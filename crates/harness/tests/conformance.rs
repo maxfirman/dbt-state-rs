@@ -329,9 +329,20 @@ async fn hydrate_confirmed(
         from_speculative_submit: false,
         table_namespace: sql_req.table_namespace.clone(),
     };
+    // F5: give the hydrated baseline a REALISTIC recorded build epoch — the max
+    // of the request's own upstream epochs — rather than None. This exercises
+    // the engine's baseline-fallback branch (an upstream the recorded run never
+    // saw falls back to `prev.last_modified_epoch`) with real millisecond
+    // magnitudes, instead of leaving every hydrated row with a null baseline
+    // that trivially forces execute on any unseen upstream.
+    let baseline_epoch = sql_req
+        .tables
+        .iter()
+        .filter_map(|t| t.last_modified_epoch)
+        .max();
     let record = qc::ExecutionRecord {
         outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: None,
+            last_modified_epoch: baseline_epoch,
             table_type: None,
             execution_results: None,
             execution_runtime_ms: None,
@@ -516,10 +527,15 @@ async fn submit_enriched_sql_clone_fallback_is_characterized() {
     assert!(ddl.contains("CREATE OR REPLACE TRANSIENT TABLE"));
     assert!(ddl.contains("CLONE"));
     assert!(ddl.contains("COPY GRANTS"));
-    assert!(ready["clone_source"].as_str().unwrap().contains("DEV_CLONE"));
+    assert!(ready["clone_source"]
+        .as_str()
+        .unwrap()
+        .contains("DEV_CLONE"));
     assert!(ready["clone_target"].as_str().unwrap().contains("PROD"));
     assert!(
-        ready["clone_required_last_modified_epoch"].as_i64().is_some(),
+        ready["clone_required_last_modified_epoch"]
+            .as_i64()
+            .is_some(),
         "clone_required_last_modified_epoch populated"
     );
     assert!(
@@ -533,12 +549,9 @@ async fn submit_enriched_sql_clone_fallback_is_characterized() {
     // CLONE routing from the SQL path is not.
     let source = ready["clone_source"].as_str().unwrap();
     let target = ready["clone_target"].as_str().unwrap();
-    let ours = dbt_state_server::clone::clone_sqls("snowflake", source, target, Some("TRANSIENT TABLE"));
-    assert_eq!(
-        ours.len(),
-        1,
-        "our generator emits one statement"
-    );
+    let ours =
+        dbt_state_server::clone::clone_sqls("snowflake", source, target, Some("TRANSIENT TABLE"));
+    assert_eq!(ours.len(), 1, "our generator emits one statement");
     assert_eq!(
         ours[0], ddl,
         "our clone DDL must byte-match the real service's clone_sqls"

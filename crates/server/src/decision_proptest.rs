@@ -36,7 +36,7 @@
 
 use proptest::prelude::*;
 
-use crate::decision::{decide, StaleUpstreamPolicy, SubmitContext, Verdict};
+use crate::decision::{decide, logical_relation_key, StaleUpstreamPolicy, SubmitContext, Verdict};
 use crate::store::{ExecutionRow, InputTable};
 
 fn is_skip(v: &Verdict) -> bool {
@@ -93,8 +93,19 @@ fn skip_would_be_safe(
 }
 
 /// Schema-stripping mirror of `logical_relation_key`, re-derived for the oracle.
+/// Quote-aware: a `.` inside double quotes is part of the identifier.
 fn strip_schema(name: &str) -> String {
-    let parts: Vec<&str> = name.split('.').map(|p| p.trim_matches('"')).collect();
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in name.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => parts.push(std::mem::take(&mut cur)),
+            other => cur.push(other),
+        }
+    }
+    parts.push(cur);
     match parts.len() {
         3 => format!("{}..{}", parts[0], parts[2]),
         2 => format!("..{}", parts[1]),
@@ -345,4 +356,121 @@ proptest! {
                 "monotonicity: skip at higher epochs implies skip at lower epochs");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// F7 — logical_relation_key parser invariants.
+//
+// `logical_relation_key` is the cross-environment match primitive: it must map
+// the SAME logical table in two environments (differing only in the schema
+// component) to the SAME key, and must NOT collapse tables that differ in
+// catalog or table name. A parser bug here causes either a cross-environment
+// false SKIP (data corruption risk) or a lost SKIP (fidelity loss). Identifiers
+// may be double-quoted and may contain dots inside the quotes.
+// ---------------------------------------------------------------------------
+
+/// Generate a single identifier component: a short name, optionally containing
+/// a dot or mixed case, that will be double-quoted when it needs quoting.
+fn ident_strategy() -> impl Strategy<Value = String> {
+    prop_oneof![
+        "[a-zA-Z][a-zA-Z0-9_]{0,6}".prop_map(|s| s),
+        // A dotted identifier MUST be quoted to be a single component.
+        "[a-z]{1,3}\\.[a-z]{1,3}".prop_map(|s| format!("\"{s}\"")),
+    ]
+}
+
+fn three_part_name(cat: &str, schema: &str, table: &str) -> String {
+    // Quote components that are not already quoted and contain no dot, to match
+    // the warehouse-style fully-qualified form the client sends.
+    let q = |p: &str| {
+        if p.starts_with('"') {
+            p.to_string()
+        } else {
+            format!("\"{p}\"")
+        }
+    };
+    format!("{}.{}.{}", q(cat), q(schema), q(table))
+}
+
+proptest! {
+    // F7.1 — Idempotence: keying a key yields the same key shape invariantly
+    // under re-application of the normalization to its own output's components
+    // (determinism of the primitive).
+    #[test]
+    fn relation_key_is_deterministic(name in "\\PC{0,40}") {
+        prop_assert_eq!(logical_relation_key(&name), logical_relation_key(&name));
+    }
+
+    // F7.2 — Schema-component insensitivity: two 3-part names that differ ONLY
+    // in the schema component MUST produce the same logical key (cross-env
+    // reuse). This holds even when catalog/table identifiers contain quoted
+    // dots — the case the old naive split('.') got wrong.
+    #[test]
+    fn relation_key_ignores_schema_component(
+        cat in ident_strategy(),
+        schema_a in ident_strategy(),
+        schema_b in ident_strategy(),
+        table in ident_strategy(),
+    ) {
+        let a = three_part_name(&cat, &schema_a, &table);
+        let b = three_part_name(&cat, &schema_b, &table);
+        prop_assert_eq!(
+            logical_relation_key(&a),
+            logical_relation_key(&b),
+            "same catalog+table, differing schema must collide: a={} b={}", a, b
+        );
+    }
+
+    // F7.3 — Catalog/table sensitivity: 3-part names that differ in the catalog
+    // OR the table component MUST NOT collide (no cross-environment false
+    // match). Schema is held constant so only the meaningful axes vary.
+    #[test]
+    fn relation_key_distinguishes_catalog_and_table(
+        cat_a in "[a-z]{1,4}",
+        cat_b in "[a-z]{1,4}",
+        schema in "[a-z]{1,4}",
+        table_a in "[a-z]{1,4}",
+        table_b in "[a-z]{1,4}",
+    ) {
+        let a = three_part_name(&cat_a, &schema, &table_a);
+        let b = three_part_name(&cat_b, &schema, &table_b);
+        // If catalog and table are both identical, keys must match; otherwise
+        // they must differ.
+        if cat_a == cat_b && table_a == table_b {
+            prop_assert_eq!(logical_relation_key(&a), logical_relation_key(&b));
+        } else {
+            prop_assert_ne!(
+                logical_relation_key(&a),
+                logical_relation_key(&b),
+                "distinct catalog/table must not collide: a={} b={}", a, b
+            );
+        }
+    }
+}
+
+/// F7 regression — a quoted identifier containing a dot must be treated as ONE
+/// component, so the schema is still stripped and two environments collide.
+/// The pre-fix `split('.')` produced 4 parts here and fell through to the
+/// pass-through arm, leaving the schema in the key (cross-environment MISS).
+#[test]
+fn relation_key_handles_quoted_dotted_table() {
+    let prod = "\"DB\".\"PROD\".\"my.table\"";
+    let dev = "\"DB\".\"DEV\".\"my.table\"";
+    assert_eq!(
+        logical_relation_key(prod),
+        logical_relation_key(dev),
+        "a quoted dotted table name must still strip the schema and collide"
+    );
+    // And the key is the schema-stripped, lowercased logical identity.
+    assert_eq!(logical_relation_key(prod), "db..my.table");
+}
+
+/// F7 regression — a quoted dot in the schema component must not leak into the
+/// table identity; stripping removes the whole quoted schema regardless of dots.
+#[test]
+fn relation_key_handles_quoted_dotted_schema() {
+    let a = "\"DB\".\"pr.od\".\"T\"";
+    let b = "\"DB\".\"de.v\".\"T\"";
+    assert_eq!(logical_relation_key(a), logical_relation_key(b));
+    assert_eq!(logical_relation_key(a), "db..t");
 }

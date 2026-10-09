@@ -51,9 +51,29 @@ Run:
     cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
       --seeds golden/fixtures/golden_20261008T222744.061Z.jsonl --iterations 200
 
-Last smoke run (20 mutants): 7 agree-execute, 13 real-skip/we-execute, 0
-divergences. Promote interesting real-skip cases into golden/fixtures/ to grow
-the #1 conformance corpus.
+The tool mutates along 12 axes, including the ones our engine ignores
+(`node_configs_hash`, `node_contract_hash`, `tolerate_nondeterminism`,
+`ignore_external_modifications`, `compare_unrendered_code`,
+`lenient_dependencies`) plus add-upstream, and prints a per-axis breakdown of
+comparisons / real-skip / DIVERGENCE for triage.
+
+Last live run vs `api.state.dbt.com` (org act_3I3…, 224 comparisons across all
+three model corpora, every axis exercised): **224 agree-execute, 0
+real-skip/we-execute, 0 DIVERGENCES.** Interpretation:
+- Strong confirmation that on every mutated input our EXECUTE decision matches
+  the hosted service's.
+- 0 real-skips means the hosted service no longer retains confirmed state for
+  these (mutated) fingerprints — the trial state captured earlier has aged out
+  and the physical warehouse objects are gone. So this run exercises the
+  "neither side has history" regime: it strongly validates the EXECUTE path but
+  does NOT, by itself, isolate whether the service treats a config/contract-hash
+  change as a logic change (review finding C1).
+- Fully isolating C1 live requires driving the hosted service into a known
+  skippable state (a real `dbt build` against Snowflake, then re-submitting the
+  same node with only `node_configs_hash` changed). That warehouse is not
+  available in this environment. Until such evidence exists, body-hash-only
+  matching is retained as the faithful behavior and the fuzz axes stay in place
+  to catch a divergence the moment skippable state is reachable.
 
 ## Why NOT certain techniques
 - Naive protobuf byte-fuzzing: tests prost/tonic decoding, not our logic.

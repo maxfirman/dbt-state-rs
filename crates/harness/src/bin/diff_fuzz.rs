@@ -10,8 +10,12 @@
 //!   1. Loads real captured SubmitEnrichedSQL requests as seeds.
 //!   2. Mutates each along MEANINGFUL axes: stale_upstream_policy, per-input
 //!      last_modified_epoch perturbed around the freshness boundary,
-//!      execution_type, adding/removing upstream tables, and node_body_hash
-//!      (match vs forced miss).
+//!      execution_type, adding/removing upstream tables, node_body_hash
+//!      (match vs forced miss), freshness tolerance, AND the fields our server
+//!      currently ignores — node_configs_hash, node_contract_hash,
+//!      tolerate_nondeterminism, ignore_external_modifications,
+//!      compare_unrendered_code, lenient_dependencies — to discover whether the
+//!      real service acts on them (review finding C1).
 //!   3. Sends each mutant to BOTH the real service and a local instance of our
 //!      server (empty state), normalizes nondeterministic fields, and compares
 //!      the decision variant + ExplainedDecision.
@@ -52,6 +56,10 @@ struct Report {
     // DIVERGENCE: real executed but we skipped, or structural mismatch.
     divergence: usize,
     divergent_samples: Vec<String>,
+    // Per-mutation-axis breakdowns for triage.
+    by_axis: BTreeMap<String, usize>,
+    real_skip_by_axis: BTreeMap<String, usize>,
+    divergence_by_axis: BTreeMap<String, usize>,
 }
 
 #[tokio::main]
@@ -105,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     for i in 0..iterations {
         let seed = &seeds[i % seeds.len()];
-        let mutant = mutate(seed, &mut rng);
+        let (mutant, axis) = mutate(seed, &mut rng);
         let req: qc::SubmitEnrichedSqlRequest = match serde_json::from_value(mutant.clone()) {
             Ok(r) => r,
             Err(_) => continue,
@@ -120,6 +128,7 @@ async fn main() -> anyhow::Result<()> {
         };
 
         report.total += 1;
+        *report.by_axis.entry(axis.to_string()).or_default() += 1;
         if real_v == ours_v {
             report.agree += 1;
             if real_v == "ready_to_execute" {
@@ -127,11 +136,19 @@ async fn main() -> anyhow::Result<()> {
             }
         } else if real_v == "skip_execution" && ours_v == "ready_to_execute" {
             report.real_skip_we_execute += 1;
+            *report
+                .real_skip_by_axis
+                .entry(axis.to_string())
+                .or_default() += 1;
         } else {
             report.divergence += 1;
-            if report.divergent_samples.len() < 20 {
+            *report
+                .divergence_by_axis
+                .entry(axis.to_string())
+                .or_default() += 1;
+            if report.divergent_samples.len() < 40 {
                 report.divergent_samples.push(format!(
-                    "real={real_v} ours={ours_v} req={}",
+                    "axis={axis} real={real_v} ours={ours_v} req={}",
                     summarize(&mutant)
                 ));
             }
@@ -152,6 +169,16 @@ fn print_report(r: &Report) {
         r.real_skip_we_execute
     );
     println!("DIVERGENCES:            {}", r.divergence);
+    println!("\nper-axis comparisons / real-skip / DIVERGENCE:");
+    let mut axes: Vec<&String> = r.by_axis.keys().collect();
+    axes.sort();
+    for a in axes {
+        let total = r.by_axis.get(a).copied().unwrap_or(0);
+        let rs = r.real_skip_by_axis.get(a).copied().unwrap_or(0);
+        let dv = r.divergence_by_axis.get(a).copied().unwrap_or(0);
+        let flag = if dv > 0 { "  <-- DIVERGENCE" } else { "" };
+        println!("  {a:28} n={total:<4} real_skip={rs:<4} div={dv}{flag}");
+    }
     for s in &r.divergent_samples {
         println!("  !! {s}");
     }
@@ -195,17 +222,28 @@ async fn call(
 }
 
 /// Mutate a seed request along meaningful semantic axes.
-fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> serde_json::Value {
+///
+/// The axes beyond index 5 specifically probe request fields our server
+/// currently IGNORES in the decision (node_configs_hash / node_contract_hash /
+/// tolerate_nondeterminism / ignore_external_modifications /
+/// compare_unrendered_code / lenient_dependencies) plus an add-upstream axis.
+/// If the real service acts on any of these while we don't, the differential
+/// run surfaces it as a `real-skip/we-execute` or a DIVERGENCE, which is the
+/// evidence needed to decide whether the field must enter our match/freshness
+/// logic (review finding C1).
+fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> (serde_json::Value, &'static str) {
     let mut m = seed.clone();
     let obj = m.as_object_mut().unwrap();
 
-    match rng.next() % 6 {
+    let axis = rng.next() % 12;
+    let label = match axis {
         0 => {
             // Toggle stale_upstream_policy.
             obj.insert(
                 "stale_upstream_policy".into(),
                 serde_json::json!(rng.next() % 2),
             );
+            "stale_upstream_policy"
         }
         1 => {
             // Perturb each input epoch around a boundary.
@@ -217,10 +255,12 @@ fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> serde_json::Value {
                     }
                 }
             }
+            "input_epoch_perturb"
         }
         2 => {
             // Flip execution_type.
             obj.insert("execution_type".into(), serde_json::json!(rng.next() % 12));
+            "execution_type"
         }
         3 => {
             // Drop an upstream table.
@@ -229,28 +269,99 @@ fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> serde_json::Value {
                     tabs.remove(0);
                 }
             }
+            "drop_upstream"
         }
         4 => {
             // Force a body-hash miss (random hash).
-            if let Some(ns) = obj
-                .get_mut("dbt_node_state")
-                .and_then(|v| v.as_object_mut())
-            {
-                ns.insert(
-                    "node_body_hash".into(),
-                    serde_json::json!(format!("{:032x}", rng.next())),
-                );
-            }
+            set_node_state_hash(obj, "node_body_hash", &format!("{:032x}", rng.next()));
+            "body_hash_miss"
         }
-        _ => {
+        5 => {
             // Change freshness tolerance.
             obj.insert(
                 "freshness_tolerance_seconds".into(),
                 serde_json::json!((rng.next() % 7200) as i64),
             );
+            "freshness_tolerance"
         }
+        6 => {
+            // IGNORED-FIELD PROBE: mutate node_configs_hash while keeping
+            // node_body_hash fixed. If the real service treats a config change
+            // as a logic change (we don't), this shows as real-skip/we-skip
+            // divergence from a hydrated seed, or real-execute/we-skip.
+            set_node_state_hash(obj, "node_configs_hash", &format!("cfg{:028x}", rng.next()));
+            "node_configs_hash"
+        }
+        7 => {
+            // IGNORED-FIELD PROBE: mutate node_contract_hash, body fixed.
+            set_node_state_hash(
+                obj,
+                "node_contract_hash",
+                &format!("con{:028x}", rng.next()),
+            );
+            "node_contract_hash"
+        }
+        8 => {
+            // IGNORED-FIELD PROBE: toggle tolerate_nondeterminism.
+            obj.insert(
+                "tolerate_nondeterminism".into(),
+                serde_json::json!(rng.next().is_multiple_of(2)),
+            );
+            "tolerate_nondeterminism"
+        }
+        9 => {
+            // IGNORED-FIELD PROBE: toggle ignore_external_modifications +
+            // compare_unrendered_code together (both freshness/logic knobs).
+            obj.insert(
+                "ignore_external_modifications".into(),
+                serde_json::json!(rng.next().is_multiple_of(2)),
+            );
+            obj.insert(
+                "compare_unrendered_code".into(),
+                serde_json::json!(rng.next().is_multiple_of(2)),
+            );
+            "external_mods+unrendered"
+        }
+        10 => {
+            // IGNORED-FIELD PROBE: mark the first upstream as a lenient
+            // dependency (per-dependency freshness relaxation).
+            if let Some(first) = obj
+                .get("tables")
+                .and_then(|t| t.as_array())
+                .and_then(|a| a.first())
+                .and_then(|t| t.get("name"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+            {
+                obj.insert("lenient_dependencies".into(), serde_json::json!([first]));
+            }
+            "lenient_dependencies"
+        }
+        _ => {
+            // ADD-UPSTREAM: inject a brand-new upstream, far newer than any
+            // existing one. If the real service treats a never-seen dependency
+            // as a change (we fall back to the recorded build epoch), this
+            // probes review finding C3.
+            if let Some(tabs) = obj.get_mut("tables").and_then(|t| t.as_array_mut()) {
+                tabs.push(serde_json::json!({
+                    "name": format!("\"DB\".\"PROD\".\"fuzz_new_{:x}\"", rng.next() % 0xffff),
+                    "last_modified_epoch": 4_000_000_000_000i64,
+                }));
+            }
+            "add_upstream"
+        }
+    };
+    (m, label)
+}
+
+/// Set a hash field inside `dbt_node_state`, creating the object if needed.
+fn set_node_state_hash(obj: &mut serde_json::Map<String, serde_json::Value>, key: &str, val: &str) {
+    let ns = obj
+        .entry("dbt_node_state")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(map) = ns.as_object_mut() {
+        map.insert(key.into(), serde_json::json!(val));
     }
-    m
 }
 
 fn summarize(req: &serde_json::Value) -> String {
@@ -331,7 +442,3 @@ impl SimpleRng {
         x
     }
 }
-
-// Keep BTreeMap import used (silences unused in some configs).
-#[allow(dead_code)]
-fn _unused(_m: BTreeMap<String, String>) {}

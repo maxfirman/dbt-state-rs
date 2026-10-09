@@ -112,8 +112,15 @@ fn execute(is_stale: bool) -> Verdict {
 /// hosted service reuses state across environments by logical identity, so
 /// upstream freshness must be matched the same way. Names with other shapes are
 /// returned lowercased/unquoted unchanged.
+///
+/// Splitting is quote-aware: a `.` inside a double-quoted identifier (e.g.
+/// `"DB"."PROD"."my.table"`) is part of the identifier, NOT a component
+/// separator. A naive `split('.')` would mis-count the parts and fail to strip
+/// the schema, causing the SAME logical table in two environments to compare
+/// UNEQUAL — a cross-environment false "execute" (stale SKIP avoided, but a
+/// faithful SKIP lost). We therefore split on unquoted dots only.
 pub(crate) fn logical_relation_key(name: &str) -> String {
-    let parts: Vec<&str> = name.split('.').map(|p| p.trim_matches('"')).collect();
+    let parts = split_relation_parts(name);
     let joined = match parts.len() {
         // catalog.schema.table -> catalog..table (drop schema)
         3 => format!("{}..{}", parts[0], parts[2]),
@@ -122,6 +129,27 @@ pub(crate) fn logical_relation_key(name: &str) -> String {
         _ => parts.join("."),
     };
     joined.to_ascii_lowercase()
+}
+
+/// Split a dotted relation name into components, treating a `.` inside a
+/// double-quoted segment as a literal (not a separator), and trimming the
+/// surrounding quotes from each component. Mirrors how warehouses quote
+/// identifiers that contain dots or reserved characters.
+fn split_relation_parts(name: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    for ch in name.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => {
+                parts.push(std::mem::take(&mut cur));
+            }
+            other => cur.push(other),
+        }
+    }
+    parts.push(cur);
+    parts
 }
 
 fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
@@ -381,7 +409,10 @@ mod tests {
         let mut c2 = ctx("h", &beyond);
         c2.freshness_tolerance_seconds = 2;
         assert!(
-            matches!(decide(&c2, Some(&prev)), Verdict::Execute { is_stale: true, .. }),
+            matches!(
+                decide(&c2, Some(&prev)),
+                Verdict::Execute { is_stale: true, .. }
+            ),
             "drift one ms beyond tolerance must execute"
         );
     }
@@ -411,7 +442,10 @@ mod tests {
         let current: Vec<InputTable> = vec![]; // all upstreams removed this run
         let prev = confirmed("h", recorded, Some(100));
         assert!(
-            matches!(decide(&ctx("h", &current), Some(&prev)), Verdict::Skip { .. }),
+            matches!(
+                decide(&ctx("h", &current), Some(&prev)),
+                Verdict::Skip { .. }
+            ),
             "no current upstreams to compare → hash match alone skips"
         );
     }
@@ -427,7 +461,10 @@ mod tests {
         let mut c = ctx("h", &current);
         c.stale_upstream_policy = StaleUpstreamPolicy::Any;
         assert!(
-            matches!(decide(&c, Some(&prev)), Verdict::Execute { is_stale: true, .. }),
+            matches!(
+                decide(&c, Some(&prev)),
+                Verdict::Execute { is_stale: true, .. }
+            ),
             "a new, newer, untracked upstream must execute"
         );
     }
@@ -438,7 +475,10 @@ mod tests {
     /// rejection NO_SUITABLE_MATCH_FOUND).
     #[test]
     fn changed_contract_is_a_hash_miss_execute() {
-        let v = decide(&ctx("new-hash-after-contract-change", &[tbl("a", 100)]), None);
+        let v = decide(
+            &ctx("new-hash-after-contract-change", &[tbl("a", 100)]),
+            None,
+        );
         match v {
             Verdict::Execute {
                 is_stale,
@@ -462,7 +502,10 @@ mod tests {
         let current = vec![tbl("a", 101)]; // 1ms newer
         let mut c = ctx("h", &current);
         c.freshness_tolerance_seconds = 0;
-        assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { is_stale: true, .. }));
+        assert!(matches!(
+            decide(&c, Some(&prev)),
+            Verdict::Execute { is_stale: true, .. }
+        ));
     }
 
     /// OLDER upstream than recorded (clock skew / restore) must NOT be treated
@@ -471,7 +514,50 @@ mod tests {
     fn older_upstream_than_recorded_skips() {
         let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
         let current = vec![tbl("a", 10)]; // older than recorded
-        assert!(matches!(decide(&ctx("h", &current), Some(&prev)), Verdict::Skip { .. }));
+        assert!(matches!(
+            decide(&ctx("h", &current), Some(&prev)),
+            Verdict::Skip { .. }
+        ));
+    }
+
+    /// EPOCH-UNIT INVARIANT (F4): `freshness_tolerance_seconds` is in SECONDS,
+    /// but every `last_modified_epoch` (upstream tables, recorded build time,
+    /// ConfirmExecution) is in MILLISECONDS — as sent by the real client and
+    /// seen in the golden fixtures (13-digit values ~1.79e12). The engine
+    /// bridges the units with a single `* 1000`. This test pins that contract:
+    /// a tolerance of T seconds absorbs exactly T*1000 ms of drift and no more.
+    /// If a future change ever mixed the units (e.g. treated epochs as seconds),
+    /// every freshness comparison would silently invert; this test fails loudly.
+    #[test]
+    fn tolerance_is_seconds_epochs_are_milliseconds() {
+        // Realistic millisecond epoch (matches golden fixture magnitudes).
+        let base = 1_791_320_539_084i64;
+        let prev = confirmed("h", vec![tbl("a", base)], Some(base));
+
+        // 5 seconds of tolerance = 5000 ms. Drift of exactly 5000 ms is fresh.
+        let at = vec![tbl("a", base + 5_000)];
+        let mut c = ctx("h", &at);
+        c.freshness_tolerance_seconds = 5;
+        assert!(
+            matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
+            "5s tolerance must absorb exactly 5000ms of drift"
+        );
+
+        // 5001 ms of drift is beyond 5 s → stale.
+        let beyond = vec![tbl("a", base + 5_001)];
+        let mut c2 = ctx("h", &beyond);
+        c2.freshness_tolerance_seconds = 5;
+        assert!(
+            matches!(
+                decide(&c2, Some(&prev)),
+                Verdict::Execute { is_stale: true, .. }
+            ),
+            "5001ms of drift exceeds a 5s (5000ms) tolerance → execute"
+        );
+
+        // Sanity: if epochs were mistakenly treated as seconds, a 5000ms drift
+        // (which is only 5 "units") would be absorbed by ANY tolerance >= 5 and
+        // the boundary at 5001 would NOT flip — the assertion above would fail.
     }
 }
 

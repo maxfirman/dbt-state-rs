@@ -262,26 +262,42 @@ impl Store {
         Ok(records.len() as u32)
     }
 
-    /// Mark a pending execution confirmed, recording the outcome. Returns true
-    /// if a matching pending row existed.
+    /// Mark a pending execution confirmed, recording the outcome. Semantics
+    /// (pinned by tests, mirrors the hosted service's idempotent confirm):
+    ///
+    ///   * The outcome fields are written ONLY on the pending→confirmed
+    ///     transition. A `request_id` that is already confirmed is NOT mutated —
+    ///     the first confirm's recorded `last_modified_epoch`/runtime is stable,
+    ///     so a late/duplicate confirm cannot silently rewrite skippable history.
+    ///   * Returns `true` when the row exists for this (org, request_id) — whether
+    ///     it was just confirmed OR was already confirmed (idempotent success).
+    ///   * Returns `false` only when no such row exists (unknown request_id).
+    ///
+    /// Scoped by `org_id` to honor the global org-isolation invariant, even
+    /// though `request_id` is a unique server-minted UUID.
     pub async fn confirm(
         &self,
+        org_id: &str,
         request_id: &str,
         last_modified_epoch: Option<i64>,
         table_type: Option<&str>,
         execution_runtime_ms: Option<i64>,
     ) -> sqlx::Result<bool> {
+        // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
             r#"
             UPDATE executions
             SET status = 'confirmed',
-                last_modified_epoch = $2,
-                table_type = $3,
-                execution_runtime_ms = $4,
+                last_modified_epoch = $3,
+                table_type = $4,
+                execution_runtime_ms = $5,
                 confirmed_at = now()
-            WHERE request_id = $1
+            WHERE org_id = $1
+              AND request_id = $2
+              AND status = 'pending'
             "#,
         )
+        .bind(org_id)
         .bind(request_id)
         .bind(last_modified_epoch)
         .bind(table_type)
@@ -289,7 +305,25 @@ impl Store {
         .execute(&self.pool)
         .await?
         .rows_affected();
-        Ok(affected > 0)
+
+        if affected > 0 {
+            return Ok(true);
+        }
+
+        // No pending row updated: either already confirmed (idempotent success)
+        // or genuinely unknown. Distinguish without mutating the outcome.
+        let exists: Option<i64> = sqlx::query_scalar(
+            r#"
+            SELECT id FROM executions
+            WHERE org_id = $1 AND request_id = $2
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
     }
 }
 

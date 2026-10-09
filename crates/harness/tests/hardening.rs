@@ -143,7 +143,12 @@ async fn unconfirmed_execution_never_skips() {
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
 
-    let req = submit("\"DB\".\"S\".\"FAILED\"", "h-failed", ETYPE_FULL, &[("up", 100)]);
+    let req = submit(
+        "\"DB\".\"S\".\"FAILED\"",
+        "h-failed",
+        ETYPE_FULL,
+        &[("up", 100)],
+    );
 
     // First submit executes (pending row written), but we DO NOT confirm —
     // simulating a build that errored before ConfirmExecution.
@@ -191,7 +196,12 @@ async fn confirming_wrong_request_id_leaves_original_pending() {
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
 
-    let req = submit("\"DB\".\"S\".\"WRONGID\"", "h-wrong", ETYPE_FULL, &[("up", 100)]);
+    let req = submit(
+        "\"DB\".\"S\".\"WRONGID\"",
+        "h-wrong",
+        ETYPE_FULL,
+        &[("up", 100)],
+    );
     let r1 = sql
         .submit_enriched_sql(req.clone())
         .await
@@ -240,12 +250,13 @@ async fn changed_contract_forces_rebuild() {
     );
     // Confirm v2.
     let rid2 = ready_request_id(&r2);
-    assert!(exec
-        .confirm_execution(confirm_req(&rid2, 200, 20))
-        .await
-        .unwrap()
-        .into_inner()
-        .success);
+    assert!(
+        exec.confirm_execution(confirm_req(&rid2, 200, 20))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
 
     // The ORIGINAL hash v1 still skips (its confirmed row is intact).
     let r1_again = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
@@ -283,7 +294,11 @@ async fn modified_upstream_forces_stale_rebuild_then_recovers() {
     // Upstream reverts to the recorded epoch → fresh → skip (confirmed row
     // still present; we never confirmed the stale rebuild).
     let reverted = submit(target, "h-up", ETYPE_FULL, &[("src", 1_000_000)]);
-    let r2 = sql.submit_enriched_sql(reverted).await.unwrap().into_inner();
+    let r2 = sql
+        .submit_enriched_sql(reverted)
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(response_variant(&r2), "skip_execution");
 }
 
@@ -300,7 +315,12 @@ async fn added_then_deleted_upstream() {
     execute_and_confirm(&mut sql, &mut exec, &base, 100, 10).await;
 
     // Add a brand-new upstream, newer than the build → execute.
-    let added = submit(target, "h-ad", ETYPE_FULL, &[("a", 100), ("b_new", 9_000_000)]);
+    let added = submit(
+        target,
+        "h-ad",
+        ETYPE_FULL,
+        &[("a", 100), ("b_new", 9_000_000)],
+    );
     let r = sql.submit_enriched_sql(added).await.unwrap().into_inner();
     assert_eq!(
         response_variant(&r),
@@ -429,11 +449,20 @@ async fn stale_policy_any_vs_all_end_to_end() {
     execute_and_confirm(&mut sql, &mut exec, &any_base, 100, 10).await;
     // Only b drifts → ANY → execute.
     let any_drift = with_policy(
-        submit(any_target, "h-any", ETYPE_FULL, &[("a", 100), ("b", 9_000_000)]),
+        submit(
+            any_target,
+            "h-any",
+            ETYPE_FULL,
+            &[("a", 100), ("b", 9_000_000)],
+        ),
         0,
         0,
     );
-    let ra = sql.submit_enriched_sql(any_drift).await.unwrap().into_inner();
+    let ra = sql
+        .submit_enriched_sql(any_drift)
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(
         response_variant(&ra),
         "ready_to_execute",
@@ -450,7 +479,12 @@ async fn stale_policy_any_vs_all_end_to_end() {
     execute_and_confirm(&mut sql, &mut exec, &all_base, 100, 10).await;
     // Only b drifts → ALL → skip (a still fresh).
     let all_one = with_policy(
-        submit(all_target, "h-all", ETYPE_FULL, &[("a", 100), ("b", 9_000_000)]),
+        submit(
+            all_target,
+            "h-all",
+            ETYPE_FULL,
+            &[("a", 100), ("b", 9_000_000)],
+        ),
         1,
         0,
     );
@@ -462,11 +496,20 @@ async fn stale_policy_any_vs_all_end_to_end() {
     );
     // Both drift → ALL → execute.
     let all_both = with_policy(
-        submit(all_target, "h-all", ETYPE_FULL, &[("a", 8_000_000), ("b", 9_000_000)]),
+        submit(
+            all_target,
+            "h-all",
+            ETYPE_FULL,
+            &[("a", 8_000_000), ("b", 9_000_000)],
+        ),
         1,
         0,
     );
-    let rc = sql.submit_enriched_sql(all_both).await.unwrap().into_inner();
+    let rc = sql
+        .submit_enriched_sql(all_both)
+        .await
+        .unwrap()
+        .into_inner();
     assert_eq!(
         response_variant(&rc),
         "ready_to_execute",
@@ -484,7 +527,12 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
     let (addr, schema) = start_server().await;
     let ch = channel(addr).await;
 
-    let req = submit("\"DB\".\"S\".\"CONC\"", "h-conc", ETYPE_FULL, &[("up", 100)]);
+    let req = submit(
+        "\"DB\".\"S\".\"CONC\"",
+        "h-conc",
+        ETYPE_FULL,
+        &[("up", 100)],
+    );
 
     // Fire N identical submits concurrently.
     let mut tasks = JoinSet::new();
@@ -507,21 +555,21 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
 
     // Exactly N pending rows were written (no dedupe), all distinct ids.
     let pool = schema_pool(&schema).await;
-    let pending: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM executions WHERE status='pending'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status='pending'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(pending, N as i64, "N distinct pending rows persisted");
 
     // Confirm ONE request_id → that fingerprint now skips.
     let mut exec = ExecutionClient::new(ch.clone());
-    assert!(exec
-        .confirm_execution(confirm_req(&request_ids[0], 100, 55))
-        .await
-        .unwrap()
-        .into_inner()
-        .success);
+    assert!(
+        exec.confirm_execution(confirm_req(&request_ids[0], 100, 55))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
 
     let mut sql = SqlClient::new(ch);
     let r = sql.submit_enriched_sql(req).await.unwrap().into_inner();
@@ -532,12 +580,13 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
     );
 
     // Confirming a SECOND of the duplicate ids is still idempotent/successful.
-    assert!(exec
-        .confirm_execution(confirm_req(&request_ids[1], 100, 55))
-        .await
-        .unwrap()
-        .into_inner()
-        .success);
+    assert!(
+        exec.confirm_execution(confirm_req(&request_ids[1], 100, 55))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
 }
 
 // 11. SKIP-SAFETY END-TO-END: across a representative matrix of transitions,

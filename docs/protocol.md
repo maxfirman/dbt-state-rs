@@ -158,3 +158,56 @@ See the "Our status" column above. Causally-reproducible skip/execute/clone and
 cross-environment reuse are fully reproduced and tested against real traffic;
 Explain/Selector/Deferral return the same (empty) responses the hosted service
 returned in captured runs.
+
+### Decision inputs: used vs. ignored
+
+The decision engine (`decision::decide`) currently derives its verdict from:
+`execution_type`, `node_body_hash`, the upstream `tables[]` freshness,
+`freshness_tolerance_seconds`, `target_table` (own-table exclusion), and
+`stale_upstream_policy`. Seeds match on `values_hash`. The match key also
+includes `table_namespace` (cross-environment reuse) and is org-scoped.
+
+The following request fields are received and (where noted) persisted, but are
+**not yet consulted** in the decision. Whether the hosted service acts on them
+is being resolved empirically with the differential-fuzz tool (which now mutates
+each of these axes — see [testing.md](testing.md) and the `diff-fuzz` module):
+
+| Field | Stored? | Risk if the real service acts on it |
+|---|---|---|
+| `node_configs_hash` | yes | a config-only change would wrongly SKIP |
+| `node_contract_hash` | yes | a contract-only change would wrongly SKIP |
+| `node_macros_hash` | no | macro change not reflected in the match key |
+| `node_persisted_descriptions_hash` | no | description change not reflected |
+| `tolerate_nondeterminism` | no | hash-mismatch skip policy may differ |
+| `ignore_external_modifications` | no | external drift handling may differ |
+| `compare_unrendered_code` | no | what counts as a logic match may differ |
+| `lenient_dependencies[]` | no | per-dependency freshness relaxation ignored |
+
+Until the fuzzer produces evidence that the hosted service changes its verdict
+on one of these, body-hash-only matching is treated as the faithful behavior.
+The conservative direction of any divergence matters: a wrongly-ignored field
+risks an unsafe SKIP (serving stale/incorrect data), so these are the
+highest-priority axes to resolve.
+
+### CLONE from the `SubmitEnrichedSQL` path (characterized gap)
+
+The hosted service can answer a plain `SubmitEnrichedSQL` with `ready_to_clone`
+("an equivalent model exists under another name so we cloned that one";
+`skip_rejection_reason = TARGET_TABLE_MISMATCH = 1`). Our `SQL` service returns
+only SKIP/EXECUTE from that path — it never emits CLONE. This is deliberate:
+whether a given submit SKIPs, EXECUTEs or CLONEs here depends on **physical
+warehouse state** (which tables already exist, whether an equivalently-named
+sibling exists to clone from) that the protocol does not carry. The two sibling
+fixtures `clone_happy_path.jsonl` and `clone_failed_fallback.jsonl` were captured
+in separate sessions and yield SKIP vs CLONE for the SAME logical fingerprint.
+The exact real response shape is pinned as a golden contract by
+`submit_enriched_sql_clone_fallback_is_characterized` so a future implementation
+can be validated against it. `Clone.RegisterClone` (the explicit clone RPC) is
+fully implemented and differentially tested.
+
+### Not reproduced (valid empty/default responses)
+
+Rich `Explain` text, `transformed_nodes_by_query` population,
+`query_hash_metadata_info`, server-side `ResolveDeferredRelations`, and
+non-Snowflake clone DDL verified against the real service. These return the same
+empty/default responses observed in captured traffic.

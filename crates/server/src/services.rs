@@ -488,7 +488,17 @@ impl Sql for SqlService {
 
         // Seeds carry no upstream `tables`; the decision is driven purely by a
         // values_hash match. Freshness defaults to fresh with empty inputs.
+        //
+        // SAFETY NOTE (C8): `freshness_tolerance_seconds = 0` and policy = Any
+        // below are inert ONLY because `input_tables` is always empty here
+        // (`considered == 0 => not stale`). If seeds ever gain upstream inputs,
+        // these hardcodes would silently apply zero tolerance — revisit then.
         let input_tables: Vec<InputTable> = Vec::new();
+        debug_assert!(
+            input_tables.is_empty(),
+            "seed decisions assume no upstream inputs; the tolerance/policy \
+             constants below are only safe for an empty input set"
+        );
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: None,
@@ -593,11 +603,13 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::ConfirmExecutionRequest>,
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
+        let org_id = org_id_of(&request);
         let req = request.into_inner();
         let found = self
             .0
             .store
             .confirm(
+                &org_id,
                 &req.request_id,
                 req.last_modified_epoch,
                 req.table_type.as_deref(),
@@ -900,6 +912,11 @@ impl SelectorService for SelectorServiceImpl {
     }
 }
 
+/// Map a store error to a gRPC status. The detailed sqlx error (which may name
+/// internal schema objects, columns, or connection fragments) is logged
+/// server-side; the client receives only a generic message to avoid leaking
+/// implementation details over the wire.
 fn db_err(e: sqlx::Error) -> Status {
-    Status::internal(format!("db error: {e}"))
+    tracing::error!(error = %e, "store error");
+    Status::internal("internal store error")
 }
