@@ -64,7 +64,9 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
     let mut meta: HashMap<String, (String, String)> = HashMap::new(); // id -> (label, decision)
 
     for d in decisions {
-        let Some(uid) = &d.node_unique_id else { continue };
+        let Some(uid) = &d.node_unique_id else {
+            continue;
+        };
         let idx = *index_of
             .entry(uid.clone())
             .or_insert_with(|| graph.add_node(uid.clone()));
@@ -79,23 +81,24 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
     // Edges: upstream input relation -> this node, when the input is produced
     // by another known node in this environment.
     for d in decisions {
-        let Some(uid) = &d.node_unique_id else { continue };
-        let inputs: Vec<String> = serde_json::from_value::<Vec<serde_json::Value>>(
-            d.input_tables.clone(),
-        )
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(norm))
-        .collect();
+        let Some(uid) = &d.node_unique_id else {
+            continue;
+        };
+        let inputs: Vec<String> =
+            serde_json::from_value::<Vec<serde_json::Value>>(d.input_tables.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(norm))
+                .collect();
         for inp in inputs {
             // Skip self-reference (a node's own target table appears in inputs).
-            if let Some(src_uid) = produced.get(&inp) {
-                if src_uid != uid {
-                    let (Some(&a), Some(&b)) = (index_of.get(src_uid), index_of.get(uid)) else {
-                        continue;
-                    };
-                    graph.update_edge(a, b, ());
-                }
+            if let Some(src_uid) = produced.get(&inp)
+                && src_uid != uid
+            {
+                let (Some(&a), Some(&b)) = (index_of.get(src_uid), index_of.get(uid)) else {
+                    continue;
+                };
+                graph.update_edge(a, b, ());
             }
         }
     }
@@ -109,7 +112,11 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
     // Collect placed nodes.
     let mut nodes = Vec::new();
     for (uid, &idx) in &index_of {
-        let (x, y) = layout.node_positions.get(&idx).copied().unwrap_or((0.0, 0.0));
+        let (x, y) = layout
+            .node_positions
+            .get(&idx)
+            .copied()
+            .unwrap_or((0.0, 0.0));
         let (label, decision) = meta
             .get(uid)
             .cloned()
@@ -129,15 +136,15 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
     let pos = |idx: NodeIndex| layout.node_positions.get(&idx).copied();
     let mut edges = Vec::new();
     for e in graph.edge_indices() {
-        if let Some((a, b)) = graph.edge_endpoints(e) {
-            if let (Some((x1, y1)), Some((x2, y2))) = (pos(a), pos(b)) {
-                edges.push(PlacedEdge {
-                    x1: x1 + PAD + NODE_W / 2.0,
-                    y1: y1 + PAD + NODE_H / 2.0,
-                    x2: x2 + PAD - NODE_W / 2.0,
-                    y2: y2 + PAD + NODE_H / 2.0,
-                });
-            }
+        if let Some((a, b)) = graph.edge_endpoints(e)
+            && let (Some((x1, y1)), Some((x2, y2))) = (pos(a), pos(b))
+        {
+            edges.push(PlacedEdge {
+                x1: x1 + PAD + NODE_W / 2.0,
+                y1: y1 + PAD + NODE_H / 2.0,
+                x2: x2 + PAD - NODE_W / 2.0,
+                y2: y2 + PAD + NODE_H / 2.0,
+            });
         }
     }
 
@@ -201,9 +208,14 @@ pub fn render_svg(layout: &Layout) -> String {
              fill=\"{}\" stroke=\"{}\" stroke-width=\"1.5\"/>\
              <text x=\"{:.1}\" y=\"{:.1}\" font-size=\"12\" font-family=\"system-ui,sans-serif\" \
              fill=\"#1b1f24\" text-anchor=\"middle\" dominant-baseline=\"middle\">{}</text></g>",
-            x, y, NODE_W, NODE_H,
-            fill(&n.decision), stroke(&n.decision),
-            n.x, y + NODE_H / 2.0,
+            x,
+            y,
+            NODE_W,
+            NODE_H,
+            fill(&n.decision),
+            stroke(&n.decision),
+            n.x,
+            y + NODE_H / 2.0,
             escape(&n.label),
         ));
     }
@@ -223,11 +235,19 @@ mod tests {
     use super::*;
     use crate::db::DecisionRow;
 
-    fn row(name: &str, uid: &str, target: Option<&str>, inputs: &[&str], decision: &str) -> DecisionRow {
-        let input_tables = serde_json::json!(inputs
-            .iter()
-            .map(|n| serde_json::json!({ "name": n, "last_modified_epoch": 0 }))
-            .collect::<Vec<_>>());
+    fn row(
+        name: &str,
+        uid: &str,
+        target: Option<&str>,
+        inputs: &[&str],
+        decision: &str,
+    ) -> DecisionRow {
+        let input_tables = serde_json::json!(
+            inputs
+                .iter()
+                .map(|n| serde_json::json!({ "name": n, "last_modified_epoch": 0 }))
+                .collect::<Vec<_>>()
+        );
         DecisionRow {
             id: 1,
             node_name: Some(name.into()),
@@ -256,8 +276,20 @@ mod tests {
     fn infers_edge_from_input_to_producer() {
         // stg produces "db.sch.stg"; mart consumes it -> edge stg -> mart.
         let decisions = vec![
-            row("stg", "model.p.stg", Some("\"DB\".\"S\".\"STG\""), &[], "build"),
-            row("mart", "model.p.mart", Some("\"DB\".\"S\".\"MART\""), &["\"DB\".\"S\".\"STG\""], "skip"),
+            row(
+                "stg",
+                "model.p.stg",
+                Some("\"DB\".\"S\".\"STG\""),
+                &[],
+                "build",
+            ),
+            row(
+                "mart",
+                "model.p.mart",
+                Some("\"DB\".\"S\".\"MART\""),
+                &["\"DB\".\"S\".\"STG\""],
+                "skip",
+            ),
         ];
         let layout = build(&decisions).expect("layout");
         assert_eq!(layout.nodes.len(), 2);
@@ -281,7 +313,13 @@ mod tests {
 
     #[test]
     fn svg_is_accessible_and_contains_nodes() {
-        let decisions = vec![row("stg", "model.p.stg", Some("\"DB\".\"S\".\"STG\""), &[], "build")];
+        let decisions = vec![row(
+            "stg",
+            "model.p.stg",
+            Some("\"DB\".\"S\".\"STG\""),
+            &[],
+            "build",
+        )];
         let layout = build(&decisions).unwrap();
         let svg = render_svg(&layout);
         assert!(svg.contains("role=\"img\""));
@@ -291,4 +329,3 @@ mod tests {
         assert!(svg.contains(">stg<"));
     }
 }
-

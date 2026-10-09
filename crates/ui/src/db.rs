@@ -3,15 +3,17 @@
 
 //! server writes to (the UI never mutates state in Phase 1).
 
-use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 
 /// Connect a small read pool. `DATABASE_URL` defaults to the local dev dsn.
 pub async fn connect() -> anyhow::Result<PgPool> {
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
-        "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".to_string()
-    });
-    let pool = PgPoolOptions::new().max_connections(8).connect(&url).await?;
+    let url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".to_string());
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&url)
+        .await?;
     Ok(pool)
 }
 

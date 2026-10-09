@@ -1,8 +1,8 @@
 //! Shared Topcoat components and formatting helpers used across pages.
 
 use topcoat::{
-    view::{component, view, View},
     Result,
+    view::{View, component, view},
 };
 
 /// A coloured status badge for a decision ("build" | "skip" | "clone").

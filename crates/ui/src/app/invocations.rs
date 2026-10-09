@@ -4,7 +4,7 @@ use serde::Serialize;
 use topcoat::{
     context::Cx,
     router::{href, module_param, page, path_param, query_params},
-    view::{view, View},
+    view::{View, view},
 };
 
 use crate::db;
@@ -77,7 +77,9 @@ pub mod invocation_id {
         let active = filter.decision.clone();
 
         let inv = db::invocation(pool, id).await.ok().flatten();
-        let mut decisions = db::decisions_for_invocation(pool, id).await.unwrap_or_default();
+        let mut decisions = db::decisions_for_invocation(pool, id)
+            .await
+            .unwrap_or_default();
         if let Some(f) = active.as_deref() {
             decisions.retain(|d| d.decision == f);
         }
@@ -89,9 +91,15 @@ pub mod invocation_id {
 
         // Precompute filter links + active flags (href! borrows must be local).
         let all_link = href!(detail, InvocationId(id));
-        let built_link = href!(detail, InvocationId(id)).query(FilterQuery { decision: "build".into() });
-        let reused_link = href!(detail, InvocationId(id)).query(FilterQuery { decision: "skip".into() });
-        let cloned_link = href!(detail, InvocationId(id)).query(FilterQuery { decision: "clone".into() });
+        let built_link = href!(detail, InvocationId(id)).query(FilterQuery {
+            decision: "build".into(),
+        });
+        let reused_link = href!(detail, InvocationId(id)).query(FilterQuery {
+            decision: "skip".into(),
+        });
+        let cloned_link = href!(detail, InvocationId(id)).query(FilterQuery {
+            decision: "clone".into(),
+        });
         let is_all = active.is_none();
         let is_built = active.as_deref() == Some("build");
         let is_reused = active.as_deref() == Some("skip");

@@ -1,8 +1,8 @@
 //! Open-source dbt State ("query cache") gRPC server with a Postgres backend.
 
+pub mod capture;
 pub mod clone;
 pub mod config;
-pub mod capture;
 pub mod decision;
 pub mod services;
 pub mod store;

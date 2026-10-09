@@ -3,7 +3,7 @@
 use topcoat::{
     context::Cx,
     router::{module_param, page, path_param},
-    view::{view, Unescaped, View},
+    view::{Unescaped, View, view},
 };
 
 use crate::db;
@@ -25,7 +25,7 @@ pub mod environment_id {
             .unwrap_or_default();
 
         let layout = lineage::build(&decisions);
-        let svg = layout.as_ref().map(|l| lineage::render_svg(l));
+        let svg = layout.as_ref().map(lineage::render_svg);
 
         Ok(view! {
             <h1>"Lineage"</h1>

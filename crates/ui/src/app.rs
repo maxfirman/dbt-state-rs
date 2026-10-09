@@ -2,8 +2,8 @@
 
 use topcoat::{
     context::Cx,
-    router::{href, layout, module_router, page, RouterBuilder, Slot},
-    view::{class, view, View},
+    router::{RouterBuilder, Slot, href, layout, module_router, page},
+    view::{View, class, view},
 };
 
 use crate::db;
@@ -78,14 +78,16 @@ async fn root_layout(cx: &Cx, slot: Slot<'_>) -> topcoat::Result<impl View> {
 #[page]
 async fn home(cx: &Cx) -> topcoat::Result<impl View> {
     let pool = crate::pool(cx);
-    let totals = db::overview_totals(pool).await.unwrap_or(db::OverviewTotals {
-        built: 0,
-        reused: 0,
-        cloned: 0,
-        invocations: 0,
-        projects: 0,
-        environments: 0,
-    });
+    let totals = db::overview_totals(pool)
+        .await
+        .unwrap_or(db::OverviewTotals {
+            built: 0,
+            reused: 0,
+            cloned: 0,
+            invocations: 0,
+            projects: 0,
+            environments: 0,
+        });
     let recent = db::recent_invocations(pool, 10).await.unwrap_or_default();
 
     let total_decisions = totals.built + totals.reused + totals.cloned;
@@ -153,7 +155,6 @@ async fn home(cx: &Cx) -> topcoat::Result<impl View> {
         </section>
     })
 }
-
 
 /// Minimal, clean, accessible stylesheet (no build step). Dark-on-light,
 /// high-contrast, generous spacing, visible focus rings.

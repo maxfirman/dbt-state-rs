@@ -3,7 +3,7 @@
 use topcoat::{
     context::Cx,
     router::{href, module_param, page, path_param},
-    view::{view, View},
+    view::{View, view},
 };
 
 use crate::db;
@@ -64,7 +64,9 @@ pub mod project_id {
             .ok()
             .flatten()
             .unwrap_or_else(|| "Unknown project".to_string());
-        let envs = db::environments_for_project(pool, id).await.unwrap_or_default();
+        let envs = db::environments_for_project(pool, id)
+            .await
+            .unwrap_or_default();
 
         Ok(view! {
             <p class="breadcrumb">

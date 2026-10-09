@@ -208,18 +208,29 @@ fn capture_submit(
 /// Classify a SubmitSQLResponse into (kind, is_stale, request_id, exec_decision_id).
 fn classify_response(
     resp: &qc::SubmitSqlResponse,
-) -> (crate::capture::DecisionKind, bool, Option<String>, Option<String>) {
+) -> (
+    crate::capture::DecisionKind,
+    bool,
+    Option<String>,
+    Option<String>,
+) {
     use crate::capture::DecisionKind;
     match &resp.response {
         Some(qc::submit_sql_response::Response::SkipExecution(s)) => (
             DecisionKind::Skip,
-            s.explained_decision.as_ref().map(|e| e.is_stale).unwrap_or(false),
+            s.explained_decision
+                .as_ref()
+                .map(|e| e.is_stale)
+                .unwrap_or(false),
             None,
             s.execution_decision_id.clone(),
         ),
         Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => (
             DecisionKind::Build,
-            r.explained_decision.as_ref().map(|e| e.is_stale).unwrap_or(false),
+            r.explained_decision
+                .as_ref()
+                .map(|e| e.is_stale)
+                .unwrap_or(false),
             Some(r.request_id.clone()),
             r.execution_decision_id.clone(),
         ),

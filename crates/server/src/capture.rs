@@ -229,7 +229,11 @@ mod tests {
 
     async fn schema_pool() -> (PgPool, String) {
         let schema = format!("captest_{}", uuid::Uuid::new_v4().simple());
-        let admin = PgPoolOptions::new().max_connections(1).connect(&dsn()).await.unwrap();
+        let admin = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&dsn())
+            .await
+            .unwrap();
         admin
             .execute(format!("CREATE SCHEMA \"{schema}\"").as_str())
             .await
@@ -241,7 +245,8 @@ mod tests {
                 move |conn, _| {
                     let schema = schema.clone();
                     Box::pin(async move {
-                        conn.execute(format!("SET search_path TO \"{schema}\"").as_str()).await?;
+                        conn.execute(format!("SET search_path TO \"{schema}\"").as_str())
+                            .await?;
                         Ok(())
                     })
                 }
@@ -293,11 +298,26 @@ mod tests {
         capture_decision(&pool, sample(DecisionKind::Build, "inv-1", "a")).await;
         capture_decision(&pool, sample(DecisionKind::Skip, "inv-1", "b")).await;
 
-        let orgs: i64 = sqlx::query_scalar("SELECT count(*) FROM organizations").fetch_one(&pool).await.unwrap();
-        let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM projects").fetch_one(&pool).await.unwrap();
-        let envs: i64 = sqlx::query_scalar("SELECT count(*) FROM environments").fetch_one(&pool).await.unwrap();
-        let invs: i64 = sqlx::query_scalar("SELECT count(*) FROM invocations").fetch_one(&pool).await.unwrap();
-        let decs: i64 = sqlx::query_scalar("SELECT count(*) FROM node_decisions").fetch_one(&pool).await.unwrap();
+        let orgs: i64 = sqlx::query_scalar("SELECT count(*) FROM organizations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM projects")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let envs: i64 = sqlx::query_scalar("SELECT count(*) FROM environments")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let invs: i64 = sqlx::query_scalar("SELECT count(*) FROM invocations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let decs: i64 = sqlx::query_scalar("SELECT count(*) FROM node_decisions")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(orgs, 1, "one org");
         assert_eq!(projects, 1, "one project");
         assert_eq!(envs, 1, "one environment");
@@ -314,4 +334,3 @@ mod tests {
         assert_eq!(reused, 1);
     }
 }
-
