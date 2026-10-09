@@ -84,14 +84,30 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
         let Some(uid) = &d.node_unique_id else {
             continue;
         };
-        let inputs: Vec<String> =
-            serde_json::from_value::<Vec<serde_json::Value>>(d.input_tables.clone())
+        // Primary signal: query_dependencies name the upstream relations the
+        // client resolved for this node (its upstream models). Fall back to
+        // input_tables (physical read freshness) when deps are absent.
+        let mut upstreams: Vec<String> =
+            serde_json::from_value::<Vec<serde_json::Value>>(d.query_dependencies.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|t| {
+                    // query_dependencies entries may be bare strings or objects
+                    // with a "name" field, depending on capture shape.
+                    t.as_str()
+                        .map(norm)
+                        .or_else(|| t.get("name").and_then(|n| n.as_str()).map(norm))
+                })
+                .collect();
+        if upstreams.is_empty() {
+            upstreams = serde_json::from_value::<Vec<serde_json::Value>>(d.input_tables.clone())
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(norm))
                 .collect();
-        for inp in inputs {
-            // Skip self-reference (a node's own target table appears in inputs).
+        }
+        for inp in upstreams {
+            // Skip self-reference (a node's own relation can appear in inputs).
             if let Some(src_uid) = produced.get(&inp)
                 && src_uid != uid
             {
@@ -262,6 +278,7 @@ mod tests {
             clone_source: None,
             execution_runtime_ms: None,
             input_tables,
+            query_dependencies: serde_json::json!([]),
             clone_sqls: None,
             created_at: chrono::Utc::now(),
         }

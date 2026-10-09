@@ -62,6 +62,9 @@ pub struct CaptureInput {
     pub clone_source: Option<String>,
     pub clone_sqls: Option<Vec<String>>,
     pub input_tables: Vec<InputTable>,
+    /// Upstream dependency relation names (from query_dependencies), used for
+    /// lineage reconstruction.
+    pub query_dependencies: Vec<String>,
     pub execution_runtime_ms: Option<i64>,
 }
 
@@ -186,10 +189,10 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             decision_description, request_id, execution_decision_id,
             node_body_hash, values_hash, table_namespace, target_table,
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
-            execution_runtime_ms
+            execution_runtime_ms, query_dependencies
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24)
+                $19,$20,$21,$22,$23,$24,$25)
         "#,
     )
     .bind(&i.org_id)
@@ -216,6 +219,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(clone_sqls)
     .bind(input_tables)
     .bind(i.execution_runtime_ms)
+    .bind(serde_json::to_value(&i.query_dependencies).unwrap_or_default())
     .execute(pool)
     .await?;
 
@@ -293,6 +297,7 @@ mod tests {
             clone_source: None,
             clone_sqls: None,
             input_tables: vec![],
+            query_dependencies: vec![],
             execution_runtime_ms: Some(42),
         }
     }

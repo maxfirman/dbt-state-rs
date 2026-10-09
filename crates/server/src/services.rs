@@ -200,6 +200,11 @@ fn capture_submit(
         clone_source: None,
         clone_sqls: None,
         input_tables: input_tables.to_vec(),
+        query_dependencies: req
+            .query_dependencies
+            .iter()
+            .map(|d| d.name.clone())
+            .collect(),
         execution_runtime_ms: runtime_of(response),
     };
     let _ = DecisionKind::Build; // keep import used across cfgs
@@ -305,6 +310,7 @@ fn capture_submit_values(
         clone_source: None,
         clone_sqls: None,
         input_tables: Vec::new(),
+        query_dependencies: Vec::new(),
         execution_runtime_ms: runtime_of(response),
     };
     spawn_capture(state, input);
@@ -804,6 +810,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     clone_source: Some(req.clone_source_table.clone()),
                     clone_sqls: Some(clone_sqls.clone()),
                     input_tables: Vec::new(),
+                    query_dependencies: Vec::new(),
                     execution_runtime_ms: None,
                 },
             );

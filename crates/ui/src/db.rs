@@ -83,6 +83,7 @@ pub struct DecisionRow {
     pub clone_source: Option<String>,
     pub execution_runtime_ms: Option<i64>,
     pub input_tables: serde_json::Value,
+    pub query_dependencies: serde_json::Value,
     pub clone_sqls: Option<serde_json::Value>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
@@ -218,7 +219,7 @@ pub async fn decisions_for_invocation(
         r#"
         SELECT id, node_name, node_unique_id, node_fqn, resource_type, decision,
                is_stale, decision_description, target_table, node_body_hash,
-               clone_source, execution_runtime_ms, input_tables, clone_sqls, created_at
+               clone_source, execution_runtime_ms, input_tables, query_dependencies, clone_sqls, created_at
         FROM node_decisions
         WHERE invocation_id = $1
         ORDER BY created_at, id
@@ -239,7 +240,7 @@ pub async fn latest_decisions_for_environment(
         SELECT DISTINCT ON (node_unique_id)
                id, node_name, node_unique_id, node_fqn, resource_type, decision,
                is_stale, decision_description, target_table, node_body_hash,
-               clone_source, execution_runtime_ms, input_tables, clone_sqls, created_at
+               clone_source, execution_runtime_ms, input_tables, query_dependencies, clone_sqls, created_at
         FROM node_decisions
         WHERE environment_id = $1 AND node_unique_id IS NOT NULL
         ORDER BY node_unique_id, created_at DESC
