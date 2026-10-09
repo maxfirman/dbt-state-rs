@@ -1,6 +1,6 @@
 # UI plan: a minimal, read-only console for the dbt State server
 
-Status: PLANNING (not yet implemented). This document captures research into the
+Status: PHASE 1 IMPLEMENTED (see ui.md). This document captures research into the
 real dbt Platform and a proposed plan for a companion UI to the dbt State server.
 
 ## Goal & non-goals

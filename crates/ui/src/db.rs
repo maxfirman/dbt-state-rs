@@ -1,4 +1,6 @@
-//! Read-only data access for the UI. Queries the same Postgres the dbt State
+//! Read-only data access for the UI.
+#![allow(dead_code)] // read models expose the full domain surface; not every field is shown yet
+
 //! server writes to (the UI never mutates state in Phase 1).
 
 use sqlx::postgres::PgPoolOptions;

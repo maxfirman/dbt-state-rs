@@ -217,3 +217,78 @@ fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::DecisionRow;
+
+    fn row(name: &str, uid: &str, target: Option<&str>, inputs: &[&str], decision: &str) -> DecisionRow {
+        let input_tables = serde_json::json!(inputs
+            .iter()
+            .map(|n| serde_json::json!({ "name": n, "last_modified_epoch": 0 }))
+            .collect::<Vec<_>>());
+        DecisionRow {
+            id: 1,
+            node_name: Some(name.into()),
+            node_unique_id: Some(uid.into()),
+            node_fqn: None,
+            resource_type: Some("model".into()),
+            decision: decision.into(),
+            is_stale: false,
+            decision_description: None,
+            target_table: target.map(|s| s.into()),
+            node_body_hash: None,
+            clone_source: None,
+            execution_runtime_ms: None,
+            input_tables,
+            clone_sqls: None,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn empty_input_yields_none() {
+        assert!(build(&[]).is_none());
+    }
+
+    #[test]
+    fn infers_edge_from_input_to_producer() {
+        // stg produces "db.sch.stg"; mart consumes it -> edge stg -> mart.
+        let decisions = vec![
+            row("stg", "model.p.stg", Some("\"DB\".\"S\".\"STG\""), &[], "build"),
+            row("mart", "model.p.mart", Some("\"DB\".\"S\".\"MART\""), &["\"DB\".\"S\".\"STG\""], "skip"),
+        ];
+        let layout = build(&decisions).expect("layout");
+        assert_eq!(layout.nodes.len(), 2);
+        assert_eq!(layout.edges.len(), 1, "one upstream->downstream edge");
+    }
+
+    #[test]
+    fn self_reference_is_not_an_edge() {
+        // A node whose own target table appears in its inputs must not self-edge.
+        let decisions = vec![row(
+            "inc",
+            "model.p.inc",
+            Some("\"DB\".\"S\".\"INC\""),
+            &["\"DB\".\"S\".\"INC\""],
+            "build",
+        )];
+        let layout = build(&decisions).expect("layout");
+        assert_eq!(layout.nodes.len(), 1);
+        assert_eq!(layout.edges.len(), 0);
+    }
+
+    #[test]
+    fn svg_is_accessible_and_contains_nodes() {
+        let decisions = vec![row("stg", "model.p.stg", Some("\"DB\".\"S\".\"STG\""), &[], "build")];
+        let layout = build(&decisions).unwrap();
+        let svg = render_svg(&layout);
+        assert!(svg.contains("role=\"img\""));
+        assert!(svg.contains("<title id=\"lin-title\">"));
+        assert!(svg.contains("<desc id=\"lin-desc\">"));
+        assert!(svg.contains("<rect"));
+        assert!(svg.contains(">stg<"));
+    }
+}
+
