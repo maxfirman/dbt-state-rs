@@ -168,26 +168,55 @@ The decision engine (`decision::decide`) currently derives its verdict from:
 includes `table_namespace` (cross-environment reuse) and is org-scoped.
 
 The following request fields are received and (where noted) persisted, but are
-**not yet consulted** in the decision. Whether the hosted service acts on them
-is being resolved empirically with the differential-fuzz tool (which now mutates
-each of these axes — see [testing.md](testing.md) and the `diff-fuzz` module):
+**not yet consulted** in the decision. Live differential testing against the
+hosted service (see below and [testing.md](testing.md)) has now clarified the
+most important case: the hosted service does **not** match on the client-sent
+`node_body_hash` at all — it fingerprints the raw `sql` **semantically**
+server-side. Our body-hash match is therefore *stricter* than the hosted
+service, so the divergence is safe-directional (we over-execute, never serve
+stale data).
 
-| Field | Stored? | Risk if the real service acts on it |
+| Field | Stored? | Observed hosted behavior / risk |
 |---|---|---|
-| `node_configs_hash` | yes | a config-only change would wrongly SKIP |
-| `node_contract_hash` | yes | a contract-only change would wrongly SKIP |
-| `node_macros_hash` | no | macro change not reflected in the match key |
-| `node_persisted_descriptions_hash` | no | description change not reflected |
-| `tolerate_nondeterminism` | no | hash-mismatch skip policy may differ |
-| `ignore_external_modifications` | no | external drift handling may differ |
-| `compare_unrendered_code` | no | what counts as a logic match may differ |
-| `lenient_dependencies[]` | no | per-dependency freshness relaxation ignored |
+| `node_body_hash` | yes (match key) | hosted service ignores it; uses its own SQL semantic fingerprint. We over-execute on semantically-equivalent SQL changes (see C1 below). |
+| `node_configs_hash` | yes | changed by a `config()` edit; hosted service still skipped — not a logic gate on its side |
+| `node_contract_hash` | yes | stable across the config/logic edits observed |
+| `node_macros_hash` | no | not observed to change a verdict |
+| `node_persisted_descriptions_hash` | no | not observed |
+| `tolerate_nondeterminism` | no | no verdict change observed in fuzzing |
+| `ignore_external_modifications` | no | no verdict change observed in fuzzing |
+| `compare_unrendered_code` | no | no verdict change observed in fuzzing |
+| `lenient_dependencies[]` | no | no verdict change observed in fuzzing |
 
-Until the fuzzer produces evidence that the hosted service changes its verdict
-on one of these, body-hash-only matching is treated as the faithful behavior.
-The conservative direction of any divergence matters: a wrongly-ignored field
-risks an unsafe SKIP (serving stale/incorrect data), so these are the
-highest-priority axes to resolve.
+### C1 (LIVE-VERIFIED) — hosted service fingerprints SQL semantics, not `node_body_hash`
+
+Captured live from `api.state.dbt.com` (jaffle-shop `customers` on Snowflake;
+fixture `golden/fixtures/c1_config_vs_logic.jsonl`, characterized by
+`crates/harness/tests/c1_probe.rs`). Four real decisions for the same node:
+
+| build | node_body_hash | node_configs_hash | hosted decision |
+|---|---|---|---|
+| first | `0fbde4f2` | `ff8f1fb7` | execute |
+| unchanged rebuild | `0fbde4f2` | `ff8f1fb7` | skip |
+| **config-only** (`config(meta=…)`) | `a0a8af93` **(changed)** | `39ba728a` **(changed)** | **skip** |
+| **genuine SQL change** (new column) | `22e8207a` **(changed)** | `ff8f1fb7` | **execute** |
+
+`node_body_hash` changed in BOTH the config-only and the real-logic build, yet
+the hosted service skipped the former and executed the latter. So its logic
+identity is a **server-side semantic fingerprint of the raw `sql`**, not the
+client hash. (`table_namespace` is an adapter/connection-level id —
+`get_adapter_unique_id()` — shared by all nodes, so it is a coarse scope, not a
+per-node key.)
+
+Our server keys the match on `node_body_hash`, which is stricter: we EXECUTE on
+a config-only change the hosted service SKIPs (and we agree on genuine logic
+changes). Faithfully closing this gap requires server-side SQL semantic
+fingerprinting (a SQL engine), which the project deliberately omits (see
+[overview.md](overview.md#the-clientserver-split-why-the-server-needs-no-sql-engine)).
+The divergence is documented and regression-guarded by `c1_probe.rs`; because it
+is safe-directional (over-execute, never stale), body-hash matching is retained
+as the conservative behavior pending a decision on whether to add a SQL
+fingerprinter.
 
 ### CLONE from the `SubmitEnrichedSQL` path (characterized gap)
 

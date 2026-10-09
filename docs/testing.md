@@ -70,10 +70,23 @@ real-skip/we-execute, 0 DIVERGENCES.** Interpretation:
   change as a logic change (review finding C1).
 - Fully isolating C1 live requires driving the hosted service into a known
   skippable state (a real `dbt build` against Snowflake, then re-submitting the
-  same node with only `node_configs_hash` changed). That warehouse is not
-  available in this environment. Until such evidence exists, body-hash-only
-  matching is retained as the faithful behavior and the fuzz axes stay in place
-  to catch a divergence the moment skippable state is reachable.
+  same node with only a config edit). That was done via the recording proxy
+  against jaffle-shop on Snowflake and RESOLVED C1 (below).
+
+### C1 resolved by live `dbt build` (recording proxy + Snowflake)
+
+A `dbt build` of jaffle-shop against Snowflake, routed through the recording
+proxy to `api.state.dbt.com`, captured four real decisions for the `customers`
+node: first-build execute, unchanged-rebuild skip, a `config(meta=…)` edit that
+changed `node_body_hash` yet still SKIPPED, and a genuine new-column change that
+EXECUTED. Because `node_body_hash` changed in BOTH the config edit and the real
+logic change but the hosted service skipped one and executed the other, the
+hosted service's logic identity is a **server-side semantic fingerprint of the
+raw SQL**, not the client-sent `node_body_hash`. Our body-hash match is stricter,
+so we EXECUTE config-only changes it SKIPs (safe-directional: over-execute, never
+stale). Captured as `golden/fixtures/c1_config_vs_logic.jsonl` and pinned by
+`crates/harness/tests/c1_probe.rs`. See
+[protocol.md](protocol.md#coverage).
 
 ## Why NOT certain techniques
 - Naive protobuf byte-fuzzing: tests prost/tonic decoding, not our logic.
