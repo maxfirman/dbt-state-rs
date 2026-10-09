@@ -26,6 +26,7 @@ only clutter the tree. Only `fixtures/` is referenced by the test suite.
 | `clone_happy_path.jsonl` | 8 | profile-deferral clone: cross-env skip + RegisterClone |
 | `clone_failed_fallback.jsonl` | 4 | **characterized gap**: `SubmitEnrichedSQL` → `ready_to_clone` ("an equivalent model exists under another name") — pinned by `submit_enriched_sql_clone_fallback_is_characterized`, NOT reproduced from an empty store (SKIP/EXECUTE/CLONE routing there depends on physical warehouse state absent from the protocol) |
 | `c1_config_vs_logic.jsonl` | 6 | **characterized divergence** (live-captured): same node across a no-op rebuild, a config-only `config(meta=…)` edit, and a genuine SQL change. Proves the hosted service fingerprints SQL *semantics* server-side (skips the config-only change despite a changed `node_body_hash`) while our body-hash match over-executes. Pinned by `crates/harness/tests/c1_probe.rs` |
+| `c1_config_semantics.jsonl` | 12 | **characterized per-config-key policy** (live-captured): one config change at a time on the same node. The hosted service skips `tags`/`meta`/`post_hook` (incl. a warehouse-mutating `ALTER TABLE … SET COMMENT`, verified not to run) but executes on `grants`/`pre_hook`/`persist_docs`. Pinned by `crates/harness/tests/c1_config_semantics.rs` |
 
 All five are replayed by `crates/harness/tests/conformance.rs`
 (`conformance_replay_all_corpora`), which asserts only the causally-reproducible

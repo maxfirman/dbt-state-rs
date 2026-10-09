@@ -218,6 +218,33 @@ is safe-directional (over-execute, never stale), body-hash matching is retained
 as the conservative behavior pending a decision on whether to add a SQL
 fingerprinter.
 
+#### C1b — the hosted service applies a per-config-key skip policy
+
+A follow-up matrix (one config change at a time on the same node; fixture
+`golden/fixtures/c1_config_semantics.jsonl`, test `c1_config_semantics.rs`)
+shows the hosted service is deliberately selective about *which* config changes
+are rebuild-worthy. The SELECT body is semantically identical in every case
+(the client renders config out of the compiled SQL into the hashes), yet:
+
+| config change | hosted decision |
+|---|---|
+| `tags` | skip |
+| `meta` | skip |
+| `post_hook` (`ALTER TABLE … SET COMMENT`) | **skip** |
+| `post_hook` (`GRANT …`) | **skip** |
+| `grants` | execute |
+| `pre_hook` | execute |
+| `persist_docs` | execute |
+
+The decisive observation: a **warehouse-mutating `post_hook` is SKIPPED** while
+a `grants` change executes. We verified on Snowflake that when the
+`SET COMMENT` post_hook was skipped, the table comment was **not** changed — so
+the hosted service silently drops the skipped hook's side effect. It is
+therefore NOT conservatively protecting warehouse state; it classifies
+`meta`/`tags`/`post_hook` as cosmetic (skippable) and `grants`/`pre_hook`/
+`persist_docs` as material (rebuild), on top of its server-side SQL fingerprint.
+Our body-hash match executes on all of these (safe-directional over-execute).
+
 ### CLONE from the `SubmitEnrichedSQL` path (characterized gap)
 
 The hosted service can answer a plain `SubmitEnrichedSQL` with `ready_to_clone`
