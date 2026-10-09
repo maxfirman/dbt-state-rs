@@ -49,6 +49,23 @@ const CORPORA: &[&str] = &[
         env!("CARGO_MANIFEST_DIR"),
         "/../../golden/fixtures/golden_20261009T100637.316Z.jsonl"
     ),
+    // Clone corpora captured in separate sessions. These include a
+    // SubmitEnrichedSQL that the hosted service answered with `ready_to_clone`
+    // ("an equivalent model exists under another name"), plus cross-environment
+    // skips. The SKIP-vs-CLONE branch there depends on physical warehouse state
+    // (which tables already exist) that is NOT in the protocol, so it cannot be
+    // reproduced from an empty store; the replay HYDRATES those entries and
+    // asserts only the causally-reproducible transitions. The exact clone
+    // response shape is pinned separately in
+    // `submit_enriched_sql_clone_fallback_is_characterized`.
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_happy_path.jsonl"
+    ),
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_failed_fallback.jsonl"
+    ),
 ];
 
 /// Fingerprint key identifying a node execution for causal tracking.
@@ -103,6 +120,7 @@ async fn run_corpus(path: &str) {
     let mut asserted_execute = 0usize;
     let mut asserted_skip = 0usize;
     let mut baseline_skips = 0usize;
+    let mut characterized_clone = 0usize;
 
     for (i, e) in entries.iter().enumerate() {
         match e.method.as_str() {
@@ -209,6 +227,22 @@ async fn run_corpus(path: &str) {
                             confirmed.insert(fp.clone());
                         }
                     }
+                    "ready_to_clone" => {
+                        // The hosted service answered a SubmitEnrichedSQL with
+                        // `ready_to_clone` ("an equivalent model exists under
+                        // another name so we cloned that one"). Whether a given
+                        // submit SKIPs, EXECUTEs or CLONEs here depends on
+                        // physical warehouse state (which tables already exist)
+                        // that is NOT carried in the protocol, so it is not
+                        // reproducible from an empty store. We DO NOT assert our
+                        // variant; we hydrate the fingerprint as confirmed
+                        // baseline so later causal assertions line up, and the
+                        // exact clone response shape is pinned by
+                        // `submit_enriched_sql_clone_fallback_is_characterized`.
+                        characterized_clone += 1;
+                        hydrate_confirmed(&mut exec, &e.request).await;
+                        confirmed.insert(fp.clone());
+                    }
                     other => panic!("entry {i}: unexpected real submit variant {other}"),
                 }
             }
@@ -256,13 +290,16 @@ async fn run_corpus(path: &str) {
         }
     }
 
-    // Guard against the replay silently asserting nothing meaningful.
+    // Guard against the replay silently asserting nothing meaningful. A corpus
+    // is meaningful if it either made a causal assertion OR characterized a
+    // clone-fallback entry (whose shape is pinned by a dedicated test).
     assert!(
-        asserted_execute + asserted_skip > 0,
-        "corpus {path}: no causal assertions were made (execute={asserted_execute} skip={asserted_skip} baseline={baseline_skips})"
+        asserted_execute + asserted_skip + characterized_clone > 0,
+        "corpus {path}: no causal assertions or characterizations were made \
+         (execute={asserted_execute} skip={asserted_skip} baseline={baseline_skips} clone={characterized_clone})"
     );
     eprintln!(
-        "conformance {path}: asserted_execute={asserted_execute} asserted_skip={asserted_skip} baseline_skips={baseline_skips}"
+        "conformance {path}: asserted_execute={asserted_execute} asserted_skip={asserted_skip} baseline_skips={baseline_skips} characterized_clone={characterized_clone}"
     );
 }
 
@@ -400,5 +437,110 @@ async fn cross_environment_namespace_skip() {
             Some(qc::submit_sql_response::Response::SkipExecution(_))
         ),
         "dev submit should skip via cross-env table_namespace reuse"
+    );
+}
+
+/// CHARACTERIZED GAP — `SubmitEnrichedSQL` answered with `ready_to_clone`.
+///
+/// The hosted service can answer a plain `SubmitEnrichedSQL` (not a
+/// `RegisterClone`) with `ready_to_clone` when "an equivalent model exists
+/// under another name so we cloned that one" (captured in
+/// `clone_failed_fallback.jsonl`). Our `SqlService::submit_enriched_sql` only
+/// returns SKIP/EXECUTE — it never emits CLONE from the SQL path.
+///
+/// This is a DELIBERATELY-NOT-REPRODUCED gap: whether a submit SKIPs, EXECUTEs
+/// or CLONEs in this situation depends on PHYSICAL warehouse state (does the
+/// target already exist? does an equivalently-named sibling exist to clone
+/// from?) which the protocol does not carry — the two sibling fixtures
+/// (`clone_happy_path` vs `clone_failed_fallback`) were captured in separate
+/// sessions with different pre-existing tables and the SAME logical fingerprint
+/// yields a SKIP in one and a CLONE in the other. Reproducing it from an empty
+/// store would mean asserting against a guess, not the real service.
+///
+/// Instead this test PINS THE REAL RESPONSE SHAPE as golden source so the
+/// contract is captured and any future implementation can be validated against
+/// it. It is the authoritative cross-check available without burning dbt State
+/// metering (which the live diff-fuzz tool requires).
+#[tokio::test]
+async fn submit_enriched_sql_clone_fallback_is_characterized() {
+    const CLONE_FALLBACK: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_failed_fallback.jsonl"
+    );
+    let entries = diff::load_golden(CLONE_FALLBACK).expect("load clone_failed_fallback");
+
+    // Find the SubmitEnrichedSQL whose real response was ready_to_clone.
+    let entry = entries
+        .iter()
+        .find(|e| {
+            e.method == "SubmitEnrichedSQL"
+                && real_variant(&e.response).as_deref() == Some("ready_to_clone")
+        })
+        .expect("a SubmitEnrichedSQL -> ready_to_clone entry");
+
+    // The request must decode cleanly into our proto type (wire-compatibility).
+    let _req: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(entry.request.clone()).expect("decode SubmitEnrichedSqlRequest");
+
+    // Pin the exact real response shape (the golden contract for this branch).
+    let ready = &entry.response["response"]["ready_to_clone"];
+    assert!(ready.is_object(), "ready_to_clone payload present");
+
+    let ed = &ready["explained_decision"];
+    assert_eq!(
+        ed["decision"].as_i64(),
+        Some(3),
+        "decision must be READY_TO_CLONE (3)"
+    );
+    // skip_rejection_reason = TARGET_TABLE_MISMATCH (1): the submitted physical
+    // target differs from the equivalent model that was cloned.
+    assert_eq!(
+        ed["skip_rejection_reason"].as_i64(),
+        Some(1),
+        "skip_rejection_reason must be TARGET_TABLE_MISMATCH (1)"
+    );
+    assert!(
+        ed["clone_rejection_reason"].is_null(),
+        "clone_rejection_reason must be null (the clone succeeded)"
+    );
+    assert_eq!(ed["is_stale"].as_bool(), Some(false));
+    assert_eq!(
+        ed["decision_description"].as_str(),
+        Some("an equivalent model exists under another name so we cloned that one"),
+    );
+
+    // The server generated clone DDL and echoed source/target + runtime.
+    let sqls = ready["clone_sqls"].as_array().expect("clone_sqls array");
+    assert_eq!(sqls.len(), 1, "one clone statement");
+    let ddl = sqls[0].as_str().unwrap();
+    assert!(ddl.contains("CREATE OR REPLACE TRANSIENT TABLE"));
+    assert!(ddl.contains("CLONE"));
+    assert!(ddl.contains("COPY GRANTS"));
+    assert!(ready["clone_source"].as_str().unwrap().contains("DEV_CLONE"));
+    assert!(ready["clone_target"].as_str().unwrap().contains("PROD"));
+    assert!(
+        ready["clone_required_last_modified_epoch"].as_i64().is_some(),
+        "clone_required_last_modified_epoch populated"
+    );
+    assert!(
+        ready["execution_runtime_ms"].as_i64().is_some(),
+        "execution_runtime_ms echoed"
+    );
+
+    // Cross-check that our clone-DDL generator reproduces the SAME statement the
+    // real service returned for this source/target/type — proving the DDL half
+    // of the contract is faithfully implemented even though the SKIP/EXECUTE/
+    // CLONE routing from the SQL path is not.
+    let source = ready["clone_source"].as_str().unwrap();
+    let target = ready["clone_target"].as_str().unwrap();
+    let ours = dbt_state_server::clone::clone_sqls("snowflake", source, target, Some("TRANSIENT TABLE"));
+    assert_eq!(
+        ours.len(),
+        1,
+        "our generator emits one statement"
+    );
+    assert_eq!(
+        ours[0], ddl,
+        "our clone DDL must byte-match the real service's clone_sqls"
     );
 }

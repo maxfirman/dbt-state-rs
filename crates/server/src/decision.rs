@@ -341,6 +341,138 @@ mod tests {
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }));
     }
+
+    // ---- Non-happy-path scenarios (hardening) ----------------------------
+
+    /// MISSING TARGET / NO HISTORY: a confirmed row with `last_modified_epoch =
+    /// None` (never recorded a build time) is not a safe baseline. A current
+    /// upstream the recorded run never saw has no baseline at all → treat as
+    /// drift → EXECUTE. The warehouse object may not exist, so we must not skip.
+    #[test]
+    fn unseen_upstream_without_baseline_executes() {
+        let recorded: Vec<InputTable> = vec![]; // recorded run saw no inputs
+        let current = vec![tbl("brand_new", 500)];
+        let prev = confirmed("h", recorded, None); // no build epoch baseline
+        let v = decide(&ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "an upstream with no recorded baseline must execute, not skip"
+        );
+    }
+
+    /// MODIFIED UPSTREAM exactly at the tolerance boundary. tolerance is a
+    /// strict `>` comparison: drift == tolerance is still fresh (skip); drift ==
+    /// tolerance+1ms is stale (execute). Pin both sides of the boundary.
+    #[test]
+    fn tolerance_boundary_is_strict_greater_than() {
+        let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
+
+        // Exactly at tolerance (2000ms): NOT drift → skip.
+        let at = vec![tbl("a", 1_002_000)];
+        let mut c = ctx("h", &at);
+        c.freshness_tolerance_seconds = 2;
+        assert!(
+            matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
+            "drift exactly at tolerance must skip"
+        );
+
+        // One ms beyond tolerance: drift → execute.
+        let beyond = vec![tbl("a", 1_002_001)];
+        let mut c2 = ctx("h", &beyond);
+        c2.freshness_tolerance_seconds = 2;
+        assert!(
+            matches!(decide(&c2, Some(&prev)), Verdict::Execute { is_stale: true, .. }),
+            "drift one ms beyond tolerance must execute"
+        );
+    }
+
+    /// SCHEMA CHANGE on an upstream (different environment schema, same logical
+    /// table) must still match by logical identity. A dev-schema upstream newer
+    /// than the recorded prod-schema upstream is genuine drift and must EXECUTE.
+    #[test]
+    fn upstream_schema_change_still_compared_by_logical_identity() {
+        let recorded = vec![tbl("\"DB\".\"PROD\".\"CUSTOMERS\"", 1_000_000)];
+        let current = vec![tbl("\"DB\".\"DEV\".\"CUSTOMERS\"", 5_000_000)]; // newer, diff schema
+        let prev = confirmed("h", recorded, Some(1_000_000));
+        let v = decide(&ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { is_stale: true, .. }),
+            "a newer upstream (matched cross-schema) is drift and must execute"
+        );
+    }
+
+    /// DELETED UPSTREAM: the current run no longer references an upstream the
+    /// recorded run had. With no current inputs to compare, a hash match alone
+    /// skips (there is nothing stale to force a rebuild). Pins the documented
+    /// `considered == 0 => not stale` behavior.
+    #[test]
+    fn dropped_all_upstreams_skips_on_hash_match() {
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let current: Vec<InputTable> = vec![]; // all upstreams removed this run
+        let prev = confirmed("h", recorded, Some(100));
+        assert!(
+            matches!(decide(&ctx("h", &current), Some(&prev)), Verdict::Skip { .. }),
+            "no current upstreams to compare → hash match alone skips"
+        );
+    }
+
+    /// ADDED UPSTREAM: a brand-new upstream not in the recorded run, newer than
+    /// the recorded build, falls back to the recorded build epoch and is drift
+    /// → EXECUTE under ANY. The new dependency's data was never incorporated.
+    #[test]
+    fn added_newer_upstream_executes_under_any() {
+        let recorded = vec![tbl("a", 100)];
+        let current = vec![tbl("a", 100), tbl("new_dep", 10_000_000)];
+        let prev = confirmed("h", recorded, Some(100));
+        let mut c = ctx("h", &current);
+        c.stale_upstream_policy = StaleUpstreamPolicy::Any;
+        assert!(
+            matches!(decide(&c, Some(&prev)), Verdict::Execute { is_stale: true, .. }),
+            "a new, newer, untracked upstream must execute"
+        );
+    }
+
+    /// CHANGED CONTRACT / CHANGED SQL: a different body hash means the store
+    /// never returns a matching confirmed row for this fingerprint; the engine
+    /// sees `confirmed = None` and must EXECUTE as a hash miss (is_stale=false,
+    /// rejection NO_SUITABLE_MATCH_FOUND).
+    #[test]
+    fn changed_contract_is_a_hash_miss_execute() {
+        let v = decide(&ctx("new-hash-after-contract-change", &[tbl("a", 100)]), None);
+        match v {
+            Verdict::Execute {
+                is_stale,
+                skip_rejection_reason,
+                clone_rejection_reason,
+                ..
+            } => {
+                assert!(!is_stale, "a hash miss is not staleness-driven");
+                assert_eq!(skip_rejection_reason, REJECTION_NO_SUITABLE_MATCH_FOUND);
+                assert_eq!(clone_rejection_reason, REJECTION_NO_SUITABLE_MATCH_FOUND);
+            }
+            _ => panic!("expected execute"),
+        }
+    }
+
+    /// Zero tolerance with any positive drift must execute (the common
+    /// "freshness must be exact" configuration).
+    #[test]
+    fn zero_tolerance_any_drift_executes() {
+        let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
+        let current = vec![tbl("a", 101)]; // 1ms newer
+        let mut c = ctx("h", &current);
+        c.freshness_tolerance_seconds = 0;
+        assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { is_stale: true, .. }));
+    }
+
+    /// OLDER upstream than recorded (clock skew / restore) must NOT be treated
+    /// as drift — only strictly-newer data forces a rebuild.
+    #[test]
+    fn older_upstream_than_recorded_skips() {
+        let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
+        let current = vec![tbl("a", 10)]; // older than recorded
+        assert!(matches!(decide(&ctx("h", &current), Some(&prev)), Verdict::Skip { .. }));
+    }
 }
 
 #[cfg(test)]
