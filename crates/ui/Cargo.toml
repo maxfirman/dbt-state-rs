@@ -1,0 +1,24 @@
+[package]
+name = "dbt-state-ui"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Read-only web console for the dbt State server (Topcoat)."
+
+[[bin]]
+name = "dbt-state-ui"
+path = "src/main.rs"
+
+[dependencies]
+topcoat = "0.10"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+sqlx.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+# Backend lineage layout (Sugiyama / dagre.js port) over petgraph.
+dagre-rs = "0.1"
+petgraph = "0.8"
