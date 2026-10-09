@@ -28,8 +28,8 @@ pub mod environment_id {
         let svg = layout.as_ref().map(lineage::render_svg);
 
         Ok(view! {
-            <h1>"Lineage"</h1>
-            <p class="lede">"Latest known state of each node in this environment."</p>
+            <h1>"Target lineage"</h1>
+            <p class="lede">"Latest known state of each node for this dbt target (profile target name, not a managed environment)."</p>
 
             if decisions.is_empty() {
                 <p class="empty">"No nodes recorded for this environment yet."</p>

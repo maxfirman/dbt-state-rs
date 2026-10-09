@@ -41,6 +41,7 @@ pub struct CaptureInput {
     pub environment_name: Option<String>,
     pub profile_name: Option<String>,
     pub dialect: Option<String>,
+    pub database: Option<String>,
     // node
     pub node_unique_id: Option<String>,
     pub node_name: Option<String>,
@@ -114,11 +115,13 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
         .unwrap_or_else(|| "default".to_string());
     let environment_id: i64 = sqlx::query_scalar(
         r#"
-        INSERT INTO environments (org_id, project_id, name, profile_name, dialect)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO environments (org_id, project_id, name, profile_name, dialect, database, "schema")
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         ON CONFLICT (project_id, name) DO UPDATE
             SET profile_name = COALESCE(EXCLUDED.profile_name, environments.profile_name),
                 dialect      = COALESCE(EXCLUDED.dialect, environments.dialect),
+                database     = COALESCE(EXCLUDED.database, environments.database),
+                "schema"     = COALESCE(EXCLUDED."schema", environments."schema"),
                 last_seen_at = now()
         RETURNING id
         "#,
@@ -128,6 +131,8 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(&env_name)
     .bind(&i.profile_name)
     .bind(&i.dialect)
+    .bind(&i.database)
+    .bind(&i.default_schema)
     .fetch_one(pool)
     .await?;
 
@@ -180,11 +185,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             node_fqn, resource_type, execution_type, decision, is_stale,
             decision_description, request_id, execution_decision_id,
             node_body_hash, values_hash, table_namespace, target_table,
-            default_schema, dialect, clone_source, clone_sqls, input_tables,
+            default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
             execution_runtime_ms
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23)
+                $19,$20,$21,$22,$23,$24)
         "#,
     )
     .bind(&i.org_id)
@@ -205,6 +210,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(&i.table_namespace)
     .bind(&i.target_table)
     .bind(&i.default_schema)
+    .bind(&i.database)
     .bind(&i.dialect)
     .bind(&i.clone_source)
     .bind(clone_sqls)
@@ -268,6 +274,7 @@ mod tests {
             environment_name: Some("prod".into()),
             profile_name: Some("snowflake".into()),
             dialect: Some("snowflake".into()),
+            database: Some("ANALYTICS_DB".into()),
             node_unique_id: Some(format!("model.jaffle_shop.{node}")),
             node_name: Some(node.into()),
             node_fqn: Some(format!("jaffle_shop.{node}")),

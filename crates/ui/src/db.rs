@@ -46,6 +46,8 @@ pub struct EnvironmentRow {
     pub name: String,
     pub profile_name: Option<String>,
     pub dialect: Option<String>,
+    pub database: Option<String>,
+    pub schema: Option<String>,
     pub dbt_state_enabled: bool,
     pub is_deferrable: bool,
     pub last_seen_at: chrono::DateTime<chrono::Utc>,
@@ -151,8 +153,8 @@ pub async fn environments_for_project(
 ) -> sqlx::Result<Vec<EnvironmentRow>> {
     sqlx::query_as::<_, EnvironmentRow>(
         r#"
-        SELECT e.id, e.name, e.profile_name, e.dialect, e.dbt_state_enabled,
-               e.is_deferrable, e.last_seen_at,
+        SELECT e.id, e.name, e.profile_name, e.dialect, e.database, e."schema",
+               e.dbt_state_enabled, e.is_deferrable, e.last_seen_at,
                COALESCE(SUM(CASE WHEN d.decision='build' THEN 1 ELSE 0 END),0)::bigint AS built,
                COALESCE(SUM(CASE WHEN d.decision='skip'  THEN 1 ELSE 0 END),0)::bigint AS reused,
                COALESCE(SUM(CASE WHEN d.decision='clone' THEN 1 ELSE 0 END),0)::bigint AS cloned

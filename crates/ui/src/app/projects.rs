@@ -73,15 +73,20 @@ pub mod project_id {
                 <a href=(href!(super::index))>"Projects"</a>" / "(&name)
             </p>
             <h1>(&name)</h1>
-            <h2>"Environments"</h2>
+            <h2>"Targets"</h2>
+            <p class="muted">
+                "A target is a dbt profile target (a client-side alias), shown with the "
+                "database and schema its decisions actually touched — not a managed environment."
+            </p>
             if envs.is_empty() {
-                <p class="empty">"No environments observed for this project."</p>
+                <p class="empty">"No targets observed for this project."</p>
             } else {
                 <table class="data-table">
                     <thead>
                         <tr>
-                            <th scope="col">"Environment"</th>
-                            <th scope="col">"Profile"</th>
+                            <th scope="col">"Target name"</th>
+                            <th scope="col">"Database"</th>
+                            <th scope="col">"Schema"</th>
                             <th scope="col">"dbt State"</th>
                             <th scope="col">"Last seen"</th>
                             <th scope="col" class="num">"Built"</th>
@@ -94,7 +99,8 @@ pub mod project_id {
                         for e in &envs {
                             <tr>
                                 <td>(&e.name)</td>
-                                <td class="muted">(e.profile_name.as_deref().unwrap_or("—"))</td>
+                                <td class="muted"><code>(e.database.as_deref().unwrap_or("—"))</code></td>
+                                <td class="muted"><code>(e.schema.as_deref().unwrap_or("—"))</code></td>
                                 <td>
                                     if e.dbt_state_enabled {
                                         <span class="flag flag--on">"enabled"</span>
