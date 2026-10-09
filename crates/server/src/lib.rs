@@ -2,6 +2,7 @@
 
 pub mod clone;
 pub mod config;
+pub mod capture;
 pub mod decision;
 pub mod services;
 pub mod store;

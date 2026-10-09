@@ -128,6 +128,175 @@ fn org_id_of<T>(req: &Request<T>) -> String {
         .to_string()
 }
 
+/// Read a string metadata header, if present and valid UTF-8.
+fn meta_str<T>(req: &Request<T>, key: &str) -> Option<String> {
+    req.metadata()
+        .get(key)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+/// Grouping metadata captured per request for the UI domain model.
+#[derive(Clone, Default)]
+struct CaptureMeta {
+    org_id: String,
+    invocation_id: Option<String>,
+    session_id: Option<String>,
+}
+
+fn capture_meta_of<T>(req: &Request<T>) -> CaptureMeta {
+    CaptureMeta {
+        org_id: org_id_of(req),
+        invocation_id: meta_str(req, "x-dbt-invocation-id"),
+        session_id: meta_str(req, "x-session-id"),
+    }
+}
+
+/// Spawn a best-effort, non-blocking capture of a decision. Never blocks or
+/// fails the gRPC response.
+fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
+    let pool = state.store.pool().clone();
+    tokio::spawn(async move {
+        crate::capture::capture_decision(&pool, input).await;
+    });
+}
+
+/// Build + spawn capture for a SubmitEnrichedSQL decision.
+fn capture_submit(
+    state: &AppState,
+    meta: &CaptureMeta,
+    req: &qc::SubmitEnrichedSqlRequest,
+    response: &qc::SubmitSqlResponse,
+    input_tables: &[crate::store::InputTable],
+) {
+    use crate::capture::{CaptureInput, DecisionKind};
+    let ns = req.dbt_node_state.as_ref();
+    let (kind, is_stale, request_id, exec_decision_id) = classify_response(response);
+    let input = CaptureInput {
+        org_id: meta.org_id.clone(),
+        external_invocation_id: meta.invocation_id.clone(),
+        session_id: meta.session_id.clone(),
+        project_external_id: ns.and_then(|s| s.project_id.clone()),
+        project_name: ns.map(|s| s.project_name.clone()),
+        environment_name: ns.map(|s| s.target_name.clone()),
+        profile_name: ns.map(|s| s.profile_name.clone()),
+        dialect: Some(req.dialect.clone()),
+        node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
+        node_name: req.labels.get("dbt_node_name").cloned(),
+        node_fqn: req.labels.get("dbt_node_fqn").cloned(),
+        resource_type: ns.map(|s| s.resource_type.clone()),
+        execution_type: req.execution_type,
+        decision: kind,
+        is_stale,
+        decision_description: decision_description_of(response),
+        request_id,
+        execution_decision_id: exec_decision_id,
+        node_body_hash: ns.and_then(|s| s.node_body_hash.clone()),
+        values_hash: None,
+        table_namespace: req.table_namespace.clone(),
+        target_table: req.target_table.clone(),
+        default_schema: req.default_schema.clone(),
+        clone_source: None,
+        clone_sqls: None,
+        input_tables: input_tables.to_vec(),
+        execution_runtime_ms: runtime_of(response),
+    };
+    let _ = DecisionKind::Build; // keep import used across cfgs
+    spawn_capture(state, input);
+}
+
+/// Classify a SubmitSQLResponse into (kind, is_stale, request_id, exec_decision_id).
+fn classify_response(
+    resp: &qc::SubmitSqlResponse,
+) -> (crate::capture::DecisionKind, bool, Option<String>, Option<String>) {
+    use crate::capture::DecisionKind;
+    match &resp.response {
+        Some(qc::submit_sql_response::Response::SkipExecution(s)) => (
+            DecisionKind::Skip,
+            s.explained_decision.as_ref().map(|e| e.is_stale).unwrap_or(false),
+            None,
+            s.execution_decision_id.clone(),
+        ),
+        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => (
+            DecisionKind::Build,
+            r.explained_decision.as_ref().map(|e| e.is_stale).unwrap_or(false),
+            Some(r.request_id.clone()),
+            r.execution_decision_id.clone(),
+        ),
+        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => (
+            DecisionKind::Clone,
+            false,
+            Some(c.request_id.clone()),
+            c.execution_decision_id.clone(),
+        ),
+        None => (DecisionKind::Build, false, None, None),
+    }
+}
+
+fn decision_description_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
+    let ed = match &resp.response {
+        Some(qc::submit_sql_response::Response::SkipExecution(s)) => s.explained_decision.as_ref(),
+        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.explained_decision.as_ref(),
+        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c.explained_decision.as_ref(),
+        None => None,
+    };
+    ed.map(|e| e.decision_description.clone())
+        .filter(|s| !s.is_empty())
+}
+
+fn runtime_of(resp: &qc::SubmitSqlResponse) -> Option<i64> {
+    match &resp.response {
+        Some(qc::submit_sql_response::Response::SkipExecution(s)) => s.execution_runtime_ms,
+        _ => None,
+    }
+}
+
+/// Build + spawn capture for a SubmitValues (seed) decision.
+fn capture_submit_values(
+    state: &AppState,
+    meta: &CaptureMeta,
+    req: &qc::SubmitValuesRequest,
+    response: &qc::SubmitSqlResponse,
+) {
+    use crate::capture::CaptureInput;
+    let ns = req.dbt_node_state.as_ref();
+    let (kind, is_stale, request_id, exec_decision_id) = classify_response(response);
+    let input = CaptureInput {
+        org_id: meta.org_id.clone(),
+        external_invocation_id: meta.invocation_id.clone(),
+        session_id: meta.session_id.clone(),
+        project_external_id: ns.and_then(|s| s.project_id.clone()),
+        project_name: ns.map(|s| s.project_name.clone()),
+        environment_name: ns.map(|s| s.target_name.clone()),
+        profile_name: ns.map(|s| s.profile_name.clone()),
+        dialect: Some(req.dialect.clone()),
+        node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
+        node_name: req.labels.get("dbt_node_name").cloned(),
+        node_fqn: req.labels.get("dbt_node_fqn").cloned(),
+        resource_type: ns.map(|s| s.resource_type.clone()),
+        execution_type: EXECUTION_TYPE_VALUES,
+        decision: kind,
+        is_stale,
+        decision_description: decision_description_of(response),
+        request_id,
+        execution_decision_id: exec_decision_id,
+        node_body_hash: ns.and_then(|s| s.node_body_hash.clone()),
+        values_hash: if req.values_hash.is_empty() {
+            None
+        } else {
+            Some(req.values_hash.clone())
+        },
+        table_namespace: req.table_namespace.clone(),
+        target_table: Some(req.target_table.clone()),
+        default_schema: None,
+        clone_source: None,
+        clone_sqls: None,
+        input_tables: Vec::new(),
+        execution_runtime_ms: runtime_of(response),
+    };
+    spawn_capture(state, input);
+}
+
 fn new_uuid_v7() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -142,6 +311,7 @@ impl Sql for SqlService {
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let org_id = org_id_of(&request);
+        let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
         let target_table = req.target_table.clone().unwrap_or_default();
@@ -262,6 +432,9 @@ impl Sql for SqlService {
             }
         };
 
+        // Best-effort capture for the UI domain model (non-blocking).
+        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+
         Ok(Response::new(response))
     }
 
@@ -270,6 +443,7 @@ impl Sql for SqlService {
         request: Request<qc::SubmitValuesRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let org_id = org_id_of(&request);
+        let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
         let target_table = req.target_table.clone();
@@ -373,6 +547,7 @@ impl Sql for SqlService {
             }
         };
 
+        capture_submit_values(&self.0, &cap_meta, &req, &response);
         Ok(Response::new(response))
     }
 
@@ -546,6 +721,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         request: Request<qc::CloneRequest>,
     ) -> Result<Response<qc::CloneResponse>, Status> {
         let org_id = org_id_of(&request);
+        let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
         let request_id = new_uuid_v7();
@@ -581,6 +757,43 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             .insert_pending(&pending)
             .await
             .map_err(db_err)?;
+
+        // Best-effort capture (non-blocking) of the clone decision.
+        {
+            use crate::capture::{CaptureInput, DecisionKind};
+            spawn_capture(
+                &self.0,
+                CaptureInput {
+                    org_id: org_id.clone(),
+                    external_invocation_id: cap_meta.invocation_id.clone(),
+                    session_id: cap_meta.session_id.clone(),
+                    project_external_id: None,
+                    project_name: None,
+                    environment_name: None,
+                    profile_name: None,
+                    dialect: Some(req.dialect.clone()),
+                    node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
+                    node_name: req.labels.get("dbt_node_name").cloned(),
+                    node_fqn: req.labels.get("dbt_node_fqn").cloned(),
+                    resource_type: None,
+                    execution_type: req.execution_type,
+                    decision: DecisionKind::Clone,
+                    is_stale: false,
+                    decision_description: None,
+                    request_id: Some(request_id.clone()),
+                    execution_decision_id: Some(execution_decision_id.clone()),
+                    node_body_hash: None,
+                    values_hash: None,
+                    table_namespace: req.table_namespace.clone(),
+                    target_table: Some(req.target_table.clone()),
+                    default_schema: None,
+                    clone_source: Some(req.clone_source_table.clone()),
+                    clone_sqls: Some(clone_sqls.clone()),
+                    input_tables: Vec::new(),
+                    execution_runtime_ms: None,
+                },
+            );
+        }
 
         tracing::info!(
             node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
