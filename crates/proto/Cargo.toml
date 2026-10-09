@@ -1,0 +1,19 @@
+[package]
+name = "dbt-state-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "dbt_state_proto"
+path = "src/lib.rs"
+
+[dependencies]
+tonic.workspace = true
+tonic-prost.workspace = true
+prost.workspace = true
+prost-types.workspace = true
+serde.workspace = true
+
+[build-dependencies]
+tonic-prost-build.workspace = true

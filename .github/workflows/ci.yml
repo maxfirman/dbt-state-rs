@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Format & Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (all targets, incl. fuzz feature, warnings = errors)
+        run: cargo clippy --workspace --all-targets --features fuzz -- -D warnings
+
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dbtstate
+          POSTGRES_PASSWORD: dbtstate
+          POSTGRES_DB: dbtstate
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U dbtstate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (workspace)
+        run: cargo build --workspace --all-targets
+
+      - name: Test (workspace)
+        # The differential-fuzz tool (feature "fuzz") is intentionally excluded:
+        # it calls the real hosted service and needs credentials. CI runs the
+        # unit + integration tests, including the conformance replay of the
+        # committed golden fixtures against a fresh Postgres.
+        run: cargo test --workspace

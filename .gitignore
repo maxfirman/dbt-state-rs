@@ -1,0 +1,6 @@
+/target
+**/*.rs.bk
+*.pdb
+.env
+golden/**/*.tmp
+/golden/golden_*.jsonl
