@@ -85,6 +85,7 @@ pub mod project_id {
                             <th scope="col" class="num">"Built"</th>
                             <th scope="col" class="num">"Reused"</th>
                             <th scope="col" class="num">"Cloned"</th>
+                            <th scope="col"><span class="sr-only">"Lineage"</span></th>
                         </tr>
                     </thead>
                     <tbody>
@@ -103,6 +104,7 @@ pub mod project_id {
                                 <td class="num">(e.built)</td>
                                 <td class="num">(e.reused)</td>
                                 <td class="num">(e.cloned)</td>
+                                <td><a href=(href!(crate::app::environments::environment_id::catalog, crate::app::environments::environment_id::EnvironmentId(e.id)))>"Lineage"</a></td>
                             </tr>
                         }
                     </tbody>

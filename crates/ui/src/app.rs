@@ -9,6 +9,7 @@ use topcoat::{
 use crate::db;
 use crate::view_helpers::{fmt_time, stat_card};
 
+pub mod environments;
 pub mod invocations;
 pub mod projects;
 
@@ -221,5 +222,8 @@ pre.sql { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 8px
 .kv { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; font-size: .9rem; margin: .5rem 0; }
 .kv dt { color: var(--muted); }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+.node-list { list-style: none; padding: 0; display: grid; gap: .4rem; }
+.node-list li { display: flex; align-items: center; gap: .6rem; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .75rem; }
+.lineage-svg { display: block; }
 .lineage-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 1rem; }
 "#;
