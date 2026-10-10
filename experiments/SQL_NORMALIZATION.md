@@ -1,66 +1,77 @@
 # dbt State server SQL comparison — mechanism (live-verified)
 
-Hypothesis tested (user): the server parses SQL (ANTLR per-dialect, like dbt
-Fusion) into a DataFusion **logical plan** and compares plan hashes, so
-semantically-equivalent SQL would skip.
+Hypothesis (user): the server parses SQL (ANTLR per-dialect, like dbt Fusion)
+and compares something plan-like, so semantically-equivalent SQL skips.
 
-**Result: DISPROVEN.** The server does lexical **token-stream normalization**,
-not logical-plan comparison. ~16 controlled live A/B experiments against
-api.state.dbt.com (clean confirmed baseline re-established before each variant;
-model `sqlprobe` on Snowflake):
+**Refined conclusion over two rounds of ~25 controlled live A/B experiments**
+(clean confirmed baseline re-established before every variant; model `sqlprobe`
+on Snowflake via the recording proxy to api.state.dbt.com):
 
-## Discriminating evidence
+The server **parses SQL into a dialect-aware AST and compares a canonical
+re-rendering** of it. It is NOT a raw token stream (round 1's conclusion was too
+weak) and NOT a logical plan (the original hypothesis is too strong). It does
+dialect-aware *name/operator/type/function* canonicalization, but performs **no
+semantic simplification** (no constant folding, no precedence/paren elimination,
+no group-by-ordinal resolution, no boolean algebra).
 
-| # | variant vs baseline | semantically equal? | logical-plan predicts | HOSTED actual |
-|---|---|---|---|---|
-| 1 | line comment `-- …` added | yes | skip | **skip** |
-| C | block comment `/* … */` added | yes | skip | **skip** |
-| 5 | UPPERCASE keywords | yes | skip | **skip** |
-| D | unquoted identifier case (`CUSTOMER_ID`) | yes | skip | **skip** |
-| 3 | `group by 1` vs `group by customer_id` | yes | skip | **execute** ✗plan |
-| 4 | redundant parens `(x is not null)` | yes | skip | **execute** ✗plan |
-| 6 | CTE wrap vs inline | yes | skip | **execute** ✗plan |
-| 7 | `not (x is null)` vs `x is not null` | yes | skip | **execute** ✗plan |
-| F | `1 = 1` vs `1 = 1.0` | yes | skip | **execute** ✗plan |
-| G | SELECT-list column reorder | no (col order) | execute | **execute** |
-| 2 | output alias rename (`id`→`cust_id`) | no (col name) | execute | **execute** |
-| E | quoted `"customer_id"` vs unquoted | no (quoting) | execute | **execute** |
-| 8 | add a column | no | execute | **execute** |
-| 9 | different WHERE filter | no | execute | **execute** |
-| A | whitespace INSIDE a string literal | no (data) | execute | **execute** |
-| B | case INSIDE a string literal | no (data) | execute | **execute** |
+## What is CANONICALIZED (→ SKIP)
 
-The six "✗plan" rows are the proof: a logical-plan comparison would normalize
-away parens, group-by ordinals, CTE wrapping, predicate rewrites, and numeric
-literal forms — all of them SKIP under H1 but the hosted service EXECUTES. So it
-is NOT comparing plans.
+| change | evidence |
+|---|---|
+| line `--` and block `/* */` comments stripped | skip |
+| optimizer hint `/*+ … */` stripped | skip |
+| inter-token whitespace collapsed | skip |
+| keyword + unquoted-identifier case folded | skip |
+| trailing comma before `FROM` | skip |
+| trailing semicolon | skip |
+| optional `AS` in aliases (`x k` ≡ `x as k`) | skip |
+| operator synonyms (`!=` ≡ `<>`) | skip |
+| cast syntax (`x::t` ≡ `cast(x as t)`) | skip |
+| type-name synonyms (`varchar` ≡ `text`) | skip |
+| function-name synonyms (`coalesce` ≡ `nvl`) | skip |
 
-## The verified model: lexical token-stream normalization (lexer-aware)
+## What is PRESERVED (→ EXECUTE)
 
-The server tokenizes the SQL and compares a normalization of the token stream.
-Specifically it:
-1. **strips comments** — both `--` line and `/* */` block (rows 1, C skip);
-2. **collapses whitespace BETWEEN tokens** (whitespace-only edits skip) but
-   **preserves whitespace INSIDE string literals** (row A executes) — so it is a
-   real lexer, not a naive string replace;
-3. **case-folds keywords and UNQUOTED identifiers** (rows 5, D skip) but
-   **preserves the case of string literals** (row B executes) and treats
-   **quoted identifiers as distinct** (row E executes);
-4. does **NOT** canonicalize semantics: parens, `group by <ordinal>` vs
-   `<name>`, CTE-vs-inline, boolean-predicate rewrites, and numeric literal
-   forms all change the token stream → EXECUTE (rows 3,4,6,7,F); token ORDER is
-   significant (rows G, 2).
+| change | evidence | note |
+|---|---|---|
+| whitespace INSIDE a string literal | execute | string content significant |
+| case INSIDE a string literal | execute | string content significant |
+| quoted identifier vs unquoted / quoted case | execute | identity-significant |
+| redundant parens `(x)` | execute | parens preserved |
+| precedence-redundant parens `(a and b) or c` | execute | NO precedence elimination |
+| group-by ordinal `1` vs column name | execute | NO ordinal resolution |
+| CTE-wrap vs inline | execute | structure preserved |
+| boolean rewrite `not(x is null)` vs `x is not null` | execute | NO boolean algebra |
+| numeric form `1` vs `1.0`, `10` vs `1e1` | execute | NO literal/const folding |
+| SELECT-list column reorder | execute | order significant |
+| output alias rename | execute | output schema significant |
 
-Equivalently: normalize = lex → drop comments → fold case of
-keyword/bareword tokens → canonical single-space between tokens, keeping string
-and quoted-identifier tokens verbatim → hash the resulting token sequence.
+## The model
 
-## Implication for dbt-state-rs
+```
+normalize(sql) = render_canonical( parse_dialect_ast(sql) )
+```
 
-Our previous `split_whitespace()` normalization was too crude (it would, e.g.,
-collapse whitespace inside string literals → wrongly skip row A, and it did not
-strip comments or fold case → wrongly execute rows 1/C/5/D). Implement a proper
-SQL lexer-level normalizer matching the four rules above. This gets us
-materially closer to the hosted skip/execute boundary while staying far short of
-a SQL engine / logical planner (which the evidence shows the server does NOT
-use either).
+where `parse_dialect_ast` resolves comments/hints away and the canonical render:
+- folds case of keywords and unquoted identifiers; keeps string literals and
+  quoted identifiers verbatim;
+- canonicalizes optional `AS`, operator synonyms, cast shorthand, and
+  type/function **synonyms** to a single spelling (dialect catalog);
+- but renders the AST **structurally as written** — keeping parens, group-by
+  ordinals, literal forms, boolean structure, CTEs, and ordering.
+
+So it sits strictly between "token stream" and "logical plan": a **syntactic AST
+canonicalization with dialect name resolution**.
+
+## Implementation status in dbt-state-rs
+
+`crate::sql_norm::normalize_sql` currently implements the LEXER subset (round 1):
+comments, whitespace, case-folding, string/quoted-ident preservation. It does
+NOT yet canonicalize optional-AS, operator synonyms, cast shorthand, or
+type/function synonyms — so for those specific equivalences we OVER-EXECUTE
+(safe-directional: we rebuild where the hosted service skips, never the
+reverse). Reproducing them faithfully requires an actual SQL parser with a
+per-dialect catalog of operator/type/function synonyms (a `sqlparser`-class
+dependency). Tracked as a known, bounded gap; the lexer subset already captures
+the highest-frequency equivalences (whitespace, comments, case) seen in real
+dbt output. See the match-key notes in docs/protocol.md.

@@ -118,15 +118,73 @@ pub fn normalize_sql(sql: &str) -> String {
             continue;
         }
 
-        // Anything else (operators, punctuation: ( ) , = < > + * etc.) is its
-        // own token so it both separates words and stays significant.
+        // Multi-char and single-char operators / punctuation. Match the longest
+        // known operator first so e.g. `!=`, `<>`, `<=`, `>=`, `||`, `::` are
+        // single tokens (needed for synonym canonicalization below).
         flush_word!();
-        out.push(c.to_string());
-        i += 1;
+        let two = if i + 1 < n { &sql[i..i + 2] } else { "" };
+        const TWO_CHAR_OPS: &[&str] = &[
+            "!=", "<>", "<=", ">=", "||", "::", "->", "==", "<<", ">>", ":=",
+        ];
+        if TWO_CHAR_OPS.contains(&two) {
+            out.push(two.to_string());
+            i += 2;
+        } else {
+            out.push(c.to_string());
+            i += 1;
+        }
     }
     flush_word!();
 
+    canonicalize_tokens(&mut out);
     out.join(" ")
+}
+
+/// Post-lexing canonicalization of the token sequence that is SAFE to do
+/// lexically (no parser needed). Covers the live-verified operator-synonym and
+/// trailing-noise equivalences:
+///   - `!=` ≡ `<>`  (canonical `<>`)
+///   - `==` ≡ `=`   (some dialects)
+///   - drop a trailing `;`
+///   - drop a trailing comma that immediately precedes a clause keyword
+///     (`from`/`where`/`group`/`order`/`having`/`qualify`/`limit`) or EOF —
+///     i.e. a dangling SELECT-list comma.
+///
+/// NOT done here (requires a real parser + dialect catalog, so left as a
+/// documented over-execute gap): cast `::`↔`cast()`, type-name synonyms
+/// (varchar/text), function-name synonyms (coalesce/nvl), optional `AS`.
+fn canonicalize_tokens(toks: &mut Vec<String>) {
+    // Operator synonyms.
+    for t in toks.iter_mut() {
+        match t.as_str() {
+            "!=" => *t = "<>".to_string(),
+            "==" => *t = "=".to_string(),
+            _ => {}
+        }
+    }
+    // Drop trailing semicolon(s).
+    while toks.last().map(|t| t == ";").unwrap_or(false) {
+        toks.pop();
+    }
+    // Drop a dangling comma before a clause keyword or EOF.
+    const CLAUSE_KW: &[&str] = &[
+        "from", "where", "group", "order", "having", "qualify", "limit", "window",
+    ];
+    let mut cleaned: Vec<String> = Vec::with_capacity(toks.len());
+    for (idx, t) in toks.iter().enumerate() {
+        if t == "," {
+            let next = toks.get(idx + 1).map(|s| s.as_str());
+            let drop = match next {
+                None => true,                        // trailing comma at EOF
+                Some(kw) => CLAUSE_KW.contains(&kw), // comma before a clause kw
+            };
+            if drop {
+                continue;
+            }
+        }
+        cleaned.push(t.clone());
+    }
+    *toks = cleaned;
 }
 
 #[cfg(test)]
@@ -185,5 +243,47 @@ mod tests {
     fn empty_and_whitespace_only() {
         assert_eq!(normalize_sql(""), "");
         assert_eq!(normalize_sql("   \n\t "), "");
+    }
+
+    #[test]
+    fn operator_synonyms_canonicalized() {
+        // != ≡ <> (verified live).
+        assert!(eq("where a != 0", "where a <> 0"));
+        // multi-char operators tokenize as one unit.
+        assert_eq!(normalize_sql("a<=b"), normalize_sql("a <= b"));
+        assert!(!eq("a < b", "a <= b"));
+    }
+
+    #[test]
+    fn trailing_comma_and_semicolon_dropped() {
+        assert!(eq("select a, b from t", "select a, b, from t"));
+        assert!(eq("select 1", "select 1;"));
+        assert!(eq("select 1", "select 1 ;"));
+        // A comma that is NOT dangling must be kept (would change meaning).
+        assert!(!eq("select a, b", "select a b"));
+    }
+
+    #[test]
+    fn optimizer_hint_stripped_like_comment() {
+        assert!(eq("select /*+ no_merge */ a from t", "select a from t"));
+    }
+
+    /// DOCUMENTED PARSER-GAP: the hosted service canonicalizes these via a
+    /// dialect AST (cast shorthand, type synonyms, function synonyms, optional
+    /// AS) and SKIPs; our lexer does NOT, so these remain DIFFERENT and we
+    /// over-execute (safe-directional). Pins the known boundary so a future
+    /// parser-based implementation has an explicit target to flip.
+    #[test]
+    fn parser_level_synonyms_are_a_known_gap() {
+        assert!(
+            !eq("cast(x as varchar)", "x::varchar"),
+            "cast shorthand: gap"
+        );
+        assert!(
+            !eq("cast(x as varchar)", "cast(x as text)"),
+            "type synonym: gap"
+        );
+        assert!(!eq("coalesce(a, b)", "nvl(a, b)"), "function synonym: gap");
+        assert!(!eq("10 as k", "10 k"), "optional AS: gap");
     }
 }

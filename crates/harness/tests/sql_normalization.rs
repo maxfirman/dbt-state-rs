@@ -85,9 +85,13 @@ async fn reproduces_live_sql_normalization_boundary() {
         ("uppercase", "SELECT customer_id AS id, COUNT(*) AS n FROM up WHERE customer_id IS NOT NULL GROUP BY customer_id".to_string()),
         ("ident_case", "select CUSTOMER_ID as id, count(*) as n from up where CUSTOMER_ID is not null group by CUSTOMER_ID".to_string()),
         ("whitespace", "select   customer_id as id,count(*) as n from up where customer_id is not null group by customer_id".to_string()),
+        // Lexically-canonicalized (implemented): trailing semicolon, hint.
+        ("trailing_semicolon", format!("{base};")),
+        ("optimizer_hint", base.replace("select customer_id", "select /*+ no_merge */ customer_id")),
     ];
     // EXECUTE cases: semantics-preserving-but-token-different (disproves plan
-    // comparison) + genuine changes.
+    // comparison), genuine changes, AND the documented parser-gap synonyms
+    // (cast shorthand / type / function synonyms) where we over-execute.
     let execs = [
         ("group_by_ordinal", base.replace("group by customer_id", "group by 1")),
         ("redundant_parens", base.replace("where customer_id is not null", "where (customer_id is not null)")),
@@ -101,7 +105,10 @@ async fn reproduces_live_sql_normalization_boundary() {
     for (label, variant) in &skips {
         tn += 1;
         let v = verdict_for(base, variant, &format!("\"DB\".\"S\".\"N{tn}\"")).await;
-        assert_eq!(v, "skip_execution", "{label}: expected skip (lexically equivalent)");
+        assert_eq!(
+            v, "skip_execution",
+            "{label}: expected skip (lexically equivalent)"
+        );
     }
     for (label, variant) in &execs {
         tn += 1;
