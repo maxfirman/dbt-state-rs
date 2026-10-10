@@ -86,7 +86,7 @@ async fn register_clone_matches_real_shape() {
 /// Replay the real ResolveDeferredRelations request and assert our response
 /// shape matches (the hosted service returned an empty fqn_by_unique_id map).
 #[tokio::test]
-async fn resolve_deferred_relations_matches_real_shape() {
+async fn deferred_relations_are_explicitly_unsupported() {
     use qc::execution_client::ExecutionClient;
     let entries = diff::load_golden(CLONE_GOLDEN).expect("load clone golden");
     let entry = entries
@@ -103,12 +103,8 @@ async fn resolve_deferred_relations_matches_real_shape() {
     let (addr, _schema) = support::start_server().await;
     let ch = support::channel(addr).await;
     let mut client = ExecutionClient::new(ch);
-    let resp = client
-        .resolve_deferred_relations(req)
-        .await
-        .expect("resolve")
-        .into_inner();
+    let resp = client.resolve_deferred_relations(req).await.unwrap_err();
 
-    assert_eq!(resp.fqn_by_unique_id.len(), real_map.len());
-    assert!(resp.fqn_by_unique_id.is_empty());
+    assert!(real_map.is_empty()); // This capture does not establish nonempty deferral behavior.
+    assert_eq!(resp.code(), tonic::Code::Unimplemented);
 }

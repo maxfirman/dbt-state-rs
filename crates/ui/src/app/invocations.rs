@@ -14,7 +14,9 @@ use crate::view_helpers::{decision_badge, fmt_runtime, fmt_time, short};
 #[page]
 pub async fn index(cx: &Cx) -> topcoat::Result<impl View> {
     let pool = crate::pool(cx);
-    let rows = db::recent_invocations(pool, 100).await.unwrap_or_default();
+    let rows = db::recent_invocations(pool, crate::org_id(cx), 100)
+        .await
+        .unwrap_or_default();
 
     Ok(view! {
         <h1>"Invocations"</h1>
@@ -76,8 +78,11 @@ pub mod invocation_id {
         let filter = query_params::<Filter>(cx)?;
         let active = filter.decision.clone();
 
-        let inv = db::invocation(pool, id).await.ok().flatten();
-        let mut decisions = db::decisions_for_invocation(pool, id)
+        let inv = db::invocation(pool, crate::org_id(cx), id)
+            .await
+            .ok()
+            .flatten();
+        let mut decisions = db::decisions_for_invocation(pool, crate::org_id(cx), id)
             .await
             .unwrap_or_default();
         if let Some(f) = active.as_deref() {

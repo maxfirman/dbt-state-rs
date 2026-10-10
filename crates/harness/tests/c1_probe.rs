@@ -1,36 +1,6 @@
-//! C1 — CHARACTERIZED DIVERGENCE: config-only change vs. genuine logic change.
-//!
-//! Captured live from api.state.dbt.com (jaffle-shop `customers` on Snowflake,
-//! `golden/fixtures/c1_config_vs_logic.jsonl`). Four real decisions for the
-//! same node, in order:
-//!
-//!   [0] first build          body=0fbde4f2 cfg=ff8f1fb7 -> ready_to_execute
-//!   [1] unchanged rebuild     body=0fbde4f2 cfg=ff8f1fb7 -> skip_execution
-//!   [2] config-only change    body=a0a8af93 cfg=39ba728a -> skip_execution  (!)
-//!   [3] genuine SQL change     body=22e8207a cfg=ff8f1fb7 -> ready_to_execute
-//!
-//! The decisive observation: `node_body_hash` CHANGED in BOTH [2] and [3], yet
-//! the hosted service SKIPPED [2] and EXECUTED [3]. So the hosted service's
-//! logic identity is NOT the client-sent `node_body_hash`.
-//!
-//! VERIFIED MECHANISM (client source + controlled live A/B, not a guess): the
-//! service rebuilds iff (a) the WHITESPACE-NORMALIZED rendered `sql` changed, or
-//! (b) an allowlisted `semantic_extras` key changed (the client folds a FIXED
-//! set — on_schema_change, contract, constraints, unique_key, grants, merge_*,
-//! incremental_predicates, event_time, sql_header, lookback, table_format,
-//! warehouse keys, __persisted_docs_hash — into semantic_extras), or (c)
-//! upstream data is stale. A `config(meta=...)` edit ([2]) changes neither the
-//! normalized SQL (only whitespace) nor an allowlisted key, so it SKIPs; a new
-//! column ([3]) changes the normalized SQL, so it EXECUTEs. This is NOT a deep
-//! semantic/AST fingerprint — just whitespace normalization + a config
-//! allowlist, both reproducible without a SQL engine.
-//!
-//! Our server now matches on exactly that (whitespace-normalized SQL +
-//! semantic_extras hash, ignoring node_body_hash), so it REPRODUCES both: it
-//! SKIPs the config-only change [2] and EXECUTEs the genuine change [3].
-//! (Earlier the match keyed on node_body_hash and over-executed on [2]; that
-//! divergence is now eliminated.)
-
+//! Captured config-only and SQL changes. The hosted skips remain golden evidence;
+//! our exact dependency-definition fingerprint conservatively rebuilds when
+//! SELECT dependency text changes to view DDL. See correctness-handoff.md B/C.
 #[path = "support.rs"]
 mod support;
 
@@ -116,31 +86,18 @@ async fn c1_config_vs_logic_change_is_characterized() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("[0] should execute for us too, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(1000),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
-    // [1] unchanged rebuild: we reproduce the skip (same body hash).
+    // [1] hosted skips; changed dependency representation conservatively builds.
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
     let v1 = support::response_variant(&sql.submit_enriched_sql(r1).await.unwrap().into_inner());
     assert_eq!(
-        v1, "skip_execution",
-        "we DO reproduce the unchanged-rebuild skip (body hash matches)"
+        v1, "ready_to_execute",
+        "dependency representation changes conservatively rebuild"
     );
 
-    // [2] config-only change (meta): the hosted service skips. With the
-    // whitespace-normalized-SQL + semantic_extras match key, we now SKIP too
-    // (meta is not an allowlisted semantic_extras key, and the SQL differs only
-    // by whitespace) — the divergence is ELIMINATED.
+    // [2] retains the same dependency representation gap.
     let r2: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[2].request.clone()).unwrap();
     let v2 = support::response_variant(&sql.submit_enriched_sql(r2).await.unwrap().into_inner());
@@ -155,14 +112,10 @@ async fn c1_config_vs_logic_change_is_characterized() {
          [3] logic-change real=ready_to_execute ours={v3}"
     );
 
-    // Both now AGREE with the hosted service:
-    //  - [2] config-only (meta) → SKIP (whitespace-normalized SQL unchanged, no
-    //    allowlisted semantic_extras change).
-    //  - [3] genuine SQL change → EXECUTE.
+    // Pin the local conservative fallback separately from hosted agreement.
     assert_eq!(
-        v2, "skip_execution",
-        "CONFORMANT: a config-only (meta) change skips, matching the hosted service \
-         (match key is whitespace-normalized SQL + semantic_extras, not node_body_hash)"
+        v2, "ready_to_execute",
+        "Known dependency representation gap: hosted skips; local builds"
     );
     assert_eq!(
         v3, "ready_to_execute",

@@ -78,7 +78,7 @@ async fn root_layout(cx: &Cx, slot: Slot<'_>) -> topcoat::Result<impl View> {
 #[page]
 async fn home(cx: &Cx) -> topcoat::Result<impl View> {
     let pool = crate::pool(cx);
-    let totals = db::overview_totals(pool)
+    let totals = db::overview_totals(pool, crate::org_id(cx))
         .await
         .unwrap_or(db::OverviewTotals {
             built: 0,
@@ -88,7 +88,9 @@ async fn home(cx: &Cx) -> topcoat::Result<impl View> {
             projects: 0,
             environments: 0,
         });
-    let recent = db::recent_invocations(pool, 10).await.unwrap_or_default();
+    let recent = db::recent_invocations(pool, crate::org_id(cx), 10)
+        .await
+        .unwrap_or_default();
 
     let total_decisions = totals.built + totals.reused + totals.cloned;
     let reuse_pct = if total_decisions > 0 {

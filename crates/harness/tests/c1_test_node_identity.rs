@@ -105,21 +105,18 @@ async fn c1_data_test_node_matched_by_unique_id() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("id test should execute first, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: None,
-        execution_results: None,
-        execution_runtime_ms: Some(100),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // The confirmed id test now skips on rerun (same unique_id).
-    let v_id_again =
-        support::response_variant(&sql.submit_enriched_sql(id_req).await.unwrap().into_inner());
+    let v_id_again = support::response_variant(
+        &sql.submit_enriched_sql(
+            serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(submits[1].request.clone())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_inner(),
+    );
     assert_eq!(
         v_id_again, "skip_execution",
         "same test (same unique_id) skips after confirm"

@@ -1,0 +1,8 @@
+[
+  {"fixture":"c1_config_vs_logic.jsonl","entry":2,"local_variant":"ready_to_execute","reason":"Dependency SELECT text changes to full view DDL; conservative exact fingerprint misses. Hosted response also uses the unresolved lag-tolerance description. Handoff B/C."},
+  {"fixture":"c1_config_vs_logic.jsonl","entry":3,"local_variant":"ready_to_execute","reason":"Config-only change still carries dependency view DDL rather than the confirmed SELECT representation. Handoff B/C."},
+  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":13,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
+  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":14,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
+  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":15,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
+  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":16,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."}
+]

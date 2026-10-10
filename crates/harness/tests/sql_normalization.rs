@@ -19,14 +19,21 @@ use qc::sql_client::SqlClient;
 fn model(target: &str, sql: &str) -> qc::SubmitEnrichedSqlRequest {
     qc::SubmitEnrichedSqlRequest {
         target_table: Some(target.to_string()),
+        tolerate_nondeterminism: true,
         dialect: "snowflake".to_string(),
         execution_type: 1,
         sql: sql.to_string(),
         table_namespace: Some("ns".to_string()),
-        tables: vec![qc::TableModifiedInfo {
-            name: "\"DB\".\"S\".\"UP\"".into(),
-            last_modified_epoch: Some(100),
-        }],
+        tables: vec![
+            qc::TableModifiedInfo {
+                name: target.into(),
+                last_modified_epoch: Some(1),
+            },
+            qc::TableModifiedInfo {
+                name: "\"DB\".\"S\".\"UP\"".into(),
+                last_modified_epoch: Some(100),
+            },
+        ],
         dbt_node_state: Some(qc::DbtNodeState {
             node_unique_id: format!("model.jaffle.{target}"),
             node_hash: "h".into(),

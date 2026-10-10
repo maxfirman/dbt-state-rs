@@ -59,16 +59,19 @@ fn submit(
 ) -> qc::SubmitEnrichedSqlRequest {
     qc::SubmitEnrichedSqlRequest {
         target_table: Some(target.to_string()),
+        tolerate_nondeterminism: true,
         dialect: "snowflake".to_string(),
         execution_type,
         sql: format!("select 1 as c_{body_hash}"),
-        tables: tables
-            .iter()
-            .map(|(n, e)| qc::TableModifiedInfo {
-                name: n.to_string(),
-                last_modified_epoch: Some(*e),
-            })
-            .collect(),
+        tables: std::iter::once(qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(1),
+        })
+        .chain(tables.iter().map(|(n, e)| qc::TableModifiedInfo {
+            name: n.to_string(),
+            last_modified_epoch: Some(*e),
+        }))
+        .collect(),
         dbt_node_state: Some(qc::DbtNodeState {
             node_unique_id: format!("model.jaffle.{target}"),
             target_name: "prod".to_string(),
@@ -264,9 +267,9 @@ async fn changed_contract_forces_rebuild() {
             .success
     );
 
-    // The ORIGINAL hash v1 still skips (its confirmed row is intact).
+    // The original history no longer describes the overwritten target.
     let r1_again = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
-    assert_eq!(response_variant(&r1_again), "skip_execution");
+    assert_eq!(response_variant(&r1_again), "ready_to_execute");
     // And v2 now skips too.
     let r2_again = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
     assert_eq!(response_variant(&r2_again), "skip_execution");
@@ -334,21 +337,19 @@ async fn added_then_deleted_upstream() {
         "a new, newer, untracked upstream must execute"
     );
 
-    // Drop ALL upstreams → nothing to compare → hash match alone skips.
+    // Missing all recorded upstreams cannot establish freshness.
     let dropped = submit(target, "h-ad", ETYPE_FULL, &[]);
     let r2 = sql.submit_enriched_sql(dropped).await.unwrap().into_inner();
     assert_eq!(
         response_variant(&r2),
-        "skip_execution",
-        "no upstreams to compare → hash match skips"
+        "ready_to_execute",
+        "missing dependency evidence requires execution"
     );
 }
 
-// 6. SCHEMA CHANGE: cross-schema upstream matched by logical identity. Confirm
-//    with a prod-schema upstream, then submit with a dev-schema upstream of the
-//    same logical table at the SAME epoch → skip (logical match, no drift).
+// 6. SCHEMA CHANGE: identical timestamps do not prove equivalent objects.
 #[tokio::test]
-async fn cross_schema_upstream_matches_logically() {
+async fn cross_schema_upstream_requires_provenance() {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -363,7 +364,7 @@ async fn cross_schema_upstream_matches_logically() {
     );
     execute_and_confirm(&mut sql, &mut exec, &prod, 1_000_000, 10).await;
 
-    // Same logical upstream under a different schema, same epoch → skip.
+    // Different physical input under a different schema requires execution.
     let dev = submit(
         target,
         "h-xs",
@@ -373,8 +374,8 @@ async fn cross_schema_upstream_matches_logically() {
     let r = sql.submit_enriched_sql(dev).await.unwrap().into_inner();
     assert_eq!(
         response_variant(&r),
-        "skip_execution",
-        "cross-schema upstream of same logical identity at same epoch skips"
+        "ready_to_execute",
+        "distinct schemas cannot establish equivalent input data"
     );
 }
 

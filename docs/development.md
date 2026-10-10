@@ -2,7 +2,8 @@
 
 ## Toolchain
 
-- **Rust** 1.98+ (edition 2021).
+- **Rust** 1.98 (selected by rust-toolchain.toml; server/proto/harness edition
+  2021, UI edition 2024).
 - **protoc** (protobuf compiler) — required by `tonic-prost-build`. Install it
   and ensure it is on `PATH` (e.g. `brew install protobuf`, `apt-get install
   protobuf-compiler`, or `arduino/setup-protoc` in CI). `tonic-prost-build` finds

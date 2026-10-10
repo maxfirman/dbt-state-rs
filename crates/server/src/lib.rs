@@ -4,6 +4,7 @@ pub mod capture;
 pub mod clone;
 pub mod config;
 pub mod decision;
+mod fingerprint;
 pub mod services;
 pub mod sql_norm;
 pub mod store;

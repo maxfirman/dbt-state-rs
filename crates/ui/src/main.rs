@@ -13,11 +13,17 @@ use topcoat::context::app_context;
 /// Shared application state: the read pool.
 pub struct Ctx {
     pub pool: sqlx::PgPool,
+    pub org_id: String,
 }
 
 /// Convenience accessor used by pages.
 pub fn pool(cx: &topcoat::context::Cx) -> &sqlx::PgPool {
     &app_context::<Ctx>(cx).pool
+}
+
+/// The console is configured for one organization; URL IDs cannot change it.
+pub fn org_id(cx: &topcoat::context::Cx) -> &str {
+    &app_context::<Ctx>(cx).org_id
 }
 
 #[tokio::main]
@@ -29,7 +35,8 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let pool = db::connect().await?;
-    let router = app::router().app_context(Ctx { pool }).build();
+    let org_id = std::env::var("DBT_STATE_UI_ORG_ID").unwrap_or_else(|_| "local".into());
+    let router = app::router().app_context(Ctx { pool, org_id }).build();
     topcoat::start(router).await?;
     Ok(())
 }

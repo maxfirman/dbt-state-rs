@@ -33,11 +33,12 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
   generated std-derive impl — do not rename the service to "fix" it.
 - **Decision engine is pure** (`decision.rs::decide`). Keep it I/O-free so the
   property tests (`decision_proptest.rs`) and conformance replay stay valid.
-- **Match key is logical, not physical.** Prefer `table_namespace` +
-  `node_body_hash` + `execution_type` (cross-environment reuse); physical
-  `target_table` is the fallback. Upstream freshness compares by
-  `logical_relation_key` (schema-stripped). A node's own target table is
-  excluded from freshness.
+- **Reuse requires current evidence.** Select latest physical history before
+  checking versioned SQL/dependency/context/config fingerprints. Compare exact
+  physical upstream names and preserve unknown epochs. Own-target existence and
+  external edits are checked separately from upstream freshness. Namespace-only
+  cross-target reuse is disabled pending provenance. Data tests require scoped
+  UID identity and complete cached results. → [docs/correctness-handoff.md](docs/correctness-handoff.md)
 - **Org isolation.** Every store query is scoped by `org_id` (from the
   `x-organization-id` metadata header, default `local`). Never weaken this.
 - **Response shapes must match the hosted service exactly** (decision ints,
@@ -55,12 +56,14 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
    cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
      --seeds golden/fixtures/<file>.jsonl --iterations 200
    ```
-   Expect 0 DIVERGENCES. New real-skip cases can be promoted into
+   This is empty-history discovery, not a conformance gate. New real-skip cases can be promoted into
    `golden/fixtures/` to grow the conformance corpus.
 → [docs/testing.md](docs/testing.md), [docs/harness.md](docs/harness.md)
 
 ## Conventions
-- TDD: capture a real golden case → write a differential/unit test → implement.
+- TDD: use primary client/protocol evidence and offline regressions for obvious
+  correctness fixes. No Snowflake access is available: do not make live calls or
+  infer unresolved hosted policy. Document remaining questions in the handoff.
 - Keep golden session files out of the tree; only `golden/fixtures/` is tracked
   (see `golden/README.md`).
 - Don't commit unless asked; prefer small, focused commits.

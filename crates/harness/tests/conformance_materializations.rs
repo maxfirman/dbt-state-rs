@@ -1,23 +1,5 @@
-//! Conformance characterizations from the exhaustive live sweep (materializations).
-//!
-//! These replay real captures from api.state.dbt.com and assert our server
-//! reproduces the hosted decision, pinning two behaviours that the official
-//! DOCS describe imprecisely:
-//!
-//!  * VIEW skip-despite-upstream-change — the docs say a view is reused "even if
-//!    new data has arrived upstream". Mechanically, the CLIENT achieves this by
-//!    sending ONLY the view's own target table in `tables[]` (never upstreams).
-//!    Our own-table exclusion then yields `considered == 0` → skip on a logic
-//!    match. Verified across all captures: no view submit carries a non-own
-//!    upstream. This test pins that a view request with only its own (even
-//!    advanced) target still skips.
-//!
-//!  * CUSTOM MATERIALIZATION reuse — the docs say custom-materialization models
-//!    are "always built and never reused". The REAL service DISAGREES: an
-//!    unchanged `custom_table` model (execution_type = DBT_CUSTOM = 11) was
-//!    SKIPPED on rerun. So treating et=11 like any other node (allowing skip on
-//!    an unchanged confirmed match) is the CONFORMANT behaviour; an
-//!    always-execute rule would diverge. Pinned by replaying the real capture.
+//! Captured custom/snapshot reuse plus offline external-view modification safety.
+//! A view's own object metadata is distinct from upstream data freshness.
 
 #[path = "support.rs"]
 mod support;
@@ -78,17 +60,7 @@ async fn custom_materialization_is_reused_like_any_node() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("custom-mat first build must execute, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(100),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
@@ -100,12 +72,9 @@ async fn custom_materialization_is_reused_like_any_node() {
     );
 }
 
-/// A VIEW (execution_type=10) whose request carries ONLY its own target table in
-/// `tables[]` (as the real client always sends for views) must skip on a logic
-/// match, regardless of the own-target epoch advancing — reproducing the hosted
-/// "views reflect new upstream data without a rebuild" behaviour.
+/// An externally modified view requires execution even with no upstreams.
 #[tokio::test]
-async fn view_skips_with_only_own_target_in_tables() {
+async fn externally_modified_view_rebuilds() {
     use qc::execution_client::ExecutionClient;
 
     let (addr, _schema) = support::start_server().await;
@@ -118,6 +87,7 @@ async fn view_skips_with_only_own_target_in_tables() {
         target_table: Some(target.to_string()),
         dialect: "snowflake".to_string(),
         execution_type: 10, // VIEW
+        tolerate_nondeterminism: true,
         sql: "select 1".to_string(),
         table_namespace: Some("ns".to_string()),
         // Views carry ONLY their own target in tables[] (never upstreams).
@@ -156,9 +126,7 @@ async fn view_skips_with_only_own_target_in_tables() {
     .await
     .unwrap();
 
-    // Rerun with the OWN target epoch advanced far beyond any tolerance: the
-    // own-table is excluded from freshness, so with no upstreams to compare the
-    // view skips on its logic match (mirrors "views reflect new data w/o rebuild").
+    // Own-target changes invalidate the object independently of upstream policy.
     let v = support::response_variant(
         &sql.submit_enriched_sql(view(9_999_999_999))
             .await
@@ -166,8 +134,8 @@ async fn view_skips_with_only_own_target_in_tables() {
             .into_inner(),
     );
     assert_eq!(
-        v, "skip_execution",
-        "a view with only its own (advanced) target in tables[] must skip on logic match"
+        v, "ready_to_execute",
+        "an externally modified view cannot reuse recorded logic"
     );
 }
 
@@ -209,17 +177,7 @@ async fn snapshot_is_reused_when_unchanged() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("snapshot first build executes, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();

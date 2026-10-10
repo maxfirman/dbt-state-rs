@@ -13,7 +13,9 @@ use crate::view_helpers::fmt_time;
 #[page]
 pub async fn index(cx: &Cx) -> topcoat::Result<impl View> {
     let pool = crate::pool(cx);
-    let projects = db::projects(pool).await.unwrap_or_default();
+    let projects = db::projects(pool, crate::org_id(cx))
+        .await
+        .unwrap_or_default();
 
     Ok(view! {
         <h1>"Projects"</h1>
@@ -59,12 +61,12 @@ pub mod project_id {
     pub async fn detail(cx: &Cx) -> topcoat::Result<impl View> {
         let pool = crate::pool(cx);
         let id = *path_param::<ProjectId>(cx)?;
-        let name = db::project_name(pool, id)
+        let name = db::project_name(pool, crate::org_id(cx), id)
             .await
             .ok()
             .flatten()
             .unwrap_or_else(|| "Unknown project".to_string());
-        let envs = db::environments_for_project(pool, id)
+        let envs = db::environments_for_project(pool, crate::org_id(cx), id)
             .await
             .unwrap_or_default();
 

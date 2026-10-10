@@ -1,5 +1,7 @@
 //! Postgres-backed state store.
 
+use crate::query_cache as qc;
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
@@ -7,7 +9,7 @@ use sqlx::PgPool;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InputTable {
     pub name: String,
-    pub last_modified_epoch: i64,
+    pub last_modified_epoch: Option<i64>,
 }
 
 /// A row in the executions table.
@@ -23,6 +25,7 @@ pub struct ExecutionRow {
     pub node_unique_id: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
+    pub execution_results: Option<qc::Struct>,
     pub input_tables: Vec<InputTable>,
     pub status: String,
     pub request_id: String,
@@ -32,6 +35,7 @@ pub struct ExecutionRow {
 #[derive(Debug, Clone)]
 pub struct PendingExecution {
     pub org_id: String,
+    pub project_id: Option<String>,
     pub target_table: String,
     pub execution_type: i32,
     pub node_hash: Option<String>,
@@ -53,6 +57,7 @@ pub struct PendingExecution {
 #[derive(Debug, Clone)]
 pub struct ConfirmedExecution {
     pub org_id: String,
+    pub project_id: Option<String>,
     pub target_table: String,
     pub execution_type: i32,
     pub node_hash: Option<String>,
@@ -71,6 +76,7 @@ pub struct ConfirmedExecution {
     pub last_modified_epoch: Option<i64>,
     pub table_type: Option<String>,
     pub execution_runtime_ms: Option<i64>,
+    pub execution_results: Option<qc::Struct>,
 }
 
 #[derive(Debug)]
@@ -87,155 +93,111 @@ impl Store {
         &self.pool
     }
 
-    /// Find the most recent CONFIRMED execution matching the node fingerprint.
-    /// Matches on BOTH `node_body_hash` (the client's unrendered template hash)
-    /// and `node_sql_hash` (a hash of the raw rendered SQL). The hosted service
-    /// compares rendered SQL by default, so a changed rendered SQL (e.g. an
-    /// env_var value) with an unchanged template hash must still force a rebuild.
+    /// Select current physical state before checking logic, kind and namespace.
+    /// An older matching execution cannot describe a target overwritten later.
     pub async fn find_confirmed(
         &self,
         org_id: &str,
         target_table: &str,
         execution_type: i32,
-        node_body_hash: Option<&str>,
         node_sql_hash: Option<&str>,
+        table_namespace: Option<&str>,
+        dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   input_tables, status, request_id
-            FROM executions
-            WHERE org_id = $1
-              AND target_table = $2
-              AND execution_type = $3
-              AND status = 'confirmed'
-              AND ($4 IS NULL OR node_body_hash IS NOT DISTINCT FROM $4)
-              AND ($5 IS NULL OR node_sql_hash IS NOT DISTINCT FROM $5)
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
+                   execution_results, input_tables, status, request_id
+            FROM (
+                SELECT * FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            ) current_execution
+            WHERE execution_type = $3
+              AND node_sql_hash IS NOT DISTINCT FROM $4
+              AND ($5 IS NULL OR table_namespace = $5)
+              AND dialect = $6
             "#,
         )
         .bind(org_id)
         .bind(target_table)
         .bind(execution_type)
-        .bind(node_body_hash)
         .bind(node_sql_hash)
+        .bind(table_namespace)
+        .bind(dialect)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
-    /// Cross-environment match: find the most recent CONFIRMED execution with
-    /// the same logical identity (`table_namespace` + `node_body_hash` +
-    /// `execution_type`) regardless of physical target/schema. This mirrors the
-    /// hosted service, which reuses a node built in one environment (e.g. prod)
-    /// to skip the same logical node in another (e.g. dev) — deferral/state
-    /// reuse. Scoped to the org. Only used when `table_namespace` is present.
-    pub async fn find_confirmed_by_namespace(
+    /// Tests have no physical target. Scope identity by project and namespace,
+    /// then compare the latest outcome's logic rather than resurrecting history.
+    pub async fn find_confirmed_test(
         &self,
         org_id: &str,
-        table_namespace: &str,
-        execution_type: i32,
-        node_body_hash: Option<&str>,
+        node_unique_id: &str,
+        project_id: Option<&str>,
+        table_namespace: Option<&str>,
         node_sql_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   input_tables, status, request_id
-            FROM executions
-            WHERE org_id = $1
-              AND table_namespace = $2
-              AND execution_type = $3
-              AND status = 'confirmed'
-              AND ($4 IS NULL OR node_body_hash IS NOT DISTINCT FROM $4)
-              AND ($5 IS NULL OR node_sql_hash IS NOT DISTINCT FROM $5)
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(org_id)
-        .bind(table_namespace)
-        .bind(execution_type)
-        .bind(node_body_hash)
-        .bind(node_sql_hash)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(Into::into))
-    }
-
-    /// Find the most recent CONFIRMED execution matching `node_unique_id`
-    /// (org- and execution_type-scoped). This is the correct match key for
-    /// nodes whose `node_body_hash` is NOT a per-node identity — notably dbt
-    /// DATA TEST nodes (execution_type = DBT_DATA_TEST = 8), where every test of
-    /// the same generic type shares one body hash (all `not_null` => 934c4ef4,
-    /// all `unique` => fc665e00, …) and `target_table` is empty. Verified live
-    /// against api.state.dbt.com: the hosted service distinguishes such tests
-    /// solely by `node_unique_id` (adding a new column test executes it; the
-    /// shared body hash would otherwise collide). See
-    /// `crates/harness/tests/c1_test_node_identity.rs`.
-    pub async fn find_confirmed_by_unique_id(
-        &self,
-        org_id: &str,
-        node_unique_id: &str,
-        execution_type: i32,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
-        let row = sqlx::query_as::<_, RawRow>(
-            r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
-                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   input_tables, status, request_id
-            FROM executions
-            WHERE org_id = $1
-              AND node_unique_id = $2
-              AND execution_type = $3
-              AND status = 'confirmed'
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
+                   execution_results, input_tables, status, request_id
+            FROM (
+                SELECT * FROM executions
+                WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
+                  AND project_id IS NOT DISTINCT FROM $3
+                  AND table_namespace IS NOT DISTINCT FROM $4
+                  AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            ) current_execution
+            WHERE node_sql_hash IS NOT DISTINCT FROM $5
             "#,
         )
         .bind(org_id)
         .bind(node_unique_id)
-        .bind(execution_type)
+        .bind(project_id)
+        .bind(table_namespace)
+        .bind(node_sql_hash)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
-    /// Find the most recent CONFIRMED seed execution matching the values_hash.
-    /// Analogous to `find_confirmed` but keyed on `values_hash` (seeds carry no
-    /// SQL body fingerprint).
+    /// Seed configuration participates in the logic hash alongside data bytes.
     pub async fn find_confirmed_values(
         &self,
         org_id: &str,
         target_table: &str,
-        execution_type: i32,
-        values_hash: Option<&str>,
+        values_hash: &str,
+        node_sql_hash: &str,
+        table_namespace: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   input_tables, status, request_id
-            FROM executions
-            WHERE org_id = $1
-              AND target_table = $2
-              AND execution_type = $3
-              AND status = 'confirmed'
-              AND values_hash IS NOT DISTINCT FROM $4
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
+                   execution_results, input_tables, status, request_id
+            FROM (
+                SELECT * FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            ) current_execution
+            WHERE execution_type = 9 AND values_hash = $3 AND node_sql_hash = $4
+              AND ($5 IS NULL OR table_namespace = $5)
             "#,
         )
         .bind(org_id)
         .bind(target_table)
-        .bind(execution_type)
         .bind(values_hash)
+        .bind(node_sql_hash)
+        .bind(table_namespace)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(Into::into))
+        row.map(TryInto::try_into).transpose()
     }
 
     /// Insert a pending execution row for a ready_to_execute verdict.
@@ -247,8 +209,8 @@ impl Store {
                 org_id, target_table, execution_type, node_hash, node_body_hash,
                 node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                 dialect, input_tables, values_hash, status, request_id, execution_decision_id,
-                node_sql_hash
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15)
+                node_sql_hash, project_id
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16)
             RETURNING id
             "#,
         )
@@ -267,6 +229,7 @@ impl Store {
         .bind(&p.request_id)
         .bind(&p.execution_decision_id)
         .bind(&p.node_sql_hash)
+        .bind(&p.project_id)
         .fetch_one(&self.pool)
         .await?;
         Ok(rec)
@@ -288,8 +251,8 @@ impl Store {
                     node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                     dialect, input_tables, values_hash, status, request_id,
                     execution_decision_id, last_modified_epoch, table_type,
-                    execution_runtime_ms, confirmed_at, node_sql_hash
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18)
+                    execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20)
                 "#,
             )
             .bind(&c.org_id)
@@ -310,6 +273,8 @@ impl Store {
             .bind(&c.table_type)
             .bind(c.execution_runtime_ms)
             .bind(&c.node_sql_hash)
+            .bind(&c.project_id)
+            .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
             .execute(&mut *tx)
             .await?;
         }
@@ -337,6 +302,7 @@ impl Store {
         last_modified_epoch: Option<i64>,
         table_type: Option<&str>,
         execution_runtime_ms: Option<i64>,
+        execution_results: Option<&qc::Struct>,
     ) -> sqlx::Result<bool> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
@@ -346,6 +312,7 @@ impl Store {
                 last_modified_epoch = $3,
                 table_type = $4,
                 execution_runtime_ms = $5,
+                execution_results = $6,
                 confirmed_at = now()
             WHERE org_id = $1
               AND request_id = $2
@@ -357,6 +324,7 @@ impl Store {
         .bind(last_modified_epoch)
         .bind(table_type)
         .bind(execution_runtime_ms)
+        .bind(execution_results.map(Message::encode_to_vec))
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -394,16 +362,23 @@ struct RawRow {
     node_unique_id: Option<String>,
     last_modified_epoch: Option<i64>,
     execution_runtime_ms: Option<i64>,
+    execution_results: Option<Vec<u8>>,
     input_tables: serde_json::Value,
     status: String,
     request_id: String,
 }
 
-impl From<RawRow> for ExecutionRow {
-    fn from(r: RawRow) -> Self {
-        let input_tables =
-            serde_json::from_value::<Vec<InputTable>>(r.input_tables).unwrap_or_default();
-        ExecutionRow {
+impl TryFrom<RawRow> for ExecutionRow {
+    type Error = sqlx::Error;
+    fn try_from(r: RawRow) -> Result<Self, Self::Error> {
+        let input_tables = serde_json::from_value::<Vec<InputTable>>(r.input_tables)
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+        let execution_results = r
+            .execution_results
+            .map(|bytes| qc::Struct::decode(bytes.as_slice()))
+            .transpose()
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+        Ok(ExecutionRow {
             id: r.id,
             org_id: r.org_id,
             target_table: r.target_table,
@@ -414,9 +389,10 @@ impl From<RawRow> for ExecutionRow {
             node_unique_id: r.node_unique_id,
             last_modified_epoch: r.last_modified_epoch,
             execution_runtime_ms: r.execution_runtime_ms,
+            execution_results,
             input_tables,
             status: r.status,
             request_id: r.request_id,
-        }
+        })
     }
 }

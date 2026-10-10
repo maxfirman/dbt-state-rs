@@ -32,17 +32,20 @@ fn submit(
 ) -> qc::SubmitEnrichedSqlRequest {
     qc::SubmitEnrichedSqlRequest {
         target_table: Some(target.to_string()),
+        tolerate_nondeterminism: true,
         dialect: "snowflake".to_string(),
         execution_type,
         sql: "select 1".to_string(),
         table_namespace: namespace.map(|s| s.to_string()),
-        tables: tables
-            .iter()
-            .map(|(n, e)| qc::TableModifiedInfo {
-                name: n.to_string(),
-                last_modified_epoch: Some(*e),
-            })
-            .collect(),
+        tables: std::iter::once(qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(1),
+        })
+        .chain(tables.iter().map(|(n, e)| qc::TableModifiedInfo {
+            name: n.to_string(),
+            last_modified_epoch: Some(*e),
+        }))
+        .collect(),
         dbt_node_state: Some(qc::DbtNodeState {
             node_unique_id: format!("model.jaffle.{target}"),
             target_name: "prod".to_string(),
@@ -192,12 +195,9 @@ async fn confirm_is_org_scoped() {
 // F2 — Match-key SELECTION (lookup layer)
 // ---------------------------------------------------------------------------
 
-/// Namespace match takes precedence over physical target: a confirmed row under
-/// a DIFFERENT physical target but the SAME table_namespace + body_hash +
-/// execution_type must be reused (cross-environment skip), even though no row
-/// matches the new physical target.
+/// Namespace identity alone cannot prove data exists at another physical target.
 #[tokio::test]
-async fn namespace_match_wins_over_physical_target() {
+async fn namespace_alone_cannot_prove_cross_target_reuse() {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -223,7 +223,7 @@ async fn namespace_match_wins_over_physical_target() {
     );
 
     // Submit under a DIFFERENT physical target (DEV), same namespace+hash, same
-    // logical upstream at the same epoch → must SKIP via namespace reuse.
+    // logical upstream at the same epoch still lacks physical provenance.
     let dev = submit(
         "\"DB\".\"DEV\".\"T\"",
         "h-ns",
@@ -234,8 +234,8 @@ async fn namespace_match_wins_over_physical_target() {
     let r2 = sql.submit_enriched_sql(dev).await.unwrap().into_inner();
     assert_eq!(
         response_variant(&r2),
-        "skip_execution",
-        "same namespace+hash under a new physical target must reuse (skip)"
+        "ready_to_execute",
+        "namespace alone cannot prove the other target contains matching data"
     );
 }
 
@@ -290,7 +290,7 @@ async fn namespace_match_respects_execution_type() {
 /// submit matching the current epoch must SKIP (newest row selected), proving
 /// the ORDER BY confirmed_at DESC tie-break is honored deterministically.
 #[tokio::test]
-async fn namespace_tiebreak_selects_newest_confirmed() {
+async fn physical_target_selects_newest_confirmed() {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -317,11 +317,11 @@ async fn namespace_tiebreak_selects_newest_confirmed() {
 
     // NEWER confirmed row: recorded upstream epoch 5000 (built against newer data).
     let new = submit(
-        "\"DB\".\"B\".\"T\"",
+        "\"DB\".\"A\".\"T\"",
         "h-tie",
         ETYPE_FULL,
         Some(ns),
-        &[("\"DB\".\"B\".\"SRC\"", 5000)],
+        &[("\"DB\".\"A\".\"SRC\"", 5000)],
     );
     let r_new = sql.submit_enriched_sql(new).await.unwrap().into_inner();
     let rid_new = ready_request_id(&r_new);
@@ -337,11 +337,11 @@ async fn namespace_tiebreak_selects_newest_confirmed() {
     // SKIP. (Against the OLD row, 5000 > 100 would be drift → execute. So a
     // SKIP here proves the newest row was selected.)
     let probe = submit(
-        "\"DB\".\"C\".\"T\"",
+        "\"DB\".\"A\".\"T\"",
         "h-tie",
         ETYPE_FULL,
         Some(ns),
-        &[("\"DB\".\"C\".\"SRC\"", 5000)],
+        &[("\"DB\".\"A\".\"SRC\"", 5000)],
     );
     let r = sql.submit_enriched_sql(probe).await.unwrap().into_inner();
     assert_eq!(
@@ -366,10 +366,13 @@ fn enriched_record(target: &str, body_hash: &str, epoch: Option<i64>) -> qc::Exe
         input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
             target_table: Some(target.to_string()),
             dialect: "snowflake".to_string(),
-            default_catalog: "DB".to_string(),
+            default_catalog: String::new(),
             execution_type: ETYPE_FULL,
             sql: "select 1".to_string(),
-            tables: vec![],
+            tables: vec![qc::TableModifiedInfo {
+                name: "up".into(),
+                last_modified_epoch: epoch,
+            }],
             query_dependencies: vec![],
             semantic_extras: Default::default(),
             labels: Default::default(),
@@ -490,6 +493,7 @@ fn test_submit(unique_id: &str, shared_body: &str) -> qc::SubmitEnrichedSqlReque
         target_table: None,
         dialect: "snowflake".to_string(),
         execution_type: ETYPE_DATA_TEST,
+        tolerate_nondeterminism: true,
         sql: "select * from x where c is null".to_string(),
         table_namespace: Some("adapter-ns".to_string()),
         tables: vec![],
@@ -532,7 +536,7 @@ async fn data_tests_do_not_collide_on_shared_body_hash() {
     );
     let rid = ready_request_id(&r1);
     assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
+        exec.confirm_execution(qc::ConfirmExecutionRequest { execution_results: Some(serde_json::from_value(serde_json::json!({"fields": {"failures": {"kind": {"int_value": 0}}, "should_error": {"kind": {"bool_value": false}}, "should_warn": {"kind": {"bool_value": false}}}})).unwrap()), ..confirm_req(&rid, 100, 10) })
             .await
             .unwrap()
             .into_inner()
@@ -559,17 +563,18 @@ async fn data_tests_do_not_collide_on_shared_body_hash() {
 
 // ---------------------------------------------------------------------------
 // Logic-identity match key: whitespace-normalized SQL + semantic_extras
-// (verified mechanism — NOT node_body_hash). See docs/protocol.md C1/C1b.
+// Captured evidence distinguishes these inputs from the client body hash.
 // ---------------------------------------------------------------------------
 
 fn model_sql(target: &str, sql: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
     qc::SubmitEnrichedSqlRequest {
         target_table: Some(target.to_string()),
+        tolerate_nondeterminism: true,
         dialect: "snowflake".to_string(),
         execution_type: ETYPE_FULL,
         sql: sql.to_string(),
         table_namespace: Some("ns".to_string()),
-        tables: vec![("up", 100i64)]
+        tables: vec![(target, 1i64), ("up", 100i64)]
             .into_iter()
             .map(|(n, e)| qc::TableModifiedInfo {
                 name: n.into(),

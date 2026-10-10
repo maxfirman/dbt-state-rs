@@ -134,3 +134,48 @@ pub fn request_with_org<T>(body: T, org: &str) -> tonic::Request<T> {
     );
     req
 }
+
+pub fn captured_org(entry: &dbt_state_harness::diff::GoldenEntry) -> &str {
+    entry
+        .metadata
+        .iter()
+        .find(|(key, _)| key == "x-organization-id")
+        .map(|(_, value)| value.as_str())
+        .unwrap_or("local")
+}
+
+pub fn captured_request<T>(
+    body: T,
+    entry: &dbt_state_harness::diff::GoldenEntry,
+) -> tonic::Request<T> {
+    request_with_org(body, captured_org(entry))
+}
+
+/// Preserve the captured outcome, correlating by the hosted request ID. Only
+/// the opaque ID changes when the request is replayed locally.
+pub async fn confirm_captured(
+    exec: &mut qc::execution_client::ExecutionClient<Channel>,
+    entries: &[dbt_state_harness::diff::GoldenEntry],
+    submit: &dbt_state_harness::diff::GoldenEntry,
+    local_id: String,
+) {
+    let hosted_id = submit.response["response"]["ready_to_execute"]["request_id"]
+        .as_str()
+        .expect("captured execute ID");
+    let entry = entries
+        .iter()
+        .find(|e| {
+            e.method == "ConfirmExecution" && e.request["request_id"].as_str() == Some(hosted_id)
+        })
+        .expect("captured confirmation for this submit");
+    let mut req: qc::ConfirmExecutionRequest =
+        serde_json::from_value(entry.request.clone()).unwrap();
+    req.request_id = local_id;
+    assert!(
+        exec.confirm_execution(req)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+}

@@ -1,24 +1,8 @@
-//! The dbt State decision engine: given a submitted node and the recorded
-//! execution history, decide SKIP / EXECUTE / CLONE.
-//!
-//! This mirrors the observed behavior of the hosted service. The client sends
-//! precomputed semantic hashes in `dbt_node_state` (so the server does not need
-//! a SQL engine for the core decision) plus per-input freshness in `tables`.
-//!
-//! Logic (refined via TDD against the golden corpus):
-//!   - EXECUTE when there is no confirmed prior execution with a matching
-//!     `node_body_hash` for this (org, target_table, execution_type).
-//!   - EXECUTE when a matching record exists but upstream data is "stale"
-//!     relative to the recorded run (per the stale_upstream_policy).
-//!   - SKIP otherwise.
-//!
-//! stale_upstream_policy (from sql_service.proto):
-//!   - ANY (0, default): every upstream must be within tolerance to skip; if
-//!     ANY upstream drifted beyond tolerance the node is stale → EXECUTE.
-//!     (matches dbt `updates_on=any`.)
-//!   - ALL (1): at least one upstream must be within tolerance to skip; the node
-//!     is stale only when ALL upstreams drifted. (matches
-//!     `freshness.build_after.updates_on=all`.)
+//! Pure freshness policy for a prevalidated confirmed candidate.
+//! Store/services validate fingerprints, target existence and cached outcomes.
+//! Exact physical upstream identities and known, unambiguous metadata are
+//! required. ANY/ALL and timestamp-distance tolerance reflect current local
+//! policy; complete hosted lag semantics remain in correctness-handoff.md.
 
 use crate::query_cache as qc;
 use crate::store::{ExecutionRow, InputTable};
@@ -155,62 +139,40 @@ fn execute(execution_type: i32, is_stale: bool, had_prior: bool) -> Verdict {
     }
 }
 
-/// Determine whether the node is stale relative to the recorded run, honoring
-/// the stale_upstream_policy. Returns true → EXECUTE, false → candidate to SKIP.
-/// Normalize a fully-qualified relation name to a logical identity that is
-/// stable across environments: strip the middle (schema) component so that
-/// `"DB"."PROD_SCHEMA"."T"` and `"DB"."DEV_SCHEMA"."T"` compare equal. The
-/// hosted service reuses state across environments by logical identity, so
-/// upstream freshness must be matched the same way. Names with other shapes are
-/// returned lowercased/unquoted unchanged.
-///
-/// Splitting is quote-aware: a `.` inside a double-quoted identifier (e.g.
-/// `"DB"."PROD"."my.table"`) is part of the identifier, NOT a component
-/// separator. A naive `split('.')` would mis-count the parts and fail to strip
-/// the schema, causing the SAME logical table in two environments to compare
-/// UNEQUAL — a cross-environment false "execute" (stale SKIP avoided, but a
-/// faithful SKIP lost). We therefore split on unquoted dots only.
-pub(crate) fn logical_relation_key(name: &str) -> String {
-    let parts = split_relation_parts(name);
-    let joined = match parts.len() {
-        // catalog.schema.table -> catalog..table (drop schema)
-        3 => format!("{}..{}", parts[0], parts[2]),
-        // schema.table -> ..table (drop schema)
-        2 => format!("..{}", parts[1]),
-        _ => parts.join("."),
-    };
-    joined.to_ascii_lowercase()
-}
-
-/// Split a dotted relation name into components, treating a `.` inside a
-/// double-quoted segment as a literal (not a separator), and trimming the
-/// surrounding quotes from each component. Mirrors how warehouses quote
-/// identifiers that contain dots or reserved characters.
-fn split_relation_parts(name: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut cur = String::new();
-    let mut in_quotes = false;
-    for ch in name.chars() {
-        match ch {
-            '"' => in_quotes = !in_quotes,
-            '.' if !in_quotes => {
-                parts.push(std::mem::take(&mut cur));
-            }
-            other => cur.push(other),
-        }
-    }
-    parts.push(cur);
-    parts
+/// Metadata is already warehouse-qualified by clients. Preserve its physical
+/// identity exactly: schemas and quoted case distinguish genuine dependencies.
+/// Cross-environment mapping needs explicit provenance, not schema stripping.
+pub(crate) fn physical_relation_key(name: &str) -> &str {
+    name
 }
 
 fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
     let tolerance_ms = ctx.freshness_tolerance_seconds.saturating_mul(1000);
 
+    let genuine = |name: &str| ctx.target_table != Some(name);
+    let current_names: std::collections::BTreeSet<_> = ctx
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .map(|t| t.name.as_str())
+        .collect();
+    let recorded_names: std::collections::BTreeSet<_> = prev
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .map(|t| t.name.as_str())
+        .collect();
+    if current_names != recorded_names
+        || current_names.len() != ctx.input_tables.iter().filter(|t| genuine(&t.name)).count()
+    {
+        return true; // Missing, additional or ambiguous dependency evidence.
+    }
+
     // Evaluate each genuine upstream input (excluding the node's own table).
     let mut considered = 0usize;
     let mut drifted = 0usize;
 
-    // Index the recorded inputs by logical identity for cross-environment match.
+    // Compare genuine inputs against recorded physical identities.
     for current in ctx.input_tables {
         if let Some(target) = ctx.target_table {
             if current.name == target {
@@ -219,22 +181,23 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
         }
         considered += 1;
 
-        let cur_key = logical_relation_key(&current.name);
-        let recorded = prev
+        let Some(current_epoch) = current.last_modified_epoch else {
+            return true;
+        };
+        let mut matches = prev
             .input_tables
             .iter()
-            .find(|t| logical_relation_key(&t.name) == cur_key)
-            .map(|t| t.last_modified_epoch)
-            // Fall back to the recorded node build time for inputs we never saw.
-            .or(prev.last_modified_epoch);
-
-        let is_drift = match recorded {
-            Some(recorded_epoch) => {
-                current.last_modified_epoch > recorded_epoch.saturating_add(tolerance_ms)
-            }
-            // No baseline at all → treat as drift (conservative execute).
-            None => true,
+            .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
+        let Some(recorded) = matches.next() else {
+            return true;
         };
+        if matches.next().is_some() {
+            return true;
+        }
+        let Some(recorded_epoch) = recorded.last_modified_epoch else {
+            return true;
+        };
+        let is_drift = current_epoch > recorded_epoch.saturating_add(tolerance_ms);
         if is_drift {
             drifted += 1;
         }
@@ -266,7 +229,7 @@ pub fn input_tables_of(req: &qc::SubmitEnrichedSqlRequest) -> Vec<InputTable> {
         .iter()
         .map(|t| InputTable {
             name: t.name.clone(),
-            last_modified_epoch: t.last_modified_epoch.unwrap_or(0),
+            last_modified_epoch: t.last_modified_epoch,
         })
         .collect()
 }
@@ -298,6 +261,7 @@ mod tests {
             node_unique_id: None,
             last_modified_epoch: built,
             execution_runtime_ms: None,
+            execution_results: None,
             input_tables: tables,
             status: "confirmed".into(),
             request_id: "r".into(),
@@ -307,7 +271,7 @@ mod tests {
     fn tbl(name: &str, epoch: i64) -> InputTable {
         InputTable {
             name: name.into(),
-            last_modified_epoch: epoch,
+            last_modified_epoch: Some(epoch),
         }
     }
 
@@ -388,27 +352,28 @@ mod tests {
     }
 
     #[test]
-    fn logical_relation_key_strips_environment_schema() {
-        assert_eq!(
-            logical_relation_key("\"DB\".\"PROD_SCHEMA\".\"T\""),
-            logical_relation_key("\"DB\".\"DEV_SCHEMA\".\"T\"")
+    fn physical_relation_key_preserves_schema() {
+        assert_ne!(
+            physical_relation_key("\"DB\".\"PROD_SCHEMA\".\"T\""),
+            physical_relation_key("\"DB\".\"DEV_SCHEMA\".\"T\"")
         );
-        assert_eq!(logical_relation_key("\"DB\".\"S\".\"T\""), "db..t");
-        assert_eq!(logical_relation_key("schema.table"), "..table");
+        assert_eq!(
+            physical_relation_key("\"DB\".\"S\".\"T\""),
+            "\"DB\".\"S\".\"T\""
+        );
+        assert_eq!(physical_relation_key("schema.table"), "schema.table");
     }
 
-    /// Cross-environment reuse: a confirmed run under one schema makes the same
-    /// logical node (same body hash, upstream reachable by logical identity)
-    /// skip under a different schema even with an older epoch.
+    /// Different physical upstreams require explicit cross-environment provenance.
     #[test]
-    fn cross_environment_upstream_matches_by_logical_identity() {
+    fn cross_environment_upstream_requires_explicit_mapping() {
         let recorded = vec![tbl("\"DB\".\"PROD\".\"CUSTOMERS\"", 1_000_000)];
         let current = vec![tbl("\"DB\".\"DEV\".\"CUSTOMERS\"", 500_000)]; // dev, older
         let prev = confirmed("h", recorded, Some(1_000_000));
         let v = decide(&ctx("h", &current), Some(&prev));
         assert!(
-            matches!(v, Verdict::Skip { .. }),
-            "cross-env logical match must skip"
+            matches!(v, Verdict::Execute { .. }),
+            "different physical inputs must not share evidence implicitly"
         );
     }
 
@@ -546,36 +511,31 @@ mod tests {
         );
     }
 
-    /// SCHEMA CHANGE on an upstream (different environment schema, same logical
-    /// table) must still match by logical identity. A dev-schema upstream newer
-    /// than the recorded prod-schema upstream is genuine drift and must EXECUTE.
+    /// Different schema input cannot match recorded physical evidence.
     #[test]
-    fn upstream_schema_change_still_compared_by_logical_identity() {
+    fn upstream_schema_change_requires_execution() {
         let recorded = vec![tbl("\"DB\".\"PROD\".\"CUSTOMERS\"", 1_000_000)];
         let current = vec![tbl("\"DB\".\"DEV\".\"CUSTOMERS\"", 5_000_000)]; // newer, diff schema
         let prev = confirmed("h", recorded, Some(1_000_000));
         let v = decide(&ctx("h", &current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { is_stale: true, .. }),
-            "a newer upstream (matched cross-schema) is drift and must execute"
+            "a different physical input requires execution"
         );
     }
 
-    /// DELETED UPSTREAM: the current run no longer references an upstream the
-    /// recorded run had. With no current inputs to compare, a hash match alone
-    /// skips (there is nothing stale to force a rebuild). Pins the documented
-    /// `considered == 0 => not stale` behavior.
+    /// Missing previously recorded input metadata cannot establish freshness.
     #[test]
-    fn dropped_all_upstreams_skips_on_hash_match() {
+    fn dropped_all_upstreams_requires_execution() {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current: Vec<InputTable> = vec![]; // all upstreams removed this run
         let prev = confirmed("h", recorded, Some(100));
         assert!(
             matches!(
                 decide(&ctx("h", &current), Some(&prev)),
-                Verdict::Skip { .. }
+                Verdict::Execute { .. }
             ),
-            "no current upstreams to compare → hash match alone skips"
+            "missing dependency evidence requires execution"
         );
     }
 

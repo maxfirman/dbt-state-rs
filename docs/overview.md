@@ -29,19 +29,18 @@ The protocol is internally called the **"query cache"** (proto package
   - the **raw compiled SQL** and a `semantic_extras` map of config;
   - for seeds, an md5 `values_hash` of the seed bytes.
 - **The server** owns the decision: it derives the node's *logic identity* from
-  the **rendered SQL** (not the client's `node_body_hash`, which it ignores for
-  reuse) plus the allowlisted `semantic_extras`, matches that against recorded
+  the **rendered SQL** by default, with a separate template comparison mode,
+  plus `semantic_extras` and dependency/context evidence, matches that against recorded
   history, evaluates upstream freshness, and returns BUILD / SKIP / CLONE. It
   then records confirmed outcomes so future runs skip.
 
-Because the logic identity is the rendered SQL, the server **does normalize
-SQL** — but we established by live experiment that this is an *AST
-canonicalization* (comments, whitespace, case, operator/cast/type/function
-synonyms), **not** a logical-plan comparison. We reproduce it with
-`sqlparser` (apache/datafusion-sqlparser-rs); see
-[protocol.md](protocol.md) §"SQL normalization" and
-[`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md). The
-CLONE DDL is the only SQL the server *generates*, from a simple dialect template.
+The implementation uses a restricted `sqlparser` AST pass for Snowflake SQL
+fingerprints. Existing experiments capture individual positive equivalences;
+they do not prove a complete semantic catalog or the hosted implementation's
+algorithm. Unsupported syntax is preserved exactly. See [protocol.md](protocol.md)
+and [`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md).
+Clone DDL is generated from dialect templates, with unsupported operations
+reported explicitly.
 
 ## Project goals
 
@@ -49,36 +48,16 @@ CLONE DDL is the only SQL the server *generates*, from a simple dialect template
 2. Keep state in a backend you control (Postgres here).
 3. Be validatable against the real service, not just against our own assumptions.
 
-## How faithfulness is ensured
+## Correctness status
 
-Three independent checks (see [testing.md](testing.md)):
+The goal is full hosted conformance, but the implementation has known gaps.
+Offline regressions, captured traffic replay and pure properties guard selected
+contracts; the hosted discovery tool has unequal history and is not a conformance
+oracle. See [testing.md](testing.md).
 
-- **Conformance replay** of real captured traffic (regression gate).
-- **Property-based invariants** over the pure decision function.
-- **Differential fuzzing** that sends mutated requests to both the real service
-  and ours and diffs the decisions (opt-in discovery tool).
-
-## Scope and known limits
-
-Implemented and validated (live, against the real service): `SubmitEnrichedSQL`
-(skip/execute with AST-canonicalized SQL + `semantic_extras` matching),
-`SubmitValues` (seeds, `values_hash`), data tests (matched by `node_unique_id`),
-snapshots/incremental/view/custom-materialization semantics, `ConfirmExecution`,
-`RecordExecutions`, `RegisterClone` (with clone-DDL generation),
-cross-environment reuse by `table_namespace`, `compare_unrendered_code`,
-node-type-specific `decision_description` strings, `ClientValidation`, `Health`,
-and conservative defaults for `Explain`, `SelectorService`,
-`ResolveDeferredRelations`, and speculative submits.
-
-Known bounded gaps (all safe-directional — we over-execute, never serve stale):
-- The SQL type/function **synonym catalogs** cover the common Snowflake aliases
-  verified live but are not exhaustive; an unlisted synonym falls through.
-- A plain `SubmitEnrichedSQL` answered with `ready_to_clone` by the hosted
-  service depends on physical warehouse state not in the protocol (characterized,
-  not reproduced).
-- Rich `Explain` text, `transformed_nodes_by_query`, `query_hash_metadata_info`,
-  and non-Snowflake clone DDL verified against the real service.
-
-See [protocol.md](protocol.md#coverage) for the full matrix and
-[`experiments/SCENARIOS.md`](../experiments/SCENARIOS.md) for the live-verified
-scenario table.
+Recent offline hardening prevents several unsafe skips and preserves cached test
+results. Some unsupported reuse paths conservatively rebuild; selectors and
+state-backed deferral return UNIMPLEMENTED. Automatic SQL cloning, volatile
+transformations, provenance, dependency resolution, lag semantics and complete
+client compatibility still need work. Read [correctness-handoff.md](correctness-handoff.md)
+for completed fixes, upgrade effects, evidence and concrete next tasks.

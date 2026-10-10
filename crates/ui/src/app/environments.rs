@@ -20,7 +20,7 @@ pub mod environment_id {
     pub async fn catalog(cx: &Cx) -> topcoat::Result<impl View> {
         let pool = crate::pool(cx);
         let id = *path_param::<EnvironmentId>(cx)?;
-        let decisions = db::latest_decisions_for_environment(pool, id)
+        let decisions = db::latest_decisions_for_environment(pool, crate::org_id(cx), id)
             .await
             .unwrap_or_default();
 

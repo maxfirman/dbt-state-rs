@@ -330,7 +330,7 @@ async fn submit_values_execute_confirm_skip() {
 
 /// Item 4: trivial services return OK empty responses.
 #[tokio::test]
-async fn trivial_services_return_empty_ok() {
+async fn explain_placeholder_and_unsupported_selector() {
     use qc::explain_client::ExplainClient;
     use qc::selector_service_client::SelectorServiceClient;
 
@@ -356,10 +356,6 @@ async fn trivial_services_return_empty_ok() {
             nodes: Vec::new(),
         })
         .await
-        .expect("get_state_selection")
-        .into_inner();
-    assert!(
-        sel.node_unique_ids.is_empty(),
-        "state selection must be empty"
-    );
+        .unwrap_err();
+    assert_eq!(sel.code(), tonic::Code::Unimplemented);
 }

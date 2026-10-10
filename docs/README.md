@@ -5,6 +5,8 @@ State ("query cache") gRPC decision service.
 
 | Doc | What it covers |
 |---|---|
+| [correctness-handoff.md](correctness-handoff.md) | Current correctness status, completed offline fixes, remaining tasks and validation limits. |
+| [correctness-review-2026-10-10.md](correctness-review-2026-10-10.md) | Original review of the pre-hardening commit, research and reproduced defects. |
 | [overview.md](overview.md) | What dbt State is, how the client/server split works, project goals. |
 | [protocol.md](protocol.md) | The gRPC protocol reference: services, messages, decision semantics, observed wire shapes. |
 | [architecture.md](architecture.md) | Server internals: decision engine, Postgres store/schema, service wiring. |

@@ -20,15 +20,19 @@ pub fn clone_sqls(
     source: &str,
     target: &str,
     source_table_type: Option<&str>,
-) -> Vec<String> {
+) -> Result<Vec<String>, &'static str> {
+    if source_table_type.is_some_and(|kind| kind.to_ascii_uppercase().contains("VIEW")) {
+        return Err("cloning view sources is not implemented");
+    }
     match dialect.to_ascii_lowercase().as_str() {
-        "snowflake" => vec![snowflake_clone(source, target, source_table_type)],
-        "bigquery" => vec![format!("CREATE OR REPLACE TABLE {target} CLONE {source}")],
-        "databricks" | "spark" => vec![format!(
+        "snowflake" => Ok(vec![snowflake_clone(source, target, source_table_type)]),
+        "bigquery" => Ok(vec![format!(
+            "CREATE OR REPLACE TABLE {target} CLONE {source}"
+        )]),
+        "databricks" | "spark" => Ok(vec![format!(
             "CREATE OR REPLACE TABLE {target} SHALLOW CLONE {source}"
-        )],
-        // Redshift / others have no zero-copy clone; fall back to CTAS.
-        _ => vec![format!("CREATE TABLE {target} AS SELECT * FROM {source}")],
+        )]),
+        _ => Err("clone DDL is not implemented for this dialect"),
     }
 }
 
@@ -36,7 +40,6 @@ fn snowflake_clone(source: &str, target: &str, source_table_type: Option<&str>) 
     // Preserve the source object kind. Snowflake reports e.g. "TRANSIENT TABLE".
     let kind = match source_table_type.map(|s| s.to_ascii_uppercase()) {
         Some(t) if t.contains("TRANSIENT") => "TRANSIENT TABLE",
-        Some(t) if t.contains("VIEW") => "VIEW",
         _ => "TABLE",
     };
     // Match the real service's formatting (leading newline + indentation).
@@ -56,7 +59,8 @@ mod tests {
             "\"DB\".\"PROD\".\"T\"",
             "\"DB\".\"DEV\".\"T\"",
             Some("TRANSIENT TABLE"),
-        );
+        )
+        .unwrap();
         assert_eq!(sqls.len(), 1);
         let s = &sqls[0];
         assert!(s.contains("CREATE OR REPLACE TRANSIENT TABLE \"DB\".\"DEV\".\"T\""));
@@ -66,14 +70,20 @@ mod tests {
 
     #[test]
     fn snowflake_plain_table_clone() {
-        let sqls = clone_sqls("snowflake", "p.s.t", "d.s.t", Some("TABLE"));
+        let sqls = clone_sqls("snowflake", "p.s.t", "d.s.t", Some("TABLE")).unwrap();
         assert!(sqls[0].contains("CREATE OR REPLACE TABLE"));
         assert!(!sqls[0].contains("TRANSIENT"));
     }
 
     #[test]
     fn bigquery_and_databricks_variants() {
-        assert!(clone_sqls("bigquery", "s", "t", None)[0].contains("CLONE s"));
-        assert!(clone_sqls("databricks", "s", "t", None)[0].contains("SHALLOW CLONE"));
+        assert!(clone_sqls("bigquery", "s", "t", None).unwrap()[0].contains("CLONE s"));
+        assert!(clone_sqls("databricks", "s", "t", None).unwrap()[0].contains("SHALLOW CLONE"));
+    }
+
+    #[test]
+    fn unsupported_clone_sources_and_dialects_do_not_emit_guessed_sql() {
+        assert!(clone_sqls("snowflake", "s", "t", Some("VIEW")).is_err());
+        assert!(clone_sqls("unknown", "s", "t", Some("TABLE")).is_err());
     }
 }

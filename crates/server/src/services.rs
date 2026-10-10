@@ -24,11 +24,31 @@ const EXECUTION_TYPE_VALUES: i32 = 9;
 // node_unique_id, not target_table/node_body_hash (which collide across tests).
 const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
 
+fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
+    use qc::value::Kind;
+    let Some(results) = results else {
+        return false;
+    };
+    let failures = matches!(
+        results.fields.get("failures").and_then(|v| v.kind.as_ref()),
+        Some(Kind::IntValue(_))
+    ) || matches!(results.fields.get("failures").and_then(|v| v.kind.as_ref()),
+        Some(Kind::DoubleValue(n)) if n.is_finite());
+    failures
+        && ["should_error", "should_warn"].iter().all(|key| {
+            matches!(
+                results.fields.get(*key).and_then(|v| v.kind.as_ref()),
+                Some(Kind::BoolValue(_))
+            )
+        })
+}
+
 /// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
 /// runtime (if any) just like the hosted service.
 fn skip_response(
     description: String,
     execution_runtime_ms: Option<i64>,
+    execution_results: Option<qc::Struct>,
     execution_decision_id: String,
 ) -> qc::SubmitSqlResponse {
     let explained = qc::ExplainedDecision {
@@ -43,9 +63,7 @@ fn skip_response(
             qc::SkipExecutionResponse {
                 explained_decision: Some(explained),
                 transformed_nodes_by_query: Default::default(),
-                execution_results: Some(qc::Struct {
-                    fields: Default::default(),
-                }),
+                execution_results: execution_results.or_else(|| Some(qc::Struct::default())),
                 execution_runtime_ms,
                 execution_decision_id: Some(execution_decision_id),
             },
@@ -324,64 +342,68 @@ fn new_uuid_v7() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Hash of the raw (rendered) SQL the client sends, used in the match key. The
-/// hosted service compares RENDERED SQL by default (`compare_unrendered_code=
-/// false`), after a LEXER-LEVEL normalization (strip comments, collapse
-/// inter-token whitespace, case-fold keywords/unquoted identifiers, preserve
-/// string literals & quoted identifiers verbatim; NO semantic canonicalization
-/// — see `crate::sql_norm` and `experiments/SQL_NORMALIZATION.md`). We normalize
-/// identically so our fingerprint matches the server's skip/execute boundary.
-/// Returns `None` for empty SQL (seeds/clones carry none) so those paths retain
-/// their prior `NULL` match semantics. See `c2_rendered_sql.rs`.
-fn sql_hash_of(sql: &str) -> Option<String> {
-    let normalized = crate::sql_norm::normalize_sql(sql);
-    if normalized.is_empty() {
-        return None;
-    }
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(normalized.as_bytes());
-    Some(hex::encode(h.finalize()))
+/// Older clients publish identity only in labels.
+fn node_unique_id(
+    state: Option<&qc::DbtNodeState>,
+    labels: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    state
+        .map(|s| s.node_unique_id.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            labels
+                .get("dbt_node_unique_id")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .map(str::to_owned)
 }
 
-/// Combine the SQL-side component (whitespace-normalized rendered SQL hash, or
-/// the unrendered template hash under compare_unrendered_code) with the
-/// `semantic_extras` hash into the single logic match key. `None` only when
-/// BOTH are absent (seeds/clones, which match on values_hash / unique_id).
-fn combine_match_hash(sql: Option<&str>, extras: Option<&str>) -> Option<String> {
-    if sql.is_none() && extras.is_none() {
-        return None;
-    }
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(sql.unwrap_or("").as_bytes());
-    h.update([0u8]);
-    h.update(extras.unwrap_or("").as_bytes());
-    Some(hex::encode(h.finalize()))
+fn namespace(value: Option<&str>) -> Option<&str> {
+    value.filter(|s| !s.is_empty())
 }
 
-/// Hash of the semantically-relevant config the client folds into
-/// `semantic_extras` (a FIXED allowlist on the client: on_schema_change,
-/// contract, constraints, unique_key, grants, merge_*, incremental_predicates,
-/// event_time, sql_header, lookback, table_format, warehouse-specific keys, and
-/// __persisted_docs_hash). Verified: changing an allowlisted key (e.g. grants)
-/// forces a rebuild; config NOT in the set (meta/tags/pre_hook/post_hook) does
-/// not appear here and must NOT force a rebuild. Deterministic (keys sorted).
-fn semantic_extras_hash(extras: &std::collections::HashMap<String, String>) -> Option<String> {
-    if extras.is_empty() {
-        return None;
+fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    let mut names = std::collections::HashSet::new();
+    req.query_dependencies
+        .iter()
+        .all(|d| !d.name.trim().is_empty() && !d.query.trim().is_empty() && names.insert(&d.name))
+}
+
+fn current_target_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    prev: &crate::store::ExecutionRow,
+) -> bool {
+    let Some(target) = req.target_table.as_deref().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if prev.target_table != target {
+        return false;
     }
-    let mut pairs: Vec<(&String, &String)> = extras.iter().collect();
-    pairs.sort();
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    for (k, v) in pairs {
-        h.update(k.as_bytes());
-        h.update([0u8]);
-        h.update(v.as_bytes());
-        h.update([0u8]);
+    let own: Vec<_> = req.tables.iter().filter(|t| t.name == target).collect();
+    // Missing/ambiguous target evidence cannot establish that an object exists.
+    own.len() == 1
+        && own[0].last_modified_epoch.is_some()
+        && (req.ignore_external_modifications
+            || matches!((own[0].last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded))
+}
+
+fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
+    qc::SqlExecution {
+        target_table: req.target_table.clone(),
+        dialect: req.dialect.clone(),
+        default_catalog: req.default_catalog.clone(),
+        default_schema: req.default_schema.clone(),
+        execution_type: req.execution_type,
+        sql: req.sql.clone(),
+        tables: req.tables.clone(),
+        query_dependencies: req.query_dependencies.clone(),
+        semantic_extras: req.semantic_extras.clone(),
+        labels: req.labels.clone(),
+        dbt_node_state: req.dbt_node_state.clone(),
+        table_namespace: req.table_namespace.clone(),
+        from_speculative_submit: false,
     }
-    Some(hex::encode(h.finalize()))
 }
 
 #[derive(Clone)]
@@ -400,99 +422,66 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
-        // The hosted service's logic identity is NOT node_body_hash alone (an
-        // UNRENDERED template hash it ignores for the default rendered-compare —
-        // cosmetic config changes it yet the service still skips). It rebuilds
-        // when the WHITESPACE-NORMALIZED rendered SQL changes OR an allowlisted
-        // `semantic_extras` key changes. With compare_unrendered_code=true it
-        // instead matches on the UNRENDERED template (node_body_hash) + extras.
-        let sql_component = if req.compare_unrendered_code {
-            // Template-only comparison: use the client's unrendered body hash.
-            node_body_hash.clone()
-        } else {
-            // Default: whitespace-normalized rendered SQL.
-            sql_hash_of(&req.sql)
-        };
-        let extras_component = semantic_extras_hash(&req.semantic_extras);
-        let node_sql_hash =
-            combine_match_hash(sql_component.as_deref(), extras_component.as_deref());
-        let match_sql_hash = node_sql_hash.clone();
+        let template = req
+            .compare_unrendered_code
+            .then(|| node_body_hash.as_deref().unwrap_or(""));
+        let node_sql_hash = Some(crate::fingerprint::sql_logic_hash(
+            &sql_execution(&req),
+            template,
+        ));
         let input_tables = decision::input_tables_of(&req);
-        let node_unique_id = req
+        let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
+        let project_id = req
             .dbt_node_state
             .as_ref()
-            .map(|s| s.node_unique_id.clone())
-            .filter(|s| !s.is_empty());
+            .and_then(|s| s.project_id.clone());
+        let table_namespace = namespace(req.table_namespace.as_deref());
 
-        let confirmed = {
-            // DATA TEST nodes (execution_type = DBT_DATA_TEST = 8) carry no
-            // per-node body identity: every test of the same generic type shares
-            // one node_body_hash and target_table is empty. The hosted service
-            // distinguishes them by node_unique_id (verified live — see
-            // c1_test_node_identity.rs). Match on node_unique_id for these so a
-            // new column test does not wrongly collide with a confirmed sibling.
-            if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
-                match node_unique_id.as_deref() {
-                    Some(uid) => self
-                        .0
-                        .store
-                        .find_confirmed_by_unique_id(&org_id, uid, execution_type)
-                        .await
-                        .map_err(db_err)?,
-                    // No unique id to key on: fall back to the physical match.
-                    None => self
-                        .0
-                        .store
-                        .find_confirmed(
-                            &org_id,
-                            &target_table,
-                            execution_type,
-                            node_body_hash.as_deref(),
-                            None,
-                        )
-                        .await
-                        .map_err(db_err)?,
-                }
-            } else {
-                // Prefer logical cross-environment matching by table_namespace +
-                // node_body_hash (mirrors the hosted service's state reuse across
-                // environments). Fall back to physical target_table matching when
-                // no namespace is supplied.
-                let by_ns = match req.table_namespace.as_deref() {
-                    Some(ns) if !ns.is_empty() => self
-                        .0
-                        .store
-                        .find_confirmed_by_namespace(
-                            &org_id,
-                            ns,
-                            execution_type,
-                            // Don't gate on node_body_hash (the service ignores
-                            // this unrendered template hash for reuse); the
-                            // combined match hash below is the logic key.
-                            None,
-                            match_sql_hash.as_deref(),
-                        )
-                        .await
-                        .map_err(db_err)?,
-                    _ => None,
-                };
-                match by_ns {
-                    Some(row) => Some(row),
-                    None => self
-                        .0
-                        .store
-                        .find_confirmed(
-                            &org_id,
-                            &target_table,
-                            execution_type,
-                            None,
-                            match_sql_hash.as_deref(),
-                        )
-                        .await
-                        .map_err(db_err)?,
-                }
+        let candidate = if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
+            match unique_id.as_deref() {
+                Some(uid) => self
+                    .0
+                    .store
+                    .find_confirmed_test(
+                        &org_id,
+                        uid,
+                        project_id.as_deref(),
+                        table_namespace,
+                        node_sql_hash.as_deref(),
+                    )
+                    .await
+                    .map_err(db_err)?,
+                None => None,
             }
+        } else {
+            self.0
+                .store
+                .find_confirmed(
+                    &org_id,
+                    &target_table,
+                    execution_type,
+                    node_sql_hash.as_deref(),
+                    table_namespace,
+                    &req.dialect,
+                )
+                .await
+                .map_err(db_err)?
         };
+        // Runtime volatile-function evidence is not implemented. Build instead
+        // of claiming reuse when evaluation is requested. Empty template/SQL is
+        // likewise insufficient. Automatic cross-target cloning remains a gap.
+        let confirmed = candidate.filter(|prev| {
+            req.tolerate_nondeterminism
+                && complete_dependencies(&req)
+                && !req.sql.trim().is_empty()
+                && (!req.compare_unrendered_code
+                    || node_body_hash.as_ref().is_some_and(|s| !s.is_empty()))
+                && if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
+                    reusable_test_results(prev.execution_results.as_ref())
+                } else {
+                    current_target_matches(&req, prev)
+                }
+        });
 
         let ctx = SubmitContext {
             execution_type,
@@ -520,6 +509,7 @@ impl Sql for SqlService {
             Verdict::Skip { description } => skip_response(
                 description,
                 confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
+                confirmed.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
             ),
             Verdict::Execute {
@@ -533,6 +523,10 @@ impl Sql for SqlService {
                 // finalize this fingerprint into skippable history.
                 let pending = PendingExecution {
                     org_id: org_id.clone(),
+                    project_id: req
+                        .dbt_node_state
+                        .as_ref()
+                        .and_then(|s| s.project_id.clone()),
                     target_table: target_table.clone(),
                     execution_type,
                     node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
@@ -546,10 +540,7 @@ impl Sql for SqlService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: req
-                        .dbt_node_state
-                        .as_ref()
-                        .map(|s| s.node_unique_id.clone()),
+                    node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
                     table_namespace: req.table_namespace.clone(),
                     dialect: req.dialect.clone(),
                     input_tables: input_tables.clone(),
@@ -596,31 +587,18 @@ impl Sql for SqlService {
             Some(req.values_hash.clone())
         };
 
-        let confirmed = self
-            .0
-            .store
-            .find_confirmed_values(
-                &org_id,
-                &target_table,
-                execution_type,
-                values_hash.as_deref(),
-            )
-            .await
-            .map_err(db_err)?;
-
-        // Seeds carry no upstream `tables`; the decision is driven purely by a
-        // values_hash match. Freshness defaults to fresh with empty inputs.
-        //
-        // SAFETY NOTE (C8): `freshness_tolerance_seconds = 0` and policy = Any
-        // below are inert ONLY because `input_tables` is always empty here
-        // (`considered == 0 => not stale`). If seeds ever gain upstream inputs,
-        // these hardcodes would silently apply zero tolerance — revisit then.
-        let input_tables: Vec<InputTable> = Vec::new();
-        debug_assert!(
-            input_tables.is_empty(),
-            "seed decisions assume no upstream inputs; the tolerance/policy \
-             constants below are only safe for an empty input set"
+        let seed_hash = crate::fingerprint::seed_logic_hash(
+            &req.dialect,
+            &req.default_catalog,
+            &req.semantic_extras,
         );
+        let confirmed = self.0.store.find_confirmed_values(
+            &org_id, &target_table, &req.values_hash, &seed_hash, namespace(req.table_namespace.as_deref()),
+        ).await.map_err(db_err)?.filter(|prev| {
+            !req.values_hash.is_empty() && req.last_modified_epoch.is_some()
+                && matches!((req.last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded)
+        });
+        let input_tables: Vec<InputTable> = Vec::new();
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: None,
@@ -645,6 +623,7 @@ impl Sql for SqlService {
             Verdict::Skip { description } => skip_response(
                 description,
                 confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
+                confirmed.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
             ),
             Verdict::Execute {
@@ -656,6 +635,10 @@ impl Sql for SqlService {
                 let request_id = new_uuid_v7();
                 let pending = PendingExecution {
                     org_id: org_id.clone(),
+                    project_id: req
+                        .dbt_node_state
+                        .as_ref()
+                        .and_then(|s| s.project_id.clone()),
                     target_table: target_table.clone(),
                     execution_type,
                     node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
@@ -663,7 +646,7 @@ impl Sql for SqlService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
-                    node_sql_hash: None,
+                    node_sql_hash: Some(seed_hash.clone()),
                     node_configs_hash: req
                         .dbt_node_state
                         .as_ref()
@@ -672,10 +655,7 @@ impl Sql for SqlService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: req
-                        .dbt_node_state
-                        .as_ref()
-                        .map(|s| s.node_unique_id.clone()),
+                    node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
                     table_namespace: req.table_namespace.clone(),
                     dialect: req.dialect.clone(),
                     input_tables: input_tables.clone(),
@@ -737,6 +717,7 @@ impl Execution for ExecutionService {
                 req.last_modified_epoch,
                 req.table_type.as_deref(),
                 req.execution_runtime_ms,
+                req.execution_results.as_ref(),
             )
             .await
             .map_err(db_err)?;
@@ -765,6 +746,10 @@ impl Execution for ExecutionService {
             let row = match input {
                 qc::execution_record::Input::EnrichedSql(sql) => ConfirmedExecution {
                     org_id: org_id.clone(),
+                    project_id: sql
+                        .dbt_node_state
+                        .as_ref()
+                        .and_then(|s| s.project_id.clone()),
                     target_table: sql.target_table.clone().unwrap_or_default(),
                     execution_type: sql.execution_type,
                     node_hash: sql.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
@@ -776,10 +761,7 @@ impl Execution for ExecutionService {
                         .and_then(|s| s.node_body_hash.clone()),
                     // Match the submit path's logic key: whitespace-normalized
                     // rendered SQL + allowlisted semantic_extras.
-                    node_sql_hash: combine_match_hash(
-                        sql_hash_of(&sql.sql).as_deref(),
-                        semantic_extras_hash(&sql.semantic_extras).as_deref(),
-                    ),
+                    node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()
@@ -788,10 +770,7 @@ impl Execution for ExecutionService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: sql
-                        .dbt_node_state
-                        .as_ref()
-                        .map(|s| s.node_unique_id.clone()),
+                    node_unique_id: node_unique_id(sql.dbt_node_state.as_ref(), &sql.labels),
                     table_namespace: sql.table_namespace.clone(),
                     dialect: sql.dialect.clone(),
                     input_tables: sql
@@ -799,7 +778,7 @@ impl Execution for ExecutionService {
                         .iter()
                         .map(|t| InputTable {
                             name: t.name.clone(),
-                            last_modified_epoch: t.last_modified_epoch.unwrap_or(0),
+                            last_modified_epoch: t.last_modified_epoch,
                         })
                         .collect(),
                     values_hash: None,
@@ -808,9 +787,14 @@ impl Execution for ExecutionService {
                     last_modified_epoch: outcome.last_modified_epoch,
                     table_type: outcome.table_type.clone(),
                     execution_runtime_ms: outcome.execution_runtime_ms,
+                    execution_results: outcome.execution_results.clone(),
                 },
                 qc::execution_record::Input::Values(values) => ConfirmedExecution {
                     org_id: org_id.clone(),
+                    project_id: values
+                        .dbt_node_state
+                        .as_ref()
+                        .and_then(|s| s.project_id.clone()),
                     target_table: values.target_table.clone(),
                     execution_type: EXECUTION_TYPE_VALUES,
                     node_hash: values.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
@@ -818,7 +802,11 @@ impl Execution for ExecutionService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
-                    node_sql_hash: None,
+                    node_sql_hash: Some(crate::fingerprint::seed_logic_hash(
+                        &values.dialect,
+                        &values.default_catalog,
+                        &values.semantic_extras,
+                    )),
                     node_configs_hash: values
                         .dbt_node_state
                         .as_ref()
@@ -844,6 +832,7 @@ impl Execution for ExecutionService {
                     last_modified_epoch: outcome.last_modified_epoch,
                     table_type: outcome.table_type.clone(),
                     execution_runtime_ms: outcome.execution_runtime_ms,
+                    execution_results: outcome.execution_results.clone(),
                 },
             };
             rows.push(row);
@@ -865,10 +854,9 @@ impl Execution for ExecutionService {
         &self,
         _request: Request<qc::ResolveDeferredRelationsRequest>,
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
-        // Conservative default: resolve nothing (echo back no relations).
-        Ok(Response::new(qc::ResolveDeferredRelationsResponse {
-            fqn_by_unique_id: Default::default(),
-        }))
+        Err(Status::unimplemented(
+            "state-backed deferred relation resolution is not implemented",
+        ))
     }
 }
 
@@ -893,12 +881,14 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             &req.clone_source_table,
             &req.target_table,
             req.clone_source_table_type.as_deref(),
-        );
+        )
+        .map_err(Status::unimplemented)?;
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
         let pending = PendingExecution {
             org_id: org_id.clone(),
+            project_id: None,
             target_table: req.target_table.clone(),
             execution_type: req.execution_type,
             node_hash: None,
@@ -1036,10 +1026,7 @@ impl SelectorService for SelectorServiceImpl {
         &self,
         _request: Request<qc::SelectorRequest>,
     ) -> Result<Response<qc::SelectorResponse>, Status> {
-        // Conservative default: select nothing.
-        Ok(Response::new(qc::SelectorResponse {
-            node_unique_ids: Vec::new(),
-        }))
+        Err(Status::unimplemented("state selectors are not implemented"))
     }
 }
 

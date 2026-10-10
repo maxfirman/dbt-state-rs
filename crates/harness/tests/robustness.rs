@@ -36,6 +36,11 @@ const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
 fn model_submit(target_table: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
     qc::SubmitEnrichedSqlRequest {
         target_table: Some(target_table.to_string()),
+        tolerate_nondeterminism: true,
+        tables: vec![qc::TableModifiedInfo {
+            name: target_table.into(),
+            last_modified_epoch: Some(1),
+        }],
         dialect: "snowflake".to_string(),
         execution_type: 10,
         sql: "select 1".to_string(),

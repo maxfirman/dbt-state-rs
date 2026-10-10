@@ -10,7 +10,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let config = Config::from_env();
-    tracing::info!(database_url = %config.database_url, "connecting to postgres");
+    tracing::info!("connecting to postgres");
     let state = AppState::connect(&config.database_url).await?;
 
     let addr = config.listen.parse()?;

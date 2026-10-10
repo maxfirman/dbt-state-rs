@@ -19,14 +19,23 @@ pub struct GoldenEntry {
 /// Load and parse a golden `.jsonl` file.
 pub fn load_golden(path: &str) -> std::io::Result<Vec<GoldenEntry>> {
     let text = std::fs::read_to_string(path)?;
+    parse_golden(&text)
+}
+
+fn parse_golden(text: &str) -> std::io::Result<Vec<GoldenEntry>> {
     let mut out = Vec::new();
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
         match serde_json::from_str::<GoldenEntry>(line) {
             Ok(e) => out.push(e),
-            Err(e) => eprintln!("skip bad golden line: {e}"),
+            Err(e) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("golden line {}: {e}", index + 1),
+                ))
+            }
         }
     }
     Ok(out)
@@ -65,4 +74,15 @@ pub fn by_node(entries: &[GoldenEntry]) -> HashMap<String, Vec<&GoldenEntry>> {
         }
     }
     m
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn malformed_trace_is_an_error_not_partial_success() {
+        let valid = r#"{"service":"SQL","method":"SubmitEnrichedSQL","request":{},"response":{}}"#;
+        let error = super::parse_golden(&format!("{valid}\nnot json\n{valid}")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("line 2"));
+    }
 }

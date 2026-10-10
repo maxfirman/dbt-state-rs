@@ -28,20 +28,6 @@ const SEED: &str = concat!(
     "/../../golden/fixtures/seed_values_hash.jsonl"
 );
 
-async fn confirm(exec: &mut ExecutionClient<tonic::transport::Channel>, rid: String, epoch: i64) {
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(epoch),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
-}
-
 /// Incremental merge model: replay execute → confirm → unchanged skip and assert
 /// our server reproduces the skip (execution_type=3 matched like any node).
 #[tokio::test]
@@ -80,7 +66,7 @@ async fn incremental_merge_reuse_reproduced() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("incremental first build executes, got {other:?}"),
     };
-    confirm(&mut exec, rid, 1_791_600_000_000).await;
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
@@ -120,7 +106,7 @@ async fn seed_values_hash_lifecycle_reproduced() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("seed first build executes, got {other:?}"),
     };
-    confirm(&mut exec, rid, 1_791_600_000_000).await;
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // Build #2 (unchanged) → skip.
     let s1: qc::SubmitValuesRequest = serde_json::from_value(submits[1].request.clone()).unwrap();

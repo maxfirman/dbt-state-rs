@@ -13,10 +13,11 @@ traffic captured against the hosted service using the official dbt Fusion client
   SQL + config fingerprint), matches it against recorded history, evaluates
   freshness, and decides BUILD / SKIP / CLONE — recording outcomes so future
   runs can skip. The decision engine is the novel part this project reproduces.
-- **Validated** against the real service: differential replay of captured
-  traffic, property-based invariants, and extensive live end-to-end runs with
-  the official dbt Fusion client on Snowflake (incl. reverse-engineering the
-  server's SQL-canonicalization rules).
+- **Correctness status:** captured traffic and offline regressions cover selected
+  behavior; this is not yet a conformant drop-in replacement. The current
+  environment has no Snowflake access. See the
+  [correctness handoff](docs/correctness-handoff.md) for fixes, compatibility
+  changes and concrete remaining tasks.
 
 ## Quick start
 

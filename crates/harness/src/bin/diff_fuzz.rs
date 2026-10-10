@@ -18,7 +18,7 @@
 //!      real service acts on them (review finding C1).
 //!   3. Sends each mutant to BOTH the real service and a local instance of our
 //!      server (empty state), normalizes nondeterministic fields, and compares
-//!      the decision variant + ExplainedDecision.
+//!      the decision variant only. This is discovery, not a conformance oracle.
 //!   4. Classifies each result and prints a report. Divergences on EXECUTE
 //!      decisions (reproducible from empty state) are the high-signal findings;
 //!      SKIPs by the real service that we cannot reproduce are expected (it has
@@ -48,6 +48,7 @@ const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate
 #[derive(Default)]
 struct Report {
     total: usize,
+    errors: usize,
     agree: usize,
     // real executed and we executed (reproducible agreement — strongest signal).
     agree_execute: usize,
@@ -74,6 +75,8 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(100);
     let upstream = std::env::var("PROXY_UPSTREAM").unwrap_or_else(|_| DEFAULT_UPSTREAM.to_string());
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+
+    anyhow::ensure!(iterations > 0, "iterations must be positive");
 
     // --- Real service client (authenticated) ---
     let credential = DbtCloudCredential::from_default_config()?;
@@ -116,7 +119,10 @@ async fn main() -> anyhow::Result<()> {
         let (mutant, axis) = mutate(seed, &mut rng);
         let req: qc::SubmitEnrichedSqlRequest = match serde_json::from_value(mutant.clone()) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(_) => {
+                report.errors += 1;
+                continue;
+            }
         };
 
         let real = call(&real_channel, req.clone(), Some(&token)).await;
@@ -124,7 +130,10 @@ async fn main() -> anyhow::Result<()> {
 
         let (real_v, ours_v) = match (real, ours) {
             (Ok(a), Ok(b)) => (a, b),
-            _ => continue, // transport/auth hiccup; skip
+            _ => {
+                report.errors += 1;
+                continue;
+            }
         };
 
         report.total += 1;
@@ -156,12 +165,24 @@ async fn main() -> anyhow::Result<()> {
     }
 
     print_report(&report);
+    anyhow::ensure!(
+        report.errors == 0 && report.total == iterations,
+        "inconclusive discovery run: {} failed comparisons",
+        report.errors
+    );
+    anyhow::ensure!(
+        report.divergence == 0,
+        "{} decision divergences",
+        report.divergence
+    );
     Ok(())
 }
 
 fn print_report(r: &Report) {
     println!("\n==== differential-fuzz report ====");
     println!("comparisons:            {}", r.total);
+    println!("failed comparisons:     {}", r.errors);
+    println!("Empty local history: this is a discovery report, not a conformance verdict.");
     println!("agree:                  {}", r.agree);
     println!("  agree (execute):      {}", r.agree_execute);
     println!(
@@ -235,7 +256,7 @@ fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> (serde_json::Value, 
     let mut m = seed.clone();
     let obj = m.as_object_mut().unwrap();
 
-    let axis = rng.next() % 12;
+    let axis = rng.next() % 14;
     let label = match axis {
         0 => {
             // Toggle stale_upstream_policy.
@@ -336,6 +357,21 @@ fn mutate(seed: &serde_json::Value, rng: &mut SimpleRng) -> (serde_json::Value, 
                 obj.insert("lenient_dependencies".into(), serde_json::json!([first]));
             }
             "lenient_dependencies"
+        }
+        12 => {
+            let sql = obj.get("sql").and_then(|v| v.as_str()).unwrap_or("");
+            obj.insert(
+                "sql".into(),
+                serde_json::json!(format!("select * from ({sql}) as fuzz_sql where false")),
+            );
+            "rendered_sql"
+        }
+        13 => {
+            let extras = obj
+                .entry("semantic_extras")
+                .or_insert_with(|| serde_json::json!({}));
+            extras["sql_header"] = serde_json::json!(format!("-- fuzz {}", rng.next()));
+            "semantic_extras"
         }
         _ => {
             // ADD-UPSTREAM: inject a brand-new upstream, far newer than any

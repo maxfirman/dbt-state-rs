@@ -83,17 +83,7 @@ async fn rendered_sql_change_forces_execute() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("run1 executes, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // run2: SAME body hash, DIFFERENT rendered SQL → MUST execute (not skip).
     let r1: qc::SubmitEnrichedSqlRequest =
@@ -163,17 +153,7 @@ async fn compare_unrendered_code_skips_rendered_change() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
         other => panic!("r1 executes, got {other:?}"),
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(1_791_600_000_000),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // r2: different rendered SQL but compare_unrendered_code=true → must SKIP.
     let r1: qc::SubmitEnrichedSqlRequest =

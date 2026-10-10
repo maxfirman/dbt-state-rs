@@ -1,24 +1,8 @@
-//! SQL lexical normalization — mirrors the dbt State server's *token-stream*
-//! SQL normalization — mirrors the dbt State server's SQL *canonicalization*
-//! (characterized live; see `experiments/SQL_NORMALIZATION.md`).
-//!
-//! The server parses SQL into a dialect AST and compares a canonical
-//! re-rendering: it canonicalizes names/operators/casts/type+function synonyms
-//! and drops syntactic noise (comments, whitespace, case, trailing commas/
-//! semicolons, optional `AS`), but performs NO semantic simplification (parens,
-//! group-by ordinals, CTE-vs-inline, boolean rewrites, numeric-literal forms,
-//! and token order all remain significant). It is NOT a logical plan.
-//!
-//! We reproduce this with `sqlparser` (apache/datafusion-sqlparser-rs, Snowflake
-//! dialect): parse → a canonicalizing AST pass (lowercase unquoted identifiers,
-//! rewrite `::` casts to `CAST(..)`, map a small, documented set of type- and
-//! function-name synonyms to a canonical spelling) → `Display`. parse+Display
-//! already gives us case/whitespace/comment/optional-AS/`!=`↔`<>`/`;` for free
-//! while preserving the semantic structure the hosted service preserves.
-//!
-//! When `sqlparser` cannot parse the input (dialect features it doesn't support),
-//! we FALL BACK to a conservative lexer-level normalizer (`normalize_sql_lexer`)
-//! so robustness is never worse than the previous implementation.
+//! Restricted Snowflake AST canonicalization for versioned fingerprints.
+//! Preserve cast kinds, parameters and qualified function identities. Unsupported
+//! syntax stays byte-for-byte identical; other dialects bypass this module.
+//! Individual positive equivalences are captured in SQL_NORMALIZATION.md, not
+//! proof of a complete semantic equivalence catalog.
 
 use std::ops::ControlFlow;
 
@@ -27,10 +11,10 @@ use sqlparser::dialect::SnowflakeDialect;
 use sqlparser::parser::Parser;
 
 /// Normalize SQL to a canonical string for the match-key hash. Parser-backed
-/// with a lexer fallback (see module docs).
+/// with exact preservation on parser failure.
 pub fn normalize_sql(sql: &str) -> String {
     match Parser::parse_sql(&SnowflakeDialect {}, sql) {
-        Ok(mut stmts) if !stmts.is_empty() => {
+        Ok(mut stmts) => {
             let mut canon = Canonicalizer;
             for s in stmts.iter_mut() {
                 let _ = s.visit(&mut canon);
@@ -41,9 +25,9 @@ pub fn normalize_sql(sql: &str) -> String {
                 .collect::<Vec<_>>()
                 .join("; ")
         }
-        // Empty parse (e.g. whitespace/comment-only) or parse error: fall back
-        // to the lexer-level normalizer (robust, conservative).
-        _ => normalize_sql_lexer(sql),
+        // Preserve unsupported syntax exactly. A partial tokenizer cannot prove
+        // equivalence for dialect extensions, escaped strings or malformed SQL.
+        _ => sql.to_string(),
     }
 }
 
@@ -54,34 +38,24 @@ pub fn normalize_sql(sql: &str) -> String {
 fn canon_type(dt: &DataType) -> Option<DataType> {
     use DataType::*;
     // Snowflake STRING family → VARCHAR.
-    let is_string = matches!(
-        dt,
-        Text | String(_)
-            | Varchar(_)
-            | Nvarchar(_)
-            | Char(_)
-            | Character(_)
-            | CharVarying(_)
-            | CharacterVarying(_)
-            | Clob(_)
-    );
+    let is_string = matches!(dt, Text | String(None) | Varchar(None));
     // Snowflake NUMBER family → NUMERIC. NUMBER/NUMERIC/DECIMAL with no
     // precision are equivalent; INT/INTEGER/BIGINT/SMALLINT are NUMBER(38,0).
     let is_number = matches!(
         dt,
-        Int(_)
-            | Integer(_)
-            | BigInt(_)
-            | SmallInt(_)
-            | TinyInt(_)
-            | Numeric(_)
-            | Decimal(_)
-            | Dec(_)
+        Int(None)
+            | Integer(None)
+            | BigInt(None)
+            | SmallInt(None)
+            | TinyInt(None)
+            | Numeric(sqlparser::ast::ExactNumberInfo::None)
+            | Decimal(sqlparser::ast::ExactNumberInfo::None)
+            | Dec(sqlparser::ast::ExactNumberInfo::None)
     ) || matches!(dt, Custom(name, args)
     if args.is_empty()
         && name.0.len() == 1
         && matches!(
-            name.0[0].as_ident().map(|i| i.value.to_ascii_lowercase()).as_deref(),
+            name.0[0].as_ident().filter(|i| i.quote_style.is_none()).map(|i| i.value.to_ascii_lowercase()).as_deref(),
             Some("number") | Some("numeric") | Some("decimal") | Some("int")
                 | Some("integer") | Some("bigint") | Some("smallint") | Some("tinyint")
         ));
@@ -122,13 +96,15 @@ impl VisitorMut for Canonicalizer {
             Expr::Cast {
                 kind, data_type, ..
             } => {
-                *kind = CastKind::Cast;
+                if *kind == CastKind::DoubleColon {
+                    *kind = CastKind::Cast;
+                }
                 if let Some(c) = canon_type(data_type) {
                     *data_type = c;
                 }
             }
             // Function-name synonyms (nvl/ifnull → coalesce, …).
-            Expr::Function(f) => {
+            Expr::Function(f) if f.name.0.len() == 1 => {
                 if let Some(ObjectNamePart::Identifier(id)) = f.name.0.last_mut() {
                     if id.quote_style.is_none() {
                         if let Some(c) = canon_function(&id.value) {
@@ -143,13 +119,18 @@ impl VisitorMut for Canonicalizer {
     }
 }
 
-/// Conservative lexer-level fallback used when `sqlparser` can't parse the SQL.
+/// Legacy lexical helper; not used for persisted fingerprints.
 /// Strips comments, collapses inter-token whitespace, case-folds keywords and
 /// unquoted identifiers (preserving string literals and quoted identifiers),
 /// canonicalizes `!=`→`<>`, drops trailing commas/semicolons. Does NOT do any
 /// AST-level synonym canonicalization. Equivalent inputs under these rules
 /// produce identical output.
 pub fn normalize_sql_lexer(sql: &str) -> String {
+    // This legacy helper only recognizes ASCII syntax. Preserve other inputs
+    // rather than slicing through a UTF-8 character or changing its identity.
+    if !sql.is_ascii() {
+        return sql.to_string();
+    }
     let mut out: Vec<String> = Vec::new();
     let bytes = sql.as_bytes();
     let mut i = 0usize;
@@ -326,6 +307,40 @@ mod tests {
         normalize_sql(a) == normalize_sql(b)
     }
 
+    #[test]
+    fn meaningful_cast_and_function_changes_remain_distinct() {
+        for (a, b) in [
+            ("select cast(x as integer)", "select try_cast(x as integer)"),
+            (
+                "select cast(x as varchar(1))",
+                "select cast(x as varchar(100))",
+            ),
+            (
+                "select cast(x as numeric(10,0))",
+                "select cast(x as numeric(10,2))",
+            ),
+            ("select s.nvl(x,0)", "select s.coalesce(x,0)"),
+        ] {
+            assert!(
+                !eq(a, b),
+                "different behavior must retain different fingerprints: {a} / {b}"
+            );
+        }
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn arbitrary_utf8_never_panics(sql in ".{0,256}") {
+            let _ = normalize_sql(&sql);
+            let _ = normalize_sql_lexer(&sql);
+        }
+    }
+
+    #[test]
+    fn unsupported_unicode_sql_is_preserved() {
+        assert_eq!(normalize_sql("select é @@"), "select é @@");
+    }
+
     // ---- Parser-backed canonicalization (full statements) ----
 
     #[test]
@@ -436,12 +451,12 @@ mod tests {
     }
 
     #[test]
-    fn unparseable_sql_falls_back_to_lexer_and_still_normalizes() {
-        // A fragment sqlparser rejects as a statement must still normalize via
-        // the lexer fallback (comments/case/whitespace), never panic.
+    fn unparseable_sql_preserves_exact_identity() {
         let a = normalize_sql("~~ not valid sql @@ -- c");
         let b = normalize_sql("~~ not valid sql @@");
-        assert_eq!(a, b, "comment stripped via lexer fallback");
+        assert_eq!(a, "~~ not valid sql @@ -- c");
+        assert_eq!(b, "~~ not valid sql @@");
+        assert_ne!(a, b, "unsupported syntax must not be partially rewritten");
     }
 
     // ---- Lexer fallback (exercised directly) ----

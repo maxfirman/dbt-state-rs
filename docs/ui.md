@@ -70,3 +70,8 @@ Phase 1 complete: capture + Overview + Projects/Environments + Invocations audit
 log + backend lineage. Deferred to later phases: environment "clear state"
 action, built-vs-reused time-series charts, authenticated client parity, SSO +
 RBAC enforcement, and manifest/catalog ingestion for the richer Catalog.
+
+UI database reads are scoped to `DBT_STATE_UI_ORG_ID` (default `local`). Set this
+to the same organization ID used by gRPC requests to inspect that organization's
+capture data. This configuration is a single-organization filter, not user
+authentication or dynamic tenant selection.
