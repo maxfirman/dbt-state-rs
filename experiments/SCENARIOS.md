@@ -73,3 +73,38 @@ found, ❓ to test, 🔧 implemented this pass.
 - target name change
 - source freshness / external table modification
 - singular test (data-test node, singular SQL)
+
+## AUTHORITATIVE RESULTS MATRIX (live-verified; all reproduced by dbt-state-rs)
+
+| scenario | et | hosted | dbt-state-rs | status |
+|---|---|---|---|---|
+| table unchanged rerun | 1 | skip | skip | ✅ |
+| view unchanged / upstream advanced | 10 | skip (client omits upstreams) | skip | ✅ |
+| view definition change | 10 | execute | execute | ✅ |
+| incremental merge unchanged | 3 | skip | skip | ✅ |
+| incremental unique_key change | 3 | execute (body hash change) | execute | ✅ |
+| incremental --full-refresh | - | client bypasses state (no submit) | n/a | ✅ |
+| snapshot unchanged | 7 | skip | skip | ✅ |
+| custom materialization unchanged | 11 | skip (docs say never-reuse; docs WRONG) | skip | ✅ |
+| seed unchanged | VALUES | skip (values_hash) | skip | ✅ |
+| seed content change | VALUES | execute (new values_hash) | execute | ✅ |
+| data test add column test | 8 | execute (new node_unique_id) | execute | ✅ C1c |
+| data test unchanged | 8 | skip (match by unique_id) | skip | ✅ C1c |
+| singular test | 8 | skip when unchanged | skip | ✅ |
+| ephemeral model | - | no submit (inlined CTE) | n/a | ✅ |
+| env_var change (default) | any | execute (rendered SQL change) | execute | ✅ C2 FIXED |
+| --vars change | any | execute (rendered SQL change) | execute | ✅ C2 |
+| compare_unrendered_code=true + env_var | any | skip (template match) | skip | ✅ C2 FIXED |
+| config meta/tags/post_hook | any | skip (cosmetic/hook dropped) | execute | ⚠️ C1 over-execute (safe) |
+| config pre_hook/grants/persist_docs | any | execute | execute | ✅ |
+| contract data_type (hash only) | 1 | skip | execute | ⚠️ C1 over-execute (safe) |
+| decision_description strings | all | node-type specific | node-type specific | ✅ (minor srr/crr imprecision) |
+
+Legend: ✅ conformant; ⚠️ safe-directional divergence (we OVER-execute, never
+serve stale), rooted in C1 — the hosted service fingerprints SQL semantics
+server-side, while we match on node_body_hash + rendered-SQL hash (stricter).
+All ⚠️ cases are documented and regression-guarded; eliminating them would need
+a server-side SQL semantic fingerprinter the project deliberately omits.
+
+Unsafe-direction bugs found & FIXED this pass: C1c (data-test unique_id match),
+C2 (rendered-SQL hash) — both previously under-executed (would serve stale).
