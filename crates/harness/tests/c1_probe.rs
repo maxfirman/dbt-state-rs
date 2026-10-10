@@ -11,22 +11,25 @@
 //!
 //! The decisive observation: `node_body_hash` CHANGED in BOTH [2] and [3], yet
 //! the hosted service SKIPPED [2] and EXECUTED [3]. So the hosted service's
-//! logic identity is NOT the client-sent `node_body_hash`. It fingerprints the
-//! raw `sql` SEMANTICALLY server-side: a `config(meta=...)` edit ([2]) perturbs
-//! the client hash but is semantically-equivalent SQL (skip), while a new
-//! column ([3]) is a real semantic change (execute).
+//! logic identity is NOT the client-sent `node_body_hash`.
 //!
-//! Our server trusts the client's `node_body_hash` as the match key, which is
-//! STRICTER than the hosted service's semantic fingerprint. Consequence: we
-//! EXECUTE on config-only changes that the hosted service SKIPs — a measured
-//! faithfulness divergence. Reproducing it faithfully needs server-side SQL
-//! semantic fingerprinting (a SQL engine), which the project deliberately omits
-//! (see docs/overview.md "why the server needs no SQL engine").
+//! VERIFIED MECHANISM (client source + controlled live A/B, not a guess): the
+//! service rebuilds iff (a) the WHITESPACE-NORMALIZED rendered `sql` changed, or
+//! (b) an allowlisted `semantic_extras` key changed (the client folds a FIXED
+//! set — on_schema_change, contract, constraints, unique_key, grants, merge_*,
+//! incremental_predicates, event_time, sql_header, lookback, table_format,
+//! warehouse keys, __persisted_docs_hash — into semantic_extras), or (c)
+//! upstream data is stale. A `config(meta=...)` edit ([2]) changes neither the
+//! normalized SQL (only whitespace) nor an allowlisted key, so it SKIPs; a new
+//! column ([3]) changes the normalized SQL, so it EXECUTEs. This is NOT a deep
+//! semantic/AST fingerprint — just whitespace normalization + a config
+//! allowlist, both reproducible without a SQL engine.
 //!
-//! This test PINS the real decisions as a golden contract AND measures our
-//! current (divergent) behavior, so the gap is documented, regression-guarded,
-//! and quantified rather than hidden. The divergence is SAFE-DIRECTIONAL: we
-//! over-execute (never serve stale data), we just skip less than we could.
+//! Our server now matches on exactly that (whitespace-normalized SQL +
+//! semantic_extras hash, ignoring node_body_hash), so it REPRODUCES both: it
+//! SKIPs the config-only change [2] and EXECUTEs the genuine change [3].
+//! (Earlier the match keyed on node_body_hash and over-executed on [2]; that
+//! divergence is now eliminated.)
 
 #[path = "support.rs"]
 mod support;
@@ -134,7 +137,10 @@ async fn c1_config_vs_logic_change_is_characterized() {
         "we DO reproduce the unchanged-rebuild skip (body hash matches)"
     );
 
-    // [2] config-only change: the hosted service skips; we EXECUTE (divergence).
+    // [2] config-only change (meta): the hosted service skips. With the
+    // whitespace-normalized-SQL + semantic_extras match key, we now SKIP too
+    // (meta is not an allowlisted semantic_extras key, and the SQL differs only
+    // by whitespace) — the divergence is ELIMINATED.
     let r2: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[2].request.clone()).unwrap();
     let v2 = support::response_variant(&sql.submit_enriched_sql(r2).await.unwrap().into_inner());
@@ -149,13 +155,14 @@ async fn c1_config_vs_logic_change_is_characterized() {
          [3] logic-change real=ready_to_execute ours={v3}"
     );
 
-    // Document the current behavior precisely:
-    //  - [2] is the DIVERGENCE (safe-directional over-execute).
-    //  - [3] is AGREEMENT on the genuine logic change.
+    // Both now AGREE with the hosted service:
+    //  - [2] config-only (meta) → SKIP (whitespace-normalized SQL unchanged, no
+    //    allowlisted semantic_extras change).
+    //  - [3] genuine SQL change → EXECUTE.
     assert_eq!(
-        v2, "ready_to_execute",
-        "DIVERGENCE: we execute a config-only change the hosted service skips \
-         (we key on node_body_hash; it fingerprints SQL semantics server-side)"
+        v2, "skip_execution",
+        "CONFORMANT: a config-only (meta) change skips, matching the hosted service \
+         (match key is whitespace-normalized SQL + semantic_extras, not node_body_hash)"
     );
     assert_eq!(
         v3, "ready_to_execute",

@@ -45,6 +45,12 @@ const DECISION_EXECUTE: i64 = 1;
 
 /// A minimal model submit with a target, body hash, execution type and
 /// upstream tables.
+///
+/// NOTE: the hosted service's logic identity is the (whitespace-normalized)
+/// rendered SQL + allowlisted `semantic_extras`, NOT `node_body_hash` (which it
+/// ignores for reuse). So we derive the `sql` field from `body_hash`: a distinct
+/// logical identity produces distinct SQL, exactly as real dbt compiles distinct
+/// logic to distinct SQL. This keeps "changed logic → rebuild" tests faithful.
 fn submit(
     target: &str,
     body_hash: &str,
@@ -55,7 +61,7 @@ fn submit(
         target_table: Some(target.to_string()),
         dialect: "snowflake".to_string(),
         execution_type,
-        sql: "select 1".to_string(),
+        sql: format!("select 1 /* {body_hash} */"),
         tables: tables
             .iter()
             .map(|(n, e)| qc::TableModifiedInfo {

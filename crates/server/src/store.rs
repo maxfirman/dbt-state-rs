@@ -110,7 +110,7 @@ impl Store {
               AND target_table = $2
               AND execution_type = $3
               AND status = 'confirmed'
-              AND node_body_hash IS NOT DISTINCT FROM $4
+              AND ($4 IS NULL OR node_body_hash IS NOT DISTINCT FROM $4)
               AND ($5 IS NULL OR node_sql_hash IS NOT DISTINCT FROM $5)
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
@@ -150,7 +150,7 @@ impl Store {
               AND table_namespace = $2
               AND execution_type = $3
               AND status = 'confirmed'
-              AND node_body_hash IS NOT DISTINCT FROM $4
+              AND ($4 IS NULL OR node_body_hash IS NOT DISTINCT FROM $4)
               AND ($5 IS NULL OR node_sql_hash IS NOT DISTINCT FROM $5)
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1

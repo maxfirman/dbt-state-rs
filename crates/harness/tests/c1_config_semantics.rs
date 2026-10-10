@@ -1,41 +1,42 @@
 //! C1b — CONFIG-SEMANTICS MATRIX (live-captured from api.state.dbt.com).
 //!
-//! Follow-up to `c1_probe.rs`. We asked: is the hosted service "clever" about
-//! which config changes are skippable — and does a config that mutates
-//! warehouse state (pre/post hooks, grants, persist_docs) force a rebuild?
+//! Follow-up to `c1_probe.rs`. We asked which config changes force a rebuild and
+//! why. Running `dbt build` of jaffle-shop `customers` on Snowflake through the
+//! recording proxy, one config change at a time, and cross-checking the client
+//! source, established the rule:
 //!
-//! We ran a `dbt build` of jaffle-shop `customers` on Snowflake through the
-//! recording proxy, applying one config change at a time. The SELECT body is
-//! semantically identical in every case (the client renders config OUT of the
-//! compiled SQL into the hashes), so the server's own SQL fingerprint is equal
-//! across all variants — yet the hosted decisions split by CONFIG KEY:
+//! The hosted service rebuilds iff the WHITESPACE-NORMALIZED rendered SQL
+//! changed OR an ALLOWLISTED `semantic_extras` key changed. The client folds a
+//! FIXED set of config keys into `semantic_extras`
+//! (on_schema_change/contract/constraints/unique_key/grants/merge_*/
+//! incremental_predicates/event_time/sql_header/lookback/table_format/warehouse
+//! keys/__persisted_docs_hash). Config NOT in that set (meta/tags/pre_hook/
+//! post_hook) does not appear in semantic_extras and does NOT force a rebuild.
 //!
-//!   change                         hosted decision
-//!   -----------------------------  ---------------
-//!   (unchanged rebuild)            skip
-//!   config(tags=[…])               skip
-//!   config(meta={…})               skip      (shown in c1_probe)
-//!   config(post_hook="ALTER …")    SKIP   <-- warehouse-mutating, still skipped
-//!   config(post_hook="GRANT …")    SKIP   <-- idem
-//!   config(grants={select:[…]})    execute
-//!   config(pre_hook="SELECT …")    execute
-//!   config(persist_docs={…})       execute
+//!   change                         semantic_extras? hosted (reproducible)
+//!   -----------------------------  ---------------- ---------------------
+//!   config(tags=[…]) / meta        no               skip
+//!   config(pre_hook / post_hook)   no               skip
+//!   whitespace-only SQL            n/a              skip
+//!   config(grants={…})             yes (grants)     execute
+//!   config(persist_docs={…})       yes (__persisted_docs_hash) execute
+//!   config(contract/unique_key)    yes              execute
 //!
-//! VERIFIED side effect: when the post_hook `ALTER TABLE … SET COMMENT 'probe'`
-//! was skipped, the warehouse table comment was NOT changed (it kept the model
-//! description). So the hosted service deliberately treats meta/tags/post_hook
-//! as non-rebuild-worthy and silently drops the post_hook's warehouse mutation
-//! — it is NOT conservatively protecting warehouse state. The split is a
-//! per-config-key policy (meta/tags/post_hook = cosmetic; grants/pre_hook/
-//! persist_docs = material), applied on top of the server-side SQL semantic
-//! fingerprint.
+//! CORRECTION: this fixture was captured in a single pass WITHOUT re-establishing
+//! a clean confirmed baseline between edits, and its `pre_hook` entry recorded
+//! EXECUTE. Re-testing with a clean baseline between each edit showed `pre_hook`
+//! reproducibly SKIPS (same as meta/post_hook). The hosted service's decision for
+//! non-allowlisted config is NOT a pure function of the request — it also depends
+//! on warehouse/server state we don't control — so the fixture's `pre_hook=execute`
+//! is a stateful artifact, retained as recorded traffic but NOT our target. An
+//! earlier draft of this test over-claimed a deterministic "per-config-key policy"
+//! and a "server-side semantic SQL fingerprint"; both were corrected to the
+//! verified `semantic_extras`-allowlist + whitespace-normalization mechanism.
 //!
-//! Our server keys the match on node_body_hash, so it executes on EVERY one of
-//! these (any config edit perturbs the client body hash). This test PINS the
-//! real decision sequence as the golden contract and records that our behavior
-//! is uniformly ready_to_execute — a safe-directional divergence (over-execute,
-//! never stale). Reproducing the hosted policy faithfully would require encoding
-//! its per-config-key semantics server-side.
+//! Our server implements that rule, so it reproduces every REPRODUCIBLE case
+//! (skip meta/tags/hooks/whitespace; execute grants/persist_docs/contract). This
+//! test pins the fixture's recorded sequence as a contract and documents the one
+//! non-reproducible entry.
 
 #[path = "support.rs"]
 mod support;
@@ -87,19 +88,21 @@ async fn c1_config_semantics_matrix_is_characterized() {
     );
 
     // The decisive pair: a warehouse-mutating post_hook SKIPPED ([3]) while a
-    // grants change EXECUTED ([4]) — so the hosted service's split is by config
-    // KEY semantics, not by "does it touch the warehouse".
+    // grants change EXECUTED ([4]) — grants is an allowlisted semantic_extras
+    // key, post_hook is not. The split is by the semantic_extras allowlist.
     assert_eq!(
         real[3], "skip_execution",
-        "post_hook change is skipped by the hosted service"
+        "post_hook (not in semantic_extras allowlist) is skipped by the hosted service"
     );
     assert_eq!(
         real[4], "ready_to_execute",
-        "grants change is executed by the hosted service"
+        "grants (in semantic_extras allowlist) is executed by the hosted service"
     );
 
     eprintln!(
-        "C1b CHARACTERIZATION: hosted per-config-key policy = {real:?}; \
-         our server executes on all of these (node_body_hash match)."
+        "C1b: hosted decisions = {real:?}; discriminator = semantic_extras allowlist \
+         + whitespace-normalized SQL. Our server reproduces every reproducible case \
+         (meta/tags/hooks skip; grants/persist_docs execute); the fixture's pre_hook=execute \
+         is a non-reproducible stateful artifact (see module docs)."
     );
 }

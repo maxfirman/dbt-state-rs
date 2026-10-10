@@ -95,16 +95,22 @@ found, ❓ to test, 🔧 implemented this pass.
 | env_var change (default) | any | execute (rendered SQL change) | execute | ✅ C2 FIXED |
 | --vars change | any | execute (rendered SQL change) | execute | ✅ C2 |
 | compare_unrendered_code=true + env_var | any | skip (template match) | skip | ✅ C2 FIXED |
-| config meta/tags/post_hook | any | skip (cosmetic/hook dropped) | execute | ⚠️ C1 over-execute (safe) |
-| config pre_hook/grants/persist_docs | any | execute | execute | ✅ |
-| contract data_type (hash only) | 1 | skip | execute | ⚠️ C1 over-execute (safe) |
+| config meta/tags/post_hook | any | skip (not in semantic_extras allowlist) | skip | ✅ (FIXED) |
+| config pre_hook/grants/persist_docs | any | pre_hook skip (reproducible); grants/persist_docs execute | matches | ✅ |
+| contract data_type (hash only) | 1 | skip (not in semantic_extras) | skip | ✅ (FIXED) |
+| whitespace-only SQL change | any | skip (normalized) | skip | ✅ (FIXED) |
+| allowlisted semantic_extras change (grants/contract/unique_key) | any | execute | execute | ✅ |
 | decision_description strings | all | node-type specific | node-type specific | ✅ (minor srr/crr imprecision) |
 
-Legend: ✅ conformant; ⚠️ safe-directional divergence (we OVER-execute, never
-serve stale), rooted in C1 — the hosted service fingerprints SQL semantics
-server-side, while we match on node_body_hash + rendered-SQL hash (stricter).
-All ⚠️ cases are documented and regression-guarded; eliminating them would need
-a server-side SQL semantic fingerprinter the project deliberately omits.
+CORRECTION (this pass): the match key was reworked from `node_body_hash` to the
+VERIFIED hosted mechanism — whitespace-normalized rendered SQL + an allowlisted
+`semantic_extras` hash (ignoring node_body_hash, which the service ignores for
+reuse). This ELIMINATED the former safe-directional over-execution on cosmetic
+config (meta/tags/hooks/whitespace now SKIP, matching hosted). The earlier
+"semantic SQL fingerprint" / "per-config-key policy (pre_hook executes)" claims
+were over-reaches corrected here: pre_hook reproducibly SKIPs under a clean
+baseline; the only residual gap is that the hosted service's decision for
+non-allowlisted config is not a pure function of the request (it showed rare
+non-reproducible EXECUTEs), so exact determinism there cannot be guaranteed from
+the protocol — we implement the reproducible-majority (skip) behaviour.
 
-Unsafe-direction bugs found & FIXED this pass: C1c (data-test unique_id match),
-C2 (rendered-SQL hash) — both previously under-executed (would serve stale).

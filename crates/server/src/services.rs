@@ -331,13 +331,67 @@ fn new_uuid_v7() -> String {
 /// client's `node_body_hash` (an UNRENDERED template hash) is unchanged.
 /// Returns `None` for empty SQL (seeds/clones carry none) so those paths retain
 /// their prior `NULL` match semantics. See `c2_rendered_sql.rs`.
+///
+/// The SQL is WHITESPACE-NORMALIZED before hashing: the hosted service ignores
+/// pure formatting/whitespace changes (verified live — a whitespace-only edit
+/// SKIPs), so collapsing runs of ASCII whitespace to single spaces (and
+/// trimming) makes our fingerprint match the server's for those edits. This is
+/// the modest "SQL understanding" the service actually applies — NOT a deep
+/// semantic/AST fingerprint. See docs/protocol.md (decision mechanism).
 fn sql_hash_of(sql: &str) -> Option<String> {
-    if sql.is_empty() {
+    let normalized = normalize_sql(sql);
+    if normalized.is_empty() {
         return None;
     }
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(sql.as_bytes());
+    h.update(normalized.as_bytes());
+    Some(hex::encode(h.finalize()))
+}
+
+/// Collapse all runs of ASCII whitespace to single spaces (and trim). Mirrors
+/// the hosted service ignoring whitespace/formatting-only SQL changes.
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Combine the SQL-side component (whitespace-normalized rendered SQL hash, or
+/// the unrendered template hash under compare_unrendered_code) with the
+/// `semantic_extras` hash into the single logic match key. `None` only when
+/// BOTH are absent (seeds/clones, which match on values_hash / unique_id).
+fn combine_match_hash(sql: Option<&str>, extras: Option<&str>) -> Option<String> {
+    if sql.is_none() && extras.is_none() {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(sql.unwrap_or("").as_bytes());
+    h.update([0u8]);
+    h.update(extras.unwrap_or("").as_bytes());
+    Some(hex::encode(h.finalize()))
+}
+
+/// Hash of the semantically-relevant config the client folds into
+/// `semantic_extras` (a FIXED allowlist on the client: on_schema_change,
+/// contract, constraints, unique_key, grants, merge_*, incremental_predicates,
+/// event_time, sql_header, lookback, table_format, warehouse-specific keys, and
+/// __persisted_docs_hash). Verified: changing an allowlisted key (e.g. grants)
+/// forces a rebuild; config NOT in the set (meta/tags/pre_hook/post_hook) does
+/// not appear here and must NOT force a rebuild. Deterministic (keys sorted).
+fn semantic_extras_hash(extras: &std::collections::HashMap<String, String>) -> Option<String> {
+    if extras.is_empty() {
+        return None;
+    }
+    let mut pairs: Vec<(&String, &String)> = extras.iter().collect();
+    pairs.sort();
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (k, v) in pairs {
+        h.update(k.as_bytes());
+        h.update([0u8]);
+        h.update(v.as_bytes());
+        h.update([0u8]);
+    }
     Some(hex::encode(h.finalize()))
 }
 
@@ -357,17 +411,23 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
-        let node_sql_hash = sql_hash_of(&req.sql);
-        // compare_unrendered_code=true tells the hosted service to match on the
-        // UNRENDERED template only, so a changed rendered SQL (e.g. an env_var
-        // value) with an unchanged template does NOT rebuild. Verified live
-        // (compare_unrendered_code.jsonl). Honor it by dropping the rendered-SQL
-        // hash from the MATCH predicate while still persisting it for history.
-        let match_sql_hash = if req.compare_unrendered_code {
-            None
+        // The hosted service's logic identity is NOT node_body_hash alone (an
+        // UNRENDERED template hash it ignores for the default rendered-compare —
+        // cosmetic config changes it yet the service still skips). It rebuilds
+        // when the WHITESPACE-NORMALIZED rendered SQL changes OR an allowlisted
+        // `semantic_extras` key changes. With compare_unrendered_code=true it
+        // instead matches on the UNRENDERED template (node_body_hash) + extras.
+        let sql_component = if req.compare_unrendered_code {
+            // Template-only comparison: use the client's unrendered body hash.
+            node_body_hash.clone()
         } else {
-            node_sql_hash.clone()
+            // Default: whitespace-normalized rendered SQL.
+            sql_hash_of(&req.sql)
         };
+        let extras_component = semantic_extras_hash(&req.semantic_extras);
+        let node_sql_hash =
+            combine_match_hash(sql_component.as_deref(), extras_component.as_deref());
+        let match_sql_hash = node_sql_hash.clone();
         let input_tables = decision::input_tables_of(&req);
         let node_unique_id = req
             .dbt_node_state
@@ -417,7 +477,10 @@ impl Sql for SqlService {
                             &org_id,
                             ns,
                             execution_type,
-                            node_body_hash.as_deref(),
+                            // Don't gate on node_body_hash (the service ignores
+                            // this unrendered template hash for reuse); the
+                            // combined match hash below is the logic key.
+                            None,
                             match_sql_hash.as_deref(),
                         )
                         .await
@@ -433,7 +496,7 @@ impl Sql for SqlService {
                             &org_id,
                             &target_table,
                             execution_type,
-                            node_body_hash.as_deref(),
+                            None,
                             match_sql_hash.as_deref(),
                         )
                         .await
@@ -722,7 +785,12 @@ impl Execution for ExecutionService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
-                    node_sql_hash: sql_hash_of(&sql.sql),
+                    // Match the submit path's logic key: whitespace-normalized
+                    // rendered SQL + allowlisted semantic_extras.
+                    node_sql_hash: combine_match_hash(
+                        sql_hash_of(&sql.sql).as_deref(),
+                        semantic_extras_hash(&sql.semantic_extras).as_deref(),
+                    ),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()

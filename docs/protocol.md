@@ -84,32 +84,54 @@ ints on the wire/JSON.
 
 Given the request and the latest matching **confirmed** record:
 
-1. **Match key.** Prefer logical cross-environment identity:
-   `table_namespace` + `node_body_hash` + `execution_type`, scoped to org. Fall
-   back to physical `target_table` when no namespace is present. (The hosted
-   service reuses a node built in prod to skip the same logical node in dev.)
-   - **Data-test nodes** (`execution_type = DBT_DATA_TEST = 8`) are the
-     exception: they carry an empty `target_table` and a `node_body_hash` that
-     is IDENTICAL across every test of the same generic type (all `not_null`
-     hash to `934c4ef4`, all `unique` to `fc665e00`, …). The hosted service
-     keys them on **`node_unique_id`** instead (live-verified: adding a new
-     column test executes it even though its body hash matches a confirmed
-     sibling). We match test nodes via `find_confirmed_by_unique_id`.
-   - **`node_contract_hash` is NOT a match gate.** A column constraint/type
-     change under an already-enforced contract changes `node_contract_hash`
-     but, with the SQL body and config unchanged, the hosted service SKIPs
-     (live-verified `varchar`→`char`). It is informational, like
-     `node_body_hash` (which the service also treats as advisory, fingerprinting
-     the raw SQL semantically — see Coverage §C1).
-2. **No match ⇒ EXECUTE** (`is_stale=false`, hash miss).
+1. **Match key (logic identity).** The hosted service's logic identity is the
+   **whitespace-normalized rendered `sql`** plus an allowlisted subset of
+   config carried in **`semantic_extras`** — NOT the client's `node_body_hash`
+   (an unrendered template hash the service ignores for reuse). Verified from
+   the client source (`run_cache_request.rs`) and controlled live A/B. Scoped by
+   org + `execution_type`, keyed logically by `table_namespace` (cross-env) with
+   physical `target_table` fallback. Our server computes a single match hash =
+   `sha256(normalize_ws(sql) ++ hash(semantic_extras))` and matches on it.
+   - **`semantic_extras` allowlist** (the keys that DO force a rebuild when
+     changed): `on_schema_change, incremental_predicates, merge_update_columns,
+     merge_exclude_columns, constraints, contract, unique_key, grants,
+     event_time, sql_header, lookback, table_format`, warehouse-specific keys,
+     and `__persisted_docs_hash`. Config NOT in this set — `meta`, `tags`,
+     `pre_hook`, `post_hook` — does not appear in `semantic_extras` and does
+     **not** force a rebuild (live-verified: `grants` → execute, `meta`/`tags`/
+     hooks → skip, whitespace-only SQL edit → skip).
+   - **Whitespace normalization.** A formatting/whitespace-only SQL change
+     SKIPs (verified). We collapse ASCII whitespace runs before hashing. This is
+     the extent of the service's "SQL understanding" — NOT a deep semantic/AST
+     fingerprint.
+   - **`compare_unrendered_code=true`** switches the SQL side to the UNRENDERED
+     template (`node_body_hash`) so non-deterministic rendered values (env_var)
+     don't rebuild.
+   - **Data-test nodes** (`execution_type = DBT_DATA_TEST = 8`): keyed on
+     **`node_unique_id`** (their body hash is identical across tests of the same
+     generic type and `target_table` is empty). Via `find_confirmed_by_unique_id`.
+   - **`node_body_hash` / `node_contract_hash` are NOT match gates** on their
+     own. A column `data_type` change (contract hash moves, but `config.contract`
+     and the SQL don't) SKIPs — because it changes neither the normalized SQL nor
+     an allowlisted `semantic_extras` key.
+2. **No match ⇒ EXECUTE.**
 3. **Match ⇒ freshness check.** Each genuine upstream input is compared by
    **logical identity** (schema-stripped `catalog..table`) against the recorded
    epoch, within `freshness_tolerance_seconds`. The node's **own** target table
    is excluded (its epoch advancing because we just rebuilt it is not drift).
    - `stale_upstream_policy = ANY` (default): stale if **any** upstream drifted.
    - `stale_upstream_policy = ALL`: stale only if **every** upstream drifted.
-   - No upstreams to compare ⇒ not stale (hash match alone skips).
+   - No upstreams to compare ⇒ not stale (logic match alone skips).
 4. **Stale ⇒ EXECUTE** (`is_stale=true`); **fresh ⇒ SKIP**.
+
+> **Residual non-determinism (honest caveat).** For config NOT in the
+> `semantic_extras` allowlist (meta/tags/pre/post_hook), the hosted service was
+> observed to be mostly SKIP under a clean-baseline protocol, but a small number
+> of captures showed EXECUTE for the same input — i.e. its decision there is not
+> a pure function of the request (it also depends on warehouse/server state not
+> in the protocol). We implement the reproducible-majority behaviour (treat
+> non-allowlisted config as non-rebuilding). This is the one area where exact
+> determinism cannot be guaranteed from the protocol alone.
 
 ## State writes: `Execution`
 
@@ -180,83 +202,72 @@ The decision engine (`decision::decide`) currently derives its verdict from:
 `stale_upstream_policy`. Seeds match on `values_hash`. The match key also
 includes `table_namespace` (cross-environment reuse) and is org-scoped.
 
-The following request fields are received and (where noted) persisted, but are
-**not yet consulted** in the decision. Live differential testing against the
-hosted service (see below and [testing.md](testing.md)) has now clarified the
-most important case: the hosted service does **not** match on the client-sent
-`node_body_hash` at all — it fingerprints the raw `sql` **semantically**
-server-side. Our body-hash match is therefore *stricter* than the hosted
-service, so the divergence is safe-directional (we over-execute, never serve
-stale data).
+The decision engine now derives the logic identity from the
+**whitespace-normalized rendered `sql`** + the allowlisted **`semantic_extras`**
+(plus `execution_type`, `table_namespace`/`target_table`, upstream freshness,
+and `stale_upstream_policy`). This was VERIFIED two ways: (1) the client source
+(`run_cache_request.rs`) builds `semantic_extras` from a fixed config-key
+allowlist, and (2) controlled live A/B against the hosted service.
 
-| Field | Stored? | Observed hosted behavior / risk |
+| Field | Role | Verified hosted behaviour |
 |---|---|---|
-| `node_body_hash` | yes (match key) | hosted service ignores it; uses its own SQL semantic fingerprint. We over-execute on semantically-equivalent SQL changes (see C1 below). |
-| `node_configs_hash` | yes | changed by a `config()` edit; hosted service still skipped — not a logic gate on its side |
-| `node_contract_hash` | yes | stable across the config/logic edits observed |
-| `node_macros_hash` | no | not observed to change a verdict |
-| `node_persisted_descriptions_hash` | no | not observed |
-| `tolerate_nondeterminism` | no | no verdict change observed in fuzzing |
-| `ignore_external_modifications` | no | no verdict change observed in fuzzing |
-| `compare_unrendered_code` | no | no verdict change observed in fuzzing |
-| `lenient_dependencies[]` | no | no verdict change observed in fuzzing |
+| `sql` (rendered) | match key (whitespace-normalized) | formatting/whitespace-only change → skip; real text change → execute |
+| `semantic_extras` | match key | changing an allowlisted key (grants, contract, unique_key, persist_docs, …) → execute |
+| `node_body_hash` | NOT a reuse gate | changes on cosmetic config, yet hosted still skips; used only as the SQL side under `compare_unrendered_code=true` |
+| `node_configs_hash` | NOT a reuse gate | changes on any config edit, incl. meta/hooks that skip |
+| `node_contract_hash` | NOT a reuse gate | a column `data_type` change moves it but skips |
+| `node_macros_hash`, `node_persisted_descriptions_hash` | informational | the latter surfaces via `__persisted_docs_hash` in semantic_extras |
+| `tolerate_nondeterminism`, `ignore_external_modifications`, `lenient_dependencies` | no verdict change observed | — |
+| `compare_unrendered_code` | match-key modifier | true ⇒ match the unrendered template instead of rendered SQL |
 
-### C1 (LIVE-VERIFIED) — hosted service fingerprints SQL semantics, not `node_body_hash`
+### C1 (LIVE-VERIFIED) — logic identity is normalized SQL + `semantic_extras`, NOT `node_body_hash`
 
 Captured live from `api.state.dbt.com` (jaffle-shop `customers` on Snowflake;
-fixture `golden/fixtures/c1_config_vs_logic.jsonl`, characterized by
+fixture `golden/fixtures/c1_config_vs_logic.jsonl`, test
 `crates/harness/tests/c1_probe.rs`). Four real decisions for the same node:
 
-| build | node_body_hash | node_configs_hash | hosted decision |
-|---|---|---|---|
-| first | `0fbde4f2` | `ff8f1fb7` | execute |
-| unchanged rebuild | `0fbde4f2` | `ff8f1fb7` | skip |
-| **config-only** (`config(meta=…)`) | `a0a8af93` **(changed)** | `39ba728a` **(changed)** | **skip** |
-| **genuine SQL change** (new column) | `22e8207a` **(changed)** | `ff8f1fb7` | **execute** |
+| build | node_body_hash | hosted decision |
+|---|---|---|
+| first | `0fbde4f2` | execute |
+| unchanged rebuild | `0fbde4f2` | skip |
+| **config-only** (`config(meta=…)`) | `a0a8af93` **(changed)** | **skip** |
+| **genuine SQL change** (new column) | `22e8207a` **(changed)** | **execute** |
 
 `node_body_hash` changed in BOTH the config-only and the real-logic build, yet
-the hosted service skipped the former and executed the latter. So its logic
-identity is a **server-side semantic fingerprint of the raw `sql`**, not the
-client hash. (`table_namespace` is an adapter/connection-level id —
-`get_adapter_unique_id()` — shared by all nodes, so it is a coarse scope, not a
-per-node key.)
+the hosted service skipped the former and executed the latter — proving the
+body hash is not the discriminator. The `meta` edit only perturbs whitespace in
+the rendered `sql` and adds no allowlisted `semantic_extras` key, so it skips;
+the new column changes the normalized SQL, so it executes. **Our server now
+reproduces both** (match hash = normalized SQL + semantic_extras). This is NOT a
+deep semantic/AST fingerprint — just whitespace normalization + a config
+allowlist.
 
-Our server keys the match on `node_body_hash`, which is stricter: we EXECUTE on
-a config-only change the hosted service SKIPs (and we agree on genuine logic
-changes). Faithfully closing this gap requires server-side SQL semantic
-fingerprinting (a SQL engine), which the project deliberately omits (see
-[overview.md](overview.md#the-clientserver-split-why-the-server-needs-no-sql-engine)).
-The divergence is documented and regression-guarded by `c1_probe.rs`; because it
-is safe-directional (over-execute, never stale), body-hash matching is retained
-as the conservative behavior pending a decision on whether to add a SQL
-fingerprinter.
+(`table_namespace` is an adapter/connection-level id — `get_adapter_unique_id()`
+— shared by all nodes, so it is a coarse scope, not a per-node key.)
 
-#### C1b — the hosted service applies a per-config-key skip policy
+#### C1b — `semantic_extras` allowlist governs config-change rebuilds
 
-A follow-up matrix (one config change at a time on the same node; fixture
-`golden/fixtures/c1_config_semantics.jsonl`, test `c1_config_semantics.rs`)
-shows the hosted service is deliberately selective about *which* config changes
-are rebuild-worthy. The SELECT body is semantically identical in every case
-(the client renders config out of the compiled SQL into the hashes), yet:
+A follow-up matrix (one config change at a time, `golden/fixtures/
+c1_config_semantics.jsonl`, test `c1_config_semantics.rs`) confirmed the rule:
 
-| config change | hosted decision |
-|---|---|
-| `tags` | skip |
-| `meta` | skip |
-| `post_hook` (`ALTER TABLE … SET COMMENT`) | **skip** |
-| `post_hook` (`GRANT …`) | **skip** |
-| `grants` | execute |
-| `pre_hook` | execute |
-| `persist_docs` | execute |
+| config change | in semantic_extras allowlist? | hosted decision | our server |
+|---|---|---|---|
+| `grants` | yes | execute | execute |
+| `persist_docs` (→ `__persisted_docs_hash`) | yes | execute | execute |
+| `contract` / `constraints` / `unique_key` | yes | execute | execute |
+| `meta` / `tags` | no | skip | skip |
+| `post_hook` | no | skip | skip |
+| whitespace-only SQL | n/a | skip | skip |
 
-The decisive observation: a **warehouse-mutating `post_hook` is SKIPPED** while
-a `grants` change executes. We verified on Snowflake that when the
-`SET COMMENT` post_hook was skipped, the table comment was **not** changed — so
-the hosted service silently drops the skipped hook's side effect. It is
-therefore NOT conservatively protecting warehouse state; it classifies
-`meta`/`tags`/`post_hook` as cosmetic (skippable) and `grants`/`pre_hook`/
-`persist_docs` as material (rebuild), on top of its server-side SQL fingerprint.
-Our body-hash match executes on all of these (safe-directional over-execute).
+**Correction to an earlier characterization.** An initial single-shot capture
+recorded `pre_hook` → execute and framed this as a "per-config-key policy"
+including a "server-side semantic SQL fingerprint." Re-testing with a clean
+confirmed baseline between each edit showed `pre_hook` reproducibly **skips**
+(like `meta`/`post_hook`); the earlier execute was a stateful confound. The one
+genuinely non-reproducible observation (the fixture's `pre_hook` entry) is
+retained as recorded traffic but is NOT asserted as our target behaviour — see
+the residual-non-determinism caveat above. We implement the reproducible rule:
+rebuild iff normalized SQL or an allowlisted `semantic_extras` key changed.
 
 ### CLONE from the `SubmitEnrichedSQL` path (characterized gap)
 

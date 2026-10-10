@@ -556,3 +556,143 @@ async fn data_tests_do_not_collide_on_shared_body_hash() {
         "a different data test sharing the body hash must not collide → execute"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Logic-identity match key: whitespace-normalized SQL + semantic_extras
+// (verified mechanism — NOT node_body_hash). See docs/protocol.md C1/C1b.
+// ---------------------------------------------------------------------------
+
+fn model_sql(target: &str, sql: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
+    qc::SubmitEnrichedSqlRequest {
+        target_table: Some(target.to_string()),
+        dialect: "snowflake".to_string(),
+        execution_type: ETYPE_FULL,
+        sql: sql.to_string(),
+        table_namespace: Some("ns".to_string()),
+        tables: vec![("up", 100i64)]
+            .into_iter()
+            .map(|(n, e)| qc::TableModifiedInfo {
+                name: n.into(),
+                last_modified_epoch: Some(e),
+            })
+            .collect(),
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: format!("model.jaffle.{target}"),
+            node_hash: body_hash.into(),
+            node_body_hash: Some(body_hash.into()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// A whitespace-only SQL change (and even a changed node_body_hash) must SKIP:
+/// the hosted service normalizes whitespace and ignores node_body_hash for
+/// reuse. Confirms we match on the whitespace-normalized SQL, not the body hash.
+#[tokio::test]
+async fn whitespace_only_sql_change_skips() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let target = "\"DB\".\"S\".\"WS\"";
+    // body_hash deliberately DIFFERENT between the two to prove it is not the gate.
+    let v1 = model_sql(target, "select 1 as a", "bodyhash-A");
+    let r = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
+    let rid = ready_request_id(&r);
+    assert!(
+        exec.confirm_execution(confirm_req(&rid, 100, 10))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    // Same SQL but reformatted (extra whitespace) + different body hash → SKIP.
+    let v2 = model_sql(target, "select   1   as   a", "bodyhash-B-different");
+    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r2),
+        "skip_execution",
+        "whitespace-only SQL change (even with a changed node_body_hash) must skip"
+    );
+}
+
+/// A real SQL text change must EXECUTE (normalized SQL differs).
+#[tokio::test]
+async fn real_sql_change_executes() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let target = "\"DB\".\"S\".\"RS\"";
+    let v1 = model_sql(target, "select 1 as a", "h");
+    let r = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
+    let rid = ready_request_id(&r);
+    assert!(
+        exec.confirm_execution(confirm_req(&rid, 100, 10))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    let v2 = model_sql(target, "select 1 as a, 2 as b", "h"); // same body hash, real SQL change
+    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r2),
+        "ready_to_execute",
+        "a real SQL change must execute"
+    );
+}
+
+/// Changing an allowlisted `semantic_extras` key (e.g. `grants`) must EXECUTE
+/// even when the SQL is unchanged.
+#[tokio::test]
+async fn semantic_extras_change_executes_sql_unchanged() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let target = "\"DB\".\"S\".\"SE\"";
+    let mut v1 = model_sql(target, "select 1 as a", "h");
+    v1.semantic_extras
+        .insert("on_schema_change".into(), "\"ignore\"".into());
+    let r = sql
+        .submit_enriched_sql(v1.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let rid = ready_request_id(&r);
+    assert!(
+        exec.confirm_execution(confirm_req(&rid, 100, 10))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    // Unchanged (same SQL + same semantic_extras) → skip.
+    let r_same = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r_same),
+        "skip_execution",
+        "unchanged → skip"
+    );
+
+    // Add an allowlisted key (grants) with SQL unchanged → execute.
+    let mut v2 = model_sql(target, "select 1 as a", "h");
+    v2.semantic_extras
+        .insert("on_schema_change".into(), "\"ignore\"".into());
+    v2.semantic_extras
+        .insert("grants".into(), "{\"select\":[\"PUBLIC\"]}".into());
+    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r2),
+        "ready_to_execute",
+        "an allowlisted semantic_extras change (grants) must execute even with unchanged SQL"
+    );
+}
