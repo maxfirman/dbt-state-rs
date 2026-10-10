@@ -61,7 +61,7 @@ fn submit(
         target_table: Some(target.to_string()),
         dialect: "snowflake".to_string(),
         execution_type,
-        sql: format!("select 1 /* {body_hash} */"),
+        sql: format!("select 1 as c_{body_hash}"),
         tables: tables
             .iter()
             .map(|(n, e)| qc::TableModifiedInfo {

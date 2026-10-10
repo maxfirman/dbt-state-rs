@@ -5,6 +5,7 @@ pub mod clone;
 pub mod config;
 pub mod decision;
 pub mod services;
+pub mod sql_norm;
 pub mod store;
 
 pub use dbt_state_proto::grpc_health;

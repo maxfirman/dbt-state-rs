@@ -324,22 +324,17 @@ fn new_uuid_v7() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Hash of the raw (rendered) SQL the client sends, used alongside
-/// `node_body_hash` in the match key. The hosted service compares RENDERED SQL
-/// by default (`compare_unrendered_code=false`), so a changed rendered SQL —
-/// e.g. a different `env_var` value — must force a rebuild even though the
-/// client's `node_body_hash` (an UNRENDERED template hash) is unchanged.
+/// Hash of the raw (rendered) SQL the client sends, used in the match key. The
+/// hosted service compares RENDERED SQL by default (`compare_unrendered_code=
+/// false`), after a LEXER-LEVEL normalization (strip comments, collapse
+/// inter-token whitespace, case-fold keywords/unquoted identifiers, preserve
+/// string literals & quoted identifiers verbatim; NO semantic canonicalization
+/// — see `crate::sql_norm` and `experiments/SQL_NORMALIZATION.md`). We normalize
+/// identically so our fingerprint matches the server's skip/execute boundary.
 /// Returns `None` for empty SQL (seeds/clones carry none) so those paths retain
 /// their prior `NULL` match semantics. See `c2_rendered_sql.rs`.
-///
-/// The SQL is WHITESPACE-NORMALIZED before hashing: the hosted service ignores
-/// pure formatting/whitespace changes (verified live — a whitespace-only edit
-/// SKIPs), so collapsing runs of ASCII whitespace to single spaces (and
-/// trimming) makes our fingerprint match the server's for those edits. This is
-/// the modest "SQL understanding" the service actually applies — NOT a deep
-/// semantic/AST fingerprint. See docs/protocol.md (decision mechanism).
 fn sql_hash_of(sql: &str) -> Option<String> {
-    let normalized = normalize_sql(sql);
+    let normalized = crate::sql_norm::normalize_sql(sql);
     if normalized.is_empty() {
         return None;
     }
@@ -347,12 +342,6 @@ fn sql_hash_of(sql: &str) -> Option<String> {
     let mut h = Sha256::new();
     h.update(normalized.as_bytes());
     Some(hex::encode(h.finalize()))
-}
-
-/// Collapse all runs of ASCII whitespace to single spaces (and trim). Mirrors
-/// the hosted service ignoring whitespace/formatting-only SQL changes.
-fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Combine the SQL-side component (whitespace-normalized rendered SQL hash, or
