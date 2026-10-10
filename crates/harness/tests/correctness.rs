@@ -474,3 +474,85 @@ async fn record_executions_duplicate_fingerprint_newest_wins() {
         "lookup must resolve to the newest confirmed row"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Data-test node identity (execution_type = DBT_DATA_TEST = 8)
+// ---------------------------------------------------------------------------
+
+const ETYPE_DATA_TEST: i32 = 8;
+
+/// Build a data-test submit: empty target_table, a body hash shared across all
+/// tests of the same generic type, distinguished only by node_unique_id — just
+/// like the real dbt client sends. `table_namespace` is present (adapter-level)
+/// to prove the fix does not fall back to a namespace+body collision either.
+fn test_submit(unique_id: &str, shared_body: &str) -> qc::SubmitEnrichedSqlRequest {
+    qc::SubmitEnrichedSqlRequest {
+        target_table: None,
+        dialect: "snowflake".to_string(),
+        execution_type: ETYPE_DATA_TEST,
+        sql: "select * from x where c is null".to_string(),
+        table_namespace: Some("adapter-ns".to_string()),
+        tables: vec![],
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: unique_id.to_string(),
+            resource_type: "test".to_string(),
+            node_hash: shared_body.to_string(),
+            node_body_hash: Some(shared_body.to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Two DIFFERENT data tests that share a body hash and have an empty target
+/// (as all `not_null` tests do) must NOT collide: confirming one must not make
+/// the other skip. Guards the review's live-captured C1c finding at the
+/// store/handler level, independent of the golden fixture.
+#[tokio::test]
+async fn data_tests_do_not_collide_on_shared_body_hash() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let shared = "934c4ef4sharednotnullbody";
+    let t1 = test_submit("test.proj.not_null_customers_customer_id.aaaa", shared);
+    let t2 = test_submit("test.proj.not_null_customers_customer_name.bbbb", shared);
+
+    // Execute + confirm test #1.
+    let r1 = sql
+        .submit_enriched_sql(t1.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        response_variant(&r1),
+        "ready_to_execute",
+        "first test executes"
+    );
+    let rid = ready_request_id(&r1);
+    assert!(
+        exec.confirm_execution(confirm_req(&rid, 100, 10))
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+
+    // Test #1 now skips (same unique_id).
+    let r1b = sql.submit_enriched_sql(t1).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r1b),
+        "skip_execution",
+        "same test skips after confirm"
+    );
+
+    // Test #2 — different unique_id, SAME body hash, empty target — must EXECUTE,
+    // not collide with the confirmed test #1.
+    let r2 = sql.submit_enriched_sql(t2).await.unwrap().into_inner();
+    assert_eq!(
+        response_variant(&r2),
+        "ready_to_execute",
+        "a different data test sharing the body hash must not collide → execute"
+    );
+}

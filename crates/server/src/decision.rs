@@ -243,6 +243,7 @@ mod tests {
             execution_type: 10,
             node_body_hash: Some(hash.into()),
             table_namespace: Some("ns".into()),
+            node_unique_id: None,
             last_modified_epoch: built,
             execution_runtime_ms: None,
             input_tables: tables,

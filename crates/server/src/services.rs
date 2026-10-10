@@ -20,6 +20,10 @@ const DECISION_READY_TO_EXECUTE: i32 = 1;
 // ModelExecutionType::VALUES (struct.proto).
 const EXECUTION_TYPE_VALUES: i32 = 9;
 
+// ModelExecutionType::DBT_DATA_TEST (shared.proto). Test nodes are keyed by
+// node_unique_id, not target_table/node_body_hash (which collide across tests).
+const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
+
 /// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
 /// runtime (if any) just like the hosted service.
 fn skip_response(
@@ -337,39 +341,73 @@ impl Sql for SqlService {
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
         let input_tables = decision::input_tables_of(&req);
+        let node_unique_id = req
+            .dbt_node_state
+            .as_ref()
+            .map(|s| s.node_unique_id.clone())
+            .filter(|s| !s.is_empty());
 
         let confirmed = {
-            // Prefer logical cross-environment matching by table_namespace +
-            // node_body_hash (mirrors the hosted service's state reuse across
-            // environments). Fall back to physical target_table matching when
-            // no namespace is supplied.
-            let by_ns = match req.table_namespace.as_deref() {
-                Some(ns) if !ns.is_empty() => self
-                    .0
-                    .store
-                    .find_confirmed_by_namespace(
-                        &org_id,
-                        ns,
-                        execution_type,
-                        node_body_hash.as_deref(),
-                    )
-                    .await
-                    .map_err(db_err)?,
-                _ => None,
-            };
-            match by_ns {
-                Some(row) => Some(row),
-                None => self
-                    .0
-                    .store
-                    .find_confirmed(
-                        &org_id,
-                        &target_table,
-                        execution_type,
-                        node_body_hash.as_deref(),
-                    )
-                    .await
-                    .map_err(db_err)?,
+            // DATA TEST nodes (execution_type = DBT_DATA_TEST = 8) carry no
+            // per-node body identity: every test of the same generic type shares
+            // one node_body_hash and target_table is empty. The hosted service
+            // distinguishes them by node_unique_id (verified live — see
+            // c1_test_node_identity.rs). Match on node_unique_id for these so a
+            // new column test does not wrongly collide with a confirmed sibling.
+            if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
+                match node_unique_id.as_deref() {
+                    Some(uid) => self
+                        .0
+                        .store
+                        .find_confirmed_by_unique_id(&org_id, uid, execution_type)
+                        .await
+                        .map_err(db_err)?,
+                    // No unique id to key on: fall back to the physical match.
+                    None => self
+                        .0
+                        .store
+                        .find_confirmed(
+                            &org_id,
+                            &target_table,
+                            execution_type,
+                            node_body_hash.as_deref(),
+                        )
+                        .await
+                        .map_err(db_err)?,
+                }
+            } else {
+                // Prefer logical cross-environment matching by table_namespace +
+                // node_body_hash (mirrors the hosted service's state reuse across
+                // environments). Fall back to physical target_table matching when
+                // no namespace is supplied.
+                let by_ns = match req.table_namespace.as_deref() {
+                    Some(ns) if !ns.is_empty() => self
+                        .0
+                        .store
+                        .find_confirmed_by_namespace(
+                            &org_id,
+                            ns,
+                            execution_type,
+                            node_body_hash.as_deref(),
+                        )
+                        .await
+                        .map_err(db_err)?,
+                    _ => None,
+                };
+                match by_ns {
+                    Some(row) => Some(row),
+                    None => self
+                        .0
+                        .store
+                        .find_confirmed(
+                            &org_id,
+                            &target_table,
+                            execution_type,
+                            node_body_hash.as_deref(),
+                        )
+                        .await
+                        .map_err(db_err)?,
+                }
             }
         };
 

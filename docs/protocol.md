@@ -88,6 +88,19 @@ Given the request and the latest matching **confirmed** record:
    `table_namespace` + `node_body_hash` + `execution_type`, scoped to org. Fall
    back to physical `target_table` when no namespace is present. (The hosted
    service reuses a node built in prod to skip the same logical node in dev.)
+   - **Data-test nodes** (`execution_type = DBT_DATA_TEST = 8`) are the
+     exception: they carry an empty `target_table` and a `node_body_hash` that
+     is IDENTICAL across every test of the same generic type (all `not_null`
+     hash to `934c4ef4`, all `unique` to `fc665e00`, …). The hosted service
+     keys them on **`node_unique_id`** instead (live-verified: adding a new
+     column test executes it even though its body hash matches a confirmed
+     sibling). We match test nodes via `find_confirmed_by_unique_id`.
+   - **`node_contract_hash` is NOT a match gate.** A column constraint/type
+     change under an already-enforced contract changes `node_contract_hash`
+     but, with the SQL body and config unchanged, the hosted service SKIPs
+     (live-verified `varchar`→`char`). It is informational, like
+     `node_body_hash` (which the service also treats as advisory, fingerprinting
+     the raw SQL semantically — see Coverage §C1).
 2. **No match ⇒ EXECUTE** (`is_stale=false`, hash miss).
 3. **Match ⇒ freshness check.** Each genuine upstream input is compared by
    **logical identity** (schema-stripped `catalog..table`) against the recorded

@@ -19,6 +19,7 @@ pub struct ExecutionRow {
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
     pub table_namespace: Option<String>,
+    pub node_unique_id: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
     pub input_tables: Vec<InputTable>,
@@ -94,7 +95,7 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash,
-                   table_namespace, last_modified_epoch, execution_runtime_ms,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
             WHERE org_id = $1
@@ -131,7 +132,7 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash,
-                   table_namespace, last_modified_epoch, execution_runtime_ms,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
             WHERE org_id = $1
@@ -152,6 +153,44 @@ impl Store {
         Ok(row.map(Into::into))
     }
 
+    /// Find the most recent CONFIRMED execution matching `node_unique_id`
+    /// (org- and execution_type-scoped). This is the correct match key for
+    /// nodes whose `node_body_hash` is NOT a per-node identity — notably dbt
+    /// DATA TEST nodes (execution_type = DBT_DATA_TEST = 8), where every test of
+    /// the same generic type shares one body hash (all `not_null` => 934c4ef4,
+    /// all `unique` => fc665e00, …) and `target_table` is empty. Verified live
+    /// against api.state.dbt.com: the hosted service distinguishes such tests
+    /// solely by `node_unique_id` (adding a new column test executes it; the
+    /// shared body hash would otherwise collide). See
+    /// `crates/harness/tests/c1_test_node_identity.rs`.
+    pub async fn find_confirmed_by_unique_id(
+        &self,
+        org_id: &str,
+        node_unique_id: &str,
+        execution_type: i32,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        let row = sqlx::query_as::<_, RawRow>(
+            r#"
+            SELECT id, org_id, target_table, execution_type, node_body_hash,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                   input_tables, status, request_id
+            FROM executions
+            WHERE org_id = $1
+              AND node_unique_id = $2
+              AND execution_type = $3
+              AND status = 'confirmed'
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(node_unique_id)
+        .bind(execution_type)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Into::into))
+    }
+
     /// Find the most recent CONFIRMED seed execution matching the values_hash.
     /// Analogous to `find_confirmed` but keyed on `values_hash` (seeds carry no
     /// SQL body fingerprint).
@@ -165,7 +204,7 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash,
-                   table_namespace, last_modified_epoch, execution_runtime_ms,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
             WHERE org_id = $1
@@ -335,6 +374,7 @@ struct RawRow {
     execution_type: i32,
     node_body_hash: Option<String>,
     table_namespace: Option<String>,
+    node_unique_id: Option<String>,
     last_modified_epoch: Option<i64>,
     execution_runtime_ms: Option<i64>,
     input_tables: serde_json::Value,
@@ -353,6 +393,7 @@ impl From<RawRow> for ExecutionRow {
             execution_type: r.execution_type,
             node_body_hash: r.node_body_hash,
             table_namespace: r.table_namespace,
+            node_unique_id: r.node_unique_id,
             last_modified_epoch: r.last_modified_epoch,
             execution_runtime_ms: r.execution_runtime_ms,
             input_tables,

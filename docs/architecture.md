@@ -78,6 +78,9 @@ values-hash lookup. Lookups:
 - `find_confirmed_by_namespace()` — primary: logical cross-env match on
   `table_namespace`+`node_body_hash`+`execution_type` (org-scoped).
 - `find_confirmed()` — fallback: physical `target_table`+`node_body_hash`.
+- `find_confirmed_by_unique_id()` — data-test nodes (`execution_type=8`), keyed
+  on `node_unique_id` (their `node_body_hash` collides across tests of the same
+  type and `target_table` is empty).
 - `find_confirmed_values()` — seeds, keyed on `values_hash`.
 - `insert_pending()` / `confirm()` — the submit→confirm lifecycle.
 - `insert_confirmed_batch()` — `RecordExecutions` atomic hydrate (single tx).
