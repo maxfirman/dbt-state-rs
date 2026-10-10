@@ -51,11 +51,13 @@ Run:
     cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
       --seeds golden/fixtures/golden_20261008T222744.061Z.jsonl --iterations 200
 
-The tool mutates along 12 axes, including the ones our engine ignores
-(`node_configs_hash`, `node_contract_hash`, `tolerate_nondeterminism`,
+The tool mutates along 12 axes, including config/SQL fields that affect the
+decision (`node_configs_hash`, `node_contract_hash`, `tolerate_nondeterminism`,
 `ignore_external_modifications`, `compare_unrendered_code`,
 `lenient_dependencies`) plus add-upstream, and prints a per-axis breakdown of
-comparisons / real-skip / DIVERGENCE for triage.
+comparisons / real-skip / DIVERGENCE for triage. (The config-change decision
+mechanism these probe was later pinned down precisely via the recording proxy —
+see C1 below and `experiments/SCENARIOS.md`.)
 
 Last live run vs `api.state.dbt.com` (org act_3I3…, 224 comparisons across all
 three model corpora, every axis exercised): **224 agree-execute, 0
@@ -81,12 +83,20 @@ node: first-build execute, unchanged-rebuild skip, a `config(meta=…)` edit tha
 changed `node_body_hash` yet still SKIPPED, and a genuine new-column change that
 EXECUTED. Because `node_body_hash` changed in BOTH the config edit and the real
 logic change but the hosted service skipped one and executed the other, the
-hosted service's logic identity is a **server-side semantic fingerprint of the
-raw SQL**, not the client-sent `node_body_hash`. Our body-hash match is stricter,
-so we EXECUTE config-only changes it SKIPs (safe-directional: over-execute, never
-stale). Captured as `golden/fixtures/c1_config_vs_logic.jsonl` and pinned by
-`crates/harness/tests/c1_probe.rs`. See
-[protocol.md](protocol.md#coverage).
+hosted service's logic identity is **not** the client-sent `node_body_hash`.
+
+Follow-up probing (~25 live A/B experiments) established the actual mechanism: a
+match on the **allowlisted `semantic_extras`** + an **AST canonicalization of
+the rendered SQL** (comments/whitespace/case/operator/cast/type/function
+synonyms normalized; parens, group-by ordinals, literal forms, boolean
+structure, and ordering preserved — NOT a logical plan). We implement this with
+`sqlparser` (see [protocol.md](protocol.md) §"SQL normalization" and
+[`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md)) and
+**reproduce the hosted decision** for config-only edits (skip) and genuine
+changes (execute). Pinned by `crates/harness/tests/c1_probe.rs`,
+`c1_config_semantics.rs`, and `sql_normalization.rs`. Residual bound: the
+synonym catalogs are not exhaustive, so an unlisted synonym over-executes
+(safe-directional, never a wrong skip).
 
 ## Why NOT certain techniques
 - Naive protobuf byte-fuzzing: tests prost/tonic decoding, not our logic.

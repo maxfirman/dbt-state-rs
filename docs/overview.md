@@ -16,28 +16,32 @@ The decision engine — the interesting part — is server-side and closed-sourc
 
 `dbt-state-rs` is an independent, self-hostable reimplementation of that server.
 
-## The client/server split (why the server needs no SQL engine)
+## The client/server split (and where SQL is parsed)
 
 The protocol is internally called the **"query cache"** (proto package
 `com.fivetran.query_cache`). The split is deliberate and important:
 
-- **The client** computes everything SQL-related and sends it pre-digested:
+- **The client** computes most things and sends them pre-digested:
   - `node_body_hash`, `node_hash`, `node_configs_hash`, `node_contract_hash`
-    (semantic fingerprints of the model) inside a `dbt_node_state` message;
-  - a `table_namespace` grouping hash;
+    (fingerprints of the model) inside a `dbt_node_state` message;
+  - a `table_namespace` grouping hash (an adapter-level id);
   - per-input-table freshness (`last_modified_epoch`);
-  - the raw compiled SQL (for the hosted service's own fingerprinting; our
-    server does not need to parse it);
+  - the **raw compiled SQL** and a `semantic_extras` map of config;
   - for seeds, an md5 `values_hash` of the seed bytes.
-- **The server** owns the decision: match the incoming fingerprint against
-  recorded history, evaluate upstream freshness, and return
-  BUILD / SKIP / CLONE. It then records confirmed outcomes so future runs skip.
+- **The server** owns the decision: it derives the node's *logic identity* from
+  the **rendered SQL** (not the client's `node_body_hash`, which it ignores for
+  reuse) plus the allowlisted `semantic_extras`, matches that against recorded
+  history, evaluates upstream freshness, and returns BUILD / SKIP / CLONE. It
+  then records confirmed outcomes so future runs skip.
 
-Because the client sends precomputed hashes, **the server does not need a SQL
-engine** for the core decision. The only place SQL is *generated* is the CLONE
-DDL, which is a simple dialect-specific `CREATE ... CLONE ...` template, not a
-query transformation. See [protocol.md](protocol.md) and
-[architecture.md](architecture.md).
+Because the logic identity is the rendered SQL, the server **does normalize
+SQL** — but we established by live experiment that this is an *AST
+canonicalization* (comments, whitespace, case, operator/cast/type/function
+synonyms), **not** a logical-plan comparison. We reproduce it with
+`sqlparser` (apache/datafusion-sqlparser-rs); see
+[protocol.md](protocol.md) §"SQL normalization" and
+[`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md). The
+CLONE DDL is the only SQL the server *generates*, from a simple dialect template.
 
 ## Project goals
 
@@ -56,13 +60,25 @@ Three independent checks (see [testing.md](testing.md)):
 
 ## Scope and known limits
 
-Implemented and validated: `SubmitEnrichedSQL` (skip/execute), `SubmitValues`
-(seeds), `ConfirmExecution`, `RecordExecutions`, `RegisterClone` (with clone-DDL
-generation), cross-environment reuse by `table_namespace`, `ClientValidation`,
-`Health`, and conservative defaults for `Explain`, `SelectorService`,
+Implemented and validated (live, against the real service): `SubmitEnrichedSQL`
+(skip/execute with AST-canonicalized SQL + `semantic_extras` matching),
+`SubmitValues` (seeds, `values_hash`), data tests (matched by `node_unique_id`),
+snapshots/incremental/view/custom-materialization semantics, `ConfirmExecution`,
+`RecordExecutions`, `RegisterClone` (with clone-DDL generation),
+cross-environment reuse by `table_namespace`, `compare_unrendered_code`,
+node-type-specific `decision_description` strings, `ClientValidation`, `Health`,
+and conservative defaults for `Explain`, `SelectorService`,
 `ResolveDeferredRelations`, and speculative submits.
 
-Not yet reproduced (valid empty/default responses, pending more captured
-traffic): rich `Explain` text, `transformed_nodes_by_query` population,
-`query_hash_metadata_info`, and non-Snowflake clone DDL verified against the real
-service. See [protocol.md](protocol.md#coverage) for the current matrix.
+Known bounded gaps (all safe-directional — we over-execute, never serve stale):
+- The SQL type/function **synonym catalogs** cover the common Snowflake aliases
+  verified live but are not exhaustive; an unlisted synonym falls through.
+- A plain `SubmitEnrichedSQL` answered with `ready_to_clone` by the hosted
+  service depends on physical warehouse state not in the protocol (characterized,
+  not reproduced).
+- Rich `Explain` text, `transformed_nodes_by_query`, `query_hash_metadata_info`,
+  and non-Snowflake clone DDL verified against the real service.
+
+See [protocol.md](protocol.md#coverage) for the full matrix and
+[`experiments/SCENARIOS.md`](../experiments/SCENARIOS.md) for the live-verified
+scenario table.

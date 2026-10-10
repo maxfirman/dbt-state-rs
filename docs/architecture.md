@@ -34,7 +34,8 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 |---|---|
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres access via sqlx: lookups, pending→confirmed lifecycle, batch hydrate. |
-| `decision.rs` | The pure decision engine (`decide()`), freshness, policy, normalization. |
+| `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
+| `sql_norm.rs` | SQL canonicalization (sqlparser-backed, lexer fallback) for the logic-identity match. |
 | `clone.rs` | Dialect-aware clone-DDL generation. |
 | `services.rs` | gRPC service impls binding the store + decision engine to the wire. |
 | `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |
@@ -43,7 +44,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 `build_router()` is shared by the binary and the in-process integration tests,
 so tests exercise the exact same wiring as production.
 
-### Decision engine (`decision.rs`)
+### Decision engine (`decision.rs`, `sql_norm.rs`)
 
 `decide(ctx, confirmed) -> Verdict` is a **pure function** — no I/O — which makes
 it unit- and property-testable. Inputs are distilled into a `SubmitContext`
@@ -56,16 +57,24 @@ target_table, stale_upstream_policy). Key helpers:
   fully-qualified relation so `"DB"."PROD"."T"` and `"DB"."DEV"."T"` compare
   equal (cross-environment reuse).
 
-See [protocol.md](protocol.md#decision-semantics-as-reproduced) for the exact
-rules. The verdict is turned into the proto response shape in `services.rs`.
+The node's **logic identity** for matching is NOT `node_body_hash` (which the
+hosted service ignores for reuse) but a hash of the **canonicalized rendered
+SQL** + the allowlisted `semantic_extras`. `sql_norm::normalize_sql` reproduces
+the hosted SQL canonicalization using `sqlparser` (parse → AST pass → render,
+with a lexer fallback); `services.rs` combines it with the `semantic_extras`
+hash into the match key. See
+[protocol.md](protocol.md#decision-semantics-as-reproduced) for the exact rules.
+The verdict is turned into the proto response shape in `services.rs`.
 
 ### Store & schema (`store.rs`, `migrations/`)
 
-Single table `executions` (see `migrations/0001_init.sql`, `0002_values_hash.sql`):
+Single table `executions` (see `migrations/`, `0001`–`0006`):
 
 - Identity/match columns: `org_id`, `target_table`, `execution_type`,
-  `node_hash`, `node_body_hash`, `node_configs_hash`, `node_contract_hash`,
-  `node_unique_id`, `table_namespace`, `values_hash`, `dialect`.
+  `node_hash`, `node_body_hash`, `node_sql_hash` (the canonicalized-SQL +
+  `semantic_extras` logic-identity hash), `node_configs_hash`,
+  `node_contract_hash`, `node_unique_id`, `table_namespace`, `values_hash`,
+  `dialect`.
 - Recorded outcome: `last_modified_epoch`, `table_type`, `execution_runtime_ms`.
 - Upstream freshness snapshot: `input_tables` (JSONB array of
   `{name, last_modified_epoch}`).
@@ -76,10 +85,10 @@ Indexes: physical-fingerprint lookup, unique `request_id`, node-uid, and the
 values-hash lookup. Lookups:
 
 - `find_confirmed_by_namespace()` — primary: logical cross-env match on
-  `table_namespace`+`node_body_hash`+`execution_type` (org-scoped).
-- `find_confirmed()` — fallback: physical `target_table`+`node_body_hash`.
+  `table_namespace` + `node_sql_hash` + `execution_type` (org-scoped).
+- `find_confirmed()` — fallback: physical `target_table` + `node_sql_hash`.
 - `find_confirmed_by_unique_id()` — data-test nodes (`execution_type=8`), keyed
-  on `node_unique_id` (their `node_body_hash` collides across tests of the same
+  on `node_unique_id` (their SQL/body hash collides across tests of the same
   type and `target_table` is empty).
 - `find_confirmed_values()` — seeds, keyed on `values_hash`.
 - `insert_pending()` / `confirm()` — the submit→confirm lifecycle.

@@ -8,13 +8,15 @@ Written in Rust (tonic + prost) with a Postgres backend (sqlx). The protocol was
 reverse-engineered from the open-source `.proto` definitions and from real
 traffic captured against the hosted service using the official dbt Fusion client.
 
-- **Core idea:** the dbt client sends each node's precomputed hashes and upstream
-  freshness; the server decides BUILD / SKIP / CLONE and records outcomes so
-  future runs can skip. The decision engine is the novel part this project
-  reproduces.
-- **Validated** against the real service three ways: differential replay of
-  captured traffic, property-based invariants, and live end-to-end runs with the
-  official dbt Fusion client on Snowflake.
+- **Core idea:** the dbt client sends each node's rendered SQL, config, hashes
+  and upstream freshness; the server derives a logic identity (a canonicalized
+  SQL + config fingerprint), matches it against recorded history, evaluates
+  freshness, and decides BUILD / SKIP / CLONE — recording outcomes so future
+  runs can skip. The decision engine is the novel part this project reproduces.
+- **Validated** against the real service: differential replay of captured
+  traffic, property-based invariants, and extensive live end-to-end runs with
+  the official dbt Fusion client on Snowflake (incl. reverse-engineering the
+  server's SQL-canonicalization rules).
 
 ## Quick start
 
