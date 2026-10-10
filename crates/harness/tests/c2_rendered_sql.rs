@@ -105,3 +105,82 @@ async fn rendered_sql_change_forces_execute() {
          serve stale output (unsafe)"
     );
 }
+
+const CMP_FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../golden/fixtures/compare_unrendered_code.jsonl"
+);
+
+/// With `compare_unrendered_code=true`, the hosted service matches on the
+/// UNRENDERED template only: a changed rendered SQL (env_var value) with an
+/// unchanged template SKIPs. Captured live: r1 (sql="…'aaa'…") execute→confirm,
+/// r2 (sql="…'bbb'…", compare_unrendered_code=true) → skip. Our server must drop
+/// the rendered-SQL hash from the match when the flag is set and reproduce the
+/// skip (the opt-in counterpart to the default C2 rebuild-on-rendered-change).
+#[tokio::test]
+async fn compare_unrendered_code_skips_rendered_change() {
+    let entries = diff::load_golden(CMP_FIXTURE).expect("load compare_unrendered fixture");
+    let submits: Vec<&diff::GoldenEntry> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .collect();
+    assert_eq!(submits.len(), 2, "execute then skip");
+
+    // Both carry compare_unrendered_code=true; rendered SQL differs; body same.
+    for s in &submits {
+        assert_eq!(
+            s.request["compare_unrendered_code"].as_bool(),
+            Some(true),
+            "fixture must have compare_unrendered_code=true"
+        );
+    }
+    let body = |i: usize| {
+        submits[i].request["dbt_node_state"]["node_body_hash"]
+            .as_str()
+            .unwrap()
+    };
+    let sql = |i: usize| submits[i].request["sql"].as_str().unwrap();
+    assert_eq!(body(0), body(1), "same template body hash");
+    assert_ne!(sql(0), sql(1), "different rendered SQL");
+    assert_eq!(
+        diff::decision_variant(&submits[0].response).unwrap(),
+        "ready_to_execute"
+    );
+    assert_eq!(
+        diff::decision_variant(&submits[1].response).unwrap(),
+        "skip_execution"
+    );
+
+    let (addr, _schema) = support::start_server().await;
+    let ch = support::channel(addr).await;
+    let mut sql_c = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let r0: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(submits[0].request.clone()).unwrap();
+    let resp0 = sql_c.submit_enriched_sql(r0).await.unwrap().into_inner();
+    let rid = match resp0.response {
+        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
+        other => panic!("r1 executes, got {other:?}"),
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: rid,
+        last_modified_epoch: Some(1_791_600_000_000),
+        failed_to_clone: false,
+        table_type: Some("TABLE".into()),
+        execution_results: None,
+        execution_runtime_ms: Some(10),
+        labels: Default::default(),
+    })
+    .await
+    .unwrap();
+
+    // r2: different rendered SQL but compare_unrendered_code=true → must SKIP.
+    let r1: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(submits[1].request.clone()).unwrap();
+    let v = support::response_variant(&sql_c.submit_enriched_sql(r1).await.unwrap().into_inner());
+    assert_eq!(
+        v, "skip_execution",
+        "compare_unrendered_code=true must match on the template only (skip a rendered-only change)"
+    );
+}

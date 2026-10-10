@@ -358,6 +358,16 @@ impl Sql for SqlService {
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
         let node_sql_hash = sql_hash_of(&req.sql);
+        // compare_unrendered_code=true tells the hosted service to match on the
+        // UNRENDERED template only, so a changed rendered SQL (e.g. an env_var
+        // value) with an unchanged template does NOT rebuild. Verified live
+        // (compare_unrendered_code.jsonl). Honor it by dropping the rendered-SQL
+        // hash from the MATCH predicate while still persisting it for history.
+        let match_sql_hash = if req.compare_unrendered_code {
+            None
+        } else {
+            node_sql_hash.clone()
+        };
         let input_tables = decision::input_tables_of(&req);
         let node_unique_id = req
             .dbt_node_state
@@ -408,7 +418,7 @@ impl Sql for SqlService {
                             ns,
                             execution_type,
                             node_body_hash.as_deref(),
-                            node_sql_hash.as_deref(),
+                            match_sql_hash.as_deref(),
                         )
                         .await
                         .map_err(db_err)?,
@@ -424,7 +434,7 @@ impl Sql for SqlService {
                             &target_table,
                             execution_type,
                             node_body_hash.as_deref(),
-                            node_sql_hash.as_deref(),
+                            match_sql_hash.as_deref(),
                         )
                         .await
                         .map_err(db_err)?,
