@@ -102,15 +102,21 @@ Given the request and the latest matching **confirmed** record:
      hooks → skip, whitespace-only SQL edit → skip).
    - **SQL normalization is LEXER-LEVEL, not semantic.** We tested (and
      disproved) the hypothesis that the server compares DataFusion-style logical
-     plans: it does not. It lexes the SQL and compares a normalized token stream
-     — strip `--`/`/* */` comments, collapse inter-token whitespace (but PRESERVE
-     whitespace inside string literals), case-fold keywords/unquoted identifiers
-     (but PRESERVE string-literal case and treat quoted identifiers as distinct).
-     It does NOT canonicalize semantics: `group by 1` ≠ `group by col`, redundant
-     parens, CTE-vs-inline, `not(x is null)` ≠ `x is not null`, and `1` ≠ `1.0`
-     all EXECUTE. See `crate::sql_norm` and
-     [`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md)
-     for the full evidence table.
+     plans: it does NOT. It parses the SQL into a dialect AST and compares a
+     canonical re-rendering. It canonicalizes names/syntax — strip
+     `--`/`/* */` comments and `/*+ hints */`, collapse whitespace, case-fold
+     keywords/unquoted identifiers (PRESERVING string-literal content/case and
+     quoted-identifier identity), drop trailing commas/semicolons, make `AS`
+     optional, unify operator synonyms (`!=` ≡ `<>`), cast shorthand (`x::t` ≡
+     `cast(x as t)`), and type/function synonyms (`varchar` ≡ `text`,
+     `coalesce` ≡ `nvl`) — but performs NO semantic simplification:
+     `group by 1` ≠ `group by col`, redundant/precedence parens, CTE-vs-inline,
+     `not(x is null)` ≠ `x is not null`, and `1` ≠ `1.0` all EXECUTE. We
+     reproduce this with `sqlparser` (apache/datafusion-sqlparser-rs, Snowflake
+     dialect): parse → canonicalizing AST pass → `Display`, with a lexer-level
+     fallback (`normalize_sql_lexer`) when parsing fails. See `crate::sql_norm`
+     and [`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md)
+     for the full evidence table and the bounded synonym-catalog gap.
    - **`compare_unrendered_code=true`** switches the SQL side to the UNRENDERED
      template (`node_body_hash`) so non-deterministic rendered values (env_var)
      don't rebuild.

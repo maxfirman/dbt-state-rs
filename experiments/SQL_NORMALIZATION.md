@@ -65,13 +65,27 @@ canonicalization with dialect name resolution**.
 
 ## Implementation status in dbt-state-rs
 
-`crate::sql_norm::normalize_sql` currently implements the LEXER subset (round 1):
-comments, whitespace, case-folding, string/quoted-ident preservation. It does
-NOT yet canonicalize optional-AS, operator synonyms, cast shorthand, or
-type/function synonyms — so for those specific equivalences we OVER-EXECUTE
-(safe-directional: we rebuild where the hosted service skips, never the
-reverse). Reproducing them faithfully requires an actual SQL parser with a
-per-dialect catalog of operator/type/function synonyms (a `sqlparser`-class
-dependency). Tracked as a known, bounded gap; the lexer subset already captures
-the highest-frequency equivalences (whitespace, comments, case) seen in real
-dbt output. See the match-key notes in docs/protocol.md.
+`crate::sql_norm::normalize_sql` is **parser-backed** (apache/datafusion-
+sqlparser-rs 0.63, Snowflake dialect): parse → a canonicalizing AST pass →
+`Display`. From parse+Display we get, for free, canonicalization of comments,
+whitespace, case, optional `AS`, `!=`↔`<>`, and trailing `;`, while the semantic
+structure the hosted service preserves (parens, group-by ordinals, CTEs, literal
+forms, boolean structure, ordering, string content) is preserved. The AST pass
+adds: lowercase unquoted identifiers, `x::T` → `CAST(x AS T)`, and a small
+documented catalog of type-name synonyms (string family → VARCHAR, number
+family incl. Snowflake `NUMBER` → NUMERIC) and function-name synonyms
+(`nvl`/`ifnull` → `coalesce`). All of comments/case/whitespace/AS/operators/
+cast/type/function were re-verified live after implementation.
+
+When `sqlparser` cannot parse the input (dialect features it doesn't support),
+`normalize_sql` falls back to a conservative lexer-level normalizer
+(`normalize_sql_lexer`) so robustness is never worse than before.
+
+Remaining bounded gap: the synonym *catalogs* (type/function) cover the common
+Snowflake aliases we verified live but are not exhaustive — an unlisted synonym
+falls through and OVER-EXECUTES (safe-directional, never a wrong skip). The
+hosted backend may also use a different parser (e.g. sqlglot if Python), so exact
+agreement on exotic SQL is not guaranteed; that trade-off was accepted when
+choosing an Apache-2.0 parser (the dbt grammar crates are ELv2 and unpublished —
+incompatible with this project's Apache-2.0 licence and "no managed service"
+clause). See the match-key notes in docs/protocol.md.

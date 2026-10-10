@@ -1,24 +1,155 @@
 //! SQL lexical normalization — mirrors the dbt State server's *token-stream*
-//! comparison (verified live; see `experiments/SQL_NORMALIZATION.md`).
+//! SQL normalization — mirrors the dbt State server's SQL *canonicalization*
+//! (characterized live; see `experiments/SQL_NORMALIZATION.md`).
 //!
-//! The hosted service does NOT compare logical plans. It lexes the SQL and
-//! compares a normalized token stream. Reproduced rules (each live-verified):
-//!   1. strip comments: `-- …` to end-of-line, and `/* … */` blocks;
-//!   2. collapse whitespace BETWEEN tokens, but PRESERVE whitespace inside
-//!      string literals;
-//!   3. case-fold keywords and UNQUOTED identifiers, but PRESERVE the case of
-//!      string literals and treat quoted identifiers verbatim (distinct);
-//!   4. do NOT canonicalize semantics — parens, group-by ordinals, CTE-vs-
-//!      inline, predicate rewrites, numeric-literal forms and token ORDER all
-//!      remain significant.
+//! The server parses SQL into a dialect AST and compares a canonical
+//! re-rendering: it canonicalizes names/operators/casts/type+function synonyms
+//! and drops syntactic noise (comments, whitespace, case, trailing commas/
+//! semicolons, optional `AS`), but performs NO semantic simplification (parens,
+//! group-by ordinals, CTE-vs-inline, boolean rewrites, numeric-literal forms,
+//! and token order all remain significant). It is NOT a logical plan.
 //!
-//! The output is a canonical single-space-joined token string suitable for
-//! hashing. It is deliberately lexical, not semantic.
+//! We reproduce this with `sqlparser` (apache/datafusion-sqlparser-rs, Snowflake
+//! dialect): parse → a canonicalizing AST pass (lowercase unquoted identifiers,
+//! rewrite `::` casts to `CAST(..)`, map a small, documented set of type- and
+//! function-name synonyms to a canonical spelling) → `Display`. parse+Display
+//! already gives us case/whitespace/comment/optional-AS/`!=`↔`<>`/`;` for free
+//! while preserving the semantic structure the hosted service preserves.
+//!
+//! When `sqlparser` cannot parse the input (dialect features it doesn't support),
+//! we FALL BACK to a conservative lexer-level normalizer (`normalize_sql_lexer`)
+//! so robustness is never worse than the previous implementation.
 
-/// Normalize SQL to a canonical token string (lexer-level). Equivalent inputs
-/// under rules 1–3 above produce identical output; anything the hosted service
-/// treats as a real change (rule 4) produces different output.
+use std::ops::ControlFlow;
+
+use sqlparser::ast::{CastKind, DataType, Expr, Ident, ObjectNamePart, VisitMut, VisitorMut};
+use sqlparser::dialect::SnowflakeDialect;
+use sqlparser::parser::Parser;
+
+/// Normalize SQL to a canonical string for the match-key hash. Parser-backed
+/// with a lexer fallback (see module docs).
 pub fn normalize_sql(sql: &str) -> String {
+    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
+        Ok(mut stmts) if !stmts.is_empty() => {
+            let mut canon = Canonicalizer;
+            for s in stmts.iter_mut() {
+                let _ = s.visit(&mut canon);
+            }
+            stmts
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        }
+        // Empty parse (e.g. whitespace/comment-only) or parse error: fall back
+        // to the lexer-level normalizer (robust, conservative).
+        _ => normalize_sql_lexer(sql),
+    }
+}
+
+/// Canonical spelling for a type-name synonym, else `None` (leave as written).
+/// Small, documented set verified live (Snowflake): string family and numeric
+/// family. Unknown types fall through — anything not unified here simply
+/// over-executes (safe), matching our "accept parser differences" stance.
+fn canon_type(dt: &DataType) -> Option<DataType> {
+    use DataType::*;
+    // Snowflake STRING family → VARCHAR.
+    let is_string = matches!(
+        dt,
+        Text | String(_)
+            | Varchar(_)
+            | Nvarchar(_)
+            | Char(_)
+            | Character(_)
+            | CharVarying(_)
+            | CharacterVarying(_)
+            | Clob(_)
+    );
+    // Snowflake NUMBER family → NUMERIC. NUMBER/NUMERIC/DECIMAL with no
+    // precision are equivalent; INT/INTEGER/BIGINT/SMALLINT are NUMBER(38,0).
+    let is_number = matches!(
+        dt,
+        Int(_)
+            | Integer(_)
+            | BigInt(_)
+            | SmallInt(_)
+            | TinyInt(_)
+            | Numeric(_)
+            | Decimal(_)
+            | Dec(_)
+    ) || matches!(dt, Custom(name, args)
+    if args.is_empty()
+        && name.0.len() == 1
+        && matches!(
+            name.0[0].as_ident().map(|i| i.value.to_ascii_lowercase()).as_deref(),
+            Some("number") | Some("numeric") | Some("decimal") | Some("int")
+                | Some("integer") | Some("bigint") | Some("smallint") | Some("tinyint")
+        ));
+    if is_string {
+        Some(Varchar(None))
+    } else if is_number {
+        Some(Numeric(sqlparser::ast::ExactNumberInfo::None))
+    } else {
+        None
+    }
+}
+
+/// Canonical spelling for a function-name synonym, else `None`. Small verified
+/// set (Snowflake). Unknown functions fall through (over-execute = safe).
+fn canon_function(name: &str) -> Option<&'static str> {
+    match name.to_ascii_lowercase().as_str() {
+        "nvl" | "ifnull" => Some("coalesce"),
+        _ => None,
+    }
+}
+
+/// AST pass applying the dialect-aware canonicalizations the hosted service does.
+struct Canonicalizer;
+impl VisitorMut for Canonicalizer {
+    type Break = ();
+
+    fn pre_visit_ident(&mut self, id: &mut Ident) -> ControlFlow<()> {
+        // Fold case of UNQUOTED identifiers/keywords; leave quoted idents alone.
+        if id.quote_style.is_none() {
+            id.value = id.value.to_ascii_lowercase();
+        }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
+        match e {
+            // `x::T` ≡ `CAST(x AS T)` — unify to CAST, and canonicalize the type.
+            Expr::Cast {
+                kind, data_type, ..
+            } => {
+                *kind = CastKind::Cast;
+                if let Some(c) = canon_type(data_type) {
+                    *data_type = c;
+                }
+            }
+            // Function-name synonyms (nvl/ifnull → coalesce, …).
+            Expr::Function(f) => {
+                if let Some(ObjectNamePart::Identifier(id)) = f.name.0.last_mut() {
+                    if id.quote_style.is_none() {
+                        if let Some(c) = canon_function(&id.value) {
+                            id.value = c.to_string();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// Conservative lexer-level fallback used when `sqlparser` can't parse the SQL.
+/// Strips comments, collapses inter-token whitespace, case-folds keywords and
+/// unquoted identifiers (preserving string literals and quoted identifiers),
+/// canonicalizes `!=`→`<>`, drops trailing commas/semicolons. Does NOT do any
+/// AST-level synonym canonicalization. Equivalent inputs under these rules
+/// produce identical output.
+pub fn normalize_sql_lexer(sql: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let bytes = sql.as_bytes();
     let mut i = 0usize;
@@ -189,101 +320,142 @@ fn canonicalize_tokens(toks: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_sql;
+    use super::{normalize_sql, normalize_sql_lexer};
 
     fn eq(a: &str, b: &str) -> bool {
         normalize_sql(a) == normalize_sql(b)
     }
 
-    #[test]
-    fn comments_are_stripped() {
-        assert!(eq("select 1", "-- hi\nselect 1"));
-        assert!(eq("select 1", "select /* block */ 1"));
-    }
+    // ---- Parser-backed canonicalization (full statements) ----
 
     #[test]
-    fn keyword_and_unquoted_identifier_case_folded() {
+    fn comments_whitespace_case_optional_as_canonicalized() {
+        assert!(eq("select 1 as a", "-- hi\nselect 1 as a"));
+        assert!(eq("select 1 as a", "select /* block */ 1 as a"));
+        assert!(eq("select /*+ hint */ a from t", "select a from t"));
         assert!(eq("select a from t", "SELECT A FROM T"));
-        assert!(eq("select customer_id", "select CUSTOMER_ID"));
+        assert!(eq("select customer_id from t", "select CUSTOMER_ID from t"));
+        assert!(eq("select   a  from   t", "select a from t"));
+        assert!(eq("select 1 as k", "select 1 k")); // optional AS
+        assert!(eq("select 1 from t", "select 1 from t;")); // trailing ;
     }
 
     #[test]
-    fn inter_token_whitespace_collapsed() {
-        assert!(eq("select   a  ,   b", "select a, b"));
-        assert!(eq("select\n\ta\nfrom t", "select a from t"));
+    fn operator_and_cast_synonyms_canonicalized() {
+        assert!(eq(
+            "select 1 from t where a != 0",
+            "select 1 from t where a <> 0"
+        ));
+        assert!(eq(
+            "select x::varchar from t",
+            "select cast(x as varchar) from t"
+        ));
     }
 
     #[test]
-    fn string_literal_whitespace_and_case_preserved() {
-        // Whitespace INSIDE a string literal is significant.
-        assert!(!eq("select 'a b'", "select 'a  b'"));
-        // Case INSIDE a string literal is significant.
-        assert!(!eq("select 'abc'", "select 'ABC'"));
+    fn type_and_function_synonyms_canonicalized() {
+        // String family.
+        assert!(eq(
+            "select cast(x as varchar) from t",
+            "select cast(x as text) from t"
+        ));
+        assert!(eq(
+            "select cast(x as varchar) from t",
+            "select cast(x as string) from t"
+        ));
+        // Number family (incl. Snowflake NUMBER which parses as a custom type).
+        assert!(eq(
+            "select cast(x as int) from t",
+            "select cast(x as number) from t"
+        ));
+        assert!(eq(
+            "select cast(x as integer) from t",
+            "select cast(x as numeric) from t"
+        ));
+        // Function synonyms.
+        assert!(eq(
+            "select coalesce(a, b) from t",
+            "select nvl(a, b) from t"
+        ));
+        assert!(eq(
+            "select coalesce(a, b) from t",
+            "select ifnull(a, b) from t"
+        ));
     }
 
     #[test]
-    fn quoted_identifier_is_distinct_from_unquoted() {
-        assert!(!eq("select \"customer_id\"", "select customer_id"));
-        // Quoted identifier case is preserved (distinct).
-        assert!(!eq("select \"a\"", "select \"A\""));
+    fn string_literals_and_quoted_identifiers_preserved() {
+        // String content (whitespace + case) is significant.
+        assert!(!eq("select 'a b' from t", "select 'a  b' from t"));
+        assert!(!eq("select 'abc' from t", "select 'ABC' from t"));
+        // Quoted identifiers are distinct from unquoted and case-sensitive.
+        assert!(!eq(
+            "select \"customer_id\" from t",
+            "select customer_id from t"
+        ));
+        assert!(!eq("select \"a\" from t", "select \"A\" from t"));
     }
 
     #[test]
     fn semantics_are_not_canonicalized() {
-        // These are semantically equivalent but must remain DIFFERENT tokens
-        // (the hosted service executes on each — it is not a logical plan).
-        assert!(!eq("group by customer_id", "group by 1"));
-        assert!(!eq("where x is not null", "where (x is not null)"));
-        assert!(!eq("where x is not null", "where not (x is null)"));
-        assert!(!eq("1 = 1", "1 = 1.0"));
-        assert!(!eq("select a, b", "select b, a"));
+        // Semantically equivalent but the hosted service EXECUTES — we must too
+        // (it is NOT a logical plan).
+        assert!(!eq(
+            "select a from t group by 1",
+            "select a from t group by a"
+        ));
+        assert!(!eq(
+            "select 1 from t where a is not null",
+            "select 1 from t where (a is not null)"
+        ));
+        assert!(!eq(
+            "select 1 from t where a is not null",
+            "select 1 from t where not (a is null)"
+        ));
+        assert!(!eq(
+            "select 1 from t where a = 1",
+            "select 1 from t where a = 1.0"
+        ));
+        assert!(!eq("select a, b from t", "select b, a from t"));
+    }
+
+    #[test]
+    fn genuine_changes_differ() {
+        assert!(!eq("select a from t", "select a, b from t"));
+        assert!(!eq(
+            "select a from t where x = 1",
+            "select a from t where x = 2"
+        ));
     }
 
     #[test]
     fn empty_and_whitespace_only() {
         assert_eq!(normalize_sql(""), "");
         assert_eq!(normalize_sql("   \n\t "), "");
+        assert_eq!(normalize_sql("-- only a comment"), "");
     }
 
     #[test]
-    fn operator_synonyms_canonicalized() {
-        // != ≡ <> (verified live).
-        assert!(eq("where a != 0", "where a <> 0"));
-        // multi-char operators tokenize as one unit.
-        assert_eq!(normalize_sql("a<=b"), normalize_sql("a <= b"));
-        assert!(!eq("a < b", "a <= b"));
+    fn unparseable_sql_falls_back_to_lexer_and_still_normalizes() {
+        // A fragment sqlparser rejects as a statement must still normalize via
+        // the lexer fallback (comments/case/whitespace), never panic.
+        let a = normalize_sql("~~ not valid sql @@ -- c");
+        let b = normalize_sql("~~ not valid sql @@");
+        assert_eq!(a, b, "comment stripped via lexer fallback");
     }
 
-    #[test]
-    fn trailing_comma_and_semicolon_dropped() {
-        assert!(eq("select a, b from t", "select a, b, from t"));
-        assert!(eq("select 1", "select 1;"));
-        assert!(eq("select 1", "select 1 ;"));
-        // A comma that is NOT dangling must be kept (would change meaning).
-        assert!(!eq("select a, b", "select a b"));
-    }
+    // ---- Lexer fallback (exercised directly) ----
 
     #[test]
-    fn optimizer_hint_stripped_like_comment() {
-        assert!(eq("select /*+ no_merge */ a from t", "select a from t"));
-    }
-
-    /// DOCUMENTED PARSER-GAP: the hosted service canonicalizes these via a
-    /// dialect AST (cast shorthand, type synonyms, function synonyms, optional
-    /// AS) and SKIPs; our lexer does NOT, so these remain DIFFERENT and we
-    /// over-execute (safe-directional). Pins the known boundary so a future
-    /// parser-based implementation has an explicit target to flip.
-    #[test]
-    fn parser_level_synonyms_are_a_known_gap() {
-        assert!(
-            !eq("cast(x as varchar)", "x::varchar"),
-            "cast shorthand: gap"
-        );
-        assert!(
-            !eq("cast(x as varchar)", "cast(x as text)"),
-            "type synonym: gap"
-        );
-        assert!(!eq("coalesce(a, b)", "nvl(a, b)"), "function synonym: gap");
-        assert!(!eq("10 as k", "10 k"), "optional AS: gap");
+    fn lexer_fallback_rules() {
+        let leq = |a: &str, b: &str| normalize_sql_lexer(a) == normalize_sql_lexer(b);
+        assert!(leq("select 1", "-- c\nselect 1"));
+        assert!(leq("SELECT A", "select a"));
+        assert!(leq("a != 0", "a <> 0"));
+        assert!(leq("select 1", "select 1;"));
+        // String content preserved even in the fallback.
+        assert!(!leq("'a b'", "'a  b'"));
+        // No semantic canonicalization in the fallback.
+        assert!(!leq("group by 1", "group by a"));
     }
 }

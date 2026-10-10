@@ -118,4 +118,33 @@ async fn reproduces_live_sql_normalization_boundary() {
             "{label}: expected execute (token stream differs — NOT a logical-plan match)"
         );
     }
+
+    // AST-level synonym canonicalization (parser-backed): these pairs differ
+    // only by a synonym the hosted service unifies, so the VARIANT must SKIP
+    // against its own baseline. Verified live.
+    let synonym_pairs: [(&str, &str, &str); 3] = [
+        (
+            "cast_shorthand",
+            "select cast(customer_id as varchar) as c from up",
+            "select customer_id::varchar as c from up",
+        ),
+        (
+            "type_synonym",
+            "select cast(customer_id as varchar) as c from up",
+            "select cast(customer_id as text) as c from up",
+        ),
+        (
+            "function_synonym",
+            "select coalesce(customer_id, 0) as c from up",
+            "select nvl(customer_id, 0) as c from up",
+        ),
+    ];
+    for (label, base_sql, variant_sql) in synonym_pairs {
+        tn += 1;
+        let v = verdict_for(base_sql, variant_sql, &format!("\"DB\".\"S\".\"N{tn}\"")).await;
+        assert_eq!(
+            v, "skip_execution",
+            "{label}: parser must canonicalize the synonym → skip (matches hosted)"
+        );
+    }
 }

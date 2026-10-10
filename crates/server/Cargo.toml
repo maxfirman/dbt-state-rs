@@ -25,6 +25,7 @@ sqlx.workspace = true
 sha2.workspace = true
 md-5.workspace = true
 hex.workspace = true
+sqlparser.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 serde.workspace = true
