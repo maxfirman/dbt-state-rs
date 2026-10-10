@@ -85,13 +85,13 @@ ints on the wire/JSON.
 Given the request and the latest matching **confirmed** record:
 
 1. **Match key (logic identity).** The hosted service's logic identity is the
-   **whitespace-normalized rendered `sql`** plus an allowlisted subset of
+   **lexically-normalized rendered `sql`** plus an allowlisted subset of
    config carried in **`semantic_extras`** — NOT the client's `node_body_hash`
    (an unrendered template hash the service ignores for reuse). Verified from
    the client source (`run_cache_request.rs`) and controlled live A/B. Scoped by
    org + `execution_type`, keyed logically by `table_namespace` (cross-env) with
    physical `target_table` fallback. Our server computes a single match hash =
-   `sha256(normalize_ws(sql) ++ hash(semantic_extras))` and matches on it.
+   `sha256(normalize_sql(sql) ++ hash(semantic_extras))` and matches on it.
    - **`semantic_extras` allowlist** (the keys that DO force a rebuild when
      changed): `on_schema_change, incremental_predicates, merge_update_columns,
      merge_exclude_columns, constraints, contract, unique_key, grants,
@@ -100,10 +100,17 @@ Given the request and the latest matching **confirmed** record:
      `pre_hook`, `post_hook` — does not appear in `semantic_extras` and does
      **not** force a rebuild (live-verified: `grants` → execute, `meta`/`tags`/
      hooks → skip, whitespace-only SQL edit → skip).
-   - **Whitespace normalization.** A formatting/whitespace-only SQL change
-     SKIPs (verified). We collapse ASCII whitespace runs before hashing. This is
-     the extent of the service's "SQL understanding" — NOT a deep semantic/AST
-     fingerprint.
+   - **SQL normalization is LEXER-LEVEL, not semantic.** We tested (and
+     disproved) the hypothesis that the server compares DataFusion-style logical
+     plans: it does not. It lexes the SQL and compares a normalized token stream
+     — strip `--`/`/* */` comments, collapse inter-token whitespace (but PRESERVE
+     whitespace inside string literals), case-fold keywords/unquoted identifiers
+     (but PRESERVE string-literal case and treat quoted identifiers as distinct).
+     It does NOT canonicalize semantics: `group by 1` ≠ `group by col`, redundant
+     parens, CTE-vs-inline, `not(x is null)` ≠ `x is not null`, and `1` ≠ `1.0`
+     all EXECUTE. See `crate::sql_norm` and
+     [`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md)
+     for the full evidence table.
    - **`compare_unrendered_code=true`** switches the SQL side to the UNRENDERED
      template (`node_body_hash`) so non-deterministic rendered values (env_var)
      don't rebuild.
@@ -203,7 +210,7 @@ The decision engine (`decision::decide`) currently derives its verdict from:
 includes `table_namespace` (cross-environment reuse) and is org-scoped.
 
 The decision engine now derives the logic identity from the
-**whitespace-normalized rendered `sql`** + the allowlisted **`semantic_extras`**
+**lexically-normalized rendered `sql`** + the allowlisted **`semantic_extras`**
 (plus `execution_type`, `table_namespace`/`target_table`, upstream freshness,
 and `stale_upstream_policy`). This was VERIFIED two ways: (1) the client source
 (`run_cache_request.rs`) builds `semantic_extras` from a fixed config-key
@@ -211,7 +218,7 @@ allowlist, and (2) controlled live A/B against the hosted service.
 
 | Field | Role | Verified hosted behaviour |
 |---|---|---|
-| `sql` (rendered) | match key (whitespace-normalized) | formatting/whitespace-only change → skip; real text change → execute |
+| `sql` (rendered) | match key (lexically normalized) | comments stripped, case-folded (keywords/unquoted idents), inter-token whitespace collapsed → skip; string-literal/semantic/token-order change → execute |
 | `semantic_extras` | match key | changing an allowlisted key (grants, contract, unique_key, persist_docs, …) → execute |
 | `node_body_hash` | NOT a reuse gate | changes on cosmetic config, yet hosted still skips; used only as the SQL side under `compare_unrendered_code=true` |
 | `node_configs_hash` | NOT a reuse gate | changes on any config edit, incl. meta/hooks that skip |
@@ -238,9 +245,10 @@ the hosted service skipped the former and executed the latter — proving the
 body hash is not the discriminator. The `meta` edit only perturbs whitespace in
 the rendered `sql` and adds no allowlisted `semantic_extras` key, so it skips;
 the new column changes the normalized SQL, so it executes. **Our server now
-reproduces both** (match hash = normalized SQL + semantic_extras). This is NOT a
-deep semantic/AST fingerprint — just whitespace normalization + a config
-allowlist.
+reproduces both** (match hash = lexically-normalized SQL + semantic_extras).
+This is NOT a deep semantic/AST/logical-plan fingerprint — just lexical
+token-stream normalization (comments, case, inter-token whitespace) + a config
+allowlist; see §"SQL normalization is LEXER-LEVEL" above.
 
 (`table_namespace` is an adapter/connection-level id — `get_adapter_unique_id()`
 — shared by all nodes, so it is a coarse scope, not a per-node key.)
