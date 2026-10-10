@@ -64,6 +64,57 @@ pub const DESC_EXECUTE: &str =
 // RejectionReason enum values (from shared.proto).
 pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
 
+// ModelExecutionType values relevant to node-kind-specific wording.
+const ET_SNAPSHOT: i32 = 7;
+const ET_DBT_DATA_TEST: i32 = 8;
+const ET_VALUES: i32 = 9;
+
+/// A human noun for the node kind, matching the hosted service's wording.
+fn node_noun(execution_type: i32) -> &'static str {
+    match execution_type {
+        ET_SNAPSHOT => "snapshot",
+        ET_DBT_DATA_TEST => "data test",
+        ET_VALUES => "seed",
+        _ => "model",
+    }
+}
+
+/// SKIP description, node-kind specific (verified live against api.state.dbt.com).
+fn skip_description(execution_type: i32) -> String {
+    match execution_type {
+        ET_VALUES => "seed was a no-op because its data has not changed".to_string(),
+        ET_DBT_DATA_TEST => {
+            "data test was a no-op because both its query and its upstream data are up to date"
+                .to_string()
+        }
+        ET_SNAPSHOT => {
+            "snapshot was a no-op because both its query and its upstream data are up to date"
+                .to_string()
+        }
+        _ => "model was a no-op because both its query and its upstream data are up to date"
+            .to_string(),
+    }
+}
+
+/// EXECUTE description, node-kind + reason specific. `had_prior` distinguishes a
+/// first build ("did not exist" / "no prior execution") from a rebuild of an
+/// existing node ("query didn't match or upstream out of date").
+fn execute_description(execution_type: i32, had_prior: bool) -> String {
+    match (execution_type, had_prior) {
+        (ET_VALUES, false) => "seed was loaded because it did not exist".to_string(),
+        (ET_VALUES, true) => "seed was loaded because its data changed".to_string(),
+        (ET_DBT_DATA_TEST, _) => {
+            "data test was executed because it has no prior execution or its query changed"
+                .to_string()
+        }
+        (et, false) => format!("{} was executed because its table did not exist", node_noun(et)),
+        (et, true) => format!(
+            "{} was executed because either its query didn't match or its upstream data is out of date",
+            node_noun(et)
+        ),
+    }
+}
+
 /// Inputs distilled from a SubmitEnrichedSQLRequest for the decision.
 pub struct SubmitContext<'a> {
     pub execution_type: i32,
@@ -80,24 +131,24 @@ pub struct SubmitContext<'a> {
 /// Decide SKIP vs EXECUTE given the latest matching confirmed record (if any).
 pub fn decide(ctx: &SubmitContext, confirmed: Option<&ExecutionRow>) -> Verdict {
     match confirmed {
-        // No prior execution with a matching fingerprint → the query didn't
-        // match any suitable candidate → EXECUTE (not stale; a hash miss).
-        None => execute(false),
+        // No prior execution with a matching fingerprint → the node did not
+        // exist / had no prior execution → EXECUTE (not stale; a hash miss).
+        None => execute(ctx.execution_type, false, false),
         Some(prev) => {
             if is_stale(ctx, prev) {
-                execute(true)
+                execute(ctx.execution_type, true, true)
             } else {
                 Verdict::Skip {
-                    description: DESC_SKIP.to_string(),
+                    description: skip_description(ctx.execution_type),
                 }
             }
         }
     }
 }
 
-fn execute(is_stale: bool) -> Verdict {
+fn execute(execution_type: i32, is_stale: bool, had_prior: bool) -> Verdict {
     Verdict::Execute {
-        description: DESC_EXECUTE.to_string(),
+        description: execute_description(execution_type, had_prior),
         skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
         clone_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
         is_stale,
@@ -258,6 +309,82 @@ mod tests {
             name: name.into(),
             last_modified_epoch: epoch,
         }
+    }
+
+    fn desc_of(v: &Verdict) -> String {
+        match v {
+            Verdict::Skip { description } => description.clone(),
+            Verdict::Execute { description, .. } => description.clone(),
+        }
+    }
+
+    /// Node-type/reason-specific decision_description strings, pinned to the
+    /// exact wording captured live from api.state.dbt.com.
+    #[test]
+    fn decision_descriptions_match_hosted_wording() {
+        let up = vec![tbl("a", 100)];
+        // First build (no prior) → "did not exist" per node kind.
+        let first = |et: i32| {
+            let mut c = ctx("h", &up);
+            c.execution_type = et;
+            desc_of(&decide(&c, None))
+        };
+        assert_eq!(
+            first(1),
+            "model was executed because its table did not exist"
+        );
+        assert_eq!(
+            first(10),
+            "model was executed because its table did not exist"
+        );
+        assert_eq!(
+            first(7),
+            "snapshot was executed because its table did not exist"
+        );
+        assert_eq!(
+            first(8),
+            "data test was executed because it has no prior execution or its query changed"
+        );
+        assert_eq!(first(9), "seed was loaded because it did not exist");
+
+        // Rebuild of an existing node (stale upstream) → "query didn't match …".
+        let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
+        let drift = vec![tbl("a", 9_000_000)];
+        let stale = |et: i32| {
+            let mut c = ctx("h", &drift);
+            c.execution_type = et;
+            desc_of(&decide(&c, Some(&prev)))
+        };
+        assert_eq!(
+            stale(1),
+            "model was executed because either its query didn't match or its upstream data is out of date"
+        );
+        assert_eq!(
+            stale(7),
+            "snapshot was executed because either its query didn't match or its upstream data is out of date"
+        );
+        assert_eq!(stale(9), "seed was loaded because its data changed");
+
+        // Skip (confirmed + fresh) → node-kind no-op wording.
+        let fresh = vec![tbl("a", 100)];
+        let skip = |et: i32| {
+            let mut c = ctx("h", &fresh);
+            c.execution_type = et;
+            desc_of(&decide(&c, Some(&prev)))
+        };
+        assert_eq!(
+            skip(1),
+            "model was a no-op because both its query and its upstream data are up to date"
+        );
+        assert_eq!(
+            skip(8),
+            "data test was a no-op because both its query and its upstream data are up to date"
+        );
+        assert_eq!(
+            skip(7),
+            "snapshot was a no-op because both its query and its upstream data are up to date"
+        );
+        assert_eq!(skip(9), "seed was a no-op because its data has not changed");
     }
 
     #[test]
