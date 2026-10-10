@@ -18,6 +18,7 @@ pub struct ExecutionRow {
     pub target_table: String,
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
+    pub node_sql_hash: Option<String>,
     pub table_namespace: Option<String>,
     pub node_unique_id: Option<String>,
     pub last_modified_epoch: Option<i64>,
@@ -35,6 +36,7 @@ pub struct PendingExecution {
     pub execution_type: i32,
     pub node_hash: Option<String>,
     pub node_body_hash: Option<String>,
+    pub node_sql_hash: Option<String>,
     pub node_configs_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_unique_id: Option<String>,
@@ -55,6 +57,7 @@ pub struct ConfirmedExecution {
     pub execution_type: i32,
     pub node_hash: Option<String>,
     pub node_body_hash: Option<String>,
+    pub node_sql_hash: Option<String>,
     pub node_configs_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_unique_id: Option<String>,
@@ -85,16 +88,21 @@ impl Store {
     }
 
     /// Find the most recent CONFIRMED execution matching the node fingerprint.
+    /// Matches on BOTH `node_body_hash` (the client's unrendered template hash)
+    /// and `node_sql_hash` (a hash of the raw rendered SQL). The hosted service
+    /// compares rendered SQL by default, so a changed rendered SQL (e.g. an
+    /// env_var value) with an unchanged template hash must still force a rebuild.
     pub async fn find_confirmed(
         &self,
         org_id: &str,
         target_table: &str,
         execution_type: i32,
         node_body_hash: Option<&str>,
+        node_sql_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash,
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
@@ -103,6 +111,7 @@ impl Store {
               AND execution_type = $3
               AND status = 'confirmed'
               AND node_body_hash IS NOT DISTINCT FROM $4
+              AND node_sql_hash IS NOT DISTINCT FROM $5
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
             "#,
@@ -111,6 +120,7 @@ impl Store {
         .bind(target_table)
         .bind(execution_type)
         .bind(node_body_hash)
+        .bind(node_sql_hash)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Into::into))
@@ -128,10 +138,11 @@ impl Store {
         table_namespace: &str,
         execution_type: i32,
         node_body_hash: Option<&str>,
+        node_sql_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash,
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
@@ -140,6 +151,7 @@ impl Store {
               AND execution_type = $3
               AND status = 'confirmed'
               AND node_body_hash IS NOT DISTINCT FROM $4
+              AND node_sql_hash IS NOT DISTINCT FROM $5
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
             "#,
@@ -148,6 +160,7 @@ impl Store {
         .bind(table_namespace)
         .bind(execution_type)
         .bind(node_body_hash)
+        .bind(node_sql_hash)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(Into::into))
@@ -171,7 +184,7 @@ impl Store {
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash,
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
@@ -203,7 +216,7 @@ impl Store {
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash,
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    input_tables, status, request_id
             FROM executions
@@ -233,8 +246,9 @@ impl Store {
             INSERT INTO executions (
                 org_id, target_table, execution_type, node_hash, node_body_hash,
                 node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
-                dialect, input_tables, values_hash, status, request_id, execution_decision_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14)
+                dialect, input_tables, values_hash, status, request_id, execution_decision_id,
+                node_sql_hash
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15)
             RETURNING id
             "#,
         )
@@ -252,6 +266,7 @@ impl Store {
         .bind(&p.values_hash)
         .bind(&p.request_id)
         .bind(&p.execution_decision_id)
+        .bind(&p.node_sql_hash)
         .fetch_one(&self.pool)
         .await?;
         Ok(rec)
@@ -273,8 +288,8 @@ impl Store {
                     node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                     dialect, input_tables, values_hash, status, request_id,
                     execution_decision_id, last_modified_epoch, table_type,
-                    execution_runtime_ms, confirmed_at
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now())
+                    execution_runtime_ms, confirmed_at, node_sql_hash
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18)
                 "#,
             )
             .bind(&c.org_id)
@@ -294,6 +309,7 @@ impl Store {
             .bind(c.last_modified_epoch)
             .bind(&c.table_type)
             .bind(c.execution_runtime_ms)
+            .bind(&c.node_sql_hash)
             .execute(&mut *tx)
             .await?;
         }
@@ -373,6 +389,7 @@ struct RawRow {
     target_table: String,
     execution_type: i32,
     node_body_hash: Option<String>,
+    node_sql_hash: Option<String>,
     table_namespace: Option<String>,
     node_unique_id: Option<String>,
     last_modified_epoch: Option<i64>,
@@ -392,6 +409,7 @@ impl From<RawRow> for ExecutionRow {
             target_table: r.target_table,
             execution_type: r.execution_type,
             node_body_hash: r.node_body_hash,
+            node_sql_hash: r.node_sql_hash,
             table_namespace: r.table_namespace,
             node_unique_id: r.node_unique_id,
             last_modified_epoch: r.last_modified_epoch,

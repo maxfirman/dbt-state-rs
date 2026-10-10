@@ -133,6 +133,7 @@ fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> Exe
         target_table: "\"DB\".\"S\".\"T\"".into(),
         execution_type: 10,
         node_body_hash: Some(hash.into()),
+        node_sql_hash: None,
         table_namespace: Some("ns".into()),
         node_unique_id: None,
         last_modified_epoch: built,

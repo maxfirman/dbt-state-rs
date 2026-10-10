@@ -324,6 +324,23 @@ fn new_uuid_v7() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
+/// Hash of the raw (rendered) SQL the client sends, used alongside
+/// `node_body_hash` in the match key. The hosted service compares RENDERED SQL
+/// by default (`compare_unrendered_code=false`), so a changed rendered SQL —
+/// e.g. a different `env_var` value — must force a rebuild even though the
+/// client's `node_body_hash` (an UNRENDERED template hash) is unchanged.
+/// Returns `None` for empty SQL (seeds/clones carry none) so those paths retain
+/// their prior `NULL` match semantics. See `c2_rendered_sql.rs`.
+fn sql_hash_of(sql: &str) -> Option<String> {
+    if sql.is_empty() {
+        return None;
+    }
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(sql.as_bytes());
+    Some(hex::encode(h.finalize()))
+}
+
 #[derive(Clone)]
 pub struct SqlService(pub AppState);
 
@@ -340,6 +357,7 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
+        let node_sql_hash = sql_hash_of(&req.sql);
         let input_tables = decision::input_tables_of(&req);
         let node_unique_id = req
             .dbt_node_state
@@ -371,6 +389,7 @@ impl Sql for SqlService {
                             &target_table,
                             execution_type,
                             node_body_hash.as_deref(),
+                            None,
                         )
                         .await
                         .map_err(db_err)?,
@@ -389,6 +408,7 @@ impl Sql for SqlService {
                             ns,
                             execution_type,
                             node_body_hash.as_deref(),
+                            node_sql_hash.as_deref(),
                         )
                         .await
                         .map_err(db_err)?,
@@ -404,6 +424,7 @@ impl Sql for SqlService {
                             &target_table,
                             execution_type,
                             node_body_hash.as_deref(),
+                            node_sql_hash.as_deref(),
                         )
                         .await
                         .map_err(db_err)?,
@@ -454,6 +475,7 @@ impl Sql for SqlService {
                     execution_type,
                     node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
                     node_body_hash: node_body_hash.clone(),
+                    node_sql_hash: node_sql_hash.clone(),
                     node_configs_hash: req
                         .dbt_node_state
                         .as_ref()
@@ -579,6 +601,7 @@ impl Sql for SqlService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
+                    node_sql_hash: None,
                     node_configs_hash: req
                         .dbt_node_state
                         .as_ref()
@@ -689,6 +712,7 @@ impl Execution for ExecutionService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
+                    node_sql_hash: sql_hash_of(&sql.sql),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()
@@ -727,6 +751,7 @@ impl Execution for ExecutionService {
                         .dbt_node_state
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
+                    node_sql_hash: None,
                     node_configs_hash: values
                         .dbt_node_state
                         .as_ref()
@@ -811,6 +836,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             execution_type: req.execution_type,
             node_hash: None,
             node_body_hash: None,
+            node_sql_hash: None,
             node_configs_hash: None,
             node_contract_hash: None,
             node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
