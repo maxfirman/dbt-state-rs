@@ -1,116 +1,78 @@
-# dbt State conformance scenario checklist
+# dbt State conformance matrix (live-verified)
 
-Derived from the official docs (docs.getdbt.com, Sep 2026) + live capture. Each
-row is a behaviour to verify against the real service and, where it differs from
-`dbt-state-rs`, to implement. Status: ✅ verified+conformant, ⚠️ divergence
-found, ❓ to test, 🔧 implemented this pass.
+Behaviors characterized against the real service (`api.state.dbt.com`, dbt Fusion
+client, Snowflake demo warehouse) via the recording proxy, and reproduced by
+`dbt-state-rs`. This is the current state, not a to-do list; open questions live
+in [docs/correctness-handoff.md](../docs/correctness-handoff.md).
 
-## Node-type reusability (docs: dbt-state-about)
-| node type | reusable? | expected |
+## Node-type reusability
+
+| node type | reusable | match key |
 |---|---|---|
-| SQL model (view/table/incremental) | yes | skip/clone when logic+data unchanged |
-| snapshot | yes | reusable |
-| seed | yes | match on values_hash |
-| data test | yes | reuse prior result if tested nodes unchanged; match by node_unique_id |
-| unit test | ❓ | state-explain shows UNKNOWN ("details unavailable") |
-| Python model | NO — always build | n/a (not Snowflake-SQL) |
-| custom materialization (DBT_CUSTOM=11) | NO — always build | must always EXECUTE |
+| SQL model (view/table/incremental) | yes | rendered SQL + `semantic_extras` (all keys the client sends) |
+| snapshot (et=7) | yes | same as models |
+| seed (VALUES) | yes | `values_hash` + seed config |
+| data test (et=8) | yes | `node_unique_id` (shared body hash per generic type) + cached result |
+| custom materialization (et=11) | yes | treated like any model (docs claim "never reuse"; the real service SKIPs an unchanged one — docs are wrong) |
+| Python model | no | not Snowflake-SQL; always builds |
 
-## Decision rules (docs: dbt-state-about, state-explain)
-| rule | expected hosted behaviour | our status |
+## Reuse / rebuild decision
+
+| scenario | et | hosted | reproduced |
+|---|---|---|---|
+| table/view/incremental/snapshot/seed/test unchanged | — | skip | ✅ |
+| no prior execution | — | execute | ✅ |
+| view, logic unchanged, upstream advanced | 10 | skip (client omits upstreams from `tables[]`) | ✅ |
+| view/model definition change (added column) | — | execute | ✅ |
+| incremental `unique_key` change | 3 | execute | ✅ |
+| incremental `--full-refresh` | — | client bypasses state (no submit) | ✅ |
+| seed content change | VALUES | execute (new `values_hash`) | ✅ |
+| data test add/changed | 8 | execute (new `node_unique_id`) | ✅ |
+| upstream newer than own build (ANY) | — | execute, `is_stale=false` | ✅ |
+| `require_fresh_data_from: all`, some parents fresh | — | skip, `is_stale=true` (tolerated-stale) | ✅ |
+| `require_fresh_data_from: all`, all parents drifted | — | execute | ✅ |
+
+## SQL / config equivalence (match key)
+
+The server fingerprints whitespace-normalized **rendered SQL** (schema-abstracted
+for cross-environment reuse) plus a hash of **all `semantic_extras` the client
+sends** (sorted). It ignores `node_body_hash` for reuse. The effective "config
+allowlist" is therefore the CLIENT's choice of which config keys to place in
+`semantic_extras`: config that changes a key the client sends (e.g. `grants`,
+contract enforce, `unique_key`, `pre_hook`) rebuilds; config the client does not
+send (`meta`, `tags`, `post_hook`, contract `data_type`) does not. See
+[SQL_NORMALIZATION.md](SQL_NORMALIZATION.md) for the SQL canonicalization.
+
+| change | hosted | reproduced |
 |---|---|---|
-| view, logic unchanged, upstream data CHANGED | SKIP (views reflect new data w/o rebuild) | ❓ likely ⚠️ (we apply freshness to all types) |
-| view uses `select *` on ref()/source() | REBUILD (cols unknown at parse) | ❓ server SQL analysis — out of scope |
-| table/incremental, upstream data changed beyond lag_tolerance | EXECUTE | ✅ |
-| logic (semantic SQL) changed | EXECUTE | ⚠️ C1: we over-execute on cosmetic (body-hash); documented |
-| data test, tested node unchanged | SKIP (reuse prior result) | ✅ (uid match) |
-| data test, new/changed | EXECUTE | ✅ (uid match, C1c) |
-| no prior execution | EXECUTE | ✅ |
-| lag_tolerance window not elapsed | SKIP even if upstream changed | ❓ (we compare epoch deltas) |
-| require_fresh_data_from any/all | ANY/ALL stale policy | ✅ |
-| custom materialization | always EXECUTE | ❓ likely ⚠️ (we treat et=11 like any model) |
+| comments / whitespace / case / optional `AS` / `!=`↔`<>` / `::`↔`cast` / type+function synonyms | skip | ✅ |
+| config `meta` / `tags` / `post_hook` (client omits from `semantic_extras`) | skip | ✅ |
+| contract `data_type` (contract hash only; not in `semantic_extras`) | skip | ✅ |
+| config in `semantic_extras` (grants, contract enforce, unique_key, pre_hook, …) | execute | ✅ |
+| env_var / `--vars` change (rendered SQL changes) | execute | ✅ |
+| `compare_unrendered_code=true` + env_var (template match) | skip | ✅ |
 
-## Config-change policy (live-verified, C1b)
-| change | hosted | our status |
+Caveat: the hosted decision for config the client does NOT send is not a pure
+function of the request (rare non-reproducible EXECUTEs were observed). We
+implement the reproducible-majority (skip) behavior.
+
+## Clone (live-verified, see docs/correctness-handoff.md §A)
+
+| scenario | hosted | reproduced |
 |---|---|---|
-| meta / tags | SKIP | ⚠️ we execute (body-hash) |
-| post_hook | SKIP (hook silently dropped) | ⚠️ we execute |
-| pre_hook | EXECUTE | ✅ agree |
-| grants | EXECUTE | ✅ agree |
-| persist_docs | EXECUTE | ✅ agree |
-| contract enforce (config change) | EXECUTE | ✅ agree |
-| contract data_type (contract hash only) | SKIP | ⚠️ we execute |
-| column description (persist_docs off) | SKIP (not sent) | ✅ |
+| eligibility: incremental/snapshot | clone via `RegisterClone` | ✅ |
+| eligibility: table | clone via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
+| register → confirm → re-submit cloned target (same logic) | skip | ✅ |
+| re-submit cloned target with changed logic | execute (`LATEST_QUERY_HASH_NOT_MATCH`) | ✅ |
+| `allow_clones: false` (`clone_chain_depth_limit=0`) | `unable_to_clone` (crr=10, decision=READY_TO_EXECUTE) | ✅ |
+| SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |
+| clone DDL (Snowflake TABLE / TRANSIENT TABLE) | `CREATE OR REPLACE … CLONE … COPY GRANTS` | ✅ byte-match |
+| clone source is a view / unknown dialect | — | UNIMPLEMENTED (rejected, no guessed DDL) |
 
-## Materializations to test (this pass)
-- view: skip-on-upstream-change behaviour (❓ KEY), logic change -> execute
-- table: baseline (✅)
-- incremental (merge/append/delete+insert/insert_overwrite): clone-from-prod + run on top; --full-refresh
-- microbatch
-- ephemeral (no node? inlined)
-- snapshot
-- materialized_view
+## Known gaps / open
 
-## CONFIRMED FINDINGS (live)
-- VIEW (et=10) skip-despite-upstream-change: ✅ CONFORMANT (not a divergence).
-  The CLIENT sends only the view's OWN target in tables[] (never upstreams;
-  verified 0/5 view submits across all captures carry non-own upstreams). Our
-  own-table exclusion => considered==0 => skip on logic match. Data TESTS on the
-  view DO carry the upstream (raw_customers) and correctly execute when it drifts.
-- VIEW definition change (added column) -> node_body_hash changes -> EXECUTE. ✅
-- CUSTOM MATERIALIZATION (et=11): docs say "always build, never reused" but the
-  REAL service SKIPPED an unchanged custom_table model on rerun (execute ->
-  confirm -> skip). => our treat-like-any-node behaviour is CONFORMANT; do NOT
-  implement an always-execute rule (would diverge). Fixture
-  custom_materialization_reuse.jsonl. Docs are aspirational/outdated here.
-
-
-## Other scenarios
-- seed content change (values_hash), new seed, seed config (delimiter/quote/column_types)
-- clone: cross-env freshest candidate; allow_clones:false; RegisterClone
-- vars: --vars change -> rendered SQL change -> execute
-- env_var in SQL -> execute (unless compare_unrendered_code)
-- target name change
-- source freshness / external table modification
-- singular test (data-test node, singular SQL)
-
-## AUTHORITATIVE RESULTS MATRIX (live-verified; all reproduced by dbt-state-rs)
-
-| scenario | et | hosted | dbt-state-rs | status |
-|---|---|---|---|---|
-| table unchanged rerun | 1 | skip | skip | ✅ |
-| view unchanged / upstream advanced | 10 | skip (client omits upstreams) | skip | ✅ |
-| view definition change | 10 | execute | execute | ✅ |
-| incremental merge unchanged | 3 | skip | skip | ✅ |
-| incremental unique_key change | 3 | execute (body hash change) | execute | ✅ |
-| incremental --full-refresh | - | client bypasses state (no submit) | n/a | ✅ |
-| snapshot unchanged | 7 | skip | skip | ✅ |
-| custom materialization unchanged | 11 | skip (docs say never-reuse; docs WRONG) | skip | ✅ |
-| seed unchanged | VALUES | skip (values_hash) | skip | ✅ |
-| seed content change | VALUES | execute (new values_hash) | execute | ✅ |
-| data test add column test | 8 | execute (new node_unique_id) | execute | ✅ C1c |
-| data test unchanged | 8 | skip (match by unique_id) | skip | ✅ C1c |
-| singular test | 8 | skip when unchanged | skip | ✅ |
-| ephemeral model | - | no submit (inlined CTE) | n/a | ✅ |
-| env_var change (default) | any | execute (rendered SQL change) | execute | ✅ C2 FIXED |
-| --vars change | any | execute (rendered SQL change) | execute | ✅ C2 |
-| compare_unrendered_code=true + env_var | any | skip (template match) | skip | ✅ C2 FIXED |
-| config meta/tags/post_hook | any | skip (not in semantic_extras allowlist) | skip | ✅ (FIXED) |
-| config pre_hook/grants/persist_docs | any | pre_hook skip (reproducible); grants/persist_docs execute | matches | ✅ |
-| contract data_type (hash only) | 1 | skip (not in semantic_extras) | skip | ✅ (FIXED) |
-| whitespace-only SQL change | any | skip (normalized) | skip | ✅ (FIXED) |
-| allowlisted semantic_extras change (grants/contract/unique_key) | any | execute | execute | ✅ |
-| decision_description strings | all | node-type specific | node-type specific | ✅ (minor srr/crr imprecision) |
-
-CORRECTION (this pass): the match key was reworked from `node_body_hash` to the
-VERIFIED hosted mechanism — whitespace-normalized rendered SQL + an allowlisted
-`semantic_extras` hash (ignoring node_body_hash, which the service ignores for
-reuse). This ELIMINATED the former safe-directional over-execution on cosmetic
-config (meta/tags/hooks/whitespace now SKIP, matching hosted). The earlier
-"semantic SQL fingerprint" / "per-config-key policy (pre_hook executes)" claims
-were over-reaches corrected here: pre_hook reproducibly SKIPs under a clean
-baseline; the only residual gap is that the hosted service's decision for
-non-allowlisted config is not a pure function of the request (it showed rare
-non-reproducible EXECUTEs), so exact determinism there cannot be guaranteed from
-the protocol — we implement the reproducible-majority (skip) behaviour.
-
+- `lag_tolerance` CAN gate a rebuild under ANY policy (observed), but the exact
+  rule is not isolated; the engine keeps the safe own-build anchor. Handoff §C.
+- Non-Snowflake clone templates (BigQuery/Databricks/Spark) are our own, unverified.
+- Volatile-function evaluation, state selectors and state-backed deferral: UNIMPLEMENTED.
+- `unit test` reuse: not characterized (state-explain shows "details unavailable").
