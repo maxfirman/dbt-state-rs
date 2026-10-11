@@ -56,8 +56,10 @@ contracts; the hosted discovery tool has unequal history and is not a conformanc
 oracle. See [testing.md](testing.md).
 
 Recent offline hardening prevents several unsafe skips and preserves cached test
-results. Some unsupported reuse paths conservatively rebuild; selectors and
-state-backed deferral return UNIMPLEMENTED. Automatic SQL cloning, volatile
-transformations, provenance, dependency resolution, lag semantics and complete
-client compatibility still need work. Read [correctness-handoff.md](correctness-handoff.md)
-for completed fixes, upgrade effects, evidence and concrete next tasks.
+results. The data-freshness lag rule was validated live and corrected (rebuild
+when an upstream is newer than the node's own last build). Some unsupported
+reuse paths conservatively rebuild; selectors and state-backed deferral return
+UNIMPLEMENTED. Automatic SQL cloning, volatile transformations, provenance,
+dependency resolution and complete client compatibility still need work. Read
+[correctness-handoff.md](correctness-handoff.md) for completed fixes, upgrade
+effects, evidence and concrete next tasks.

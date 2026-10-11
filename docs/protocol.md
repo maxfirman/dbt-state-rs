@@ -100,8 +100,11 @@ remaining policies and compatibility gaps.
    target metadata builds. Data tests instead require complete cached results.
 4. Compare exact physical upstream names, excluding the own target from upstream
    drift only. Unknown epochs, changed input sets, and duplicate evidence build.
-   ANY/ALL and the existing timestamp-distance lag formula remain pending hosted
-   characterization. Another physical target builds until provenance is known.
+   An upstream newer than the node's own last-build epoch is drift (ANY/ALL
+   policy); this own-build anchor was verified live and `freshness_tolerance_
+   seconds` is intentionally not applied — see
+   [correctness-handoff.md §C](correctness-handoff.md). Another physical target
+   builds until provenance is known.
 5. Requested volatile evaluation (`tolerate_nondeterminism=false`) builds until
    runtime transformations are implemented. SQL submits do not generate CLONE.
 

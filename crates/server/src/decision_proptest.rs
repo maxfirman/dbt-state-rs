@@ -34,7 +34,24 @@ fn skip_would_be_safe(
     {
         return false;
     }
-    let tol_ms = tol_s.saturating_mul(1000);
+    // Verified rule: an upstream is drift iff it is strictly newer than our own
+    // last-build epoch. `freshness_tolerance_seconds` does not absorb the gap
+    // (verified live; see correctness-handoff.md).
+    let _ = tol_s;
+    // No genuine upstreams to compare → a hash/identity match alone is safe to
+    // skip, independent of whether an own-build epoch was recorded (mirrors the
+    // engine's short-circuit; a source-less model or no-input node is fresh).
+    let genuine_count = current
+        .iter()
+        .filter(|t| Some(t.name.as_str()) != target)
+        .count();
+    if genuine_count == 0 {
+        return true;
+    }
+    // With upstreams to check, an unknown own-build epoch cannot prove freshness.
+    let Some(own_build_epoch) = prev.last_modified_epoch else {
+        return false;
+    };
     let mut considered = 0usize;
     let mut drifted = 0usize;
     for c in current {
@@ -53,10 +70,7 @@ fn skip_would_be_safe(
         if matches.len() != 1 {
             return false;
         }
-        let Some(recorded) = matches[0].last_modified_epoch else {
-            return false;
-        };
-        if current_epoch > recorded.saturating_add(tol_ms) {
+        if current_epoch > own_build_epoch {
             drifted += 1;
         }
     }

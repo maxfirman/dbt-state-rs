@@ -27,7 +27,8 @@ not proof of general rules.
 | 9: empty selectors/deferral | Return UNIMPLEMENTED for both services rather than an empty successful selection/map. | Public gRPC error assertions |
 | 10: invalid clone DDL | Reject view sources and unknown dialects before inserting pending history. Preserve the captured Snowflake table DDL and both response mirrors. | Exact captured table DDL, view/unknown-dialect errors and no pending rows |
 | 13: tenant leaks/logged password | Scope every UI database read to configured `DBT_STATE_UI_ORG_ID` (default `local`); remove startup DSN logging. | Two organizations with identical project names; all UI read methods including direct foreign IDs |
-| Testing/toolchain | Pin Rust 1.98; move capture DB test out of `--lib`; reject malformed trace lines; replay all 14 fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences. | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
+| 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests exempt (no own object). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
+| Testing/toolchain | Pin Rust 1.98; move capture DB test out of `--lib`; reject malformed trace lines; replay all 15 fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences. | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -106,13 +107,43 @@ observations. A parser round trip alone is not a semantic oracle.
 
 ### C. Lag tolerance and template comparison (review 11, 12)
 
-**Policies intentionally not changed without an oracle.** Freshness currently
-compares `current_input > recorded_input + tolerance_seconds*1000`; official docs
-suggest elapsed age since build can matter instead. Introduce an injectable
-clock and characterize unchanged/changed inputs before/at/after the lag window,
-negative/extreme tolerance, logic changes within the window, ANY/ALL with mixed
-changes, and old builds with small timestamp deltas. Do not change the rule based
-only on prose or an oracle that copies the current implementation.
+**Lag/data freshness — RESOLVED (live-verified 2026-10-11).** The freshness
+rule was characterized against the real service (api.state.dbt.com, dbt Fusion
+client, Snowflake `prod_demo`) via the recording proxy. A model with
+`lag_tolerance=5m` over an upstream whose physical table was recreated in place
+with identical content (advancing its modification epoch WITHOUT any dbt SQL
+change, isolating pure data freshness from the upstream-logic-change bypass)
+rebuilds iff:
+
+    max_upstream_epoch > own_last_build_epoch
+
+That is: an upstream newer than the object we last built forces a rebuild. The
+comparison anchor is the node's OWN last-build epoch — NOT the upstream epoch
+recorded at that build (the previous implementation's anchor), and NOT a
+wall-clock build-age gate (the lag_tolerance doc's prose and the pre-hardening
+review both hypothesized the latter; neither matched the observed behavior).
+Critically, `freshness_tolerance_seconds` did NOT absorb the gap: a 300s
+tolerance still rebuilt on an upstream only tens of seconds newer than the
+build, and `is_stale=false` on every captured entry (staleness is a separate
+axis). The previous `current_input > recorded_input + tolerance` rule could SKIP
+when the upstream-delta was within tolerance even though the hosted service
+rebuilt — the UNSAFE (stale-serving) direction.
+
+`decision.rs::is_stale` now anchors on `prev.last_modified_epoch` (own build
+epoch), with ANY/ALL preserved and `freshness_tolerance_seconds` intentionally
+NOT applied (applying it would widen the skip window and reintroduce the unsafe
+skip; the only safe direction when uncertain is to execute more). Data-test
+nodes (`execution_type=8`) have no own object and no build epoch; they are
+governed by identity/logic match, not this axis. Pinned by the unit tests in
+`decision.rs` (`freshness_*`), the `decision_proptest.rs` oracle, the golden
+fixture `golden/fixtures/lag_freshness_own_build.jsonl`, and the characterization
+test `crates/harness/tests/lag_freshness.rs`.
+
+Remaining lag questions (not blocking): whether `lag_tolerance` ever gates in a
+scenario this capture did not reach (e.g. a different client/service version, or
+a wall-clock gate that only engages at much larger build ages); and direct-parent
+vs leaf propagation of the upstream-logic-change bypass. Re-characterize before
+reintroducing any tolerance effect — do not restore it from prose alone.
 
 `compare_unrendered_code=true` remains exclusive template-body comparison,
 while false uses rendered SQL. Fingerprints separate both modes, include extras,

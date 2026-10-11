@@ -52,8 +52,10 @@ so tests exercise the exact same wiring as production.
 candidate fingerprint, physical target and cached test result before invoking
 it. The engine compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
-from upstream drift. Existing ANY/ALL and lag-tolerance policy remain unchanged.
-See [protocol.md](protocol.md#current-decision-semantics).
+from upstream drift. Freshness drift is an upstream newer than the node's own
+last-build epoch (ANY/ALL policy), verified live; `freshness_tolerance_seconds`
+is intentionally not applied. See [protocol.md](protocol.md#current-decision-semantics)
+and [correctness-handoff.md §C](correctness-handoff.md).
 
 `fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
 mode), dialect/default context, sorted semantic extras and supplied dependency

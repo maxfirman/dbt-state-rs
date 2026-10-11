@@ -1,8 +1,9 @@
 //! Pure freshness policy for a prevalidated confirmed candidate.
 //! Store/services validate fingerprints, target existence and cached outcomes.
 //! Exact physical upstream identities and known, unambiguous metadata are
-//! required. ANY/ALL and timestamp-distance tolerance reflect current local
-//! policy; complete hosted lag semantics remain in correctness-handoff.md.
+//! required. Freshness compares each upstream epoch against the node's own
+//! last-build epoch (ANY/ALL policy); this anchor and the no-tolerance-
+//! absorption behavior were verified live — see correctness-handoff.md.
 
 use crate::query_cache as qc;
 use crate::store::{ExecutionRow, InputTable};
@@ -168,44 +169,80 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
         return true; // Missing, additional or ambiguous dependency evidence.
     }
 
+    // Freshness anchor: the node's OWN last build epoch. A node is stale when an
+    // upstream input is newer than the object we last built. This was verified
+    // live against api.state.dbt.com (Fusion client, Snowflake) — see the lag
+    // characterization in docs/correctness-handoff.md and the golden fixture:
+    // the service rebuilds iff `max_upstream_epoch > own_last_build_epoch`,
+    // comparing against the own-build epoch (NOT the upstream epoch recorded at
+    // that build) and WITHOUT `freshness_tolerance_seconds` absorbing the gap
+    // (a 300s tolerance did not absorb a 120s upstream-newer-than-build gap).
+    //
+    // `freshness_tolerance_seconds` is intentionally NOT applied here. Applying
+    // it (widening the skip window) would reintroduce an unsafe skip that serves
+    // data staler than the hosted service would: the only safe direction when a
+    // policy is uncertain is to execute more, never skip more. See the F-series
+    // tests below for the pinned boundary.
+    let _ = tolerance_ms; // field preserved on the wire; see note above.
+
     // Evaluate each genuine upstream input (excluding the node's own table).
+    // The own-build epoch only matters when there is an upstream to compare it
+    // against: a node with no genuine upstreams (e.g. a source-less model or a
+    // data test with no input freshness) is never stale on this axis, even if
+    // it never recorded a build epoch.
+    let genuine_upstreams: Vec<&InputTable> = ctx
+        .input_tables
+        .iter()
+        .filter(|t| ctx.target_table != Some(&t.name))
+        .collect();
+    if genuine_upstreams.is_empty() {
+        // No upstream inputs to compare → a hash match alone is safe to skip.
+        return false;
+    }
+
+    let Some(own_build_epoch) = prev.last_modified_epoch else {
+        // No own-build epoch recorded. Data tests (execution_type = 8) never
+        // produce a physical object and so have no build epoch nor an own-build
+        // freshness axis — they are governed by identity + logic match, and the
+        // hosted service skips them on a match (verified in the test-node golden
+        // fixture, where ConfirmExecution carries last_modified_epoch = None yet
+        // the re-submit skips). For object-producing node types a missing build
+        // epoch means we cannot prove freshness → execute conservatively rather
+        // than risk serving stale data.
+        return ctx.execution_type != ET_DBT_DATA_TEST;
+    };
+
     let mut considered = 0usize;
     let mut drifted = 0usize;
 
     // Compare genuine inputs against recorded physical identities.
-    for current in ctx.input_tables {
-        if let Some(target) = ctx.target_table {
-            if current.name == target {
-                continue; // own table modification is not upstream drift
-            }
-        }
+    for current in genuine_upstreams {
         considered += 1;
 
         let Some(current_epoch) = current.last_modified_epoch else {
             return true;
         };
+        // The recorded dependency set is still validated for identity/ambiguity
+        // (missing, extra or duplicate names already forced stale above and
+        // here), but the drift decision anchors on the own-build epoch.
         let mut matches = prev
             .input_tables
             .iter()
             .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
-        let Some(recorded) = matches.next() else {
+        if matches.next().is_none() {
             return true;
-        };
+        }
         if matches.next().is_some() {
             return true;
         }
-        let Some(recorded_epoch) = recorded.last_modified_epoch else {
-            return true;
-        };
-        let is_drift = current_epoch > recorded_epoch.saturating_add(tolerance_ms);
+        let is_drift = current_epoch > own_build_epoch;
         if is_drift {
             drifted += 1;
         }
     }
 
     if considered == 0 {
-        // No upstream inputs to compare (e.g. a source-less model); a hash match
-        // alone means not stale.
+        // Defensive: unreachable given the genuine_upstreams emptiness check.
         return false;
     }
 
@@ -422,15 +459,26 @@ mod tests {
         );
     }
 
+    /// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake): a non-zero
+    /// `freshness_tolerance_seconds` does NOT absorb upstream drift. The service
+    /// rebuilds as soon as an upstream is newer than the own-build epoch, even
+    /// with a large tolerance (a 300s tolerance did not absorb a 120s gap).
+    /// So any upstream newer than our build is stale regardless of tolerance.
     #[test]
-    fn freshness_tolerance_absorbs_small_drift() {
+    fn freshness_tolerance_does_not_absorb_drift() {
+        // own build epoch = 1_000_000; upstream only 1000ms newer; tolerance 2s.
         let recorded = vec![tbl("a", 1_000_000)];
-        // drift of 1000ms, tolerance 2s = 2000ms → within tolerance → skip
         let current = vec![tbl("a", 1_001_000)];
         let prev = confirmed("h", recorded, Some(1_000_000));
         let mut c = ctx("h", &current);
         c.freshness_tolerance_seconds = 2;
-        assert!(matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }));
+        assert!(
+            matches!(
+                decide(&c, Some(&prev)),
+                Verdict::Execute { is_stale: true, .. }
+            ),
+            "upstream newer than own build must execute even within tolerance"
+        );
     }
 
     #[test]
@@ -482,32 +530,33 @@ mod tests {
         );
     }
 
-    /// MODIFIED UPSTREAM exactly at the tolerance boundary. tolerance is a
-    /// strict `>` comparison: drift == tolerance is still fresh (skip); drift ==
-    /// tolerance+1ms is stale (execute). Pin both sides of the boundary.
+    /// FRESHNESS BOUNDARY (verified): drift is a strict `>` comparison against
+    /// the OWN BUILD epoch, not the recorded-upstream epoch, and tolerance does
+    /// not shift it. Upstream == own-build is fresh (skip); own-build + 1ms is
+    /// stale (execute). A large tolerance does not move this boundary.
     #[test]
-    fn tolerance_boundary_is_strict_greater_than() {
+    fn freshness_boundary_is_own_build_strict_greater_than() {
         let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
 
-        // Exactly at tolerance (2000ms): NOT drift → skip.
-        let at = vec![tbl("a", 1_002_000)];
+        // Upstream exactly equal to own build: NOT drift → skip (even with tol).
+        let at = vec![tbl("a", 1_000_000)];
         let mut c = ctx("h", &at);
-        c.freshness_tolerance_seconds = 2;
+        c.freshness_tolerance_seconds = 300;
         assert!(
             matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
-            "drift exactly at tolerance must skip"
+            "upstream equal to own build must skip"
         );
 
-        // One ms beyond tolerance: drift → execute.
-        let beyond = vec![tbl("a", 1_002_001)];
+        // One ms newer than own build: drift → execute, tolerance notwithstanding.
+        let beyond = vec![tbl("a", 1_000_001)];
         let mut c2 = ctx("h", &beyond);
-        c2.freshness_tolerance_seconds = 2;
+        c2.freshness_tolerance_seconds = 300;
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
                 Verdict::Execute { is_stale: true, .. }
             ),
-            "drift one ms beyond tolerance must execute"
+            "upstream one ms newer than own build must execute even with 300s tolerance"
         );
     }
 
@@ -597,8 +646,9 @@ mod tests {
         ));
     }
 
-    /// OLDER upstream than recorded (clock skew / restore) must NOT be treated
-    /// as drift — only strictly-newer data forces a rebuild.
+    /// OLDER upstream than our own build (clock skew / restore) must NOT be
+    /// treated as drift — only an upstream strictly newer than the own-build
+    /// epoch forces a rebuild.
     #[test]
     fn older_upstream_than_recorded_skips() {
         let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
@@ -609,44 +659,40 @@ mod tests {
         ));
     }
 
-    /// EPOCH-UNIT INVARIANT (F4): `freshness_tolerance_seconds` is in SECONDS,
-    /// but every `last_modified_epoch` (upstream tables, recorded build time,
-    /// ConfirmExecution) is in MILLISECONDS — as sent by the real client and
-    /// seen in the golden fixtures (13-digit values ~1.79e12). The engine
-    /// bridges the units with a single `* 1000`. This test pins that contract:
-    /// a tolerance of T seconds absorbs exactly T*1000 ms of drift and no more.
-    /// If a future change ever mixed the units (e.g. treated epochs as seconds),
-    /// every freshness comparison would silently invert; this test fails loudly.
+    /// EPOCH MAGNITUDE INVARIANT: every `last_modified_epoch` (upstream tables,
+    /// recorded build time, ConfirmExecution) is in MILLISECONDS — as sent by
+    /// the real client and seen in the golden fixtures (13-digit values
+    /// ~1.79e12). Freshness compares the upstream epoch directly against the
+    /// own-build epoch in those native millisecond units; a 1ms difference is
+    /// decisive. This pins that the comparison is not accidentally scaled or
+    /// unit-mixed. `freshness_tolerance_seconds` is deliberately irrelevant here
+    /// (verified live: it does not absorb upstream drift).
     #[test]
-    fn tolerance_is_seconds_epochs_are_milliseconds() {
+    fn freshness_compares_millisecond_epochs_against_own_build() {
         // Realistic millisecond epoch (matches golden fixture magnitudes).
         let base = 1_791_320_539_084i64;
         let prev = confirmed("h", vec![tbl("a", base)], Some(base));
 
-        // 5 seconds of tolerance = 5000 ms. Drift of exactly 5000 ms is fresh.
-        let at = vec![tbl("a", base + 5_000)];
+        // Upstream equal to own build (to the ms) → fresh, even with tolerance.
+        let at = vec![tbl("a", base)];
         let mut c = ctx("h", &at);
-        c.freshness_tolerance_seconds = 5;
+        c.freshness_tolerance_seconds = 300;
         assert!(
             matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
-            "5s tolerance must absorb exactly 5000ms of drift"
+            "upstream equal to own build (ms) is fresh"
         );
 
-        // 5001 ms of drift is beyond 5 s → stale.
-        let beyond = vec![tbl("a", base + 5_001)];
+        // One millisecond newer than own build → stale, tolerance notwithstanding.
+        let beyond = vec![tbl("a", base + 1)];
         let mut c2 = ctx("h", &beyond);
-        c2.freshness_tolerance_seconds = 5;
+        c2.freshness_tolerance_seconds = 300;
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
                 Verdict::Execute { is_stale: true, .. }
             ),
-            "5001ms of drift exceeds a 5s (5000ms) tolerance → execute"
+            "upstream 1ms newer than own build is stale regardless of tolerance"
         );
-
-        // Sanity: if epochs were mistakenly treated as seconds, a 5000ms drift
-        // (which is only 5 "units") would be absorbed by ANY tolerance >= 5 and
-        // the boundary at 5001 would NOT flip — the assertion above would fail.
     }
 }
 
