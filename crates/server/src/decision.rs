@@ -31,6 +31,11 @@ impl StaleUpstreamPolicy {
 pub enum Verdict {
     Skip {
         description: String,
+        /// Hosted `is_stale`: true when upstream drift IS present but the node is
+        /// still reused (e.g. ALL policy and not every direct parent drifted).
+        /// VERIFIED LIVE: a skip serving slightly-stale data reports is_stale=true;
+        /// a no-drift skip and every execute report false. See lag_freshness.rs.
+        is_stale: bool,
     },
     Execute {
         description: String,
@@ -120,23 +125,41 @@ pub fn decide(ctx: &SubmitContext, confirmed: Option<&ExecutionRow>) -> Verdict 
         // exist / had no prior execution → EXECUTE (not stale; a hash miss).
         None => execute(ctx.execution_type, false, false),
         Some(prev) => {
-            if is_stale(ctx, prev) {
+            let f = evaluate_freshness(ctx, prev);
+            if f.should_rebuild {
                 execute(ctx.execution_type, true, true)
             } else {
+                // Reuse. The hosted service still reports is_stale=true when
+                // upstream drift is present but tolerated (e.g. ALL policy with
+                // only some parents drifted) — the reused result is knowingly a
+                // little stale. A no-drift reuse reports is_stale=false.
                 Verdict::Skip {
                     description: skip_description(ctx.execution_type),
+                    is_stale: f.drift_present,
                 }
             }
         }
     }
 }
 
-fn execute(execution_type: i32, is_stale: bool, had_prior: bool) -> Verdict {
+/// Result of the freshness evaluation: whether to rebuild (policy-applied) and
+/// whether any upstream drift is present at all (for hosted is_stale reporting).
+struct Freshness {
+    should_rebuild: bool,
+    drift_present: bool,
+}
+
+fn execute(execution_type: i32, _stale_driven: bool, had_prior: bool) -> Verdict {
     Verdict::Execute {
         description: execute_description(execution_type, had_prior),
         skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
         clone_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
-        is_stale,
+        // VERIFIED LIVE: the hosted service reports is_stale=FALSE on every
+        // EXECUTE, including an upstream-drift-driven rebuild (lag fixture entry
+        // 5, and the multi-upstream ANY captures). is_stale is only ever true on
+        // a tolerated-stale SKIP. The rebuild reason is carried by srr/crr, not
+        // is_stale.
+        is_stale: false,
     }
 }
 
@@ -147,7 +170,14 @@ pub(crate) fn physical_relation_key(name: &str) -> &str {
     name
 }
 
-fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
+fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
+    // A safety rebuild (missing/ambiguous/unknown evidence) always rebuilds; its
+    // is_stale is irrelevant (executes report false). Only a genuine tolerated
+    // skip surfaces drift_present=true.
+    let rebuild = || Freshness {
+        should_rebuild: true,
+        drift_present: true,
+    };
     let tolerance_ms = ctx.freshness_tolerance_seconds.saturating_mul(1000);
 
     let genuine = |name: &str| ctx.target_table != Some(name);
@@ -166,7 +196,7 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
     if current_names != recorded_names
         || current_names.len() != ctx.input_tables.iter().filter(|t| genuine(&t.name)).count()
     {
-        return true; // Missing, additional or ambiguous dependency evidence.
+        return rebuild(); // Missing, additional or ambiguous dependency evidence.
     }
 
     // Freshness anchor: the node's OWN last build epoch. A node is stale when an
@@ -197,7 +227,10 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
         .collect();
     if genuine_upstreams.is_empty() {
         // No upstream inputs to compare → a hash match alone is safe to skip.
-        return false;
+        return Freshness {
+            should_rebuild: false,
+            drift_present: false,
+        };
     }
 
     let Some(own_build_epoch) = prev.last_modified_epoch else {
@@ -209,7 +242,14 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
         // the re-submit skips). For object-producing node types a missing build
         // epoch means we cannot prove freshness → execute conservatively rather
         // than risk serving stale data.
-        return ctx.execution_type != ET_DBT_DATA_TEST;
+        return if ctx.execution_type == ET_DBT_DATA_TEST {
+            Freshness {
+                should_rebuild: false,
+                drift_present: false,
+            }
+        } else {
+            rebuild()
+        };
     };
 
     let mut considered = 0usize;
@@ -220,7 +260,7 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
         considered += 1;
 
         let Some(current_epoch) = current.last_modified_epoch else {
-            return true;
+            return rebuild();
         };
         // The recorded dependency set is still validated for identity/ambiguity
         // (missing, extra or duplicate names already forced stale above and
@@ -230,10 +270,10 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
             .iter()
             .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
         if matches.next().is_none() {
-            return true;
+            return rebuild();
         }
         if matches.next().is_some() {
-            return true;
+            return rebuild();
         }
         let is_drift = current_epoch > own_build_epoch;
         if is_drift {
@@ -243,14 +283,22 @@ fn is_stale(ctx: &SubmitContext, prev: &ExecutionRow) -> bool {
 
     if considered == 0 {
         // Defensive: unreachable given the genuine_upstreams emptiness check.
-        return false;
+        return Freshness {
+            should_rebuild: false,
+            drift_present: false,
+        };
     }
 
-    match ctx.stale_upstream_policy {
-        // ANY drift makes it stale.
-        StaleUpstreamPolicy::Any => drifted > 0,
-        // Stale only when every upstream drifted.
+    let drift_present = drifted > 0;
+    let should_rebuild = match ctx.stale_upstream_policy {
+        // ANY drift makes it rebuild.
+        StaleUpstreamPolicy::Any => drift_present,
+        // Rebuild only when every direct parent drifted.
         StaleUpstreamPolicy::All => drifted == considered,
+    };
+    Freshness {
+        should_rebuild,
+        drift_present,
     }
 }
 
@@ -294,6 +342,7 @@ mod tests {
             execution_type: 10,
             node_body_hash: Some(hash.into()),
             node_sql_hash: None,
+            node_namespace_logic_hash: None,
             table_namespace: Some("ns".into()),
             node_unique_id: None,
             last_modified_epoch: built,
@@ -302,6 +351,7 @@ mod tests {
             input_tables: tables,
             status: "confirmed".into(),
             request_id: "r".into(),
+            clone_source_table: None,
         }
     }
 
@@ -314,7 +364,7 @@ mod tests {
 
     fn desc_of(v: &Verdict) -> String {
         match v {
-            Verdict::Skip { description } => description.clone(),
+            Verdict::Skip { description, .. } => description.clone(),
             Verdict::Execute { description, .. } => description.clone(),
         }
     }
@@ -438,7 +488,11 @@ mod tests {
         let prev = confirmed("h", recorded, Some(100));
         let v = decide(&ctx("h", &current), Some(&prev));
         match v {
-            Verdict::Execute { is_stale, .. } => assert!(is_stale, "upstream drift is stale"),
+            // Upstream drift under ANY rebuilds; the hosted service reports
+            // is_stale=FALSE on the execute (verified live, lag fixture entry 5).
+            Verdict::Execute { is_stale, .. } => {
+                assert!(!is_stale, "an execute always reports is_stale=false")
+            }
             _ => panic!("expected execute"),
         }
     }
@@ -475,7 +529,10 @@ mod tests {
         assert!(
             matches!(
                 decide(&c, Some(&prev)),
-                Verdict::Execute { is_stale: true, .. }
+                Verdict::Execute {
+                    is_stale: false,
+                    ..
+                }
             ),
             "upstream newer than own build must execute even within tolerance"
         );
@@ -510,6 +567,74 @@ mod tests {
         let mut c = ctx("h", &current);
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }));
+    }
+
+    // ---- is_stale reporting (VERIFIED LIVE, multi-upstream ALL policy) -----
+    //
+    // Live truth table (api.state.dbt.com, Fusion client, Snowflake, 2 upstreams
+    // lp_up_a + lp_up_b, lag_experiment.sh):
+    //   ANY, no drift          -> skip,    is_stale=false
+    //   ANY, upstream drift     -> execute, is_stale=false
+    //   ALL, one-of-two drift   -> skip,    is_stale=TRUE   (tolerated staleness)
+    //   ALL, all drift          -> execute, is_stale=false
+    // i.e. is_stale is true ONLY on a reuse that knowingly serves slightly stale
+    // data (drift present but tolerated by the ALL policy). It is NEVER set on an
+    // execute. lag_tolerance does NOT gate: ALL/one-drift skips even at lag=0, and
+    // ANY/drift executes even within tolerance (own-build anchor). See
+    // docs/correctness-handoff.md §C and crates/harness/tests/lag_freshness.rs.
+
+    /// ALL policy, only one of two parents drifted → SKIP with is_stale=TRUE.
+    #[test]
+    fn all_policy_partial_drift_skips_with_is_stale_true() {
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let current = vec![tbl("a", 100), tbl("b", 999)]; // only b drifted
+        let prev = confirmed("h", recorded, Some(100));
+        let mut c = ctx("h", &current);
+        c.stale_upstream_policy = StaleUpstreamPolicy::All;
+        match decide(&c, Some(&prev)) {
+            Verdict::Skip { is_stale, .. } => {
+                assert!(
+                    is_stale,
+                    "ALL-policy tolerated-staleness skip reports is_stale=true"
+                )
+            }
+            _ => panic!("expected skip"),
+        }
+    }
+
+    /// A no-drift skip reports is_stale=FALSE (both ANY and ALL).
+    #[test]
+    fn no_drift_skip_reports_is_stale_false() {
+        let tables = vec![tbl("a", 100), tbl("b", 100)];
+        let prev = confirmed("h", tables.clone(), Some(100));
+        for policy in [StaleUpstreamPolicy::Any, StaleUpstreamPolicy::All] {
+            let mut c = ctx("h", &tables);
+            c.stale_upstream_policy = policy;
+            match decide(&c, Some(&prev)) {
+                Verdict::Skip { is_stale, .. } => {
+                    assert!(!is_stale, "a fresh (no-drift) skip is not stale")
+                }
+                _ => panic!("expected skip"),
+            }
+        }
+    }
+
+    /// Under ANY policy, drift drives an EXECUTE and is_stale is FALSE (never set
+    /// on an execute, even though drift is present).
+    #[test]
+    fn any_policy_drift_executes_with_is_stale_false() {
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let current = vec![tbl("a", 100), tbl("b", 999)];
+        let prev = confirmed("h", recorded, Some(100));
+        let mut c = ctx("h", &current);
+        c.stale_upstream_policy = StaleUpstreamPolicy::Any;
+        assert!(matches!(
+            decide(&c, Some(&prev)),
+            Verdict::Execute {
+                is_stale: false,
+                ..
+            }
+        ));
     }
 
     // ---- Non-happy-path scenarios (hardening) ----------------------------
@@ -554,7 +679,10 @@ mod tests {
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
-                Verdict::Execute { is_stale: true, .. }
+                Verdict::Execute {
+                    is_stale: false,
+                    ..
+                }
             ),
             "upstream one ms newer than own build must execute even with 300s tolerance"
         );
@@ -568,7 +696,13 @@ mod tests {
         let prev = confirmed("h", recorded, Some(1_000_000));
         let v = decide(&ctx("h", &current), Some(&prev));
         assert!(
-            matches!(v, Verdict::Execute { is_stale: true, .. }),
+            matches!(
+                v,
+                Verdict::Execute {
+                    is_stale: false,
+                    ..
+                }
+            ),
             "a different physical input requires execution"
         );
     }
@@ -601,7 +735,10 @@ mod tests {
         assert!(
             matches!(
                 decide(&c, Some(&prev)),
-                Verdict::Execute { is_stale: true, .. }
+                Verdict::Execute {
+                    is_stale: false,
+                    ..
+                }
             ),
             "a new, newer, untracked upstream must execute"
         );
@@ -642,7 +779,10 @@ mod tests {
         c.freshness_tolerance_seconds = 0;
         assert!(matches!(
             decide(&c, Some(&prev)),
-            Verdict::Execute { is_stale: true, .. }
+            Verdict::Execute {
+                is_stale: false,
+                ..
+            }
         ));
     }
 
@@ -689,7 +829,10 @@ mod tests {
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
-                Verdict::Execute { is_stale: true, .. }
+                Verdict::Execute {
+                    is_stale: false,
+                    ..
+                }
             ),
             "upstream 1ms newer than own build is stale regardless of tolerance"
         );

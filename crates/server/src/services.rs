@@ -47,6 +47,7 @@ fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
 /// runtime (if any) just like the hosted service.
 fn skip_response(
     description: String,
+    is_stale: bool,
     execution_runtime_ms: Option<i64>,
     execution_results: Option<qc::Struct>,
     execution_decision_id: String,
@@ -55,7 +56,7 @@ fn skip_response(
         decision: DECISION_SKIP_EXECUTION,
         skip_rejection_reason: None,
         clone_rejection_reason: None,
-        is_stale: false,
+        is_stale,
         decision_description: description,
     };
     qc::SubmitSqlResponse {
@@ -105,6 +106,87 @@ fn execute_response(
 // SubmitSQLResultType::READY_TO_CLONE and RejectionReason::FORCED_NOT_ELIGIBLE.
 const DECISION_READY_TO_CLONE: i32 = 3;
 const REJECTION_FORCED_NOT_ELIGIBLE: i32 = 5;
+// RejectionReason::CLONE_CHAIN_LIMIT_EXCEEDED. VERIFIED LIVE: when a target
+// disallows clones (profile `allow_clones: false`), the Fusion client encodes it
+// as `clone_chain_depth_limit = 0` and the hosted service answers RegisterClone
+// with `unable_to_clone` carrying this rejection reason + decision=READY_TO_EXECUTE.
+const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
+
+// RejectionReason::TARGET_TABLE_MISMATCH + description for the SQL-submit
+// cross-name clone fallback (an equivalent exists under another name).
+const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
+const CLONE_FALLBACK_DESCRIPTION: &str =
+    "an equivalent model exists under another name so we cloned that one";
+
+/// Build a SubmitSQLResponse `ready_to_clone` for the cross-name fallback: an
+/// equivalent model exists under another physical name, so clone it into the
+/// submit target. VERIFIED LIVE shape: decision=3 (READY_TO_CLONE),
+/// skip_rejection_reason=1 (TARGET_TABLE_MISMATCH), clone_rejection_reason=null,
+/// the equivalent's build epoch as clone_required_last_modified_epoch, its
+/// runtime echoed.
+#[allow(deprecated)]
+fn submit_ready_to_clone_response(
+    request_id: String,
+    clone_sqls: Vec<String>,
+    clone_source: String,
+    clone_target: String,
+    clone_required_last_modified_epoch: Option<i64>,
+    execution_runtime_ms: Option<i64>,
+    execution_decision_id: String,
+) -> qc::SubmitSqlResponse {
+    qc::SubmitSqlResponse {
+        response: Some(qc::submit_sql_response::Response::ReadyToClone(
+            qc::ReadyToCloneResponse {
+                request_id,
+                last_modified_query: String::new(),
+                clone_sqls,
+                clone_source,
+                clone_target,
+                explained_decision: Some(qc::ExplainedDecision {
+                    decision: DECISION_READY_TO_CLONE,
+                    skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
+                    clone_rejection_reason: None,
+                    is_stale: false,
+                    decision_description: CLONE_FALLBACK_DESCRIPTION.to_string(),
+                }),
+                transformed_nodes_by_query: Default::default(),
+                clone_required_last_modified_epoch,
+                clone_execution_results: Some(qc::Struct {
+                    fields: Default::default(),
+                }),
+                execution_runtime_ms,
+                execution_decision_id: Some(execution_decision_id),
+            },
+        )),
+    }
+}
+
+/// Build an UnableToCloneResponse matching the hosted shape when a clone is
+/// rejected: decision=1 (READY_TO_EXECUTE), the clone_rejection_reason, no
+/// skip_rejection_reason, empty description. The deprecated top-level oneof is
+/// left EMPTY on this path (verified live — only ready_to_clone mirrors it).
+fn unable_to_clone_response(
+    clone_source: String,
+    clone_target: String,
+    clone_rejection_reason: i32,
+) -> qc::CloneResponse {
+    #[allow(deprecated)]
+    qc::CloneResponse {
+        ready_to_clone: None,
+        unable_to_clone: Some(qc::UnableToCloneResponse {
+            clone_source,
+            clone_target,
+            explained_decision: Some(qc::ExplainedDecision {
+                decision: DECISION_READY_TO_EXECUTE,
+                skip_rejection_reason: None,
+                clone_rejection_reason: Some(clone_rejection_reason),
+                is_stale: false,
+                decision_description: String::new(),
+            }),
+        }),
+        response: None,
+    }
+}
 
 /// Build a ReadyToCloneResponse matching the hosted service's shape: decision=3
 /// (READY_TO_CLONE), skip_rejection_reason=5 (FORCED_NOT_ELIGIBLE), no clone
@@ -429,6 +511,10 @@ impl Sql for SqlService {
             &sql_execution(&req),
             template,
         ));
+        // Schema-abstracted cross-environment logic identity (clone adoption).
+        // Only meaningful for rendered (non-template) comparison of real SQL.
+        let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
+            .then(|| crate::fingerprint::namespace_logic_hash(&sql_execution(&req)));
         let input_tables = decision::input_tables_of(&req);
         let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
         let project_id = req
@@ -454,7 +540,8 @@ impl Sql for SqlService {
                 None => None,
             }
         } else {
-            self.0
+            let strict = self
+                .0
                 .store
                 .find_confirmed(
                     &org_id,
@@ -465,7 +552,59 @@ impl Sql for SqlService {
                     &req.dialect,
                 )
                 .await
-                .map_err(db_err)?
+                .map_err(db_err)?;
+            // CROSS-ENVIRONMENT CLONE ADOPTION. When the strict (exact rendered
+            // SQL) match misses, the physical target may still be reusable if it
+            // was CLONED from (or is otherwise) the SAME model in the namespace:
+            // its schema-abstracted logic identity equals this submit's. This
+            // reproduces the hosted post-clone SKIP, which is logic-sensitive
+            // (a genuine SQL change still executes). Verified live; see
+            // experiments/clone_logic_sensitivity.sh. Freshness still governs
+            // via decide(); we only supply the candidate here.
+            match strict {
+                Some(row) => Some(row),
+                None => match ns_logic_hash.as_deref() {
+                    Some(ns_hash) => self
+                        .0
+                        .store
+                        .find_latest_confirmed_target(
+                            &org_id,
+                            &target_table,
+                            execution_type,
+                            table_namespace,
+                            &req.dialect,
+                        )
+                        .await
+                        .map_err(db_err)?
+                        .filter(|prev| {
+                            // Only CLONE-ORIGIN rows are adopted cross-environment.
+                            // A clone establishes a physical object with the
+                            // source's logic; a later submit skips when its
+                            // schema-abstracted logic matches. Ordinary (non-clone)
+                            // rows are NOT adopted here: that would let a genuine
+                            // resolution-context change (e.g. default_schema) skip,
+                            // which the hosted service rebuilds. Broader
+                            // cross-environment reuse without a clone is a separate
+                            // provenance feature (see correctness-handoff.md §A).
+                            prev.clone_source_table.is_some()
+                                && prev.node_namespace_logic_hash.as_deref() == Some(ns_hash)
+                        })
+                        .map(|mut prev| {
+                            // A clone-origin row records NO upstream inputs (the
+                            // clone had none). Adopt the submit's CURRENT inputs
+                            // as the recorded set so the freshness check compares
+                            // each upstream against the clone's own build epoch
+                            // (prev.last_modified_epoch) rather than treating the
+                            // empty recorded set as a dependency-set change. The
+                            // own-build anchor stays the authoritative clone epoch.
+                            if prev.input_tables.is_empty() {
+                                prev.input_tables = input_tables.clone();
+                            }
+                            prev
+                        }),
+                    None => None,
+                },
+            }
         };
         // Runtime volatile-function evidence is not implemented. Build instead
         // of claiming reuse when evaluation is requested. Empty template/SQL is
@@ -495,6 +634,97 @@ impl Sql for SqlService {
         };
         let verdict = decision::decide(&ctx, confirmed.as_ref());
 
+        // SQL-SUBMIT CROSS-NAME CLONE FALLBACK. When we would EXECUTE (no reuse
+        // match) but an EQUIVALENT model (same namespace + schema-abstracted
+        // logic) was already built under a DIFFERENT physical name, the hosted
+        // service answers `ready_to_clone` to clone that equivalent into this
+        // target ("an equivalent model exists under another name so we cloned
+        // that one"). VERIFIED LIVE (experiments/clone_experiment.sh table
+        // materialization; golden/fixtures/clone_submit_equivalent_fallback.jsonl).
+        // Gated to real-SQL submits with a known namespace logic identity, no
+        // confirmed reuse candidate, and not seeds/data tests.
+        if confirmed.is_none()
+            && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
+            && execution_type != EXECUTION_TYPE_VALUES
+            // Respect allow_clones=false (the client sets it per target). Verified
+            // live for the RegisterClone path (clone_chain_depth_limit=0); applied
+            // here to the SQL-submit fallback as the conservative, consistent
+            // choice (a target that forbids clones must not be cloned into).
+            && req.allow_clones != Some(false)
+        {
+            if let (Some(ns_hash), Some(ns)) = (ns_logic_hash.as_deref(), table_namespace) {
+                if let Some(eq) = self
+                    .0
+                    .store
+                    .find_clone_equivalent(&org_id, ns, ns_hash, execution_type, &target_table)
+                    .await
+                    .map_err(db_err)?
+                {
+                    if let Ok(clone_sqls) = crate::clone::clone_sqls(
+                        &req.dialect,
+                        &eq.source_table,
+                        &target_table,
+                        eq.table_type.as_deref(),
+                    ) {
+                        let request_id = new_uuid_v7();
+                        let execution_decision_id = new_uuid_v7();
+                        // Persist a pending row keyed on the submit target so the
+                        // forthcoming ConfirmExecution finalizes it, inheriting the
+                        // equivalent's logic identity (so later submits reuse it).
+                        let pending = PendingExecution {
+                            org_id: org_id.clone(),
+                            project_id: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.project_id.clone()),
+                            target_table: target_table.clone(),
+                            execution_type,
+                            node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
+                            node_body_hash: node_body_hash.clone(),
+                            node_sql_hash: node_sql_hash.clone(),
+                            node_namespace_logic_hash: ns_logic_hash.clone(),
+                            node_configs_hash: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.node_configs_hash.clone()),
+                            node_contract_hash: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.node_contract_hash.clone()),
+                            node_unique_id: node_unique_id(
+                                req.dbt_node_state.as_ref(),
+                                &req.labels,
+                            ),
+                            table_namespace: req.table_namespace.clone(),
+                            dialect: req.dialect.clone(),
+                            input_tables: input_tables.clone(),
+                            values_hash: None,
+                            request_id: request_id.clone(),
+                            execution_decision_id: Some(execution_decision_id.clone()),
+                            clone_source_table: Some(eq.source_table.clone()),
+                        };
+                        self.0
+                            .store
+                            .insert_pending(&pending)
+                            .await
+                            .map_err(db_err)?;
+
+                        let response = submit_ready_to_clone_response(
+                            request_id,
+                            clone_sqls,
+                            eq.source_table.clone(),
+                            target_table.clone(),
+                            eq.last_modified_epoch,
+                            eq.execution_runtime_ms,
+                            execution_decision_id,
+                        );
+                        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+                        return Ok(Response::new(response));
+                    }
+                }
+            }
+        }
+
         tracing::info!(
             node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
             execution_type,
@@ -506,8 +736,12 @@ impl Sql for SqlService {
 
         let execution_decision_id = new_uuid_v7();
         let response = match verdict {
-            Verdict::Skip { description } => skip_response(
+            Verdict::Skip {
                 description,
+                is_stale,
+            } => skip_response(
+                description,
+                is_stale,
                 confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
                 confirmed.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
@@ -532,6 +766,7 @@ impl Sql for SqlService {
                     node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
                     node_body_hash: node_body_hash.clone(),
                     node_sql_hash: node_sql_hash.clone(),
+                    node_namespace_logic_hash: ns_logic_hash.clone(),
                     node_configs_hash: req
                         .dbt_node_state
                         .as_ref()
@@ -547,6 +782,7 @@ impl Sql for SqlService {
                     values_hash: None,
                     request_id: request_id.clone(),
                     execution_decision_id: Some(execution_decision_id.clone()),
+                    clone_source_table: None,
                 };
                 self.0
                     .store
@@ -620,8 +856,12 @@ impl Sql for SqlService {
 
         let execution_decision_id = new_uuid_v7();
         let response = match verdict {
-            Verdict::Skip { description } => skip_response(
+            Verdict::Skip {
                 description,
+                is_stale,
+            } => skip_response(
+                description,
+                is_stale,
                 confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
                 confirmed.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
@@ -647,6 +887,7 @@ impl Sql for SqlService {
                         .as_ref()
                         .and_then(|s| s.node_body_hash.clone()),
                     node_sql_hash: Some(seed_hash.clone()),
+                    node_namespace_logic_hash: None,
                     node_configs_hash: req
                         .dbt_node_state
                         .as_ref()
@@ -662,6 +903,7 @@ impl Sql for SqlService {
                     values_hash: values_hash.clone(),
                     request_id: request_id.clone(),
                     execution_decision_id: Some(execution_decision_id.clone()),
+                    clone_source_table: None,
                 };
                 self.0
                     .store
@@ -762,6 +1004,7 @@ impl Execution for ExecutionService {
                     // Match the submit path's logic key: whitespace-normalized
                     // rendered SQL + allowlisted semantic_extras.
                     node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
+                    node_namespace_logic_hash: Some(crate::fingerprint::namespace_logic_hash(sql)),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()
@@ -807,6 +1050,7 @@ impl Execution for ExecutionService {
                         &values.default_catalog,
                         &values.semantic_extras,
                     )),
+                    node_namespace_logic_hash: None,
                     node_configs_hash: values
                         .dbt_node_state
                         .as_ref()
@@ -873,6 +1117,25 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
+        // allow_clones=false: the Fusion client encodes a target that disallows
+        // clones as `clone_chain_depth_limit = 0`. VERIFIED LIVE: the hosted
+        // service answers `unable_to_clone` with clone_rejection_reason=10
+        // (CLONE_CHAIN_LIMIT_EXCEEDED) and decision=READY_TO_EXECUTE, writes no
+        // pending history, and leaves the deprecated oneof empty. The client then
+        // builds the node normally.
+        if req.clone_chain_depth_limit == Some(0) {
+            tracing::info!(
+                source = %req.clone_source_table,
+                target = %req.target_table,
+                "clone rejected: clone_chain_depth_limit=0 (allow_clones=false)"
+            );
+            return Ok(Response::new(unable_to_clone_response(
+                req.clone_source_table.clone(),
+                req.target_table.clone(),
+                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+            )));
+        }
+
         let request_id = new_uuid_v7();
         let execution_decision_id = new_uuid_v7();
 
@@ -884,6 +1147,23 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         )
         .map_err(Status::unimplemented)?;
 
+        // Inherit the clone SOURCE's schema-abstracted logic identity so a later
+        // submit for the clone TARGET can match it (the cloned object has the
+        // source's logic). Looked up by the source's physical name within the
+        // same namespace. If the source was never recorded here, the clone row
+        // carries no logic identity and a later submit falls back to EXECUTE
+        // (safe: we never skip without proven logic equivalence).
+        let inherited_ns_logic = self
+            .0
+            .store
+            .find_source_ns_logic_hash(
+                &org_id,
+                &req.clone_source_table,
+                namespace(req.table_namespace.as_deref()),
+            )
+            .await
+            .map_err(db_err)?;
+
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
         let pending = PendingExecution {
@@ -894,6 +1174,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             node_hash: None,
             node_body_hash: None,
             node_sql_hash: None,
+            node_namespace_logic_hash: inherited_ns_logic,
             node_configs_hash: None,
             node_contract_hash: None,
             node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
@@ -903,6 +1184,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             values_hash: None,
             request_id: request_id.clone(),
             execution_decision_id: Some(execution_decision_id.clone()),
+            clone_source_table: Some(req.clone_source_table.clone()),
         };
         self.0
             .store

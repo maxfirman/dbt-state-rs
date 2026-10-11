@@ -21,6 +21,7 @@ pub struct ExecutionRow {
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub node_namespace_logic_hash: Option<String>,
     pub table_namespace: Option<String>,
     pub node_unique_id: Option<String>,
     pub last_modified_epoch: Option<i64>,
@@ -29,6 +30,9 @@ pub struct ExecutionRow {
     pub input_tables: Vec<InputTable>,
     pub status: String,
     pub request_id: String,
+    /// Set only for clone-origin rows (from RegisterClone): the physical source
+    /// this target was cloned from. Enables clone adoption on a later submit.
+    pub clone_source_table: Option<String>,
 }
 
 /// Parameters captured when a ready_to_execute verdict is issued (pending row).
@@ -41,6 +45,7 @@ pub struct PendingExecution {
     pub node_hash: Option<String>,
     pub node_body_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub node_namespace_logic_hash: Option<String>,
     pub node_configs_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_unique_id: Option<String>,
@@ -50,6 +55,9 @@ pub struct PendingExecution {
     pub values_hash: Option<String>,
     pub request_id: String,
     pub execution_decision_id: Option<String>,
+    /// Set only for clone-origin rows (from RegisterClone): the physical source
+    /// this target was cloned from. NULL for ordinary SQL/seed executions.
+    pub clone_source_table: Option<String>,
 }
 
 /// A fully-formed confirmed execution to insert directly (RecordExecutions
@@ -63,6 +71,7 @@ pub struct ConfirmedExecution {
     pub node_hash: Option<String>,
     pub node_body_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub node_namespace_logic_hash: Option<String>,
     pub node_configs_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_unique_id: Option<String>,
@@ -77,6 +86,16 @@ pub struct ConfirmedExecution {
     pub table_type: Option<String>,
     pub execution_runtime_ms: Option<i64>,
     pub execution_results: Option<qc::Struct>,
+}
+
+/// A confirmed "equivalent under another name" to clone from (SQL-submit
+/// cross-name fallback). Source physical name + warehouse type + build epoch.
+#[derive(Debug, Clone)]
+pub struct CloneEquivalent {
+    pub source_table: String,
+    pub table_type: Option<String>,
+    pub last_modified_epoch: Option<i64>,
+    pub execution_runtime_ms: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -107,8 +126,9 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id
+                   execution_results, input_tables, status, request_id, clone_source_table
             FROM (
                 SELECT * FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
@@ -144,8 +164,9 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id
+                   execution_results, input_tables, status, request_id, clone_source_table
             FROM (
                 SELECT * FROM executions
                 WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
@@ -179,8 +200,9 @@ impl Store {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id
+                   execution_results, input_tables, status, request_id, clone_source_table
             FROM (
                 SELECT * FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
@@ -200,6 +222,160 @@ impl Store {
         row.map(TryInto::try_into).transpose()
     }
 
+    /// The newest confirmed CLONE-ORIGIN execution for a physical target. A
+    /// clone-origin row (RegisterClone) carries the physical object's build
+    /// epoch and an INHERITED `node_namespace_logic_hash` (from the clone
+    /// source), which the caller compares against the submit's abstracted logic.
+    /// Restricted to clone-origin rows so ordinary executions (and any corrupt
+    /// unrelated rows) are never materialized by the cross-environment fallback.
+    pub async fn find_latest_confirmed_target(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        execution_type: i32,
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        let row = sqlx::query_as::<_, RawRow>(
+            r#"
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                   execution_results, input_tables, status, request_id, clone_source_table
+            FROM executions
+            WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+              AND execution_type = $3
+              AND ($4 IS NULL OR table_namespace = $4)
+              AND dialect = $5
+              AND clone_source_table IS NOT NULL
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(target_table)
+        .bind(execution_type)
+        .bind(table_namespace)
+        .bind(dialect)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
+    /// The newest confirmed execution in a namespace carrying a given
+    /// schema-abstracted logic identity. Used at RegisterClone to inherit the
+    /// clone SOURCE's logic identity onto the clone-origin row, so a later
+    /// submit for the clone target can match its (schema-abstracted) logic.
+    pub async fn find_confirmed_ns_logic(
+        &self,
+        org_id: &str,
+        table_namespace: &str,
+        node_namespace_logic_hash: &str,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        let row = sqlx::query_as::<_, RawRow>(
+            r#"
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                   execution_results, input_tables, status, request_id, clone_source_table
+            FROM executions
+            WHERE org_id = $1 AND table_namespace = $2
+              AND node_namespace_logic_hash = $3 AND status = 'confirmed'
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(table_namespace)
+        .bind(node_namespace_logic_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(TryInto::try_into).transpose()
+    }
+
+    /// Find a confirmed "equivalent model under another name" to clone FROM.
+    ///
+    /// VERIFIED LIVE: a SQL submit for a target that does not yet exist, when an
+    /// equivalent model (same `table_namespace` + schema-abstracted logic) was
+    /// already built under a DIFFERENT physical target, is answered with
+    /// `ready_to_clone` cloning that equivalent into the submit target
+    /// ("an equivalent model exists under another name so we cloned that one").
+    /// Returns the source's physical name, warehouse table type and build epoch
+    /// so the service can emit the clone DDL + `clone_required_last_modified_epoch`.
+    pub async fn find_clone_equivalent(
+        &self,
+        org_id: &str,
+        table_namespace: &str,
+        node_namespace_logic_hash: &str,
+        execution_type: i32,
+        exclude_target: &str,
+    ) -> sqlx::Result<Option<CloneEquivalent>> {
+        type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
+        let row: Option<CloneEquivRow> = sqlx::query_as(
+            r#"
+            SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms
+            FROM executions
+            WHERE org_id = $1 AND table_namespace = $2
+              AND node_namespace_logic_hash = $3 AND status = 'confirmed'
+              AND execution_type = $4
+              AND target_table <> $5
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(table_namespace)
+        .bind(node_namespace_logic_hash)
+        .bind(execution_type)
+        .bind(exclude_target)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(
+            |(source_table, table_type, last_modified_epoch, execution_runtime_ms)| {
+                CloneEquivalent {
+                    source_table,
+                    table_type,
+                    last_modified_epoch,
+                    execution_runtime_ms,
+                }
+            },
+        ))
+    }
+
+    /// Look up the clone source's confirmed logic identity by its physical
+    /// target name within a namespace. Returns the inherited
+    /// `node_namespace_logic_hash` to stamp on a clone-origin row.
+    pub async fn find_source_ns_logic_hash(
+        &self,
+        org_id: &str,
+        source_table: &str,
+        table_namespace: Option<&str>,
+    ) -> sqlx::Result<Option<String>> {
+        let row = sqlx::query_as::<_, RawRow>(
+            r#"
+            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                   node_namespace_logic_hash,
+                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                   execution_results, input_tables, status, request_id, clone_source_table
+            FROM executions
+            WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+              AND ($3 IS NULL OR table_namespace = $3)
+              AND node_namespace_logic_hash IS NOT NULL
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(org_id)
+        .bind(source_table)
+        .bind(table_namespace)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row
+            .map(TryInto::try_into)
+            .transpose()?
+            .and_then(|r: ExecutionRow| r.node_namespace_logic_hash))
+    }
+
     /// Insert a pending execution row for a ready_to_execute verdict.
     pub async fn insert_pending(&self, p: &PendingExecution) -> sqlx::Result<i64> {
         let input_tables = serde_json::to_value(&p.input_tables).unwrap_or_default();
@@ -209,8 +385,8 @@ impl Store {
                 org_id, target_table, execution_type, node_hash, node_body_hash,
                 node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                 dialect, input_tables, values_hash, status, request_id, execution_decision_id,
-                node_sql_hash, project_id
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16)
+                node_sql_hash, project_id, node_namespace_logic_hash, clone_source_table
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18)
             RETURNING id
             "#,
         )
@@ -230,6 +406,8 @@ impl Store {
         .bind(&p.execution_decision_id)
         .bind(&p.node_sql_hash)
         .bind(&p.project_id)
+        .bind(&p.node_namespace_logic_hash)
+        .bind(&p.clone_source_table)
         .fetch_one(&self.pool)
         .await?;
         Ok(rec)
@@ -251,8 +429,9 @@ impl Store {
                     node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                     dialect, input_tables, values_hash, status, request_id,
                     execution_decision_id, last_modified_epoch, table_type,
-                    execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20)
+                    execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results,
+                    node_namespace_logic_hash
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20,$21)
                 "#,
             )
             .bind(&c.org_id)
@@ -275,6 +454,7 @@ impl Store {
             .bind(&c.node_sql_hash)
             .bind(&c.project_id)
             .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
+            .bind(&c.node_namespace_logic_hash)
             .execute(&mut *tx)
             .await?;
         }
@@ -358,6 +538,7 @@ struct RawRow {
     execution_type: i32,
     node_body_hash: Option<String>,
     node_sql_hash: Option<String>,
+    node_namespace_logic_hash: Option<String>,
     table_namespace: Option<String>,
     node_unique_id: Option<String>,
     last_modified_epoch: Option<i64>,
@@ -366,6 +547,7 @@ struct RawRow {
     input_tables: serde_json::Value,
     status: String,
     request_id: String,
+    clone_source_table: Option<String>,
 }
 
 impl TryFrom<RawRow> for ExecutionRow {
@@ -385,6 +567,7 @@ impl TryFrom<RawRow> for ExecutionRow {
             execution_type: r.execution_type,
             node_body_hash: r.node_body_hash,
             node_sql_hash: r.node_sql_hash,
+            node_namespace_logic_hash: r.node_namespace_logic_hash,
             table_namespace: r.table_namespace,
             node_unique_id: r.node_unique_id,
             last_modified_epoch: r.last_modified_epoch,
@@ -393,6 +576,7 @@ impl TryFrom<RawRow> for ExecutionRow {
             input_tables,
             status: r.status,
             request_id: r.request_id,
+            clone_source_table: r.clone_source_table,
         })
     }
 }

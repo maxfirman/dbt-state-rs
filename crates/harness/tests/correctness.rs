@@ -195,7 +195,12 @@ async fn confirm_is_org_scoped() {
 // F2 — Match-key SELECTION (lookup layer)
 // ---------------------------------------------------------------------------
 
-/// Namespace identity alone cannot prove data exists at another physical target.
+/// Namespace identity alone cannot prove data exists at another physical target,
+/// so a cross-target submit must NOT SKIP. VERIFIED LIVE: the hosted service
+/// instead answers `ready_to_clone` — it clones the equivalent (same namespace +
+/// schema-abstracted logic + execution_type) into the submit target rather than
+/// blindly reusing it. A clone physically copies the data, so it is safe; a SKIP
+/// would not be. See crates/harness/tests/clone_submit_fallback.rs.
 #[tokio::test]
 async fn namespace_alone_cannot_prove_cross_target_reuse() {
     let (addr, _schema) = start_server().await;
@@ -222,8 +227,9 @@ async fn namespace_alone_cannot_prove_cross_target_reuse() {
             .success
     );
 
-    // Submit under a DIFFERENT physical target (DEV), same namespace+hash, same
-    // logical upstream at the same epoch still lacks physical provenance.
+    // Submit under a DIFFERENT physical target (DEV), same namespace+logic+type.
+    // The equivalent exists under another name → the hosted service CLONES it in
+    // (ready_to_clone), it never SKIPs (which would reuse data that isn't there).
     let dev = submit(
         "\"DB\".\"DEV\".\"T\"",
         "h-ns",
@@ -234,8 +240,8 @@ async fn namespace_alone_cannot_prove_cross_target_reuse() {
     let r2 = sql.submit_enriched_sql(dev).await.unwrap().into_inner();
     assert_eq!(
         response_variant(&r2),
-        "ready_to_execute",
-        "namespace alone cannot prove the other target contains matching data"
+        "ready_to_clone",
+        "cross-name equivalent is cloned in, never skipped",
     );
 }
 

@@ -73,15 +73,22 @@ fn comparison_preserves_result_fields_named_like_ids() {
 #[tokio::test]
 async fn conformance_replay_all_corpora() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../golden/fixtures");
+    // Characterization-only corpora are interleaved MULTI-RUN captures (the same
+    // physical tables reused across sub-runs with deliberately advanced epochs).
+    // They are NOT causally replayable from an empty store — cross-run physical
+    // state is not in the protocol — so dedicated tests assert their contracts
+    // by inspection + targeted replay (see lag_policy.rs). Exclude them here.
+    const CHARACTERIZATION_ONLY: &[&str] = &["lag_multi_upstream_policy.jsonl"];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|p| p.unwrap().path())
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("jsonl"))
+        .filter(|p| !CHARACTERIZATION_ONLY.contains(&p.file_name().unwrap().to_str().unwrap()))
         .collect();
     paths.sort();
     assert_eq!(
         paths.len(),
-        15,
+        17,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

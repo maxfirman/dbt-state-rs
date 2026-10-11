@@ -12,6 +12,18 @@ fn normalized(dialect: &str, sql: &str) -> String {
     }
 }
 
+/// Schema-abstracted normalization for the cross-environment (namespace-scoped)
+/// logic identity. The SAME model built in different environments differs only
+/// in the physical schema qualifier of its three-part names; abstracting that
+/// yields a shared identity (verified live — see sql_norm docs).
+fn normalized_ns(dialect: &str, sql: &str) -> String {
+    if dialect.eq_ignore_ascii_case("snowflake") {
+        crate::sql_norm::normalize_sql_namespace_abstracted(sql)
+    } else {
+        sql.to_owned()
+    }
+}
+
 fn field(h: &mut Sha256, bytes: &[u8]) {
     h.update((bytes.len() as u64).to_le_bytes());
     h.update(bytes);
@@ -67,6 +79,45 @@ pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String 
         for value in [name, query.as_str(), catalog, schema] {
             field(&mut h, value.as_bytes());
         }
+    }
+    hex::encode(h.finalize())
+}
+
+/// Cross-environment logic identity, scoped by `table_namespace`.
+///
+/// The same dbt model built in different environments (e.g. prod and a dev
+/// clone) produces rendered SQL that differs ONLY in the physical schema
+/// qualifier of its three-part object names, and dependency definitions that
+/// differ only likewise. This hash abstracts those schema components (and omits
+/// the physical default_schema and per-dependency physical names/schemas) so
+/// the identity is identical across environments. It is used ONLY for
+/// namespace-grouped cross-environment reuse (e.g. adopting a cloned object);
+/// the strict `sql_logic_hash` remains the primary same-target identity.
+///
+/// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake): a dev submit
+/// whose rendered SQL differs from the prod source only by schema is treated as
+/// the same logic (skips after a clone), while a genuine projection change
+/// executes. See experiments/clone_logic_sensitivity.sh.
+pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
+    let mut h = Sha256::new();
+    field(&mut h, b"dbt-state-ns-logic-v1");
+    field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
+    // Intentionally NO default_catalog/default_schema: those are physical and
+    // differ across environments. The abstracted SQL carries the logic.
+    field(&mut h, normalized_ns(&req.dialect, &req.sql).as_bytes());
+    extras(&mut h, &req.semantic_extras);
+    // Dependencies: compare only the schema-abstracted query text, sorted. The
+    // physical dependency NAME and its catalog/schema are environment-specific
+    // and excluded; the abstracted definition carries the dependency's logic.
+    let mut dependency_queries: Vec<String> = req
+        .query_dependencies
+        .iter()
+        .map(|d| normalized_ns(&req.dialect, &d.query))
+        .collect();
+    dependency_queries.sort();
+    field(&mut h, &(dependency_queries.len() as u64).to_le_bytes());
+    for query in dependency_queries {
+        field(&mut h, query.as_bytes());
     }
     hex::encode(h.finalize())
 }

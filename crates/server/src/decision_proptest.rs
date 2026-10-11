@@ -105,6 +105,7 @@ fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> Exe
         execution_type: 10,
         node_body_hash: Some(hash.into()),
         node_sql_hash: None,
+        node_namespace_logic_hash: None,
         table_namespace: Some("ns".into()),
         node_unique_id: None,
         last_modified_epoch: built,
@@ -113,6 +114,7 @@ fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> Exe
         input_tables: tables,
         status: "confirmed".into(),
         request_id: "r".into(),
+        clone_source_table: None,
     }
 }
 

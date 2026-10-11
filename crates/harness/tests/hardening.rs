@@ -295,7 +295,10 @@ async fn modified_upstream_forces_stale_rebuild_then_recovers() {
         Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => {
             let ed = x.explained_decision.as_ref().unwrap();
             assert_eq!(ed.decision as i64, DECISION_EXECUTE);
-            assert!(ed.is_stale, "upstream drift must set is_stale=true");
+            // VERIFIED LIVE (lag fixture entry 5; multi-upstream ANY captures):
+            // the hosted service reports is_stale=FALSE on an upstream-drift
+            // rebuild. is_stale is only ever true on a tolerated-stale SKIP.
+            assert!(!ed.is_stale, "an execute always reports is_stale=false");
         }
         other => panic!("expected stale execute, got {other:?}"),
     }

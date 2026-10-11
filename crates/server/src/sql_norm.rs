@@ -13,9 +13,28 @@ use sqlparser::parser::Parser;
 /// Normalize SQL to a canonical string for the match-key hash. Parser-backed
 /// with exact preservation on parser failure.
 pub fn normalize_sql(sql: &str) -> String {
+    normalize_sql_inner(sql, false)
+}
+
+/// Like [`normalize_sql`] but ABSTRACTS the schema component of three-part
+/// object names (`catalog.schema.table` → `catalog.<ns>.table`). This yields a
+/// logic identity that is identical for the SAME model built in different
+/// environments (e.g. prod vs a dev clone), which differ only by the physical
+/// schema qualifier in their rendered SQL. VERIFIED LIVE against
+/// api.state.dbt.com: the hosted service skips a dev submit whose rendered SQL
+/// differs from the prod source ONLY in the schema qualifier, and executes when
+/// the projection/logic genuinely changes (see experiments/clone_logic_
+/// sensitivity.sh and docs/correctness-handoff.md). This is scoped to
+/// cross-environment (namespace-grouped) reuse; the strict `normalize_sql`
+/// remains the primary same-target identity.
+pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
+    normalize_sql_inner(sql, true)
+}
+
+fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
     match Parser::parse_sql(&SnowflakeDialect {}, sql) {
         Ok(mut stmts) => {
-            let mut canon = Canonicalizer;
+            let mut canon = Canonicalizer { abstract_schema };
             for s in stmts.iter_mut() {
                 let _ = s.visit(&mut canon);
             }
@@ -30,6 +49,9 @@ pub fn normalize_sql(sql: &str) -> String {
         _ => sql.to_string(),
     }
 }
+
+/// Placeholder substituted for the schema component under schema abstraction.
+const SCHEMA_PLACEHOLDER: &str = "__dbt_state_ns__";
 
 /// Canonical spelling for a type-name synonym, else `None` (leave as written).
 /// Small, documented set verified live (Snowflake): string family and numeric
@@ -78,9 +100,27 @@ fn canon_function(name: &str) -> Option<&'static str> {
 }
 
 /// AST pass applying the dialect-aware canonicalizations the hosted service does.
-struct Canonicalizer;
+struct Canonicalizer {
+    /// When true, replace the schema component of three-part object names so the
+    /// same model in different environments shares a logic identity.
+    abstract_schema: bool,
+}
 impl VisitorMut for Canonicalizer {
     type Break = ();
+
+    fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
+        // A fully-qualified `catalog.schema.table` reference abstracts its
+        // middle (schema) component. Two-part (`schema.table`) and one-part
+        // names are left intact: a bare `schema.table` is ambiguous and
+        // abstracting it would risk conflating genuinely different relations.
+        if self.abstract_schema && name.0.len() == 3 {
+            if let ObjectNamePart::Identifier(id) = &mut name.0[1] {
+                id.value = SCHEMA_PLACEHOLDER.to_string();
+                id.quote_style = None;
+            }
+        }
+        ControlFlow::Continue(())
+    }
 
     fn pre_visit_ident(&mut self, id: &mut Ident) -> ControlFlow<()> {
         // Fold case of UNQUOTED identifiers/keywords; leave quoted idents alone.
@@ -441,6 +481,70 @@ mod tests {
             "select a from t where x = 1",
             "select a from t where x = 2"
         ));
+    }
+
+    // ---- Schema-abstracted (cross-environment) normalization ----
+    use super::normalize_sql_namespace_abstracted as nsabs;
+
+    fn nseq(a: &str, b: &str) -> bool {
+        nsabs(a) == nsabs(b)
+    }
+
+    /// VERIFIED LIVE: the SAME model in prod vs a dev clone differs ONLY in the
+    /// schema qualifier of three-part names, and the hosted service treats them
+    /// as the same logic (skips the dev submit after a clone). Schema
+    /// abstraction must collapse that difference.
+    #[test]
+    fn schema_abstraction_collapses_prod_and_dev() {
+        let prod =
+            "select order_id from CDO_DEMO_DB.prod_state_demo.stg_orders where x > '1900-01-01'";
+        let dev =
+            "select order_id from CDO_DEMO_DB.dev_clone_demo.stg_orders where x > '1900-01-01'";
+        assert!(
+            nseq(prod, dev),
+            "prod/dev same model (schema-only diff) must share abstracted identity"
+        );
+    }
+
+    /// VERIFIED LIVE: a genuine projection change (added column) EXECUTES even
+    /// across environments — schema abstraction must NOT hide real logic change.
+    #[test]
+    fn schema_abstraction_preserves_logic_change() {
+        let base = "select order_id from CDO_DEMO_DB.dev_clone_demo.stg_orders";
+        let changed =
+            "select order_id, upper(customer_id) as c from CDO_DEMO_DB.dev_clone_demo.stg_orders";
+        assert!(
+            !nseq(base, changed),
+            "a real projection change must remain distinct under abstraction"
+        );
+    }
+
+    /// Catalog and table components must still distinguish relations; only the
+    /// schema (middle) component is abstracted.
+    #[test]
+    fn schema_abstraction_keeps_catalog_and_table_significant() {
+        assert!(!nseq("select a from db1.s.t", "select a from db2.s.t"));
+        assert!(!nseq("select a from db.s.t1", "select a from db.s.t2"));
+    }
+
+    /// Two-part names are NOT abstracted (ambiguous catalog.schema vs
+    /// schema.table), so a schema-only change there still differs.
+    #[test]
+    fn schema_abstraction_leaves_two_part_names_intact() {
+        assert!(!nseq("select a from prod.t", "select a from dev.t"));
+    }
+
+    /// The strict (non-abstracted) normalizer must STILL distinguish prod/dev —
+    /// abstraction is an additive cross-environment identity, not a replacement.
+    #[test]
+    fn strict_normalizer_still_distinguishes_schema() {
+        let prod = "select a from db.prod.t";
+        let dev = "select a from db.dev.t";
+        assert_ne!(
+            super::normalize_sql(prod),
+            super::normalize_sql(dev),
+            "strict identity must remain schema-sensitive"
+        );
     }
 
     #[test]

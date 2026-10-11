@@ -65,27 +65,66 @@ gap and may abort client operations that previously succeeded incorrectly.
 
 ### A. Physical state, concurrency and clone provenance (review 1, 7, 10)
 
-Offline work: introduce a current-relation/provenance model distinct from
-append-only executions. Store enough source identity, logic, freshness and
-outcome evidence to validate cross-environment reuse. Test concurrent A/B builds,
-reversed confirms, dropped/recreated sources, cloned-target re-submission,
-source drift between decision and clone, duplicate confirms, server restart,
-and Record batches with conflicting targets. State selectors/deferral will need
-project/profile/environment/node history, currently mostly capture metadata
-and insufficient as authoritative state.
+**Clone lifecycle, eligibility, rejection and the SQL-submit cross-name fallback —
+LIVE-VERIFIED + IMPLEMENTED (2026-10-11).** Characterized against the real service
+(api.state.dbt.com, Fusion client, Snowflake `prod_demo`/`dev_clone`) via the
+recording proxy; see `experiments/clone_experiment.sh`,
+`experiments/clone_logic_sensitivity.sh`, and the fixtures
+`clone_rejected_allow_clones_false.jsonl` + `clone_submit_equivalent_fallback.jsonl`.
 
-Hosted/warehouse questions: SKIP versus CLONE versus DEFER eligibility; source
-epoch requirements; clone row/time limits, allow_clones, defer_enabled and
-is_defer_to_profile; late-confirmation ordering; warehouse clock semantics;
-source freshness enforcement; TABLE types other than the captured ordinary and
-transient types. Do not reinstate schema stripping or namespace-only SKIP.
-`failed_to_clone=true` is not automatically a failed build: the public Rust
-client can confirm a successful normal build after clone fallback. Characterize
-that lifecycle before rejecting confirmations based on the flag alone.
+- **Clone eligibility SPLITS by materialization.** Incremental models and
+  snapshots clone via the `Clone.RegisterClone` RPC (the `pre_clone` path, default
+  `if_missing`). Table materializations clone via `SQL.SubmitEnrichedSQL` →
+  `ready_to_clone` (the cross-name fallback below). Clones require profile
+  `defer_to_target` set and the dev object absent.
+- **Clone lifecycle (register → confirm → reuse) now reproduced.** After
+  `RegisterClone` + `ConfirmExecution`, a later submit for the cloned target
+  SKIPS when its logic matches — and reuse is CROSS-ENVIRONMENT (schema-
+  abstracted) and LOGIC-SENSITIVE: a dev submit differing from the prod source
+  only in the schema qualifier skips; a genuine SQL change executes
+  (`LATEST_QUERY_HASH_NOT_MATCH`=8). Implemented via a schema-abstracted
+  `node_namespace_logic_hash` (`fingerprint::namespace_logic_hash`,
+  `sql_norm::normalize_sql_namespace_abstracted`) recorded on every execution,
+  plus clone provenance columns (`clone_source_table`, migration 0008). The
+  clone-origin row inherits the source's namespace logic identity at
+  RegisterClone (`store::find_source_ns_logic_hash`) and is adopted by a later
+  submit only when it is clone-origin and the abstracted logic matches
+  (`store::find_latest_confirmed_target`, gated to clone-origin). Pinned by
+  `crates/harness/tests/clone_lifecycle.rs`.
+- **`allow_clones: false` rejection.** The client encodes it as
+  `clone_chain_depth_limit = 0`; `RegisterClone` returns `unable_to_clone`
+  (decision=1 READY_TO_EXECUTE, `clone_rejection_reason=10`
+  CLONE_CHAIN_LIMIT_EXCEEDED, empty deprecated oneof, no pending row) and the
+  client builds normally. Implemented in `services.rs::register_clone`; pinned by
+  `clone.rs::register_clone_rejected_when_allow_clones_false`.
+- **SQL-submit cross-name `ready_to_clone` fallback.** A submit for an absent
+  target with an equivalent (same namespace + schema-abstracted logic +
+  `execution_type`) under another physical name returns `ready_to_clone` cloning
+  it in (decision=3, `skip_rejection_reason=1` TARGET_TABLE_MISMATCH,
+  `clone_required_last_modified_epoch`=source build epoch, source runtime echoed).
+  Implemented via `store::find_clone_equivalent` + `services::
+  submit_ready_to_clone_response`; gated to real SQL submits with a known
+  namespace, `allow_clones != false`, and `execution_type` match. Pinned by
+  `crates/harness/tests/clone_submit_fallback.rs`.
 
-BigQuery/Databricks/Spark clone templates remain unverified. Snowflake view
-cloning now reports unsupported; a correct view-copy strategy needs actual view
-definition/context, not `CREATE VIEW ... CLONE`.
+Remaining in this area: concurrent A/B builds, reversed/late confirms, dropped/
+recreated sources mid-decision, server restart, Record batches with conflicting
+targets; clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
+WINDOW`=9) and deeper chain limits (>0); `defer_enabled`/`is_defer_to_profile`
+nuances; `allow_clones=false` suppression of the SQL-submit fallback is applied
+by inference (consistent with the RegisterClone path) but not independently
+captured. `failed_to_clone=true` (observed with "clone source freshness
+unavailable") is still confirmed as a normal build — do not reject on the flag
+alone. State selectors/deferral still need authoritative project/profile/
+environment/node history.
+
+Hosted/warehouse questions: late-confirmation ordering; warehouse clock
+semantics; source-freshness enforcement; TABLE types beyond ordinary/transient.
+Do not reinstate schema stripping for the STRICT same-target identity or a
+namespace-only SKIP (the cross-env path CLONES, it never skips without proven
+physical provenance). BigQuery/Databricks/Spark clone templates remain
+unverified. Snowflake view cloning reports unsupported; a correct view-copy
+needs the actual view definition/context, not `CREATE VIEW ... CLONE`.
 
 ### B. Dependency semantics and SQL equivalence (review 2, 4, 5)
 
@@ -139,11 +178,57 @@ governed by identity/logic match, not this axis. Pinned by the unit tests in
 fixture `golden/fixtures/lag_freshness_own_build.jsonl`, and the characterization
 test `crates/harness/tests/lag_freshness.rs`.
 
-Remaining lag questions (not blocking): whether `lag_tolerance` ever gates in a
-scenario this capture did not reach (e.g. a different client/service version, or
-a wall-clock gate that only engages at much larger build ages); and direct-parent
-vs leaf propagation of the upstream-logic-change bypass. Re-characterize before
-reintroducing any tolerance effect — do not restore it from prose alone.
+Remaining lag questions (not blocking):
+
+- **`require_fresh_data_from` ANY/ALL — VERIFIED LIVE 2026-10-11 (multi-upstream).**
+  A model cross-joining two independent upstreams, each recreated in place to
+  advance only its epoch, was characterized under both policies (fixture
+  `golden/fixtures/lag_multi_upstream_policy.jsonl`,
+  `experiments/lag_experiment.sh`). ALL rebuilds only when EVERY direct parent
+  drifted; with one-of-two drifted it SKIPS. This holds even at
+  `lag_tolerance=0`, proving the ALL skip is PURE POLICY (not lag absorption).
+  Matches the engine's `drifted == considered` rule. Pinned by
+  `crates/harness/tests/lag_policy.rs` and `decision.rs` unit tests.
+
+- **`is_stale` reporting — VERIFIED LIVE + FIXED 2026-10-11.** The hosted service
+  reports `is_stale=false` on EVERY execute (including an upstream-drift
+  rebuild — lag fixture entry 5 and the ANY captures), and `is_stale=TRUE` only
+  on a tolerated-stale SKIP (ALL policy with some parents fresh: the reused
+  result knowingly serves slightly stale data). The engine previously hardcoded
+  `is_stale=false` on skips and set `is_stale=true` on drift executes — both
+  wrong. `decision.rs::evaluate_freshness` now returns `{should_rebuild,
+  drift_present}`; `Verdict::Skip` carries `is_stale = drift_present` and every
+  execute reports false. Pinned by `decision.rs` (`*_is_stale_*` tests) and
+  `lag_policy.rs`.
+
+- **`lag_tolerance` gating — NOW PROVEN TO EXIST (open: exact rule).** The prior
+  conclusion that `lag_tolerance` NEVER gates was overturned. The multi-upstream
+  capture contains ANY-policy SKIPS with `is_stale=true` whose
+  `decision_description` is *"model was a no-op because its query is up to date
+  and its data is within lag tolerance"*, where an upstream is newer than the
+  own build by LESS than `lag_tolerance` (e.g. +53.7s under a 300s tolerance).
+  So `lag_tolerance` CAN suppress a rebuild under ANY policy. However, multiple
+  controlled single-run experiments (`experiments/lag_isolate.sh`,
+  `lag_buildage.sh`) could NOT reproduce it: a fresh build followed by an
+  upstream bump always rebuilt on the first drifted submit regardless of
+  tolerance or build-age, because each drifted submit immediately re-advances
+  the build epoch past the upstream. The confounding variable (which clock the
+  tolerance is measured against — wall-clock since upstream change, wall-clock
+  build-age, or a server-side "last rebuild" ledger that persists across submits
+  without a client confirm) is NOT yet isolated. The engine therefore STILL uses
+  the own-build anchor (rebuild on any ANY-drift) — the SAFE direction (it
+  executes more, never serves staler data than hosted). DO NOT implement a lag
+  gate until the exact trigger is isolated from a clean, un-confounded capture;
+  a wrong gate reintroduces unsafe skips. The evidence is pinned by the
+  `hosted_policy_is_stale_truth_table` assertion in `lag_policy.rs` (the
+  ANY-within-lag-tolerance skip must remain in the corpus).
+
+- Direct-parent vs leaf propagation of the upstream-logic-change bypass remains
+  uncharacterized.
+
+The own-build anchor itself remains verified for the ANY path:
+`golden/fixtures/lag_freshness_own_build.jsonl`, `decision.rs` `freshness_*`
+tests, `decision_proptest.rs` oracle, `crates/harness/tests/lag_freshness.rs`.
 
 `compare_unrendered_code=true` remains exclusive template-body comparison,
 while false uses rendered SQL. Fingerprints separate both modes, include extras,
