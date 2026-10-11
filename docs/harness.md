@@ -36,7 +36,25 @@ with a minted Bearer token, and appends decoded request/response JSON to a golde
     # normalized away by the server fingerprint and still SKIP. --full-refresh does NOT
     # force execute when logic+data unchanged.
 
-### 2. Differential tester (NEXT) — replays golden requests against OUR server
+### Scenario-specific capture drivers (`experiments/`)
+Reusable wrappers that start from a clean `jaffle-shop` tree, drive a focused
+scenario against `--target prod_demo`/`dev_clone`, and print the newly captured
+decisions. They **only ever mutate `CDO_DEMO_DB`** (demo schemas) and `git
+restore` the project afterwards.
+
+- `proxy_up.sh` — start/restart the recording proxy (survives the shell).
+- `run.sh LABEL SELECT [EDIT_PY] [EXTRA…]` — generic single-model build.
+- `clone_experiment.sh LABEL {incremental|table|snapshot} [--fresh-source] [--no-clones]`
+  — prod→dev clone flow (RegisterClone / `unable_to_clone` on `allow_clones=false`).
+- `clone_logic_sensitivity.sh` — proves post-clone reuse is schema-abstracted and
+  logic-sensitive.
+- `lag_experiment.sh LABEL {any|all} LAG {none|a|b|both}` — two-upstream
+  `require_fresh_data_from` + `is_stale`; `lag_isolate.sh` / `lag_buildage.sh`
+  probe the (unresolved) `lag_tolerance` gating.
+
+Promote a useful capture into `golden/fixtures/` and drive it from a test.
+
+### 2. Differential tester — replays golden requests against OUR server
 Read golden `.jsonl`, feed each request into our server via an in-process tonic
 client, diff the response against the recorded one. Normalize nondeterministic
 fields before diff: request_id, execution_decision_id, timestamps/epochs,

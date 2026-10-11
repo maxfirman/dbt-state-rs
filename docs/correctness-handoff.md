@@ -1,16 +1,17 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-10. Read this before changing decisions. The goal remains a
+Updated 2026-10-11. Read this before changing decisions. The goal remains a
 conformant drop-in dbt State replacement; **the current server does not yet meet
-that goal**. There is no Snowflake access, and this work made no new hosted
-requests. Passing local tests establish the contracts below, not complete
-hosted equivalence.
+that goal**, but a growing set of behaviors is now live-verified.
 
-The [original review](correctness-review-2026-10-10.md) describes commit
-`e31d33aa38e187de434a5f0d83c56e9904c36c9f` before these changes. Its line numbers,
-status descriptions and test counts are historical. This document is the current
-handoff; experimental notes remain evidence about their individual scenarios,
-not proof of general rules.
+An earlier phase hardened the server offline (unsafe-skip fixes, fingerprinting,
+test/seed identity, org isolation — summarized in the table below). A later
+phase (2026-10-11) characterized the **clone** and **lag/freshness** paths
+against the REAL hosted service (api.state.dbt.com, dbt Fusion client, Snowflake
+`prod_demo`/`dev_clone`) via the recording proxy, and implemented/fixed them.
+Those live-verified sections are marked inline (see §A and §C). Passing local
+tests establish the contracts below; live-verified items additionally reproduce
+captured hosted responses, but complete hosted equivalence is still not claimed.
 
 ## Completed changes and evidence
 
@@ -28,7 +29,9 @@ not proof of general rules.
 | 10: invalid clone DDL | Reject view sources and unknown dialects before inserting pending history. Preserve the captured Snowflake table DDL and both response mirrors. | Exact captured table DDL, view/unknown-dialect errors and no pending rows |
 | 13: tenant leaks/logged password | Scope every UI database read to configured `DBT_STATE_UI_ORG_ID` (default `local`); remove startup DSN logging. | Two organizations with identical project names; all UI read methods including direct foreign IDs |
 | 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests exempt (no own object). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
-| Testing/toolchain | Pin Rust 1.98; move capture DB test out of `--lib`; reject malformed trace lines; replay all 15 fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences. | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
+| 10 (extended, live-verified 2026-10-11): clone lifecycle, rejection, cross-name fallback | Reproduce register→confirm→cross-environment reuse (schema-abstracted, logic-sensitive); reject `allow_clones=false` (`clone_chain_depth_limit=0` → `unable_to_clone`, crr=10); emit SQL-submit `ready_to_clone` for an equivalent under another name. Migration 0008 adds `node_namespace_logic_hash` + `clone_source_table`. See §A. | `clone_lifecycle.rs`, `clone.rs::register_clone_rejected_when_allow_clones_false`, `clone_submit_fallback.rs`, fixtures `clone_rejected_allow_clones_false.jsonl` + `clone_submit_equivalent_fallback.jsonl`, `sql_norm`/`fingerprint` unit tests |
+| 12b (live-verified 2026-10-11): require_fresh_data_from + is_stale | Verify ALL rebuilds only when every direct parent drifted (SKIP otherwise, even at lag 0); fix `is_stale` to be false on every execute and true only on a tolerated-stale skip. Record evidence that `lag_tolerance` CAN gate under ANY policy (exact rule not yet isolated; engine keeps the safe own-build anchor). See §C. | `decision.rs` `*_is_stale_*` tests, `crates/harness/tests/lag_policy.rs`, fixture `lag_multi_upstream_policy.jsonl` |
+| Testing/toolchain | Pin Rust 1.98; capture DB test out of `--lib`; reject malformed trace lines; replay all fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences; add live `experiments/` capture drivers (clone/lag). | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -39,6 +42,13 @@ Migration `0007_execution_results.sql` adds nullable `project_id`, binary
 custom protobuf Struct bytes, preserving int64 and non-finite double fields
 without JSON conversion. Existing numeric input epochs deserialize as `Some`;
 new null epochs preserve unknown evidence. Corrupt rows cause an explicit error.
+
+Migration `0008_cross_env_reuse.sql` adds nullable `node_namespace_logic_hash`
+(the schema-abstracted cross-environment logic identity) and `clone_source_table`
+(clone provenance), plus a namespace+logic index. Both are populated on new
+executions only; pre-0008 confirmed rows have them NULL, so cross-environment
+clone adoption simply does not fire for them (they fall back to the existing
+strict same-target path — safe, no behavior change for legacy rows).
 
 SQL/seed hashes now have a versioned, length-framed SHA-256 domain. Existing
 fingerprints will cold miss and rebuild; **do not rehash old rows in place**:
@@ -247,9 +257,12 @@ template reuse should consume batch history once hosted behavior is established.
 - Implement volatile-function evaluation and `transformed_nodes_by_query`,
   including client execution/confirmation of transformed expressions. Current
   BUILD fallback does not reproduce the transformation protocol.
-- Implement SQL-submit automatic `ready_to_clone`, query hash metadata,
-  `clone_required_last_modified_epoch`, meaningful rejection reasons and complete
-  description strings across all branches. Submit currently only BUILD/SKIP.
+- SQL-submit `ready_to_clone` is now IMPLEMENTED for the cross-name equivalence
+  case (see §A: `clone_required_last_modified_epoch`, TARGET_TABLE_MISMATCH
+  rejection, source runtime echo). Still remaining: `query_hash_metadata_info`
+  on `ready_to_execute`, `transformed_nodes_by_query`, and the complete rejection
+  reason / description matrix across every submit branch (we populate the
+  verified ones; others are the conservative BUILD/SKIP/CLONE set).
 - Explain RPCs still return empty defaults; ClientValidation accepts every
   version; speculative SQL always returns Undecided. Establish exact supported
   client versions and behavior instead of advertising general coverage.
@@ -300,18 +313,24 @@ fuzzing while Snowflake/hosted validation is unavailable.
 
 ## Research sources for the next agent
 
-The [review](correctness-review-2026-10-10.md) includes detailed source links and
-feature coverage. Re-read primary sources when changing behavior:
+Re-read primary sources when changing behavior:
 
-- [Lag tolerance](https://docs.getdbt.com/reference/resource-configs/lag-tolerance)
-  and [dbt State](https://docs.getdbt.com/docs/deploy/dbt-state-about).
+- [dbt State overview](https://docs.getdbt.com/docs/deploy/dbt-state-about),
+  [dbt State configs](https://docs.getdbt.com/reference/resource-configs/dbt-state-configs)
+  (the reuse → clone → build ladder; `lag_tolerance`, `require_fresh_data_from`,
+  `pre_clone`, `allow_clones`, `defer_to_target`, `compare_unrendered_code`,
+  `evaluate_volatile_sql`), and
+  [deferral](https://docs.getdbt.com/docs/deploy/dbt-state-deferral).
 - [Public Rust client at reviewed commit](https://github.com/dbt-labs/dbt/tree/a0fc53e6797b135ce8d4fea99c581ea5116803ac):
   `crates/dbt-tasks-core/src/run_cache/run_cache_service.rs` (metadata, view
   traversal, transformations, cached tests, clone fallback), `run_cache_request.rs`,
-  and the vendored protobuf definitions.
+  `crates/dbt-state/src/run_cache_defer.rs`, and the vendored protobuf definitions.
 - [Public Python client at reviewed commit](https://github.com/dbt-labs/dbt-state/tree/b0f3030c90dd0766f2d1625b3305829d881fc2ae):
   `clients/dbt_state/src/dbt_state/run_cache.py` (label identity, target metadata,
   seed semantic extras and test outcomes).
+- Live capture workflow: [harness.md](harness.md) + the `experiments/` drivers
+  (`clone_experiment.sh`, `clone_logic_sensitivity.sh`, `lag_experiment.sh`,
+  `lag_isolate.sh`). Each isolates one behavior and only mutates `CDO_DEMO_DB`.
 
 Wire schemas match the reviewed Rust client exactly; older Python schemas and
 identity representations differ. Pin the supported client versions in a future
@@ -319,8 +338,8 @@ compatibility matrix, not just the proto commit.
 
 ## Validation
 
-Run the following with Postgres at DATABASE_URL (default documented in
-[development.md](development.md)); none require Snowflake or hosted access:
+The offline suite needs only Postgres at DATABASE_URL (default in
+[development.md](development.md)); none of it requires Snowflake or hosted access:
 
 ```bash
 cargo test --workspace
@@ -329,19 +348,24 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ```
 
-Final checks passed with Rust 1.98.0 and disposable Postgres 17:
+Last run (Rust 1.98, disposable Postgres 17):
 
-- Workspace: **125 tests passed**, including **14 new offline gRPC regressions**.
-- Server library: **50 tests passed** with DATABASE_URL pointing to an unreachable
-  port, verifying that this target does not require a database.
-- Formatting and Clippy (all targets, including the fuzz feature): passed.
-- Replay was also rerun after adding a confirmation-ID echo assertion. All 14
-  files / 102 entries were accounted for: 76 checks against hosted evidence
-  (rebuild variants or complete applicable responses), six pinned local
-  fallbacks, 14 entries with unknown baseline, and six clone/deferral entries
-  outside lifecycle comparison. RegisterClone's captured shape/DDL is checked
-  separately. The six fallbacks are not hosted agreement.
-- No Snowflake or hosted requests were made. The disposable database was removed.
+- Workspace: **144 tests passed** across 30 binaries.
+- Server library: **58 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database.
+- Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
+- Conformance replay: 16 fixtures causally replayed; `lag_multi_upstream_policy`
+  is characterization-only (excluded) and validated by `lag_policy.rs`. Clone
+  rejection and SQL-submit clone fallback entries are counted as replay gaps and
+  asserted by their dedicated tests (`clone.rs`, `clone_submit_fallback.rs`).
+  The six pinned local fallbacks in [golden/replay_gaps.json](../golden/replay_gaps.json)
+  remain exercised exactly once.
+
+Live verification (clone + lag paths, §A and §C) was performed against the real
+service and Snowflake demo warehouse via the recording proxy; those captures are
+promoted into `golden/fixtures/`. The offline suite above does **not** make
+hosted/Snowflake requests. Re-run the live `experiments/` drivers only against a
+disposable demo schema (`CDO_DEMO_DB`) when re-characterizing.
 
 Re-run the commands above against a new local Postgres
 instance before extending behavior; do not use the removed temporary database

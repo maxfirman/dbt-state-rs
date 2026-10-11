@@ -36,8 +36,8 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres access via sqlx: lookups, pending→confirmed lifecycle, batch hydrate. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
-| `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure) for the logic-identity match. |
-| `fingerprint.rs` | Versioned SQL/dependency/context and seed fingerprints shared by Submit/Record. |
+| `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
+| `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
 | `clone.rs` | Dialect-aware clone-DDL generation. |
 | `services.rs` | gRPC service impls binding the store + decision engine to the wire. |
 | `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |
@@ -59,13 +59,20 @@ and [correctness-handoff.md §C](correctness-handoff.md).
 
 `fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
 mode), dialect/default context, sorted semantic extras and supplied dependency
-SQL/context. Seeds share their own versioned configuration hash. Unsupported SQL
-is retained exactly; old hashes cold miss rather than being reinterpreted.
+SQL/context. It also derives a schema-abstracted cross-environment logic hash
+(`namespace_logic_hash`) used, scoped by `table_namespace`, for clone reuse: the
+same model built in different environments differs only by the physical schema
+qualifier, which the abstraction collapses. Seeds share their own versioned
+configuration hash. Unsupported SQL is retained exactly; old hashes cold miss
+rather than being reinterpreted.
 
-Migrations 0001–0007 provide execution history and separate UI capture tables.
-`executions` stores identity/context hashes, optional freshness snapshots,
-confirmed outcomes and complete protobuf result bytes. Models/seeds select the
-latest confirmed physical target before matching its fingerprint. Tests select
+Migrations 0001–0008 provide execution history and separate UI capture tables.
+`executions` stores identity/context hashes (including the cross-environment
+`node_namespace_logic_hash` and clone provenance `clone_source_table` from 0008),
+optional freshness snapshots, confirmed outcomes and complete protobuf result
+bytes. Models/seeds select the latest confirmed physical target before matching
+its fingerprint; cross-environment clone reuse additionally matches by namespace
++ abstracted logic. Tests select
 by org/project/namespace/UID and then check logic/results. Pending rows do not
 permit reuse. Confirm writes an outcome once; Record batches are transactional.
 

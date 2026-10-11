@@ -1,9 +1,12 @@
 # Testing
 
-Correctness comes first. No Snowflake or hosted access is currently available.
-Use offline regressions and public client/protocol evidence; do not invent
-hosted behavior. The [handoff](correctness-handoff.md) lists remaining work,
-known deviations and the independent state-machine testing plan.
+Correctness comes first. The offline suite (below) needs only Postgres and makes
+no hosted/Snowflake calls; it is the day-to-day gate. Behaviors are additionally
+characterized live against the real service via the recording proxy and the
+`experiments/` drivers (see [harness.md](harness.md)) — capture first, promote a
+golden fixture, then assert. Do not invent hosted behavior; document open
+questions in the [handoff](correctness-handoff.md), which also lists remaining
+work and the independent state-machine testing plan.
 
 ## Local checks
 
@@ -35,13 +38,20 @@ independent oracle for the complete service or hosted lag semantics.
 
 ## Captured traffic replay
 
-`crates/harness/tests/conformance.rs` loads all 14 JSONL fixtures. Invalid trace
-lines fail with a line number. It preserves complete captured confirmation
-outcomes and correlates hosted/local request IDs directly. It asserts hosted
-rebuild variants even after previous confirms, and compares complete causal
-SKIP responses after stripping only opaque IDs. Version/speculative responses
-are also compared. Dedicated tests cover captured materializations, seed/test
-lifecycles and both RegisterClone response mirrors.
+`crates/harness/tests/conformance.rs` auto-discovers the `golden/fixtures/`
+corpus (16 causally-replayed fixtures; interleaved multi-run captures such as
+`lag_multi_upstream_policy.jsonl` are excluded via a `CHARACTERIZATION_ONLY` list
+and validated by dedicated tests). Invalid trace lines fail with a line number.
+It preserves complete captured confirmation outcomes and correlates hosted/local
+request IDs directly. It asserts hosted rebuild variants even after previous
+confirms, and compares complete causal SKIP responses after stripping only
+opaque IDs. Version/speculative responses are also compared. Dedicated tests
+cover captured materializations, seed/test lifecycles, both RegisterClone
+response mirrors, the clone register→confirm→reuse lifecycle
+(`clone_lifecycle.rs`), the `allow_clones=false` `unable_to_clone` rejection
+(`clone.rs`), the SQL-submit cross-name clone fallback
+(`clone_submit_fallback.rs`), and the multi-upstream ANY/ALL + `is_stale`
+behavior (`lag_policy.rs`).
 
 Leading hosted SKIPs and uncorrelated confirms depend on unknown initial
 history; they are counted, never hydrated with guessed epochs/results. Automatic
@@ -51,7 +61,7 @@ where possible. See the handoff for the exact remaining replay limitations.
 Passing these tests is not proof that every captured response or feature is
 implemented.
 
-## Hosted discovery (unavailable here)
+## Hosted discovery (differential fuzz)
 
 The opt-in differential tool uses real credentials/metering:
 
@@ -60,9 +70,10 @@ cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
   --seeds golden/fixtures/<file>.jsonl --iterations 200
 ```
 
-Do not run it in the current no-live-verification environment. Its local side
-has empty history and it compares variants only; zero divergences does not prove
-reuse conformance. Decode/transport failures, missing comparisons and reported
+It needs a dbt Cloud credential in `~/.dbt/dbt_cloud.yml` and burns dbt State
+metering, so run it deliberately. Its local side has empty history and it
+compares variants only; zero divergences does not prove reuse conformance.
+Decode/transport failures, missing comparisons and reported
 divergences now fail the process. Future work must establish equivalent state,
 compare complete responses/errors, save reproducible scenarios and shrink
 stateful divergences. Promote useful controlled cases into golden/fixtures;

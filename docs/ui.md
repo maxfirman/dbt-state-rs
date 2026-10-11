@@ -5,7 +5,11 @@ A read-only web console for the dbt State server, built with
 Rust, no WASM). It presents an audit log of what dbt State decided across
 projects and environments. It never executes dbt and never mutates state.
 
-See [ui-plan.md](ui-plan.md) for the full plan, research, and roadmap.
+Design stance: the UI is an **honest audit log of what happened**, not a control
+plane or an authoritative project/environment hierarchy. The deferral/clone
+"environment" is a client-side concept (the dbt profile `target_name`), so the UI
+presents it as the literal profile target rather than inventing a server-side
+environment model.
 
 ## What it shows
 

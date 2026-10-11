@@ -36,9 +36,11 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
 - **Reuse requires current evidence.** Select latest physical history before
   checking versioned SQL/dependency/context/config fingerprints. Compare exact
   physical upstream names and preserve unknown epochs. Own-target existence and
-  external edits are checked separately from upstream freshness. Namespace-only
-  cross-target reuse is disabled pending provenance. Data tests require scoped
-  UID identity and complete cached results. → [docs/correctness-handoff.md](docs/correctness-handoff.md)
+  external edits are checked separately from upstream freshness. Cross-environment
+  reuse is via CLONE (keyed by `table_namespace` + schema-abstracted logic +
+  execution type), never a namespace-only SKIP — a SKIP still requires the strict
+  same-target match. Data tests require scoped UID identity and complete cached
+  results. → [docs/correctness-handoff.md](docs/correctness-handoff.md)
 - **Org isolation.** Every store query is scoped by `org_id` (from the
   `x-organization-id` metadata header, default `local`). Never weaken this.
 - **Response shapes must match the hosted service exactly** (decision ints,
@@ -61,9 +63,13 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
 → [docs/testing.md](docs/testing.md), [docs/harness.md](docs/harness.md)
 
 ## Conventions
-- TDD: use primary client/protocol evidence and offline regressions for obvious
-  correctness fixes. No Snowflake access is available: do not make live calls or
-  infer unresolved hosted policy. Document remaining questions in the handoff.
+- TDD: characterize behavior against the REAL service first when possible
+  (recording proxy + `experiments/` drivers, see `docs/harness.md`), promote a
+  golden fixture, add the assertion, then implement. Live captures require a dbt
+  Cloud credential in `~/.dbt/dbt_cloud.yml` and a Snowflake target; **only ever
+  mutate the demo database (`CDO_DEMO_DB`)**. When live access is unavailable,
+  use primary client/protocol evidence and offline regressions; do not infer
+  unresolved hosted policy — document open questions in the handoff.
 - Keep golden session files out of the tree; only `golden/fixtures/` is tracked
   (see `golden/README.md`).
 - Don't commit unless asked; prefer small, focused commits.

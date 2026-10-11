@@ -25,9 +25,9 @@ files are Apache-2.0, published by dbt Labs, and vendored in this repo under
 
 | Service | RPCs | Role | Our status |
 |---|---|---|---|
-| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | the verdict | BUILD/SKIP with conservative fallbacks; speculative Undecided |
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | the verdict | BUILD / SKIP / cross-name CLONE (live-verified); speculative Undecided |
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | writes state / deferral | Confirm/Record implemented; deferral UNIMPLEMENTED |
-| `Clone` | `RegisterClone` | clone decision + DDL | table DDL; eligibility/provenance incomplete |
+| `Clone` | `RegisterClone` | clone decision + DDL | table DDL + lifecycle + `allow_clones=false` rejection (live-verified); non-Snowflake templates unverified |
 | `ClientValidation` | `ValidateClientVersion` | version gate | implemented (true) |
 | `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | human text | empty defaults |
 | `SelectorService` | `GetStateSelection` | state:modified selectors | UNIMPLEMENTED |
@@ -100,13 +100,20 @@ remaining policies and compatibility gaps.
    target metadata builds. Data tests instead require complete cached results.
 4. Compare exact physical upstream names, excluding the own target from upstream
    drift only. Unknown epochs, changed input sets, and duplicate evidence build.
-   An upstream newer than the node's own last-build epoch is drift (ANY/ALL
-   policy); this own-build anchor was verified live and `freshness_tolerance_
-   seconds` is intentionally not applied — see
-   [correctness-handoff.md §C](correctness-handoff.md). Another physical target
-   builds until provenance is known.
-5. Requested volatile evaluation (`tolerate_nondeterminism=false`) builds until
-   runtime transformations are implemented. SQL submits do not generate CLONE.
+   An upstream newer than the node's own last-build epoch is drift. `ALL` policy
+   (`require_fresh_data_from`) rebuilds only when every direct parent drifted,
+   else a tolerated-stale SKIP with `is_stale=true`; every execute reports
+   `is_stale=false`. This own-build anchor and the `is_stale` reporting were
+   verified live; `freshness_tolerance_seconds` is intentionally not applied
+   (though it IS known to gate under some conditions — see
+   [correctness-handoff.md §C](correctness-handoff.md)).
+5. Cross-environment reuse (live-verified): a clone-origin object, or an
+   equivalent model under another physical name in the same `table_namespace`
+   with matching schema-abstracted logic, is reused via CLONE — a confirmed clone
+   target SKIPS a matching later submit, and a submit for an absent target whose
+   equivalent exists elsewhere returns `ready_to_clone`. Requested volatile
+   evaluation (`tolerate_nondeterminism=false`) still builds until runtime
+   transformations are implemented.
 
 These checks can over-execute compared with hosted behavior. A passing replay
 only establishes its reproducible captured cases.
@@ -164,6 +171,34 @@ return UNIMPLEMENTED.
 Other dialects: BigQuery `CREATE OR REPLACE TABLE ... CLONE ...`, Databricks/Spark
 `... SHALLOW CLONE ...`. Unknown dialects return UNIMPLEMENTED. Non-Snowflake variants are our own templates,
 not yet verified against the real service.
+
+### Clone eligibility, rejection and lifecycle (live-verified 2026-10-11)
+
+- **Eligibility splits by materialization.** Incremental models and snapshots
+  clone via `RegisterClone` (the `pre_clone` path). Table materializations clone
+  via `SubmitEnrichedSQL` → `ready_to_clone` (see below). Clones require profile
+  `defer_to_target` and the dev object absent.
+- **`allow_clones: false`** is encoded by the client as
+  `clone_chain_depth_limit = 0`. The service answers `unable_to_clone`
+  (`UnableToCloneResponse{clone_source, clone_target, ExplainedDecision{decision=1
+  (READY_TO_EXECUTE), clone_rejection_reason=10 (CLONE_CHAIN_LIMIT_EXCEEDED),
+  decision_description=""}}`); the deprecated top-level oneof is left empty and no
+  history is written. The client then builds normally.
+- **Lifecycle.** After `RegisterClone` + `ConfirmExecution`, a later submit for
+  the cloned target SKIPS when its schema-abstracted logic matches (and executes
+  on a genuine logic change). See `decision_description` wording in the SKIP/
+  EXECUTE sections above.
+
+### SQL-submit cross-name clone (`SubmitEnrichedSQL` → `ready_to_clone`)
+
+A `SubmitEnrichedSQL` for a target that does not yet exist, when an equivalent
+model (same `table_namespace` + schema-abstracted logic + `execution_type`) was
+already built under a DIFFERENT physical name, returns `ready_to_clone` cloning
+that equivalent in: `ExplainedDecision{decision=3 (READY_TO_CLONE),
+skip_rejection_reason=1 (TARGET_TABLE_MISMATCH), clone_rejection_reason=null,
+decision_description="an equivalent model exists under another name so we cloned
+that one"}`, with `clone_required_last_modified_epoch` = the source's build epoch
+and `execution_runtime_ms` echoing the source's runtime.
 
 ## Custom `Struct` type
 

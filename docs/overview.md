@@ -52,14 +52,17 @@ reported explicitly.
 
 The goal is full hosted conformance, but the implementation has known gaps.
 Offline regressions, captured traffic replay and pure properties guard selected
-contracts; the hosted discovery tool has unequal history and is not a conformance
-oracle. See [testing.md](testing.md).
+contracts; the clone and lag/freshness paths are additionally live-verified
+against the real service. See [testing.md](testing.md).
 
-Recent offline hardening prevents several unsafe skips and preserves cached test
-results. The data-freshness lag rule was validated live and corrected (rebuild
-when an upstream is newer than the node's own last build). Some unsupported
-reuse paths conservatively rebuild; selectors and state-backed deferral return
-UNIMPLEMENTED. Automatic SQL cloning, volatile transformations, provenance,
-dependency resolution and complete client compatibility still need work. Read
-[correctness-handoff.md](correctness-handoff.md) for completed fixes, upgrade
-effects, evidence and concrete next tasks.
+Live verification (2026-10-11) covered the clone and freshness paths: the
+clone lifecycle (register → confirm → cross-environment reuse), `allow_clones`
+rejection, the SQL-submit cross-name clone fallback, the `require_fresh_data_from`
+ANY/ALL semantics and `is_stale` reporting. It also established that
+`lag_tolerance` *can* gate a rebuild (overturning an earlier assumption), though
+the exact rule is not yet isolated, so the engine keeps the safe own-build anchor.
+Earlier offline hardening prevents several unsafe skips and preserves cached test
+results. Still open: volatile transformations, selectors/state-backed deferral
+(UNIMPLEMENTED), non-Snowflake clone templates, and complete client
+compatibility. Read [correctness-handoff.md](correctness-handoff.md) for the
+live-verified behavior, upgrade effects, evidence and concrete next tasks.
