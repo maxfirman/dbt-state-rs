@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-12 (review #2 2nd FOLLOW-UP). Read this before changing
+Updated 2026-10-12 (review #2 3rd FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -46,6 +46,11 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | **#2 2ND FOLLOW-UP finding 3 (2026-10-12): real CLONE conformance gating** | The conformance replay's `ready_to_clone` arm only incremented `gaps` — it never compared the local CLONE response or replayed its confirmation, so clone fixtures were not actually gated. Now it asserts the local CLONE payload (minus opaque IDs), correlates the confirmation into `pending` (tracking cloned state), and distinguishes a full causal match from a keyed MISSING-SOURCE-HISTORY gap and from a genuine mismatch. Un-excluded the replayable `template_compare_unrendered.jsonl`. | `conformance.rs` clone arm; 7 keyed clone/missing-history entries in `golden/replay_gaps.json`; corpus 22→24 fixtures |
 | **#2 2ND FOLLOW-UP finding 4 (live-verified 2026-10-12): clone eligibility dimensions** | The eligibility experiment used top-level config keys and wrongly declared `lag_tolerance`/`evaluate_volatile_sql` unavailable; they belong under the nested `state={}` config (dbt 2.0.6 parses it). Distinct arms + a wire-field VARCHECK now confirm the independent variable reached the request. LIVE: a STALE cross-name source still returns `ready_to_clone` under BOTH zero `freshness_tolerance_seconds` AND `tolerate_nondeterminism=false` — neither gates the fallback; the server matches. | `clone_eligibility.rs::{server_clones_stale_equivalent_under_zero_tolerance,server_clones_stale_equivalent_under_volatile_evaluation}`, `experiments/clone_eligibility.sh` |
 | **#2 2ND FOLLOW-UP finding 5 (2026-10-12): experiment reliability** | Drivers now check the dbt EXIT STATUS directly (not a loose grep a partial multi-node build could satisfy) and FAIL on a failed mutation (the `CREATE OR REPLACE` run_op no longer swallows errors with `\|\| true`); the swapped-binding driver's oracles are executable assertions (fail on a missing submit, wrong decision, or wrong warehouse contents). | hardened `clone_eligibility.sh`, `clone_chain_provenance.sh`, `finding3_swapped_bindings.sh`; new `finding3_view_dep_swap.sh`, `registerclone_source_age.sh` |
+| **#2 3RD FOLLOW-UP finding 1 (2026-10-12): quoted-identifier case in schema abstraction** | `SchemaMap` lowercased + stripped quotes unconditionally, so Snowflake's case-SENSITIVE quoted schemas `DB."X".INPUT` and `DB."x".INPUT` collapsed to one relative token and a swap of their definitions conflated → unsafe clone. Added a quote-aware `canonical_schema_key` (quoted → `q:` case-sensitive keyspace; unquoted → `u:` folded); `SchemaCollector` and the `Canonicalizer` preserve quote state. The resolution-context sub-cases were MEASURED LIVE (`experiments/resolution_context.sh`): hosted keys dependency equivalence on the DEFINITION BODY (executes when the data differs, reuses when it abstracts equal), so a bare leaf-schema rename is the environment qualifier (cross-env positive), not a bug. | `fingerprint.rs::{ns_quoted_case_distinct_schemas_do_not_collapse, ns_dependency_leaf_schema_rename_is_cross_env_positive, ns_fully_qualified/unqualified_context_only}`, `clone_submit_fallback.rs::server_executes_quoted_case_swapped_binding` |
+| **#2 3RD FOLLOW-UP finding 2 (2026-10-12): exact RegisterClone replay + retractions** | The earlier synthetic clone-age test did NOT send the captured requests (et=3 vs 2, plain SQL vs incremental predicate, supplied deps vs empty). Replaced with `registerclone_source_age_chain_exact_replay`, which drives ALL 5 captured messages through the gRPC services; entries 0–3 match and ENTRY 4 is pinned as a KNOWN GAP (the INCREMENTAL self-referential `where id > (select … from {{ this }})` predicate reuse is UNIMPLEMENTED — the server EXECUTEs where hosted reuses). RETRACTED the over-broad "hosted does not validate a source epoch" claim (the capture's source epoch is OLDER than its confirmation; it does not exercise the newer/externally-changed case). | `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay` |
+| **#2 3RD FOLLOW-UP finding 3 (live-verified 2026-10-12): volatile suppresses the clone (CORRECTS the prior claim)** | With a GENUINELY volatile model (`current_timestamp()`) and `evaluate_volatile_sql=true`, hosted does NOT clone — it EXECUTES. The earlier (deterministic-query) volatile arm wrongly concluded volatile didn't gate. SERVER FIX: the cross-name clone fallback is now gated on `tolerate_nondeterminism` (a volatile model must not reuse a clone that would serve a different evaluated value). Promoted self-contained captures with unique per-run source logic: `clone_fallback_zero_tolerance.jsonl` (ftol=0 still clones a stale source) and `clone_fallback_volatile.jsonl` (executes). The `clone_eligibility.sh` VARCHECK now EXITS NONZERO on a wire-field mismatch, missing dev submit, missing clone-source epoch, or a broken staleness interval. | `services.rs` fallback gate; `clone_eligibility.rs::{server_clones_stale_equivalent_under_zero_tolerance, server_executes_not_clones_under_volatile_evaluation, hosted_zero_tolerance_*, hosted_volatile_*}` |
+| **#2 3RD FOLLOW-UP finding 4 (2026-10-12): binding-swap regression gate** | The committed view-dep-swap capture's treatment EXECUTE passed partly because the local store had no baseline candidate (missing source history), with no control and inconsistent dependency representation. Added a self-contained gate: build+confirm a prod consumer with two view deps, then a NO-SWAP CONTROL (identical bindings → `ready_to_clone`, proving a compatible candidate exists) and the SWAP (same root SQL, same `create or replace view` representation → `ready_to_execute`). The treatment EXECUTE is now a real gate (a wrong binding hash would clone the treatment too and fail). | `clone_submit_fallback.rs::dep_binding_swap_gated_against_present_baseline_with_control` |
+| **#2 3RD FOLLOW-UP finding 5 (2026-10-12): new-driver oracle hardening** | `finding3_view_dep_swap.sh` and `registerclone_source_age.sh` had print-only oracles. Both now EXIT NONZERO on absent prerequisites/measurements: the view-dep driver fails on a nonzero contents query, a missing/≠`ready_to_execute` submit, <2 dependencies, or dev contents ≠ `(2,)`; the source-age driver fails unless a RegisterClone event + both confirms + a dev resubmit are present AND the distinguishing interval (source build < upstream < clone creation) holds. Failure paths are warehouse-free assertions. | hardened `experiments/finding3_view_dep_swap.sh`, `experiments/registerclone_source_age.sh` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -673,18 +678,18 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **248 tests passed** across the workspace (adds this session's
-  review-#2 2ND FOLLOW-UP fixes on top of the earlier work: the reachable
-  same-basename binding-collision fix (relative schema map) with
-  BLUE/RED + unqualified + view-dep-swap tests; the latest-row-first clone
-  source lookup + namespace-transition regression; real CLONE conformance
-  gating; the clone-age-vs-source-age RegisterClone characterization; and the
-  zero-tolerance / volatile clone-eligibility server reproductions).
-- Server library: **103 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (adds the
-  metamorphic + BLUE/RED + unqualified `fingerprint.rs` tests).
+- Workspace: **255 tests passed** across the workspace (adds this session's
+  review-#2 3RD FOLLOW-UP fixes on top of the earlier work: the quoted-identifier
+  case fix (quote-aware schema key) with context cross-env positives; the exact
+  5-message RegisterClone replay (entry-4 incremental-predicate gap pinned); the
+  volatile clone-suppression server fix with promoted zero-tol/volatile captures;
+  the binding-swap regression gate with a no-swap control; and the hardened
+  experiment-driver oracles).
+- Server library: **107 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database (adds the quoted-case
+  + context + metamorphic `fingerprint.rs` tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
-- Conformance replay: **24 fixtures causally replayed** with REAL CLONE gating
+- Conformance replay: **26 fixtures causally replayed** with REAL CLONE gating
   (the `ready_to_clone` arm now compares the local clone payload and replays its
   confirmation — review #2 2nd follow-up P1 #3). Exact-replay captures promoted:
   `clone_fallback_swapped_bindings`, `clone_fallback_dep_binding_swap`,
