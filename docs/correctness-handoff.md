@@ -34,6 +34,7 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | Testing/toolchain | Pin Rust 1.98; capture DB test out of `--lib`; reject malformed trace lines; replay all fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences; add live `experiments/` capture drivers (clone/lag). | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
 | **#2 finding 1 (live-verified 2026-10-12): data-test upstream freshness** | A data test (execution_type=8) is confirmed with NO own object epoch; the engine returned `should_rebuild=false` for it BEFORE comparing upstreams, reusing a stale cached pass/fail after the tested data changed. Now `decision.rs::data_test_upstream_freshness` anchors a data test's freshness on the RECORDED UPSTREAM epoch (per input, strict `>`, ANY-style; unknown/absent baseline rebuilds). VERIFIED LIVE (`experiments/data_test_freshness{,_control}.sh`): `dt_test` over `dt_up` executes when `dt_up`'s epoch advances and skips when unchanged. | 6 `decision.rs` unit tests, `crates/harness/tests/data_test_freshness.rs`, fixture `data_test_upstream_freshness.jsonl` (CHARACTERIZATION-ONLY) |
 | **#2 finding 5 (2026-10-12): RecordExecutions logical-state atomicity** | `RecordExecutions` wrote each record's `node_states` (selector/deferral) row inline — before full batch validation and outside the batch transaction — so a rejected (INVALID_ARGUMENT) or DB-failed batch leaked logical state. Now node-state upserts are collected during row build (fail-fast, no writes) and published only AFTER the executions batch commits. Error-path atomicity only; every successful path is behavior-preserving (conformance replay still passes). The companion publication-point question (an UNCONFIRMED/failed submit being immediately deferrable) is left unchanged and documented open — it needs live pending/failed-build characterization. | `crates/harness/tests/correctness.rs::rejected_record_batch_does_not_leak_node_state` |
+| **#2 finding 6 (live-verified 2026-10-12): compare_unrendered_code dual identity** | With `compare_unrendered_code=true` the server used `template=node_body_hash` EXCLUSIVELY, so a template-only change (identical rendered SQL) wrongly EXECUTED. Now `node_sql_hash` ALWAYS carries the rendered identity and `node_template_hash` (migration 0011) carries the template identity; `find_confirmed` reuses when EITHER matches — the documented "rebuild only when BOTH change" contract. VERIFIED LIVE (`experiments/template_comparison.sh`): a Jinja-comment-only edit (template changed, rendered identical) SKIPS. Both hashes fold in deps/context/extras so a genuine dependency change still rebuilds. | 5 `template_comparison.rs` tests, fixture `template_compare_unrendered.jsonl` (CHARACTERIZATION-ONLY), migration 0011 |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -66,6 +67,12 @@ Migration `0010_node_state_fqn.sql` adds a nullable `target_table` column to
 a `dbt_node_state` and a physical target. It powers deferral
 (`ResolveDeferredRelations` resolves a node to its defer-to-env FQN); legacy
 rows have it NULL and simply do not resolve. No effect on the decision path.
+
+Migration `0011_node_template_hash.sql` adds a nullable `node_template_hash`
+column to `executions` for the `compare_unrendered_code` dual identity (review
+#2 finding 6). It is written only on `compare_unrendered_code=true` submits;
+legacy rows and all Record/seed/clone rows have it NULL and match on the
+rendered `node_sql_hash` alone, exactly as before. No backfill is needed.
 
 SQL/seed hashes now have a versioned, length-framed SHA-256 domain. Existing
 fingerprints will cold miss and rebuild; **do not rehash old rows in place**:
@@ -281,11 +288,15 @@ guessing hosted policy:
   The SQL-submit cross-name clone fallback is already LIVE-VERIFIED as driven by
   schema-abstracted logic identity, NOT target existence
   (`clone_submit_equivalent_fallback.jsonl`, `clone_fallback_over_existing_target.jsonl`,
-  §A). The review's freshness-guard claim is a local counterexample only ("hosted
-  confirmation still needed"); isolating it needs two differently-named objects
-  with controlled, differing upstream epochs in ONE adapter namespace — the
-  decision there is governed by warehouse physical state the protocol does not
-  expose. Open until a controlled live capture exists.
+  §A). A fresh live attempt (2026-10-12, `experiments/clone_fallback_freshness.sh`
+  + `clone_fallback_control.sh`) found the fallback does NOT fire in a flat
+  same-schema prod build (the absent target just executed "table did not exist"),
+  and the control was contaminated by hosted-history carryover across runs with
+  reused fixed names ("Cloned from other environment"), re-confirming the
+  review's point that dropping warehouse objects does NOT reset hosted decision
+  history. Cleanly isolating the freshness-guard claim therefore needs the
+  cross-ENVIRONMENT dev_clone flow with UNIQUE per-run names and controlled
+  upstream staleness — a dedicated controlled capture, not a quick win. Open.
 - **Finding 3 (namespace abstraction erases dependency identity: BLUE/RED,
   swapped V1/V2).** Schema abstraction is a DELIBERATE, live-verified
   cross-environment identity (§A; `fingerprint.rs`/`sql_norm.rs` live-comment
@@ -300,9 +311,12 @@ guessing hosted policy:
 - **Finding 5A (publication point: an UNCONFIRMED/failed submit is immediately
   deferrable).** The successful-build captures do not establish pending/failed
   policy; the publication point must be characterized live, not guessed. Open.
-- **Finding 6 (template truth table; wildcard-view column evidence).** The review
-  states "reproduced locally; hosted confirmation still needed"; `fingerprint.rs`
-  already notes the template truth table is unresolved. Open (see §C).
+- **Finding 6 (template truth table; wildcard-view column evidence).** The
+  template cell is now FIXED + LIVE-VERIFIED (2026-10-12): a Jinja-comment-only
+  edit (template changed, rendered identical) SKIPS, matching the documented
+  "rebuild only when BOTH change" contract. See §C and
+  `template_comparison.rs`. The wildcard-view column-evidence sub-claim remains
+  open (needs a live upstream-column-change capture).
 - **Finding 7 (lag/graph/ordering, physical identity across accounts).** Already
   documented open / characterization-only in §C. No new genuine bug.
 - **Finding 8 (recording-proxy fidelity).** A test-oracle improvement (forward
@@ -398,14 +412,30 @@ The own-build anchor itself remains verified for the ANY path:
 `golden/fixtures/lag_freshness_own_build.jsonl`, `decision.rs` `freshness_*`
 tests, `decision_proptest.rs` oracle, `crates/harness/tests/lag_freshness.rs`.
 
-`compare_unrendered_code=true` remains exclusive template-body comparison,
-while false uses rendered SQL. Fingerprints separate both modes, include extras,
-context and dependency definitions, and reject empty body evidence. Existing
-capture proves one changed-rendered/unchanged-template SKIP, not the complete
-truth table. Test all four template/rendered changes with the flag both ways,
-mode transitions, macros/vars and actual Python/Rust clients. `SQLExecution` in
-Record has no comparison flag: it currently records rendered mode; decide how
-template reuse should consume batch history once hosted behavior is established.
+`compare_unrendered_code=true` is now DUAL-IDENTITY and LIVE-VERIFIED (review #2
+finding 6, 2026-10-12): the server computes BOTH the rendered logic hash
+(`node_sql_hash`, always) and the unrendered-template hash (`node_template_hash`,
+migration 0011), and `find_confirmed` reuses when EITHER matches the recorded
+row. This reproduces the documented contract — a rebuild occurs ONLY when BOTH
+the rendered SQL AND the template change — and both cells are captured: template
+same + rendered changed → SKIP (`compare_unrendered_code.jsonl`) and template
+changed + rendered same → SKIP (`template_compare_unrendered.jsonl`, a
+Jinja-comment-only edit;  `experiments/template_comparison.sh`). Both hashes fold
+in the same dependency/context/extras components, so a genuine dependency or
+context change still invalidates both and rebuilds. When `compare_unrendered_code`
+is false only the rendered hash is matched, as before. Previously the server used
+`template = node_body_hash` EXCLUSIVELY in cuc mode, so a template-only change
+(identical rendered SQL) wrongly EXECUTED. Pinned by
+`crates/harness/tests/template_comparison.rs` and
+`golden/fixtures/template_compare_unrendered.jsonl`.
+
+Still open on templates: the four-cell matrix with the flag BOTH ways and
+`compare_unrendered_code=false` transitions, macro/var changes, and actual
+Python/Rust clients. `SQLExecution` in Record has no comparison flag: it records
+rendered mode (`node_template_hash` NULL), so a cuc submit after a Record-only
+history reuses on the rendered identity alone — acceptable but uncharacterized;
+decide how Record should seed the template identity once hosted behavior is
+captured.
 
 ### D. Full public client feature set (review 8, 9 and coverage matrix)
 
@@ -560,11 +590,12 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **214 tests passed** across the workspace (adds this session's
+- Workspace: **219 tests passed** across the workspace (adds this session's
   review-#2 fixes: 6 data-test-freshness decision unit tests, the
-  `data_test_freshness.rs` harness test, and the
-  `rejected_record_batch_does_not_leak_node_state` atomicity test — on top of
-  the earlier clone-provenance, selector last-write-wins + observability,
+  `data_test_freshness.rs` harness test, the
+  `rejected_record_batch_does_not_leak_node_state` atomicity test, and 5
+  `template_comparison.rs` compare_unrendered_code dual-identity tests — on top
+  of the earlier clone-provenance, selector last-write-wins + observability,
   deferral, allow_clones=false, concurrency determinism, dependency/SQL
   negatives, auth-hardening, and physical-state-before-filters work).
 - Server library: **95 tests passed** with DATABASE_URL pointing to an
@@ -575,9 +606,10 @@ Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
   captures (`lag_multi_upstream_policy`, `selector_state_selection`,
   `clone_fallback_over_existing_target`, `selector_last_write_wins`,
   `deferral_resolve`, `clone_submit_allow_clones_false`,
-  `clone_rebuild_execution_type`, `data_test_upstream_freshness`) are excluded
-  and validated by their dedicated tests. Clone rejection and SQL-submit clone
-  fallback entries are counted as replay gaps and asserted by their dedicated
+  `clone_rebuild_execution_type`, `data_test_upstream_freshness`,
+  `template_compare_unrendered`) are excluded and validated by their dedicated
+  tests. Clone rejection and SQL-submit clone fallback entries are counted as
+  replay gaps and asserted by their dedicated
   tests (`clone.rs`, `clone_submit_fallback.rs`). The six pinned local fallbacks
   in [golden/replay_gaps.json](../golden/replay_gaps.json) remain exercised
   exactly once.

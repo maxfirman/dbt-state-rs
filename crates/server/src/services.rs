@@ -602,13 +602,25 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
         let node_body_hash = decision::node_body_hash_of(&req);
-        let template = req
-            .compare_unrendered_code
-            .then(|| node_body_hash.as_deref().unwrap_or(""));
+        // `node_sql_hash` ALWAYS carries the RENDERED logic identity. In
+        // `compare_unrendered_code` mode we ADDITIONALLY compute the unrendered
+        // TEMPLATE identity (`node_template_hash`): the hosted service rebuilds a
+        // cuc node ONLY when BOTH the rendered SQL and the template change, i.e.
+        // it reuses when EITHER is unchanged (documented + verified live — see
+        // crates/harness/tests/template_comparison.rs). Both hashes fold in the
+        // same dependency/context/extras components, so a genuine dependency or
+        // context change invalidates BOTH and rebuilds. When cuc is off,
+        // node_template_hash is None and only the rendered hash is matched.
         let node_sql_hash = Some(crate::fingerprint::sql_logic_hash(
             &sql_execution(&req),
-            template,
+            None,
         ));
+        let node_template_hash = req.compare_unrendered_code.then(|| {
+            crate::fingerprint::sql_logic_hash(
+                &sql_execution(&req),
+                Some(node_body_hash.as_deref().unwrap_or("")),
+            )
+        });
         // Schema-abstracted cross-environment logic identity (clone adoption).
         // Only meaningful for rendered (non-template) comparison of real SQL.
         let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
@@ -655,6 +667,7 @@ impl Sql for SqlService {
                     node_sql_hash.as_deref(),
                     table_namespace,
                     &req.dialect,
+                    node_template_hash.as_deref(),
                 )
                 .await
                 .map_err(db_err)?;
@@ -820,6 +833,7 @@ impl Sql for SqlService {
                             request_id: request_id.clone(),
                             execution_decision_id: Some(execution_decision_id.clone()),
                             clone_source_table: None,
+                            node_template_hash: node_template_hash.clone(),
                         };
                         self.0
                             .store
@@ -879,6 +893,7 @@ impl Sql for SqlService {
                             request_id: request_id.clone(),
                             execution_decision_id: Some(execution_decision_id.clone()),
                             clone_source_table: Some(eq.source_table.clone()),
+                            node_template_hash: node_template_hash.clone(),
                         };
                         self.0
                             .store
@@ -960,6 +975,7 @@ impl Sql for SqlService {
                     request_id: request_id.clone(),
                     execution_decision_id: Some(execution_decision_id.clone()),
                     clone_source_table: None,
+                    node_template_hash: node_template_hash.clone(),
                 };
                 self.0
                     .store
@@ -1090,6 +1106,7 @@ impl Sql for SqlService {
                     request_id: request_id.clone(),
                     execution_decision_id: Some(execution_decision_id.clone()),
                     clone_source_table: None,
+                    node_template_hash: None,
                 };
                 self.0
                     .store
@@ -1224,6 +1241,7 @@ impl Execution for ExecutionService {
                     table_type: outcome.table_type.clone(),
                     execution_runtime_ms: outcome.execution_runtime_ms,
                     execution_results: outcome.execution_results.clone(),
+                    node_template_hash: None,
                 },
                 qc::execution_record::Input::Values(values) => ConfirmedExecution {
                     org_id: org_id.clone(),
@@ -1270,6 +1288,7 @@ impl Execution for ExecutionService {
                     table_type: outcome.table_type.clone(),
                     execution_runtime_ms: outcome.execution_runtime_ms,
                     execution_results: outcome.execution_results.clone(),
+                    node_template_hash: None,
                 },
             };
             rows.push(row);
@@ -1436,6 +1455,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             request_id: request_id.clone(),
             execution_decision_id: Some(execution_decision_id.clone()),
             clone_source_table: Some(req.clone_source_table.clone()),
+            node_template_hash: None,
         };
         self.0
             .store

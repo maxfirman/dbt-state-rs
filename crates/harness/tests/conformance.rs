@@ -117,6 +117,10 @@ async fn conformance_replay_all_corpora() {
         // replay cannot model the in-place upstream mutation; pinned by
         // data_test_freshness.rs.
         "data_test_upstream_freshness.jsonl",
+        // compare_unrendered_code dual identity: a template-only change (Jinja
+        // comment) with identical rendered SQL SKIPS. Interleaved baseline +
+        // re-submit over the same node; pinned by template_comparison.rs.
+        "template_compare_unrendered.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

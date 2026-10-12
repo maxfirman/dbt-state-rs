@@ -58,6 +58,10 @@ pub struct PendingExecution {
     /// Set only for clone-origin rows (from RegisterClone): the physical source
     /// this target was cloned from. NULL for ordinary SQL/seed executions.
     pub clone_source_table: Option<String>,
+    /// The unrendered-template logic hash, set only in `compare_unrendered_code`
+    /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
+    /// OR `node_template_hash` (template) equals the submit's.
+    pub node_template_hash: Option<String>,
 }
 
 /// A fully-formed confirmed execution to insert directly (RecordExecutions
@@ -86,6 +90,8 @@ pub struct ConfirmedExecution {
     pub table_type: Option<String>,
     pub execution_runtime_ms: Option<i64>,
     pub execution_results: Option<qc::Struct>,
+    /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
+    pub node_template_hash: Option<String>,
 }
 
 /// A confirmed "equivalent under another name" to clone from (SQL-submit
@@ -136,6 +142,19 @@ impl Store {
 
     /// Select current physical state before checking logic, kind and namespace.
     /// An older matching execution cannot describe a target overwritten later.
+    ///
+    /// `node_template_hash` is the submit's unrendered-template identity, set
+    /// only in `compare_unrendered_code` mode. When present, a row matches if
+    /// EITHER its recorded rendered hash equals `node_sql_hash` OR its recorded
+    /// template hash equals `node_template_hash` — the documented contract that
+    /// a `compare_unrendered_code` node rebuilds ONLY when BOTH the rendered SQL
+    /// and the unrendered template change (verified live; see
+    /// `template_comparison.rs`). When `node_template_hash` is NULL (ordinary
+    /// rendered comparison) only `node_sql_hash` is compared, as before.
+    // A current-state lookup filters on several independent, non-groupable
+    // dimensions (target, kind, both logic identities, namespace, dialect); a
+    // params struct would not improve clarity for a single internal query.
+    #[allow(clippy::too_many_arguments)]
     pub async fn find_confirmed(
         &self,
         org_id: &str,
@@ -144,6 +163,7 @@ impl Store {
         node_sql_hash: Option<&str>,
         table_namespace: Option<&str>,
         dialect: &str,
+        node_template_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -157,7 +177,10 @@ impl Store {
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
             ) current_execution
             WHERE execution_type = $3
-              AND node_sql_hash IS NOT DISTINCT FROM $4
+              AND (
+                node_sql_hash IS NOT DISTINCT FROM $4
+                OR ($7 IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM $7)
+              )
               AND ($5 IS NULL OR table_namespace = $5)
               AND dialect = $6
             "#,
@@ -168,6 +191,7 @@ impl Store {
         .bind(node_sql_hash)
         .bind(table_namespace)
         .bind(dialect)
+        .bind(node_template_hash)
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
@@ -466,8 +490,9 @@ impl Store {
                 org_id, target_table, execution_type, node_hash, node_body_hash,
                 node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
                 dialect, input_tables, values_hash, status, request_id, execution_decision_id,
-                node_sql_hash, project_id, node_namespace_logic_hash, clone_source_table
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18)
+                node_sql_hash, project_id, node_namespace_logic_hash, clone_source_table,
+                node_template_hash
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18,$19)
             RETURNING id
             "#,
         )
@@ -489,6 +514,7 @@ impl Store {
         .bind(&p.project_id)
         .bind(&p.node_namespace_logic_hash)
         .bind(&p.clone_source_table)
+        .bind(&p.node_template_hash)
         .fetch_one(&self.pool)
         .await?;
         Ok(rec)
@@ -511,8 +537,8 @@ impl Store {
                     dialect, input_tables, values_hash, status, request_id,
                     execution_decision_id, last_modified_epoch, table_type,
                     execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results,
-                    node_namespace_logic_hash
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20,$21)
+                    node_namespace_logic_hash, node_template_hash
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20,$21,$22)
                 "#,
             )
             .bind(&c.org_id)
@@ -536,6 +562,7 @@ impl Store {
             .bind(&c.project_id)
             .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
             .bind(&c.node_namespace_logic_hash)
+            .bind(&c.node_template_hash)
             .execute(&mut *tx)
             .await?;
         }
