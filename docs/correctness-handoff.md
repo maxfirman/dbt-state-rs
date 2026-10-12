@@ -396,6 +396,14 @@ template reuse should consume batch history once hosted behavior is established.
   trusted identity mapping remain deployment work. UI uses one configured org,
   not authenticated multi-user tenant selection. Bound asynchronous capture
   work/retention before enabling it under heavy load.
+  **Hardening ADDED (2026-10-12):** `DBT_STATE_REQUIRE_ORG_HEADER=true` makes the
+  server REJECT (`UNAUTHENTICATED`) any request lacking a non-empty
+  `x-organization-id` header instead of silently bucketing it into the shared
+  `local` tenant. Off by default (preserves the insecure local-dev flow where
+  the client omits the header). This enforces org SCOPING PRESENCE — it still
+  does NOT authenticate the claimed org against a trusted bearer token, which
+  remains the deployment-side work (OAuth/TLS/trusted-identity). Pinned by
+  `crates/harness/tests/auth.rs` and a `config.rs` unit test.
 
 ### E. Independent testing foundation
 

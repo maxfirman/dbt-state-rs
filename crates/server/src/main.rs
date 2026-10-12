@@ -11,7 +11,12 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
     tracing::info!("connecting to postgres");
-    let state = AppState::connect(&config.database_url).await?;
+    let state = AppState::connect(&config.database_url)
+        .await?
+        .with_require_org_header(config.require_org_header);
+    if config.require_org_header {
+        tracing::info!("x-organization-id header is REQUIRED (multi-tenant mode)");
+    }
 
     let addr = config.listen.parse()?;
     tracing::info!(%addr, "dbt-state-server listening");

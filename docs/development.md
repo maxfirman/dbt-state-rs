@@ -40,6 +40,9 @@ startup.
 ```bash
 export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
 export DBT_STATE_LISTEN=127.0.0.1:50051        # optional, this is the default
+export DBT_STATE_REQUIRE_ORG_HEADER=false      # optional; set true for multi-tenant
+                                               # deployments to reject requests
+                                               # lacking x-organization-id
 RUST_LOG=info cargo run -p dbt-state-server
 ```
 

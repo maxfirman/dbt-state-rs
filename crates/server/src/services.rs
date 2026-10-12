@@ -234,8 +234,30 @@ fn org_id_of<T>(req: &Request<T>) -> String {
     req.metadata()
         .get("x-organization-id")
         .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())
         .unwrap_or("local")
         .to_string()
+}
+
+/// Resolve the organization id, enforcing presence when the deployment requires
+/// it (`AppState::require_org_header`). Returns the scoped org on success, or
+/// `UNAUTHENTICATED` when the header is required but absent/empty. This enforces
+/// org SCOPING presence — it is NOT identity authentication (verifying the org
+/// against a trusted token is deployment work). Local/insecure runs leave the
+/// flag off and fall back to the `local` tenant as before.
+fn org_id_checked<T>(state: &AppState, req: &Request<T>) -> Result<String, Status> {
+    let present = req
+        .metadata()
+        .get("x-organization-id")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if state.require_org_header && !present {
+        return Err(Status::unauthenticated(
+            "missing required x-organization-id metadata header",
+        ));
+    }
+    Ok(org_id_of(req))
 }
 
 /// Read a string metadata header, if present and valid UTF-8.
@@ -552,7 +574,7 @@ impl Sql for SqlService {
         &self,
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
@@ -954,7 +976,7 @@ impl Sql for SqlService {
         &self,
         request: Request<qc::SubmitValuesRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
@@ -1101,7 +1123,7 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::ConfirmExecutionRequest>,
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
         let found = self
             .0
@@ -1127,7 +1149,7 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::RecordExecutionsRequest>,
     ) -> Result<Response<qc::RecordExecutionsResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
 
         let mut rows: Vec<ConfirmedExecution> = Vec::with_capacity(req.records.len());
@@ -1268,7 +1290,7 @@ impl Execution for ExecutionService {
         // i.e. the submit `target_table` recorded for that (project, env, node).
         // Nodes not built in that env are simply omitted (the empty-map case we
         // first captured was precisely that: nothing built there yet).
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
 
         // project_id scopes the recorded node state (same scope as the selector).
@@ -1307,7 +1329,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         &self,
         request: Request<qc::CloneRequest>,
     ) -> Result<Response<qc::CloneResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
@@ -1502,7 +1524,7 @@ impl SelectorService for SelectorServiceImpl {
         &self,
         request: Request<qc::SelectorRequest>,
     ) -> Result<Response<qc::SelectorResponse>, Status> {
-        let org_id = org_id_of(&request);
+        let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
 
         // Decode the criterion. The client only ever sends 1..=10; SC_UNSPECIFIED

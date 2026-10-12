@@ -33,6 +33,9 @@ pub struct AppState {
     /// `selector_state_write_failures_are_observable` offline test. It is NOT a
     /// correctness signal for a single request; it is an operational health gauge.
     pub selector_write_failures: Arc<std::sync::atomic::AtomicU64>,
+    /// When true, reject requests lacking a non-empty `x-organization-id` header
+    /// instead of bucketing them into the default tenant. See `config::Config`.
+    pub require_org_header: bool,
 }
 
 impl AppState {
@@ -45,7 +48,15 @@ impl AppState {
         Ok(Self {
             store: Arc::new(Store::new(pool)),
             selector_write_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            require_org_header: false,
         })
+    }
+
+    /// Opt into rejecting requests without an organization header (multi-tenant
+    /// hardening). Chainable on a freshly-built state.
+    pub fn with_require_org_header(mut self, require: bool) -> Self {
+        self.require_org_header = require;
+        self
     }
 
     /// Build from an existing pool (used by tests with a transactional/temp DB).
@@ -53,6 +64,7 @@ impl AppState {
         Self {
             store: Arc::new(Store::new(pool)),
             selector_write_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            require_org_header: false,
         }
     }
 

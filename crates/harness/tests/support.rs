@@ -27,6 +27,17 @@ pub fn dsn() -> String {
 /// Spin up our server in-process against a fresh isolated schema. Returns the
 /// bound address and the schema name (for cleanup / row assertions).
 pub async fn start_server_with_state() -> (SocketAddr, String, AppState) {
+    start_server_configured(false).await
+}
+
+/// Like `start_server_with_state` but enables the require-organization-header
+/// hardening mode on the server.
+pub async fn start_server_require_org() -> (SocketAddr, String) {
+    let (addr, schema, _state) = start_server_configured(true).await;
+    (addr, schema)
+}
+
+async fn start_server_configured(require_org_header: bool) -> (SocketAddr, String, AppState) {
     let schema = format!("difftest_{}", uuid::Uuid::new_v4().simple());
 
     // Admin pool to create the schema.
@@ -65,7 +76,7 @@ pub async fn start_server_with_state() -> (SocketAddr, String, AppState) {
         .await
         .expect("migrate");
 
-    let state = AppState::from_pool(pool);
+    let state = AppState::from_pool(pool).with_require_org_header(require_org_header);
     let state_handle = state.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

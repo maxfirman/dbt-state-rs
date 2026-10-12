@@ -20,6 +20,11 @@ files are Apache-2.0, published by dbt Labs, and vendored in this repo under
 - Per-request metadata headers from the real client: `x-request-id`,
   `x-session-id`, `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`,
   `x-dbt-invocation-id`.
+- Every store query is scoped by `x-organization-id` (default tenant `local`
+  when absent). Setting `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests
+  without a non-empty org header (`UNAUTHENTICATED`) for multi-tenant
+  deployments. This is org SCOPING presence, not identity authentication —
+  verifying the org against a trusted token (OAuth/TLS) is deployment work.
 
 ## Services
 
