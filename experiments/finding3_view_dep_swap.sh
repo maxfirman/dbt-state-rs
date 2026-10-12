@@ -69,8 +69,9 @@ query_contents(){
   cat > macros/_dvexp.sql <<MACRO
 {% macro _dvexp() %}{% set r = run_query("select id from $1 order by id") %}{% if execute %}{{ log("CONTENTS $1 = " ~ r.columns[0].values(), info=true) }}{% endif %}{% endmacro %}
 MACRO
-  dbt run-operation _dvexp --profile snowflake --target dev_clone --skip-semantic-manifest-validation >/tmp/dv_q.txt 2>&1 || true
-  rm -f macros/_dvexp.sql
+  dbt run-operation _dvexp --profile snowflake --target dev_clone --skip-semantic-manifest-validation >/tmp/dv_q.txt 2>&1
+  local rc=$?; rm -f macros/_dvexp.sql
+  [ $rc -eq 0 ] || { cat /tmp/dv_q.txt; fail "contents query failed"; }
   grep "CONTENTS" /tmp/dv_q.txt | tail -1
 }
 
@@ -92,27 +93,34 @@ grep -iE "Cloned|Reused|Succeeded|Completed" /tmp/dv_dev.txt | sed 's/^ *//' | t
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 [ -n "$GF" ] || fail "no golden capture"
-echo "--- ORACLE 1: hosted decision + query_dependencies for dev $CONS ---"
-python3 - "$GF" "$BEFORE" "$CONS" <<'PY'
+echo "--- ORACLE 1: hosted decision + query_dependencies for dev $CONS (asserted) ---"
+python3 - "$GF" "$BEFORE" "$CONS" <<'PY' || { echo "FATAL: oracle 1 failed"; exit 1; }
 import json,sys
 gf,before,cons=sys.argv[1],int(sys.argv[2]),sys.argv[3]
 rows=[json.loads(l) for l in open(gf) if l.strip()][before:]
-found=False
+dec=None; ndeps=0
 for r in rows:
     if r['method']!='SubmitEnrichedSQL': continue
     req=r['request']; name=req.get('labels',{}).get('dbt_node_name','')
     if name!=cons: continue
-    found=True
     resp=r.get('response',{}).get('response',{}) or {}
     v=next(iter(resp.keys()),None); p=resp.get(v) or {}
     ed=p.get('explained_decision',{})
     deps=[(d.get('name'),d.get('query','').strip()[:40]) for d in req.get('query_dependencies',[])]
+    dec=v; ndeps=len(deps)
     print("DV_DEC "+json.dumps({"node":name,"decision":v,
       "srr":ed.get('skip_rejection_reason'),"desc":ed.get('decision_description'),
-      "clone_source":p.get('clone_source'),"n_deps":len(deps),"deps":deps,
+      "clone_source":p.get('clone_source'),"n_deps":ndeps,"deps":deps,
       "sql":req.get('sql','').strip()}))
-if not found: print("DV_DEC {\"error\":\"no cons submit captured\"}")
+if dec is None:
+    print("ERROR: no cons submit captured"); sys.exit(1)
+if ndeps < 2:
+    print(f"ERROR: expected >=2 query_dependencies (the real bug shape) but got {ndeps}"); sys.exit(1)
+if dec != "ready_to_execute":
+    print(f"ERROR: expected ready_to_execute (binding preserved) but got {dec}"); sys.exit(1)
 PY
-echo "--- ORACLE 2: actual contents of dev_clone_demo.$CONS ---"
-query_contents "CDO_DEMO_DB.dev_clone_demo.$CONS"
-echo "(SAFE = [2] / executed; UNSAFE conflation = [1] / cloned from prod cons)"
+echo "--- ORACLE 2: actual contents of dev_clone_demo.$CONS (asserted = [2]) ---"
+contents=$(query_contents "CDO_DEMO_DB.dev_clone_demo.$CONS")
+echo "$contents"
+echo "$contents" | grep -q "(2,)" || fail "oracle 2: dev contents are not [2] (data conflation?): $contents"
+echo "BOTH ORACLES OK: hosted executed the swapped view binding and dev holds [2]."
