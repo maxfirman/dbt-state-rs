@@ -483,6 +483,134 @@ mod tests {
         ));
     }
 
+    // ---- SQL-semantics negative coverage (over-execute is the safe default) --
+
+    /// Only the small verified synonym set is unified. A quoted function name is
+    /// a DIFFERENT (case-sensitive, possibly user-defined) identifier and must
+    /// NOT be folded into the builtin synonym.
+    #[test]
+    fn quoted_function_name_is_not_synonym_folded() {
+        assert!(
+            !eq(
+                "select \"NVL\"(a, 0) from t",
+                "select coalesce(a, 0) from t"
+            ),
+            "a quoted \"NVL\" is not the builtin nvl and must stay distinct"
+        );
+    }
+
+    /// UDF SHADOWING: a schema-qualified call (`myschema.nvl(...)`) is a
+    /// user/overloaded function, NOT the unqualified builtin, so it must not be
+    /// canonicalized to `coalesce`. Guards against false reuse across a UDF that
+    /// shadows a builtin name.
+    #[test]
+    fn qualified_udf_shadowing_a_builtin_stays_distinct() {
+        assert!(!eq(
+            "select myschema.nvl(a, 0) from t",
+            "select coalesce(a, 0) from t"
+        ));
+        assert!(!eq(
+            "select myschema.nvl(a, 0) from t",
+            "select myschema.coalesce(a, 0) from t"
+        ));
+    }
+
+    /// A function OUTSIDE the verified synonym set is left as written — two
+    /// genuinely different functions must not collide, and a function is not
+    /// confused with a same-named column.
+    #[test]
+    fn unknown_functions_are_not_unified() {
+        assert!(!eq(
+            "select zeroifnull(a) from t",
+            "select coalesce(a, 0) from t"
+        ));
+        assert!(!eq(
+            "select nullif(a, b) from t",
+            "select coalesce(a, b) from t"
+        ));
+    }
+
+    /// CAST negatives beyond the verified families: a precision/scale difference
+    /// and a genuinely different target type must stay distinct, and TRY_CAST is
+    /// not CAST (different failure semantics).
+    #[test]
+    fn cast_type_differences_stay_distinct() {
+        assert!(!eq(
+            "select cast(x as varchar(10)) from t",
+            "select cast(x as varchar(20)) from t"
+        ));
+        assert!(!eq(
+            "select cast(x as number(10,2)) from t",
+            "select cast(x as number(10,4)) from t"
+        ));
+        assert!(!eq(
+            "select cast(x as int) from t",
+            "select cast(x as float) from t"
+        ));
+        assert!(!eq(
+            "select cast(x as date) from t",
+            "select cast(x as timestamp) from t"
+        ));
+        assert!(!eq(
+            "select try_cast(x as int) from t",
+            "select cast(x as int) from t"
+        ));
+    }
+
+    /// COLLATE / session-sensitive constructs are preserved: a COLLATE clause
+    /// changes comparison/sort semantics and must remain distinct.
+    #[test]
+    fn collation_is_significant() {
+        assert!(!eq(
+            "select a from t order by a",
+            "select a from t order by a collate 'en-ci'"
+        ));
+        assert!(!eq(
+            "select a collate 'en-ci' from t",
+            "select a collate 'fr' from t"
+        ));
+    }
+
+    /// DISTINCT, LIMIT and ORDER BY direction all change result semantics and
+    /// must stay distinct (the normalizer is syntactic, not a logical planner).
+    #[test]
+    fn result_shaping_clauses_are_significant() {
+        assert!(!eq("select a from t", "select distinct a from t"));
+        assert!(!eq("select a from t", "select a from t limit 10"));
+        assert!(!eq(
+            "select a from t order by a asc",
+            "select a from t order by a desc"
+        ));
+        assert!(!eq("select a from t", "select a from t order by a"));
+    }
+
+    /// JOIN kind is significant (inner vs left changes the result set).
+    #[test]
+    fn join_kind_is_significant() {
+        assert!(!eq(
+            "select a from t join u on t.id = u.id",
+            "select a from t left join u on t.id = u.id"
+        ));
+    }
+
+    /// Qualified vs unqualified builtin that IS in the synonym set: an
+    /// unqualified `nvl` folds to `coalesce`, but the aggregate/count family and
+    /// other builtins are untouched (we only unified a tiny set).
+    #[test]
+    fn only_verified_synonyms_fold() {
+        // Verified: unqualified nvl/ifnull -> coalesce.
+        assert!(eq(
+            "select nvl(a, 0) from t",
+            "select coalesce(a, 0) from t"
+        ));
+        assert!(eq(
+            "select ifnull(a, 0) from t",
+            "select coalesce(a, 0) from t"
+        ));
+        // NOT unified: count(*) vs count(1) are left as written (over-execute).
+        assert!(!eq("select count(*) from t", "select count(1) from t"));
+    }
+
     // ---- Schema-abstracted (cross-environment) normalization ----
     use super::normalize_sql_namespace_abstracted as nsabs;
 

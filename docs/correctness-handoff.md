@@ -201,16 +201,31 @@ needs the actual view definition/context, not `CREATE VIEW ... CLONE`.
 
 ### B. Dependency semantics and SQL equivalence (review 2, 4, 5)
 
-Offline work: retain a resolved dependency graph; distinguish view DDL from its
-query; handle cycles, duplicates, incomplete definitions, raw references outside
-the DAG, quoted identifiers, and default resolution context. Add nested views,
-transitive definition changes, missing/added columns with SELECT *, and input
-ordering invariance. Exact fingerprinting of supplied definitions does not
+**Negative coverage ADDED (2026-10-12, offline).** Dependency-identity
+properties are now pinned in `crates/server/src/fingerprint.rs` tests: the
+STRICT identity distinguishes a changed dependency definition and the physical
+dependency name / resolution catalog / schema (same-target reuse cannot conflate
+different physical inputs); the NAMESPACE-ABSTRACTED identity excludes the
+physical dependency name/catalog/schema (so the same model's view in prod vs a
+dev clone shares identity) BUT still distinguishes a genuine dependency LOGIC
+change, a different dependency-set size, and a root projection change; dependency
+ORDER is irrelevant in both; and template vs rendered modes never collide. SQL
+equivalence negatives are pinned in `crates/server/src/sql_norm.rs` tests:
+quoted/qualified function names and UDFs that shadow a builtin are NOT
+synonym-folded; unknown functions, cast precision/scale and target-type
+differences, TRY_CAST vs CAST, COLLATE, DISTINCT/LIMIT/ORDER-direction and JOIN
+kind all stay distinct (the normalizer is syntactic, over-executing is the safe
+default). Only the tiny verified synonym set folds.
+
+Offline work remaining: retain a resolved dependency graph; distinguish view DDL
+from its query; handle cycles, raw references outside
+the DAG, and default resolution context. Add nested views,
+transitive definition changes, missing/added columns with SELECT *. Exact
+fingerprinting of supplied definitions does not
 establish completeness of the supplied graph. `lenient_dependencies` is still
 ignored; define its behavior from primary client/docs evidence and then capture
-controlled cases. Builtin synonym rules should gain more negative cases and
-warehouse validation before being expanded; unqualified UDF shadowing remains
-a resolution question.
+controlled cases. Builtin synonym rules should gain warehouse validation before
+being expanded.
 
 Hosted/warehouse questions: actual equivalence catalog, parameterized numeric
 and string casts, session settings/collation, SQL header effects, view-definition

@@ -134,3 +134,231 @@ pub fn seed_logic_hash(
     extras(&mut h, semantic_extras);
     hex::encode(h.finalize())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::query_cache as qc;
+
+    fn dep(name: &str, query: &str, catalog: &str, schema: &str) -> qc::QueryDependency {
+        qc::QueryDependency {
+            name: name.into(),
+            query: query.into(),
+            default_catalog: catalog.into(),
+            default_schema: schema.into(),
+        }
+    }
+
+    fn exec(sql: &str, deps: Vec<qc::QueryDependency>) -> qc::SqlExecution {
+        qc::SqlExecution {
+            target_table: Some("\"DB\".\"S\".\"T\"".into()),
+            dialect: "snowflake".into(),
+            default_catalog: "DB".into(),
+            default_schema: Some("S".into()),
+            execution_type: 1,
+            sql: sql.into(),
+            tables: vec![],
+            query_dependencies: deps,
+            semantic_extras: HashMap::new(),
+            labels: HashMap::new(),
+            dbt_node_state: None,
+            table_namespace: Some("ns".into()),
+            from_speculative_submit: false,
+        }
+    }
+
+    fn strict(e: &qc::SqlExecution) -> String {
+        sql_logic_hash(e, None)
+    }
+
+    // ---- STRICT identity (same-target reuse) is dependency-sensitive ---------
+
+    /// Identical dependency sets produce the same strict fingerprint.
+    #[test]
+    fn strict_identical_dependencies_match() {
+        let a = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "DB", "S")],
+        );
+        let b = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "DB", "S")],
+        );
+        assert_eq!(strict(&a), strict(&b));
+    }
+
+    /// A changed dependency DEFINITION (query text) changes the strict hash:
+    /// different physical data behind the same reference must not be reused.
+    #[test]
+    fn strict_changed_dependency_query_differs() {
+        let a = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "DB", "S")],
+        );
+        let b = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 2 as id", "DB", "S")],
+        );
+        assert_ne!(
+            strict(&a),
+            strict(&b),
+            "changed view definition must differ"
+        );
+    }
+
+    /// The strict identity distinguishes the physical dependency NAME and its
+    /// resolution catalog/schema — same-target reuse must see different physical
+    /// inputs as different.
+    #[test]
+    fn strict_distinguishes_physical_dependency_name_and_context() {
+        let base = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "DB", "S")],
+        );
+        let diff_name = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"W\"", "select 1 as id", "DB", "S")],
+        );
+        let diff_schema = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "DB", "OTHER")],
+        );
+        let diff_catalog = exec(
+            "select * from v",
+            vec![dep("\"DB\".\"S\".\"V\"", "select 1 as id", "OTHER", "S")],
+        );
+        assert_ne!(
+            strict(&base),
+            strict(&diff_name),
+            "physical dep name matters"
+        );
+        assert_ne!(strict(&base), strict(&diff_schema), "dep schema matters");
+        assert_ne!(strict(&base), strict(&diff_catalog), "dep catalog matters");
+    }
+
+    /// Dependency ORDER must not change identity (sets, not sequences).
+    #[test]
+    fn dependency_order_is_irrelevant() {
+        let d1 = dep("\"DB\".\"S\".\"A\"", "select 1 as id", "DB", "S");
+        let d2 = dep("\"DB\".\"S\".\"B\"", "select 2 as id", "DB", "S");
+        let a = exec("select * from a join b", vec![d1.clone(), d2.clone()]);
+        let b = exec("select * from a join b", vec![d2, d1]);
+        assert_eq!(strict(&a), strict(&b), "dependency order must not matter");
+        assert_eq!(
+            namespace_logic_hash(&a),
+            namespace_logic_hash(&b),
+            "dependency order must not matter (abstracted)"
+        );
+    }
+
+    // ---- NAMESPACE-ABSTRACTED identity (cross-environment reuse) -------------
+
+    /// The abstracted identity EXCLUDES the physical dependency name and its
+    /// catalog/schema: the SAME model's view in prod vs a dev clone (different
+    /// physical name/schema, schema-abstracted-equivalent query) shares identity.
+    /// This is the deliberate cross-environment behavior (verified live).
+    #[test]
+    fn ns_abstracts_physical_dependency_name_and_context() {
+        let prod = exec(
+            "select order_id from CDO.prod.stg_orders",
+            vec![dep(
+                "\"CDO\".\"PROD\".\"STG_ORDERS\"",
+                "create or replace view STG_ORDERS as (select * from CDO.prod.raw_orders)",
+                "CDO",
+                "prod",
+            )],
+        );
+        let dev = exec(
+            "select order_id from CDO.dev.stg_orders",
+            vec![dep(
+                "\"CDO\".\"DEV\".\"STG_ORDERS\"",
+                "create or replace view STG_ORDERS as (select * from CDO.dev.raw_orders)",
+                "CDO",
+                "dev",
+            )],
+        );
+        assert_eq!(
+            namespace_logic_hash(&prod),
+            namespace_logic_hash(&dev),
+            "same model across envs (schema-only diff) shares abstracted identity"
+        );
+        // ...but the STRICT identity still distinguishes them (schema-sensitive).
+        assert_ne!(
+            strict(&prod),
+            strict(&dev),
+            "strict identity stays environment-specific"
+        );
+    }
+
+    /// NEGATIVE: the abstracted identity still distinguishes a genuine change to
+    /// the dependency's LOGIC (not just its environment qualifier). Different
+    /// physical dependencies with genuinely different query logic must NOT
+    /// collide, even though physical names are excluded.
+    #[test]
+    fn ns_distinguishes_dependency_logic_change() {
+        let a = exec(
+            "select order_id from CDO.dev.stg_orders",
+            vec![dep(
+                "\"CDO\".\"DEV\".\"STG_ORDERS\"",
+                "create or replace view STG_ORDERS as (select * from CDO.dev.raw_orders)",
+                "CDO",
+                "dev",
+            )],
+        );
+        // The view now filters rows — a genuine logic change in the dependency.
+        let b = exec(
+            "select order_id from CDO.dev.stg_orders",
+            vec![dep(
+                "\"CDO\".\"DEV\".\"STG_ORDERS\"",
+                "create or replace view STG_ORDERS as (select * from CDO.dev.raw_orders where ordered_at > '2020-01-01')",
+                "CDO",
+                "dev",
+            )],
+        );
+        assert_ne!(
+            namespace_logic_hash(&a),
+            namespace_logic_hash(&b),
+            "a dependency LOGIC change must remain distinct under abstraction"
+        );
+    }
+
+    /// NEGATIVE: a different NUMBER of dependencies must differ (length framing
+    /// prevents a dropped dependency from colliding with a reordered one).
+    #[test]
+    fn ns_distinguishes_dependency_set_size() {
+        let one = exec(
+            "select * from a",
+            vec![dep("\"DB\".\"S\".\"A\"", "select 1 as id", "DB", "S")],
+        );
+        let two = exec(
+            "select * from a join b",
+            vec![
+                dep("\"DB\".\"S\".\"A\"", "select 1 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"B\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(namespace_logic_hash(&one), namespace_logic_hash(&two));
+        assert_ne!(strict(&one), strict(&two));
+    }
+
+    /// NEGATIVE: the root SQL's own logic change is distinguished under
+    /// abstraction (abstraction only collapses the schema qualifier, not the
+    /// projection).
+    #[test]
+    fn ns_distinguishes_root_projection_change() {
+        let a = exec("select order_id from CDO.dev.t", vec![]);
+        let b = exec("select order_id, customer_id from CDO.dev.t", vec![]);
+        assert_ne!(namespace_logic_hash(&a), namespace_logic_hash(&b));
+    }
+
+    /// The template (compare_unrendered_code) mode has a DISTINCT namespace from
+    /// rendered mode: the same body bytes under template mode must not collide
+    /// with rendered SQL that happens to hash the same.
+    #[test]
+    fn template_and_rendered_modes_do_not_collide() {
+        let e = exec("select 1 as id", vec![]);
+        let rendered = sql_logic_hash(&e, None);
+        let template = sql_logic_hash(&e, Some("some-body-hash"));
+        assert_ne!(rendered, template, "template vs rendered must not collide");
+    }
+}
