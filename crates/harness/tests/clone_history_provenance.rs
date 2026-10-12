@@ -575,3 +575,101 @@ async fn clone_equivalent_must_reflect_current_namespace_of_source() {
          make it a current clone source in NS"
     );
 }
+
+/// REGRESSION (review #2 2nd follow-up, P0 #2): `find_source_ns_logic_hash` must
+/// select the clone SOURCE's CURRENT physical row (latest confirmed, ANY
+/// namespace) BEFORE filtering by the requested namespace. The previous query
+/// applied `($3 IS NULL OR table_namespace = $3)` in the SAME WHERE as the
+/// ORDER BY, so when the source's NEWEST build moved to a DIFFERENT namespace,
+/// that newest row was filtered out and an OLDER same-namespace row's logic hash
+/// was inherited onto the clone-origin row — later authorizing an unsafe SKIP of
+/// the cloned target against stale logic.
+///
+/// Scenario: build the source with logic A in namespace NS (older), rebuild it
+/// with logic B in namespace NS2 (newer — its CURRENT state). RegisterClone the
+/// source with namespace NS. Since the source's current state is in NS2 (not
+/// NS), the clone-origin row must inherit NO logic identity, so resubmitting the
+/// clone target with the stale logic A EXECUTES (never SKIPs against the
+/// obsolete inherited hash).
+#[tokio::test]
+async fn clone_source_logic_inherit_must_reflect_current_namespace() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    const NS2: &str = "99887766554433221100ffeeddccbbaa";
+    let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"NSX_SRC\"";
+    let tgt = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"NSX_TGT\"";
+    let raw_epoch = 1_791_320_590_839i64;
+
+    // 1) Build SOURCE with logic A in namespace NS (older state → records a
+    //    namespace logic hash for A under NS).
+    execute_and_confirm(
+        &mut sql,
+        &mut exec,
+        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
+        1_791_743_740_000,
+    )
+    .await;
+
+    // 2) Rebuild SOURCE in a DIFFERENT namespace NS2 (newer → its CURRENT state).
+    let mut src_ns2 = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
+    src_ns2.table_namespace = Some(NS2.into());
+    execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
+
+    // 3) RegisterClone the source under the OLD namespace NS. The source's
+    //    current row is in NS2, so the latest-row-first lookup post-filters it
+    //    out → inherit NO logic identity onto the clone-origin row.
+    let clone_resp = clone
+        .register_clone(qc::CloneRequest {
+            target_table: tgt.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 1,
+            clone_source_table: src.into(),
+            clone_source_last_modified_epoch: Some(1_791_743_760_000),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            labels: [(
+                "dbt_node_unique_id".to_string(),
+                "model.jaffle_shop.clone_probe".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: ready.request_id,
+            last_modified_epoch: Some(1_791_743_784_000),
+            table_type: Some("TRANSIENT TABLE".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .success
+    );
+
+    // 4) Resubmit the clone target with the OLD logic A under namespace NS.
+    //    Because the clone-origin row inherited NO logic identity (the source's
+    //    current state was in NS2), there is no proven equivalence → EXECUTE,
+    //    never SKIP against the stale inherited A-hash.
+    let tgt_a = sql
+        .submit_enriched_sql(submit(tgt, "dev_clone_demo", 1, raw_epoch, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        response_variant(&tgt_a),
+        "ready_to_execute",
+        "a source whose current state moved to another namespace must not leak \
+         its stale same-namespace logic into the clone target's reuse decision"
+    );
+}

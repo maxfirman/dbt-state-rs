@@ -462,27 +462,40 @@ impl Store {
         source_table: &str,
         table_namespace: Option<&str>,
     ) -> sqlx::Result<Option<String>> {
-        // PHYSICAL-STATE INVARIANT (review issue #1 follow-up): take the source's
-        // CURRENT state (latest confirmed row) FIRST, then read its logic hash.
-        // The hash may be NULL (the source's newest build used unrendered
-        // comparison or empty SQL, which store no namespace logic hash); in that
-        // case we inherit NOTHING, so the clone-origin row carries no logic
-        // identity and a later submit for the clone target EXECUTEs (safe — we
-        // never SKIP without proven logic equivalence). Applying
-        // `node_namespace_logic_hash IS NOT NULL` BEFORE the ORDER BY would skip
-        // the current NULL-hash row and inherit an OBSOLETE hash from an older
-        // row the source no longer reflects.
+        // PHYSICAL-STATE INVARIANT (review #2 2nd follow-up, P0 #2): select the
+        // source's CURRENT physical row (latest confirmed, ANY namespace) FIRST,
+        // and ONLY THEN require it to match the requested namespace. The previous
+        // query applied `($3 IS NULL OR table_namespace = $3)` in the SAME WHERE
+        // as the ORDER BY, so if the source's NEWEST build moved to a different
+        // namespace, that newest row was filtered out and an OLDER same-namespace
+        // row was returned — inheriting an OBSOLETE logic identity onto the
+        // clone-origin row (which could later authorize an unsafe SKIP of the
+        // cloned target). Now a namespace transition yields NO inherited hash
+        // (the current row is in a different namespace → post-filter drops it →
+        // inherit nothing → a later submit for the clone target EXECUTEs; safe).
+        //
+        // The current row's hash may also be NULL (its newest build used
+        // unrendered comparison or empty SQL): then we inherit nothing, same
+        // safe outcome. Selecting the latest row first guarantees a stale row is
+        // never resurrected.
         let row = sqlx::query_as::<_, RawRow>(
             r#"
+            WITH current_state AS (
+                SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                       node_namespace_logic_hash,
+                       table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                       execution_results, input_tables, status, request_id, clone_source_table
+                FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC
+                LIMIT 1
+            )
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    execution_results, input_tables, status, request_id, clone_source_table
-            FROM executions
-            WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
-              AND ($3 IS NULL OR table_namespace = $3)
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
+            FROM current_state
+            WHERE ($3 IS NULL OR table_namespace = $3)
             "#,
         )
         .bind(org_id)

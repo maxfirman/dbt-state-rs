@@ -116,6 +116,11 @@ async fn conformance_replay_all_corpora() {
         // srr=1), across a different upstream table name. Interleaved
         // cross-session capture; pinned by clone_fallback_xenv.rs.
         "clone_fallback_xenv_fresh.jsonl",
+        // RegisterClone source-age vs clone-age distinguishing interval
+        // (source build < upstream < clone creation -> SKIP). Contains a
+        // RegisterClone RPC the generic SKIP/EXECUTE/CLONE replay does not drive
+        // against the server; pinned by clone_chain_provenance.rs.
+        "clone_chain_source_age.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
