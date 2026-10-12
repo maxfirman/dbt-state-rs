@@ -305,20 +305,23 @@ guessing hosted policy:
   exact clone tolerance and time-travel window remain OPEN (need controlled
   adapter-level capture).
 - **Finding 3 (namespace abstraction erases dependency identity: BLUE/RED,
-  swapped V1/V2).** Schema abstraction is a DELIBERATE, live-verified
-  cross-environment identity (§A; `fingerprint.rs`/`sql_norm.rs` live-comment
-  tests). New live evidence (2026-10-12, `clone_fallback_xenv.sh`) is a
-  Finding-3 SIGNAL in the opposite direction to the review's worry: hosted
-  cloned across two models referencing DIFFERENT upstream TABLE names
-  (`cf2_up_g*` vs `cf2_up_f*`), i.e. hosted's abstraction is MORE aggressive
-  than the server's schema-only abstraction, so hosted reuses MORE here, not
-  less. Tightening dependency binding would therefore reduce reuse below hosted
-  (a regression). The exact hosted abstraction KEY (what it treats as the same
-  dependency) is still uncharacterized and remains OPEN; a precise
-  genuinely-different-DATA counterexample needs controlled per-schema datasets
-  with asserted row contents (two profile targets make this constructible — a
-  concrete next step), but the current evidence does NOT show the server
-  over-reusing relative to hosted. Not changed.
+  swapped V1/V2).** DECISIVELY SETTLED as a NON-BUG via a two-oracle live
+  experiment (2026-10-12, `experiments/finding3_data_conflation.sh` +
+  `finding3_control.sh`; hosted decision + ACTUAL Snowflake warehouse contents).
+  Two models whose rendered SQL differs only in the dependency table name, over
+  upstreams with DIFFERENT data (`v3a=select 1`, `v3b=select 2`): the dev build
+  of `m3b` (deferring to prod where `m3a` built) returned `ready_to_execute`
+  (no clone) and `dev_clone_demo.m3b` contained `(2,)` — CORRECT, not `m3a`'s
+  `(1,)`. The CONTROL with IDENTICAL upstream data (both `select 1`) returned
+  `ready_to_clone` from the prod equivalent; contents `(1,)` — CORRECT. So
+  hosted keys clone eligibility on the dependency DEFINITION (normalized query
+  text), cloning ONLY when the dependency data is identical (safe) and executing
+  when it differs. There is NO unsafe data conflation. The server already
+  matches this on BOTH arms — `namespace_logic_hash` folds in the
+  schema-abstracted dependency QUERY text per dependency — so the review's
+  BLUE/RED + swapped-V1/V2 worry is not borne out. Guarded by
+  `clone_submit_fallback.rs::finding3_dependency_definition_keys_clone_eligibility`.
+  CLOSED (no server change; conformance confirmed + regression-guarded).
 - **Finding 4 (RegisterClone provenance / age reset / external source edit).**
   Offline invariant counterexamples; the real meaning of namespace transitions
   and clone-chain provenance needs live clone-chain characterization. Open.

@@ -277,6 +277,97 @@ fn hosted_allow_clones_false_suppression_shape_is_pinned() {
     );
 }
 
+/// FINDING 3 (review #2) — DEPENDENCY-DEFINITION KEYING, live-verified safe.
+///
+/// Two-oracle live experiment (experiments/finding3_data_conflation.sh +
+/// finding3_control.sh; hosted decision + ACTUAL warehouse contents):
+///   * Two models whose rendered SQL differs only in the dependency table name,
+///     over upstreams with DIFFERENT data (v3a=`select 1`, v3b=`select 2`): the
+///     dev build of m3b (deferring to prod where m3a built) -> ready_to_execute
+///     (no clone); dev_clone_demo.m3b contained (2,) — CORRECT, not m3a's (1,).
+///   * The CONTROL with IDENTICAL upstream data (both `select 1`) -> the dev
+///     build -> ready_to_clone from the prod equivalent; contents (1,) — CORRECT.
+/// So hosted keys clone eligibility on the dependency DEFINITION (normalized
+/// query text), NOT just the model/table name: it clones only when the
+/// dependency data is identical (safe) and executes when it differs. There is
+/// NO unsafe data conflation; the review's BLUE/RED + swapped-V1/V2 worry is not
+/// borne out against hosted.
+///
+/// The server already matches this: `namespace_logic_hash` folds in the
+/// schema-abstracted dependency QUERY text per dependency. This test guards that
+/// conformance — a different dependency definition must EXECUTE (no clone), an
+/// identical one must be clone-eligible — so a future change that drops
+/// dependency-definition sensitivity (reintroducing the conflation risk) fails.
+#[tokio::test]
+async fn finding3_dependency_definition_keys_clone_eligibility() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    // An equivalent built under name A in prod, whose dependency V is defined as
+    // `select 1 as id`.
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M3SRC\"";
+    let dep = |q: &str| qc::QueryDependency {
+        name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V3\"".into(),
+        query: q.into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: "prod_state_demo".into(),
+    };
+    let mut src = submit(a, "prod_state_demo");
+    src.sql = "select id from CDO_DEMO_DB.prod_state_demo.v3".into();
+    src.query_dependencies = vec![dep("select 1 as id")];
+    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("first build of the source must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // ARM A: a differently-named target whose dependency DATA DIFFERS
+    // (`select 2 as id`) must EXECUTE — the server must not clone the source's
+    // {1} data into a {2} target. (Hosted: ready_to_execute; dev contents (2,).)
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT\"";
+    let mut diff_data = submit(b, "dev_clone_demo");
+    diff_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
+    diff_data.query_dependencies = vec![dep("select 2 as id")];
+    assert_eq!(
+        support::response_variant(
+            &sql.submit_enriched_sql(diff_data)
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "ready_to_execute",
+        "a different dependency DEFINITION must execute, never clone (no data conflation)"
+    );
+
+    // ARM B / CONTROL: identical dependency DATA (`select 1 as id`) is
+    // clone-eligible — the cross-name fallback fires. (Hosted: ready_to_clone;
+    // dev contents (1,).)
+    let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT2\"";
+    let mut same_data = submit(c, "dev_clone_demo");
+    same_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
+    same_data.query_dependencies = vec![dep("select 1 as id")];
+    assert_eq!(
+        support::response_variant(
+            &sql.submit_enriched_sql(same_data)
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "ready_to_clone",
+        "an identical dependency DEFINITION is clone-eligible (safe cross-name reuse)"
+    );
+}
+
 /// Server reproduction: an absent target whose equivalent exists under another
 /// name, submitted with `clone_chain_depth_limit = 0` (allow_clones=false), must
 /// NOT clone. It returns the specific CLONE_CHAIN_LIMIT_EXCEEDED execute shape
