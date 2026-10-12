@@ -83,10 +83,14 @@ async fn register_clone_matches_real_shape() {
     }
 }
 
-/// Replay the real ResolveDeferredRelations request and assert our response
-/// shape matches (the hosted service returned an empty fqn_by_unique_id map).
+/// Replay the real ResolveDeferredRelations request. The hosted service
+/// returned an EMPTY `fqn_by_unique_id` map for this capture (the requested
+/// node had not been built in the defer-to env in that session). Our server now
+/// IMPLEMENTS deferral (see deferral.rs) and must likewise return an empty map
+/// when it has no recorded physical state for the requested nodes — NOT an
+/// error. The nonempty resolution is pinned by `deferral.rs`.
 #[tokio::test]
-async fn deferred_relations_are_explicitly_unsupported() {
+async fn deferred_relations_empty_when_nothing_built() {
     use qc::execution_client::ExecutionClient;
     let entries = diff::load_golden(CLONE_GOLDEN).expect("load clone golden");
     let entry = entries
@@ -99,14 +103,21 @@ async fn deferred_relations_are_explicitly_unsupported() {
     let real_map = entry.response["fqn_by_unique_id"]
         .as_object()
         .expect("real fqn_by_unique_id");
+    assert!(real_map.is_empty(), "this capture has an empty resolution");
 
     let (addr, _schema) = support::start_server().await;
     let ch = support::channel(addr).await;
     let mut client = ExecutionClient::new(ch);
-    let resp = client.resolve_deferred_relations(req).await.unwrap_err();
+    let resp = client
+        .resolve_deferred_relations(req)
+        .await
+        .expect("resolve_deferred_relations succeeds")
+        .into_inner();
 
-    assert!(real_map.is_empty()); // This capture does not establish nonempty deferral behavior.
-    assert_eq!(resp.code(), tonic::Code::Unimplemented);
+    assert!(
+        resp.fqn_by_unique_id.is_empty(),
+        "no recorded node state => empty resolution, matching the hosted capture"
+    );
 }
 
 /// CLONE REJECTION — allow_clones=false. VERIFIED LIVE (experiments/

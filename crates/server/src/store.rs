@@ -114,6 +114,10 @@ pub struct NodeStateUpsert {
     pub node_macros_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_database_representation: Option<String>,
+    /// The physical relation this node was built as in `target_name`, used to
+    /// resolve `ResolveDeferredRelations`. The submit/record `target_table`
+    /// (a quoted 3-part FQN). NULL for data tests (empty target).
+    pub target_table: Option<String>,
 }
 
 #[derive(Debug)]
@@ -589,8 +593,8 @@ impl Store {
                 org_id, project_id, target_name, node_unique_id,
                 node_body_hash, node_configs_hash, node_persisted_descriptions_hash,
                 node_macros_hash, node_contract_hash, node_database_representation,
-                updated_at
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+                target_table, updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
             ON CONFLICT (org_id, project_id, target_name, node_unique_id) DO UPDATE SET
                 node_body_hash = EXCLUDED.node_body_hash,
                 node_configs_hash = EXCLUDED.node_configs_hash,
@@ -598,6 +602,7 @@ impl Store {
                 node_macros_hash = EXCLUDED.node_macros_hash,
                 node_contract_hash = EXCLUDED.node_contract_hash,
                 node_database_representation = EXCLUDED.node_database_representation,
+                target_table = EXCLUDED.target_table,
                 updated_at = now()
             "#,
         )
@@ -611,6 +616,7 @@ impl Store {
         .bind(&n.node_macros_hash)
         .bind(&n.node_contract_hash)
         .bind(&n.node_database_representation)
+        .bind(&n.target_table)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -668,6 +674,44 @@ impl Store {
                     },
                 )
             })
+            .collect())
+    }
+
+    /// Resolve each requested `node_unique_id` to the PHYSICAL relation it was
+    /// last built as in the `target_name` env (for `ResolveDeferredRelations`),
+    /// scoped by (org, project_id, target env). Only nodes with a recorded
+    /// physical `target_table` are returned; absent/data-test nodes are simply
+    /// omitted from the map (the client treats an unresolved node as not
+    /// deferrable), matching the hosted empty-when-unknown behavior.
+    ///
+    /// VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
+    /// returns `{ node_unique_id -> "CATALOG"."SCHEMA"."OBJECT" }` for upstreams
+    /// built in the defer-to env; the FQN equals the submit `target_table`.
+    pub async fn resolve_deferred_fqns(
+        &self,
+        org_id: &str,
+        project_id: &str,
+        target_name: &str,
+        node_unique_ids: &[String],
+    ) -> sqlx::Result<std::collections::HashMap<String, String>> {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT node_unique_id, target_table
+            FROM node_states
+            WHERE org_id = $1 AND project_id = $2 AND target_name = $3
+              AND node_unique_id = ANY($4)
+              AND target_table IS NOT NULL
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(target_name)
+        .bind(node_unique_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(uid, fqn)| fqn.map(|f| (uid, f)))
             .collect())
     }
 }

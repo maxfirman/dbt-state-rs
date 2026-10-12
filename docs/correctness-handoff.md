@@ -25,7 +25,7 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | 6: seed configuration | Match latest physical state, seed bytes and semantic configuration/context; require known current object metadata. | Column types, missing object, content reversion, Record/Submit parity |
 | 7: cross-target SKIP without provenance | Remove unconditional namespace reuse. Rebuild another physical target until object/provenance mapping is implemented. | Different target/schema with same namespace cannot SKIP |
 | 8: volatile evaluation omitted | BUILD whenever evaluation is requested (`tolerate_nondeterminism=false`) until transformations are implemented. | Flag transition rejects reuse |
-| 9: empty selectors/deferral | **Selectors IMPLEMENTED (live-verified 2026-10-11, see §D).** `GetStateSelection` reproduces the hosted `state:*` verdicts via a recorded `node_states` store + pure `selector::classify`. Deferral still returns UNIMPLEMENTED rather than an empty successful map. | `selector_conformance.rs`, `selector_offline.rs`, `selector.rs` unit tests; deferral gRPC error assertion |
+| 9: empty selectors/deferral | **Selectors IMPLEMENTED (live-verified 2026-10-11, see §D).** `GetStateSelection` reproduces the hosted `state:*` verdicts via a recorded `node_states` store + pure `selector::classify`. **Deferral IMPLEMENTED (live-verified 2026-10-12, see §D):** `ResolveDeferredRelations` resolves each node to its defer-to-env physical FQN from `node_states` (migration 0010 adds `target_table`), omitting unbuilt nodes. | `selector_conformance.rs`, `selector_offline.rs`, `selector.rs` unit tests; `deferral.rs` + fixture `deferral_resolve.jsonl` |
 | 10: invalid clone DDL | Reject view sources and unknown dialects before inserting pending history. Preserve the captured Snowflake table DDL and both response mirrors. | Exact captured table DDL, view/unknown-dialect errors and no pending rows |
 | 13: tenant leaks/logged password | Scope every UI database read to configured `DBT_STATE_UI_ORG_ID` (default `local`); remove startup DSN logging. | Two organizations with identical project names; all UI read methods including direct foreign IDs |
 | 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests exempt (no own object). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
@@ -58,6 +58,12 @@ it has no effect on the decision path and legacy executions are unaffected. A
 `state:*` selector against an env with no recorded node state simply reports
 every node as `new`/`modified` until a build (in that `defer_to_target` env)
 seeds it.
+
+Migration `0010_node_state_fqn.sql` adds a nullable `target_table` column to
+`node_states`, populated going forward on every Submit/Record that carries both
+a `dbt_node_state` and a physical target. It powers deferral
+(`ResolveDeferredRelations` resolves a node to its defer-to-env FQN); legacy
+rows have it NULL and simply do not resolve. No effect on the decision path.
 
 SQL/seed hashes now have a versioned, length-framed SHA-256 domain. Existing
 fingerprints will cold miss and rebuild; **do not rehash old rows in place**:
@@ -324,9 +330,17 @@ template reuse should consume batch history once hosted behavior is established.
   error (still never failing the decision path), so a silent baseline-staleness
   divergence is a surfaceable metric. Pinned by
   `selector_offline.rs::selector_state_write_failures_are_observable`.
-  **Deferral** (`ResolveDeferredRelations`) still returns UNIMPLEMENTED (needs
-  authoritative profile/project/target/node mapping; the observed real response
-  is an empty map from profile auto-deferral).
+  **Deferral** (`ResolveDeferredRelations`) is now IMPLEMENTED + LIVE-VERIFIED
+  (2026-10-12, `experiments/deferral_experiment.sh`). Building from `dev_clone`
+  (`defer_to_target: prod_demo`) and selecting only a downstream node defers its
+  upstreams; the hosted service answers
+  `ResolveDeferredRelations(profile, target=prod_demo, project, [uids])` with a
+  map `node_unique_id -> "CATALOG"."SCHEMA"."OBJECT"` for each node built in that
+  env (the submit `target_table`). The earlier empty-map captures were simply
+  the not-yet-built case. The server records `target_table` in `node_states`
+  (migration 0010) and resolves (org, project_id, target env, uids) → FQN,
+  omitting unbuilt nodes. Pinned by `crates/harness/tests/deferral.rs` and the
+  fixture `golden/fixtures/deferral_resolve.jsonl`.
 - Implement volatile-function evaluation and `transformed_nodes_by_query`,
   including client execution/confirmation of transformed expressions. Current
   BUILD fallback does not reproduce the transformation protocol.

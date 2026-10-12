@@ -415,11 +415,19 @@ async fn unsupported_history_queries_are_errors_not_empty_successes() {
         tonic::Code::InvalidArgument,
         "empty project_id must be rejected, not an empty success"
     );
-    // ResolveDeferredRelations remains an explicit feature gap.
-    let result = ExecutionClient::new(ch)
+    // ResolveDeferredRelations is now IMPLEMENTED (see deferral.rs). A default
+    // request (no project_id / target / ids) resolves nothing — it returns an
+    // empty map gracefully rather than erroring, matching the hosted behavior
+    // for an unresolvable scope.
+    let resp = ExecutionClient::new(ch)
         .resolve_deferred_relations(qc::ResolveDeferredRelationsRequest::default())
-        .await;
-    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
+        .await
+        .expect("resolve_deferred_relations succeeds on an empty scope")
+        .into_inner();
+    assert!(
+        resp.fqn_by_unique_id.is_empty(),
+        "an unresolvable scope yields an empty map, not an error"
+    );
 }
 
 #[tokio::test]

@@ -94,6 +94,10 @@ async fn conformance_replay_all_corpora() {
         // rebuilt in the defer-to env moves the comparison baseline). Pinned by
         // selector_offline.rs::selector_baseline_is_last_write_wins.
         "selector_last_write_wins.jsonl",
+        // ResolveDeferredRelations resolution (node_unique_id -> defer-to env
+        // FQN). The generic SKIP/EXECUTE/CLONE replay does not model deferral;
+        // pinned by deferral.rs.
+        "deferral_resolve.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

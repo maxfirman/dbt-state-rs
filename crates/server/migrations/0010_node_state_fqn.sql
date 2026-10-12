@@ -1,0 +1,20 @@
+-- dbt State server — add the physical FQN to the selector/deferral node-state
+-- store (v10).
+--
+-- node_states is keyed by the logical (org_id, project_id, target env name,
+-- node_unique_id) and already records the comparison hashes for `state:*`
+-- selectors. Deferral (Execution.ResolveDeferredRelations) resolves each
+-- requested node_unique_id to the PHYSICAL relation it was last built as IN THE
+-- DEFER-TO ENV — which is exactly this table's scope plus the physical target.
+--
+-- VERIFIED LIVE (experiments/deferral_experiment.sh, api.state.dbt.com, Fusion,
+-- Snowflake): after building upstreams in prod_demo, a selective dev_clone build
+-- that defers them calls ResolveDeferredRelations(profile, target=prod_demo,
+-- project, [node_unique_ids]) and the hosted service returns
+--   { node_unique_id -> "CATALOG"."SCHEMA"."OBJECT" }
+-- i.e. the submit `target_table` of each node's latest build in that env.
+--
+-- Populated going forward on every Submit/Record that carries a dbt_node_state
+-- AND a target_table (models/seeds; data tests have an empty target and are
+-- skipped). Legacy rows have it NULL and simply do not resolve for deferral.
+ALTER TABLE node_states ADD COLUMN IF NOT EXISTS target_table TEXT;

@@ -496,7 +496,12 @@ fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
 /// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
 /// keys (target_name/project_id) the selector needs; the executions decision
 /// ledger is unaffected.
-async fn record_node_state(state: &AppState, org_id: &str, node_state: Option<&qc::DbtNodeState>) {
+async fn record_node_state(
+    state: &AppState,
+    org_id: &str,
+    node_state: Option<&qc::DbtNodeState>,
+    target_table: Option<&str>,
+) {
     let Some(ns) = node_state else { return };
     let (Some(project_id), target_name) = (ns.project_id.clone(), ns.target_name.clone()) else {
         return;
@@ -515,6 +520,10 @@ async fn record_node_state(state: &AppState, org_id: &str, node_state: Option<&q
         node_macros_hash: ns.node_macros_hash.clone(),
         node_contract_hash: ns.node_contract_hash.clone(),
         node_database_representation: ns.node_database_representation.clone(),
+        // The physical FQN this node was built as in `target_name` — used to
+        // resolve deferral (ResolveDeferredRelations). Empty targets (data
+        // tests) record NULL and are not deferrable.
+        target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
     };
     if let Err(e) = state.store.upsert_node_state(&upsert).await {
         // Recording selector state must never fail the decision path. Count the
@@ -543,7 +552,13 @@ impl Sql for SqlService {
 
         // Record the node's comparison state for `state:*` selectors (latest
         // wins), regardless of the SKIP/EXECUTE verdict below.
-        record_node_state(&self.0, &org_id, req.dbt_node_state.as_ref()).await;
+        record_node_state(
+            &self.0,
+            &org_id,
+            req.dbt_node_state.as_ref(),
+            req.target_table.as_deref(),
+        )
+        .await;
 
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
@@ -875,7 +890,13 @@ impl Sql for SqlService {
         let req = request.into_inner();
 
         // Record the seed's comparison state for `state:*` selectors.
-        record_node_state(&self.0, &org_id, req.dbt_node_state.as_ref()).await;
+        record_node_state(
+            &self.0,
+            &org_id,
+            req.dbt_node_state.as_ref(),
+            Some(req.target_table.as_str()),
+        )
+        .await;
 
         let target_table = req.target_table.clone();
         // execution_type is implicitly VALUES(9) for seeds.
@@ -1149,7 +1170,11 @@ impl Execution for ExecutionService {
                 qc::execution_record::Input::EnrichedSql(sql) => sql.dbt_node_state.as_ref(),
                 qc::execution_record::Input::Values(values) => values.dbt_node_state.as_ref(),
             };
-            record_node_state(&self.0, &org_id, node_state).await;
+            let node_target = match input {
+                qc::execution_record::Input::EnrichedSql(sql) => sql.target_table.as_deref(),
+                qc::execution_record::Input::Values(values) => Some(values.target_table.as_str()),
+            };
+            record_node_state(&self.0, &org_id, node_state, node_target).await;
         }
 
         let stored = self
@@ -1166,11 +1191,41 @@ impl Execution for ExecutionService {
 
     async fn resolve_deferred_relations(
         &self,
-        _request: Request<qc::ResolveDeferredRelationsRequest>,
+        request: Request<qc::ResolveDeferredRelationsRequest>,
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
-        Err(Status::unimplemented(
-            "state-backed deferred relation resolution is not implemented",
-        ))
+        // VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
+        // maps each requested node_unique_id to the PHYSICAL relation it was last
+        // built as in the `target_name` (defer-to) env, scoped by project_id —
+        // i.e. the submit `target_table` recorded for that (project, env, node).
+        // Nodes not built in that env are simply omitted (the empty-map case we
+        // first captured was precisely that: nothing built there yet).
+        let org_id = org_id_of(&request);
+        let req = request.into_inner();
+
+        // project_id scopes the recorded node state (same scope as the selector).
+        // Without it the defer-to env's node→FQN mapping is unresolvable, so we
+        // return an empty map rather than guessing across projects.
+        let Some(project_id) = req.project_id.as_deref().filter(|s| !s.is_empty()) else {
+            return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
+                fqn_by_unique_id: Default::default(),
+            }));
+        };
+        if req.target_name.is_empty() || req.node_unique_ids.is_empty() {
+            return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
+                fqn_by_unique_id: Default::default(),
+            }));
+        }
+
+        let fqn_by_unique_id = self
+            .0
+            .store
+            .resolve_deferred_fqns(&org_id, project_id, &req.target_name, &req.node_unique_ids)
+            .await
+            .map_err(db_err)?;
+
+        Ok(Response::new(qc::ResolveDeferredRelationsResponse {
+            fqn_by_unique_id,
+        }))
     }
 }
 

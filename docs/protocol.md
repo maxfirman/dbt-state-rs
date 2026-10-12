@@ -26,7 +26,7 @@ files are Apache-2.0, published by dbt Labs, and vendored in this repo under
 | Service | RPCs | Role | Our status |
 |---|---|---|---|
 | `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | the verdict | BUILD / SKIP / cross-name CLONE (live-verified); speculative Undecided |
-| `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | writes state / deferral | Confirm/Record implemented; deferral UNIMPLEMENTED |
+| `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | writes state / deferral | Confirm/Record implemented; deferral implemented (live-verified) |
 | `Clone` | `RegisterClone` | clone decision + DDL | table DDL + lifecycle + `allow_clones=false` rejection (live-verified); non-Snowflake templates unverified |
 | `ClientValidation` | `ValidateClientVersion` | version gate | implemented (true) |
 | `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | human text | empty defaults |
@@ -132,10 +132,16 @@ only establishes its reproducible captured cases.
   (`SQLExecution`, hashes via `dbt_node_state`) or `values` (`ValuesExecution`).
   Processed atomically (all-or-nothing).
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
-  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Observed real
-  response: an **empty** map (the clone source came from profile-based
-  auto-deferral, not server resolution). Our resolver returns UNIMPLEMENTED until
-  authoritative nonempty mapping behavior is implemented.
+  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. **Implemented
+  (live-verified, `experiments/deferral_experiment.sh`).** Resolves each
+  requested `node_unique_id` to the physical relation it was last built as in
+  the `target_name` (defer-to) env, scoped by `project_id` — i.e. the submit
+  `target_table` recorded in `node_states` for that (project, env, node). Nodes
+  not built in that env are omitted (an unresolvable scope yields an empty map,
+  matching the hosted empty-when-unknown behavior; the first captures we took
+  were empty precisely because nothing had been built there yet). The FQN is a
+  quoted 3-part name, e.g.
+  `"CDO_DEMO_DB"."PROD_STATE_DEMO"."STG_CUSTOMERS"`.
 
 ## Seeds: `SQL.SubmitValues`
 
@@ -266,5 +272,5 @@ but with `int64` support, used for `execution_results` / telemetry config.
 See the service table above and the complete remaining feature/testing backlog in
 [correctness-handoff.md](correctness-handoff.md). Captured response examples and
 experiments are useful evidence for individual scenarios; complete hosted
-conformance has not been established. Telemetry, selectors, deferral, automatic
-SQL cloning, runtime transformations and several policy rules remain incomplete.
+conformance has not been established. Telemetry, automatic SQL cloning, runtime
+transformations and several policy rules remain incomplete.
