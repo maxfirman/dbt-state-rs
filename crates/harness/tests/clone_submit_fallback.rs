@@ -306,17 +306,18 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
     let mut exec = ExecutionClient::new(ch);
 
     // An equivalent built under name A in prod, whose dependency V is defined as
-    // `select 1 as id`.
+    // `select 1 as id`. The dependency resolves in the SUBMIT's own environment
+    // schema (as real dbt traffic does — a dev submit resolves its ref in dev).
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M3SRC\"";
-    let dep = |q: &str| qc::QueryDependency {
-        name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V3\"".into(),
+    let dep = |schema_upper: &str, schema_lower: &str, q: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{schema_upper}\".\"V3\""),
         query: q.into(),
         default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: "prod_state_demo".into(),
+        default_schema: schema_lower.into(),
     };
     let mut src = submit(a, "prod_state_demo");
     src.sql = "select id from CDO_DEMO_DB.prod_state_demo.v3".into();
-    src.query_dependencies = vec![dep("select 1 as id")];
+    src.query_dependencies = vec![dep("PROD_STATE_DEMO", "prod_state_demo", "select 1 as id")];
     let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
     let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
         panic!("first build of the source must execute");
@@ -337,7 +338,7 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT\"";
     let mut diff_data = submit(b, "dev_clone_demo");
     diff_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
-    diff_data.query_dependencies = vec![dep("select 2 as id")];
+    diff_data.query_dependencies = vec![dep("DEV_CLONE_DEMO", "dev_clone_demo", "select 2 as id")];
     assert_eq!(
         support::response_variant(
             &sql.submit_enriched_sql(diff_data)
@@ -355,7 +356,7 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT2\"";
     let mut same_data = submit(c, "dev_clone_demo");
     same_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
-    same_data.query_dependencies = vec![dep("select 1 as id")];
+    same_data.query_dependencies = vec![dep("DEV_CLONE_DEMO", "dev_clone_demo", "select 1 as id")];
     assert_eq!(
         support::response_variant(
             &sql.submit_enriched_sql(same_data)
@@ -559,5 +560,112 @@ async fn server_does_not_clone_swapped_binding_equivalent() {
         "ready_to_execute",
         "a swapped dependency binding (same multiset, different output) must \
          execute, never clone — no data conflation"
+    );
+}
+
+/// FINDING 3 (review #2 2nd follow-up) — DEPENDENCY-DEFINITION binding swap with
+/// NONEMPTY query_dependencies and a CONSTANT root SQL. Unlike the earlier
+/// root-SQL swap (which carried empty query_dependencies and replayed on pre-fix
+/// code), this exercises the ACTUAL defect the first fix targeted: the two
+/// dependency DEFINITIONS are swapped between references while the consumer's
+/// rendered root SQL (ref order) is unchanged.
+///
+/// LIVE CAPTURE (experiments/finding3_view_dep_swap.sh,
+/// golden/fixtures/clone_fallback_dep_binding_swap.jsonl): prod builds the
+/// consumer over two VIEW deps (up1=`select 1`, up2=`select 2`); dev submits the
+/// same consumer with the view definitions SWAPPED (up1=`select 2`, up2=`select
+/// 1`), target absent, carrying 2 query_dependencies. Hosted answered
+/// `ready_to_execute` and the dev warehouse contents were `(2,)` (the swapped
+/// model's correct value), NOT prod's `(1,)`.
+#[test]
+fn hosted_dep_binding_swap_executes_shape_is_pinned() {
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_fallback_dep_binding_swap.jsonl"
+    );
+    let entries = diff::load_golden(FIXTURE).expect("load dep-binding-swap fixture");
+    let dev = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .find(|e| e.request["default_schema"].as_str() == Some("dev_clone_demo"))
+        .expect("the dev submit");
+    assert!(
+        dev.request["query_dependencies"]
+            .as_array()
+            .map(|a| a.len())
+            >= Some(2),
+        "the dev submit carries NONEMPTY query_dependencies (the real bug shape)"
+    );
+    assert_eq!(
+        diff::decision_variant(&dev.response).as_deref(),
+        Some("ready_to_execute"),
+        "hosted executes the swapped-dependency-binding submit (no unsafe clone)"
+    );
+}
+
+/// Server reproduction (DISTINGUISHES the fix): build the prod consumer with two
+/// view dependencies, confirm it, then submit the dev consumer with the two
+/// dependency DEFINITIONS swapped and the root SQL constant (modulo env schema).
+/// Pre-fix (single-placeholder abstraction) this returned CLONE — the two deps
+/// collapsed to one schema token and the swap looked identical. Post-fix the two
+/// distinct dependency schemas get distinct relative tokens, so the swap differs
+/// and the submit EXECUTES.
+#[tokio::test]
+async fn server_executes_swapped_dependency_binding_with_views() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    // Two VIEW deps that SHARE a basename (INPUT) but live in two DISTINCT
+    // schemas (X and Y) — the reachable collision shape (custom schema/alias),
+    // referenced by a consumer whose root SQL ref order is held constant.
+    let dep = |schema_up: &str, schema_lo: &str, q: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{schema_up}\".\"INPUT\""),
+        query: q.into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema_lo.into(),
+    };
+    let root = "select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b";
+
+    // Prod consumer: X.INPUT = select 1, Y.INPUT = select 2.
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DVCONS\"";
+    let mut src = submit(a, "prod_state_demo");
+    src.sql = root.into();
+    src.query_dependencies = vec![
+        dep("X", "x", "select 1 as id"),
+        dep("Y", "y", "select 2 as id"),
+    ];
+    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("prod consumer must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_830_532_736),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Dev consumer: SAME root SQL, but the two same-basename view definitions are
+    // SWAPPED (X.INPUT=select 2, Y.INPUT=select 1). The output differs (projects
+    // a.id = X.INPUT). Pre-fix the single placeholder collapsed X and Y so the
+    // sorted (name, def) pairs were identical -> CLONE (unsafe). Post-fix X and Y
+    // get distinct relative tokens -> the swap differs -> EXECUTE.
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"DVCONS\"";
+    let mut swapped = submit(b, "dev_clone_demo");
+    swapped.sql = root.into();
+    swapped.query_dependencies = vec![
+        dep("X", "x", "select 2 as id"),
+        dep("Y", "y", "select 1 as id"),
+    ];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "a swapped same-basename dependency binding (nonempty deps, constant root \
+         SQL, distinct schemas) must EXECUTE, never clone — no data conflation"
     );
 }

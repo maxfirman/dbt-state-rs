@@ -16,9 +16,10 @@ fn normalized(dialect: &str, sql: &str) -> String {
 /// logic identity. The SAME model built in different environments differs only
 /// in the physical schema qualifier of its three-part names; abstracting that
 /// yields a shared identity (verified live — see sql_norm docs).
-fn normalized_ns(dialect: &str, sql: &str) -> String {
+/// Namespace-abstract normalization with a shared relative schema map.
+fn normalized_ns_with(dialect: &str, sql: &str, schemas: &crate::sql_norm::SchemaMap) -> String {
     if dialect.eq_ignore_ascii_case("snowflake") {
-        crate::sql_norm::normalize_sql_namespace_abstracted(sql)
+        crate::sql_norm::normalize_sql_namespace_abstracted_with(sql, schemas)
     } else {
         sql.to_owned()
     }
@@ -106,30 +107,67 @@ pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String 
 /// the same logic (skips after a clone), while a genuine projection change
 /// executes. See experiments/clone_logic_sensitivity.sh.
 pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
+    use crate::sql_norm::{
+        abstract_object_name_schema_with, schema_of_object_name, schemas_in_sql, SchemaMap,
+    };
+    // Build ONE request-wide relative schema→token map covering every schema
+    // that appears in the root SQL, in each dependency NAME, and in each
+    // dependency DEFINITION, PLUS the request's default_schema (so an UNQUALIFIED
+    // root reference resolved via default_schema participates in the mapping).
+    // Distinct schemas get distinct tokens (sorted order); a single environment
+    // schema collapses to token 0, preserving cross-env equivalence while
+    // keeping genuinely-different schemas distinct (review #2 2nd follow-up, P0).
+    let mut all_schemas: Vec<String> = Vec::new();
+    all_schemas.extend(schemas_in_sql(&req.sql));
+    if let Some(ds) = req.default_schema.as_deref().filter(|s| !s.is_empty()) {
+        all_schemas.push(ds.to_string());
+    }
+    for d in &req.query_dependencies {
+        if let Some(s) = schema_of_object_name(&d.name) {
+            all_schemas.push(s);
+        }
+        all_schemas.extend(schemas_in_sql(&d.query));
+    }
+    let schemas = SchemaMap::from_schemas(all_schemas);
+
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-ns-logic-v1");
+    field(&mut h, b"dbt-state-ns-logic-v2");
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
-    // Intentionally NO default_catalog/default_schema: those are physical and
-    // differ across environments. The abstracted SQL carries the logic.
-    field(&mut h, normalized_ns(&req.dialect, &req.sql).as_bytes());
+    // The default_schema is folded in as its RELATIVE token (not its physical
+    // name), so the SAME model across environments (whose default_schema differs
+    // only by the environment qualifier → token 0) still matches, while two
+    // requests whose default_schema resolves an unqualified reference to a
+    // genuinely different relation differ.
+    let default_schema_token = req
+        .default_schema
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|ds| schemas.placeholder_for_schema(ds))
+        .unwrap_or_default();
+    field(&mut h, default_schema_token.as_bytes());
+    field(
+        &mut h,
+        normalized_ns_with(&req.dialect, &req.sql, &schemas).as_bytes(),
+    );
     extras(&mut h, &req.semantic_extras);
     // Dependencies: bind each dependency's schema-abstracted NAME to its
-    // schema-abstracted definition, sorted by that pair. The physical schema of
-    // BOTH the name and the definition is abstracted (so prod and a dev clone
-    // share identity), but the (reference → definition) BINDING is preserved:
-    // swapping two definitions between their references, or resolving the same
-    // reference to a different definition, changes the identity. Hashing only a
-    // sorted multiset of definition texts (the previous behavior) discarded that
-    // binding and conflated genuinely different logic — review #2 finding 3,
-    // P0 reuse-safety. Length-framed per component so a name/definition boundary
-    // cannot be forged by crafted content.
+    // schema-abstracted definition, sorted by that pair, ALL under the shared
+    // relative schema map. The physical schema of both the name and the
+    // definition is abstracted to a relative token (so prod and a dev clone
+    // share identity), but the (reference → definition) BINDING is preserved AND
+    // two genuinely different schemas get different tokens — so swapping two
+    // definitions between references with distinct schemas changes the identity.
+    // Hashing only a sorted multiset of definition texts (the original behavior)
+    // discarded the binding; a single global schema placeholder (the first fix)
+    // discarded multi-schema distinctness — review #2 finding 3 + its 2nd
+    // follow-up. Length-framed per component.
     let mut dependency_bindings: Vec<(String, String)> = req
         .query_dependencies
         .iter()
         .map(|d| {
             (
-                crate::sql_norm::abstract_object_name_schema(&d.name),
-                normalized_ns(&req.dialect, &d.query),
+                abstract_object_name_schema_with(&d.name, &schemas),
+                normalized_ns_with(&req.dialect, &d.query, &schemas),
             )
         })
         .collect();
@@ -546,16 +584,19 @@ mod tests {
         );
     }
 
-    /// METAMORPHIC: two dependencies with the SAME base table name but in
-    /// DIFFERENT schemas, each bound to a different definition. Swapping the
-    /// schema qualifier between the two references (so A points at the other
-    /// schema's definition) must change identity — the schema abstraction
-    /// collapses the environment qualifier but must NOT collapse two genuinely
-    /// different same-basename relations whose definitions differ.
+    /// METAMORPHIC + REGRESSION (review #2 2nd follow-up, P0): two dependencies
+    /// with the SAME base table name but in DIFFERENT schemas, each bound to a
+    /// different definition. This shape IS reachable in dbt via custom
+    /// `schema=`/`alias=` configs (e.g. `up_x` → `DB.X.INPUT`, `up_y` →
+    /// `DB.Y.INPUT`), both referenced by one model. Swapping the definitions
+    /// between the two same-basename references under an UNCHANGED root query
+    /// changes the output (projects the first ref), so the abstracted identity
+    /// MUST differ. The previous single-placeholder abstraction collapsed X and
+    /// Y to the same token and wrongly treated the swap as equivalent (an unsafe
+    /// CLONE). The relative-schema renaming (distinct schemas → positional
+    /// tokens by sorted order) preserves their distinctness.
     #[test]
     fn ns_metamorphic_same_basename_different_schema() {
-        // Both references share the base name INPUT but live in schemas X and Y
-        // with different definitions. (Same-namespace reuse: both three-part.)
         let base = exec(
             "select a.id from DB.X.INPUT a cross join DB.Y.INPUT b",
             vec![
@@ -571,31 +612,81 @@ mod tests {
                 dep("\"DB\".\"Y\".\"INPUT\"", "select 1 as id", "DB", "Y"),
             ],
         );
-        // NOTE: schema abstraction collapses X and Y to the same placeholder, so
-        // the two ABSTRACTED names are equal; the binding is then distinguished
-        // purely by which definition each occupies in the sorted (name, def)
-        // list. Because both abstracted names are identical, the sorted pair
-        // lists are {(INPUT, select 1),(INPUT, select 2)} either way — so this
-        // pair documents a KNOWN LIMIT: when two references abstract to the SAME
-        // name, their definitions form a multiset and a swap is NOT
-        // distinguished. The STRICT identity (schema-sensitive) DOES distinguish
-        // them, and same-target reuse uses the strict identity, so there is no
-        // unsafe same-target skip. Cross-env reuse of two same-basename inputs
-        // in different schemas within one model is not a shape dbt emits
-        // (a model's refs resolve to distinct relations), so this is a
-        // documented boundary, not a reachable unsafe case.
-        assert_eq!(
+        assert_ne!(
             namespace_logic_hash(&base),
             namespace_logic_hash(&swapped),
-            "DOCUMENTED LIMIT: two refs abstracting to the same name form a \
-             definition multiset; the STRICT identity (used for same-target \
-             reuse) still distinguishes them"
+            "two same-basename inputs in different schemas with swapped \
+             definitions must NOT collide under abstraction (reachable via \
+             custom schema/alias; output differs)"
         );
-        // The strict identity MUST distinguish the swap (safety net).
+        // The strict identity must also distinguish them (defense in depth).
+        assert_ne!(strict(&base), strict(&swapped));
+    }
+
+    /// REGRESSION (review #2 2nd follow-up, P0): the original BLUE/RED physical-
+    /// input counterexample. The same root logic references `INPUT`, resolved in
+    /// two environments (BLUE vs RED) whose underlying data genuinely differs.
+    /// With two DISTINCT schemas each bound to a different definition, the
+    /// abstracted identity must differ (not clone BLUE's data into RED).
+    #[test]
+    fn ns_blue_red_distinct_physical_inputs_differ() {
+        let blue_red = exec(
+            "select a.id from DB.BLUE.INPUT a cross join DB.RED.INPUT b",
+            vec![
+                dep("\"DB\".\"BLUE\".\"INPUT\"", "select 1 as id", "DB", "BLUE"),
+                dep("\"DB\".\"RED\".\"INPUT\"", "select 2 as id", "DB", "RED"),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.BLUE.INPUT a cross join DB.RED.INPUT b",
+            vec![
+                dep("\"DB\".\"BLUE\".\"INPUT\"", "select 2 as id", "DB", "BLUE"),
+                dep("\"DB\".\"RED\".\"INPUT\"", "select 1 as id", "DB", "RED"),
+            ],
+        );
         assert_ne!(
-            strict(&base),
-            strict(&swapped),
-            "the strict (schema-sensitive) identity distinguishes the swap"
+            namespace_logic_hash(&blue_red),
+            namespace_logic_hash(&swapped),
+            "BLUE/RED distinct physical inputs with swapped definitions must differ"
+        );
+    }
+
+    /// REGRESSION (review #2 2nd follow-up, P0): a genuinely UNQUALIFIED root
+    /// reference `select id from INPUT` resolved via `default_schema`. Changing
+    /// the resolution context (BLUE → RED) with a correspondingly different
+    /// dependency definition must change the abstracted identity — the context
+    /// resolves the reference, so two different resolutions are different logic.
+    #[test]
+    fn ns_unqualified_default_schema_context_differs() {
+        let blue = qc::SqlExecution {
+            default_schema: Some("BLUE".into()),
+            ..exec(
+                "select id from INPUT",
+                vec![dep(
+                    "\"DB\".\"BLUE\".\"INPUT\"",
+                    "select 1 as id",
+                    "DB",
+                    "BLUE",
+                )],
+            )
+        };
+        let red = qc::SqlExecution {
+            default_schema: Some("RED".into()),
+            ..exec(
+                "select id from INPUT",
+                vec![dep(
+                    "\"DB\".\"RED\".\"INPUT\"",
+                    "select 2 as id",
+                    "DB",
+                    "RED",
+                )],
+            )
+        };
+        assert_ne!(
+            namespace_logic_hash(&blue),
+            namespace_logic_hash(&red),
+            "an unqualified reference resolving to a different definition via a \
+             different default_schema must differ"
         );
     }
 

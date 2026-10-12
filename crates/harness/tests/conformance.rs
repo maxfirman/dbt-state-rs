@@ -111,10 +111,6 @@ async fn conformance_replay_all_corpora() {
         // clone_history_provenance.rs::
         // clone_adoption_must_not_resurrect_row_of_different_execution_type.
         "clone_rebuild_execution_type.jsonl",
-        // compare_unrendered_code dual identity: a template-only change (Jinja
-        // comment) with identical rendered SQL SKIPS. Interleaved baseline +
-        // re-submit over the same node; pinned by template_comparison.rs.
-        "template_compare_unrendered.jsonl",
         // Cross-environment clone fallback (dev_clone defer_to prod): a dev build
         // of an absent target clones the cross-env equivalent (ready_to_clone,
         // srr=1), across a different upstream table name. Interleaved
@@ -130,7 +126,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        22,
+        24,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -221,7 +217,56 @@ async fn conformance_replay_all_corpora() {
                             unknown_baseline += 1;
                         }
                         "ready_to_clone" => {
-                            gaps += 1;
+                            // REAL CLONE GATING (review #2 2nd follow-up, P1):
+                            // compare the local CLONE response to hosted, correlate
+                            // its confirmation so the cloned state is tracked, and
+                            // distinguish a genuine full-match from a MISSING-SOURCE-
+                            // HISTORY gap (the empty local store has no equivalent to
+                            // clone, so it executes) and from a variant/policy
+                            // mismatch.
+                            let local_variant = support::response_variant(&response);
+                            let known_gap = known.iter().find(|g| {
+                                g.fixture == path.file_name().unwrap().to_string_lossy()
+                                    && g.entry == i
+                            });
+                            if local_variant == "ready_to_clone" {
+                                // Full causal clone match: compare the payload
+                                // (minus opaque IDs) and correlate the confirm.
+                                let qc::submit_sql_response::Response::ReadyToClone(local) =
+                                    response.response.clone().unwrap()
+                                else {
+                                    unreachable!()
+                                };
+                                let ours = without_ids(serde_json::to_value(&response).unwrap());
+                                let real = without_ids(e.response.clone());
+                                if ours != real {
+                                    mismatches.push(format!(
+                                        "{context}: CLONE payload differs ours={ours} real={real}"
+                                    ));
+                                }
+                                let id = e.response["response"]["ready_to_clone"]["request_id"]
+                                    .as_str()
+                                    .unwrap();
+                                pending.insert(id.into(), (local.request_id, key));
+                                asserted += 1;
+                            } else if let Some(gap) = known_gap {
+                                // MISSING SOURCE HISTORY: hosted cloned from a source
+                                // whose build is not in THIS fixture, so the empty
+                                // local store cannot clone and falls back (executes).
+                                // Allowed only when explicitly exempted with a reason.
+                                assert!(!gap.reason.trim().is_empty());
+                                assert_eq!(
+                                    local_variant, gap.local_variant,
+                                    "{context}: characterized clone fallback changed"
+                                );
+                                seen_gaps.insert((gap.fixture.clone(), i));
+                                gaps += 1;
+                            } else {
+                                mismatches.push(format!(
+                                    "{context}: hosted ready_to_clone but local {local_variant} \
+                                     (missing source history? add a keyed replay_gaps entry)"
+                                ));
+                            }
                         }
                         other => panic!("{context}: unsupported response {other}"),
                     }

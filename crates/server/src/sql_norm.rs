@@ -17,57 +17,119 @@ pub fn normalize_sql(sql: &str) -> String {
 }
 
 /// Like [`normalize_sql`] but ABSTRACTS the schema component of three-part
-/// object names (`catalog.schema.table` → `catalog.<ns>.table`). This yields a
-/// logic identity that is identical for the SAME model built in different
-/// environments (e.g. prod vs a dev clone), which differ only by the physical
-/// schema qualifier in their rendered SQL. VERIFIED LIVE against
-/// api.state.dbt.com: the hosted service skips a dev submit whose rendered SQL
-/// differs from the prod source ONLY in the schema qualifier, and executes when
-/// the projection/logic genuinely changes (see experiments/clone_logic_
-/// sensitivity.sh and docs/correctness-handoff.md). This is scoped to
-/// cross-environment (namespace-grouped) reuse; the strict `normalize_sql`
-/// remains the primary same-target identity.
+/// object names using a RELATIVE schema→token map (`catalog.schema.table` →
+/// `catalog.__dbt_state_ns__{token}.table`). Within one request the SAME
+/// physical schema always maps to the SAME token, and DISTINCT schemas map to
+/// DISTINCT tokens (assigned by sorted schema name). This yields a logic
+/// identity identical for the SAME model built in different environments (which
+/// differ only by a single uniform schema qualifier → one distinct schema →
+/// always token 0), while PRESERVING the distinctness of two genuinely
+/// different relations that share a basename but live in different schemas (a
+/// model cross-joining `DB.X.INPUT` and `DB.Y.INPUT` → two distinct schemas →
+/// tokens 0 and 1 — so swapping their definitions changes the identity; review
+/// #2 2nd follow-up, P0). A single global placeholder would have collapsed X
+/// and Y and conflated the swap. VERIFIED LIVE for the single-schema cross-env
+/// case; see experiments/clone_logic_sensitivity.sh and docs/correctness-handoff.md.
 pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
-    normalize_sql_inner(sql, true)
+    normalize_sql_namespace_abstracted_with(sql, &SchemaMap::collapse_all())
 }
 
-/// Schema-abstract a dependency's physical object NAME so the (reference →
-/// definition) binding can be keyed across environments.
-///
-/// A dependency reference like `"CDO"."PROD"."STG_ORDERS"` differs from its dev
-/// clone `"CDO"."DEV"."STG_ORDERS"` ONLY in the middle (schema) component. To
-/// bind each dependency reference to its definition in the cross-environment
-/// (namespace-abstracted) identity WITHOUT reintroducing an environment-specific
-/// difference, we abstract the schema component of the name exactly as
-/// `normalize_sql_namespace_abstracted` does for in-SQL relations, and
-/// case-fold unquoted parts.
-///
-/// Rules (mirroring the in-SQL relation visitor):
-///   * Split into dot-separated parts, each optionally double-quoted.
-///   * Only a THREE-part name has its middle component replaced with the schema
-///     placeholder; one- and two-part names are left intact (a two-part
-///     `schema.table` is ambiguous and abstracting it risks conflation).
-///   * An UNQUOTED part is lowercased; a quoted part keeps its exact case (the
-///     quotes themselves are normalized away so `"V1"` and `V1` compare equal
-///     only when case matches — Snowflake uppercases unquoted idents, but we do
-///     not resolve that here; the goal is a STABLE cross-env key, and the client
-///     sends consistently-quoted names within one project).
-///
-/// This is a string-level transform (dependency names are not full SQL
-/// statements, so the AST path does not apply) and is intentionally
-/// conservative: when a name does not look like a dotted identifier it is
-/// returned lowercased-but-otherwise-verbatim, which can only ever make two
-/// genuinely different names LESS likely to collide (safe: over-execute).
-pub fn abstract_object_name_schema(name: &str) -> String {
+/// As [`normalize_sql_namespace_abstracted`] but with an explicit relative
+/// schema→token map so the caller can share ONE consistent mapping across the
+/// root SQL and every dependency name/definition.
+pub fn normalize_sql_namespace_abstracted_with(sql: &str, schemas: &SchemaMap) -> String {
+    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
+        Ok(mut stmts) => {
+            let mut canon = Canonicalizer {
+                abstract_schema: true,
+                schemas: Some(schemas),
+            };
+            for s in stmts.iter_mut() {
+                let _ = s.visit(&mut canon);
+            }
+            stmts
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        }
+        _ => sql.to_string(),
+    }
+}
+
+/// A relative schema → positional-token map, shared across a request's root SQL
+/// and all dependency names/definitions so one physical schema abstracts to one
+/// stable token everywhere. Tokens are assigned by SORTED distinct schema name
+/// (deterministic, independent of textual order).
+#[derive(Debug, Clone, Default)]
+pub struct SchemaMap {
+    tokens: std::collections::HashMap<String, usize>,
+    /// When true, every schema collapses to token 0 (legacy single-placeholder
+    /// behavior) — used when no explicit map is supplied.
+    collapse_all: bool,
+}
+
+impl SchemaMap {
+    /// Legacy behavior: every schema collapses to the same token.
+    pub fn collapse_all() -> Self {
+        Self {
+            tokens: Default::default(),
+            collapse_all: true,
+        }
+    }
+
+    /// Build a relative map from schema names (as they appear in 3-part names).
+    /// Case is folded (Snowflake unquoted identifiers are case-insensitive);
+    /// distinct schemas get distinct tokens by sorted order.
+    pub fn from_schemas<I: IntoIterator<Item = String>>(schemas: I) -> Self {
+        let mut distinct: Vec<String> = schemas
+            .into_iter()
+            .map(|s| s.trim().trim_matches('"').to_ascii_lowercase())
+            .collect();
+        distinct.sort();
+        distinct.dedup();
+        let tokens = distinct
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| (s, i))
+            .collect();
+        Self {
+            tokens,
+            collapse_all: false,
+        }
+    }
+
+    /// The placeholder token for a schema component (as written in a 3-part
+    /// name). An unknown schema falls back to token 0 (safe: cannot be MORE
+    /// distinct than a mapped schema).
+    fn placeholder_for(&self, schema: &str) -> String {
+        if self.collapse_all {
+            return format!("{SCHEMA_PLACEHOLDER}0");
+        }
+        let key = schema.trim().trim_matches('"').to_ascii_lowercase();
+        let token = self.tokens.get(&key).copied().unwrap_or(0);
+        format!("{SCHEMA_PLACEHOLDER}{token}")
+    }
+
+    /// Public accessor for the relative token of a schema name (e.g. the
+    /// request's `default_schema`), used to fold the resolution context into a
+    /// logic hash as a relative token rather than a physical name.
+    pub fn placeholder_for_schema(&self, schema: &str) -> String {
+        self.placeholder_for(schema)
+    }
+}
+
+/// Schema-abstract a dependency's physical object NAME using the shared relative
+/// schema map. Quoting rules: split on `.`, strip surrounding double-quotes
+/// (un-doubling embedded quotes, preserving case), lowercase unquoted parts;
+/// only a THREE-part name has its middle (schema) component abstracted.
+pub fn abstract_object_name_schema_with(name: &str, schemas: &SchemaMap) -> String {
     let parts: Vec<&str> = name.split('.').collect();
     let unquote = |p: &str| -> String {
         let t = p.trim();
         if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
-            // Quoted: strip the surrounding quotes, un-double embedded quotes,
-            // preserve case.
             t[1..t.len() - 1].replace("\"\"", "\"")
         } else {
-            // Unquoted: Snowflake-style case-insensitive — lowercase.
             t.to_ascii_lowercase()
         }
     };
@@ -75,7 +137,7 @@ pub fn abstract_object_name_schema(name: &str) -> String {
         format!(
             "{}.{}.{}",
             unquote(parts[0]),
-            SCHEMA_PLACEHOLDER,
+            schemas.placeholder_for(parts[1]),
             unquote(parts[2])
         )
     } else {
@@ -87,10 +149,47 @@ pub fn abstract_object_name_schema(name: &str) -> String {
     }
 }
 
+/// Legacy single-token overload of [`abstract_object_name_schema_with`].
+pub fn abstract_object_name_schema(name: &str) -> String {
+    abstract_object_name_schema_with(name, &SchemaMap::collapse_all())
+}
+
+/// Collect the distinct schema components (middle of a 3-part name) that appear
+/// in a SQL statement's relations, so a caller can build a request-wide
+/// [`SchemaMap`]. Parser failures yield no schemas.
+pub fn schemas_in_sql(sql: &str) -> Vec<String> {
+    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
+        Ok(mut stmts) => {
+            let mut collector = SchemaCollector {
+                schemas: Vec::new(),
+            };
+            for s in stmts.iter_mut() {
+                let _ = s.visit(&mut collector);
+            }
+            collector.schemas
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Extract the schema (middle) component from a possibly-quoted 3-part object
+/// NAME string. Returns `None` for non-3-part names.
+pub fn schema_of_object_name(name: &str) -> Option<String> {
+    let parts: Vec<&str> = name.split('.').collect();
+    if parts.len() == 3 {
+        Some(parts[1].trim().trim_matches('"').to_string())
+    } else {
+        None
+    }
+}
+
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
     match Parser::parse_sql(&SnowflakeDialect {}, sql) {
         Ok(mut stmts) => {
-            let mut canon = Canonicalizer { abstract_schema };
+            let mut canon = Canonicalizer {
+                abstract_schema,
+                schemas: None,
+            };
             for s in stmts.iter_mut() {
                 let _ = s.visit(&mut canon);
             }
@@ -106,7 +205,8 @@ fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
     }
 }
 
-/// Placeholder substituted for the schema component under schema abstraction.
+/// Placeholder PREFIX substituted for the schema component under schema
+/// abstraction; a relative token index is appended (`__dbt_state_ns__0`, …).
 const SCHEMA_PLACEHOLDER: &str = "__dbt_state_ns__";
 
 /// Canonical spelling for a type-name synonym, else `None` (leave as written).
@@ -156,22 +256,36 @@ fn canon_function(name: &str) -> Option<&'static str> {
 }
 
 /// AST pass applying the dialect-aware canonicalizations the hosted service does.
-struct Canonicalizer {
+struct Canonicalizer<'a> {
     /// When true, replace the schema component of three-part object names so the
     /// same model in different environments shares a logic identity.
     abstract_schema: bool,
+    /// Relative schema→token map shared across the request (root SQL + deps);
+    /// `None` means use the legacy single-token collapse.
+    schemas: Option<&'a SchemaMap>,
 }
-impl VisitorMut for Canonicalizer {
+impl VisitorMut for Canonicalizer<'_> {
     type Break = ();
 
     fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
         // A fully-qualified `catalog.schema.table` reference abstracts its
-        // middle (schema) component. Two-part (`schema.table`) and one-part
-        // names are left intact: a bare `schema.table` is ambiguous and
-        // abstracting it would risk conflating genuinely different relations.
+        // middle (schema) component to a RELATIVE token (so distinct schemas in
+        // one request stay distinct while a single environment schema collapses
+        // to a stable token). Two-part (`schema.table`) and one-part names are
+        // left intact: a bare `schema.table` is ambiguous and abstracting it
+        // would risk conflating genuinely different relations.
         if self.abstract_schema && name.0.len() == 3 {
+            // Read the current schema token BEFORE mutating it.
+            let schema_text = match &name.0[1] {
+                ObjectNamePart::Identifier(id) => id.value.clone(),
+                _ => String::new(),
+            };
+            let placeholder = match self.schemas {
+                Some(map) => map.placeholder_for(&schema_text),
+                None => SchemaMap::collapse_all().placeholder_for(&schema_text),
+            };
             if let ObjectNamePart::Identifier(id) = &mut name.0[1] {
-                id.value = SCHEMA_PLACEHOLDER.to_string();
+                id.value = placeholder;
                 id.quote_style = None;
             }
         }
@@ -210,6 +324,23 @@ impl VisitorMut for Canonicalizer {
                 }
             }
             _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+/// AST pass that collects the schema (middle) component of every three-part
+/// relation reference, so a caller can build a request-wide [`SchemaMap`].
+struct SchemaCollector {
+    schemas: Vec<String>,
+}
+impl VisitorMut for SchemaCollector {
+    type Break = ();
+    fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
+        if name.0.len() == 3 {
+            if let ObjectNamePart::Identifier(id) = &name.0[1] {
+                self.schemas.push(id.value.clone());
+            }
         }
         ControlFlow::Continue(())
     }
