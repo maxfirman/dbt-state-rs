@@ -74,5 +74,38 @@ implement the reproducible-majority (skip) behavior.
 - `lag_tolerance` CAN gate a rebuild under ANY policy (observed), but the exact
   rule is not isolated; the engine keeps the safe own-build anchor. Handoff §C.
 - Non-Snowflake clone templates (BigQuery/Databricks/Spark) are our own, unverified.
-- Volatile-function evaluation, state selectors and state-backed deferral: UNIMPLEMENTED.
+- Volatile-function evaluation and state-backed deferral (`ResolveDeferredRelations`): UNIMPLEMENTED.
 - `unit test` reuse: not characterized (state-explain shows "details unavailable").
+
+## State selectors (`state:*`) — live-verified, see docs/correctness-handoff.md §D
+
+`SelectorService.GetStateSelection` powers dbt State-powered `state:*` selectors.
+Baseline built in `prod_demo`; selector queried from `dev_clone`
+(`defer_to_target: prod_demo`, so `target=prod_demo`) via
+`experiments/selector_experiment.sh`. The server records the client-supplied
+`DbtNodeData` hashes verbatim (keyed by org/project_id/`target` env/node_unique_id)
+and does a pure comparison. Reproduced by `crates/harness/tests/selector_conformance.rs`
+(67 captured queries, set-equal) + `selector_offline.rs`.
+
+Rule per submitted node vs its recorded state `rec` (absent ⇒ *new*):
+
+| criterion (wire) | matches when | reproduced |
+|---|---|---|
+| `new` (2) | `rec` absent | ✅ |
+| `old` (4) | `rec` present | ✅ |
+| `modified.body` (5) | `rec` absent or `node_body_hash` differs | ✅ |
+| `modified.configs` (6) | `rec` absent or `node_configs_hash` differs | ✅ |
+| `modified.relation` (7) | `rec` absent or `node_database_representation` differs | ✅ |
+| `modified.persisted_descriptions` (8) | `rec` absent or that hash differs | ✅ |
+| `modified.macros` (9) | `rec` absent or `node_macros_hash` differs | ✅ |
+| `modified.contract` (10) | `rec` absent or `node_contract_hash` differs | ✅ |
+| `modified` (1) | `rec` absent OR any of body/configs/persisted_descriptions/macros/contract differs (**relation EXCLUDED**) | ✅ |
+| `unmodified` (3) | `old` and not `modified` | ✅ |
+
+Proven invariants: `new`/`old` and `modified`/`unmodified` each partition the
+sent set; a *new* node matches every `modified.*`. Node types dbt State never
+records (source/unit_test/semantic_model/metric/saved_query) are always
+`new`/`modified`. `node_body_hash` is a raw file hash → whitespace/comment-only
+edits count as `modified.body` (the selector is file-hash based, not the semantic
+SQL fingerprint). Unknown/`SC_UNSPECIFIED` criteria and empty `project_id` are
+rejected with `INVALID_ARGUMENT`.

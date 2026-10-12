@@ -25,7 +25,7 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | 6: seed configuration | Match latest physical state, seed bytes and semantic configuration/context; require known current object metadata. | Column types, missing object, content reversion, Record/Submit parity |
 | 7: cross-target SKIP without provenance | Remove unconditional namespace reuse. Rebuild another physical target until object/provenance mapping is implemented. | Different target/schema with same namespace cannot SKIP |
 | 8: volatile evaluation omitted | BUILD whenever evaluation is requested (`tolerate_nondeterminism=false`) until transformations are implemented. | Flag transition rejects reuse |
-| 9: empty selectors/deferral | Return UNIMPLEMENTED for both services rather than an empty successful selection/map. | Public gRPC error assertions |
+| 9: empty selectors/deferral | **Selectors IMPLEMENTED (live-verified 2026-10-11, see §D).** `GetStateSelection` reproduces the hosted `state:*` verdicts via a recorded `node_states` store + pure `selector::classify`. Deferral still returns UNIMPLEMENTED rather than an empty successful map. | `selector_conformance.rs`, `selector_offline.rs`, `selector.rs` unit tests; deferral gRPC error assertion |
 | 10: invalid clone DDL | Reject view sources and unknown dialects before inserting pending history. Preserve the captured Snowflake table DDL and both response mirrors. | Exact captured table DDL, view/unknown-dialect errors and no pending rows |
 | 13: tenant leaks/logged password | Scope every UI database read to configured `DBT_STATE_UI_ORG_ID` (default `local`); remove startup DSN logging. | Two organizations with identical project names; all UI read methods including direct foreign IDs |
 | 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests exempt (no own object). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
@@ -50,6 +50,15 @@ executions only; pre-0008 confirmed rows have them NULL, so cross-environment
 clone adoption simply does not fire for them (they fall back to the existing
 strict same-target path — safe, no behavior change for legacy rows).
 
+Migration `0009_node_states.sql` adds a new `node_states` table (keyed by
+org/project_id/`target` env/node_unique_id) for the `state:*` selector
+comparison store — SEPARATE from the `executions` decision ledger. It is
+populated going forward on every Submit/Record that carries a `dbt_node_state`;
+it has no effect on the decision path and legacy executions are unaffected. A
+`state:*` selector against an env with no recorded node state simply reports
+every node as `new`/`modified` until a build (in that `defer_to_target` env)
+seeds it.
+
 SQL/seed hashes now have a versioned, length-framed SHA-256 domain. Existing
 fingerprints will cold miss and rebuild; **do not rehash old rows in place**:
 root SQL, dependency definitions and complete outcomes were not stored there.
@@ -68,8 +77,9 @@ More work may execute: missing metadata, changed physical input names,
 dependency representation differences (SELECT versus full view DDL), another
 physical target, unsupported syntax, or requested volatile evaluation. These
 are intentional conservative fallbacks, **not claims of hosted conformance**.
-Selector/deferral callers now receive UNIMPLEMENTED; this is an explicit feature
-gap and may abort client operations that previously succeeded incorrectly.
+State selectors are now implemented (see §D). Deferral callers still receive
+UNIMPLEMENTED; this is an explicit feature gap and may abort client operations
+that previously succeeded incorrectly.
 
 ## Remaining work, in priority order
 
@@ -125,8 +135,8 @@ nuances; `allow_clones=false` suppression of the SQL-submit fallback is applied
 by inference (consistent with the RegisterClone path) but not independently
 captured. `failed_to_clone=true` (observed with "clone source freshness
 unavailable") is still confirmed as a normal build — do not reject on the flag
-alone. State selectors/deferral still need authoritative project/profile/
-environment/node history.
+alone. State selectors are implemented (§D); deferral still needs authoritative
+project/profile/environment/node history.
 
 Hosted/warehouse questions: late-confirmation ordering; warehouse clock
 semantics; source-freshness enforcement; TABLE types beyond ordinary/transient.
@@ -251,9 +261,29 @@ template reuse should consume batch history once hosted behavior is established.
 
 ### D. Full public client feature set (review 8, 9 and coverage matrix)
 
-- Implement selectors (criteria enums and project/target scoping) and deferral
-  (profile/project/target/node mapping) using authoritative state; require
-  nonempty response fixtures. Both currently return UNIMPLEMENTED.
+- **State selectors — LIVE-VERIFIED + IMPLEMENTED (2026-10-11).**
+  `SelectorService.GetStateSelection` (dbt State-powered `state:*` selectors) is
+  implemented and conformant. Characterized against the real service
+  (`api.state.dbt.com`, jaffle-shop, Snowflake `prod_demo` baseline, selector
+  queried from `dev_clone` whose `defer_to_target: prod_demo`) via the recording
+  proxy (`experiments/selector_experiment.sh`); fixture
+  `golden/fixtures/selector_state_selection.jsonl` (67 distinct queries across
+  all 10 criteria + every change type), pinned by
+  `crates/harness/tests/selector_conformance.rs` (set-equal replay) and
+  `selector_offline.rs` (record-path + org/project/target scoping). Verified
+  semantics (see protocol.md): the server records the client-supplied
+  `DbtNodeData` hashes verbatim on every Submit/Record (migration 0009
+  `node_states`, keyed by org/project_id/`target` env/node_unique_id) and does a
+  pure hash comparison. `new`/`old` and `modified`/`unmodified` partition the
+  sent set; `modified = new ∪ body ∪ configs ∪ persisted_descriptions ∪ macros ∪
+  contract` with **`relation` excluded**; a new node matches every `modified.*`;
+  untracked node types are always new/modified; `node_body_hash` is a raw
+  (whitespace-sensitive) file hash. Pure engine in `crates/server/src/selector.rs`
+  (`classify`, 13 unit tests). Open: the client batches ≤10,000 nodes/request —
+  the server handles a single large request; multi-batch union is client-side.
+  **Deferral** (`ResolveDeferredRelations`) still returns UNIMPLEMENTED (needs
+  authoritative profile/project/target/node mapping; the observed real response
+  is an empty map from profile auto-deferral).
 - Implement volatile-function evaluation and `transformed_nodes_by_query`,
   including client execution/confirmation of transformed expressions. Current
   BUILD fallback does not reproduce the transformation protocol.
@@ -350,8 +380,9 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17):
 
-- Workspace: **144 tests passed** across 30 binaries.
-- Server library: **58 tests passed** with DATABASE_URL pointing to an
+- Workspace: **164 tests passed** across 31 binaries (adds the `state:*`
+  selector engine, conformance replay and offline scoping tests).
+- Server library: **71 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database.
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
 - Conformance replay: 16 fixtures causally replayed; `lag_multi_upstream_policy`

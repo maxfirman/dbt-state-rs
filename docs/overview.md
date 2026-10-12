@@ -62,7 +62,10 @@ ANY/ALL semantics and `is_stale` reporting. It also established that
 `lag_tolerance` *can* gate a rebuild (overturning an earlier assumption), though
 the exact rule is not yet isolated, so the engine keeps the safe own-build anchor.
 Earlier offline hardening prevents several unsafe skips and preserves cached test
-results. Still open: volatile transformations, selectors/state-backed deferral
-(UNIMPLEMENTED), non-Snowflake clone templates, and complete client
-compatibility. Read [correctness-handoff.md](correctness-handoff.md) for the
-live-verified behavior, upgrade effects, evidence and concrete next tasks.
+results. The dbt State-powered `state:*` selectors
+(`SelectorService.GetStateSelection`) are also live-verified and implemented.
+Still open: volatile transformations, state-backed deferral
+(`ResolveDeferredRelations`, UNIMPLEMENTED), non-Snowflake clone templates, and
+complete client compatibility. Read
+[correctness-handoff.md](correctness-handoff.md) for the live-verified behavior,
+upgrade effects, evidence and concrete next tasks.

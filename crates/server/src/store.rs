@@ -98,6 +98,24 @@ pub struct CloneEquivalent {
     pub execution_runtime_ms: Option<i64>,
 }
 
+/// A node's recorded comparison state for `state:*` selectors, keyed by the
+/// logical (org, project_id, target env, node_unique_id). Mirrors the client's
+/// `DbtNodeData` hashes; the hosted service records them verbatim and the
+/// selector compares against them (verified live — see `selector.rs`).
+#[derive(Debug, Clone)]
+pub struct NodeStateUpsert {
+    pub org_id: String,
+    pub project_id: String,
+    pub target_name: String,
+    pub node_unique_id: String,
+    pub node_body_hash: Option<String>,
+    pub node_configs_hash: Option<String>,
+    pub node_persisted_descriptions_hash: Option<String>,
+    pub node_macros_hash: Option<String>,
+    pub node_contract_hash: Option<String>,
+    pub node_database_representation: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct Store {
     pool: PgPool,
@@ -527,6 +545,100 @@ impl Store {
         .fetch_optional(&self.pool)
         .await?;
         Ok(exists.is_some())
+    }
+
+    /// Upsert a node's comparison state for `state:*` selectors (latest wins),
+    /// keyed by the logical (org, project_id, target env, node_unique_id). Called
+    /// on every Submit/Record that carries a `dbt_node_state`, so a real build in
+    /// the defer-to env seeds the state a later selector reads. See
+    /// `selector.rs` and migration 0009.
+    pub async fn upsert_node_state(&self, n: &NodeStateUpsert) -> sqlx::Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO node_states (
+                org_id, project_id, target_name, node_unique_id,
+                node_body_hash, node_configs_hash, node_persisted_descriptions_hash,
+                node_macros_hash, node_contract_hash, node_database_representation,
+                updated_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+            ON CONFLICT (org_id, project_id, target_name, node_unique_id) DO UPDATE SET
+                node_body_hash = EXCLUDED.node_body_hash,
+                node_configs_hash = EXCLUDED.node_configs_hash,
+                node_persisted_descriptions_hash = EXCLUDED.node_persisted_descriptions_hash,
+                node_macros_hash = EXCLUDED.node_macros_hash,
+                node_contract_hash = EXCLUDED.node_contract_hash,
+                node_database_representation = EXCLUDED.node_database_representation,
+                updated_at = now()
+            "#,
+        )
+        .bind(&n.org_id)
+        .bind(&n.project_id)
+        .bind(&n.target_name)
+        .bind(&n.node_unique_id)
+        .bind(&n.node_body_hash)
+        .bind(&n.node_configs_hash)
+        .bind(&n.node_persisted_descriptions_hash)
+        .bind(&n.node_macros_hash)
+        .bind(&n.node_contract_hash)
+        .bind(&n.node_database_representation)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Fetch the recorded comparison state for the given node ids within one
+    /// (org, project_id, target env) scope. Nodes with no row are absent from
+    /// the map (the selector treats them as `new`). Scoped by `org_id` per the
+    /// global org-isolation invariant.
+    pub async fn fetch_node_states(
+        &self,
+        org_id: &str,
+        project_id: &str,
+        target_name: &str,
+        node_unique_ids: &[String],
+    ) -> sqlx::Result<std::collections::HashMap<String, crate::selector::RecordedNode>> {
+        use crate::selector::RecordedNode;
+        type Row = (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        let rows: Vec<Row> = sqlx::query_as(
+            r#"
+            SELECT node_unique_id, node_body_hash, node_configs_hash,
+                   node_persisted_descriptions_hash, node_macros_hash,
+                   node_contract_hash, node_database_representation
+            FROM node_states
+            WHERE org_id = $1 AND project_id = $2 AND target_name = $3
+              AND node_unique_id = ANY($4)
+            "#,
+        )
+        .bind(org_id)
+        .bind(project_id)
+        .bind(target_name)
+        .bind(node_unique_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(uid, body, configs, pd, macros, contract, repr)| {
+                (
+                    uid,
+                    RecordedNode {
+                        node_body_hash: body,
+                        node_configs_hash: configs,
+                        node_persisted_descriptions_hash: pd,
+                        node_macros_hash: macros,
+                        node_contract_hash: contract,
+                        node_database_representation: repr,
+                    },
+                )
+            })
+            .collect())
     }
 }
 

@@ -23,6 +23,8 @@ use dbt_state_harness::golden::{GoldenEntry, GoldenLog};
 
 use dbt_state_proto::query_cache as qc;
 
+use qc::client_telemetry_client::ClientTelemetryClient;
+use qc::client_telemetry_server::{ClientTelemetry, ClientTelemetryServer};
 use qc::client_validation_client::ClientValidationClient;
 use qc::client_validation_server::{ClientValidation, ClientValidationServer};
 use qc::clone_client::CloneClient;
@@ -31,6 +33,8 @@ use qc::execution_client::ExecutionClient;
 use qc::execution_server::{Execution, ExecutionServer};
 use qc::explain_client::ExplainClient;
 use qc::explain_server::{Explain, ExplainServer};
+use qc::selector_service_client::SelectorServiceClient;
+use qc::selector_service_server::{SelectorService, SelectorServiceServer};
 use qc::sql_client::SqlClient;
 use qc::sql_server::{Sql, SqlServer};
 
@@ -295,6 +299,62 @@ impl Explain for ProxyService {
     }
 }
 
+// ---- SelectorService (state:* selectors) ----
+#[tonic::async_trait]
+impl SelectorService for ProxyService {
+    async fn get_state_selection(
+        &self,
+        request: Request<qc::SelectorRequest>,
+    ) -> Result<Response<qc::SelectorResponse>, Status> {
+        let meta = Proxy::capture_metadata(&request);
+        let msg = request.into_inner();
+        let up = self.upstream_request(msg.clone()).await?;
+        let resp = SelectorServiceClient::new(self.channel.clone())
+            .get_state_selection(up)
+            .await?
+            .into_inner();
+        self.log("SelectorService", "GetStateSelection", meta, &msg, &resp);
+        Ok(Response::new(resp))
+    }
+}
+
+// ---- ClientTelemetry (metering; selector fires ClientSelectorEvent) ----
+#[tonic::async_trait]
+impl ClientTelemetry for ProxyService {
+    // RegisterSessionStart is deprecated in the proto but the proxy must still
+    // forward it verbatim if a client sends it.
+    #[allow(deprecated)]
+    async fn register_session_start(
+        &self,
+        request: Request<qc::SessionStartRequest>,
+    ) -> Result<Response<qc::SessionStartResponse>, Status> {
+        let meta = Proxy::capture_metadata(&request);
+        let msg = request.into_inner();
+        let up = self.upstream_request(msg.clone()).await?;
+        let resp = ClientTelemetryClient::new(self.channel.clone())
+            .register_session_start(up)
+            .await?
+            .into_inner();
+        self.log("ClientTelemetry", "RegisterSessionStart", meta, &msg, &resp);
+        Ok(Response::new(resp))
+    }
+
+    async fn submit_telemetry_batch(
+        &self,
+        request: Request<qc::SubmitTelemetryBatchRequest>,
+    ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
+        let meta = Proxy::capture_metadata(&request);
+        let msg = request.into_inner();
+        let up = self.upstream_request(msg.clone()).await?;
+        let resp = ClientTelemetryClient::new(self.channel.clone())
+            .submit_telemetry_batch(up)
+            .await?
+            .into_inner();
+        self.log("ClientTelemetry", "SubmitTelemetryBatch", meta, &msg, &resp);
+        Ok(Response::new(resp))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -344,7 +404,9 @@ async fn main() -> anyhow::Result<()> {
         .add_service(ExecutionServer::new(svc.clone()))
         .add_service(CloneServer::new(svc.clone()))
         .add_service(ClientValidationServer::new(svc.clone()))
-        .add_service(ExplainServer::new(svc))
+        .add_service(ExplainServer::new(svc.clone()))
+        .add_service(SelectorServiceServer::new(svc.clone()))
+        .add_service(ClientTelemetryServer::new(svc))
         .serve(addr)
         .await?;
 

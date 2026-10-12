@@ -5,6 +5,7 @@ pub mod clone;
 pub mod config;
 pub mod decision;
 mod fingerprint;
+pub mod selector;
 pub mod services;
 pub mod sql_norm;
 pub mod store;
@@ -66,7 +67,9 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
         .add_service(CloneServer::new(CloneServiceImpl(state.clone())))
         .add_service(ClientValidationServer::new(ClientValidationService))
         .add_service(ExplainServer::new(ExplainService))
-        .add_service(SelectorServiceServer::new(SelectorServiceImpl))
+        .add_service(SelectorServiceServer::new(SelectorServiceImpl(
+            state.clone(),
+        )))
 }
 
 /// A gRPC health service that reports SERVING. The dbt client may probe

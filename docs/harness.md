@@ -51,6 +51,12 @@ restore` the project afterwards.
 - `lag_experiment.sh LABEL {any|all} LAG {none|a|b|both}` — two-upstream
   `require_fresh_data_from` + `is_stale`; `lag_isolate.sh` / `lag_buildage.sh`
   probe the (unresolved) `lag_tolerance` gating.
+- `selector_experiment.sh {baseline|query CRIT|mutate CRIT EDIT|all-clean}` —
+  dbt State-powered `state:*` selectors (`GetStateSelection`). Builds a baseline
+  in `prod_demo`, then runs `dbt compile --select state:<crit>` from `dev_clone`
+  (`defer_to_target: prod_demo`) to capture the selector verdicts. NOTE: the
+  recording proxy must proxy `SelectorService` (and `ClientTelemetry`) for these
+  calls to be captured — it now does.
 
 Promote a useful capture into `golden/fixtures/` and drive it from a test.
 

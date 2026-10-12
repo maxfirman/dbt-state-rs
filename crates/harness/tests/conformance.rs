@@ -78,7 +78,15 @@ async fn conformance_replay_all_corpora() {
     // They are NOT causally replayable from an empty store — cross-run physical
     // state is not in the protocol — so dedicated tests assert their contracts
     // by inspection + targeted replay (see lag_policy.rs). Exclude them here.
-    const CHARACTERIZATION_ONLY: &[&str] = &["lag_multi_upstream_policy.jsonl"];
+    //
+    // `selector_state_selection.jsonl` likewise carries a baseline-then-query
+    // structure (SubmitEnrichedSQL/SubmitValues record node state; subsequent
+    // GetStateSelection queries read it) that the generic SKIP/EXECUTE/CLONE
+    // replay does not model — it is driven by `selector_conformance.rs`.
+    const CHARACTERIZATION_ONLY: &[&str] = &[
+        "lag_multi_upstream_policy.jsonl",
+        "selector_state_selection.jsonl",
+    ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
         .map(|p| p.unwrap().path())

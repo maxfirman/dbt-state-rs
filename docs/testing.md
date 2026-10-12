@@ -50,8 +50,12 @@ cover captured materializations, seed/test lifecycles, both RegisterClone
 response mirrors, the clone register→confirm→reuse lifecycle
 (`clone_lifecycle.rs`), the `allow_clones=false` `unable_to_clone` rejection
 (`clone.rs`), the SQL-submit cross-name clone fallback
-(`clone_submit_fallback.rs`), and the multi-upstream ANY/ALL + `is_stale`
-behavior (`lag_policy.rs`).
+(`clone_submit_fallback.rs`), the multi-upstream ANY/ALL + `is_stale`
+behavior (`lag_policy.rs`), and the dbt State-powered `state:*` selectors
+(`selector_conformance.rs` replays 67 captured `GetStateSelection` queries
+across all 10 criteria and asserts set-equality; `selector_offline.rs` exercises
+the record path and org/project/target scoping; plus the pure
+`selector::classify` unit tests in the server crate).
 
 Leading hosted SKIPs and uncorrelated confirms depend on unknown initial
 history; they are counted, never hydrated with guessed epochs/results. Automatic

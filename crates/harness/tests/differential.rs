@@ -330,7 +330,7 @@ async fn submit_values_execute_confirm_skip() {
 
 /// Item 4: trivial services return OK empty responses.
 #[tokio::test]
-async fn explain_placeholder_and_unsupported_selector() {
+async fn explain_placeholder_and_implemented_selector() {
     use qc::explain_client::ExplainClient;
     use qc::selector_service_client::SelectorServiceClient;
 
@@ -347,6 +347,8 @@ async fn explain_placeholder_and_unsupported_selector() {
         .into_inner();
     assert!(msgs.messages.is_empty(), "explain messages must be empty");
 
+    // SelectorService.GetStateSelection is implemented (state:* selectors). With
+    // an empty node set it returns an empty selection — not UNIMPLEMENTED.
     let mut selector = SelectorServiceClient::new(ch);
     let sel = selector
         .get_state_selection(qc::SelectorRequest {
@@ -356,6 +358,10 @@ async fn explain_placeholder_and_unsupported_selector() {
             nodes: Vec::new(),
         })
         .await
-        .unwrap_err();
-    assert_eq!(sel.code(), tonic::Code::Unimplemented);
+        .expect("get_state_selection")
+        .into_inner();
+    assert!(
+        sel.node_unique_ids.is_empty(),
+        "empty submission must select nothing"
+    );
 }

@@ -488,6 +488,40 @@ fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
     }
 }
 
+/// Record a node's comparison state for `state:*` selectors from a submitted
+/// `dbt_node_state` (latest wins). CHARACTERIZED LIVE: the hosted service
+/// records the client-supplied hashes verbatim on every Submit/Record — keyed
+/// by the logical (org, project_id, target env, node_unique_id) — regardless of
+/// the SKIP/EXECUTE verdict, and the selector compares against them (see
+/// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
+/// keys (target_name/project_id) the selector needs; the executions decision
+/// ledger is unaffected.
+async fn record_node_state(state: &AppState, org_id: &str, node_state: Option<&qc::DbtNodeState>) {
+    let Some(ns) = node_state else { return };
+    let (Some(project_id), target_name) = (ns.project_id.clone(), ns.target_name.clone()) else {
+        return;
+    };
+    if project_id.is_empty() || target_name.is_empty() || ns.node_unique_id.is_empty() {
+        return;
+    }
+    let upsert = crate::store::NodeStateUpsert {
+        org_id: org_id.to_string(),
+        project_id,
+        target_name,
+        node_unique_id: ns.node_unique_id.clone(),
+        node_body_hash: ns.node_body_hash.clone(),
+        node_configs_hash: ns.node_configs_hash.clone(),
+        node_persisted_descriptions_hash: ns.node_persisted_descriptions_hash.clone(),
+        node_macros_hash: ns.node_macros_hash.clone(),
+        node_contract_hash: ns.node_contract_hash.clone(),
+        node_database_representation: ns.node_database_representation.clone(),
+    };
+    if let Err(e) = state.store.upsert_node_state(&upsert).await {
+        // Recording selector state must never fail the decision path.
+        tracing::warn!(error = %e, "failed to record node state for selectors");
+    }
+}
+
 #[derive(Clone)]
 pub struct SqlService(pub AppState);
 
@@ -500,6 +534,10 @@ impl Sql for SqlService {
         let org_id = org_id_of(&request);
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
+
+        // Record the node's comparison state for `state:*` selectors (latest
+        // wins), regardless of the SKIP/EXECUTE verdict below.
+        record_node_state(&self.0, &org_id, req.dbt_node_state.as_ref()).await;
 
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
@@ -814,6 +852,9 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
+        // Record the seed's comparison state for `state:*` selectors.
+        record_node_state(&self.0, &org_id, req.dbt_node_state.as_ref()).await;
+
         let target_table = req.target_table.clone();
         // execution_type is implicitly VALUES(9) for seeds.
         let execution_type = EXECUTION_TYPE_VALUES;
@@ -1080,6 +1121,13 @@ impl Execution for ExecutionService {
                 },
             };
             rows.push(row);
+
+            // Record each node's comparison state for `state:*` selectors.
+            let node_state = match input {
+                qc::execution_record::Input::EnrichedSql(sql) => sql.dbt_node_state.as_ref(),
+                qc::execution_record::Input::Values(values) => values.dbt_node_state.as_ref(),
+            };
+            record_node_state(&self.0, &org_id, node_state).await;
         }
 
         let stored = self
@@ -1300,15 +1348,48 @@ impl Explain for ExplainService {
 }
 
 #[derive(Clone)]
-pub struct SelectorServiceImpl;
+pub struct SelectorServiceImpl(pub AppState);
 
 #[tonic::async_trait]
 impl SelectorService for SelectorServiceImpl {
     async fn get_state_selection(
         &self,
-        _request: Request<qc::SelectorRequest>,
+        request: Request<qc::SelectorRequest>,
     ) -> Result<Response<qc::SelectorResponse>, Status> {
-        Err(Status::unimplemented("state selectors are not implemented"))
+        let org_id = org_id_of(&request);
+        let req = request.into_inner();
+
+        // Decode the criterion. The client only ever sends 1..=10; SC_UNSPECIFIED
+        // and out-of-range are rejected rather than guessed.
+        let criteria = crate::selector::SelectorCriteria::from_i32(req.selector_criteria)
+            .ok_or_else(|| {
+                Status::invalid_argument(format!(
+                    "unknown selector_criteria {}",
+                    req.selector_criteria
+                ))
+            })?;
+
+        // project_id scopes the comparison state (required by the client).
+        if req.project_id.is_empty() {
+            return Err(Status::invalid_argument("project_id is required"));
+        }
+
+        // Fetch the recorded comparison state for exactly the submitted nodes,
+        // scoped by (org, project_id, target env). Nodes absent from the store
+        // are `new` (classify treats a missing recorded node accordingly).
+        let uids: Vec<String> = req.nodes.iter().map(|n| n.node_unique_id.clone()).collect();
+        let recorded = self
+            .0
+            .store
+            .fetch_node_states(&org_id, &req.project_id, &req.target, &uids)
+            .await
+            .map_err(db_err)?;
+
+        let node_unique_ids = crate::selector::select_matching(criteria, &req.nodes, |uid| {
+            recorded.get(uid).cloned()
+        });
+
+        Ok(Response::new(qc::SelectorResponse { node_unique_ids }))
     }
 }
 

@@ -404,10 +404,18 @@ async fn seeds_match_configuration_current_object_and_latest_build() {
 async fn unsupported_history_queries_are_errors_not_empty_successes() {
     let (addr, _) = start_server().await;
     let ch = channel(addr).await;
+    // SelectorService.GetStateSelection is implemented, but it must still reject
+    // a malformed request (here: a default request with an empty project_id)
+    // with INVALID_ARGUMENT rather than silently returning an empty success.
     let result = qc::selector_service_client::SelectorServiceClient::new(ch.clone())
         .get_state_selection(qc::SelectorRequest::default())
         .await;
-    assert_eq!(result.unwrap_err().code(), tonic::Code::Unimplemented);
+    assert_eq!(
+        result.unwrap_err().code(),
+        tonic::Code::InvalidArgument,
+        "empty project_id must be rejected, not an empty success"
+    );
+    // ResolveDeferredRelations remains an explicit feature gap.
     let result = ExecutionClient::new(ch)
         .resolve_deferred_relations(qc::ResolveDeferredRelationsRequest::default())
         .await;

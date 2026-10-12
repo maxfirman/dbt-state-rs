@@ -30,7 +30,7 @@ files are Apache-2.0, published by dbt Labs, and vendored in this repo under
 | `Clone` | `RegisterClone` | clone decision + DDL | table DDL + lifecycle + `allow_clones=false` rejection (live-verified); non-Snowflake templates unverified |
 | `ClientValidation` | `ValidateClientVersion` | version gate | implemented (true) |
 | `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | human text | empty defaults |
-| `SelectorService` | `GetStateSelection` | state:modified selectors | UNIMPLEMENTED |
+| `SelectorService` | `GetStateSelection` | state:* selectors | implemented (live-verified) |
 | `ClientTelemetry` | `SubmitTelemetryBatch`, … | metering (dbt Labs only) | not served |
 | `Health` (grpc.health.v1) | `Check`, `Watch` | health | SERVING |
 
@@ -144,6 +144,62 @@ last_modified_epoch?, dbt_node_state?, …}`. Decision mirrors
 `SubmitEnrichedSQL` but matches on data bytes plus seed configuration/context
 and latest physical state, requiring known current-target metadata;
 `execution_type` is implicitly `VALUES=9`.
+
+## State selectors: `SelectorService.GetStateSelection`
+
+Powers dbt State-powered `state:*` selectors (`state:new/old/modified/
+unmodified` and the `modified.*` sub-selectors). Used when dbt State is enabled,
+`project-id` is set, and no `--state` manifest is given; each node is compared
+against **its own last execution in the `defer_to_target` env** rather than a
+single `manifest.json`. Triggered by e.g. `dbt compile --select state:modified`
+(and build/run/test); `dbt ls` does **not** engage the service.
+
+Request `SelectorRequest{target, selector_criteria (SelectorCriteria),
+project_id, nodes[] = DbtNodeData{node_unique_id, node_hash, node_body_hash?,
+node_configs_hash?, node_persisted_descriptions_hash?, node_macros_hash?,
+node_contract_hash?, node_database_representation?}}`. `target` is the
+`defer_to_target` ENV name (default `prod`), NOT a physical schema. The client
+batches ≤10,000 nodes/request and unions the responses. Response
+`SelectorResponse{node_unique_ids[]}` — the subset matching the criterion.
+
+`SelectorCriteria`: `SC_UNSPECIFIED=0, MODIFIED=1, NEW=2, UNMODIFIED=3, OLD=4,
+BODY=5, CONFIGS=6, RELATION=7, PERSISTED_DESCRIPTIONS=8, MACROS=9, CONTRACT=10`.
+
+### Semantics (live-verified)
+
+Characterized against the real service (`api.state.dbt.com`, jaffle-shop,
+Snowflake `prod_demo` baseline, selector queried from `dev_clone`), reproduced
+by `dbt-state-rs`; see
+[`golden/fixtures/selector_state_selection.jsonl`](../golden/fixtures/selector_state_selection.jsonl),
+`experiments/selector_experiment.sh` and `crates/harness/tests/selector_conformance.rs`.
+
+The server does a **pure comparison** of the client-supplied `DbtNodeData`
+hashes against the node's recorded state (keyed by org / `project_id` / `target`
+env / `node_unique_id`) — it records the hashes verbatim on every
+Submit/Record and never recomputes. For a submitted node whose recorded state is
+`rec` (or absent → the node is *new*):
+
+- `new` ⇔ `rec` absent; `old` ⇔ `rec` present (`new`/`old` partition the sent set).
+- `modified.body/configs/relation/persisted_descriptions/macros/contract` ⇔
+  `rec` absent **or** that component hash differs. A *new* node matches every
+  `modified.*`.
+- `modified` ⇔ `rec` absent **or** any of body/configs/persisted_descriptions/
+  macros/contract differs. **`relation` is EXCLUDED from `modified`** (a
+  database/schema/alias difference across environments is not a content change).
+- `unmodified` ⇔ `old` and not `modified` (`modified`/`unmodified` partition the
+  sent set).
+
+Only node types dbt State records (models, seeds, snapshots, data tests) ever
+have recorded state; node types it never tracks (sources, unit tests, semantic
+models, metrics, saved queries) are always returned as `new`/`modified`.
+`node_body_hash` is a raw file hash, so whitespace/comment-only edits DO count as
+`modified.body` (the selector is file-hash based, unlike the semantic reuse
+decision). An unknown/`SC_UNSPECIFIED` criterion or an empty `project_id` is
+rejected with `INVALID_ARGUMENT`.
+
+The server records node state in a dedicated `node_states` table (migration
+0009), separate from the `executions` decision ledger, keyed by the logical
+(org, project_id, target env, node_unique_id) the selector scopes by.
 
 ## Clone: `Clone.RegisterClone`
 
