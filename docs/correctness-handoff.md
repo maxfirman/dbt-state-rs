@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-11. Read this before changing decisions. The goal remains a
+Updated 2026-10-12. Read this before changing decisions. The goal remains a
 conformant drop-in dbt State replacement; **the current server does not yet meet
 that goal**, but a growing set of behaviors is now live-verified.
 
@@ -478,19 +478,25 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ```
 
-Last run (Rust 1.98, disposable Postgres 17):
+Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **164 tests passed** across 31 binaries (adds the `state:*`
-  selector engine, conformance replay and offline scoping tests).
-- Server library: **71 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database.
+- Workspace: **202 tests passed** across the workspace (adds this session's
+  clone-provenance, selector last-write-wins + observability, deferral,
+  allow_clones=false, concurrency determinism, dependency/SQL negatives, and
+  auth-hardening tests).
+- Server library: **89 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database (adds the new
+  `fingerprint`, `sql_norm` negative and `config` unit tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
-- Conformance replay: 16 fixtures causally replayed; `lag_multi_upstream_policy`
-  is characterization-only (excluded) and validated by `lag_policy.rs`. Clone
-  rejection and SQL-submit clone fallback entries are counted as replay gaps and
-  asserted by their dedicated tests (`clone.rs`, `clone_submit_fallback.rs`).
-  The six pinned local fallbacks in [golden/replay_gaps.json](../golden/replay_gaps.json)
-  remain exercised exactly once.
+- Conformance replay: 17 fixtures causally replayed; the characterization-only
+  captures (`lag_multi_upstream_policy`, `selector_state_selection`,
+  `clone_fallback_over_existing_target`, `selector_last_write_wins`,
+  `deferral_resolve`, `clone_submit_allow_clones_false`) are excluded and
+  validated by their dedicated tests. Clone rejection and SQL-submit clone
+  fallback entries are counted as replay gaps and asserted by their dedicated
+  tests (`clone.rs`, `clone_submit_fallback.rs`). The six pinned local fallbacks
+  in [golden/replay_gaps.json](../golden/replay_gaps.json) remain exercised
+  exactly once.
 
 Live verification (clone + lag paths, §A and §C) was performed against the real
 service and Snowflake demo warehouse via the recording proxy; those captures are

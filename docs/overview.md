@@ -63,9 +63,9 @@ ANY/ALL semantics and `is_stale` reporting. It also established that
 the exact rule is not yet isolated, so the engine keeps the safe own-build anchor.
 Earlier offline hardening prevents several unsafe skips and preserves cached test
 results. The dbt State-powered `state:*` selectors
-(`SelectorService.GetStateSelection`) are also live-verified and implemented.
-Still open: volatile transformations, state-backed deferral
-(`ResolveDeferredRelations`, UNIMPLEMENTED), non-Snowflake clone templates, and
+(`SelectorService.GetStateSelection`) and state-backed deferral
+(`ResolveDeferredRelations`) are also live-verified and implemented.
+Still open: volatile transformations, non-Snowflake clone templates, and
 complete client compatibility. Read
 [correctness-handoff.md](correctness-handoff.md) for the live-verified behavior,
 upgrade effects, evidence and concrete next tasks.
