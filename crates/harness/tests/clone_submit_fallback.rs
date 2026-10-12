@@ -729,3 +729,87 @@ async fn server_executes_quoted_case_swapped_binding() {
          not clone (no lowercasing collapse)"
     );
 }
+
+/// FINDING 1 (review #2 3rd follow-up) — BINDING-SWAP REGRESSION GATE with a
+/// present baseline candidate + a NO-SWAP CONTROL + consistent dependency
+/// representation. The committed capture's treatment EXECUTEs partly because the
+/// local store has no baseline to reuse (missing source history); the review
+/// asked for a test that proves a COMPATIBLE CANDIDATE really exists before the
+/// swap, with a no-swap control and the SAME dependency representation across
+/// arms (not bare `select` vs `CREATE VIEW`).
+///
+/// This builds + confirms a prod consumer with two view dependencies, then:
+///   (control) a dev submit with IDENTICAL bindings -> ready_to_clone (proves a
+///             compatible candidate exists and is clone-eligible), and
+///   (treatment) a dev submit with the two dependency definitions SWAPPED, SAME
+///             dependency representation (both `create or replace view …`),
+///             same root SQL -> ready_to_execute (the swap is correctly NOT
+///             matched to the present candidate).
+/// If the binding hash were wrong, the control would still clone but the
+/// treatment would ALSO clone — so the treatment EXECUTE is a real gate only
+/// because the control proves a candidate is present.
+#[tokio::test]
+async fn dep_binding_swap_gated_against_present_baseline_with_control() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    // CONSISTENT dependency representation across ALL arms: full view DDL.
+    let dep = |schema_up: &str, schema_lo: &str, body: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{schema_up}\".\"INPUT\""),
+        query: format!(
+            "create or replace view INPUT as (select {body} from CDO_DEMO_DB.{schema_lo}.raw)"
+        ),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema_lo.into(),
+    };
+    let root = "select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b";
+
+    // Baseline: build + confirm the prod consumer (X.INPUT=1, Y.INPUT=2).
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"BINDCONS\"";
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = root.into();
+    base.query_dependencies = vec![dep("X", "x", "1 as id"), dep("Y", "y", "2 as id")];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline consumer must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // CONTROL (no swap): identical bindings, different target → ready_to_clone.
+    // This PROVES a compatible candidate exists in the store at treatment time.
+    let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"BINDCONS_CTL\"";
+    let mut no_swap = submit(c, "dev_clone_demo");
+    no_swap.sql = root.into();
+    no_swap.query_dependencies = vec![dep("X", "x", "1 as id"), dep("Y", "y", "2 as id")];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(no_swap).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "CONTROL: an identical-binding submit must find the present baseline and \
+         clone it (proves a compatible candidate exists)"
+    );
+
+    // TREATMENT (swap): same root SQL + same dependency REPRESENTATION, only the
+    // two definitions swapped between references → must EXECUTE (not clone the
+    // present candidate), proving the binding is distinguished.
+    let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"BINDCONS_SWAP\"";
+    let mut swap = submit(d, "dev_clone_demo");
+    swap.sql = root.into();
+    swap.query_dependencies = vec![dep("X", "x", "2 as id"), dep("Y", "y", "1 as id")];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "TREATMENT: a swapped binding (same root SQL, same dependency \
+         representation, present candidate) must EXECUTE — the swap is a real \
+         gate because the control proved a candidate exists"
+    );
+}
