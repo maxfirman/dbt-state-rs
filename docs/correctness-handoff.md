@@ -160,11 +160,22 @@ recording proxy; see `experiments/clone_experiment.sh`,
   `golden/fixtures/clone_fallback_over_existing_target.jsonl` (characterization-
   only), pinned by `clone_submit_fallback.rs::hosted_fallback_fires_over_existing_target`.
 
-Remaining in this area: concurrent A/B builds, reversed/late confirms, dropped/
-recreated sources mid-decision, server restart, Record batches with conflicting
-targets; clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
+Remaining in this area: dropped/recreated sources mid-decision, server restart;
+clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
 WINDOW`=9) and deeper chain limits (>0); `defer_enabled`/`is_defer_to_profile`
-nuances. **`allow_clones=false` suppression of the SQL-submit fallback is now
+nuances. **Concurrency / late-confirmation / conflicting-batch determinism is
+now PINNED (2026-10-12, `crates/harness/tests/concurrency.rs`).** Hosted behavior
+under true concurrency is not establishable from a sequential capture (so these
+are not hosted-parity claims), but the server's rule is made explicit and
+deterministic: CURRENT PHYSICAL STATE = the execution with the newest
+`confirmed_at` (tie-broken by id). Confirmation order — NOT submission order —
+defines current state (reversed-confirm test); a late confirm deterministically
+becomes current (late-confirm test); conflicting confirmed builds for one target
+both persist and the last-confirmed wins (conflicting-rows test); and
+Submit↔Record agree on the model fingerprint (parity test). This models "the
+last build to finish writing the object wins" — the only provenance signal
+available without stable warehouse object IDs (stronger lineage remains open).
+**`allow_clones=false` suppression of the SQL-submit fallback is now
 LIVE-VERIFIED (2026-10-12, `experiments/clone_experiment.sh table --no-clones`):**
 the client encodes it as `clone_chain_depth_limit=0` on the SUBMIT (NOT via
 `allow_clones`), and the hosted service, instead of cloning the equivalent,
