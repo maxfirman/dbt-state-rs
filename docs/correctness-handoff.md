@@ -28,10 +28,12 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | 9: empty selectors/deferral | **Selectors IMPLEMENTED (live-verified 2026-10-11, see §D).** `GetStateSelection` reproduces the hosted `state:*` verdicts via a recorded `node_states` store + pure `selector::classify`. **Deferral IMPLEMENTED (live-verified 2026-10-12, see §D):** `ResolveDeferredRelations` resolves each node to its defer-to-env physical FQN from `node_states` (migration 0010 adds `target_table`), omitting unbuilt nodes. | `selector_conformance.rs`, `selector_offline.rs`, `selector.rs` unit tests; `deferral.rs` + fixture `deferral_resolve.jsonl` |
 | 10: invalid clone DDL | Reject view sources and unknown dialects before inserting pending history. Preserve the captured Snowflake table DDL and both response mirrors. | Exact captured table DDL, view/unknown-dialect errors and no pending rows |
 | 13: tenant leaks/logged password | Scope every UI database read to configured `DBT_STATE_UI_ORG_ID` (default `local`); remove startup DSN logging. | Two organizations with identical project names; all UI read methods including direct foreign IDs |
-| 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests exempt (no own object). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
+| 12: lag tolerance (live-verified 2026-10-11) | Anchor data-freshness drift on the node's OWN last-build epoch (`upstream_epoch > own_build_epoch`), replacing the `recorded_upstream + tolerance` timestamp-distance rule. `freshness_tolerance_seconds` verified NOT to absorb the gap and intentionally unapplied. Data tests have no own object, so they anchor on the RECORDED UPSTREAM epoch instead (review #2 finding 1, 2026-10-12). See §C. | `decision.rs` `freshness_*` unit tests, proptest oracle, `golden/fixtures/lag_freshness_own_build.jsonl`, `crates/harness/tests/lag_freshness.rs` |
 | 10 (extended, live-verified 2026-10-11): clone lifecycle, rejection, cross-name fallback | Reproduce register→confirm→cross-environment reuse (schema-abstracted, logic-sensitive); reject `allow_clones=false` (`clone_chain_depth_limit=0` → `unable_to_clone`, crr=10); emit SQL-submit `ready_to_clone` for an equivalent under another name. Migration 0008 adds `node_namespace_logic_hash` + `clone_source_table`. See §A. | `clone_lifecycle.rs`, `clone.rs::register_clone_rejected_when_allow_clones_false`, `clone_submit_fallback.rs`, fixtures `clone_rejected_allow_clones_false.jsonl` + `clone_submit_equivalent_fallback.jsonl`, `sql_norm`/`fingerprint` unit tests |
 | 12b (live-verified 2026-10-11): require_fresh_data_from + is_stale | Verify ALL rebuilds only when every direct parent drifted (SKIP otherwise, even at lag 0); fix `is_stale` to be false on every execute and true only on a tolerated-stale skip. Record evidence that `lag_tolerance` CAN gate under ANY policy (exact rule not yet isolated; engine keeps the safe own-build anchor). See §C. | `decision.rs` `*_is_stale_*` tests, `crates/harness/tests/lag_policy.rs`, fixture `lag_multi_upstream_policy.jsonl` |
 | Testing/toolchain | Pin Rust 1.98; capture DB test out of `--lib`; reject malformed trace lines; replay all fixtures with full captured confirms and ID correlation; fail discovery fuzz tool on transport/decode failures or divergences; add live `experiments/` capture drivers (clone/lag). | Workspace tests, no-DB library tests, strict trace parse test, full causal response comparisons, fuzz compilation |
+| **#2 finding 1 (live-verified 2026-10-12): data-test upstream freshness** | A data test (execution_type=8) is confirmed with NO own object epoch; the engine returned `should_rebuild=false` for it BEFORE comparing upstreams, reusing a stale cached pass/fail after the tested data changed. Now `decision.rs::data_test_upstream_freshness` anchors a data test's freshness on the RECORDED UPSTREAM epoch (per input, strict `>`, ANY-style; unknown/absent baseline rebuilds). VERIFIED LIVE (`experiments/data_test_freshness{,_control}.sh`): `dt_test` over `dt_up` executes when `dt_up`'s epoch advances and skips when unchanged. | 6 `decision.rs` unit tests, `crates/harness/tests/data_test_freshness.rs`, fixture `data_test_upstream_freshness.jsonl` (CHARACTERIZATION-ONLY) |
+| **#2 finding 5 (2026-10-12): RecordExecutions logical-state atomicity** | `RecordExecutions` wrote each record's `node_states` (selector/deferral) row inline — before full batch validation and outside the batch transaction — so a rejected (INVALID_ARGUMENT) or DB-failed batch leaked logical state. Now node-state upserts are collected during row build (fail-fast, no writes) and published only AFTER the executions batch commits. Error-path atomicity only; every successful path is behavior-preserving (conformance replay still passes). The companion publication-point question (an UNCONFIRMED/failed submit being immediately deferrable) is left unchanged and documented open — it needs live pending/failed-build characterization. | `crates/harness/tests/correctness.rs::rejected_record_batch_does_not_leak_node_state` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -264,6 +266,51 @@ Hosted/warehouse questions: actual equivalence catalog, parameterized numeric
 and string casts, session settings/collation, SQL header effects, view-definition
 representations. See existing SQL normalization experiments for individual
 observations. A parser round trip alone is not a semantic oracle.
+
+#### Review #2 findings assessment (2026-10-12)
+
+Review #2 raised 9 findings. Two were genuine and provable to the project's
+standard and are FIXED (see the completed-changes table): finding 1 (data-test
+upstream freshness, LIVE-VERIFIED) and finding 5's error-path atomicity (rejected
+`RecordExecutions` batch must not leak logical state). The rest were triaged
+against the AGENTS.md do-not-infer rule and are **documented OPEN** rather than
+changed, because a clean live characterization could not be constructed without
+guessing hosted policy:
+
+- **Finding 2 (clone fallback freshness / stale same-target suppresses clone).**
+  The SQL-submit cross-name clone fallback is already LIVE-VERIFIED as driven by
+  schema-abstracted logic identity, NOT target existence
+  (`clone_submit_equivalent_fallback.jsonl`, `clone_fallback_over_existing_target.jsonl`,
+  §A). The review's freshness-guard claim is a local counterexample only ("hosted
+  confirmation still needed"); isolating it needs two differently-named objects
+  with controlled, differing upstream epochs in ONE adapter namespace — the
+  decision there is governed by warehouse physical state the protocol does not
+  expose. Open until a controlled live capture exists.
+- **Finding 3 (namespace abstraction erases dependency identity: BLUE/RED,
+  swapped V1/V2).** Schema abstraction is a DELIBERATE, live-verified
+  cross-environment identity (§A; `fingerprint.rs`/`sql_norm.rs` live-comment
+  tests). The counterexamples are within-namespace; the `table_namespace` is
+  adapter-supplied (one value per warehouse/account), so a clean live
+  contradiction is not constructible in jaffle-shop's single account. Open:
+  needs a controlled multi-account/namespace capture to decide whether hosted
+  binds each dependency to a resolved graph node.
+- **Finding 4 (RegisterClone provenance / age reset / external source edit).**
+  Offline invariant counterexamples; the real meaning of namespace transitions
+  and clone-chain provenance needs live clone-chain characterization. Open.
+- **Finding 5A (publication point: an UNCONFIRMED/failed submit is immediately
+  deferrable).** The successful-build captures do not establish pending/failed
+  policy; the publication point must be characterized live, not guessed. Open.
+- **Finding 6 (template truth table; wildcard-view column evidence).** The review
+  states "reproduced locally; hosted confirmation still needed"; `fingerprint.rs`
+  already notes the template truth table is unresolved. Open (see §C).
+- **Finding 7 (lag/graph/ordering, physical identity across accounts).** Already
+  documented open / characterization-only in §C. No new genuine bug.
+- **Finding 8 (recording-proxy fidelity).** A test-oracle improvement (forward
+  redacted client metadata, capture errors/trailers/raw bytes, fail on capture
+  loss), not a server reuse-safety or conformance defect. Tracked as harness
+  work; it does not change any decision.
+- **Finding 9 (wire/client compatibility holes, auth = trusted-header scoping).**
+  Explicitly deployment requirements and known documented gaps (see §D).
 
 ### C. Lag tolerance and template comparison (review 11, 12)
 
@@ -513,20 +560,23 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **205 tests passed** across the workspace (adds this session's
-  clone-provenance, selector last-write-wins + observability, deferral,
-  allow_clones=false, concurrency determinism, dependency/SQL negatives,
-  auth-hardening, and the three physical-state-before-filters provenance tests).
-- Server library: **89 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (adds the new
-  `fingerprint`, `sql_norm` negative and `config` unit tests).
+- Workspace: **214 tests passed** across the workspace (adds this session's
+  review-#2 fixes: 6 data-test-freshness decision unit tests, the
+  `data_test_freshness.rs` harness test, and the
+  `rejected_record_batch_does_not_leak_node_state` atomicity test — on top of
+  the earlier clone-provenance, selector last-write-wins + observability,
+  deferral, allow_clones=false, concurrency determinism, dependency/SQL
+  negatives, auth-hardening, and physical-state-before-filters work).
+- Server library: **95 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database (adds the 6 new
+  `decision.rs` data-test-freshness unit tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
 - Conformance replay: 17 fixtures causally replayed; the characterization-only
   captures (`lag_multi_upstream_policy`, `selector_state_selection`,
   `clone_fallback_over_existing_target`, `selector_last_write_wins`,
   `deferral_resolve`, `clone_submit_allow_clones_false`,
-  `clone_rebuild_execution_type`) are excluded and
-  validated by their dedicated tests. Clone rejection and SQL-submit clone
+  `clone_rebuild_execution_type`, `data_test_upstream_freshness`) are excluded
+  and validated by their dedicated tests. Clone rejection and SQL-submit clone
   fallback entries are counted as replay gaps and asserted by their dedicated
   tests (`clone.rs`, `clone_submit_fallback.rs`). The six pinned local fallbacks
   in [golden/replay_gaps.json](../golden/replay_gaps.json) remain exercised
