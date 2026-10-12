@@ -516,28 +516,20 @@ fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
     }
 }
 
-/// Record a node's comparison state for `state:*` selectors from a submitted
-/// `dbt_node_state` (latest wins). CHARACTERIZED LIVE: the hosted service
-/// records the client-supplied hashes verbatim on every Submit/Record — keyed
-/// by the logical (org, project_id, target env, node_unique_id) — regardless of
-/// the SKIP/EXECUTE verdict, and the selector compares against them (see
-/// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
-/// keys (target_name/project_id) the selector needs; the executions decision
-/// ledger is unaffected.
-async fn record_node_state(
-    state: &AppState,
+/// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
+/// or `None` when the node_state lacks the scope keys (project_id/target_name/
+/// node_unique_id) the selector needs. Pure — performs no I/O.
+fn node_state_upsert(
     org_id: &str,
     node_state: Option<&qc::DbtNodeState>,
     target_table: Option<&str>,
-) {
-    let Some(ns) = node_state else { return };
-    let (Some(project_id), target_name) = (ns.project_id.clone(), ns.target_name.clone()) else {
-        return;
-    };
+) -> Option<crate::store::NodeStateUpsert> {
+    let ns = node_state?;
+    let (project_id, target_name) = (ns.project_id.clone()?, ns.target_name.clone());
     if project_id.is_empty() || target_name.is_empty() || ns.node_unique_id.is_empty() {
-        return;
+        return None;
     }
-    let upsert = crate::store::NodeStateUpsert {
+    Some(crate::store::NodeStateUpsert {
         org_id: org_id.to_string(),
         project_id,
         target_name,
@@ -552,6 +544,25 @@ async fn record_node_state(
         // resolve deferral (ResolveDeferredRelations). Empty targets (data
         // tests) record NULL and are not deferrable.
         target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
+    })
+}
+
+/// Record a node's comparison state for `state:*` selectors from a submitted
+/// `dbt_node_state` (latest wins). CHARACTERIZED LIVE: the hosted service
+/// records the client-supplied hashes verbatim on every Submit/Record — keyed
+/// by the logical (org, project_id, target env, node_unique_id) — regardless of
+/// the SKIP/EXECUTE verdict, and the selector compares against them (see
+/// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
+/// keys (target_name/project_id) the selector needs; the executions decision
+/// ledger is unaffected.
+async fn record_node_state(
+    state: &AppState,
+    org_id: &str,
+    node_state: Option<&qc::DbtNodeState>,
+    target_table: Option<&str>,
+) {
+    let Some(upsert) = node_state_upsert(org_id, node_state, target_table) else {
+        return;
     };
     if let Err(e) = state.store.upsert_node_state(&upsert).await {
         // Recording selector state must never fail the decision path. Count the
@@ -1153,6 +1164,13 @@ impl Execution for ExecutionService {
         let req = request.into_inner();
 
         let mut rows: Vec<ConfirmedExecution> = Vec::with_capacity(req.records.len());
+        // Collect selector/deferral state upserts to apply ONLY AFTER the whole
+        // batch validates and the executions insert succeeds. Review #2 finding
+        // 5: writing node_states per-record inside this loop (before full
+        // validation and outside the batch transaction) leaked logical state
+        // when a later record was invalid or the batch insert failed — a
+        // rejected request must have no persisted side effect.
+        let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
         for record in &req.records {
             let outcome = record.outcome.clone().unwrap_or_default();
             let input = record
@@ -1256,7 +1274,9 @@ impl Execution for ExecutionService {
             };
             rows.push(row);
 
-            // Record each node's comparison state for `state:*` selectors.
+            // Collect each node's comparison state for `state:*` selectors; the
+            // actual write is deferred until after the batch insert succeeds so
+            // a rejected/failed batch leaves no logical state behind.
             let node_state = match input {
                 qc::execution_record::Input::EnrichedSql(sql) => sql.dbt_node_state.as_ref(),
                 qc::execution_record::Input::Values(values) => values.dbt_node_state.as_ref(),
@@ -1265,7 +1285,9 @@ impl Execution for ExecutionService {
                 qc::execution_record::Input::EnrichedSql(sql) => sql.target_table.as_deref(),
                 qc::execution_record::Input::Values(values) => Some(values.target_table.as_str()),
             };
-            record_node_state(&self.0, &org_id, node_state, node_target).await;
+            if let Some(upsert) = node_state_upsert(&org_id, node_state, node_target) {
+                node_state_upserts.push(upsert);
+            }
         }
 
         let stored = self
@@ -1274,6 +1296,19 @@ impl Execution for ExecutionService {
             .insert_confirmed_batch(&rows)
             .await
             .map_err(db_err)?;
+
+        // The batch committed; now publish the selector/deferral state. These
+        // best-effort writes never fail the request (the execution ledger is
+        // already durable); a failure is counted so the divergence is
+        // observable, matching the submit path's semantics.
+        for upsert in &node_state_upserts {
+            if let Err(e) = self.0.store.upsert_node_state(upsert).await {
+                self.0
+                    .selector_write_failures
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(error = %e, "failed to record node state for selectors");
+            }
+        }
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,

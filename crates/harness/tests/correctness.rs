@@ -439,6 +439,83 @@ async fn record_executions_batch_is_atomic_on_invalid_record() {
     );
 }
 
+/// A rejected RecordExecutions batch must not leak LOGICAL (selector/deferral)
+/// state either. Review #2 finding 5: `node_states` writes happened per-record
+/// inside the loop, BEFORE the whole batch was validated and OUTSIDE the batch
+/// transaction, so a valid record followed by an invalid one left the first
+/// node resolvable for deferral even though the request returned
+/// INVALID_ARGUMENT. A rejected request must have NO persisted side effect.
+#[tokio::test]
+async fn rejected_record_batch_does_not_leak_node_state() {
+    let (addr, schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut exec = ExecutionClient::new(ch);
+
+    // A valid record whose node_state carries the scope keys (project_id +
+    // target_name + target_table) that drive selector/deferral state.
+    let good = qc::ExecutionRecord {
+        outcome: Some(qc::ExecutionOutcome {
+            last_modified_epoch: Some(1_000),
+            table_type: Some("TABLE".to_string()),
+            execution_results: None,
+            execution_runtime_ms: Some(10),
+        }),
+        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
+            target_table: Some("\"DB\".\"S\".\"ROLLED_BACK\"".to_string()),
+            dialect: "snowflake".to_string(),
+            default_catalog: "DB".to_string(),
+            execution_type: ETYPE_FULL,
+            sql: "select 1".to_string(),
+            tables: vec![],
+            query_dependencies: vec![],
+            semantic_extras: Default::default(),
+            labels: Default::default(),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.jaffle.rolled_back".to_string(),
+                project_id: Some("proj-1".to_string()),
+                target_name: "prod".to_string(),
+                node_hash: "h".to_string(),
+                node_body_hash: Some("h".to_string()),
+                ..Default::default()
+            }),
+            default_schema: Some("S".to_string()),
+            from_speculative_submit: false,
+            table_namespace: None,
+        })),
+    };
+    // An invalid record (no input oneof) — rejects the whole batch.
+    let bad = qc::ExecutionRecord {
+        outcome: Some(qc::ExecutionOutcome::default()),
+        input: None,
+    };
+
+    let res = exec
+        .record_executions(request_with_org(
+            qc::RecordExecutionsRequest {
+                records: vec![good, bad],
+            },
+            "acme",
+        ))
+        .await;
+    assert!(res.is_err(), "invalid batch must be rejected");
+
+    // Neither the execution ledger NOR the logical node_states may have changed.
+    let pool = schema_pool(&schema).await;
+    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(execs, 0, "no executions persisted from a rejected batch");
+    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM node_states")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        states, 0,
+        "a rejected batch must not leak selector/deferral node_state"
+    );
+}
+
 /// Duplicate-fingerprint hydration: two RecordExecutions for the SAME
 /// fingerprint with different recorded epochs both persist (no dedupe), and a
 /// subsequent matching submit resolves to the NEWEST confirmed row — so an
