@@ -53,7 +53,11 @@ async fn start_server_configured(require_org_header: bool) -> (SocketAddr, Strin
 
     // Server pool pinned to the schema via search_path.
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        // Keep this small: the conformance replay starts one server (hence one
+        // pool) PER fixture and holds them for the whole test, so a large
+        // per-pool cap times the growing corpus can exceed Postgres
+        // max_connections. Two is enough for the sequential submit+confirm flow.
+        .max_connections(2)
         .after_connect({
             let schema = schema.clone();
             move |conn, _meta| {

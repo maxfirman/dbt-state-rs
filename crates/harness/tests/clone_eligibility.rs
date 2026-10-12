@@ -190,19 +190,21 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
 }
 
 /// CLONE ELIGIBILITY under ZERO tolerance and VOLATILE evaluation (review #2 2nd
-/// follow-up P1 #4). The 2nd review correctly noted the nested State config
-/// (`state={'lag_tolerance':'0s','evaluate_volatile_sql':true}`) IS reachable in
-/// dbt 2.0.6 and asked for these independent dimensions to be characterized.
+/// + 3rd follow-up). The nested State config
+/// (`state={'lag_tolerance':'0s','evaluate_volatile_sql':true}`) is reachable in
+/// dbt 2.0.6; these independent dimensions are characterized with a wire-field
+/// VARCHECK asserting the flag actually reached the request.
 ///
-/// LIVE (experiments/clone_eligibility.sh stale_zerotol / volatile, with the
-/// wire-field VARCHECK asserting the independent variable actually reached the
-/// request): a STALE source (built before an upstream bump; its clone epoch is
-/// older than the dev submit's current upstream) STILL returns `ready_to_clone`
-/// under BOTH zero `freshness_tolerance_seconds=0` AND
-/// `tolerate_nondeterminism=false`. So neither zero tolerance nor volatile
-/// evaluation gates the cross-name clone fallback — hosted tolerates the stale
-/// clone on every arm. These server reproductions guard that the server matches
-/// (does not spuriously gate the fallback on those flags).
+/// LIVE RESULTS (experiments/clone_eligibility.sh):
+///   * ZERO tolerance (`freshness_tolerance_seconds=0`, deterministic model): a
+///     STALE source STILL returns `ready_to_clone` — zero tolerance does NOT
+///     gate the cross-name clone (golden/fixtures/clone_fallback_zero_tolerance.jsonl).
+///   * VOLATILE (`tolerate_nondeterminism=false`, GENUINELY volatile model with
+///     `current_timestamp()`): hosted does NOT clone — it EXECUTES (srr=6)
+///     (golden/fixtures/clone_fallback_volatile.jsonl). The 3rd follow-up was
+///     right: the earlier volatile arm had no volatile function and wrongly
+///     concluded volatile didn't gate. The server now suppresses the cross-name
+///     fallback when `tolerate_nondeterminism=false`.
 #[tokio::test]
 async fn server_clones_stale_equivalent_under_zero_tolerance() {
     assert_eq!(
@@ -214,12 +216,12 @@ async fn server_clones_stale_equivalent_under_zero_tolerance() {
 }
 
 #[tokio::test]
-async fn server_clones_stale_equivalent_under_volatile_evaluation() {
+async fn server_executes_not_clones_under_volatile_evaluation() {
     assert_eq!(
         clone_eligibility_variant(/*freshness_tolerance_seconds=*/ 2700, /*tnd=*/ false).await,
-        "ready_to_clone",
-        "evaluate_volatile_sql (tolerate_nondeterminism=false) must not suppress \
-         the stale cross-name clone (hosted clones; verified live)"
+        "ready_to_execute",
+        "evaluate_volatile_sql (tolerate_nondeterminism=false) SUPPRESSES the \
+         cross-name clone — hosted executes a volatile model (verified live)"
     );
 }
 
@@ -296,4 +298,77 @@ async fn clone_eligibility_variant(freshness_tolerance_seconds: i64, tnd: bool) 
         .unwrap()
         .into_inner();
     support::response_variant(&rb).to_string()
+}
+
+/// Pin the hosted truth for the ZERO-tolerance and VOLATILE arms directly from
+/// their committed captures (review #2 3rd follow-up P1 #3 — the arms must be
+/// backed by replayable fixtures, not just synthetic requests).
+#[test]
+fn hosted_zero_tolerance_clones_stale_source_shape_is_pinned() {
+    const F: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_fallback_zero_tolerance.jsonl"
+    );
+    let entries = diff::load_golden(F).expect("load zero-tol fixture");
+    let dev = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .find(|e| e.request["default_schema"].as_str() == Some("dev_clone_demo"))
+        .expect("dev submit");
+    assert_eq!(
+        dev.request["freshness_tolerance_seconds"].as_i64(),
+        Some(0),
+        "the dev submit carries freshness_tolerance_seconds=0 (zero tolerance)"
+    );
+    assert_eq!(
+        diff::decision_variant(&dev.response).as_deref(),
+        Some("ready_to_clone"),
+        "zero tolerance still clones a stale source (hosted truth)"
+    );
+    // The cloned source is NEWER-than? No — assert the staleness: the clone
+    // source epoch is OLDER than the dev submit's current upstream.
+    let clone = &dev.response["response"]["ready_to_clone"];
+    let src_epoch = clone["clone_required_last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let up = dev.request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    assert!(
+        up > src_epoch,
+        "upstream (@{up}) is newer than the clone source (@{src_epoch})"
+    );
+}
+
+#[test]
+fn hosted_volatile_executes_not_clones_shape_is_pinned() {
+    const F: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_fallback_volatile.jsonl"
+    );
+    let entries = diff::load_golden(F).expect("load volatile fixture");
+    let dev = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .find(|e| e.request["default_schema"].as_str() == Some("dev_clone_demo"))
+        .expect("dev submit");
+    assert_eq!(
+        dev.request["tolerate_nondeterminism"].as_bool(),
+        Some(false),
+        "the dev submit carries tolerate_nondeterminism=false (evaluate_volatile_sql)"
+    );
+    assert!(
+        dev.request["sql"]
+            .as_str()
+            .unwrap()
+            .to_lowercase()
+            .contains("current_timestamp"),
+        "the model uses a GENUINE volatile function"
+    );
+    assert_eq!(
+        diff::decision_variant(&dev.response).as_deref(),
+        Some("ready_to_execute"),
+        "a volatile model is NOT cloned — hosted executes (the clone would serve a \
+         different evaluated value)"
+    );
 }

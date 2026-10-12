@@ -783,7 +783,18 @@ impl Sql for SqlService {
         // that exact shape (fixture clone_submit_allow_clones_false.jsonl).
         let clones_forbidden =
             req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
+        // When volatile evaluation is requested (`tolerate_nondeterminism=false`,
+        // i.e. `evaluate_volatile_sql=true`), the model's output depends on a
+        // nondeterministic expression (e.g. current_timestamp()), so a clone of
+        // an existing equivalent would serve a DIFFERENT evaluated value. VERIFIED
+        // LIVE (experiments/clone_eligibility.sh volatile,
+        // golden/fixtures/clone_fallback_volatile.jsonl): with a genuinely
+        // volatile model the hosted service does NOT clone — it EXECUTES
+        // (srr=6). The cross-name fallback is therefore gated on
+        // `tolerate_nondeterminism` (the same flag that gates same-target reuse
+        // in the `confirmed` candidate filter above).
         if confirmed.is_none()
+            && req.tolerate_nondeterminism
             && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
             && execution_type != EXECUTION_TYPE_VALUES
         {
