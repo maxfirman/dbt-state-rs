@@ -36,7 +36,17 @@ trap cleanup EXIT
 mkdir -p models/marts macros
 export DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL="127.0.0.1:$PORT" RUN_CACHE_API_SECURE=false
 fail(){ echo "FATAL: $1"; exit 1; }
-built_ok(){ grep -qiE "Completed successfully|Succeeded|Reused|Cloned|No-op|no-op" "$1"; }
+# Reliable precondition: dbt EXIT STATUS is authoritative; also require the
+# expected number of nodes to have succeeded/reused/cloned/skipped.
+run_build(){ # $1=target $2=log $3=expected_ok $4+=select
+  local target="$1" log="$2" expected="$3"; shift 3
+  dbt build --profile snowflake --target "$target" --select "$@" \
+    --skip-semantic-manifest-validation >"$log" 2>&1
+  local rc=$?
+  [ $rc -eq 0 ] || { cat "$log"; fail "dbt build exited $rc (target=$target)"; }
+  local ok; ok=$(grep -ciE "Succeeded|Reused|Cloned|No-op|no-op" "$log")
+  [ "$ok" -ge "$expected" ] || { cat "$log"; fail "only $ok/$expected ok (target=$target)"; }
+}
 
 cat > "models/marts/$UP.sql" <<SQL
 {{ config(materialized='table') }}
@@ -47,22 +57,22 @@ cat > "models/marts/$MODEL.sql" <<SQL
 select id, amount from {{ ref('$UP') }}
 SQL
 
-run_op(){ cat > macros/_ccexp.sql <<MACRO
-{% macro _ccexp() %}{% do run_query("$1") %}{{ log("ran-op", info=true) }}{% endmacro %}
+run_op(){ # $1=sql $2=target ; fails on nonzero exit (NOT swallowed)
+  cat > macros/_ccexp.sql <<MACRO
+{% macro _ccexp() %}{% do run_query("$1") %}{{ log("ran-op-ok", info=true) }}{% endmacro %}
 MACRO
-  dbt run-operation _ccexp --profile snowflake --target "$2" --skip-semantic-manifest-validation >/tmp/cc_op.txt 2>&1 || true
-  rm -f macros/_ccexp.sql; }
+  dbt run-operation _ccexp --profile snowflake --target "$2" --skip-semantic-manifest-validation >/tmp/cc_op.txt 2>&1
+  local rc=$?; rm -f macros/_ccexp.sql
+  [ $rc -eq 0 ] && grep -q "ran-op-ok" /tmp/cc_op.txt || { cat /tmp/cc_op.txt; fail "mutation failed: $1"; }
+}
 
 echo "############ CLONE-CHAIN PROVENANCE id=$ID ############"
 echo "--- 1. prod build $UP + $MODEL (source S over U@E1) ---"
-dbt build --profile snowflake --target prod_demo --select "$UP" "$MODEL" --skip-semantic-manifest-validation >/tmp/cc_prod.txt 2>&1
-built_ok /tmp/cc_prod.txt || { cat /tmp/cc_prod.txt; fail "prod build failed"; }
+run_build prod_demo /tmp/cc_prod.txt 2 "$UP" "$MODEL"
 
 echo "--- 2. dev build $UP, then $MODEL (absent target -> CLONE S into T) ---"
-dbt build --profile snowflake --target dev_clone --select "$UP" --skip-semantic-manifest-validation >/tmp/cc_devup.txt 2>&1
-built_ok /tmp/cc_devup.txt || { cat /tmp/cc_devup.txt; fail "dev upstream build failed"; }
-dbt build --profile snowflake --target dev_clone --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cc_devclone.txt 2>&1
-built_ok /tmp/cc_devclone.txt || { cat /tmp/cc_devclone.txt; fail "dev clone build failed"; }
+run_build dev_clone /tmp/cc_devup.txt 1 "$UP"
+run_build dev_clone /tmp/cc_devclone.txt 1 "$MODEL"
 grep -iE "Cloned|Reused|Succeeded" /tmp/cc_devclone.txt | sed 's/^ *//' | tail -2
 
 echo "--- 3. bump dev upstream $UP (E2 > clone build epoch) ---"
@@ -71,8 +81,7 @@ run_op "create or replace table CDO_DEMO_DB.dev_clone_demo.$UP as (select 1 as i
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true); BEFORE=0; [ -n "$GF" ] && BEFORE=$(wc -l < "$GF")
 
 echo "--- 4. dev re-submit $MODEL over U@E2 (upstream advanced past clone) ---"
-dbt build --profile snowflake --target dev_clone --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cc_dev2.txt 2>&1
-built_ok /tmp/cc_dev2.txt || { cat /tmp/cc_dev2.txt; fail "dev re-submit failed"; }
+run_build dev_clone /tmp/cc_dev2.txt 1 "$MODEL"
 grep -iE "Cloned|Reused|Succeeded|No-op|no-op" /tmp/cc_dev2.txt | sed 's/^ *//' | tail -3
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)

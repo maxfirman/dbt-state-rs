@@ -188,3 +188,112 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
          speculative freshness gate on the clone candidate)"
     );
 }
+
+/// CLONE ELIGIBILITY under ZERO tolerance and VOLATILE evaluation (review #2 2nd
+/// follow-up P1 #4). The 2nd review correctly noted the nested State config
+/// (`state={'lag_tolerance':'0s','evaluate_volatile_sql':true}`) IS reachable in
+/// dbt 2.0.6 and asked for these independent dimensions to be characterized.
+///
+/// LIVE (experiments/clone_eligibility.sh stale_zerotol / volatile, with the
+/// wire-field VARCHECK asserting the independent variable actually reached the
+/// request): a STALE source (built before an upstream bump; its clone epoch is
+/// older than the dev submit's current upstream) STILL returns `ready_to_clone`
+/// under BOTH zero `freshness_tolerance_seconds=0` AND
+/// `tolerate_nondeterminism=false`. So neither zero tolerance nor volatile
+/// evaluation gates the cross-name clone fallback — hosted tolerates the stale
+/// clone on every arm. These server reproductions guard that the server matches
+/// (does not spuriously gate the fallback on those flags).
+#[tokio::test]
+async fn server_clones_stale_equivalent_under_zero_tolerance() {
+    assert_eq!(
+        clone_eligibility_variant(/*freshness_tolerance_seconds=*/ 0, /*tnd=*/ true).await,
+        "ready_to_clone",
+        "zero freshness tolerance must not suppress the stale cross-name clone \
+         (hosted clones; verified live)"
+    );
+}
+
+#[tokio::test]
+async fn server_clones_stale_equivalent_under_volatile_evaluation() {
+    assert_eq!(
+        clone_eligibility_variant(/*freshness_tolerance_seconds=*/ 2700, /*tnd=*/ false).await,
+        "ready_to_clone",
+        "evaluate_volatile_sql (tolerate_nondeterminism=false) must not suppress \
+         the stale cross-name clone (hosted clones; verified live)"
+    );
+}
+
+/// Build a prod source over an OLD upstream, confirm it, bump nothing (the dev
+/// submit simply carries a NEWER upstream so the source is stale), then submit
+/// an absent dev target with the given freshness_tolerance_seconds /
+/// tolerate_nondeterminism and return the decision variant.
+async fn clone_eligibility_variant(freshness_tolerance_seconds: i64, tnd: bool) -> String {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    const NS: &str = "elig-ns";
+    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ELIG\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ELIG\"";
+
+    let submit = |target: &str, schema: &str, up_epoch: i64| qc::SubmitEnrichedSqlRequest {
+        target_table: Some(target.into()),
+        dialect: "snowflake".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: Some(schema.into()),
+        execution_type: 1,
+        sql: format!("select id, amount from CDO_DEMO_DB.{schema}.elig_up"),
+        tolerate_nondeterminism: tnd,
+        freshness_tolerance_seconds,
+        tables: vec![qc::TableModifiedInfo {
+            name: format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase()),
+            last_modified_epoch: Some(up_epoch),
+        }],
+        query_dependencies: vec![qc::QueryDependency {
+            name: format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase()),
+            query: "select 1 as id, 100 as amount".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            default_schema: schema.into(),
+        }],
+        table_namespace: Some(NS.into()),
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: "model.jaffle.elig".into(),
+            node_body_hash: Some("body".into()),
+            project_id: Some("p".into()),
+            ..Default::default()
+        }),
+        labels: [("dbt_node_name".to_string(), "elig".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    // Build + confirm the source over the OLD upstream epoch (1000).
+    let r0 = sql
+        .submit_enriched_sql(submit(source, "prod_state_demo", 1_000))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("source must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_500),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Dev submit of an absent target with a NEWER upstream (2000) → the source
+    // (built @1500) is stale relative to it. Return the decision.
+    let rb = sql
+        .submit_enriched_sql(submit(dev, "dev_clone_demo", 2_000))
+        .await
+        .unwrap()
+        .into_inner();
+    support::response_variant(&rb).to_string()
+}

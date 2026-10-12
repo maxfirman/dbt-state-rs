@@ -61,7 +61,17 @@ select a.id from {{ ref('$U2') }} a cross join {{ ref('$U1') }} b
 SQL
 
 fail(){ echo "FATAL: $1"; exit 1; }
-built_ok(){ grep -qiE "Completed successfully|Succeeded|Reused|Cloned" "$1"; }
+# Reliable precondition: dbt EXIT STATUS is authoritative; also require the
+# expected node count to have succeeded/reused/cloned (catches partial builds).
+run_build(){ # $1=target $2=log $3=expected_ok $4+=select
+  local target="$1" log="$2" expected="$3"; shift 3
+  dbt build --profile snowflake --target "$target" --select "$@" \
+    --skip-semantic-manifest-validation >"$log" 2>&1
+  local rc=$?
+  [ $rc -eq 0 ] || { cat "$log"; fail "dbt build exited $rc (target=$target)"; }
+  local ok; ok=$(grep -ciE "Succeeded|Reused|Cloned" "$log")
+  [ "$ok" -ge "$expected" ] || { cat "$log"; fail "only $ok/$expected nodes ok (target=$target)"; }
+}
 
 query_contents(){ # $1 = fqn
   cat > macros/_sbexp.sql <<MACRO
@@ -71,56 +81,56 @@ query_contents(){ # $1 = fqn
 {% endmacro %}
 MACRO
   dbt run-operation _sbexp --profile snowflake --target dev_clone \
-    --skip-semantic-manifest-validation >/tmp/sb_q.txt 2>&1 || true
-  rm -f macros/_sbexp.sql
+    --skip-semantic-manifest-validation >/tmp/sb_q.txt 2>&1
+  local rc=$?; rm -f macros/_sbexp.sql
+  [ $rc -eq 0 ] || { cat /tmp/sb_q.txt; fail "contents query failed"; }
   grep "CONTENTS" /tmp/sb_q.txt | tail -1
 }
 
 echo "############ FINDING 3 SWAPPED BINDINGS id=$ID ############"
 echo "--- 1. build up1,up2,consA in prod_demo (consA data={1}) ---"
-dbt build --profile snowflake --target prod_demo --select "$U1" "$U2" "$CA" \
-  --skip-semantic-manifest-validation >/tmp/sb_prod.txt 2>&1
-built_ok /tmp/sb_prod.txt || { cat /tmp/sb_prod.txt; fail "prod precondition build failed"; }
-grep -iE "Succeeded|Reused|Error|Completed" /tmp/sb_prod.txt | sed 's/^ *//' | tail -4
+run_build prod_demo /tmp/sb_prod.txt 3 "$U1" "$U2" "$CA"
+grep -iE "Succeeded|Completed" /tmp/sb_prod.txt | sed 's/^ *//' | tail -4
 
 echo "--- 2. build up1,up2 in dev_clone (so consB refs resolve) ---"
-dbt build --profile snowflake --target dev_clone --select "$U1" "$U2" \
-  --skip-semantic-manifest-validation >/tmp/sb_devup.txt 2>&1
-built_ok /tmp/sb_devup.txt || { cat /tmp/sb_devup.txt; fail "dev upstream build failed"; }
-grep -iE "Succeeded|Reused|Cloned|Error|Completed" /tmp/sb_devup.txt | sed 's/^ *//' | tail -3
+run_build dev_clone /tmp/sb_devup.txt 2 "$U1" "$U2"
+grep -iE "Succeeded|Reused|Cloned|Completed" /tmp/sb_devup.txt | sed 's/^ *//' | tail -3
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 BEFORE=0; [ -n "$GF" ] && BEFORE=$(wc -l < "$GF")
 
 echo "--- 3. build consB in dev_clone (absent target, defers to prod) ---"
-dbt build --profile snowflake --target dev_clone --select "$CB" \
-  --skip-semantic-manifest-validation >/tmp/sb_dev.txt 2>&1
-built_ok /tmp/sb_dev.txt || { cat /tmp/sb_dev.txt; fail "dev consB build failed"; }
-grep -iE "Succeeded|Reused|Cloned|clone|Error|Completed" /tmp/sb_dev.txt | sed 's/^ *//' | tail -6
+run_build dev_clone /tmp/sb_dev.txt 1 "$CB"
+grep -iE "Succeeded|Reused|Cloned|clone|Completed" /tmp/sb_dev.txt | sed 's/^ *//' | tail -6
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 [ -n "$GF" ] || fail "no golden capture file produced"
-echo "--- ORACLE 1: hosted decision for dev $CB ---"
-python3 - "$GF" "$BEFORE" "$CB" <<'PY'
+echo "--- ORACLE 1: hosted decision for dev $CB (asserted) ---"
+python3 - "$GF" "$BEFORE" "$CB" <<'PY' || { echo "FATAL: oracle 1 assertion failed"; exit 1; }
 import json,sys
 gf,before,cb=sys.argv[1],int(sys.argv[2]),sys.argv[3]
 rows=[json.loads(l) for l in open(gf) if l.strip()][before:]
-found=False
+found=None
 for r in rows:
     if r['method']!='SubmitEnrichedSQL': continue
     req=r['request']; name=req.get('labels',{}).get('dbt_node_name','')
     if name!=cb: continue
-    found=True
     resp=r.get('response',{}).get('response',{}) or {}
     v=next(iter(resp.keys()),None); p=resp.get(v) or {}
     ed=p.get('explained_decision',{})
+    found=v
     print("SB_DEC "+json.dumps({"node":name,"decision":v,
       "srr":ed.get('skip_rejection_reason'),"crr":ed.get('clone_rejection_reason'),
       "desc":ed.get('decision_description'),"clone_source":p.get('clone_source'),
       "deps":[d.get('name') for d in req.get('query_dependencies',[])],
       "sql":req.get('sql','').strip()}))
-if not found: print("SB_DEC {\"error\":\"no consB submit captured\"}")
+if found is None:
+    print("ERROR: no consB submit captured"); sys.exit(1)
+if found != "ready_to_execute":
+    print(f"ERROR: expected ready_to_execute (binding preserved) but got {found}"); sys.exit(1)
 PY
-echo "--- ORACLE 2: actual contents of dev_clone_demo.$CB ---"
-query_contents "CDO_DEMO_DB.dev_clone_demo.$CB"
-echo "(SAFE = [2] / executed; UNSAFE conflation = [1] / cloned from consA)"
+echo "--- ORACLE 2: actual contents of dev_clone_demo.$CB (asserted = [2]) ---"
+contents=$(query_contents "CDO_DEMO_DB.dev_clone_demo.$CB")
+echo "$contents"
+echo "$contents" | grep -q "(2,)" || fail "oracle 2: dev contents are not [2] (data conflation?): $contents"
+echo "BOTH ORACLES OK: hosted executed the swapped binding and dev holds [2]."
