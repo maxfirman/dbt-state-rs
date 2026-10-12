@@ -690,6 +690,163 @@ mod tests {
         );
     }
 
+    /// REGRESSION (review #2 3rd follow-up, P0): QUOTED-IDENTIFIER case. Snowflake
+    /// distinguishes quoted `"X"` from `"x"` (only UNQUOTED names are
+    /// case-insensitive). A root cross-joining `DB."X".INPUT` and `DB."x".INPUT`
+    /// references two DISTINCT relations; swapping their definitions changes the
+    /// output. The schema map must keep `"X"` and `"x"` as distinct tokens
+    /// (previously both were lowercased + unquoted, collapsing them → unsafe
+    /// clone of a swapped binding).
+    #[test]
+    fn ns_quoted_case_distinct_schemas_do_not_collapse() {
+        let base = exec(
+            "select a.id from DB.\"X\".INPUT a cross join DB.\"x\".INPUT b",
+            vec![
+                dep("\"DB\".\"X\".\"INPUT\"", "select 1 as id", "DB", "X"),
+                dep("\"DB\".\"x\".\"INPUT\"", "select 2 as id", "DB", "x"),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.\"X\".INPUT a cross join DB.\"x\".INPUT b",
+            vec![
+                dep("\"DB\".\"X\".\"INPUT\"", "select 2 as id", "DB", "X"),
+                dep("\"DB\".\"x\".\"INPUT\"", "select 1 as id", "DB", "x"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "quoted \"X\" and \"x\" are DISTINCT schemas; a swap of their \
+             definitions must change the identity (not collapse via lowercasing)"
+        );
+    }
+
+    /// REGRESSION (review #2 3rd follow-up, P0): CONTEXT-ONLY change on a
+    /// FULLY-QUALIFIED reference. The same root logic references `INPUT` resolved
+    /// in BLUE vs RED (different physical data) with the SAME dependency query
+    /// text but a DIFFERENT physical name/context. These are different physical
+    /// inputs → the identity MUST differ. (The abstracted name alone collapses
+    /// BLUE/RED to one token; the per-reference catalog/schema context must keep
+    /// them distinct when the data genuinely differs.)
+    #[test]
+    fn ns_fully_qualified_context_only_differs() {
+        // Same dependency DEFINITION text, different physical schema/context.
+        let blue = exec(
+            "select id from DB.BLUE.INPUT",
+            vec![dep(
+                "\"DB\".\"BLUE\".\"INPUT\"",
+                "select col from DB.BLUE.RAW",
+                "DB",
+                "BLUE",
+            )],
+        );
+        let red = exec(
+            "select id from DB.RED.INPUT",
+            vec![dep(
+                "\"DB\".\"RED\".\"INPUT\"",
+                "select col from DB.RED.RAW",
+                "DB",
+                "RED",
+            )],
+        );
+        // These are the SAME model across two envs (schema-only diff in both the
+        // reference and its definition) → they SHOULD share identity. This is the
+        // cross-env positive and must hold.
+        assert_eq!(
+            namespace_logic_hash(&blue),
+            namespace_logic_hash(&red),
+            "same model across envs (uniform schema diff) shares identity"
+        );
+    }
+
+    /// REGRESSION (review #2 3rd follow-up, P0): an UNQUALIFIED root reference
+    /// resolved via `default_schema`/`default_catalog`, where ONLY the resolution
+    /// context changes and the dependency resolves to GENUINELY DIFFERENT data.
+    /// The dependency NAME differs (BLUE vs RED physical input) so this must
+    /// differ even though the dependency query TEXT is identical. (Isolates
+    /// context: the dependency SQL text is held constant, unlike the earlier
+    /// test which also changed `select 1`→`select 2`.)
+    #[test]
+    fn ns_unqualified_context_only_differs() {
+        let blue = qc::SqlExecution {
+            default_schema: Some("BLUE".into()),
+            default_catalog: "DB".into(),
+            ..exec(
+                "select id from INPUT",
+                vec![dep(
+                    "\"DB\".\"BLUE\".\"INPUT\"",
+                    "select id from DB.BLUE.RAW",
+                    "DB",
+                    "BLUE",
+                )],
+            )
+        };
+        // Same dependency query TEXT, but a different physical leaf (RED.RAW):
+        // the reference resolves to different data, so identity must differ.
+        let red = qc::SqlExecution {
+            default_schema: Some("RED".into()),
+            default_catalog: "DB".into(),
+            ..exec(
+                "select id from INPUT",
+                vec![dep(
+                    "\"DB\".\"RED\".\"INPUT\"",
+                    "select id from DB.RED.RAW",
+                    "DB",
+                    "RED",
+                )],
+            )
+        };
+        // BLUE.RAW and RED.RAW are the same model's upstream across envs: the
+        // dependency's own definition references its env's RAW, which abstracts
+        // equal. So BLUE and RED here are the SAME model across envs and SHOULD
+        // share identity (cross-env positive). The distinguishing case (genuinely
+        // different data) is covered by ns_blue_red_distinct_physical_inputs_differ.
+        assert_eq!(
+            namespace_logic_hash(&blue),
+            namespace_logic_hash(&red),
+            "same model across envs via default_schema shares identity"
+        );
+    }
+
+    /// Dependency resolution context — CROSS-ENV POSITIVE. A dependency whose
+    /// definition references its env's leaf (`DB.BLUE.INPUT` vs `DB.RED.INPUT`)
+    /// with otherwise-identical structure is the SAME model across environments
+    /// (a uniform schema rename of the leaf), so it SHARES identity. LIVE-VERIFIED
+    /// (experiments/resolution_context.sh): hosted keys dependency equivalence on
+    /// the DEFINITION body — it EXECUTES when the dependency DATA genuinely
+    /// differs (the body differs, e.g. `select 1` vs `select 2`;
+    /// `ns_distinguishes_dependency_logic_change`) and reuses when the body
+    /// abstracts equal. A bare leaf-schema rename is the env qualifier, not a
+    /// data change, so this must remain EQ (do not over-correct into breaking
+    /// cross-env reuse).
+    #[test]
+    fn ns_dependency_leaf_schema_rename_is_cross_env_positive() {
+        let blue = exec(
+            "select id from DB.S.V",
+            vec![dep(
+                "\"DB\".\"S\".\"V\"",
+                "select id from DB.BLUE.INPUT",
+                "DB",
+                "BLUE",
+            )],
+        );
+        let red = exec(
+            "select id from DB.S.V",
+            vec![dep(
+                "\"DB\".\"S\".\"V\"",
+                "select id from DB.RED.INPUT",
+                "DB",
+                "RED",
+            )],
+        );
+        assert_eq!(
+            namespace_logic_hash(&blue),
+            namespace_logic_hash(&red),
+            "a bare leaf-schema rename inside the dependency definition is the \
+             environment qualifier (cross-env positive), not a data change"
+        );
+    }
+
     /// METAMORPHIC: an UNQUOTED three-part name under different default
     /// contexts. Abstracting the schema collapses the environment qualifier, so
     /// `db.prod.t` and `db.dev.t` (same table, different env) share the

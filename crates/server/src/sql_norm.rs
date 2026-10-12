@@ -79,12 +79,13 @@ impl SchemaMap {
     }
 
     /// Build a relative map from schema names (as they appear in 3-part names).
-    /// Case is folded (Snowflake unquoted identifiers are case-insensitive);
-    /// distinct schemas get distinct tokens by sorted order.
+    /// Each schema is reduced to its quote-aware canonical key
+    /// ([`canonical_schema_key`]): a quoted schema is case-sensitive, an unquoted
+    /// one folds. Distinct canonical keys get distinct tokens by sorted order.
     pub fn from_schemas<I: IntoIterator<Item = String>>(schemas: I) -> Self {
         let mut distinct: Vec<String> = schemas
             .into_iter()
-            .map(|s| s.trim().trim_matches('"').to_ascii_lowercase())
+            .map(|s| canonical_schema_key(&s))
             .collect();
         distinct.sort();
         distinct.dedup();
@@ -100,13 +101,16 @@ impl SchemaMap {
     }
 
     /// The placeholder token for a schema component (as written in a 3-part
-    /// name). An unknown schema falls back to token 0 (safe: cannot be MORE
-    /// distinct than a mapped schema).
+    /// name). An unknown schema falls back to token 0 — NOTE this is a lossy
+    /// fallback that can only REDUCE distinctness, so it is applied only to
+    /// schemas that genuinely did not appear in the request's name set (which
+    /// cannot happen for a well-formed request where every reference's schema is
+    /// collected); it is not a safety guarantee, merely a total function.
     fn placeholder_for(&self, schema: &str) -> String {
         if self.collapse_all {
             return format!("{SCHEMA_PLACEHOLDER}0");
         }
-        let key = schema.trim().trim_matches('"').to_ascii_lowercase();
+        let key = canonical_schema_key(schema);
         let token = self.tokens.get(&key).copied().unwrap_or(0);
         format!("{SCHEMA_PLACEHOLDER}{token}")
     }
@@ -173,13 +177,29 @@ pub fn schemas_in_sql(sql: &str) -> Vec<String> {
 }
 
 /// Extract the schema (middle) component from a possibly-quoted 3-part object
-/// NAME string. Returns `None` for non-3-part names.
+/// NAME string. Returns `None` for non-3-part names. Preserves the RAW spelling
+/// (including surrounding double-quotes) so `canonical_schema_key` can keep a
+/// quoted (case-sensitive) schema distinct from an unquoted one.
 pub fn schema_of_object_name(name: &str) -> Option<String> {
     let parts: Vec<&str> = name.split('.').collect();
     if parts.len() == 3 {
-        Some(parts[1].trim().trim_matches('"').to_string())
+        Some(parts[1].trim().to_string())
     } else {
         None
+    }
+}
+
+/// Canonical key for a schema component, honoring Snowflake identifier
+/// semantics: a QUOTED schema (`"X"`) is case-SENSITIVE, an unquoted one is
+/// case-insensitive (folded to lowercase). The two keyspaces are kept disjoint
+/// (`q:`/`u:` prefix) so `"X"`, `"x"`, and `X` are three distinct keys where
+/// Snowflake would treat them as distinct relations. Review #2 3rd follow-up P0.
+fn canonical_schema_key(raw: &str) -> String {
+    let t = raw.trim();
+    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+        format!("q:{}", t[1..t.len() - 1].replace("\"\"", "\""))
+    } else {
+        format!("u:{}", t.to_ascii_lowercase())
     }
 }
 
@@ -275,8 +295,12 @@ impl VisitorMut for Canonicalizer<'_> {
         // left intact: a bare `schema.table` is ambiguous and abstracting it
         // would risk conflating genuinely different relations.
         if self.abstract_schema && name.0.len() == 3 {
-            // Read the current schema token BEFORE mutating it.
+            // Read the current schema spelling (quote-aware) BEFORE mutating it,
+            // so a QUOTED schema maps to its distinct canonical token.
             let schema_text = match &name.0[1] {
+                ObjectNamePart::Identifier(id) if id.quote_style.is_some() => {
+                    format!("\"{}\"", id.value.replace('"', "\"\""))
+                }
                 ObjectNamePart::Identifier(id) => id.value.clone(),
                 _ => String::new(),
             };
@@ -339,7 +363,16 @@ impl VisitorMut for SchemaCollector {
     fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
         if name.0.len() == 3 {
             if let ObjectNamePart::Identifier(id) = &name.0[1] {
-                self.schemas.push(id.value.clone());
+                // Preserve quote state so a QUOTED (case-sensitive) schema keys
+                // differently from an unquoted one: re-wrap a quoted ident in
+                // double quotes, which `canonical_schema_key` then treats as
+                // case-sensitive.
+                if id.quote_style.is_some() {
+                    self.schemas
+                        .push(format!("\"{}\"", id.value.replace('"', "\"\"")));
+                } else {
+                    self.schemas.push(id.value.clone());
+                }
             }
         }
         ControlFlow::Continue(())

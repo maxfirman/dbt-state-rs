@@ -669,3 +669,63 @@ async fn server_executes_swapped_dependency_binding_with_views() {
          SQL, distinct schemas) must EXECUTE, never clone — no data conflation"
     );
 }
+
+/// FINDING 1 (review #2 3rd follow-up) — QUOTED-IDENTIFIER case, server level.
+/// The reviewer's gRPC probe: a root cross-joining `DB."X".INPUT` and
+/// `DB."x".INPUT` (quoted, case-sensitive → DISTINCT relations) with the two
+/// dependency definitions swapped must EXECUTE, not clone — pre-fix the schema
+/// map lowercased both to the same token and conflated the swap. Here the prod
+/// baseline is built + confirmed and the swapped dev submit must still EXECUTE
+/// (no equivalent found for the swapped binding).
+#[tokio::test]
+async fn server_executes_quoted_case_swapped_binding() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let dep = |schema_raw: &str, q: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".{schema_raw}.\"INPUT\""),
+        query: q.into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema_raw.trim_matches('"').into(),
+    };
+    // Quoted "X" and "x" are distinct schemas (case-sensitive).
+    let root = "select a.id from CDO_DEMO_DB.\"X\".INPUT a cross join CDO_DEMO_DB.\"x\".INPUT b";
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"QCONS\"";
+    let mut src = submit(a, "prod_state_demo");
+    src.sql = root.into();
+    src.query_dependencies = vec![
+        dep("\"X\"", "select 1 as id"),
+        dep("\"x\"", "select 2 as id"),
+    ];
+    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("prod consumer must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_830_532_736),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Swapped definitions between the two quoted-case-distinct references.
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"QCONS\"";
+    let mut swapped = submit(b, "dev_clone_demo");
+    swapped.sql = root.into();
+    swapped.query_dependencies = vec![
+        dep("\"X\"", "select 2 as id"),
+        dep("\"x\"", "select 1 as id"),
+    ];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "quoted \"X\"/\"x\" are distinct schemas; a swapped binding must EXECUTE, \
+         not clone (no lowercasing collapse)"
+    );
+}
