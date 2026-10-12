@@ -14,9 +14,10 @@ traffic captured against the hosted service using the official dbt Fusion client
   freshness, and decides BUILD / SKIP / CLONE — recording outcomes so future
   runs can skip. The decision engine is the novel part this project reproduces.
 - **Correctness status:** captured traffic, offline regressions and live
-  verification against the real service cover selected behavior (notably the
-  clone and lag/freshness paths); this is not yet a fully conformant drop-in
-  replacement. See the
+  verification against the real service cover selected behavior — notably the
+  clone, lag/freshness, data-test upstream freshness, `compare_unrendered_code`
+  template, deferral and `state:*` selector paths; this is not yet a fully
+  conformant drop-in replacement. See the
   [correctness handoff](docs/correctness-handoff.md) for live-verified behavior,
   compatibility changes and concrete remaining tasks.
 

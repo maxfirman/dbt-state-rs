@@ -99,7 +99,10 @@ remaining policies and compatibility gaps.
    dependency definitions/context. Snowflake SQL uses a restricted AST
    canonicalization preserving cast kinds, parameters and qualified functions;
    parser failures and other dialects preserve exact SQL. Template comparison
-   remains a separate, unresolved mode based on a nonempty body hash.
+   (`compare_unrendered_code=true`) is a DUAL identity: the server records both
+   the rendered logic hash and the unrendered-template hash and reuses when
+   EITHER matches — a rebuild occurs only when BOTH the rendered SQL and the
+   template change (documented contract, verified live; review #2 finding 6).
 3. Require a known current target epoch no newer than its recorded confirmation,
    unless external modifications are explicitly ignored. Missing or ambiguous
    target metadata builds. Data tests instead require complete cached results.
@@ -111,7 +114,10 @@ remaining policies and compatibility gaps.
    `is_stale=false`. This own-build anchor and the `is_stale` reporting were
    verified live; `freshness_tolerance_seconds` is intentionally not applied
    (though it IS known to gate under some conditions — see
-   [correctness-handoff.md §C](correctness-handoff.md)).
+   [correctness-handoff.md §C](correctness-handoff.md)). A data test produces no
+   object, so it has no own-build epoch: it anchors drift on the epoch RECORDED
+   for each upstream at its last confirmation (per input, strict `>`), rebuilding
+   when the tested data changed (review #2 finding 1, verified live).
 5. Cross-environment reuse (live-verified): a clone-origin object, or an
    equivalent model under another physical name in the same `table_namespace`
    with matching schema-abstracted logic, is reused via CLONE — a confirmed clone

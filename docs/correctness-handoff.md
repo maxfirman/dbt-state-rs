@@ -607,14 +607,18 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **219 tests passed** across the workspace (adds this session's
+- Workspace: **221 tests passed** across the workspace (adds this session's
   review-#2 fixes: 6 data-test-freshness decision unit tests, the
   `data_test_freshness.rs` harness test, the
-  `rejected_record_batch_does_not_leak_node_state` atomicity test, and 5
-  `template_comparison.rs` compare_unrendered_code dual-identity tests — on top
-  of the earlier clone-provenance, selector last-write-wins + observability,
-  deferral, allow_clones=false, concurrency determinism, dependency/SQL
-  negatives, auth-hardening, and physical-state-before-filters work).
+  `rejected_record_batch_does_not_leak_node_state` atomicity test, 5
+  `template_comparison.rs` compare_unrendered_code dual-identity tests, the
+  cross-environment clone-fallback characterization
+  (`clone_fallback_xenv.rs`), and the finding-3 dependency-definition keying
+  regression (`clone_submit_fallback.rs::finding3_dependency_definition_keys_clone_eligibility`)
+  — on top of the earlier clone-provenance, selector last-write-wins +
+  observability, deferral, allow_clones=false, concurrency determinism,
+  dependency/SQL negatives, auth-hardening, and physical-state-before-filters
+  work).
 - Server library: **95 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database (adds the 6 new
   `decision.rs` data-test-freshness unit tests).
@@ -624,8 +628,9 @@ Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
   `clone_fallback_over_existing_target`, `selector_last_write_wins`,
   `deferral_resolve`, `clone_submit_allow_clones_false`,
   `clone_rebuild_execution_type`, `data_test_upstream_freshness`,
-  `template_compare_unrendered`) are excluded and validated by their dedicated
-  tests. Clone rejection and SQL-submit clone fallback entries are counted as
+  `template_compare_unrendered`, `clone_fallback_xenv_fresh`) are excluded and
+  validated by their dedicated tests. Clone rejection and SQL-submit clone
+  fallback entries are counted as
   replay gaps and asserted by their dedicated
   tests (`clone.rs`, `clone_submit_fallback.rs`). The six pinned local fallbacks
   in [golden/replay_gaps.json](../golden/replay_gaps.json) remain exercised

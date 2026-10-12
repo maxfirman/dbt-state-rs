@@ -52,15 +52,22 @@ reported explicitly.
 
 The goal is full hosted conformance, but the implementation has known gaps.
 Offline regressions, captured traffic replay and pure properties guard selected
-contracts; the clone and lag/freshness paths are additionally live-verified
-against the real service. See [testing.md](testing.md).
+contracts; the clone, lag/freshness, data-test freshness and template paths are
+additionally live-verified against the real service. See [testing.md](testing.md).
 
-Live verification (2026-10-11) covered the clone and freshness paths: the
+Live verification (2026-10-11/12) covered the clone and freshness paths: the
 clone lifecycle (register → confirm → cross-environment reuse), `allow_clones`
 rejection, the SQL-submit cross-name clone fallback, the `require_fresh_data_from`
 ANY/ALL semantics and `is_stale` reporting. It also established that
 `lag_tolerance` *can* gate a rebuild (overturning an earlier assumption), though
 the exact rule is not yet isolated, so the engine keeps the safe own-build anchor.
+A later pass (review #2, 2026-10-12) additionally live-verified: data tests
+anchor upstream freshness on the RECORDED upstream epoch (they have no own-build
+epoch) and re-run when the tested data changed; `compare_unrendered_code=true` is
+a DUAL identity (reuse iff either the rendered SQL or the template is unchanged);
+and that the clone fallback keys on the dependency DEFINITION (no unsafe data
+conflation — confirmed with warehouse-content checks). `RecordExecutions` was
+also made atomic for logical selector/deferral state on rejection.
 Earlier offline hardening prevents several unsafe skips and preserves cached test
 results. The dbt State-powered `state:*` selectors
 (`SelectorService.GetStateSelection`) and state-backed deferral
