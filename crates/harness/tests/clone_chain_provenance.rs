@@ -108,202 +108,121 @@ fn hosted_clone_rebuilds_when_upstream_advances_past_clone() {
     );
 }
 
-/// REGISTERCLONE SOURCE-AGE vs CLONE-AGE (review #2 2nd follow-up, P0 #2) —
+/// REGISTERCLONE SOURCE-AGE CHAIN (review #2 2nd+3rd follow-up, P0 #2) —
 /// live-captured (experiments/registerclone_source_age.sh;
-/// golden/fixtures/clone_chain_source_age.jsonl). This capture isolates the
-/// DISTINGUISHING interval the review asked for (the earlier upstream-drift
-/// capture could not separate the two policies):
+/// golden/fixtures/clone_chain_source_age.jsonl). FIVE messages:
+///   0 prod SUBMIT (et=2 incremental, empty deps, plain SELECT) -> execute
+///   1 CONFIRM lme=1791831369299 (source build @T1)
+///   2 RegisterClone source->dev (et=2)
+///   3 CONFIRM lme=1791831502677 (clone creation @T3)
+///   4 dev SUBMIT (et=2, SQL now carries the INCREMENTAL `where id > (select
+///     ... from {{ this }})` predicate; own target @1791831506226, upstream
+///     @1791831449030) -> hosted skip_execution.
 ///
-///   source built @T1 (confirm lme=1791831369299)
-///   upstream bumped @T2 (dev RC_UP @1791831449030, T2 > T1; source NOT rebuilt)
-///   RegisterClone source→dev @T3 (confirm lme=1791831502677, T3 > T2)
-///   resubmit dev with upstream @T2  (T1 < T2 < T3)  ->  skip_execution
+/// HONEST STATUS (3rd follow-up correction): the earlier claim that this chain
+/// is reproduced by a synthetic clone-age test was WRONG — the synthetic test
+/// used et=3, a plain (non-incremental) SQL, supplied deps, and own-epoch equal
+/// to the clone confirm, so it did NOT send these requests. Replaying the EXACT
+/// capture below, entries 0-3 match and ENTRY 4 returns local `ready_to_execute`
+/// where hosted SKIPs. The cause is a genuine, UNIMPLEMENTED behavior: for an
+/// INCREMENTAL model, hosted treats the second-phase SQL (which adds a
+/// self-referential `where id > (select ... from {{ this }})` predicate) as the
+/// SAME node as the first-phase build for reuse, whereas the server's logic hash
+/// sees a different SQL and executes. This is isolated as a known replay gap
+/// (incremental self-referential predicate reuse), NOT silently claimed as
+/// reproduced.
 ///
-/// Hosted SKIPs with the upstream NEWER than the source build (T1) but OLDER
-/// than the clone creation (T3). So hosted anchors the clone target's freshness
-/// on the CLONE CREATION epoch (clone-age), NOT the source content age — a clone
-/// whose data predates the current upstream is still reused as long as the clone
-/// OBJECT was created after that upstream. The server's own-build anchor uses
-/// the clone's confirmed epoch and reproduces this, so NO source-epoch
-/// validation is added (hosted does not do one). This settles the original
-/// `source@100 / upstream@200 / clone@300 -> resubmit` counterexample: the SKIP
-/// is hosted-faithful, not an unsafe reuse.
-#[test]
-fn hosted_clone_age_not_source_age_shape_is_pinned() {
-    let entries = diff::load_golden(SOURCE_AGE_FIXTURE).expect("load source-age fixture");
-    // The chain must contain a RegisterClone (the clone creation event).
-    assert!(
-        entries.iter().any(|e| e.method == "RegisterClone"),
-        "the fixture includes the RegisterClone call (the clone creation)"
-    );
-    let confirms: Vec<&diff::GoldenEntry> = entries
-        .iter()
-        .filter(|e| e.method == "ConfirmExecution")
-        .collect();
-    let source_build = confirms[0].request["last_modified_epoch"].as_i64().unwrap();
-    let clone_creation = confirms[1].request["last_modified_epoch"].as_i64().unwrap();
-    let dev = entries
-        .iter()
-        .filter(|e| e.method == "SubmitEnrichedSQL")
-        .find(|e| e.request["default_schema"].as_str() == Some("dev_clone_demo"))
-        .expect("the dev resubmit");
-    let dev_upstream = dev.request["tables"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|t| {
-            !t["name"]
-                .as_str()
-                .unwrap_or("")
-                .to_uppercase()
-                .contains("RC_MODEL")
-        })
-        .filter_map(|t| t["last_modified_epoch"].as_i64())
-        .max()
-        .expect("dev upstream epoch");
-    // The distinguishing interval: source build < upstream < clone creation.
-    assert!(
-        source_build < dev_upstream && dev_upstream < clone_creation,
-        "upstream (@{dev_upstream}) must be NEWER than the source build \
-         (@{source_build}) and OLDER than the clone creation (@{clone_creation})"
-    );
-    // Hosted SKIPs → clone-age anchor, not source-age.
-    assert_eq!(
-        diff::decision_variant(&dev.response).as_deref(),
-        Some("skip_execution"),
-        "hosted anchors on the clone creation epoch (clone-age), not source-content age"
-    );
-}
-
-/// Server reproduction: the server reproduces the clone-age anchor. Build an
-/// incremental source and confirm it (T1); RegisterClone it into dev and confirm
-/// the clone (T3); resubmit the clone target with an upstream epoch BETWEEN T1
-/// and T3 → SKIP (the clone's own-build anchor is T3, and T3 >= upstream).
+/// SEPARATELY (3rd follow-up correction): the claim "hosted does not validate a
+/// RegisterClone source epoch" is RETRACTED — this capture's source epoch
+/// (1791831368903) is OLDER than the source's recorded confirmation
+/// (1791831369299); it does not exercise the newer/externally-changed source
+/// case. Source-content freshness, clone-creation age, and source-identity
+/// validation remain SEPARATE OPEN questions; this capture settles none of them
+/// beyond its own request.
 #[tokio::test]
-async fn server_clone_age_anchor_skips_upstream_between_source_and_clone() {
+async fn registerclone_source_age_chain_exact_replay() {
+    let entries = diff::load_golden(SOURCE_AGE_FIXTURE).expect("load source-age fixture");
+    assert_eq!(entries.len(), 5, "the full 5-message chain");
+
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let mut exec = ExecutionClient::new(ch.clone());
 
-    const NS: &str = "src-age-ns";
-    let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RCSRC\"";
-    let tgt = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RCSRC\"";
-    let t1 = 1_000i64; // source build
-    let t2 = 2_000i64; // upstream bump (source NOT rebuilt)
-    let t3 = 3_000i64; // clone creation
-
-    let submit = |target: &str, schema: &str, own: Option<i64>, up: i64| {
-        let mut tables = vec![qc::TableModifiedInfo {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"RCUP\"", schema.to_uppercase()),
-            last_modified_epoch: Some(up),
-        }];
-        if let Some(o) = own {
-            tables.push(qc::TableModifiedInfo {
-                name: target.into(),
-                last_modified_epoch: Some(o),
-            });
-        }
-        qc::SubmitEnrichedSqlRequest {
-            target_table: Some(target.into()),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            default_schema: Some(schema.into()),
-            execution_type: 3,
-            sql: format!("select id, amount from CDO_DEMO_DB.{schema}.rcup"),
-            tolerate_nondeterminism: true,
-            freshness_tolerance_seconds: 2700,
-            tables,
-            query_dependencies: vec![qc::QueryDependency {
-                name: format!("\"CDO_DEMO_DB\".\"{}\".\"RCUP\"", schema.to_uppercase()),
-                query: "select 1 as id, 100 as amount".into(),
-                default_catalog: "CDO_DEMO_DB".into(),
-                default_schema: schema.into(),
-            }],
-            table_namespace: Some(NS.into()),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: "model.jaffle.rcsrc".into(),
-                node_body_hash: Some("body".into()),
-                project_id: Some("p".into()),
-                ..Default::default()
-            }),
-            labels: [
-                ("dbt_node_name".to_string(), "rcsrc".to_string()),
-                (
-                    "dbt_node_unique_id".to_string(),
-                    "model.jaffle.rcsrc".to_string(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        }
-    };
-
-    // Source build @T1 (upstream also @T1) + confirm.
+    // Replay entry 0: prod source submit → must EXECUTE (first build). Correlate
+    // its request_id to the hosted one for the following confirm.
+    let e0 = &entries[0];
+    let req0: qc::SubmitEnrichedSqlRequest = serde_json::from_value(e0.request.clone()).unwrap();
     let r0 = sql
-        .submit_enriched_sql(submit(src, "prod_state_demo", None, t1))
+        .submit_enriched_sql(support::captured_request(req0, e0))
         .await
         .unwrap()
         .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("source must execute");
+    let qc::submit_sql_response::Response::ReadyToExecute(local0) = r0.response.unwrap() else {
+        panic!("entry 0: source must execute");
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(t1),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(50),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
 
-    // RegisterClone source→dev; confirm the clone at T3 (the clone creation).
+    // Replay entry 1: confirm the source build using the local request_id.
+    let mut c1: qc::ConfirmExecutionRequest =
+        serde_json::from_value(entries[1].request.clone()).unwrap();
+    c1.request_id = local0.request_id;
+    assert!(
+        exec.confirm_execution(support::captured_request(c1, &entries[1]))
+            .await
+            .unwrap()
+            .into_inner()
+            .success,
+        "entry 1: source confirm succeeds"
+    );
+
+    // Replay entry 2: RegisterClone → ready_to_clone (both mirrors populated).
+    let rc: qc::CloneRequest = serde_json::from_value(entries[2].request.clone()).unwrap();
     let clone_resp = clone
-        .register_clone(qc::CloneRequest {
-            target_table: tgt.into(),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 3,
-            clone_source_table: src.into(),
-            clone_source_last_modified_epoch: Some(t1),
-            clone_source_table_type: Some("TRANSIENT TABLE".into()),
-            table_namespace: Some(NS.into()),
-            labels: [(
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle.rcsrc".to_string(),
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        })
+        .register_clone(support::captured_request(rc, &entries[2]))
         .await
         .unwrap()
         .into_inner();
-    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: ready.request_id,
-        last_modified_epoch: Some(t3),
-        table_type: Some("TRANSIENT TABLE".into()),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let ready = clone_resp
+        .ready_to_clone
+        .expect("entry 2: RegisterClone returns ready_to_clone");
 
-    // Resubmit the clone target with the clone's own epoch T3 and an upstream at
-    // T2 (T1 < T2 < T3). The clone-age anchor (T3) is >= the upstream (T2) → SKIP.
-    let resub = sql
-        .submit_enriched_sql(submit(tgt, "dev_clone_demo", Some(t3), t2))
+    // Replay entry 3: confirm the clone creation.
+    let mut c3: qc::ConfirmExecutionRequest =
+        serde_json::from_value(entries[3].request.clone()).unwrap();
+    c3.request_id = ready.request_id;
+    assert!(
+        exec.confirm_execution(support::captured_request(c3, &entries[3]))
+            .await
+            .unwrap()
+            .into_inner()
+            .success,
+        "entry 3: clone confirm succeeds"
+    );
+
+    // Replay entry 4: the dev resubmit with the INCREMENTAL predicate.
+    let e4 = &entries[4];
+    let req4: qc::SubmitEnrichedSqlRequest = serde_json::from_value(e4.request.clone()).unwrap();
+    let r4 = sql
+        .submit_enriched_sql(support::captured_request(req4, e4))
         .await
         .unwrap()
         .into_inner();
+    let local4 = support::response_variant(&r4);
+    let hosted4 = diff::decision_variant(&e4.response).unwrap();
+
     assert_eq!(
-        support::response_variant(&resub),
-        "skip_execution",
-        "the server anchors the clone target's freshness on the CLONE creation \
-         epoch (clone-age), reproducing hosted — an upstream older than the clone \
-         creation does not force a rebuild"
+        hosted4, "skip_execution",
+        "hosted SKIPs entry 4 (captured truth)"
+    );
+    // KNOWN GAP: the server EXECUTEs here because the incremental self-referential
+    // predicate changes the logic hash. Pin the gap EXACTLY so a future fix that
+    // models incremental-phase reuse flips this and forces this assertion to be
+    // updated (rather than silently claiming parity).
+    assert_eq!(
+        local4, "ready_to_execute",
+        "KNOWN GAP (incremental self-referential predicate reuse UNIMPLEMENTED): \
+         the server executes the second-phase incremental submit where hosted \
+         reuses. If this changes, the gap is resolved — update the test and docs."
     );
 }
