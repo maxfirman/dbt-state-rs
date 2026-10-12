@@ -193,3 +193,69 @@ async fn get_state_selection_reproduces_hosted_responses() {
         "expected the full captured query corpus, got {queries}"
     );
 }
+
+/// LAST-WRITE-WINS conformance (live-captured,
+/// golden/fixtures/selector_last_write_wins.jsonl,
+/// experiments/selector_last_write_wins.sh). Replays the capture IN ORDER
+/// through our server: `stg_customers` is recorded (V1), `state:modified` is
+/// queried (not selected), then `stg_customers` is re-recorded with a changed
+/// body (V2), and `state:modified` is queried again (now selected). Our
+/// latest-wins `node_states` upsert must reproduce BOTH captured selector
+/// responses, proving the baseline tracks the NEWEST recorded execution.
+#[tokio::test]
+async fn last_write_wins_baseline_reproduces_hosted() {
+    const LWW_FIXTURE: &str = "../../golden/fixtures/selector_last_write_wins.jsonl";
+    let entries = load_golden(LWW_FIXTURE).expect("load last-write-wins fixture");
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+
+    let mut selector_checks = 0usize;
+    for e in &entries {
+        let org = org_of(e);
+        match e.method.as_str() {
+            // Replay each record through the real record path (latest wins).
+            "SubmitEnrichedSQL" => {
+                let req: qc::SubmitEnrichedSqlRequest =
+                    serde_json::from_value(e.request.clone()).expect("decode submit");
+                qc::sql_client::SqlClient::new(ch.clone())
+                    .submit_enriched_sql(request_with_org(req, &org))
+                    .await
+                    .expect("replay submit");
+            }
+            "GetStateSelection" => {
+                let req = selector_request(e);
+                let expected: BTreeSet<String> = e
+                    .response
+                    .get("node_unique_ids")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|x| x.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let resp = SelectorServiceClient::new(ch.clone())
+                    .get_state_selection(request_with_org(req.clone(), &org))
+                    .await
+                    .expect("replay selector")
+                    .into_inner();
+                let got: BTreeSet<String> = resp.node_unique_ids.into_iter().collect();
+                // The captured corpus for this fixture sent a subset of the full
+                // project; assert set-equality on the stg_customers membership,
+                // which is the discriminating signal for last-write-wins.
+                let uid = "model.jaffle_shop.stg_customers";
+                assert_eq!(
+                    got.contains(uid),
+                    expected.contains(uid),
+                    "stg_customers modified-membership must match hosted at query {selector_checks}"
+                );
+                selector_checks += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        selector_checks, 2,
+        "expected the before/after selector queries from the capture"
+    );
+}

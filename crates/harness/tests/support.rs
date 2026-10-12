@@ -26,7 +26,7 @@ pub fn dsn() -> String {
 
 /// Spin up our server in-process against a fresh isolated schema. Returns the
 /// bound address and the schema name (for cleanup / row assertions).
-pub async fn start_server() -> (SocketAddr, String) {
+pub async fn start_server_with_state() -> (SocketAddr, String, AppState) {
     let schema = format!("difftest_{}", uuid::Uuid::new_v4().simple());
 
     // Admin pool to create the schema.
@@ -66,6 +66,7 @@ pub async fn start_server() -> (SocketAddr, String) {
         .expect("migrate");
 
     let state = AppState::from_pool(pool);
+    let state_handle = state.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -81,6 +82,12 @@ pub async fn start_server() -> (SocketAddr, String) {
 
     // Give the server a moment to start accepting.
     tokio::time::sleep(Duration::from_millis(100)).await;
+    (addr, schema, state_handle)
+}
+
+/// Spin up the server and return only `(addr, schema)` for the common case.
+pub async fn start_server() -> (SocketAddr, String) {
+    let (addr, schema, _state) = start_server_with_state().await;
     (addr, schema)
 }
 

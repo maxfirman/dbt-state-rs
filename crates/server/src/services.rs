@@ -517,7 +517,13 @@ async fn record_node_state(state: &AppState, org_id: &str, node_state: Option<&q
         node_database_representation: ns.node_database_representation.clone(),
     };
     if let Err(e) = state.store.upsert_node_state(&upsert).await {
-        // Recording selector state must never fail the decision path.
+        // Recording selector state must never fail the decision path. Count the
+        // failure so it is observable (metric/alert) rather than silently lost:
+        // the execution ledger may advance while `state:*` selectors read a
+        // stale baseline, and that divergence must be measurable in deployment.
+        state
+            .selector_write_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::warn!(error = %e, "failed to record node state for selectors");
     }
 }

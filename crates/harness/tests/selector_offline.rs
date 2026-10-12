@@ -16,7 +16,7 @@ use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
 use qc::selector_service_client::SelectorServiceClient;
 use qc::sql_client::SqlClient;
-use support::{channel, request_with_org, start_server};
+use support::{channel, request_with_org, schema_pool, start_server, start_server_with_state};
 
 // SelectorCriteria wire ints.
 const MODIFIED: i32 = 1;
@@ -326,4 +326,100 @@ async fn unknown_criteria_and_missing_project_are_rejected() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+/// LIVE-VERIFIED (experiments/selector_last_write_wins.sh,
+/// golden/fixtures/selector_last_write_wins.jsonl): the selector comparison
+/// baseline is LAST-WRITE-WINS. A node rebuilt in the defer-to env records a new
+/// baseline, and a subsequent selector query compares against that NEWEST record
+/// — so the previously-identical submission is then reported `modified`.
+///
+/// This pins the semantics of `store::upsert_node_state`'s latest-wins
+/// `ON CONFLICT DO UPDATE`. The hosted service's behavior under CONCURRENT
+/// arrival (racing records for the same node) is NOT establishable from a
+/// capture and is intentionally not asserted here; the deterministic sequential
+/// contract is what we reproduce.
+#[tokio::test]
+async fn selector_baseline_is_last_write_wins() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+
+    // Record V1 for model.a (body0).
+    sql.submit_enriched_sql(request_with_org(submit_req("model.a", "DB.S.A"), ORG))
+        .await
+        .expect("record V1");
+
+    // Submitting the identical V1 body => unmodified.
+    let v1 = node_data("model.a"); // body0
+    assert!(
+        select(&ch, ORG, TARGET, PROJECT, MODIFIED, vec![v1.clone()])
+            .await
+            .is_empty(),
+        "V1 submission matches the V1 baseline => not modified"
+    );
+
+    // Re-record the SAME node with a CHANGED body (V2 = body1). Latest wins.
+    let mut v2_req = submit_req("model.a", "DB.S.A");
+    v2_req.dbt_node_state.as_mut().unwrap().node_body_hash = Some("body1".to_string());
+    v2_req.sql = "select 2 as id -- v2".to_string();
+    sql.submit_enriched_sql(request_with_org(v2_req, ORG))
+        .await
+        .expect("record V2");
+
+    // The ORIGINAL V1 submission now DIFFERS from the newest (V2) baseline =>
+    // modified. This is the hosted last-write-wins behavior.
+    assert_eq!(
+        select(&ch, ORG, TARGET, PROJECT, MODIFIED, vec![v1.clone()]).await,
+        BTreeSet::from(["model.a".to_string()]),
+        "after re-recording V2, the V1 submission is modified vs the newest baseline"
+    );
+    assert_eq!(
+        select(&ch, ORG, TARGET, PROJECT, BODY, vec![v1]).await,
+        BTreeSet::from(["model.a".to_string()]),
+        "the moved baseline is a body change"
+    );
+}
+
+/// The best-effort selector-state write must NEVER fail the decision path, and a
+/// write FAILURE must be observable (counted) rather than silently lost. We
+/// force the failure by dropping the `node_states` table out from under the
+/// server, then submit: the SQL decision still succeeds and the
+/// `selector_write_failures` gauge increments.
+#[tokio::test]
+async fn selector_state_write_failures_are_observable() {
+    let (addr, schema, state) = start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+
+    assert_eq!(state.selector_write_failures(), 0, "clean start");
+
+    // Drop the selector store table in the server's schema to force an upsert
+    // error on the next record (the executions ledger is untouched).
+    let pool = schema_pool(&schema).await;
+    sqlx::query("DROP TABLE node_states")
+        .execute(&pool)
+        .await
+        .expect("drop node_states");
+
+    // The decision path must still succeed (best-effort capture).
+    let resp = sql
+        .submit_enriched_sql(request_with_org(submit_req("model.obs", "DB.S.OBS"), ORG))
+        .await
+        .expect("submit still succeeds despite selector-store outage")
+        .into_inner();
+    assert!(
+        matches!(
+            resp.response,
+            Some(qc::submit_sql_response::Response::ReadyToExecute(_))
+        ),
+        "the SQL decision is unaffected by the selector-store failure"
+    );
+
+    // ...and the failure was counted, not silently swallowed.
+    assert_eq!(
+        state.selector_write_failures(),
+        1,
+        "a failed best-effort selector-state write must be observable"
+    );
 }

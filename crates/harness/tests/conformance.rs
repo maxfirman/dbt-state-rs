@@ -90,6 +90,10 @@ async fn conformance_replay_all_corpora() {
         // decision depends on warehouse state not in the protocol). Pinned by
         // clone_submit_fallback.rs::hosted_fallback_fires_over_existing_target.
         "clone_fallback_over_existing_target.jsonl",
+        // Baseline-then-query selector capture proving last-write-wins (a node
+        // rebuilt in the defer-to env moves the comparison baseline). Pinned by
+        // selector_offline.rs::selector_baseline_is_last_write_wins.
+        "selector_last_write_wins.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

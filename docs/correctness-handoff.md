@@ -308,6 +308,22 @@ template reuse should consume batch history once hosted behavior is established.
   (whitespace-sensitive) file hash. Pure engine in `crates/server/src/selector.rs`
   (`classify`, 13 unit tests). Open: the client batches ≤10,000 nodes/request —
   the server handles a single large request; multi-batch union is client-side.
+  **Baseline is LAST-WRITE-WINS — LIVE-VERIFIED (2026-10-12,
+  `experiments/selector_last_write_wins.sh`).** Re-recording a node in the
+  defer-to env moves the comparison baseline to the NEWEST recorded execution: a
+  node rebuilt there is then reported `modified` against its own previous
+  content. This confirms `store::upsert_node_state`'s latest-wins
+  `ON CONFLICT DO UPDATE` is hosted-faithful for sequential semantics. Fixture
+  `golden/fixtures/selector_last_write_wins.jsonl`; pinned by
+  `selector_offline.rs::selector_baseline_is_last_write_wins` and
+  `selector_conformance.rs::last_write_wins_baseline_reproduces_hosted`.
+  Concurrent/racing-record ordering is NOT establishable from a capture and is
+  intentionally not implemented as a guard (would be speculative); the
+  last-arriving write wins by design. **Best-effort write is now OBSERVABLE:**
+  `record_node_state` increments `AppState::selector_write_failures` on a store
+  error (still never failing the decision path), so a silent baseline-staleness
+  divergence is a surfaceable metric. Pinned by
+  `selector_offline.rs::selector_state_write_failures_are_observable`.
   **Deferral** (`ResolveDeferredRelations`) still returns UNIMPLEMENTED (needs
   authoritative profile/project/target/node mapping; the observed real response
   is an empty map from profile auto-deferral).
