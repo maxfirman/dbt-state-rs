@@ -295,3 +295,283 @@ async fn clone_adoption_must_not_resurrect_rebuilt_target() {
          so the hosted service re-clones it into DEV even though DEV exists holding B"
     );
 }
+
+// ============================================================================
+// FOLLOW-UP (review issue #1, 2026-10-12): select CURRENT physical state before
+// ALL metadata filters. The P0 fixes picked the latest confirmed row per source
+// before matching logic/provenance, but three lookups still applied some
+// metadata filters (execution_type / dialect / namespace / hash-NOT-NULL)
+// BEFORE ordering by confirmed_at. A target whose CURRENT state differs on one
+// of those columns could still resolve to an older matching row. Each test
+// below asserts the SAFE physical-state-faithful outcome.
+// ============================================================================
+
+/// Transition 1a — `find_latest_confirmed_target`: clone→rebuild with a CHANGED
+/// execution type must not adopt the stale clone-origin row.
+///
+/// LIVE-VERIFIED (experiments/physical_state_exec_type.sh, golden
+/// golden_20261012T102334): a dbt model switched `table`→`incremental` sends
+/// execution_type=1 (FULL) then =3 (MERGE) for the SAME physical target in the
+/// SAME namespace, so the transition is client-reachable. Hosted timeline on
+/// DEV: et=1 submit (absent) → ready_to_clone from PROD (clone-origin et=1 row);
+/// et=3 submit → ready_to_execute (DEV now holds an ordinary et=3 build); et=1
+/// submit of the same logic again → **ready_to_clone**, NOT a skip reusing the
+/// stale et=1 clone-origin row. Hosted treats the et=1 clone-origin row as
+/// historical because DEV's current state is the et=3 build.
+///
+/// The bug: `find_latest_confirmed_target` filtered `execution_type=1` before
+/// `ORDER BY confirmed_at`, so it would still find the stale et=1 clone-origin
+/// row and (logic matching) could SKIP. The fix picks DEV's latest row first
+/// (the et=3 ordinary build), which is neither execution_type=1 nor
+/// clone-origin → no adoption → falls through to the cross-name clone fallback.
+#[tokio::test]
+async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PTF_PROBE\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PTF_PROBE\"";
+    let raw_epoch = 1_791_320_590_839i64;
+    let prod_epoch = 1_791_743_740_000i64;
+    let clone_epoch = 1_791_743_784_000i64;
+
+    // 1) Build the SOURCE in prod as a TABLE (et=1), logic A, confirm.
+    execute_and_confirm(
+        &mut sql,
+        &mut exec,
+        submit(prod, "prod_state_demo", prod_epoch, raw_epoch, ""),
+        prod_epoch,
+    )
+    .await;
+
+    // 2) Clone prod→dev (clone-origin row, et=1, inherits logic A), confirm.
+    let clone_resp = clone
+        .register_clone(qc::CloneRequest {
+            target_table: dev.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 1,
+            clone_source_table: prod.into(),
+            clone_source_last_modified_epoch: Some(prod_epoch),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            labels: [(
+                "dbt_node_unique_id".to_string(),
+                "model.jaffle_shop.clone_probe".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: ready.request_id,
+            last_modified_epoch: Some(clone_epoch),
+            table_type: Some("TRANSIENT TABLE".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .success
+    );
+
+    // 3) Rebuild DEV as an INCREMENTAL merge (et=3), same logic A. DEV's CURRENT
+    //    physical state is now an ordinary et=3 build (not clone-origin).
+    let mut dev_incr = submit(dev, "dev_clone_demo", 1_791_743_790_000, raw_epoch, "");
+    dev_incr.execution_type = 3;
+    execute_and_confirm(&mut sql, &mut exec, dev_incr, 1_791_743_790_000).await;
+
+    // 4) Re-submit DEV as a TABLE (et=1), logic A again. DEV's latest confirmed
+    //    row is the et=3 ordinary build, so the stale et=1 clone-origin row must
+    //    NOT be adopted → NO SKIP. Hosted re-clones the equivalent (PROD).
+    let dev_a = sql
+        .submit_enriched_sql(submit(
+            dev,
+            "dev_clone_demo",
+            1_791_743_790_000,
+            raw_epoch,
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(
+        response_variant(&dev_a),
+        "skip_execution",
+        "the stale et=1 clone-origin row must NOT be resurrected to SKIP a target \
+         whose current physical state is an et=3 incremental build"
+    );
+    assert_eq!(
+        response_variant(&dev_a),
+        "ready_to_clone",
+        "LIVE-VERIFIED: DEV's current state is et=3, so hosted re-clones the \
+         equivalent (PROD) rather than reusing the historical et=1 clone-origin row"
+    );
+}
+
+/// Transition 1b — `find_source_ns_logic_hash`: when the clone SOURCE's newest
+/// confirmed row carries NO schema-abstracted logic hash, RegisterClone must
+/// inherit NOTHING (not an obsolete hash from an older row).
+///
+/// Reachability (primary evidence, services.rs): the namespace logic hash is
+/// stored only when `!compare_unrendered_code && sql non-empty`. A source first
+/// built with rendered SQL (hash present) and later rebuilt via an unrendered
+/// comparison submit records a NEWER row with `node_namespace_logic_hash` NULL.
+///
+/// The bug: `find_source_ns_logic_hash` filtered `node_namespace_logic_hash IS
+/// NOT NULL` before ordering, so it skipped the newer NULL-hash row and
+/// inherited the stale hash onto the clone-origin row — which could later let a
+/// resubmit SKIP against logic the source no longer has. The fix selects the
+/// source's latest confirmed row first; if it lacks a hash, inherit none → the
+/// clone target carries no logic identity → a later submit EXECUTEs (safe).
+///
+/// OFFLINE invariant (store determinism); not a hosted-parity claim.
+#[tokio::test]
+async fn clone_source_logic_inherit_must_use_current_source_state() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PROBE_SRC\"";
+    let tgt = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PROBE_TGT\"";
+    let raw_epoch = 1_791_320_590_839i64;
+
+    // 1) Build SOURCE with rendered logic A → stores node_namespace_logic_hash.
+    execute_and_confirm(
+        &mut sql,
+        &mut exec,
+        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
+        1_791_743_740_000,
+    )
+    .await;
+
+    // 2) Rebuild SOURCE via an UNRENDERED-comparison submit (newer row, NULL
+    //    namespace logic hash). This is the source's CURRENT state.
+    let mut src_unrendered = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
+    src_unrendered.compare_unrendered_code = true;
+    execute_and_confirm(&mut sql, &mut exec, src_unrendered, 1_791_743_760_000).await;
+
+    // 3) Clone source→target. The source's CURRENT row has no logic hash, so the
+    //    clone-origin row must inherit NONE.
+    let clone_resp = clone
+        .register_clone(qc::CloneRequest {
+            target_table: tgt.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 1,
+            clone_source_table: src.into(),
+            clone_source_last_modified_epoch: Some(1_791_743_760_000),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            labels: [(
+                "dbt_node_unique_id".to_string(),
+                "model.jaffle_shop.clone_probe".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: ready.request_id,
+            last_modified_epoch: Some(1_791_743_784_000),
+            table_type: Some("TRANSIENT TABLE".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .success
+    );
+
+    // 4) Resubmit the clone target with the OLD rendered logic A. Because the
+    //    clone-origin row inherited NO logic identity (source's current state
+    //    had none), there is no proven logic equivalence → MUST EXECUTE, never
+    //    SKIP against a stale inherited hash.
+    let tgt_a = sql
+        .submit_enriched_sql(submit(
+            tgt,
+            "dev_clone_demo",
+            1_791_743_784_000,
+            raw_epoch,
+            "",
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_ne!(
+        response_variant(&tgt_a),
+        "skip_execution",
+        "a clone whose source's CURRENT state carries no logic hash must not SKIP \
+         by inheriting an obsolete hash from an older source row"
+    );
+}
+
+/// Transition 3 — `find_clone_equivalent`: a physical target whose CURRENT state
+/// lives in a DIFFERENT namespace must not appear as a current clone source in
+/// the requested namespace via a stale same-namespace row.
+///
+/// NOT cleanly client-reachable: across all captured traffic no physical target
+/// ever changes `table_namespace` (it is a stable adapter-level id). Encoded as
+/// an OFFLINE invariant only — NO hosted-parity claim (do-not-infer rule). The
+/// bug: `find_clone_equivalent` reduced to latest-per-target WITHIN the
+/// requested namespace, so a target whose newest state moved to another
+/// namespace could still surface its older same-namespace row as "current".
+/// The fix computes current-state-per-target across ALL namespaces first, then
+/// filters by the requested namespace.
+#[tokio::test]
+async fn clone_equivalent_must_reflect_current_namespace_of_source() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    const NS2: &str = "aa11bb22cc33dd44ee55ff6600112233";
+    let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"XNS_SRC\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"XNS_DEV\"";
+    let raw_epoch = 1_791_320_590_839i64;
+
+    // 1) Build SOURCE with logic A in namespace NS (older state).
+    execute_and_confirm(
+        &mut sql,
+        &mut exec,
+        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
+        1_791_743_740_000,
+    )
+    .await;
+
+    // 2) Rebuild SOURCE with logic A but in a DIFFERENT namespace NS2 (newer
+    //    state). The source's CURRENT namespace is NS2, not NS.
+    let mut src_ns2 = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
+    src_ns2.table_namespace = Some(NS2.into());
+    execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
+
+    // 3) A new target DEV (absent) submits logic A in namespace NS. The source's
+    //    CURRENT state is in NS2, so there is NO equivalent under another name in
+    //    NS → MUST EXECUTE, not clone the stale NS row of the source.
+    let dev_a = sql
+        .submit_enriched_sql(submit(dev, "dev_clone_demo", 1, raw_epoch, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        response_variant(&dev_a),
+        "ready_to_execute",
+        "the source's CURRENT state is in namespace NS2; its stale NS row must not \
+         make it a current clone source in NS"
+    );
+}

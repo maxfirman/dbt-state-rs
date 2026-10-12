@@ -103,6 +103,14 @@ async fn conformance_replay_all_corpora() {
         // depends on cross-session equivalent history. Pinned by
         // clone_submit_fallback.rs::allow_clones_false_suppresses_fallback_*.
         "clone_submit_allow_clones_false.jsonl",
+        // Interleaved clone→incremental→table over the SAME physical target
+        // (execution_type 1→3→1). Proves the current physical state (et=3)
+        // supersedes a historical et=1 clone-origin row: the final et=1 submit
+        // re-clones rather than reusing the stale row. Decision depends on
+        // warehouse state not in the protocol; pinned by
+        // clone_history_provenance.rs::
+        // clone_adoption_must_not_resurrect_row_of_different_execution_type.
+        "clone_rebuild_execution_type.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

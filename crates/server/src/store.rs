@@ -273,19 +273,36 @@ impl Store {
         table_namespace: Option<&str>,
         dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
+        // PHYSICAL-STATE INVARIANT (review issue #1 follow-up): select the
+        // target's CURRENT state (latest confirmed row, ANY provenance / type /
+        // namespace / dialect) FIRST, then require that current row to match the
+        // submit's execution_type, namespace and dialect. If the target was last
+        // rebuilt with a different materialization strategy (e.g. table→
+        // incremental: execution_type 1→3, LIVE-VERIFIED client-reachable),
+        // namespace or dialect, the newest row fails the post-filter and we
+        // return None — a stale historical (clone-origin) row of the old type is
+        // never resurrected for clone adoption. Filtering those columns BEFORE
+        // the ORDER BY would skip the current row and pick the old match.
         let row = sqlx::query_as::<_, RawRow>(
             r#"
+            WITH current_state AS (
+                SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
+                       node_namespace_logic_hash,
+                       table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
+                       input_tables, status, request_id, clone_source_table, dialect
+                FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC
+                LIMIT 1
+            )
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
                    NULL::bytea AS execution_results, input_tables, status, request_id, clone_source_table
-            FROM executions
-            WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
-              AND execution_type = $3
+            FROM current_state
+            WHERE execution_type = $3
               AND ($4 IS NULL OR table_namespace = $4)
               AND dialect = $5
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
             "#,
         )
         .bind(org_id)
@@ -347,28 +364,31 @@ impl Store {
         exclude_target: &str,
     ) -> sqlx::Result<Option<CloneEquivalent>> {
         // PHYSICAL-STATE INVARIANT: a candidate source may only be cloned if its
-        // CURRENT physical contents match the requested logic. We therefore
-        // reduce the namespace to the latest confirmed row PER physical target
-        // (DISTINCT ON — the current state of each object), and only then filter
-        // those current states by logic + execution type. A source that was
-        // rebuilt with different logic since it last matched is excluded,
-        // because its newest row no longer carries the requested logic hash.
-        // Without this, an obsolete A-logic row for a source now holding B could
-        // resurrect stale SQL as a clone source (A→B→A).
+        // CURRENT physical contents match the requested logic. We reduce to the
+        // latest confirmed row PER physical target (DISTINCT ON — the current
+        // state of each object) ACROSS ALL namespaces, and only then filter
+        // those current states by the requested namespace + logic + execution
+        // type. Computing the per-target current row within a single namespace
+        // (review issue #1 follow-up, transition 3) could surface a target's
+        // older same-namespace row as "current" after its newest state moved to
+        // a different namespace. A source rebuilt with different logic since it
+        // last matched is likewise excluded, because its newest row no longer
+        // carries the requested logic hash (A→B→A).
         type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
         let row: Option<CloneEquivRow> = sqlx::query_as(
             r#"
             WITH current_state AS (
                 SELECT DISTINCT ON (target_table)
                        target_table, table_type, last_modified_epoch, execution_runtime_ms,
-                       node_namespace_logic_hash, execution_type
+                       node_namespace_logic_hash, execution_type, table_namespace
                 FROM executions
-                WHERE org_id = $1 AND table_namespace = $2 AND status = 'confirmed'
+                WHERE org_id = $1 AND status = 'confirmed'
                 ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC
             )
             SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms
             FROM current_state
-            WHERE node_namespace_logic_hash = $3
+            WHERE table_namespace = $2
+              AND node_namespace_logic_hash = $3
               AND execution_type = $4
               AND target_table <> $5
             ORDER BY last_modified_epoch DESC NULLS LAST, target_table
@@ -403,6 +423,16 @@ impl Store {
         source_table: &str,
         table_namespace: Option<&str>,
     ) -> sqlx::Result<Option<String>> {
+        // PHYSICAL-STATE INVARIANT (review issue #1 follow-up): take the source's
+        // CURRENT state (latest confirmed row) FIRST, then read its logic hash.
+        // The hash may be NULL (the source's newest build used unrendered
+        // comparison or empty SQL, which store no namespace logic hash); in that
+        // case we inherit NOTHING, so the clone-origin row carries no logic
+        // identity and a later submit for the clone target EXECUTEs (safe — we
+        // never SKIP without proven logic equivalence). Applying
+        // `node_namespace_logic_hash IS NOT NULL` BEFORE the ORDER BY would skip
+        // the current NULL-hash row and inherit an OBSOLETE hash from an older
+        // row the source no longer reflects.
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
@@ -412,7 +442,6 @@ impl Store {
             FROM executions
             WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
               AND ($3 IS NULL OR table_namespace = $3)
-              AND node_namespace_logic_hash IS NOT NULL
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
             "#,

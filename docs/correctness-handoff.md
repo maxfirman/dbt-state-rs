@@ -159,6 +159,39 @@ recording proxy; see `experiments/clone_experiment.sh`,
   unsafe stale-clone-origin SKIP; the subsequent clone is correct. Fixture
   `golden/fixtures/clone_fallback_over_existing_target.jsonl` (characterization-
   only), pinned by `clone_submit_fallback.rs::hosted_fallback_fires_over_existing_target`.
+- **Current physical state before ALL metadata filters — HARDENED (review
+  issue #1 follow-up, 2026-10-12).** The P0 fixes picked the latest row per
+  source before matching logic, but three lookups still applied SOME metadata
+  filters before `ORDER BY confirmed_at`: a target's current row could be
+  skipped and an older matching one returned. All three now select the current
+  physical state FIRST, then filter:
+  - `find_latest_confirmed_target` applied `execution_type`/`table_namespace`/
+    `dialect` before the ORDER BY. **LIVE-VERIFIED client-reachable
+    (`experiments/physical_state_exec_type.sh`):** a model switched
+    `table`→`incremental` sends `execution_type` 1→3 for the same target; after
+    the target holds an et=3 build, re-submitting et=1 of the same logic is
+    answered `ready_to_clone`, NOT a skip reusing the stale et=1 clone-origin
+    row. Fixed via a `current_state` CTE (latest row, any type) then post-filter.
+    Fixture `golden/fixtures/clone_rebuild_execution_type.jsonl`
+    (characterization-only).
+  - `find_source_ns_logic_hash` applied `node_namespace_logic_hash IS NOT NULL`
+    before the ORDER BY, so a source whose newest build stores no logic hash
+    (unrendered-comparison or empty SQL — see the `ns_logic_hash` gate in
+    `services.rs`) would inherit an OBSOLETE hash onto the clone-origin row. Now
+    reads the source's latest row's hash directly (may be NULL → inherit none →
+    later submit EXECUTEs; safe).
+  - `find_clone_equivalent` reduced to latest-per-target WITHIN the requested
+    namespace, so a target whose newest state moved to another namespace could
+    surface its older same-namespace row as current. Now computes
+    current-state-per-target across ALL namespaces, then filters by namespace.
+    `table_namespace` is a stable adapter-level id (no target changes it across
+    captured traffic), so this is an OFFLINE invariant with no hosted-parity
+    claim (do-not-infer rule).
+
+  All three pinned by `crates/harness/tests/clone_history_provenance.rs`
+  (`clone_adoption_must_not_resurrect_row_of_different_execution_type` —
+  live-verified; `clone_source_logic_inherit_must_use_current_source_state` and
+  `clone_equivalent_must_reflect_current_namespace_of_source` — offline).
 
 Remaining in this area: dropped/recreated sources mid-decision, server restart;
 clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
@@ -480,10 +513,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **202 tests passed** across the workspace (adds this session's
+- Workspace: **205 tests passed** across the workspace (adds this session's
   clone-provenance, selector last-write-wins + observability, deferral,
-  allow_clones=false, concurrency determinism, dependency/SQL negatives, and
-  auth-hardening tests).
+  allow_clones=false, concurrency determinism, dependency/SQL negatives,
+  auth-hardening, and the three physical-state-before-filters provenance tests).
 - Server library: **89 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database (adds the new
   `fingerprint`, `sql_norm` negative and `config` unit tests).
@@ -491,7 +524,8 @@ Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 - Conformance replay: 17 fixtures causally replayed; the characterization-only
   captures (`lag_multi_upstream_policy`, `selector_state_selection`,
   `clone_fallback_over_existing_target`, `selector_last_write_wins`,
-  `deferral_resolve`, `clone_submit_allow_clones_false`) are excluded and
+  `deferral_resolve`, `clone_submit_allow_clones_false`,
+  `clone_rebuild_execution_type`) are excluded and
   validated by their dedicated tests. Clone rejection and SQL-submit clone
   fallback entries are counted as replay gaps and asserted by their dedicated
   tests (`clone.rs`, `clone_submit_fallback.rs`). The six pinned local fallbacks
