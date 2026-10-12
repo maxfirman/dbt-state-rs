@@ -1182,12 +1182,15 @@ impl Execution for ExecutionService {
         let req = request.into_inner();
 
         let mut rows: Vec<ConfirmedExecution> = Vec::with_capacity(req.records.len());
-        // Collect selector/deferral state upserts to apply ONLY AFTER the whole
-        // batch validates and the executions insert succeeds. Review #2 finding
-        // 5: writing node_states per-record inside this loop (before full
-        // validation and outside the batch transaction) leaked logical state
-        // when a later record was invalid or the batch insert failed — a
-        // rejected request must have no persisted side effect.
+        // Collect selector/deferral state upserts to apply in the SAME
+        // transaction as the executions insert. Review #2 finding 5: writing
+        // node_states per-record inside this loop (before full validation and
+        // outside the batch transaction) leaked logical state when a later
+        // record was invalid or the batch insert failed, and committing the
+        // executions batch BEFORE a best-effort node_states write left a durable
+        // execution row with no logical state on a node_states failure. Both are
+        // now written atomically (insert_confirmed_batch_with_node_states): a
+        // rejected request or any write failure has NO persisted side effect.
         let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
         for record in &req.records {
             let outcome = record.outcome.clone().unwrap_or_default();
@@ -1295,8 +1298,8 @@ impl Execution for ExecutionService {
             rows.push(row);
 
             // Collect each node's comparison state for `state:*` selectors; the
-            // actual write is deferred until after the batch insert succeeds so
-            // a rejected/failed batch leaves no logical state behind.
+            // actual write happens in the SAME transaction as the executions
+            // insert so a rejected/failed batch leaves no logical state behind.
             let node_state = match input {
                 qc::execution_record::Input::EnrichedSql(sql) => sql.dbt_node_state.as_ref(),
                 qc::execution_record::Input::Values(values) => values.dbt_node_state.as_ref(),
@@ -1310,25 +1313,17 @@ impl Execution for ExecutionService {
             }
         }
 
+        // Write the executions batch AND the selector/deferral node_states in a
+        // SINGLE transaction (review #2 finding 5, full atomicity): a successful
+        // RecordExecutions publishes execution and logical state consistently,
+        // and a node_states write failure rolls the WHOLE request back (no
+        // partial publish, no durable execution row without its logical state).
         let stored = self
             .0
             .store
-            .insert_confirmed_batch(&rows)
+            .insert_confirmed_batch_with_node_states(&rows, &node_state_upserts)
             .await
             .map_err(db_err)?;
-
-        // The batch committed; now publish the selector/deferral state. These
-        // best-effort writes never fail the request (the execution ledger is
-        // already durable); a failure is counted so the divergence is
-        // observable, matching the submit path's semantics.
-        for upsert in &node_state_upserts {
-            if let Err(e) = self.0.store.upsert_node_state(upsert).await {
-                self.0
-                    .selector_write_failures
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                tracing::warn!(error = %e, "failed to record node state for selectors");
-            }
-        }
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,

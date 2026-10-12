@@ -516,6 +516,166 @@ async fn rejected_record_batch_does_not_leak_node_state() {
     );
 }
 
+/// FULL CROSS-STORE ATOMICITY (review #2 finding 5, follow-up). A SUCCESSFUL
+/// RecordExecutions must not leave the execution ledger and the logical
+/// (selector/deferral) state inconsistent. Previously the executions batch
+/// COMMITTED and then a best-effort node_states write ran outside the
+/// transaction; a node_states failure left a durable execution row with zero
+/// logical rows (records_stored=1, empty deferral). Both tables are now written
+/// in ONE transaction, so a node_states fault rolls the WHOLE request back.
+///
+/// This injects a deterministic fault with a `CHECK (false)` constraint on the
+/// isolated test schema's `node_states`, then records a single valid execution
+/// whose node_state carries the scope keys (so a node_states upsert is
+/// attempted). The request must FAIL and leave NEITHER table changed — no
+/// partial publish.
+#[tokio::test]
+async fn node_state_write_failure_rolls_back_whole_record_batch() {
+    let (addr, schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut exec = ExecutionClient::new(ch);
+
+    // Inject a deterministic fault: any INSERT into node_states will fail.
+    let pool = schema_pool(&schema).await;
+    sqlx::query("ALTER TABLE node_states ADD CONSTRAINT fault_injection CHECK (false)")
+        .execute(&pool)
+        .await
+        .expect("add fault constraint");
+
+    // A single valid record whose node_state carries project_id + target_name +
+    // node_unique_id, so the server attempts a node_states upsert.
+    let rec = qc::ExecutionRecord {
+        outcome: Some(qc::ExecutionOutcome {
+            last_modified_epoch: Some(2_000),
+            table_type: Some("TABLE".to_string()),
+            execution_results: None,
+            execution_runtime_ms: Some(20),
+        }),
+        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
+            target_table: Some("\"DB\".\"S\".\"ATOMIC\"".to_string()),
+            dialect: "snowflake".to_string(),
+            default_catalog: "DB".to_string(),
+            execution_type: ETYPE_FULL,
+            sql: "select 1".to_string(),
+            tables: vec![],
+            query_dependencies: vec![],
+            semantic_extras: Default::default(),
+            labels: Default::default(),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.jaffle.atomic".to_string(),
+                project_id: Some("proj-atomic".to_string()),
+                target_name: "prod".to_string(),
+                node_hash: "h".to_string(),
+                node_body_hash: Some("h".to_string()),
+                ..Default::default()
+            }),
+            default_schema: Some("S".to_string()),
+            from_speculative_submit: false,
+            table_namespace: None,
+        })),
+    };
+
+    let res = exec
+        .record_executions(request_with_org(
+            qc::RecordExecutionsRequest { records: vec![rec] },
+            "acme",
+        ))
+        .await;
+    assert!(
+        res.is_err(),
+        "a node_states write failure must fail the whole RecordExecutions request"
+    );
+
+    // The execution row must NOT have been published either (full rollback).
+    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        execs, 0,
+        "the execution ledger must roll back when the logical-state write fails \
+         (no partial publish)"
+    );
+    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM node_states")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(states, 0, "no logical state persisted either");
+
+    // Clean up the injected fault so the shared schema (if reused) is sane.
+    let _ = sqlx::query("ALTER TABLE node_states DROP CONSTRAINT fault_injection")
+        .execute(&pool)
+        .await;
+}
+
+/// A SUCCESSFUL RecordExecutions publishes execution AND logical state together
+/// (the happy path of the atomic write): the recorded node becomes resolvable
+/// for deferral in the same request.
+#[tokio::test]
+async fn successful_record_batch_publishes_execution_and_node_state_together() {
+    let (addr, schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut exec = ExecutionClient::new(ch);
+
+    let rec = qc::ExecutionRecord {
+        outcome: Some(qc::ExecutionOutcome {
+            last_modified_epoch: Some(3_000),
+            table_type: Some("TABLE".to_string()),
+            execution_results: None,
+            execution_runtime_ms: Some(30),
+        }),
+        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
+            target_table: Some("\"DB\".\"S\".\"PUB\"".to_string()),
+            dialect: "snowflake".to_string(),
+            default_catalog: "DB".to_string(),
+            execution_type: ETYPE_FULL,
+            sql: "select 1".to_string(),
+            tables: vec![],
+            query_dependencies: vec![],
+            semantic_extras: Default::default(),
+            labels: Default::default(),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.jaffle.pub".to_string(),
+                project_id: Some("proj-pub".to_string()),
+                target_name: "prod".to_string(),
+                node_hash: "h".to_string(),
+                node_body_hash: Some("h".to_string()),
+                ..Default::default()
+            }),
+            default_schema: Some("S".to_string()),
+            from_speculative_submit: false,
+            table_namespace: None,
+        })),
+    };
+
+    let stored = exec
+        .record_executions(request_with_org(
+            qc::RecordExecutionsRequest { records: vec![rec] },
+            "acme",
+        ))
+        .await
+        .expect("record succeeds")
+        .into_inner()
+        .records_stored;
+    assert_eq!(stored, 1);
+
+    let pool = schema_pool(&schema).await;
+    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(execs, 1, "the execution is published");
+    let states: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM node_states WHERE node_unique_id = 'model.jaffle.pub'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        states, 1,
+        "the logical state is published in the same request"
+    );
+}
 /// Duplicate-fingerprint hydration: two RecordExecutions for the SAME
 /// fingerprint with different recorded epochs both persist (no dedupe), and a
 /// subsequent matching submit resolves to the NEWEST confirmed row — so an

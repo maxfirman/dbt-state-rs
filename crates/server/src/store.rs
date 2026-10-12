@@ -542,6 +542,44 @@ impl Store {
         records: &[ConfirmedExecution],
     ) -> sqlx::Result<u32> {
         let mut tx = self.pool.begin().await?;
+        Self::insert_confirmed_rows(&mut tx, records).await?;
+        tx.commit().await?;
+        Ok(records.len() as u32)
+    }
+
+    /// Insert a batch of fully-confirmed executions AND their selector/deferral
+    /// `node_states` upserts in a SINGLE transaction. Either everything commits
+    /// or nothing does: a failure writing either table rolls back BOTH.
+    ///
+    /// Review #2 finding 5 (full atomicity): previously the executions batch
+    /// committed and THEN best-effort `node_states` upserts ran outside the
+    /// transaction, so a logical-state write failure left a durable execution
+    /// row with no corresponding selector/deferral state (`records_stored=1`,
+    /// zero logical rows, empty deferral resolution). Writing both in one
+    /// transaction makes a successful `RecordExecutions` publish execution and
+    /// logical state consistently — a `node_states` fault now rolls the whole
+    /// request back and surfaces as an error, rather than a silent partial
+    /// publish. Returns the number of execution rows inserted.
+    pub async fn insert_confirmed_batch_with_node_states(
+        &self,
+        records: &[ConfirmedExecution],
+        node_states: &[NodeStateUpsert],
+    ) -> sqlx::Result<u32> {
+        let mut tx = self.pool.begin().await?;
+        Self::insert_confirmed_rows(&mut tx, records).await?;
+        for n in node_states {
+            Self::upsert_node_state_tx(&mut tx, n).await?;
+        }
+        tx.commit().await?;
+        Ok(records.len() as u32)
+    }
+
+    /// Insert confirmed execution rows into an open transaction (shared by the
+    /// executions-only and executions+node_states batch methods).
+    async fn insert_confirmed_rows(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        records: &[ConfirmedExecution],
+    ) -> sqlx::Result<()> {
         for c in records {
             let input_tables = serde_json::to_value(&c.input_tables).unwrap_or_default();
             sqlx::query(
@@ -578,11 +616,10 @@ impl Store {
             .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
             .bind(&c.node_namespace_logic_hash)
             .bind(&c.node_template_hash)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
-        tx.commit().await?;
-        Ok(records.len() as u32)
+        Ok(())
     }
 
     /// Mark a pending execution confirmed, recording the outcome. Semantics
@@ -658,6 +695,18 @@ impl Store {
     /// the defer-to env seeds the state a later selector reads. See
     /// `selector.rs` and migration 0009.
     pub async fn upsert_node_state(&self, n: &NodeStateUpsert) -> sqlx::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        Self::upsert_node_state_tx(&mut tx, n).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Upsert a node's comparison state inside an open transaction (shared by
+    /// the standalone `upsert_node_state` and the atomic record batch).
+    async fn upsert_node_state_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        n: &NodeStateUpsert,
+    ) -> sqlx::Result<()> {
         sqlx::query(
             r#"
             INSERT INTO node_states (
@@ -688,7 +737,7 @@ impl Store {
         .bind(&n.node_contract_hash)
         .bind(&n.node_database_representation)
         .bind(&n.target_table)
-        .execute(&self.pool)
+        .execute(&mut **tx)
         .await?;
         Ok(())
     }
