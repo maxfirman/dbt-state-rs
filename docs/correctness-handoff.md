@@ -164,12 +164,21 @@ Remaining in this area: concurrent A/B builds, reversed/late confirms, dropped/
 recreated sources mid-decision, server restart, Record batches with conflicting
 targets; clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
 WINDOW`=9) and deeper chain limits (>0); `defer_enabled`/`is_defer_to_profile`
-nuances; `allow_clones=false` suppression of the SQL-submit fallback is applied
-by inference (consistent with the RegisterClone path) but not independently
-captured. `failed_to_clone=true` (observed with "clone source freshness
+nuances. **`allow_clones=false` suppression of the SQL-submit fallback is now
+LIVE-VERIFIED (2026-10-12, `experiments/clone_experiment.sh table --no-clones`):**
+the client encodes it as `clone_chain_depth_limit=0` on the SUBMIT (NOT via
+`allow_clones`), and the hosted service, instead of cloning the equivalent,
+returns `ready_to_execute` with `skip_rejection_reason=1` (TARGET_TABLE_MISMATCH),
+`clone_rejection_reason=10` (CLONE_CHAIN_LIMIT_EXCEEDED) and
+`decision_description="model was executed because the maximum number of nested
+clones has been reached"`. The server now reproduces this exact shape (it
+previously gated only on `allow_clones != Some(false)`, which the real client
+never sets, and emitted a generic execute). Fixture
+`clone_submit_allow_clones_false.jsonl`; pinned by
+`clone_submit_fallback.rs::allow_clones_false_suppresses_fallback_with_chain_limit_shape`.
+`failed_to_clone=true` (observed with "clone source freshness
 unavailable") is still confirmed as a normal build — do not reject on the flag
-alone. State selectors are implemented (§D); deferral still needs authoritative
-project/profile/environment/node history.
+alone. State selectors and deferral are implemented (§D).
 
 Hosted/warehouse questions: late-confirmation ordering; warehouse clock
 semantics; source-freshness enforcement; TABLE types beyond ordinary/transient.

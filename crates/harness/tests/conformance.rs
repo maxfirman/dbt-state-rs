@@ -98,6 +98,11 @@ async fn conformance_replay_all_corpora() {
         // FQN). The generic SKIP/EXECUTE/CLONE replay does not model deferral;
         // pinned by deferral.rs.
         "deferral_resolve.jsonl",
+        // allow_clones=false (clone_chain_depth_limit=0) suppression of the
+        // SQL-submit clone fallback: a single interleaved submit whose decision
+        // depends on cross-session equivalent history. Pinned by
+        // clone_submit_fallback.rs::allow_clones_false_suppresses_fallback_*.
+        "clone_submit_allow_clones_false.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

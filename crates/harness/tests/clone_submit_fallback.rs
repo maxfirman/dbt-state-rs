@@ -240,3 +240,97 @@ fn hosted_fallback_fires_over_existing_target() {
         Some("an equivalent model exists under another name so we cloned that one")
     );
 }
+
+/// HOSTED TRUTH (live-captured, experiments/clone_experiment.sh table
+/// --no-clones): when the submit target FORBIDS clones, the client encodes it as
+/// `clone_chain_depth_limit = 0` on the SubmitEnrichedSQL (NOT via `allow_clones`,
+/// which stays unset). The cross-name clone fallback is then SUPPRESSED, but the
+/// hosted service does not emit a generic execute — it returns a SPECIFIC
+/// `ready_to_execute`: decision=1, skip_rejection_reason=1 (TARGET_TABLE_MISMATCH),
+/// clone_rejection_reason=10 (CLONE_CHAIN_LIMIT_EXCEEDED), is_stale=false,
+/// decision_description="model was executed because the maximum number of nested
+/// clones has been reached".
+#[test]
+fn hosted_allow_clones_false_suppression_shape_is_pinned() {
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_submit_allow_clones_false.jsonl"
+    );
+    let entries = diff::load_golden(FIXTURE).expect("load fixture");
+    let entry = entries
+        .iter()
+        .find(|e| e.method == "SubmitEnrichedSQL")
+        .expect("a submit entry");
+    assert_eq!(
+        entry.request["clone_chain_depth_limit"].as_i64(),
+        Some(0),
+        "allow_clones=false is encoded as clone_chain_depth_limit=0 on the submit"
+    );
+    let ed = &entry.response["response"]["ready_to_execute"]["explained_decision"];
+    assert_eq!(ed["decision"].as_i64(), Some(1));
+    assert_eq!(ed["skip_rejection_reason"].as_i64(), Some(1));
+    assert_eq!(ed["clone_rejection_reason"].as_i64(), Some(10));
+    assert_eq!(ed["is_stale"].as_bool(), Some(false));
+    assert_eq!(
+        ed["decision_description"].as_str(),
+        Some("model was executed because the maximum number of nested clones has been reached")
+    );
+}
+
+/// Server reproduction: an absent target whose equivalent exists under another
+/// name, submitted with `clone_chain_depth_limit = 0` (allow_clones=false), must
+/// NOT clone. It returns the specific CLONE_CHAIN_LIMIT_EXCEEDED execute shape
+/// (srr=1, crr=10, the "maximum number of nested clones" description), matching
+/// the hosted service — not a generic execute and not a clone.
+#[tokio::test]
+async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
+
+    // Build + confirm the equivalent under name A.
+    let r0 = sql
+        .submit_enriched_sql(submit(a, "prod_state_demo"))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("first build of A must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(15275),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Submit for absent B with clone_chain_depth_limit=0 (allow_clones=false).
+    let mut req = submit(b, "dev_clone_demo");
+    req.clone_chain_depth_limit = Some(0);
+    let rb = sql.submit_enriched_sql(req).await.unwrap().into_inner();
+
+    let x = match rb.response {
+        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x,
+        other => panic!("expected ready_to_execute (clone suppressed), got {other:?}"),
+    };
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(ed.decision, 1, "READY_TO_EXECUTE");
+    assert_eq!(ed.skip_rejection_reason, Some(1), "TARGET_TABLE_MISMATCH");
+    assert_eq!(
+        ed.clone_rejection_reason,
+        Some(10),
+        "CLONE_CHAIN_LIMIT_EXCEEDED"
+    );
+    assert!(!ed.is_stale);
+    assert_eq!(
+        ed.decision_description,
+        "model was executed because the maximum number of nested clones has been reached"
+    );
+}

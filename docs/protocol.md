@@ -262,6 +262,15 @@ decision_description="an equivalent model exists under another name so we cloned
 that one"}`, with `clone_required_last_modified_epoch` = the source's build epoch
 and `execution_runtime_ms` echoing the source's runtime.
 
+When the submit target FORBIDS clones (the client sends
+`clone_chain_depth_limit = 0` on the submit — NOT `allow_clones`, which stays
+unset), the fallback is suppressed and the service returns `ready_to_execute`
+with `ExplainedDecision{decision=1, skip_rejection_reason=1
+(TARGET_TABLE_MISMATCH), clone_rejection_reason=10 (CLONE_CHAIN_LIMIT_EXCEEDED),
+is_stale=false, decision_description="model was executed because the maximum
+number of nested clones has been reached"}` (live-verified,
+`experiments/clone_experiment.sh table --no-clones`).
+
 ## Custom `Struct` type
 
 `struct.proto` defines a `Struct`/`Value`/`ListValue` like `google.protobuf.Struct`

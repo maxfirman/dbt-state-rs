@@ -117,6 +117,12 @@ const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
 const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
 const CLONE_FALLBACK_DESCRIPTION: &str =
     "an equivalent model exists under another name so we cloned that one";
+// VERIFIED LIVE (experiments/clone_experiment.sh table --no-clones): when an
+// equivalent exists under another name but the submit target forbids clones
+// (`clone_chain_depth_limit=0`), the hosted service executes with this exact
+// description plus skip_rejection_reason=1 and clone_rejection_reason=10.
+const CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION: &str =
+    "model was executed because the maximum number of nested clones has been reached";
 
 /// Build a SubmitSQLResponse `ready_to_clone` for the cross-name fallback: an
 /// equivalent model exists under another physical name, so clone it into the
@@ -718,14 +724,21 @@ impl Sql for SqlService {
         // materialization; golden/fixtures/clone_submit_equivalent_fallback.jsonl).
         // Gated to real-SQL submits with a known namespace logic identity, no
         // confirmed reuse candidate, and not seeds/data tests.
+        //
+        // allow_clones=false: the client encodes a clone-forbidding target as
+        // `clone_chain_depth_limit = 0` on the SUBMIT (NOT via `allow_clones`,
+        // which stays unset — VERIFIED LIVE, experiments/clone_experiment.sh
+        // table --no-clones). When an equivalent WOULD be cloned but clones are
+        // forbidden, the hosted service does NOT emit a generic execute: it
+        // returns `ready_to_execute` with skip_rejection_reason=1
+        // (TARGET_TABLE_MISMATCH), clone_rejection_reason=10
+        // (CLONE_CHAIN_LIMIT_EXCEEDED) and the description below. We reproduce
+        // that exact shape (fixture clone_submit_allow_clones_false.jsonl).
+        let clones_forbidden =
+            req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
         if confirmed.is_none()
             && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
             && execution_type != EXECUTION_TYPE_VALUES
-            // Respect allow_clones=false (the client sets it per target). Verified
-            // live for the RegisterClone path (clone_chain_depth_limit=0); applied
-            // here to the SQL-submit fallback as the conservative, consistent
-            // choice (a target that forbids clones must not be cloned into).
-            && req.allow_clones != Some(false)
         {
             if let (Some(ns_hash), Some(ns)) = (ns_logic_hash.as_deref(), table_namespace) {
                 if let Some(eq) = self
@@ -735,6 +748,62 @@ impl Sql for SqlService {
                     .await
                     .map_err(db_err)?
                 {
+                    // An equivalent exists under another name. If the target
+                    // forbids clones, suppress the clone and emit the hosted
+                    // CLONE_CHAIN_LIMIT_EXCEEDED execute shape; otherwise clone.
+                    if clones_forbidden {
+                        let request_id = new_uuid_v7();
+                        let execution_decision_id = new_uuid_v7();
+                        // Persist an ordinary (non-clone) pending row so the
+                        // forthcoming ConfirmExecution records the normal build.
+                        let pending = PendingExecution {
+                            org_id: org_id.clone(),
+                            project_id: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.project_id.clone()),
+                            target_table: target_table.clone(),
+                            execution_type,
+                            node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
+                            node_body_hash: node_body_hash.clone(),
+                            node_sql_hash: node_sql_hash.clone(),
+                            node_namespace_logic_hash: ns_logic_hash.clone(),
+                            node_configs_hash: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.node_configs_hash.clone()),
+                            node_contract_hash: req
+                                .dbt_node_state
+                                .as_ref()
+                                .and_then(|s| s.node_contract_hash.clone()),
+                            node_unique_id: node_unique_id(
+                                req.dbt_node_state.as_ref(),
+                                &req.labels,
+                            ),
+                            table_namespace: req.table_namespace.clone(),
+                            dialect: req.dialect.clone(),
+                            input_tables: input_tables.clone(),
+                            values_hash: None,
+                            request_id: request_id.clone(),
+                            execution_decision_id: Some(execution_decision_id.clone()),
+                            clone_source_table: None,
+                        };
+                        self.0
+                            .store
+                            .insert_pending(&pending)
+                            .await
+                            .map_err(db_err)?;
+                        let response = execute_response(
+                            CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION.to_string(),
+                            REJECTION_TARGET_TABLE_MISMATCH,
+                            REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+                            false,
+                            request_id,
+                            execution_decision_id,
+                        );
+                        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+                        return Ok(Response::new(response));
+                    }
                     if let Ok(clone_sqls) = crate::clone::clone_sqls(
                         &req.dialect,
                         &eq.source_table,
