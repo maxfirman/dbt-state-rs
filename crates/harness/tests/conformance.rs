@@ -86,6 +86,10 @@ async fn conformance_replay_all_corpora() {
     const CHARACTERIZATION_ONLY: &[&str] = &[
         "lag_multi_upstream_policy.jsonl",
         "selector_state_selection.jsonl",
+        // Interleaved clone→rebuild→clone over the SAME physical target (the
+        // decision depends on warehouse state not in the protocol). Pinned by
+        // clone_submit_fallback.rs::hosted_fallback_fires_over_existing_target.
+        "clone_fallback_over_existing_target.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

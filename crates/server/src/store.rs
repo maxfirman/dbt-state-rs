@@ -240,12 +240,27 @@ impl Store {
         row.map(TryInto::try_into).transpose()
     }
 
-    /// The newest confirmed CLONE-ORIGIN execution for a physical target. A
-    /// clone-origin row (RegisterClone) carries the physical object's build
-    /// epoch and an INHERITED `node_namespace_logic_hash` (from the clone
-    /// source), which the caller compares against the submit's abstracted logic.
-    /// Restricted to clone-origin rows so ordinary executions (and any corrupt
-    /// unrelated rows) are never materialized by the cross-environment fallback.
+    /// The newest confirmed execution describing a physical target — the
+    /// CURRENT physical state — for the cross-environment clone-adoption path.
+    ///
+    /// PHYSICAL-STATE INVARIANT: a historical execution must never be treated as
+    /// evidence of the current contents of a physical object. The clone-origin
+    /// marker (`clone_source_table IS NOT NULL`) is therefore NOT part of the
+    /// selection: if a cloned target was later rebuilt normally, that ordinary
+    /// rebuild is the current state and this returns it. The CALLER then adopts
+    /// the row only if it is itself clone-origin AND its inherited
+    /// schema-abstracted logic matches the submit (see
+    /// `services.rs::submit_enriched_sql`). Selecting the latest row first and
+    /// filtering afterwards guarantees a stale clone-origin row cannot be
+    /// resurrected once the object has been overwritten by a non-clone build.
+    ///
+    /// `execution_results` is intentionally NOT selected (returned as NULL):
+    /// this lookup feeds only clone adoption, which never serves a row's cached
+    /// results (clone-origin rows carry none, and the caller overwrites
+    /// `input_tables`). Decoding a corrupt-but-irrelevant results blob here
+    /// would spuriously fail an otherwise cold-miss submit; the result-serving
+    /// queries (`find_confirmed`, `find_confirmed_test`, `find_confirmed_values`)
+    /// still surface corruption as an INTERNAL error.
     pub async fn find_latest_confirmed_target(
         &self,
         org_id: &str,
@@ -259,13 +274,12 @@ impl Store {
             SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
                    node_namespace_logic_hash,
                    table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id, clone_source_table
+                   NULL::bytea AS execution_results, input_tables, status, request_id, clone_source_table
             FROM executions
             WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
               AND execution_type = $3
               AND ($4 IS NULL OR table_namespace = $4)
               AND dialect = $5
-              AND clone_source_table IS NOT NULL
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
             "#,
@@ -328,16 +342,32 @@ impl Store {
         execution_type: i32,
         exclude_target: &str,
     ) -> sqlx::Result<Option<CloneEquivalent>> {
+        // PHYSICAL-STATE INVARIANT: a candidate source may only be cloned if its
+        // CURRENT physical contents match the requested logic. We therefore
+        // reduce the namespace to the latest confirmed row PER physical target
+        // (DISTINCT ON — the current state of each object), and only then filter
+        // those current states by logic + execution type. A source that was
+        // rebuilt with different logic since it last matched is excluded,
+        // because its newest row no longer carries the requested logic hash.
+        // Without this, an obsolete A-logic row for a source now holding B could
+        // resurrect stale SQL as a clone source (A→B→A).
         type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
         let row: Option<CloneEquivRow> = sqlx::query_as(
             r#"
+            WITH current_state AS (
+                SELECT DISTINCT ON (target_table)
+                       target_table, table_type, last_modified_epoch, execution_runtime_ms,
+                       node_namespace_logic_hash, execution_type
+                FROM executions
+                WHERE org_id = $1 AND table_namespace = $2 AND status = 'confirmed'
+                ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC
+            )
             SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms
-            FROM executions
-            WHERE org_id = $1 AND table_namespace = $2
-              AND node_namespace_logic_hash = $3 AND status = 'confirmed'
+            FROM current_state
+            WHERE node_namespace_logic_hash = $3
               AND execution_type = $4
               AND target_table <> $5
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
+            ORDER BY last_modified_epoch DESC NULLS LAST, target_table
             LIMIT 1
             "#,
         )

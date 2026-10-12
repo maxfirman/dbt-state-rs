@@ -191,3 +191,52 @@ async fn no_equivalent_executes_normally() {
         "no equivalent under another name => normal execute"
     );
 }
+
+/// HOSTED TRUTH (live-captured, experiments/p0_fallback_over_existing.sh): the
+/// SQL-submit cross-name clone fallback fires EVEN WHEN the submit target
+/// already exists with its own confirmed build history holding DIFFERENT logic.
+/// The captured DEV sequence for one `clone_probe` table model is, in order:
+/// logic L1 with DEV absent -> ready_to_clone (srr=1, cross-name); logic L2
+/// (added column) -> ready_to_execute (srr=6, no equivalent); logic L1 again
+/// with DEV now holding L2 -> ready_to_clone (srr=1, cross-name). The fallback
+/// discriminator is purely "does an equivalent for THIS logic exist under
+/// another name", NOT target existence. This overturned an earlier inferred
+/// gate (`!target_has_confirmed_history`) and is why review issue #1 P0#2's
+/// resubmit is `ready_to_clone`, not `ready_to_execute`. The server reproduces
+/// it: the stale clone-origin row is NOT adopted (no unsafe SKIP) and the
+/// cross-name fallback then clones the current equivalent in.
+#[test]
+fn hosted_fallback_fires_over_existing_target() {
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_fallback_over_existing_target.jsonl"
+    );
+    let entries = diff::load_golden(FIXTURE).expect("load fixture");
+    let decisions: Vec<Option<String>> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .map(|e| diff::decision_variant(&e.response))
+        .collect();
+    assert_eq!(
+        decisions,
+        vec![
+            Some("ready_to_clone".to_string()),
+            Some("ready_to_execute".to_string()),
+            Some("ready_to_clone".to_string()),
+        ],
+        "hosted clone→rebuild(diff logic)→clone sequence over the SAME target"
+    );
+    // The third decision (fallback over an existing target) carries the
+    // cross-name signature: TARGET_TABLE_MISMATCH and the equivalent description.
+    let third = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .nth(2)
+        .expect("third submit");
+    let ed = &third.response["response"]["ready_to_clone"]["explained_decision"];
+    assert_eq!(ed["skip_rejection_reason"].as_i64(), Some(1));
+    assert_eq!(
+        ed["decision_description"].as_str(),
+        Some("an equivalent model exists under another name so we cloned that one")
+    );
+}

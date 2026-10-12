@@ -561,6 +561,13 @@ impl Sql for SqlService {
             .and_then(|s| s.project_id.clone());
         let table_namespace = namespace(req.table_namespace.as_deref());
 
+        // Whether the server has ANY confirmed execution describing this exact
+        // physical target (regardless of logic/provenance). NOT used to gate the
+        // cross-name clone fallback — LIVE-VERIFIED (experiments/
+        // p0_fallback_over_existing.sh) that the hosted service answers
+        // `ready_to_clone` for an equivalent under another name EVEN WHEN the
+        // target already exists with its own confirmed history holding different
+        // logic. The gate is purely "does an equivalent exist for THIS logic".
         let candidate = if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
             match unique_id.as_deref() {
                 Some(uid) => self
@@ -601,8 +608,14 @@ impl Sql for SqlService {
             // via decide(); we only supply the candidate here.
             match strict {
                 Some(row) => Some(row),
-                None => match ns_logic_hash.as_deref() {
-                    Some(ns_hash) => self
+                None => {
+                    // The CURRENT physical state of this target (latest confirmed
+                    // row, any provenance). Selecting the latest first guarantees
+                    // a stale clone-origin row cannot be resurrected for adoption
+                    // after an ordinary rebuild (review issue #1 P0#2): the row
+                    // is adopted (→ possible SKIP) only if it is ITSELF the
+                    // current state AND clone-origin AND logic-compatible.
+                    let latest_for_target = self
                         .0
                         .store
                         .find_latest_confirmed_target(
@@ -613,35 +626,38 @@ impl Sql for SqlService {
                             &req.dialect,
                         )
                         .await
-                        .map_err(db_err)?
-                        .filter(|prev| {
-                            // Only CLONE-ORIGIN rows are adopted cross-environment.
-                            // A clone establishes a physical object with the
-                            // source's logic; a later submit skips when its
-                            // schema-abstracted logic matches. Ordinary (non-clone)
-                            // rows are NOT adopted here: that would let a genuine
-                            // resolution-context change (e.g. default_schema) skip,
-                            // which the hosted service rebuilds. Broader
-                            // cross-environment reuse without a clone is a separate
-                            // provenance feature (see correctness-handoff.md §A).
-                            prev.clone_source_table.is_some()
-                                && prev.node_namespace_logic_hash.as_deref() == Some(ns_hash)
-                        })
-                        .map(|mut prev| {
-                            // A clone-origin row records NO upstream inputs (the
-                            // clone had none). Adopt the submit's CURRENT inputs
-                            // as the recorded set so the freshness check compares
-                            // each upstream against the clone's own build epoch
-                            // (prev.last_modified_epoch) rather than treating the
-                            // empty recorded set as a dependency-set change. The
-                            // own-build anchor stays the authoritative clone epoch.
-                            if prev.input_tables.is_empty() {
-                                prev.input_tables = input_tables.clone();
-                            }
-                            prev
-                        }),
-                    None => None,
-                },
+                        .map_err(db_err)?;
+                    match ns_logic_hash.as_deref() {
+                        Some(ns_hash) => latest_for_target
+                            .filter(|prev| {
+                                // Only CLONE-ORIGIN rows are adopted cross-environment.
+                                // A clone establishes a physical object with the
+                                // source's logic; a later submit skips when its
+                                // schema-abstracted logic matches. Ordinary (non-clone)
+                                // rows are NOT adopted here: that would let a genuine
+                                // resolution-context change (e.g. default_schema) skip,
+                                // which the hosted service rebuilds. Broader
+                                // cross-environment reuse without a clone is a separate
+                                // provenance feature (see correctness-handoff.md §A).
+                                prev.clone_source_table.is_some()
+                                    && prev.node_namespace_logic_hash.as_deref() == Some(ns_hash)
+                            })
+                            .map(|mut prev| {
+                                // A clone-origin row records NO upstream inputs (the
+                                // clone had none). Adopt the submit's CURRENT inputs
+                                // as the recorded set so the freshness check compares
+                                // each upstream against the clone's own build epoch
+                                // (prev.last_modified_epoch) rather than treating the
+                                // empty recorded set as a dependency-set change. The
+                                // own-build anchor stays the authoritative clone epoch.
+                                if prev.input_tables.is_empty() {
+                                    prev.input_tables = input_tables.clone();
+                                }
+                                prev
+                            }),
+                        None => None,
+                    }
+                }
             }
         };
         // Runtime volatile-function evidence is not implemented. Build instead

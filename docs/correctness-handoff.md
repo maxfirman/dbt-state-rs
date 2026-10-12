@@ -126,6 +126,33 @@ recording proxy; see `experiments/clone_experiment.sh`,
   submit_ready_to_clone_response`; gated to real SQL submits with a known
   namespace, `allow_clones != false`, and `execution_type` match. Pinned by
   `crates/harness/tests/clone_submit_fallback.rs`.
+- **Historical clone-state must reflect CURRENT physical contents — FIXED
+  (review issue #1 P0#1/P0#2, 2026-10-12).** Two clone-state lookups could treat
+  a historical execution as evidence of an object's current contents:
+  `store::find_clone_equivalent` filtered by (namespace, logic, type) BEFORE
+  reducing to the newest row per source, so an obsolete A-logic row for a source
+  since rebuilt with B could resurrect stale SQL as a clone source (A→B→A); and
+  `store::find_latest_confirmed_target` applied `clone_source_table IS NOT NULL`
+  BEFORE selecting the latest row, so a cloned-then-rebuilt target still resolved
+  to the old clone-origin row and could be ADOPTED into an unsafe SKIP. Fixed:
+  `find_clone_equivalent` now reduces to the latest confirmed row PER target
+  (`DISTINCT ON (target_table)`) and only then filters by logic+type;
+  `find_latest_confirmed_target` selects the latest confirmed target row of any
+  provenance (caller still requires clone-origin + logic match to adopt) and
+  omits `execution_results` from that lookup (adoption never serves cached
+  results, so a corrupt-but-irrelevant blob can't fail a cold miss). Pinned by
+  `crates/harness/tests/clone_history_provenance.rs`.
+- **The cross-name fallback fires OVER an existing target — LIVE-VERIFIED
+  (2026-10-12, `experiments/p0_fallback_over_existing.sh`).** A table target
+  submitted with logic L1 (absent → clone), rebuilt with L2 (execute), then
+  submitted with L1 again while physically holding L2 is answered
+  `ready_to_clone` AGAIN. The fallback discriminator is purely "does an
+  equivalent for THIS logic exist under another name", NOT target existence or
+  prior build history. An inferred `!target_has_confirmed_history` gate was
+  therefore REMOVED (it contradicted hosted). The P0#2 fix only prevents the
+  unsafe stale-clone-origin SKIP; the subsequent clone is correct. Fixture
+  `golden/fixtures/clone_fallback_over_existing_target.jsonl` (characterization-
+  only), pinned by `clone_submit_fallback.rs::hosted_fallback_fires_over_existing_target`.
 
 Remaining in this area: concurrent A/B builds, reversed/late confirms, dropped/
 recreated sources mid-decision, server restart, Record batches with conflicting
