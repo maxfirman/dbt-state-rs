@@ -111,6 +111,12 @@ async fn conformance_replay_all_corpora() {
         // clone_history_provenance.rs::
         // clone_adoption_must_not_resurrect_row_of_different_execution_type.
         "clone_rebuild_execution_type.jsonl",
+        // Interleaved data-test freshness capture (treatment + control over the
+        // SAME test node): a data test confirmed with no object epoch EXECUTES
+        // when its upstream epoch advanced and SKIPS when unchanged. The generic
+        // replay cannot model the in-place upstream mutation; pinned by
+        // data_test_freshness.rs.
+        "data_test_upstream_freshness.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

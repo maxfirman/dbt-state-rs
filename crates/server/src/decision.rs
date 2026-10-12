@@ -233,23 +233,27 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
         };
     }
 
-    let Some(own_build_epoch) = prev.last_modified_epoch else {
-        // No own-build epoch recorded. Data tests (execution_type = 8) never
-        // produce a physical object and so have no build epoch nor an own-build
-        // freshness axis — they are governed by identity + logic match, and the
-        // hosted service skips them on a match (verified in the test-node golden
-        // fixture, where ConfirmExecution carries last_modified_epoch = None yet
-        // the re-submit skips). For object-producing node types a missing build
-        // epoch means we cannot prove freshness → execute conservatively rather
-        // than risk serving stale data.
-        return if ctx.execution_type == ET_DBT_DATA_TEST {
-            Freshness {
-                should_rebuild: false,
-                drift_present: false,
+    let own_build_epoch = match prev.last_modified_epoch {
+        Some(epoch) => epoch,
+        None => {
+            // No own-build epoch recorded. Data tests (execution_type = 8) never
+            // produce a physical object, so they have NO own-build epoch — yet
+            // the hosted service still invalidates a cached test result when the
+            // tested (upstream) data changed. VERIFIED LIVE (issue #2 finding 1,
+            // experiments/data_test_freshness{,_control}.sh): a test confirmed
+            // against INPUT@E re-runs when a later submit presents INPUT@>E, and
+            // skips when INPUT@<=E. With no own-build epoch, a data test's
+            // freshness anchor is therefore the RECORDED UPSTREAM epoch, compared
+            // per input. Delegate to that evaluation below.
+            //
+            // For object-producing node types a missing build epoch means we
+            // cannot prove freshness at all → execute conservatively rather than
+            // risk serving stale data.
+            if ctx.execution_type == ET_DBT_DATA_TEST {
+                return data_test_upstream_freshness(ctx, prev, &genuine_upstreams);
             }
-        } else {
-            rebuild()
-        };
+            return rebuild();
+        }
     };
 
     let mut considered = 0usize;
@@ -298,6 +302,59 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
     };
     Freshness {
         should_rebuild,
+        drift_present,
+    }
+}
+
+/// Freshness for a data test (execution_type = 8) that has NO own-build epoch.
+///
+/// A data test produces no physical object, so it is confirmed with
+/// `last_modified_epoch = None`. Its freshness anchor is therefore the epoch
+/// RECORDED for each upstream at the test's last confirmation (not an own-build
+/// epoch). The test is stale when a current upstream is strictly newer than the
+/// epoch recorded for that same upstream. The caller has already validated the
+/// upstream NAME set (missing/extra/ambiguous inputs forced a rebuild), so each
+/// current upstream has exactly one recorded counterpart here.
+///
+/// VERIFIED LIVE (issue #2 finding 1). ANY-style: any drifted upstream re-runs
+/// the test. An unknown current epoch or an upstream with no recorded baseline
+/// cannot be proven fresh → rebuild (we never skip on unprovable freshness).
+fn data_test_upstream_freshness(
+    _ctx: &SubmitContext,
+    prev: &ExecutionRow,
+    genuine_upstreams: &[&InputTable],
+) -> Freshness {
+    let rebuild = || Freshness {
+        should_rebuild: true,
+        drift_present: true,
+    };
+    let mut drift_present = false;
+    for current in genuine_upstreams {
+        let Some(current_epoch) = current.last_modified_epoch else {
+            // Unknown current upstream epoch: cannot prove freshness → rebuild.
+            return rebuild();
+        };
+        // The recorded epoch for this exact upstream. A single unambiguous match
+        // is guaranteed by the caller's name-set validation; defend anyway.
+        let mut matches = prev
+            .input_tables
+            .iter()
+            .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
+        let Some(recorded) = matches.next() else {
+            return rebuild(); // no recorded baseline for this upstream
+        };
+        if matches.next().is_some() {
+            return rebuild(); // ambiguous recorded baseline
+        }
+        let Some(recorded_epoch) = recorded.last_modified_epoch else {
+            return rebuild(); // recorded baseline carried no epoch
+        };
+        if current_epoch > recorded_epoch {
+            drift_present = true;
+        }
+    }
+    Freshness {
+        should_rebuild: drift_present,
         drift_present,
     }
 }
@@ -796,6 +853,121 @@ mod tests {
         assert!(matches!(
             decide(&ctx("h", &current), Some(&prev)),
             Verdict::Skip { .. }
+        ));
+    }
+
+    // ---- DATA-TEST upstream freshness (VERIFIED LIVE, issue #2 finding 1) ----
+    //
+    // Live truth (api.state.dbt.com, Fusion client, Snowflake;
+    // experiments/data_test_freshness{,_control}.sh): a data test
+    // (execution_type = 8) is confirmed with NO own object epoch
+    // (ConfirmExecution.last_modified_epoch = None, only test results). A later
+    // submit whose upstream input epoch is NEWER than the epoch recorded for
+    // that upstream at the test's last confirmation EXECUTES ("data test was
+    // executed because it has no prior execution or its query changed"); an
+    // identical re-submit with the SAME upstream epoch SKIPS ("…a no-op because
+    // both its query and its upstream data are up to date"). So a data test's
+    // freshness anchor is the RECORDED UPSTREAM epoch (it has no own-build
+    // epoch), compared per input with strict `>`.
+    // Golden fixture: golden/fixtures/data_test_upstream_freshness.jsonl.
+
+    fn data_test_ctx<'a>(hash: &'a str, tables: &'a [InputTable]) -> SubmitContext<'a> {
+        SubmitContext {
+            execution_type: ET_DBT_DATA_TEST,
+            node_body_hash: Some(hash),
+            input_tables: tables,
+            freshness_tolerance_seconds: 0,
+            target_table: None,
+            stale_upstream_policy: StaleUpstreamPolicy::Any,
+        }
+    }
+
+    /// A data test confirmed with no own epoch must EXECUTE when its upstream is
+    /// newer than the epoch recorded at its last confirmation (VERIFIED LIVE).
+    #[test]
+    fn data_test_executes_when_upstream_newer_than_recorded() {
+        let recorded = vec![tbl("DB.S.INPUT", 100)];
+        let mut prev = confirmed("h", recorded, None); // tests have no build epoch
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.INPUT", 200)]; // upstream advanced
+        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "a data test must re-run when its upstream data changed, even with no own epoch"
+        );
+    }
+
+    /// Boundary: upstream exactly equal to the recorded epoch is fresh → SKIP
+    /// (VERIFIED LIVE control arm).
+    #[test]
+    fn data_test_skips_when_upstream_equal_to_recorded() {
+        let recorded = vec![tbl("DB.S.INPUT", 200)];
+        let mut prev = confirmed("h", recorded, None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.INPUT", 200)]; // unchanged
+        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Skip { .. }),
+            "an unchanged data test (same upstream epoch) must skip"
+        );
+    }
+
+    /// An older-or-equal upstream is still fresh (clock skew / restore): only a
+    /// strictly newer upstream re-runs the test.
+    #[test]
+    fn data_test_skips_when_upstream_older_than_recorded() {
+        let recorded = vec![tbl("DB.S.INPUT", 200)];
+        let mut prev = confirmed("h", recorded, None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.INPUT", 50)];
+        assert!(matches!(
+            decide(&data_test_ctx("h", &current), Some(&prev)),
+            Verdict::Skip { .. }
+        ));
+    }
+
+    /// A data test whose upstream carries an UNKNOWN (None) epoch cannot be
+    /// proven fresh → EXECUTE (we never skip on unprovable freshness).
+    #[test]
+    fn data_test_executes_when_upstream_epoch_unknown() {
+        let recorded = vec![tbl("DB.S.INPUT", 200)];
+        let mut prev = confirmed("h", recorded, None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![InputTable {
+            name: "DB.S.INPUT".into(),
+            last_modified_epoch: None,
+        }];
+        assert!(matches!(
+            decide(&data_test_ctx("h", &current), Some(&prev)),
+            Verdict::Execute { .. }
+        ));
+    }
+
+    /// A data test with NO genuine upstream inputs (e.g. a test over a seed or a
+    /// source-less assertion) still skips on a pure identity match — there is no
+    /// upstream freshness axis to violate.
+    #[test]
+    fn data_test_without_upstreams_still_skips_on_match() {
+        let mut prev = confirmed("h", vec![], None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current: Vec<InputTable> = vec![];
+        assert!(matches!(
+            decide(&data_test_ctx("h", &current), Some(&prev)),
+            Verdict::Skip { .. }
+        ));
+    }
+
+    /// A data test over MULTIPLE upstreams re-runs if ANY one drifted past its
+    /// recorded epoch (tests gate on their tested data, ANY-style).
+    #[test]
+    fn data_test_executes_if_any_upstream_drifts() {
+        let recorded = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 100)];
+        let mut prev = confirmed("h", recorded, None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 999)]; // B drifted
+        assert!(matches!(
+            decide(&data_test_ctx("h", &current), Some(&prev)),
+            Verdict::Execute { .. }
         ));
     }
 
