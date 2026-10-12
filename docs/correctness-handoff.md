@@ -1,9 +1,9 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-12 (review #2 FOLLOW-UP). Read this before changing decisions.
-The goal remains a conformant drop-in dbt State replacement; **the current
-server does not yet meet that goal**, but a growing set of behaviors is now
-live-verified.
+Updated 2026-10-12 (review #2 2nd FOLLOW-UP). Read this before changing
+decisions. The goal remains a conformant drop-in dbt State replacement; **the
+current server does not yet meet that goal**, but a growing set of behaviors is
+now live-verified.
 
 An earlier phase hardened the server offline (unsafe-skip fixes, fingerprinting,
 test/seed identity, org isolation — summarized in the table below). A later
@@ -41,6 +41,11 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | **#2 FOLLOW-UP finding 5 (2026-10-12): FULL cross-store atomicity** | The executions batch committed BEFORE a best-effort `node_states` write, so a logical-state write failure left a durable execution row with no logical state. Both tables are now written in ONE transaction (`store::insert_confirmed_batch_with_node_states`); a node_states fault rolls the WHOLE request back. | `correctness.rs::{node_state_write_failure_rolls_back_whole_record_batch,successful_record_batch_publishes_execution_and_node_state_together}` |
 | **#2 FOLLOW-UP finding 2 (live-verified 2026-10-12): stale-source clone eligibility** | Captured the clone SOURCE's full provenance (addressing the review's critique). A dev submit whose current upstream is NEWER than the source's build epoch STILL returns `ready_to_clone` from that stale source — hosted TOLERATES source staleness. The server matches (also clones), so it is NOT over-conservative; a freshness gate would regress conformance and is intentionally not added. | conformance fixture `clone_fallback_stale_source.jsonl`, `clone_eligibility.rs::{hosted_clones_stale_source_with_captured_provenance,server_clones_stale_cross_name_equivalent_like_hosted}` |
 | **#2 FOLLOW-UP finding 4 (live-verified 2026-10-12): clone-chain provenance** | After a clone is confirmed, bumping the upstream NEWER than the clone's build epoch makes a re-submit `ready_to_execute` ("its upstream data is out of date"). Hosted anchors a post-clone target's freshness on the CLONE's build epoch and REBUILDS when the upstream advances past it — the own-build anchor the engine implements; a clone is NOT perpetually fresh. The server reproduces the whole chain. | conformance fixture `clone_chain_upstream_drift.jsonl`, `clone_chain_provenance.rs::hosted_clone_rebuilds_when_upstream_advances_past_clone` |
+| **#2 2ND FOLLOW-UP finding 1 (live-verified 2026-10-12): schema abstraction collapsed distinct bindings — REACHABLE** | The first binding fix still abstracted EVERY schema to a single placeholder, so two same-basename relations in DIFFERENT schemas (reachable via custom `schema=`/`alias=`) collapsed and a swap of their definitions under a constant root SQL hashed identically → unsafe CLONE. Rewrote the abstraction to a RELATIVE schema→token map (`sql_norm::SchemaMap`): distinct schemas → distinct tokens (sorted); a single environment schema → token 0 (cross-env preserved). `namespace_logic_hash` (v2) builds one request-wide map over the root SQL + every dependency name/definition + `default_schema` (resolving unqualified refs). LIVE-VERIFIED with NONEMPTY `query_dependencies` (two VIEW deps, constant root SQL): hosted EXECUTES, dev contents `(2,)`. | `fingerprint.rs::{ns_metamorphic_same_basename_different_schema,ns_blue_red_distinct_physical_inputs_differ,ns_unqualified_default_schema_context_differs}`, conformance fixture `clone_fallback_dep_binding_swap.jsonl`, `clone_submit_fallback.rs::{hosted_dep_binding_swap_executes_shape_is_pinned,server_executes_swapped_dependency_binding_with_views}` |
+| **#2 2ND FOLLOW-UP finding 2 (live-verified 2026-10-12): RegisterClone source lookup + clone-age anchor** | CODE DEFECT: `store::find_source_ns_logic_hash` filtered namespace in the SAME WHERE as the ORDER BY, so a source whose newest build moved namespaces leaked a stale same-namespace logic hash onto the clone-origin row. Fixed: select the source's CURRENT physical row FIRST (CTE), then post-filter namespace (a transition → inherit nothing → safe EXECUTE). Separately, a RegisterClone chain isolating `source build < upstream < clone creation` shows hosted SKIPs → it anchors on the CLONE CREATION epoch (clone-age), NOT source-content age; the server's own-build anchor reproduces this, so no speculative source-epoch validation is added. | `clone_history_provenance.rs::clone_source_logic_inherit_must_reflect_current_namespace`, fixture `clone_chain_source_age.jsonl`, `clone_chain_provenance.rs::{hosted_clone_age_not_source_age_shape_is_pinned,server_clone_age_anchor_skips_upstream_between_source_and_clone}` |
+| **#2 2ND FOLLOW-UP finding 3 (2026-10-12): real CLONE conformance gating** | The conformance replay's `ready_to_clone` arm only incremented `gaps` — it never compared the local CLONE response or replayed its confirmation, so clone fixtures were not actually gated. Now it asserts the local CLONE payload (minus opaque IDs), correlates the confirmation into `pending` (tracking cloned state), and distinguishes a full causal match from a keyed MISSING-SOURCE-HISTORY gap and from a genuine mismatch. Un-excluded the replayable `template_compare_unrendered.jsonl`. | `conformance.rs` clone arm; 7 keyed clone/missing-history entries in `golden/replay_gaps.json`; corpus 22→24 fixtures |
+| **#2 2ND FOLLOW-UP finding 4 (live-verified 2026-10-12): clone eligibility dimensions** | The eligibility experiment used top-level config keys and wrongly declared `lag_tolerance`/`evaluate_volatile_sql` unavailable; they belong under the nested `state={}` config (dbt 2.0.6 parses it). Distinct arms + a wire-field VARCHECK now confirm the independent variable reached the request. LIVE: a STALE cross-name source still returns `ready_to_clone` under BOTH zero `freshness_tolerance_seconds` AND `tolerate_nondeterminism=false` — neither gates the fallback; the server matches. | `clone_eligibility.rs::{server_clones_stale_equivalent_under_zero_tolerance,server_clones_stale_equivalent_under_volatile_evaluation}`, `experiments/clone_eligibility.sh` |
+| **#2 2ND FOLLOW-UP finding 5 (2026-10-12): experiment reliability** | Drivers now check the dbt EXIT STATUS directly (not a loose grep a partial multi-node build could satisfy) and FAIL on a failed mutation (the `CREATE OR REPLACE` run_op no longer swallows errors with `\|\| true`); the swapped-binding driver's oracles are executable assertions (fail on a missing submit, wrong decision, or wrong warehouse contents). | hardened `clone_eligibility.sh`, `clone_chain_provenance.sh`, `finding3_swapped_bindings.sh`; new `finding3_view_dep_swap.sh`, `registerclone_source_age.sh` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -313,6 +318,16 @@ assessment where the follow-up was right.
   server_does_not_clone_swapped_binding_equivalent}`. The earlier
   single-dependency experiment remains valid as a complementary case
   (`finding3_dependency_definition_keys_clone_eligibility`).
+  **2ND FOLLOW-UP CORRECTION:** the binding fix above was INCOMPLETE — it still
+  abstracted every schema to a SINGLE placeholder, so two same-basename
+  relations in DIFFERENT schemas (REACHABLE via custom `schema=`/`alias=`)
+  collapsed and a swap of their definitions still conflated. Fixed by a RELATIVE
+  schema→token map (`sql_norm::SchemaMap`; distinct schemas → distinct tokens,
+  single env schema → token 0). LIVE-VERIFIED with NONEMPTY `query_dependencies`
+  (two VIEW deps, constant root SQL): hosted EXECUTES, dev contents `(2,)`
+  (`experiments/finding3_view_dep_swap.sh`, fixture
+  `clone_fallback_dep_binding_swap.jsonl`). See the 2ND FOLLOW-UP rows in the
+  completed-changes table.
 
 - **Finding 6 (template truth table; data-test regression) — the follow-up's new
   regression is FIXED (`b210e8c`).** The finding-6 dual-identity fix threaded the
@@ -351,30 +366,39 @@ assessment where the follow-up was right.
   review's implied freshness gate would reuse LESS than hosted (a regression).
   The fallback is intentionally NOT tightened. Fixture
   `clone_fallback_stale_source.jsonl` (conformance-replayed) pinned by
-  `clone_eligibility.rs`. The EXACT clone tolerance window and the
-  timing-sensitive OUTSIDE_TIME_TRAVEL_WINDOW rejection remain OPEN — this Fusion
-  version (dbt 2.0.6) rejects `lag_tolerance`/`evaluate_volatile_sql` as
-  model-config keys (UnusedConfigKey dbt1060), so per-model tolerance/volatile
-  variation is NOT client-reachable and cannot be characterized without
-  speculation (do-not-infer).
+  `clone_eligibility.rs`.
+  **2ND FOLLOW-UP:** `lag_tolerance`/`evaluate_volatile_sql` ARE reachable via
+  the nested `state={}` config (not top-level keys). With distinct arms and a
+  wire-field VARCHECK, a STALE cross-name source STILL returns `ready_to_clone`
+  under BOTH zero `freshness_tolerance_seconds` AND
+  `tolerate_nondeterminism=false` — neither dimension gates the fallback; the
+  server matches (`clone_eligibility.rs::server_clones_stale_equivalent_under_*`).
+  The stale-same-target-vs-fresh-alternative suppression dimension and the exact
+  clone tolerance window / OUTSIDE_TIME_TRAVEL_WINDOW remain OPEN (need dedicated
+  controlled captures).
 
-- **Finding 4 (RegisterClone provenance / content age) — now CHARACTERIZED
-  (`46e50e7`).** A live clone-chain (`experiments/clone_chain_provenance.sh`)
-  settles the provenance question: after a clone is confirmed, bumping the
+- **Finding 4 (RegisterClone provenance / content age) — CHARACTERIZED
+  (`46e50e7`, `da4d712`).** A live clone-chain (`experiments/clone_chain_provenance.sh`)
+  settles the post-clone drift question: after a clone is confirmed, bumping the
   upstream NEWER than the clone's build epoch makes a re-submit for the clone
   target `ready_to_execute` ("… its upstream data is out of date"). So hosted
   anchors a post-clone target's freshness on the CLONE's build epoch and REBUILDS
   when an upstream advances past it — the own-build anchor the engine implements;
-  a clone is NOT perpetually fresh. The server reproduces the WHOLE chain
-  (conformance fixture `clone_chain_upstream_drift.jsonl`). The three local
-  counterexamples the review listed assumed an unsafe SKIP; the live evidence
-  shows hosted (and the server) REBUILD once the upstream moves past the clone,
-  and that the orthogonal source-content-age (a clone built from a source whose
-  data predates the current upstream) is hosted-TOLERATED at clone time (finding
-  2). No speculative source-epoch validation is added (hosted does not do it).
-  Pinned by `clone_chain_provenance.rs`. The namespace-transition sub-case was
-  already hardened under issue #1 follow-up (`find_source_ns_logic_hash` reads the
-  source's CURRENT row first). Deeper multi-step chain limits remain OPEN.
+  a clone is NOT perpetually fresh.
+  **2ND FOLLOW-UP (corrections):** (a) the upstream-drift capture alone could not
+  distinguish source-age from clone-age; a dedicated RegisterClone chain
+  isolating `source build < upstream < clone creation` shows hosted SKIPs → it
+  anchors on the CLONE CREATION epoch (clone-age), NOT source-content age
+  (`experiments/registerclone_source_age.sh`, fixture `clone_chain_source_age.jsonl`,
+  `clone_chain_provenance.rs::{hosted_clone_age_not_source_age_shape_is_pinned,
+  server_clone_age_anchor_skips_upstream_between_source_and_clone}`). The server's
+  own-build anchor reproduces this, so no speculative source-epoch validation is
+  added (hosted does not do one). (b) The namespace-transition sub-case was NOT
+  actually hardened earlier — `find_source_ns_logic_hash` still filtered
+  namespace BEFORE the ORDER BY, leaking a stale same-namespace logic hash onto
+  the clone-origin row. NOW FIXED (latest-row-first CTE, then post-filter;
+  `clone_history_provenance.rs::clone_source_logic_inherit_must_reflect_current_namespace`).
+  Deeper multi-step chain limits remain OPEN.
 
 - **Finding 7 (lag/graph/ordering, physical identity across accounts).** Already
   documented open / characterization-only in §C. No new genuine bug.
@@ -649,35 +673,35 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-12):
 
-- Workspace: **239 tests passed** across the workspace (adds this session's
-  review-#2 FOLLOW-UP fixes on top of the earlier work: the finding-3
-  swapped-binding fix — `fingerprint.rs` binding + 3 metamorphic tests + the
-  swapped-binding hosted-pin and server-reproduction tests; the finding-6
-  data-test template regression — `data_test_template.rs` 4 cells + hosted pin;
-  the finding-5 FULL atomicity fault-injection + publish tests; the finding-2
-  stale-source clone-eligibility pin + server reproduction; and the finding-4
-  clone-chain provenance pin).
-- Server library: **101 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (adds the 3 new
-  metamorphic + 3 binding `fingerprint.rs` tests).
+- Workspace: **248 tests passed** across the workspace (adds this session's
+  review-#2 2ND FOLLOW-UP fixes on top of the earlier work: the reachable
+  same-basename binding-collision fix (relative schema map) with
+  BLUE/RED + unqualified + view-dep-swap tests; the latest-row-first clone
+  source lookup + namespace-transition regression; real CLONE conformance
+  gating; the clone-age-vs-source-age RegisterClone characterization; and the
+  zero-tolerance / volatile clone-eligibility server reproductions).
+- Server library: **103 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database (adds the
+  metamorphic + BLUE/RED + unqualified `fingerprint.rs` tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
-- Conformance replay: **22 fixtures causally replayed** (the follow-up review's
-  bullet to promote exact-replay captures: `clone_fallback_swapped_bindings`,
+- Conformance replay: **24 fixtures causally replayed** with REAL CLONE gating
+  (the `ready_to_clone` arm now compares the local clone payload and replays its
+  confirmation — review #2 2nd follow-up P1 #3). Exact-replay captures promoted:
+  `clone_fallback_swapped_bindings`, `clone_fallback_dep_binding_swap`,
   `data_test_compare_unrendered`, `clone_fallback_stale_source`,
-  `clone_chain_upstream_drift`, and `data_test_upstream_freshness` — whose 8
-  test-node assertions now replay, with the single externally-replaced upstream
-  model isolated as a MISSING-HISTORY gap in
-  [golden/replay_gaps.json](../golden/replay_gaps.json)). The remaining
+  `clone_chain_upstream_drift`, `template_compare_unrendered`, and
+  `data_test_upstream_freshness` (whose test-node assertions replay, with the
+  externally-replaced upstream model isolated as a MISSING-HISTORY gap).
+  Captures that clone from a source built in a PRIOR session are keyed as
+  missing-source-history gaps in [golden/replay_gaps.json](../golden/replay_gaps.json)
+  (clone_chain entries, clone_failed_fallback, dep_binding_swap,
+  clone_submit_equivalent_fallback) rather than silently counted. The remaining
   characterization-only captures (`lag_multi_upstream_policy`,
   `selector_state_selection`, `clone_fallback_over_existing_target`,
   `selector_last_write_wins`, `deferral_resolve`,
   `clone_submit_allow_clones_false`, `clone_rebuild_execution_type`,
-  `template_compare_unrendered`, `clone_fallback_xenv_fresh`) are excluded and
-  validated by their dedicated tests. Clone rejection and SQL-submit clone
-  fallback entries are counted as replay gaps and asserted by their dedicated
-  tests (`clone.rs`, `clone_submit_fallback.rs`). The pinned local fallbacks in
-  [golden/replay_gaps.json](../golden/replay_gaps.json) (including the new
-  data-test missing-history entry) remain exercised exactly once.
+  `clone_fallback_xenv_fresh`, `clone_chain_source_age`) are excluded and
+  validated by their dedicated tests.
 
 Live verification (clone + lag paths, §A and §C) was performed against the real
 service and Snowflake demo warehouse via the recording proxy; those captures are
