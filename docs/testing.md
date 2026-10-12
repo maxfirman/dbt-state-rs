@@ -39,7 +39,7 @@ independent oracle for the complete service or hosted lag semantics.
 ## Captured traffic replay
 
 `crates/harness/tests/conformance.rs` auto-discovers the `golden/fixtures/`
-corpus (16 causally-replayed fixtures; interleaved multi-run captures such as
+corpus (22 causally-replayed fixtures; interleaved multi-run captures such as
 `lag_multi_upstream_policy.jsonl` are excluded via a `CHARACTERIZATION_ONLY` list
 and validated by dedicated tests). Invalid trace lines fail with a line number.
 It preserves complete captured confirmation outcomes and correlates hosted/local

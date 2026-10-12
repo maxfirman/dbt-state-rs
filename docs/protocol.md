@@ -103,6 +103,9 @@ remaining policies and compatibility gaps.
    the rendered logic hash and the unrendered-template hash and reuses when
    EITHER matches — a rebuild occurs only when BOTH the rendered SQL and the
    template change (documented contract, verified live; review #2 finding 6).
+   This dual identity applies to BOTH models and DATA TESTS
+   (`find_confirmed`/`find_confirmed_test`); the data-test lookup honoring the
+   template hash was the review #2 finding-6 FOLLOW-UP fix, also live-verified.
 3. Require a known current target epoch no newer than its recorded confirmation,
    unless external modifications are explicitly ignored. Missing or ambiguous
    target metadata builds. Data tests instead require complete cached results.
@@ -141,7 +144,10 @@ only establishes its reproducible captured cases.
 - `RecordExecutions{records[]}` → `{records_stored}`. Bypass hydration path:
   each `ExecutionRecord` has an `outcome` and a oneof input of `enriched_sql`
   (`SQLExecution`, hashes via `dbt_node_state`) or `values` (`ValuesExecution`).
-  Processed atomically (all-or-nothing).
+  Processed atomically (all-or-nothing) — the executions batch AND the derived
+  selector/deferral `node_states` are written in a SINGLE transaction, so a
+  rejected batch or any write failure leaves no partial state (review #2
+  finding 5, full cross-store atomicity).
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
   project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. **Implemented
   (live-verified, `experiments/deferral_experiment.sh`).** Resolves each

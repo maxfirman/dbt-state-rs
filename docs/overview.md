@@ -64,10 +64,17 @@ the exact rule is not yet isolated, so the engine keeps the safe own-build ancho
 A later pass (review #2, 2026-10-12) additionally live-verified: data tests
 anchor upstream freshness on the RECORDED upstream epoch (they have no own-build
 epoch) and re-run when the tested data changed; `compare_unrendered_code=true` is
-a DUAL identity (reuse iff either the rendered SQL or the template is unchanged);
-and that the clone fallback keys on the dependency DEFINITION (no unsafe data
-conflation — confirmed with warehouse-content checks). `RecordExecutions` was
-also made atomic for logical selector/deferral state on rejection.
+a DUAL identity for BOTH models and data tests (reuse iff either the rendered
+SQL or the template is unchanged); that the cross-environment clone identity must
+bind each dependency's schema-abstracted NAME to its definition — swapping two
+definitions between references is NOT equivalent (a genuine P0 reuse-safety bug,
+fixed; confirmed with warehouse-content checks that a swapped-binding model
+executes and holds its own correct data); that a clone source is cloned even when
+its data is older than the current upstream (hosted tolerates source staleness),
+while a post-clone target REBUILDS once an upstream advances past the clone's
+build epoch (own-build anchor). `RecordExecutions` writes the execution ledger
+and the derived selector/deferral state in a single transaction (full
+cross-store atomicity).
 Earlier offline hardening prevents several unsafe skips and preserves cached test
 results. The dbt State-powered `state:*` selectors
 (`SelectorService.GetStateSelection`) and state-backed deferral

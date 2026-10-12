@@ -39,8 +39,13 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
   external edits are checked separately from upstream freshness. Cross-environment
   reuse is via CLONE (keyed by `table_namespace` + schema-abstracted logic +
   execution type), never a namespace-only SKIP — a SKIP still requires the strict
-  same-target match. Data tests require scoped UID identity and complete cached
-  results. → [docs/correctness-handoff.md](docs/correctness-handoff.md)
+  same-target match. The schema-abstracted logic identity binds each dependency's
+  schema-abstracted NAME to its definition (NOT a bare multiset of definitions),
+  so swapping two dependency definitions between references is NOT equivalent
+  (review #2 finding 3). Data tests require scoped UID identity and complete
+  cached results, and (under `compare_unrendered_code`) honor the dual
+  rendered/template identity just like models. →
+  [docs/correctness-handoff.md](docs/correctness-handoff.md)
 - **Org isolation.** Every store query is scoped by `org_id` (from the
   `x-organization-id` metadata header, default `local`). Never weaken this.
 - **Response shapes must match the hosted service exactly** (decision ints,
