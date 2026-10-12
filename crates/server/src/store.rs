@@ -199,6 +199,16 @@ impl Store {
 
     /// Tests have no physical target. Scope identity by project and namespace,
     /// then compare the latest outcome's logic rather than resurrecting history.
+    ///
+    /// `node_template_hash` is the submit's unrendered-template identity, set
+    /// only in `compare_unrendered_code` mode. When present, a row matches if
+    /// EITHER its recorded rendered hash equals `node_sql_hash` OR its recorded
+    /// template hash equals `node_template_hash` — the same dual-identity
+    /// contract applied to models in `find_confirmed` (a cuc node rebuilds ONLY
+    /// when BOTH the rendered SQL and the template change). Review #2 finding 6
+    /// FOLLOW-UP: the data-test lookup previously compared only `node_sql_hash`,
+    /// so a cuc data test with an unchanged template but a changed interpolated
+    /// rendered literal wrongly EXECUTED where the hosted service reuses it.
     pub async fn find_confirmed_test(
         &self,
         org_id: &str,
@@ -206,6 +216,7 @@ impl Store {
         project_id: Option<&str>,
         table_namespace: Option<&str>,
         node_sql_hash: Option<&str>,
+        node_template_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -221,7 +232,10 @@ impl Store {
                   AND status = 'confirmed'
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
             ) current_execution
-            WHERE node_sql_hash IS NOT DISTINCT FROM $5
+            WHERE (
+                node_sql_hash IS NOT DISTINCT FROM $5
+                OR ($6 IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM $6)
+            )
             "#,
         )
         .bind(org_id)
@@ -229,6 +243,7 @@ impl Store {
         .bind(project_id)
         .bind(table_namespace)
         .bind(node_sql_hash)
+        .bind(node_template_hash)
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()

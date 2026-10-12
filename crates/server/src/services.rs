@@ -651,6 +651,7 @@ impl Sql for SqlService {
                         project_id.as_deref(),
                         table_namespace,
                         node_sql_hash.as_deref(),
+                        node_template_hash.as_deref(),
                     )
                     .await
                     .map_err(db_err)?,
