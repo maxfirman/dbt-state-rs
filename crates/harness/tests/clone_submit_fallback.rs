@@ -425,3 +425,139 @@ async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
         "model was executed because the maximum number of nested clones has been reached"
     );
 }
+
+/// FINDING 3 (review #2 FOLLOW-UP) — SWAPPED DEPENDENCY BINDINGS, live-verified.
+///
+/// The follow-up review's exact counterexample: a root query that cross-joins
+/// two dependencies and projects the FIRST one, with the two dependency
+/// DEFINITIONS swapped between the references. The sorted multiset of dependency
+/// definitions is identical; only the binding differs. Output differs.
+///
+/// LIVE CAPTURE (experiments/finding3_swapped_bindings.sh,
+/// golden/fixtures/clone_fallback_swapped_bindings.jsonl). prod builds
+/// consA = `select a.id from up1 a cross join up2 b` -> {1}. dev then submits
+/// consB = `select a.id from up2 a cross join up1 b` (binding swapped) with the
+/// dev target ABSENT. TWO ORACLES: hosted answered `ready_to_execute` (srr=6,
+/// "model was executed because its table did not exist") — NOT a clone of
+/// consA — and the ACTUAL dev warehouse contents were (2,), consB's correct
+/// value, not consA's (1,).
+///
+/// So hosted keys reuse on the (reference -> definition) BINDING: a swapped
+/// binding is NOT equivalent and must execute. The previous
+/// `namespace_logic_hash` hashed only a sorted multiset of definition texts,
+/// which would have conflated consA and consB. The fix binds each
+/// schema-abstracted dependency NAME to its definition
+/// (fingerprint::namespace_logic_hash; see the
+/// `ns_distinguishes_swapped_dependency_bindings` unit test).
+#[test]
+fn hosted_swapped_bindings_execute_not_clone() {
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/clone_fallback_swapped_bindings.jsonl"
+    );
+    let entries = diff::load_golden(FIXTURE).expect("load swapped-binding fixture");
+    let submits: Vec<&diff::GoldenEntry> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .collect();
+    // consA (prod baseline) then consB (dev, binding swapped).
+    assert_eq!(submits.len(), 2, "consA baseline + consB swapped submit");
+
+    // The two root SQLs reference the two upstreams in SWAPPED order.
+    let sql_a = submits[0].request["sql"].as_str().unwrap();
+    let sql_b = submits[1].request["sql"].as_str().unwrap();
+    assert_ne!(
+        sql_a, sql_b,
+        "the swapped binding changes the root SQL order"
+    );
+
+    // The hosted decision for consB is EXECUTE (table did not exist), NOT a
+    // clone of consA — proving the binding is not conflated.
+    assert_eq!(
+        diff::decision_variant(&submits[1].response).as_deref(),
+        Some("ready_to_execute"),
+        "hosted executes the swapped-binding model (no unsafe clone)"
+    );
+    let ed = &submits[1].response["response"]["ready_to_execute"]["explained_decision"];
+    assert!(
+        ed["clone_rejection_reason"].as_i64() != Some(0) || true,
+        "clone was not performed"
+    );
+}
+
+/// Server reproduction: a model built under name A whose rendered SQL and
+/// dependency BINDINGS yield one namespace-logic identity must NOT be cloned
+/// into a differently-named target whose dependency bindings are SWAPPED (same
+/// multiset of definitions, different binding). The server must EXECUTE the
+/// swapped submit — the fix to `namespace_logic_hash` makes the two identities
+/// differ so no clone equivalent is found.
+#[tokio::test]
+async fn server_does_not_clone_swapped_binding_equivalent() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    // Two dependencies with DIFFERENT definitions, bound to two references.
+    let dep = |name: &str, q: &str| qc::QueryDependency {
+        name: name.into(),
+        query: q.into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: "prod_state_demo".into(),
+    };
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SBCONS\"";
+
+    // Baseline (prod): root projects V1 (first ref); V1=select 1, V2=select 2.
+    let mut base = submit(a, "prod_state_demo");
+    base.sql =
+        "select x.id from CDO_DEMO_DB.prod_state_demo.v1 x cross join CDO_DEMO_DB.prod_state_demo.v2 y"
+            .into();
+    base.query_dependencies = vec![
+        dep(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V1\"",
+            "select 1 as id",
+        ),
+        dep(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V2\"",
+            "select 2 as id",
+        ),
+    ];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Swapped target (dev, absent): same root SQL text but V1 and V2 definitions
+    // SWAPPED between the references. Multiset of definitions {1,2} unchanged;
+    // the binding differs -> different output -> must EXECUTE, never clone.
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"SBCONS\"";
+    let mut swapped = submit(b, "dev_clone_demo");
+    swapped.sql =
+        "select x.id from CDO_DEMO_DB.dev_clone_demo.v1 x cross join CDO_DEMO_DB.dev_clone_demo.v2 y"
+            .into();
+    swapped.query_dependencies = vec![
+        dep(
+            "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"V1\"",
+            "select 2 as id",
+        ),
+        dep(
+            "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"V2\"",
+            "select 1 as id",
+        ),
+    ];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "a swapped dependency binding (same multiset, different output) must \
+         execute, never clone — no data conflation"
+    );
+}

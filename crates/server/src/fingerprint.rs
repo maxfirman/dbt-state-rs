@@ -94,6 +94,13 @@ pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String 
 /// namespace-grouped cross-environment reuse (e.g. adopting a cloned object);
 /// the strict `sql_logic_hash` remains the primary same-target identity.
 ///
+/// Each dependency's schema-abstracted NAME is bound to its schema-abstracted
+/// definition (sorted by the pair), so the (reference → definition) relationship
+/// is preserved: swapping two definitions between their references changes the
+/// identity even though the multiset of definition texts is unchanged (review #2
+/// finding 3). Only the physical SCHEMA of the name/definition is abstracted, so
+/// the same model in prod and a dev clone still shares identity.
+///
 /// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake): a dev submit
 /// whose rendered SQL differs from the prod source only by schema is treated as
 /// the same logic (skips after a clone), while a genuine projection change
@@ -106,17 +113,30 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     // differ across environments. The abstracted SQL carries the logic.
     field(&mut h, normalized_ns(&req.dialect, &req.sql).as_bytes());
     extras(&mut h, &req.semantic_extras);
-    // Dependencies: compare only the schema-abstracted query text, sorted. The
-    // physical dependency NAME and its catalog/schema are environment-specific
-    // and excluded; the abstracted definition carries the dependency's logic.
-    let mut dependency_queries: Vec<String> = req
+    // Dependencies: bind each dependency's schema-abstracted NAME to its
+    // schema-abstracted definition, sorted by that pair. The physical schema of
+    // BOTH the name and the definition is abstracted (so prod and a dev clone
+    // share identity), but the (reference → definition) BINDING is preserved:
+    // swapping two definitions between their references, or resolving the same
+    // reference to a different definition, changes the identity. Hashing only a
+    // sorted multiset of definition texts (the previous behavior) discarded that
+    // binding and conflated genuinely different logic — review #2 finding 3,
+    // P0 reuse-safety. Length-framed per component so a name/definition boundary
+    // cannot be forged by crafted content.
+    let mut dependency_bindings: Vec<(String, String)> = req
         .query_dependencies
         .iter()
-        .map(|d| normalized_ns(&req.dialect, &d.query))
+        .map(|d| {
+            (
+                crate::sql_norm::abstract_object_name_schema(&d.name),
+                normalized_ns(&req.dialect, &d.query),
+            )
+        })
         .collect();
-    dependency_queries.sort();
-    field(&mut h, &(dependency_queries.len() as u64).to_le_bytes());
-    for query in dependency_queries {
+    dependency_bindings.sort();
+    field(&mut h, &(dependency_bindings.len() as u64).to_le_bytes());
+    for (name, query) in dependency_bindings {
+        field(&mut h, name.as_bytes());
         field(&mut h, query.as_bytes());
     }
     hex::encode(h.finalize())
@@ -349,6 +369,131 @@ mod tests {
         let a = exec("select order_id from CDO.dev.t", vec![]);
         let b = exec("select order_id, customer_id from CDO.dev.t", vec![]);
         assert_ne!(namespace_logic_hash(&a), namespace_logic_hash(&b));
+    }
+
+    // ---- NAMESPACE-ABSTRACTED identity preserves reference→definition binding -
+
+    /// REGRESSION (review #2 finding 3, P0 reuse-safety): the abstracted
+    /// identity must bind each dependency REFERENCE to its resolved DEFINITION,
+    /// not just hash a sorted multiset of definition texts. Consider an
+    /// UNCHANGED root query that cross-joins two dependencies, with their
+    /// definitions SWAPPED between the two references:
+    ///
+    ///   root: `select a.id from DB.S.V1 a cross join DB.S.V2 b`
+    ///   binding X: V1 = `select 1 as id`, V2 = `select 2 as id`
+    ///   binding Y: V1 = `select 2 as id`, V2 = `select 1 as id`
+    ///
+    /// The sorted multiset of dependency query texts is identical in both
+    /// (`{select 1, select 2}`), but the ACTUAL output differs (the root selects
+    /// `a.id`, i.e. V1's value: 1 under X, 2 under Y). If the abstracted identity
+    /// discards the (reference → definition) binding it would treat X and Y as
+    /// the same logic and wrongly clone one into the other — serving `1` where
+    /// `2` is required. The identities MUST differ.
+    #[test]
+    fn ns_distinguishes_swapped_dependency_bindings() {
+        let x = exec(
+            "select a.id from DB.S.V1 a cross join DB.S.V2 b",
+            vec![
+                dep("\"DB\".\"S\".\"V1\"", "select 1 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"V2\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        let y = exec(
+            "select a.id from DB.S.V1 a cross join DB.S.V2 b",
+            vec![
+                dep("\"DB\".\"S\".\"V1\"", "select 2 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"V2\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&x),
+            namespace_logic_hash(&y),
+            "swapping two dependency definitions between their references must \
+             change the abstracted identity (output differs: 1 vs 2)"
+        );
+    }
+
+    /// REGRESSION (review #2 finding 3): the original BLUE/RED counterexample.
+    /// The same model logic references `INPUT` resolved in two different
+    /// environments whose underlying data genuinely differs. Here the physical
+    /// NAME differs only by schema (BLUE vs RED) but the DEFINITION attached to
+    /// that reference differs — so the identities must differ. (When only the
+    /// schema differs AND the definition is schema-abstract-equal, they SHOULD
+    /// match — that is the cross-env case, covered separately below.)
+    #[test]
+    fn ns_distinguishes_same_reference_different_definition() {
+        let blue = exec(
+            "select id from DB.S.INPUT",
+            vec![dep(
+                "\"DB\".\"BLUE\".\"INPUT\"",
+                "select 1 as id",
+                "DB",
+                "BLUE",
+            )],
+        );
+        let red = exec(
+            "select id from DB.S.INPUT",
+            vec![dep(
+                "\"DB\".\"RED\".\"INPUT\"",
+                "select 2 as id",
+                "DB",
+                "RED",
+            )],
+        );
+        assert_ne!(
+            namespace_logic_hash(&blue),
+            namespace_logic_hash(&red),
+            "the same reference resolving to a different definition must differ"
+        );
+    }
+
+    /// POSITIVE (must still hold after the binding fix): the SAME model across
+    /// environments — identical reference-to-definition structure, differing
+    /// only in the physical schema qualifier of both the reference name and the
+    /// definition text — keeps a SHARED abstracted identity. The binding fix
+    /// must preserve this cross-environment reuse, not break it.
+    #[test]
+    fn ns_same_model_cross_env_still_shares_identity_with_binding() {
+        let prod = exec(
+            "select o.id from CDO.prod.stg_orders o cross join CDO.prod.stg_customers c",
+            vec![
+                dep(
+                    "\"CDO\".\"PROD\".\"STG_ORDERS\"",
+                    "select * from CDO.prod.raw_orders",
+                    "CDO",
+                    "prod",
+                ),
+                dep(
+                    "\"CDO\".\"PROD\".\"STG_CUSTOMERS\"",
+                    "select * from CDO.prod.raw_customers",
+                    "CDO",
+                    "prod",
+                ),
+            ],
+        );
+        let dev = exec(
+            "select o.id from CDO.dev.stg_orders o cross join CDO.dev.stg_customers c",
+            vec![
+                dep(
+                    "\"CDO\".\"DEV\".\"STG_ORDERS\"",
+                    "select * from CDO.dev.raw_orders",
+                    "CDO",
+                    "dev",
+                ),
+                dep(
+                    "\"CDO\".\"DEV\".\"STG_CUSTOMERS\"",
+                    "select * from CDO.dev.raw_customers",
+                    "CDO",
+                    "dev",
+                ),
+            ],
+        );
+        assert_eq!(
+            namespace_logic_hash(&prod),
+            namespace_logic_hash(&dev),
+            "the same model across envs (schema-only diff in both the reference \
+             and its definition) must still share abstracted identity"
+        );
     }
 
     /// The template (compare_unrendered_code) mode has a DISTINCT namespace from

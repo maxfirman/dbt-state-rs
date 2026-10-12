@@ -31,6 +31,62 @@ pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
     normalize_sql_inner(sql, true)
 }
 
+/// Schema-abstract a dependency's physical object NAME so the (reference →
+/// definition) binding can be keyed across environments.
+///
+/// A dependency reference like `"CDO"."PROD"."STG_ORDERS"` differs from its dev
+/// clone `"CDO"."DEV"."STG_ORDERS"` ONLY in the middle (schema) component. To
+/// bind each dependency reference to its definition in the cross-environment
+/// (namespace-abstracted) identity WITHOUT reintroducing an environment-specific
+/// difference, we abstract the schema component of the name exactly as
+/// `normalize_sql_namespace_abstracted` does for in-SQL relations, and
+/// case-fold unquoted parts.
+///
+/// Rules (mirroring the in-SQL relation visitor):
+///   * Split into dot-separated parts, each optionally double-quoted.
+///   * Only a THREE-part name has its middle component replaced with the schema
+///     placeholder; one- and two-part names are left intact (a two-part
+///     `schema.table` is ambiguous and abstracting it risks conflation).
+///   * An UNQUOTED part is lowercased; a quoted part keeps its exact case (the
+///     quotes themselves are normalized away so `"V1"` and `V1` compare equal
+///     only when case matches — Snowflake uppercases unquoted idents, but we do
+///     not resolve that here; the goal is a STABLE cross-env key, and the client
+///     sends consistently-quoted names within one project).
+///
+/// This is a string-level transform (dependency names are not full SQL
+/// statements, so the AST path does not apply) and is intentionally
+/// conservative: when a name does not look like a dotted identifier it is
+/// returned lowercased-but-otherwise-verbatim, which can only ever make two
+/// genuinely different names LESS likely to collide (safe: over-execute).
+pub fn abstract_object_name_schema(name: &str) -> String {
+    let parts: Vec<&str> = name.split('.').collect();
+    let unquote = |p: &str| -> String {
+        let t = p.trim();
+        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+            // Quoted: strip the surrounding quotes, un-double embedded quotes,
+            // preserve case.
+            t[1..t.len() - 1].replace("\"\"", "\"")
+        } else {
+            // Unquoted: Snowflake-style case-insensitive — lowercase.
+            t.to_ascii_lowercase()
+        }
+    };
+    if parts.len() == 3 {
+        format!(
+            "{}.{}.{}",
+            unquote(parts[0]),
+            SCHEMA_PLACEHOLDER,
+            unquote(parts[2])
+        )
+    } else {
+        parts
+            .iter()
+            .map(|p| unquote(p))
+            .collect::<Vec<_>>()
+            .join(".")
+    }
+}
+
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
     match Parser::parse_sql(&SnowflakeDialect {}, sql) {
         Ok(mut stmts) => {
