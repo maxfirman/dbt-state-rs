@@ -111,12 +111,6 @@ async fn conformance_replay_all_corpora() {
         // clone_history_provenance.rs::
         // clone_adoption_must_not_resurrect_row_of_different_execution_type.
         "clone_rebuild_execution_type.jsonl",
-        // Interleaved data-test freshness capture (treatment + control over the
-        // SAME test node): a data test confirmed with no object epoch EXECUTES
-        // when its upstream epoch advanced and SKIPS when unchanged. The generic
-        // replay cannot model the in-place upstream mutation; pinned by
-        // data_test_freshness.rs.
-        "data_test_upstream_freshness.jsonl",
         // compare_unrendered_code dual identity: a template-only change (Jinja
         // comment) with identical rendered SQL SKIPS. Interleaved baseline +
         // re-submit over the same node; pinned by template_comparison.rs.
@@ -136,7 +130,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        21,
+        22,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

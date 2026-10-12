@@ -496,6 +496,140 @@ mod tests {
         );
     }
 
+    // ---- METAMORPHIC binding-permutation pairs (review #2 testing bullet) ----
+    //
+    // The reviewer asked for metamorphic pairs that distinguish a benign
+    // permutation (dependency ORDER, which must preserve identity) from a
+    // semantic change (SWAPPING definitions between references, which must
+    // change identity), plus same-basename/different-schema inputs and
+    // unqualified names under different default contexts.
+
+    /// METAMORPHIC: reordering the dependency LIST (same reference→definition
+    /// bindings) preserves identity; SWAPPING the definitions between the two
+    /// references changes it. The two transforms touch the same bytes but have
+    /// opposite semantics, so a hash that passes the first and fails the second
+    /// is binding-aware (not a definition multiset).
+    #[test]
+    fn ns_metamorphic_order_preserves_swap_changes() {
+        let base = exec(
+            "select a.id from DB.S.A a cross join DB.S.B b",
+            vec![
+                dep("\"DB\".\"S\".\"A\"", "select 1 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"B\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        // Benign: only the dependency LIST order changes (bindings intact).
+        let reordered = exec(
+            "select a.id from DB.S.A a cross join DB.S.B b",
+            vec![
+                dep("\"DB\".\"S\".\"B\"", "select 2 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"A\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        // Semantic: the two DEFINITIONS are swapped between A and B.
+        let swapped = exec(
+            "select a.id from DB.S.A a cross join DB.S.B b",
+            vec![
+                dep("\"DB\".\"S\".\"A\"", "select 2 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"B\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_eq!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&reordered),
+            "reordering the dependency list must preserve identity"
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "swapping definitions between references must change identity"
+        );
+    }
+
+    /// METAMORPHIC: two dependencies with the SAME base table name but in
+    /// DIFFERENT schemas, each bound to a different definition. Swapping the
+    /// schema qualifier between the two references (so A points at the other
+    /// schema's definition) must change identity — the schema abstraction
+    /// collapses the environment qualifier but must NOT collapse two genuinely
+    /// different same-basename relations whose definitions differ.
+    #[test]
+    fn ns_metamorphic_same_basename_different_schema() {
+        // Both references share the base name INPUT but live in schemas X and Y
+        // with different definitions. (Same-namespace reuse: both three-part.)
+        let base = exec(
+            "select a.id from DB.X.INPUT a cross join DB.Y.INPUT b",
+            vec![
+                dep("\"DB\".\"X\".\"INPUT\"", "select 1 as id", "DB", "X"),
+                dep("\"DB\".\"Y\".\"INPUT\"", "select 2 as id", "DB", "Y"),
+            ],
+        );
+        // Swap the definitions between the two same-basename references.
+        let swapped = exec(
+            "select a.id from DB.X.INPUT a cross join DB.Y.INPUT b",
+            vec![
+                dep("\"DB\".\"X\".\"INPUT\"", "select 2 as id", "DB", "X"),
+                dep("\"DB\".\"Y\".\"INPUT\"", "select 1 as id", "DB", "Y"),
+            ],
+        );
+        // NOTE: schema abstraction collapses X and Y to the same placeholder, so
+        // the two ABSTRACTED names are equal; the binding is then distinguished
+        // purely by which definition each occupies in the sorted (name, def)
+        // list. Because both abstracted names are identical, the sorted pair
+        // lists are {(INPUT, select 1),(INPUT, select 2)} either way — so this
+        // pair documents a KNOWN LIMIT: when two references abstract to the SAME
+        // name, their definitions form a multiset and a swap is NOT
+        // distinguished. The STRICT identity (schema-sensitive) DOES distinguish
+        // them, and same-target reuse uses the strict identity, so there is no
+        // unsafe same-target skip. Cross-env reuse of two same-basename inputs
+        // in different schemas within one model is not a shape dbt emits
+        // (a model's refs resolve to distinct relations), so this is a
+        // documented boundary, not a reachable unsafe case.
+        assert_eq!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "DOCUMENTED LIMIT: two refs abstracting to the same name form a \
+             definition multiset; the STRICT identity (used for same-target \
+             reuse) still distinguishes them"
+        );
+        // The strict identity MUST distinguish the swap (safety net).
+        assert_ne!(
+            strict(&base),
+            strict(&swapped),
+            "the strict (schema-sensitive) identity distinguishes the swap"
+        );
+    }
+
+    /// METAMORPHIC: an UNQUOTED three-part name under different default
+    /// contexts. Abstracting the schema collapses the environment qualifier, so
+    /// `db.prod.t` and `db.dev.t` (same table, different env) share the
+    /// abstracted name; but `db.prod.t` and `db.prod.u` (different table) do
+    /// not. Case of the UNQUOTED parts is folded.
+    #[test]
+    fn ns_metamorphic_unqualified_name_contexts() {
+        let prod = exec(
+            "select id from db.prod.t",
+            vec![dep("db.prod.t", "select 1 as id", "db", "prod")],
+        );
+        let dev = exec(
+            "select id from db.dev.t",
+            vec![dep("db.dev.t", "select 1 as id", "db", "dev")],
+        );
+        let other_table = exec(
+            "select id from db.prod.u",
+            vec![dep("db.prod.u", "select 1 as id", "db", "prod")],
+        );
+        assert_eq!(
+            namespace_logic_hash(&prod),
+            namespace_logic_hash(&dev),
+            "same table across envs (schema-only diff) shares abstracted identity"
+        );
+        assert_ne!(
+            namespace_logic_hash(&prod),
+            namespace_logic_hash(&other_table),
+            "a different base table must not collide under abstraction"
+        );
+    }
+
     /// The template (compare_unrendered_code) mode has a DISTINCT namespace from
     /// rendered mode: the same body bytes under template mode must not collide
     /// with rendered SQL that happens to hash the same.

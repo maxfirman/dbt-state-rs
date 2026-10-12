@@ -56,30 +56,40 @@ bump_prod_upstream(){ run_op "create or replace table CDO_DEMO_DB.prod_state_dem
 
 echo "############ CROSS-ENV CLONE FALLBACK ($ARM) id=$ID ############"
 
+# Fail hard on a failed precondition build (review #2 testing bullet: experiment
+# drivers must not continue past a failed setup/build/query step).
+fail(){ echo "FATAL: $1"; exit 1; }
+built_ok(){ grep -qiE "Completed successfully|Succeeded|Reused|Cloned" "$1"; }
+
 if [ "$ARM" = "stale" ]; then
   echo "--- 1. build prod $UP + $MODEL (source holds E1) ---"
-  dbt build --profile snowflake --target prod_demo --select "$UP" "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_prod.txt 2>&1 || true
+  dbt build --profile snowflake --target prod_demo --select "$UP" "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_prod.txt 2>&1
+  built_ok /tmp/cf2_prod.txt || { cat /tmp/cf2_prod.txt; fail "prod source build failed"; }
   grep -iE "Succeeded|Reused|Error" /tmp/cf2_prod.txt | sed 's/^ *//' | tail -3
   echo "--- 2. bump prod upstream E1->E2 (source $MODEL NOT rebuilt, stays stale) ---"
   bump_prod_upstream
 else
   echo "--- 1. build prod $UP only ---"
-  dbt build --profile snowflake --target prod_demo --select "$UP" --skip-semantic-manifest-validation >/tmp/cf2_prod0.txt 2>&1 || true
+  dbt build --profile snowflake --target prod_demo --select "$UP" --skip-semantic-manifest-validation >/tmp/cf2_prod0.txt 2>&1
+  built_ok /tmp/cf2_prod0.txt || { cat /tmp/cf2_prod0.txt; fail "prod upstream build failed"; }
   echo "--- 1b. bump prod upstream, THEN build $MODEL (source incorporates E2) ---"
   bump_prod_upstream
-  dbt build --profile snowflake --target prod_demo --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_prod.txt 2>&1 || true
+  dbt build --profile snowflake --target prod_demo --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_prod.txt 2>&1
+  built_ok /tmp/cf2_prod.txt || { cat /tmp/cf2_prod.txt; fail "prod model build failed"; }
   grep -iE "Succeeded|Reused|Error" /tmp/cf2_prod.txt | sed 's/^ *//' | tail -3
 fi
 
 # Build the upstream in dev_clone so the dev submit's ref resolves + is current.
 echo "--- 3. build $UP in dev_clone (dev upstream now current/E2) ---"
-dbt build --profile snowflake --target dev_clone --select "$UP" --skip-semantic-manifest-validation >/tmp/cf2_dev_up.txt 2>&1 || true
+dbt build --profile snowflake --target dev_clone --select "$UP" --skip-semantic-manifest-validation >/tmp/cf2_dev_up.txt 2>&1
+built_ok /tmp/cf2_dev_up.txt || { cat /tmp/cf2_dev_up.txt; fail "dev upstream build failed"; }
 grep -iE "Succeeded|Reused|Cloned|Error" /tmp/cf2_dev_up.txt | sed 's/^ *//' | tail -2
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null|head -1||true); BEFORE=0; [ -n "$GF" ] && BEFORE=$(wc -l<"$GF")
 
 echo "--- 4. build $MODEL in dev_clone (absent target, defers to prod) ---"
-dbt build --profile snowflake --target dev_clone --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_dev.txt 2>&1 || true
+dbt build --profile snowflake --target dev_clone --select "$MODEL" --skip-semantic-manifest-validation >/tmp/cf2_dev.txt 2>&1
+built_ok /tmp/cf2_dev.txt || { cat /tmp/cf2_dev.txt; fail "dev model build failed"; }
 grep -iE "Succeeded|Reused|Cloned|clone|Error" /tmp/cf2_dev.txt | sed 's/^ *//' | tail -6
 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null|head -1||true)
