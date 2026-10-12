@@ -121,6 +121,11 @@ async fn conformance_replay_all_corpora() {
         // comment) with identical rendered SQL SKIPS. Interleaved baseline +
         // re-submit over the same node; pinned by template_comparison.rs.
         "template_compare_unrendered.jsonl",
+        // Cross-environment clone fallback (dev_clone defer_to prod): a dev build
+        // of an absent target clones the cross-env equivalent (ready_to_clone,
+        // srr=1), across a different upstream table name. Interleaved
+        // cross-session capture; pinned by clone_fallback_xenv.rs.
+        "clone_fallback_xenv_fresh.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()

@@ -285,26 +285,40 @@ changed, because a clean live characterization could not be constructed without
 guessing hosted policy:
 
 - **Finding 2 (clone fallback freshness / stale same-target suppresses clone).**
-  The SQL-submit cross-name clone fallback is already LIVE-VERIFIED as driven by
-  schema-abstracted logic identity, NOT target existence
-  (`clone_submit_equivalent_fallback.jsonl`, `clone_fallback_over_existing_target.jsonl`,
-  §A). A fresh live attempt (2026-10-12, `experiments/clone_fallback_freshness.sh`
-  + `clone_fallback_control.sh`) found the fallback does NOT fire in a flat
-  same-schema prod build (the absent target just executed "table did not exist"),
-  and the control was contaminated by hosted-history carryover across runs with
-  reused fixed names ("Cloned from other environment"), re-confirming the
-  review's point that dropping warehouse objects does NOT reset hosted decision
-  history. Cleanly isolating the freshness-guard claim therefore needs the
-  cross-ENVIRONMENT dev_clone flow with UNIQUE per-run names and controlled
-  upstream staleness — a dedicated controlled capture, not a quick win. Open.
+  Investigated live via the cross-ENVIRONMENT dev_clone flow (`defer_to_target:
+  prod_demo`) with UNIQUE per-run names (2026-10-12,
+  `experiments/clone_fallback_xenv.sh`;
+  `golden/fixtures/clone_fallback_xenv_fresh.jsonl`,
+  `crates/harness/tests/clone_fallback_xenv.rs`). The cross-name clone fallback
+  DOES fire there: a dev build of an absent target returns `ready_to_clone`
+  (srr=1) cloning the equivalent built under another name. Two things emerged:
+  (a) hosted cloned a source whose data was NOT rebuilt after an upstream bump
+  ("Cloned from other environment within tolerance") — hosted TOLERATES source
+  staleness rather than gating on it; and (b) one run rejected the clone with
+  crr=9 OUTSIDE_TIME_TRAVEL_WINDOW while an identical repeat returned
+  `ready_to_clone`, so that rejection is TIMING-SENSITIVE / non-deterministic
+  (Snowflake time-travel visibility), not a stable encodable rule.
+  **Determination:** on this axis the server is MORE CONSERVATIVE than hosted
+  (hosted reuses aggressively). Adding the review's implied freshness GATE to
+  `find_clone_equivalent` would make the server reuse LESS than hosted — a
+  conformance REGRESSION — so the fallback is intentionally NOT tightened. The
+  exact clone tolerance and time-travel window remain OPEN (need controlled
+  adapter-level capture).
 - **Finding 3 (namespace abstraction erases dependency identity: BLUE/RED,
   swapped V1/V2).** Schema abstraction is a DELIBERATE, live-verified
   cross-environment identity (§A; `fingerprint.rs`/`sql_norm.rs` live-comment
-  tests). The counterexamples are within-namespace; the `table_namespace` is
-  adapter-supplied (one value per warehouse/account), so a clean live
-  contradiction is not constructible in jaffle-shop's single account. Open:
-  needs a controlled multi-account/namespace capture to decide whether hosted
-  binds each dependency to a resolved graph node.
+  tests). New live evidence (2026-10-12, `clone_fallback_xenv.sh`) is a
+  Finding-3 SIGNAL in the opposite direction to the review's worry: hosted
+  cloned across two models referencing DIFFERENT upstream TABLE names
+  (`cf2_up_g*` vs `cf2_up_f*`), i.e. hosted's abstraction is MORE aggressive
+  than the server's schema-only abstraction, so hosted reuses MORE here, not
+  less. Tightening dependency binding would therefore reduce reuse below hosted
+  (a regression). The exact hosted abstraction KEY (what it treats as the same
+  dependency) is still uncharacterized and remains OPEN; a precise
+  genuinely-different-DATA counterexample needs controlled per-schema datasets
+  with asserted row contents (two profile targets make this constructible — a
+  concrete next step), but the current evidence does NOT show the server
+  over-reusing relative to hosted. Not changed.
 - **Finding 4 (RegisterClone provenance / age reset / external source edit).**
   Offline invariant counterexamples; the real meaning of namespace transitions
   and clone-chain provenance needs live clone-chain characterization. Open.
