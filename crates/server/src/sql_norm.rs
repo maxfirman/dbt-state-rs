@@ -261,6 +261,22 @@ const VOLATILE_FUNCTIONS: &[&str] = &[
     "seq8",
 ];
 
+/// The SUBSET of volatile context functions Snowflake allows to be called
+/// WITHOUT parentheses (ANSI compatibility), so a BARE identifier of this name
+/// is the volatile builtin rather than a column. From functions-context "Usage
+/// notes": CURRENT_DATE, CURRENT_TIME, CURRENT_TIMESTAMP, CURRENT_USER,
+/// LOCALTIME, LOCALTIMESTAMP. (CURRENT_USER is not time/random and so is not in
+/// VOLATILE_FUNCTIONS.) Everything else — `random`, `uuid_string`, `sysdate`,
+/// `seqN`, … — REQUIRES parentheses, so a bare identifier of those names is an
+/// ordinary column, NOT the function. Review #2 6th follow-up P1.
+const CONTEXT_PARENLESS_FUNCTIONS: &[&str] = &[
+    "current_date",
+    "current_time",
+    "current_timestamp",
+    "localtime",
+    "localtimestamp",
+];
+
 /// True if `sql` references any [`VOLATILE_FUNCTIONS`] member as a function
 /// call. Parses with the Snowflake dialect and inspects PARSED EXPRESSIONS only
 /// — never a raw-text substring scan — so a clock keyword appearing in a COMMENT
@@ -281,21 +297,27 @@ pub fn sql_contains_volatile_function(sql: &str) -> bool {
         id.quote_style.is_none()
             && VOLATILE_FUNCTIONS.contains(&id.value.to_ascii_lowercase().as_str())
     }
+    fn is_parenless_context_name(id: &Ident) -> bool {
+        id.quote_style.is_none()
+            && CONTEXT_PARENLESS_FUNCTIONS.contains(&id.value.to_ascii_lowercase().as_str())
+    }
     impl VisitorMut for VolatileFinder {
         type Break = ();
         fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
             let hit = match e {
                 // Function call: current_timestamp(), random(), uuid_string(), …
+                // — the FULL volatile set applies to parenthesized calls.
                 Expr::Function(f) => matches!(
                     f.name.0.last(),
                     Some(ObjectNamePart::Identifier(id)) if is_volatile_name(id)
                 ),
-                // Bare parenless context expression: `current_timestamp`,
-                // `current_date`. A single-component unquoted identifier whose
-                // name is a volatile builtin. (A real column of the same bare
-                // name is indistinguishable here, but these names are reserved
-                // Snowflake context functions, so this is the safe reading.)
-                Expr::Identifier(id) => is_volatile_name(id),
+                // Bare parenless expression: ONLY the documented parenthesis-free
+                // CONTEXT clock functions (current_timestamp/date/time, localtime,
+                // localtimestamp) count here. `random`, `uuid_string`, `sysdate`,
+                // `seqN`, … REQUIRE parentheses, so a bare identifier of those
+                // names is an ordinary COLUMN, not the function. Review #2 6th
+                // follow-up P1.
+                Expr::Identifier(id) => is_parenless_context_name(id),
                 _ => false,
             };
             if hit {
@@ -1320,6 +1342,55 @@ mod tests {
         ));
         // Unparseable SQL is conservatively treated as volatile (safe: execute).
         assert!(sql_contains_volatile_function("this is not sql @@@ )("));
+    }
+
+    /// REGRESSION (review #2 6th follow-up, P1): the BARE (parenless) identifier
+    /// branch must only match the documented parenthesis-free CONTEXT clock
+    /// expressions, NOT functions like `random`/`uuid_string` that REQUIRE
+    /// parentheses. A bare `random` is an ordinary COLUMN reference; only
+    /// `random()` is the volatile builtin. (Snowflake: only CURRENT_DATE/TIME/
+    /// TIMESTAMP, LOCALTIME, LOCALTIMESTAMP — and CURRENT_USER, non-volatile —
+    /// may be called without parentheses.)
+    #[test]
+    fn bare_identifier_volatility_is_parenless_context_only() {
+        // Bare `random` is a COLUMN, not the function → NOT volatile.
+        assert!(
+            !sql_contains_volatile_function("select random from (select 42 as random)"),
+            "a bare `random` is a column (random() needs parens) — not volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select \"RANDOM\" from (select 42 as random)"),
+            "a quoted RANDOM column — not volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select uuid_string from t"),
+            "a bare `uuid_string` is a column (uuid_string() needs parens) — not volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select sysdate from t"),
+            "a bare `sysdate` is a column (sysdate() needs parens) — not volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select seq8 from t"),
+            "a bare `seq8` is a column — not volatile"
+        );
+        // The ACTUAL function calls ARE volatile.
+        assert!(sql_contains_volatile_function("select random() from t"));
+        assert!(sql_contains_volatile_function(
+            "select uuid_string() from t"
+        ));
+        assert!(sql_contains_volatile_function("select sysdate() from t"));
+        // Parenless CONTEXT clock expressions ARE volatile.
+        assert!(sql_contains_volatile_function(
+            "select current_timestamp from t"
+        ));
+        assert!(sql_contains_volatile_function("select current_date from t"));
+        assert!(sql_contains_volatile_function(
+            "select localtimestamp from t"
+        ));
+        // A column that happens to be named `current_timestamp` is
+        // indistinguishable from the parenless context fn and is treated as
+        // volatile (the conservative/safe reading for a reserved context name).
     }
 
     /// The gate must inspect the DEPENDENCY GRAPH, not just the root SQL: a view

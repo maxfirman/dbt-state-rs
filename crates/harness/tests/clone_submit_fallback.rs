@@ -1173,3 +1173,49 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
          swapped binding must EXECUTE, not clone (no component-boundary collision)"
     );
 }
+
+/// P1 #2 (review #2 6th follow-up) — a column literally named `random` is
+/// DETERMINISTIC (`random()` with parentheses would be the volatile function).
+/// Under `tolerate_nondeterminism=false` the model must still CLONE its
+/// equivalent, exactly like any other deterministic model — the bare-identifier
+/// volatility branch must not misclassify it.
+#[tokio::test]
+async fn bare_random_column_is_deterministic_and_clones() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RNDCONS\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RNDCONS\"";
+    // Root selects a COLUMN named `random` — not the function.
+    let root = |schema: &str| format!("select random from CDO_DEMO_DB.{schema}.rnd_up");
+
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = root("prod_state_demo");
+    base.query_dependencies = vec![];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    let mut dev = submit(b, "dev_clone_demo");
+    dev.sql = root("dev_clone_demo");
+    dev.query_dependencies = vec![];
+    dev.tolerate_nondeterminism = false;
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "a column named `random` is deterministic and must CLONE even with \
+         tolerate_nondeterminism=false (random() with parens would be volatile)"
+    );
+}
