@@ -354,6 +354,29 @@ impl Store {
         row.map(TryInto::try_into).transpose()
     }
 
+    /// True if ANY confirmed execution exists for this physical target
+    /// (regardless of execution_type, fingerprint, namespace or dialect). This
+    /// is the PHYSICAL-EXISTENCE signal used to distinguish a genuine first
+    /// build from a rebuild whose logic fingerprint no longer matches — hosted
+    /// reports the rebuild rationale ("query didn't match or upstream out of
+    /// date") when the target existed. Review #2 5th follow-up P1 #4.
+    pub async fn target_has_confirmed_history(
+        &self,
+        org_id: &str,
+        target_table: &str,
+    ) -> sqlx::Result<bool> {
+        let exists: Option<i32> = sqlx::query_scalar(
+            r#"SELECT 1 FROM executions
+               WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+               LIMIT 1"#,
+        )
+        .bind(org_id)
+        .bind(target_table)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
     /// The newest confirmed execution in a namespace carrying a given
     /// schema-abstracted logic identity. Used at RegisterClone to inherit the
     /// clone SOURCE's logic identity onto the clone-origin row, so a later

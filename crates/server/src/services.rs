@@ -750,6 +750,16 @@ impl Sql for SqlService {
                 }
         });
 
+        // PHYSICAL-EXISTENCE signal (fingerprint-agnostic): did this target ever
+        // have a confirmed build? When no fingerprint matched (confirmed is
+        // None) but the target existed, this is a REBUILD and hosted reports the
+        // rebuild rationale (not "did not exist"). Review #2 5th follow-up P1 #4.
+        let target_has_prior_build = self
+            .0
+            .store
+            .target_has_confirmed_history(&org_id, &target_table)
+            .await
+            .map_err(db_err)?;
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: node_body_hash.as_deref(),
@@ -759,6 +769,7 @@ impl Sql for SqlService {
             stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
                 req.stale_upstream_policy,
             ),
+            target_has_prior_build,
         };
         let verdict = decision::decide(&ctx, confirmed.as_ref());
 
@@ -1076,6 +1087,12 @@ impl Sql for SqlService {
                 && matches!((req.last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded)
         });
         let input_tables: Vec<InputTable> = Vec::new();
+        let target_has_prior_build = self
+            .0
+            .store
+            .target_has_confirmed_history(&org_id, &target_table)
+            .await
+            .map_err(db_err)?;
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: None,
@@ -1083,6 +1100,7 @@ impl Sql for SqlService {
             freshness_tolerance_seconds: 0,
             target_table: Some(target_table.as_str()),
             stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
+            target_has_prior_build,
         };
         let verdict = decision::decide(&ctx, confirmed.as_ref());
 

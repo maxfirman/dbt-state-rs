@@ -116,14 +116,23 @@ pub struct SubmitContext<'a> {
     /// treated as upstream drift.
     pub target_table: Option<&'a str>,
     pub stale_upstream_policy: StaleUpstreamPolicy,
+    /// Whether the server has ANY confirmed prior build of this physical target
+    /// (regardless of fingerprint/provenance). Distinguishes a genuine FIRST
+    /// build ("did not exist") from a REBUILD whose logic fingerprint no longer
+    /// matches ("query didn't match or upstream out of date"): hosted reports
+    /// the rebuild rationale when the target existed, even if no fingerprint
+    /// matched. Review #2 5th follow-up P1 #4.
+    pub target_has_prior_build: bool,
 }
 
 /// Decide SKIP vs EXECUTE given the latest matching confirmed record (if any).
 pub fn decide(ctx: &SubmitContext, confirmed: Option<&ExecutionRow>) -> Verdict {
     match confirmed {
-        // No prior execution with a matching fingerprint → the node did not
-        // exist / had no prior execution → EXECUTE (not stale; a hash miss).
-        None => execute(ctx.execution_type, false, false),
+        // No confirmed record with a MATCHING fingerprint. The target either
+        // never existed (first build → "did not exist") or existed under a
+        // different fingerprint (rebuild → "query didn't match / out of date").
+        // `target_has_prior_build` carries the physical-existence signal.
+        None => execute(ctx.execution_type, false, ctx.target_has_prior_build),
         Some(prev) => {
             let f = evaluate_freshness(ctx, prev);
             if f.should_rebuild {
@@ -388,6 +397,7 @@ mod tests {
             freshness_tolerance_seconds: 0,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
+            target_has_prior_build: false,
         }
     }
 
@@ -879,6 +889,7 @@ mod tests {
             freshness_tolerance_seconds: 0,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
+            target_has_prior_build: false,
         }
     }
 

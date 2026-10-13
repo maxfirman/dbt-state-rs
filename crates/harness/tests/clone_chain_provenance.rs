@@ -264,27 +264,27 @@ async fn registerclone_source_age_chain_exact_replay() {
          clone (entry 3, own epoch 1791831506226) and is up to date, so hosted \
          reports a no-op (\"both its query and its upstream data are up to date\")"
     );
-    // UNRESOLVED DIVERGENCE (review #2 4th follow-up, P1 #4). We do NOT attribute
-    // this to a single cause. The reviewer's local-variation probes show the
-    // incremental self-referential predicate is NOT the isolated cause: removing
-    // the predicate alone yields CLONE (not SKIP); aligning the own-target epoch
-    // with the clone confirmation yields EXECUTE; applying both yields a SKIP
-    // whose runtime does not match the capture. Entry 4 differs from entry 0 on
-    // MULTIPLE axes simultaneously — the schema (prod→dev), the added
-    // `where id > (select max(id) from {{ this }})` predicate, AND the
+    // UNRESOLVED DIVERGENCE (review #2 4th+5th follow-up, P1 #4). We do NOT
+    // attribute this to a single cause. The reviewer's local-variation probes
+    // show the incremental self-referential predicate is NOT the isolated cause:
+    // removing the predicate alone yields CLONE (not SKIP); aligning the
+    // own-target epoch with the clone confirmation yields EXECUTE; applying both
+    // yields a SKIP whose runtime does not match the capture. Entry 4 differs
+    // from entry 0 on MULTIPLE axes simultaneously — the schema (prod→dev), the
+    // added `where id > (select max(id) from {{ this }})` predicate, AND the
     // own-target/upstream epochs — so this capture cannot isolate the hosted
-    // rule. The honest status is: hosted performs a post-clone same-target no-op
-    // SKIP here; the server, replaying from an empty store with the clone
-    // recorded, does not reproduce that SKIP for this entry. No general
-    // predicate-disregard (or any other speculative) rule is implemented. The
-    // divergence is pinned EXACTLY so a future, properly-characterized fix must
-    // update this assertion rather than silently claim parity.
-    assert_ne!(
-        local4, "skip_execution",
-        "UNRESOLVED: the server does not reproduce the hosted post-clone no-op \
-         SKIP for entry 4. The cause is NOT isolated (schema, incremental \
-         predicate and own/upstream epochs all differ at once); do not infer a \
-         single rule. Current local decision: {local4}. If this changes, \
-         re-characterize and update the test + handoff."
+    // rule. Hosted performs a post-clone same-target no-op SKIP; the server,
+    // replaying the clone, EXECUTEs. No speculative rule is implemented.
+    //
+    // The local variant is pinned EXACTLY (not a loose `assert_ne`) so an
+    // unexpected transition — e.g. EXECUTE→CLONE — fails here and forces a
+    // re-characterization rather than passing silently (5th follow-up P1 #4).
+    assert_eq!(
+        local4, "ready_to_execute",
+        "UNRESOLVED but PINNED: the server currently EXECUTEs entry 4 where hosted \
+         performs a post-clone no-op SKIP. The cause is NOT isolated (schema, \
+         incremental predicate and own/upstream epochs all differ at once); do \
+         not infer a single rule. If this variant changes, re-characterize and \
+         update the test + handoff."
     );
 }

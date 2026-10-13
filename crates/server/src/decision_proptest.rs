@@ -131,6 +131,7 @@ fn ctx<'a>(
         freshness_tolerance_seconds: tol,
         target_table: target,
         stale_upstream_policy: policy,
+        target_has_prior_build: false,
     }
 }
 
