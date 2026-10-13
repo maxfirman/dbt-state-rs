@@ -164,3 +164,73 @@ async fn compare_unrendered_code_skips_rendered_change() {
         "compare_unrendered_code=true must match on the template only (skip a rendered-only change)"
     );
 }
+
+/// P0 #1 (review #2 5th follow-up) — a QUOTED reserved-word column reference
+/// must NOT be treated as the same logic as the bare reserved-word LITERAL on
+/// the SAME target. `select "NULL" from …` reads a column; `select NULL from …`
+/// produces a null. The 4th-follow-up normalization rendered `"NULL"` as the
+/// bare `NULL`, so after confirming the first the second SKIPPED (served stale
+/// output) — the unsafe direction. Build+confirm the column-ref form, then
+/// submit the literal form for the SAME target → must EXECUTE, not skip.
+#[tokio::test]
+async fn quoted_reserved_word_change_forces_execute_same_target() {
+    let (addr, _schema) = support::start_server().await;
+    let ch = support::channel(addr).await;
+    let mut sql_c = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let target = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RW_PROBE\"";
+    let mk = |body: &str| qc::SubmitEnrichedSqlRequest {
+        target_table: Some(target.into()),
+        dialect: "snowflake".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: Some("prod_state_demo".into()),
+        execution_type: 1,
+        sql: format!("select {body} from CDO_DEMO_DB.prod_state_demo.rw_up"),
+        tolerate_nondeterminism: true,
+        table_namespace: Some("rw-ns".into()),
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: "model.jaffle.rw".into(),
+            node_body_hash: Some("b".into()),
+            project_id: Some("p".into()),
+            ..Default::default()
+        }),
+        labels: [("dbt_node_name".to_string(), "rw".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    // Build + confirm the COLUMN-REFERENCE form: select "NULL" from …
+    let r0 = sql_c
+        .submit_enriched_sql(mk("\"NULL\""))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("first build must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Submit the LITERAL form for the SAME target: select NULL from …
+    let v = support::response_variant(
+        &sql_c
+            .submit_enriched_sql(mk("NULL"))
+            .await
+            .unwrap()
+            .into_inner(),
+    );
+    assert_eq!(
+        v, "ready_to_execute",
+        "a quoted reserved-word column ref and the bare literal are different \
+         logic; the second must EXECUTE, not skip the first's stale output"
+    );
+}

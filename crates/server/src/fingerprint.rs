@@ -44,7 +44,7 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-sql-v2");
+    field(&mut h, b"dbt-state-sql-v3");
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     field(&mut h, req.default_catalog.as_bytes());
     field(
@@ -131,7 +131,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     let schemas = SchemaMap::from_schemas(all_schemas);
 
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-ns-logic-v2");
+    field(&mut h, b"dbt-state-ns-logic-v3");
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     // The default_schema is folded in as its RELATIVE token (not its physical
     // name), so the SAME model across environments (whose default_schema differs
@@ -982,6 +982,106 @@ mod tests {
             namespace_logic_hash(&unquoted),
             namespace_logic_hash(&upper_quoted),
             "unquoted X schema folds to uppercase == quoted \"X\" (CLONE retained)"
+        );
+    }
+
+    /// REGRESSION (review #2 5th follow-up, P0 #2): a QUOTED component with an
+    /// EMBEDDED DOT must stay one case-sensitive component. `abstract_object_name_schema_with`
+    /// split on every `.`, so `"X.Y"` and `"x.y"` fragmented and uppercased into
+    /// the same string → a swapped binding on dotted quoted schemas CLONED
+    /// unsafely. These are valid, distinct Snowflake relations.
+    #[test]
+    fn ns_dotted_quoted_schema_binding_swap_differs() {
+        let base = exec(
+            "select a.id from DB.\"X.Y\".INPUT a cross join DB.\"x.y\".INPUT b",
+            vec![
+                dep(
+                    "\"DB\".\"X.Y\".\"INPUT\"",
+                    "select 1 as id",
+                    "DB",
+                    "\"X.Y\"",
+                ),
+                dep(
+                    "\"DB\".\"x.y\".\"INPUT\"",
+                    "select 2 as id",
+                    "DB",
+                    "\"x.y\"",
+                ),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.\"X.Y\".INPUT a cross join DB.\"x.y\".INPUT b",
+            vec![
+                dep(
+                    "\"DB\".\"X.Y\".\"INPUT\"",
+                    "select 2 as id",
+                    "DB",
+                    "\"X.Y\"",
+                ),
+                dep(
+                    "\"DB\".\"x.y\".\"INPUT\"",
+                    "select 1 as id",
+                    "DB",
+                    "\"x.y\"",
+                ),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "quoted \"X.Y\" and \"x.y\" are DISTINCT case-sensitive schemas; a \
+             swapped binding must change the identity (the dot is inside the quotes)"
+        );
+    }
+
+    /// REGRESSION (review #2 5th follow-up, P0 #2): a quoted TABLE component with
+    /// an embedded dot likewise stays one component and keeps its case.
+    #[test]
+    fn ns_dotted_quoted_table_binding_swap_differs() {
+        let base = exec(
+            "select a.id from DB.S.X a cross join DB.S.Y b",
+            vec![
+                dep("\"DB\".\"S\".\"T.a\"", "select 1 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"t.a\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.S.X a cross join DB.S.Y b",
+            vec![
+                dep("\"DB\".\"S\".\"T.a\"", "select 2 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"t.a\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "quoted \"T.a\" and \"t.a\" are distinct relations; a swapped binding \
+             must change the identity"
+        );
+    }
+
+    /// Escaped embedded quote in a component: `"a""b"` is the single identifier
+    /// `a"b`, distinct from `"A""B"` (`A"B`). A swap must change the identity.
+    #[test]
+    fn ns_escaped_quote_component_binding_swap_differs() {
+        let base = exec(
+            "select a.id from DB.S.X a cross join DB.S.Y b",
+            vec![
+                dep("\"DB\".\"S\".\"a\"\"b\"", "select 1 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"A\"\"B\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.S.X a cross join DB.S.Y b",
+            vec![
+                dep("\"DB\".\"S\".\"a\"\"b\"", "select 2 as id", "DB", "S"),
+                dep("\"DB\".\"S\".\"A\"\"B\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "escaped-quote components a\"b vs A\"B are distinct; a swap must differ"
         );
     }
 }

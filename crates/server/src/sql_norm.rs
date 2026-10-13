@@ -123,20 +123,69 @@ impl SchemaMap {
     }
 }
 
+/// Split a dotted object NAME into its real identifier components, respecting
+/// DOUBLE-QUOTED segments: a `.` inside `"…"` is part of the component, and `""`
+/// is an escaped embedded quote. Each returned element retains its ORIGINAL
+/// spelling (including surrounding quotes) so [`canonical_identifier`] can apply
+/// the correct case semantics. Review #2 5th follow-up P0 #2 (the old
+/// `split('.')` fragmented quoted components like `"X.Y"`). A trailing unquoted
+/// run and malformed input are returned best-effort (never panics).
+pub fn split_object_name_components(name: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let bytes: Vec<char> = name.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if in_quotes {
+            if c == '"' {
+                if i + 1 < bytes.len() && bytes[i + 1] == '"' {
+                    // Escaped embedded quote — keep both chars, stay in quotes.
+                    cur.push('"');
+                    cur.push('"');
+                    i += 2;
+                    continue;
+                }
+                cur.push('"');
+                in_quotes = false;
+                i += 1;
+                continue;
+            }
+            cur.push(c);
+            i += 1;
+        } else if c == '"' {
+            in_quotes = true;
+            cur.push('"');
+            i += 1;
+        } else if c == '.' {
+            parts.push(std::mem::take(&mut cur));
+            i += 1;
+        } else {
+            cur.push(c);
+            i += 1;
+        }
+    }
+    parts.push(cur);
+    parts
+}
+
 /// Schema-abstract a dependency's physical object NAME using the shared relative
-/// schema map. Quoting rules: split on `.`; the catalog and table components are
-/// canonicalized with [`canonical_identifier`] (Snowflake semantics: unquoted
-/// folds to UPPERCASE, quoted is case-sensitive, so `INPUT` ≡ `"INPUT"` but
-/// `"input"` is distinct); only a THREE-part name has its middle (schema)
-/// component abstracted to a relative token.
+/// schema map. The name is split into REAL identifier components with
+/// [`split_object_name_components`] (a `.` inside `"…"` is part of the
+/// component). The catalog and table components are canonicalized with
+/// [`canonical_identifier`] (Snowflake semantics: unquoted folds to UPPERCASE,
+/// quoted is case-sensitive, so `INPUT` ≡ `"INPUT"` but `"input"` is distinct);
+/// only a THREE-part name has its middle (schema) component abstracted to a
+/// relative token.
 pub fn abstract_object_name_schema_with(name: &str, schemas: &SchemaMap) -> String {
-    let parts: Vec<&str> = name.split('.').collect();
+    let parts = split_object_name_components(name);
     if parts.len() == 3 {
         format!(
             "{}.{}.{}",
-            canonical_identifier(parts[0]),
-            schemas.placeholder_for(parts[1]),
-            canonical_identifier(parts[2])
+            canonical_identifier(&parts[0]),
+            schemas.placeholder_for(&parts[1]),
+            canonical_identifier(&parts[2])
         )
     } else {
         parts
@@ -264,7 +313,7 @@ pub fn sql_contains_volatile_function(sql: &str) -> bool {
 /// (including surrounding double-quotes) so `canonical_schema_key` can keep a
 /// quoted (case-sensitive) schema distinct from an unquoted one.
 pub fn schema_of_object_name(name: &str) -> Option<String> {
-    let parts: Vec<&str> = name.split('.').collect();
+    let parts = split_object_name_components(name);
     if parts.len() == 3 {
         Some(parts[1].trim().to_string())
     } else {
@@ -303,20 +352,58 @@ fn canonical_schema_key(raw: &str) -> String {
     canonical_identifier(raw)
 }
 
-/// True if `s` is a value an UNQUOTED Snowflake identifier can resolve to:
-/// a non-empty bareword of uppercase ASCII letters, digits or underscores that
-/// does not start with a digit, and contains no lowercase/special character.
-/// Such a resolved value can be emitted unquoted (its unquoted and
-/// quoted-uppercase spellings denote the same identifier); anything else must
-/// stay quoted to preserve its case-sensitive, delimited identity.
+/// True if the resolved value `s` can be emitted UNQUOTED without changing the
+/// expression's meaning. Two conditions must hold:
+///   1. shape: a non-empty bareword of uppercase ASCII letters/digits/`_` not
+///      starting with a digit (what an unquoted identifier can resolve to); and
+///   2. reparse-invariance: parsing `select <s>` yields exactly an
+///      `Expr::Identifier` with the same unquoted value — so a RESERVED word
+///      (`NULL`, `TRUE`, `CASE`, …) or anything the grammar would read as a
+///      different expression KIND (literal/keyword/function) is EXCLUDED and
+///      kept quoted. This prevents the 5th-follow-up regression where a quoted
+///      reserved-word column reference `"NULL"` was rendered as the bare `NULL`
+///      literal. Review #2 5th follow-up P0.
 fn is_bare_uppercase_identifier(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c.is_ascii_uppercase() || c == '_' => {}
         _ => return false,
     }
-    s.chars()
+    if !s
+        .chars()
         .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+    {
+        return false;
+    }
+    // Reparse-invariance: the bareword must parse as a plain identifier
+    // expression (not a keyword/literal/function). Use a fresh parse so this is
+    // independent of the surrounding statement.
+    match Parser::parse_sql(&SnowflakeDialect {}, &format!("select {s}")) {
+        Ok(stmts) => matches!(
+            projection_expr(&stmts),
+            Some(Expr::Identifier(id)) if id.quote_style.is_none() && id.value == s
+        ),
+        _ => false,
+    }
+}
+
+/// Extract the single projected expression from a parsed `select <expr>`, if the
+/// statement has exactly that shape.
+fn projection_expr(stmts: &[sqlparser::ast::Statement]) -> Option<&Expr> {
+    use sqlparser::ast::{SelectItem, SetExpr, Statement};
+    let [Statement::Query(q)] = stmts else {
+        return None;
+    };
+    let SetExpr::Select(sel) = q.body.as_ref() else {
+        return None;
+    };
+    if sel.projection.len() != 1 {
+        return None;
+    }
+    match &sel.projection[0] {
+        SelectItem::UnnamedExpr(e) => Some(e),
+        _ => None,
+    }
 }
 
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
@@ -699,7 +786,37 @@ fn canonicalize_tokens(toks: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_sql, normalize_sql_lexer, sql_contains_volatile_function};
+    use super::{
+        normalize_sql, normalize_sql_lexer, split_object_name_components,
+        sql_contains_volatile_function,
+    };
+
+    #[test]
+    fn object_name_component_split_respects_quotes() {
+        assert_eq!(
+            split_object_name_components("DB.S.INPUT"),
+            vec!["DB", "S", "INPUT"]
+        );
+        // A dot INSIDE quotes stays in the component.
+        assert_eq!(
+            split_object_name_components("DB.\"X.Y\".INPUT"),
+            vec!["DB", "\"X.Y\"", "INPUT"]
+        );
+        assert_eq!(
+            split_object_name_components("\"DB\".\"x.y\".\"INPUT\""),
+            vec!["\"DB\"", "\"x.y\"", "\"INPUT\""]
+        );
+        // Escaped embedded quote: "a""b" is one component.
+        assert_eq!(
+            split_object_name_components("DB.S.\"a\"\"b\""),
+            vec!["DB", "S", "\"a\"\"b\""]
+        );
+        // A quoted component may itself contain a dot AND an escaped quote.
+        assert_eq!(
+            split_object_name_components("\"d.b\".\"a\"\"b.c\".T"),
+            vec!["\"d.b\"", "\"a\"\"b.c\"", "T"]
+        );
+    }
 
     fn eq(a: &str, b: &str) -> bool {
         normalize_sql(a) == normalize_sql(b)
@@ -807,6 +924,56 @@ mod tests {
             "select customer_id from t"
         ));
         assert!(!eq("select \"a\" from t", "select \"A\" from t"));
+    }
+
+    /// REGRESSION (review #2 5th follow-up, P0): a QUOTED reserved-word
+    /// identifier must NOT be rendered as the bare keyword, because re-parsing
+    /// the bare keyword yields a DIFFERENT expression kind. `"NULL"` is a column
+    /// reference; `NULL` is the null literal. The 4th-follow-up normalization
+    /// emitted every bare-uppercase resolved value unquoted, collapsing them.
+    #[test]
+    fn quoted_reserved_word_identifier_is_not_bare_keyword() {
+        // Column reference "NULL" vs the NULL literal — distinct expressions.
+        assert!(
+            !eq(
+                "select \"NULL\" from (select 42 as \"NULL\")",
+                "select NULL from (select 42 as \"NULL\")"
+            ),
+            "quoted reserved-word column ref must not normalize to the NULL literal"
+        );
+        // Quoted literal-keyword identifiers must keep their quotes so a reparse
+        // does not turn them into a literal/keyword of a different kind.
+        for sql in [
+            "select \"NULL\" from t",
+            "select \"TRUE\" from t",
+            "select \"FALSE\" from t",
+        ] {
+            let n = normalize_sql(sql);
+            assert!(
+                n.contains('"'),
+                "quoted reserved-word identifier must keep its quotes: {sql} -> {n}"
+            );
+        }
+        // And the resolved bare keyword must NOT be emitted (would reparse as a
+        // literal): the normalized form of `select "NULL" ...` must not contain a
+        // bare ` null ` token in projection position.
+        let n = normalize_sql("select \"NULL\" from t").to_ascii_lowercase();
+        assert!(
+            n.contains("\"null\""),
+            "the NULL identifier must stay quoted, got: {n}"
+        );
+    }
+
+    /// POSITIVE (review #2 5th follow-up, P0): an ORDINARY quoted-uppercase
+    /// identifier is still unified with its unquoted spelling (that is the 4th
+    /// follow-up fix we must retain). Only reserved words are protected.
+    #[test]
+    fn ordinary_quoted_uppercase_still_equals_unquoted() {
+        assert!(eq(
+            "select \"CUSTOMER_ID\" from t",
+            "select customer_id from t"
+        ));
+        assert!(eq("select \"ID\" from t", "select id from t"));
     }
 
     #[test]
