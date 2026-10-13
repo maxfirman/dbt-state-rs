@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-13 (review #2 4th FOLLOW-UP). Read this before changing
+Updated 2026-10-13 (review #2 5th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -56,10 +56,25 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | **#2 4TH FOLLOW-UP finding 3 (live-measured 2026-10-13): EXECUTE payload gating + NARROWED volatile gate** | SUPERSEDES 3rd-follow-up finding 3's blanket `tolerate_nondeterminism` gate. (a) The conformance `ready_to_execute` arm compared only the VARIANT, hiding the volatile fixture's full-response mismatch (hosted populates `transformed_nodes_by_query` with the runtime `CURRENT_TIMESTAMP()` value; local returns `{}`). It now compares the FULL execute payload with a field-scoped `ignore_fields` known gap for that one unimplemented field (`clone_fallback_volatile` entries 0+2 → `known_gaps=2`, not 0) and tolerates the first-build-vs-rebuild `explained_decision` as a documented replay-state artifact. (b) LIVE truth-table: a DETERMINISTIC model with `evaluate_volatile_sql=true` (tnd=false) is STILL cloned by hosted (`experiments/clone_eligibility.sh volatile_det`), so the earlier blanket gate was too broad. The cross-name clone fallback is now suppressed ONLY when the SQL ACTUALLY contains a volatile function (`sql_norm::sql_contains_volatile_function`, a documented Snowflake nondeterministic set), a CONSERVATIVE fallback — NOT full volatile-evaluation conformance. | `services.rs` gate (`volatile_blocks_clone`); `sql_norm.rs::sql_contains_volatile_function`; `conformance.rs` execute arm + `strip_named_fields`/`execute_diff_is_only_rebuild_rationale`; `clone_submit_fallback.rs::{deterministic_model_clones_even_when_nondeterminism_not_tolerated, genuine_volatile_model_executes_when_nondeterminism_not_tolerated}`; `clone_eligibility.rs::volatile_sql_executes_but_deterministic_clones_under_nondeterminism_flag`; `golden/replay_gaps.json` ignore_fields entries |
 | **#2 4TH FOLLOW-UP finding 4 (2026-10-13): RegisterClone cause RETRACTED, full-response compare** | SUPERSEDES the 3rd-follow-up claim that the entry-4 mismatch is CAUSED by the incremental self-referential predicate. That attribution is not isolated (per the reviewer's local-variation probes) — entry 4 differs from entry 0 on THREE axes at once (schema prod→dev, the added predicate, and the own-target/upstream epochs); hosted's own wording ("both its query and its upstream data are up to date") shows a post-clone same-target no-op. The test now compares entries 0–3 by FULL response value (both RegisterClone mirrors) and pins entry 4 as an UNRESOLVED DIVERGENCE (no single-cause claim, no speculative predicate-disregard rule). `registerclone_source_age.sh` audits the COMPLETE RPC history and fails on intervening `RecordExecutions`/speculative submits. | `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay` (+`strip_ids`); `experiments/registerclone_source_age.sh` |
 | **#2 4TH FOLLOW-UP finding 5 (2026-10-13): shared trace validator + warehouse-free fault tests** | The experiment oracles accepted uncorrelated evidence: `clone_eligibility.sh` never validated the selected clone source against a captured confirmed build, and `registerclone_source_age.sh` accepted a method name + positional confirm epochs without correlating successful responses/IDs. New `experiments/trace_validate.py` correlates source/clone/confirmation identities + successful outcomes and rejects missing baselines + intervening writes; both drivers use it. `experiments/trace_validate_test.py` adds 9 warehouse-free fault-path tests reproducing the reviewer's matrix (deleted baseline, unsuccessful confirm, `unable_to_clone`, unrelated confirm id, missing source build, intervening `RecordExecutions`) — all now rejected. | `experiments/trace_validate.py`, `experiments/trace_validate_test.py`, `experiments/{clone_eligibility,registerclone_source_age}.sh` |
+| **#2 5TH FOLLOW-UP finding 1 (2026-10-13): reparse-invariant identifier canonicalization + fingerprint v3** | REGRESSION I introduced in the 4th follow-up: `pre_visit_ident` emitted every bare-uppercase resolved value UNQUOTED, so a quoted reserved-word column reference `"NULL"` rendered as the bare `NULL` — which reparses as the null LITERAL (a different expression kind), making `select "NULL" …` SKIP after confirming `select NULL …`. FIX: `is_bare_uppercase_identifier` now requires REPARSE-INVARIANCE (parsing `select <word>` must yield exactly an `Expr::Identifier`), so reserved words/literals/functions keep their quotes; ordinary quoted-uppercase names still unify. Both P0 fixes change canonicalization, so fingerprint versions were bumped `dbt-state-sql-v2`→`v3` and `dbt-state-ns-logic-v2`→`v3` to INVALIDATE persisted fingerprints from the unsafe normalizer on upgrade. | `sql_norm.rs::{is_bare_uppercase_identifier,projection_expr}`; `fingerprint.rs` v3 tags; `sql_norm.rs::{quoted_reserved_word_identifier_is_not_bare_keyword,ordinary_quoted_uppercase_still_equals_unquoted}`; `c2_rendered_sql.rs::quoted_reserved_word_change_forces_execute_same_target` |
+| **#2 5TH FOLLOW-UP finding 2 (2026-10-13): dotted/escaped quoted object-name parsing** | `abstract_object_name_schema_with`/`schema_of_object_name` split on every `.`, fragmenting a quoted component with an embedded dot (`"X.Y"` vs `"x.y"`) and uppercasing the fragments, so a swapped binding on dotted quoted names CLONED unsafely. FIX: `split_object_name_components` parses real identifier components honoring double-quoted segments and `""` escapes; both functions use it. | `sql_norm.rs::split_object_name_components`; `fingerprint.rs::{ns_dotted_quoted_schema_binding_swap_differs,ns_dotted_quoted_table_binding_swap_differs,ns_escaped_quote_component_binding_swap_differs}`; `sql_norm.rs::object_name_component_split_respects_quotes` |
+| **#2 5TH FOLLOW-UP finding 3 (2026-10-13): parse-based volatility over the dependency graph** | The 4th-follow-up gate inspected only `req.sql` (missing a volatile VIEW dependency) and used a raw-text substring fallback (a clock keyword in a COMMENT or STRING LITERAL flipped the decision; unknown functions were implicitly deterministic). FIX: `sql_contains_volatile_function` is now PURELY AST-based (matches a volatile builtin only as a function call or a bare parenless identifier, both unquoted) — comments/literals/similar-named/qualified columns are no longer false positives, unparseable is conservatively volatile. New `request_has_volatile_sql` inspects the root SQL AND every supplied dependency definition. Still a conservative suppression gate, NOT full volatile-evaluation conformance. | `sql_norm.rs::{sql_contains_volatile_function,request_has_volatile_sql}`; `services.rs` gate; `clone_submit_fallback.rs::volatile_dependency_definition_suppresses_clone`; hardened `volatile_function_detection` + `request_volatility_covers_dependency_definitions` |
+| **#2 5TH FOLLOW-UP finding 4 (2026-10-13): replay-state EXECUTE gating + rebuild rationale server fix** | The conformance execute arm trusted the LOCAL "did not exist" wording and exempted the WHOLE `explained_decision` except the decision int, silently accepting differing rejection codes / `is_stale` / wording after a confirmed baseline (6 post-baseline cases). FIX (harness): the rebuild-rationale exemption is now gated on `has_history` derived from the REPLAY STATE (a prior ConfirmExecution for this target), and `ignore_fields` asserts the exempted field ITSELF differs (path-aware for `explained_decision.<field>`). FIX (server): `SubmitContext.target_has_prior_build` (`store.target_has_confirmed_history`, fingerprint-agnostic) lets `decide()` report the hosted rebuild rationale ("query didn't match or upstream out of date") when the target existed under a different fingerprint — resolving 5/6. The residual `c1_config_semantics` entry 7 (hosted srr=8/crr=7 vs 6/6) is an EXACT field-scoped gap on those two codes only. `clone_chain_provenance` entry 4 now asserts the exact local variant (not `assert_ne`). | `decision.rs::{SubmitContext.target_has_prior_build,decide}`; `store.rs::target_has_confirmed_history`; `conformance.rs::{execute_diff_is_only_rebuild_rationale,retain_named_fields}`; `golden/replay_gaps.json` entry-7 gap |
+| **#2 5TH FOLLOW-UP finding 5 (2026-10-13): event-ordered trace validator** | `trace_validate.py` could let a FUTURE confirmation justify an EARLIER decision, checked the `from_speculative_submit` FLAG instead of the real `SubmitEnrichedSQLSpeculative` METHOD, accepted a `failed_to_clone=true` confirm as a baseline, accepted disagreeing RegisterClone mirrors, and never checked a baseline on the EXECUTE/negative-treatment path. FIX: `before_index` event ordering; method recognition; `_confirm_is_successful` separates physical outcome from RPC ack; `_mirrors_agree`; `require_present_baseline_for_execute`. `trace_validate_test.py` grows 9→15 warehouse-free fault tests. | `experiments/trace_validate.py`, `experiments/trace_validate_test.py`, `experiments/{clone_eligibility,registerclone_source_age}.sh` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
 ## Compatibility and upgrade effects
+
+**Fingerprint version bump v2→v3 (review #2 5th follow-up).** The persisted
+logic fingerprints are versioned by a leading tag (`dbt-state-sql-v3`,
+`dbt-state-ns-logic-v3`). The 5th-follow-up identifier-canonicalization fixes
+(reserved-word quoting, dotted quoted names) change what those hashes produce, so
+the tags were bumped from `v2` to `v3`. On upgrade, a submit's new-version hash
+will not match any pre-upgrade `v2` row, so the server safely REBUILDS rather
+than reusing a hash computed by the old (unsafe) normalizer. No migration is
+needed; stale `v2` rows simply never match and age out. (`dbt-state-seed-v2` is
+unaffected — seeds carry no SQL.)
 
 Migration `0007_execution_results.sql` adds nullable `project_id`, binary
 `execution_results`, and an index on current confirmed targets. Results use the
@@ -119,7 +134,7 @@ that previously succeeded incorrectly.
 
 ## Remaining work, in priority order
 
-> **Review #2 4TH FOLLOW-UP — explicitly OPEN (do-not-infer):**
+> **Review #2 4TH+5TH FOLLOW-UP — explicitly OPEN (do-not-infer):**
 > - **Resolution-context namespace policy** (finding 2): cannot be isolated from
 >   upstream freshness through Fusion; whether hosted keys dependency equivalence
 >   on anything beyond the definition body + freshness is UNRESOLVED. Treated as
@@ -138,6 +153,12 @@ that previously succeeded incorrectly.
 >   gate needs a fresh capture of its own confirmed baseline + a no-swap control.
 >   (The SELF-CONTAINED gate `dep_binding_swap_gated_against_present_baseline_with_control`
 >   covers the server-side property.)
+> - **Rebuild rejection-code mapping** (5th follow-up finding 4): after a
+>   confirmed baseline, a changed submit that misses the fingerprint now reports
+>   the correct rebuild DESCRIPTION, but hosted's rejection CODES vary
+>   (`c1_config_semantics` entry 7 uses skip=8/clone=7 while other post-baseline
+>   rebuilds use 6/6). The 8/7-vs-6/6 selection is uncharacterized; recorded as an
+>   EXACT field-scoped conformance gap on those two codes only.
 > - Prior-acknowledged open items (below) remain: stale-same-target vs
 >   fresh-alternative, exact lag/time-travel window, the unconfirmed/failed-submit
 >   publication point, wildcard-view columns, graph/ordering, proxy fidelity, the
@@ -714,20 +735,20 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **264 tests passed** across the workspace (adds this session's
-  review-#2 4TH FOLLOW-UP fixes on top of the earlier work: the consistent
-  identifier-case canonicalization for all components with table/catalog
-  quoted-case tests; the resolution-context live characterization (unresolved)
-  with the two renamed cross-env-positive tests; the full EXECUTE-payload
-  conformance comparison with a field-scoped volatile gap + the narrowed
-  volatile-SQL clone gate and its deterministic/volatile tests; the retracted
-  RegisterClone cause with full-response comparison; and the shared trace
-  validator). (Env note: the shared Postgres test DB had accumulated ~18k
-  leftover `difftest_` schemas from prior runs and filled its volume — tests do
-  not auto-drop their isolated schema; dropped to unblock.)
-- Server library: **111 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (adds the quoted-case
-  + context + metamorphic `fingerprint.rs` tests).
+- Workspace: **275 tests passed** across the workspace (adds this session's
+  review-#2 5TH FOLLOW-UP fixes on top of the earlier work: the reparse-invariant
+  identifier canonicalization (quoted reserved words keep their quotes) with the
+  fingerprint `v3` bump; the dotted/escaped quoted object-name parser; the
+  parse-based volatility detection over the whole dependency graph; the
+  replay-state-gated EXECUTE comparison + the `target_has_prior_build` rebuild
+  rationale server fix with its entry-7 field-scoped gap; and the event-ordered
+  trace validator). The 15 warehouse-free `trace_validate_test.py` checks are run
+  separately (`python3 experiments/trace_validate_test.py`). (Env note: the
+  shared Postgres test DB accumulates `difftest_` schemas — tests do not
+  auto-drop their isolated schema; drop them if the volume fills.)
+- Server library: **118 tests passed** with DATABASE_URL pointing to an
+  unreachable port, verifying the engine needs no database (adds the
+  reserved-word, dotted-name and parse-based-volatility `sql_norm` tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
 - Conformance replay: **26 fixtures causally replayed** with REAL CLONE gating
   (the `ready_to_clone` arm now compares the local clone payload and replays its
