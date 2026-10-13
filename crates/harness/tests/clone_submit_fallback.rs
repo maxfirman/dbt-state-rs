@@ -952,3 +952,100 @@ async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
          CLONE must be retained (not lost to a spelling difference)"
     );
 }
+
+/// P1 #3 (review #2 4th follow-up) — the cross-name clone fallback suppression
+/// must key on the SQL being GENUINELY volatile, not merely on
+/// `tolerate_nondeterminism=false`. LIVE: a DETERMINISTIC model carrying
+/// evaluate_volatile_sql=true (tnd=false) is still CLONED by hosted ("an
+/// equivalent model exists under another name…") — experiments/
+/// clone_eligibility.sh volatile_det. The earlier blanket gate wrongly executed.
+#[tokio::test]
+async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VD_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VD_PROBE\"";
+    let det_sql = "select id from CDO_DEMO_DB.prod_state_demo.vd_up";
+
+    // Build + confirm the equivalent under A (deterministic SQL).
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = det_sql.into();
+    base.query_dependencies = vec![];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("A must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Submit B: SAME deterministic SQL but tolerate_nondeterminism=false.
+    let mut dev = submit(b, "dev_clone_demo");
+    dev.sql = "select id from CDO_DEMO_DB.dev_clone_demo.vd_up".into();
+    dev.query_dependencies = vec![];
+    dev.tolerate_nondeterminism = false;
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "a DETERMINISTIC model must still clone the equivalent even with \
+         tolerate_nondeterminism=false (the SQL has no volatile function)"
+    );
+}
+
+/// P1 #3 (review #2 4th follow-up) — a GENUINELY volatile model
+/// (current_timestamp()) with tolerate_nondeterminism=false is NOT cloned:
+/// hosted EXECUTES so the volatile value is re-evaluated. LIVE:
+/// golden/fixtures/clone_fallback_volatile.jsonl.
+#[tokio::test]
+async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VV_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VV_PROBE\"";
+    let vol_prod =
+        "select id, current_timestamp() as loaded_at from CDO_DEMO_DB.prod_state_demo.vv_up";
+
+    // Build + confirm the equivalent under A (volatile SQL, tnd=true so it is
+    // recorded as a clone-eligible equivalent).
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = vol_prod.into();
+    base.query_dependencies = vec![];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("A must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Submit B: volatile SQL with tolerate_nondeterminism=false → EXECUTE.
+    let mut dev = submit(b, "dev_clone_demo");
+    dev.sql =
+        "select id, current_timestamp() as loaded_at from CDO_DEMO_DB.dev_clone_demo.vv_up".into();
+    dev.query_dependencies = vec![];
+    dev.tolerate_nondeterminism = false;
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "a GENUINELY volatile model (current_timestamp) must EXECUTE under \
+         tolerate_nondeterminism=false — cloning would serve a stale evaluation"
+    );
+}

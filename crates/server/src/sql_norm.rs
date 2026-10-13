@@ -170,6 +170,95 @@ pub fn schemas_in_sql(sql: &str) -> Vec<String> {
     }
 }
 
+/// A conservative, DOCUMENTED set of Snowflake nondeterministic ("volatile")
+/// scalar functions whose value can change between evaluations of otherwise
+/// identical SQL, so a CLONE of an existing equivalent would serve a different
+/// result. Keyed by lowercased, unquoted function name.
+///
+/// Context clock family (functions-context / functions-date-time) and the
+/// data-generation family (functions-data-generation). The capture that
+/// motivated this (golden/fixtures/clone_fallback_volatile.jsonl) keys
+/// `transformed_nodes_by_query` on `CURRENT_TIMESTAMP()`. We detect the clock
+/// and random/uuid families Snowflake documents as nondeterministic. Anything
+/// NOT in this set is treated as deterministic (so a plain model still clones —
+/// review #2 4th follow-up P1 #3: the earlier blanket `tolerate_nondeterminism`
+/// gate wrongly suppressed clones for deterministic models too).
+const VOLATILE_FUNCTIONS: &[&str] = &[
+    // Clock / context (evaluated per statement but differ across runs).
+    "current_timestamp",
+    "localtimestamp",
+    "systimestamp",
+    "sysdate",
+    "getdate",
+    "current_time",
+    "localtime",
+    "current_date",
+    // Random / UUID / sequence generators.
+    "random",
+    "randstr",
+    "uuid_string",
+    "normal",
+    "uniform",
+    "zipf",
+    "seq1",
+    "seq2",
+    "seq4",
+    "seq8",
+];
+
+/// True if `sql` references any [`VOLATILE_FUNCTIONS`] member as a function
+/// call. Parses with the Snowflake dialect and inspects function-name
+/// identifiers (unquoted; a quoted `"CURRENT_TIMESTAMP"` would be a user object,
+/// not the builtin). If the SQL does not parse, be CONSERVATIVE and report
+/// volatile (true) so an unanalyzable statement is not cloned under
+/// nondeterminism — the safe direction is to execute.
+pub fn sql_contains_volatile_function(sql: &str) -> bool {
+    struct VolatileFinder {
+        found: bool,
+    }
+    impl VisitorMut for VolatileFinder {
+        type Break = ();
+        fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
+            if let Expr::Function(f) = e {
+                if let Some(ObjectNamePart::Identifier(id)) = f.name.0.last() {
+                    if id.quote_style.is_none()
+                        && VOLATILE_FUNCTIONS.contains(&id.value.to_ascii_lowercase().as_str())
+                    {
+                        self.found = true;
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
+        Ok(mut stmts) => {
+            let mut v = VolatileFinder { found: false };
+            for s in stmts.iter_mut() {
+                let _ = s.visit(&mut v);
+                if v.found {
+                    return true;
+                }
+            }
+            // Snowflake also allows bare, parenless clock expressions
+            // (`current_timestamp`, `current_date`, …) which the parser surfaces
+            // as plain identifiers rather than function calls. Catch those with a
+            // defensive lowercased substring scan of the clock keywords.
+            let lower = sql.to_ascii_lowercase();
+            [
+                "current_timestamp",
+                "current_date",
+                "current_time",
+                "sysdate",
+            ]
+            .iter()
+            .any(|k| lower.contains(k))
+        }
+        _ => true,
+    }
+}
+
 /// Extract the schema (middle) component from a possibly-quoted 3-part object
 /// NAME string. Returns `None` for non-3-part names. Preserves the RAW spelling
 /// (including surrounding double-quotes) so `canonical_schema_key` can keep a
@@ -610,7 +699,7 @@ fn canonicalize_tokens(toks: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_sql, normalize_sql_lexer};
+    use super::{normalize_sql, normalize_sql_lexer, sql_contains_volatile_function};
 
     fn eq(a: &str, b: &str) -> bool {
         normalize_sql(a) == normalize_sql(b)
@@ -973,5 +1062,42 @@ mod tests {
         assert!(!leq("'a b'", "'a  b'"));
         // No semantic canonicalization in the fallback.
         assert!(!leq("group by 1", "group by a"));
+    }
+
+    /// Volatile-function detection (review #2 4th follow-up, P1 #3): the clone
+    /// suppression must key on the SQL ACTUALLY being volatile, not merely on a
+    /// flag. A deterministic model is NOT volatile (so it may clone); a model
+    /// with current_timestamp()/random()/uuid_string()/etc. IS.
+    #[test]
+    fn volatile_function_detection() {
+        // Deterministic — NOT volatile (must remain clone-eligible).
+        assert!(!sql_contains_volatile_function(
+            "select id, amount, 42 as runmark from CDO_DEMO_DB.s.up"
+        ));
+        assert!(!sql_contains_volatile_function(
+            "select coalesce(a, b) from t"
+        ));
+        // Genuine volatile functions.
+        assert!(sql_contains_volatile_function(
+            "select id, current_timestamp() as loaded_at from t"
+        ));
+        assert!(sql_contains_volatile_function("select random() from t"));
+        assert!(sql_contains_volatile_function(
+            "select uuid_string() from t"
+        ));
+        assert!(sql_contains_volatile_function("select sysdate() from t"));
+        // Parenless clock expression.
+        assert!(sql_contains_volatile_function(
+            "select current_timestamp from t"
+        ));
+        // A QUOTED identifier named like a builtin is a user object, not the
+        // volatile builtin — the AST finder ignores quoted function names (the
+        // parenless scan is clock-keyword only and does not match quoted ids as
+        // function calls here).
+        assert!(!sql_contains_volatile_function(
+            "select t.amount from t where t.id = 1"
+        ));
+        // Unparseable SQL is conservatively treated as volatile (safe: execute).
+        assert!(sql_contains_volatile_function("this is not sql @@@ )("));
     }
 }

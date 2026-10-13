@@ -791,10 +791,28 @@ impl Sql for SqlService {
         // golden/fixtures/clone_fallback_volatile.jsonl): with a genuinely
         // volatile model the hosted service does NOT clone — it EXECUTES
         // (srr=6). The cross-name fallback is therefore gated on
-        // `tolerate_nondeterminism` (the same flag that gates same-target reuse
-        // in the `confirmed` candidate filter above).
+        // When volatile evaluation is requested (`tolerate_nondeterminism=false`,
+        // i.e. `evaluate_volatile_sql=true`) AND the SQL genuinely contains a
+        // volatile function (e.g. current_timestamp()), a clone of an existing
+        // equivalent would serve a DIFFERENT evaluated value, so the hosted
+        // service EXECUTES instead of cloning. VERIFIED LIVE: with a genuinely
+        // volatile model hosted does NOT clone (srr=6)
+        // (experiments/clone_eligibility.sh volatile,
+        // golden/fixtures/clone_fallback_volatile.jsonl), but with a
+        // DETERMINISTIC model carrying the same flag (tnd=false) hosted DOES
+        // clone ("an equivalent model exists under another name…")
+        // (experiments/clone_eligibility.sh volatile_det, review #2 4th
+        // follow-up P1 #3). So the suppression is gated on the SQL ACTUALLY being
+        // volatile — the earlier blanket `tolerate_nondeterminism` gate was too
+        // broad and wrongly suppressed clones for deterministic models. This is a
+        // CONSERVATIVE fallback keyed on a documented volatile-function set
+        // (sql_norm::VOLATILE_FUNCTIONS), NOT full volatile-evaluation
+        // conformance (the hosted `transformed_nodes_by_query` runtime values
+        // remain unimplemented — see golden/replay_gaps.json).
+        let volatile_blocks_clone = !req.tolerate_nondeterminism
+            && crate::sql_norm::sql_contains_volatile_function(&req.sql);
         if confirmed.is_none()
-            && req.tolerate_nondeterminism
+            && !volatile_blocks_clone
             && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
             && execution_type != EXECUTION_TYPE_VALUES
         {

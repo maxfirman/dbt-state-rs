@@ -201,14 +201,21 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
 ///     gate the cross-name clone (golden/fixtures/clone_fallback_zero_tolerance.jsonl).
 ///   * VOLATILE (`tolerate_nondeterminism=false`, GENUINELY volatile model with
 ///     `current_timestamp()`): hosted does NOT clone — it EXECUTES (srr=6)
-///     (golden/fixtures/clone_fallback_volatile.jsonl). The 3rd follow-up was
-///     right: the earlier volatile arm had no volatile function and wrongly
-///     concluded volatile didn't gate. The server now suppresses the cross-name
-///     fallback when `tolerate_nondeterminism=false`.
+///     (golden/fixtures/clone_fallback_volatile.jsonl). But a DETERMINISTIC
+///     model carrying the SAME flag (tnd=false) is STILL cloned
+///     (experiments/clone_eligibility.sh volatile_det). So the server suppresses
+///     the cross-name fallback only when the SQL ACTUALLY contains a volatile
+///     function (sql_norm::sql_contains_volatile_function), NOT for every
+///     tnd=false request — review #2 4th follow-up P1 #3 corrected the earlier
+///     blanket gate.
 #[tokio::test]
 async fn server_clones_stale_equivalent_under_zero_tolerance() {
     assert_eq!(
-        clone_eligibility_variant(/*freshness_tolerance_seconds=*/ 0, /*tnd=*/ true).await,
+        clone_eligibility_variant(
+            /*freshness_tolerance_seconds=*/ 0, /*tnd=*/ true,
+            /*volatile_sql=*/ false
+        )
+        .await,
         "ready_to_clone",
         "zero freshness tolerance must not suppress the stale cross-name clone \
          (hosted clones; verified live)"
@@ -216,20 +223,39 @@ async fn server_clones_stale_equivalent_under_zero_tolerance() {
 }
 
 #[tokio::test]
-async fn server_executes_not_clones_under_volatile_evaluation() {
+async fn volatile_sql_executes_but_deterministic_clones_under_nondeterminism_flag() {
+    // GENUINE volatile SQL (current_timestamp) + tnd=false → EXECUTE: cloning
+    // would serve a stale evaluated value (verified live,
+    // golden/fixtures/clone_fallback_volatile.jsonl).
     assert_eq!(
-        clone_eligibility_variant(/*freshness_tolerance_seconds=*/ 2700, /*tnd=*/ false).await,
+        clone_eligibility_variant(2700, /*tnd=*/ false, /*volatile_sql=*/ true).await,
         "ready_to_execute",
-        "evaluate_volatile_sql (tolerate_nondeterminism=false) SUPPRESSES the \
-         cross-name clone — hosted executes a volatile model (verified live)"
+        "a genuinely volatile model must EXECUTE under tolerate_nondeterminism=false"
+    );
+    // DETERMINISTIC SQL + tnd=false → still CLONE the stale equivalent: the flag
+    // alone does NOT suppress the clone (verified live,
+    // experiments/clone_eligibility.sh volatile_det). This is the cell the
+    // reviewer flagged — the earlier synthetic test used deterministic SQL yet
+    // asserted EXECUTE, conflating the flag with genuine volatility.
+    assert_eq!(
+        clone_eligibility_variant(2700, /*tnd=*/ false, /*volatile_sql=*/ false).await,
+        "ready_to_clone",
+        "a deterministic model clones the stale equivalent even with \
+         tolerate_nondeterminism=false (flag alone does not gate the clone)"
     );
 }
 
-/// Build a prod source over an OLD upstream, confirm it, bump nothing (the dev
-/// submit simply carries a NEWER upstream so the source is stale), then submit
-/// an absent dev target with the given freshness_tolerance_seconds /
-/// tolerate_nondeterminism and return the decision variant.
-async fn clone_eligibility_variant(freshness_tolerance_seconds: i64, tnd: bool) -> String {
+/// Build a prod source over an OLD upstream, confirm it, then submit an absent
+/// dev target with the given freshness_tolerance_seconds /
+/// tolerate_nondeterminism and (optionally) a GENUINELY volatile projection,
+/// returning the decision variant. The cross-name clone fallback is the path
+/// under test: with no same-target history the dev submit either clones the
+/// prod equivalent or executes.
+async fn clone_eligibility_variant(
+    freshness_tolerance_seconds: i64,
+    tnd: bool,
+    volatile_sql: bool,
+) -> String {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -245,7 +271,11 @@ async fn clone_eligibility_variant(freshness_tolerance_seconds: i64, tnd: bool) 
         default_catalog: "CDO_DEMO_DB".into(),
         default_schema: Some(schema.into()),
         execution_type: 1,
-        sql: format!("select id, amount from CDO_DEMO_DB.{schema}.elig_up"),
+        sql: if volatile_sql {
+            format!("select id, amount, current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.elig_up")
+        } else {
+            format!("select id, amount from CDO_DEMO_DB.{schema}.elig_up")
+        },
         tolerate_nondeterminism: tnd,
         freshness_tolerance_seconds,
         tables: vec![qc::TableModifiedInfo {

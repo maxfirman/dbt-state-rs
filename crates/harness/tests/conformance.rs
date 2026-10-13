@@ -18,6 +18,16 @@ struct KnownGap {
     entry: usize,
     local_variant: String,
     reason: String,
+    /// Optional field-scoped exemption for a `ready_to_execute` (or other)
+    /// payload comparison: the NAMED response fields are stripped from BOTH the
+    /// local and hosted payloads before comparing, so an unimplemented or
+    /// runtime-dependent field (e.g. `transformed_nodes_by_query`, which holds
+    /// the hosted service's volatile-function evaluations) is a VISIBLE,
+    /// documented known gap rather than a silent variant-only pass. When present,
+    /// the comparison asserts the rest of the payload matches exactly AND that at
+    /// least one named field genuinely differs (so a resolved gap is flagged).
+    #[serde(default)]
+    ignore_fields: Vec<String>,
 }
 
 fn real_variant(resp: &serde_json::Value) -> Option<String> {
@@ -55,6 +65,79 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+/// After `without_ids` (and any `ignore_fields`) stripping, decide whether the
+/// ONLY remaining difference between a local and hosted `ready_to_execute`
+/// payload is the first-build-vs-rebuild `explained_decision` rationale. This is
+/// a REPLAY-STATE artifact, not a logic difference: the conformance replay runs
+/// against an EMPTY store, so a target that existed in the hosted session is
+/// absent locally and the server correctly reports "table did not exist"
+/// (clone/skip rejection reason 6) while hosted — having prior history — reports
+/// a rebuild rationale ("query didn't match or upstream out of date"). The
+/// server's description logic itself is pinned by
+/// `decision::tests::decision_descriptions_match_hosted_wording`. The DECISION
+/// int is identical in both; only the explanatory sub-fields differ. Returns
+/// true only when every non-`explained_decision` field is equal AND local shows
+/// a first-build rationale while hosted shows a different (rebuild) one.
+fn execute_diff_is_only_rebuild_rationale(
+    ours: &serde_json::Value,
+    real: &serde_json::Value,
+) -> bool {
+    let o = &ours["response"]["ready_to_execute"];
+    let r = &real["response"]["ready_to_execute"];
+    if !o.is_object() || !r.is_object() {
+        return false;
+    }
+    let (o, r) = (o.as_object().unwrap(), r.as_object().unwrap());
+    // Every field EXCEPT explained_decision must be byte-equal.
+    let keys: HashSet<&String> = o.keys().chain(r.keys()).collect();
+    for k in keys {
+        if k == "explained_decision" {
+            continue;
+        }
+        if o.get(k) != r.get(k) {
+            return false;
+        }
+    }
+    let od = &o["explained_decision"];
+    let rd = &r["explained_decision"];
+    // Same DECISION int (both EXECUTE); differing rationale only.
+    if od["decision"] != rd["decision"] {
+        return false;
+    }
+    if od == rd {
+        return false; // no rationale difference => not this artifact
+    }
+    let local_desc = od["decision_description"].as_str().unwrap_or("");
+    let first_build = local_desc.contains("did not exist")
+        || local_desc.contains("no prior execution")
+        || local_desc.contains("has no prior");
+    // Local must be the first-build rationale (the empty-store truth); hosted
+    // differs (the rebuild rationale it recorded from real history).
+    first_build && od["decision_description"] != rd["decision_description"]
+}
+
+/// Strip a set of NAMED response fields from every decision-variant payload
+/// (used for field-scoped known-gap comparison). Returns whether ANY named
+/// field was actually present/removed, so a comparison can assert the gap is
+/// real (not already resolved). Operates on the `without_ids`-normalized shape.
+fn strip_named_fields(value: &mut serde_json::Value, fields: &[String]) -> bool {
+    let mut removed = false;
+    if let serde_json::Value::Object(root) = value {
+        if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
+            for payload in variants.values_mut() {
+                if let serde_json::Value::Object(f) = payload {
+                    for name in fields {
+                        if f.remove(name).is_some() {
+                            removed = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    removed
+}
+
 #[test]
 fn comparison_preserves_result_fields_named_like_ids() {
     let response = serde_json::json!({"response": {"skip_execution": {
@@ -68,6 +151,23 @@ fn comparison_preserves_result_fields_named_like_ids() {
             ["kind"]["string_value"],
         "result"
     );
+}
+
+#[test]
+fn strip_named_fields_removes_only_named_payload_fields() {
+    let mut v = serde_json::json!({"response": {"ready_to_execute": {
+        "last_modified_query": "q",
+        "transformed_nodes_by_query": {"n": {"node_to_func": {"CURRENT_TIMESTAMP()": "t"}}}
+    }}});
+    let removed = strip_named_fields(&mut v, &["transformed_nodes_by_query".to_string()]);
+    assert!(removed);
+    assert!(v["response"]["ready_to_execute"]["transformed_nodes_by_query"].is_null());
+    assert_eq!(
+        v["response"]["ready_to_execute"]["last_modified_query"],
+        "q"
+    );
+    // Absent field => nothing removed.
+    assert!(!strip_named_fields(&mut v, &["nonexistent".to_string()]));
 }
 
 #[tokio::test]
@@ -183,6 +283,47 @@ async fn conformance_replay_all_corpora() {
                                 "ready_to_execute",
                                 "{context}: hosted rebuild must not skip"
                             );
+                            // Compare the FULL execute payload (minus opaque IDs),
+                            // not just the variant. Two documented, VISIBLE
+                            // categories are tolerated: (1) a field-scoped gap
+                            // (e.g. the volatile `transformed_nodes_by_query` map,
+                            // which hosted populates with CURRENT_TIMESTAMP() etc.
+                            // and the local server does not yet evaluate), declared
+                            // in replay_gaps.json via ignore_fields; and (2) the
+                            // first-build-vs-rebuild `explained_decision` rationale,
+                            // a REPLAY-STATE artifact of running against an empty
+                            // store (the server's wording itself is pinned by a
+                            // unit test). Anything else is a mismatch.
+                            let response_json = serde_json::to_value(&response).unwrap();
+                            let mut ours = without_ids(response_json);
+                            let mut real = without_ids(e.response.clone());
+                            let gap = known.iter().find(|g| {
+                                g.fixture == path.file_name().unwrap().to_string_lossy()
+                                    && g.entry == i
+                                    && !g.ignore_fields.is_empty()
+                            });
+                            if let Some(gap) = gap {
+                                assert!(!gap.reason.trim().is_empty());
+                                assert_ne!(
+                                    ours, real,
+                                    "{context}: execute gap is resolved; remove its \
+                                     ignore_fields exemption"
+                                );
+                                let r1 = strip_named_fields(&mut ours, &gap.ignore_fields);
+                                let r2 = strip_named_fields(&mut real, &gap.ignore_fields);
+                                assert!(
+                                    r1 || r2,
+                                    "{context}: ignore_fields matched nothing; stale exemption"
+                                );
+                                seen_gaps.insert((gap.fixture.clone(), i));
+                                gaps += 1;
+                            }
+                            if ours != real && !execute_diff_is_only_rebuild_rationale(&ours, &real)
+                            {
+                                mismatches.push(format!(
+                                    "{context} (ready_to_execute): ours={ours} real={real}"
+                                ));
+                            }
                             let qc::submit_sql_response::Response::ReadyToExecute(local) =
                                 response.response.unwrap()
                             else {

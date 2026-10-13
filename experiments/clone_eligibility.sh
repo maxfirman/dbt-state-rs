@@ -65,6 +65,11 @@ case "$ARM" in
   # evaluate_volatile_sql flag is meaningful: the model's output depends on a
   # nondeterministic expression, which is the original volatile-reuse concern.
   volatile)      STATE="state={'lag_tolerance': '2700s', 'evaluate_volatile_sql': true}"; PROJ="select id, amount, $ID as runmark, current_timestamp() as loaded_at from {{ ref('$UP') }}";;
+  # DETERMINISTIC body but evaluate_volatile_sql=true: isolates the FLAG from a
+  # genuine volatile function. The reviewer flagged that the synthetic test
+  # conflated tolerate_nondeterminism=false with genuinely-volatile SQL. Here the
+  # flag is on but the SQL has NO volatile expression.
+  volatile_det)  STATE="state={'lag_tolerance': '2700s', 'evaluate_volatile_sql': true}"; PROJ="select id, amount, $ID as runmark from {{ ref('$UP') }}";;
   *) fail "unknown arm $ARM";;
 esac
 
