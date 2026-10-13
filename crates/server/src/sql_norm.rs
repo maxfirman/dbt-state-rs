@@ -256,27 +256,45 @@ const VOLATILE_FUNCTIONS: &[&str] = &[
 ];
 
 /// True if `sql` references any [`VOLATILE_FUNCTIONS`] member as a function
-/// call. Parses with the Snowflake dialect and inspects function-name
-/// identifiers (unquoted; a quoted `"CURRENT_TIMESTAMP"` would be a user object,
-/// not the builtin). If the SQL does not parse, be CONSERVATIVE and report
-/// volatile (true) so an unanalyzable statement is not cloned under
-/// nondeterminism — the safe direction is to execute.
+/// call. Parses with the Snowflake dialect and inspects PARSED EXPRESSIONS only
+/// — never a raw-text substring scan — so a clock keyword appearing in a COMMENT
+/// (`-- current_date`) or a STRING LITERAL (`'current_timestamp'`) is NOT a false
+/// positive (the parser surfaces those as a stripped comment / an `Expr::Value`,
+/// not an identifier/function). Matches a volatile builtin written either as a
+/// function call (`current_timestamp()`, `random()`) or as a bare parenless
+/// context expression (`current_timestamp`), in both cases only when the name is
+/// UNQUOTED (a quoted `"CURRENT_TIMESTAMP"` is a user object). If the SQL does
+/// not parse, be CONSERVATIVE and report volatile (true) so an unanalyzable
+/// statement is not cloned under nondeterminism — the safe direction is to
+/// execute. Review #2 5th follow-up P1 #3.
 pub fn sql_contains_volatile_function(sql: &str) -> bool {
     struct VolatileFinder {
         found: bool,
     }
+    fn is_volatile_name(id: &Ident) -> bool {
+        id.quote_style.is_none()
+            && VOLATILE_FUNCTIONS.contains(&id.value.to_ascii_lowercase().as_str())
+    }
     impl VisitorMut for VolatileFinder {
         type Break = ();
         fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
-            if let Expr::Function(f) = e {
-                if let Some(ObjectNamePart::Identifier(id)) = f.name.0.last() {
-                    if id.quote_style.is_none()
-                        && VOLATILE_FUNCTIONS.contains(&id.value.to_ascii_lowercase().as_str())
-                    {
-                        self.found = true;
-                        return ControlFlow::Break(());
-                    }
-                }
+            let hit = match e {
+                // Function call: current_timestamp(), random(), uuid_string(), …
+                Expr::Function(f) => matches!(
+                    f.name.0.last(),
+                    Some(ObjectNamePart::Identifier(id)) if is_volatile_name(id)
+                ),
+                // Bare parenless context expression: `current_timestamp`,
+                // `current_date`. A single-component unquoted identifier whose
+                // name is a volatile builtin. (A real column of the same bare
+                // name is indistinguishable here, but these names are reserved
+                // Snowflake context functions, so this is the safe reading.)
+                Expr::Identifier(id) => is_volatile_name(id),
+                _ => false,
+            };
+            if hit {
+                self.found = true;
+                return ControlFlow::Break(());
             }
             ControlFlow::Continue(())
         }
@@ -290,22 +308,30 @@ pub fn sql_contains_volatile_function(sql: &str) -> bool {
                     return true;
                 }
             }
-            // Snowflake also allows bare, parenless clock expressions
-            // (`current_timestamp`, `current_date`, …) which the parser surfaces
-            // as plain identifiers rather than function calls. Catch those with a
-            // defensive lowercased substring scan of the clock keywords.
-            let lower = sql.to_ascii_lowercase();
-            [
-                "current_timestamp",
-                "current_date",
-                "current_time",
-                "sysdate",
-            ]
-            .iter()
-            .any(|k| lower.contains(k))
+            false
         }
+        // Unparseable → conservative: treat as volatile (execute, do not clone).
         _ => true,
     }
+}
+
+/// True if a request's logic graph contains a volatile function anywhere that
+/// affects its output: the root `sql` OR ANY supplied dependency definition
+/// (a view whose body is `select current_timestamp()` makes the consumer's
+/// result nondeterministic even though the consumer's own SQL is deterministic).
+/// Any dependency whose query does NOT parse is treated conservatively as
+/// volatile. Review #2 5th follow-up P1 #3 (the gate previously inspected only
+/// the root SQL).
+pub fn request_has_volatile_sql<'a, I>(root_sql: &str, dependency_queries: I) -> bool
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    if sql_contains_volatile_function(root_sql) {
+        return true;
+    }
+    dependency_queries
+        .into_iter()
+        .any(|q| !q.trim().is_empty() && sql_contains_volatile_function(q))
 }
 
 /// Extract the schema (middle) component from a possibly-quoted 3-part object
@@ -1231,10 +1257,9 @@ mod tests {
         assert!(!leq("group by 1", "group by a"));
     }
 
-    /// Volatile-function detection (review #2 4th follow-up, P1 #3): the clone
-    /// suppression must key on the SQL ACTUALLY being volatile, not merely on a
-    /// flag. A deterministic model is NOT volatile (so it may clone); a model
-    /// with current_timestamp()/random()/uuid_string()/etc. IS.
+    /// Volatile-function detection (review #2 4th+5th follow-up, P1 #3): the
+    /// clone suppression keys on the SQL ACTUALLY being volatile — PARSE-based,
+    /// never a raw-text substring scan.
     #[test]
     fn volatile_function_detection() {
         // Deterministic — NOT volatile (must remain clone-eligible).
@@ -1257,14 +1282,62 @@ mod tests {
         assert!(sql_contains_volatile_function(
             "select current_timestamp from t"
         ));
-        // A QUOTED identifier named like a builtin is a user object, not the
-        // volatile builtin — the AST finder ignores quoted function names (the
-        // parenless scan is clock-keyword only and does not match quoted ids as
-        // function calls here).
+
+        // 5th follow-up NEGATIVES — a clock keyword in a COMMENT or a STRING
+        // LITERAL, or a similarly-NAMED non-clock identifier, is NOT volatile.
+        assert!(
+            !sql_contains_volatile_function("select a from t -- current_date"),
+            "a clock keyword in a comment must NOT be volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select a from t /* current_timestamp */"),
+            "a clock keyword in a block comment must NOT be volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select 'current_timestamp' as label from t"),
+            "a clock keyword as a string literal must NOT be volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select current_timestamp_col from t"),
+            "a similarly-named column must NOT be volatile"
+        );
+        assert!(
+            !sql_contains_volatile_function("select t.current_date from t"),
+            "a qualified column named like a clock fn must NOT be volatile"
+        );
+        // A QUOTED identifier named like a builtin is a user object.
+        assert!(!sql_contains_volatile_function(
+            "select \"CURRENT_TIMESTAMP\" from t"
+        ));
         assert!(!sql_contains_volatile_function(
             "select t.amount from t where t.id = 1"
         ));
         // Unparseable SQL is conservatively treated as volatile (safe: execute).
         assert!(sql_contains_volatile_function("this is not sql @@@ )("));
+    }
+
+    /// The gate must inspect the DEPENDENCY GRAPH, not just the root SQL: a view
+    /// whose body is volatile makes the consumer nondeterministic (5th follow-up).
+    #[test]
+    fn request_volatility_covers_dependency_definitions() {
+        use super::request_has_volatile_sql;
+        let root = "select loaded_at from DB.S.V";
+        // Deterministic root + deterministic deps → not volatile.
+        assert!(!request_has_volatile_sql(
+            root,
+            ["select 1 as loaded_at"].into_iter()
+        ));
+        // Deterministic root but a VOLATILE view definition → volatile.
+        assert!(request_has_volatile_sql(
+            root,
+            ["create or replace view V as (select current_timestamp() as loaded_at)"].into_iter()
+        ));
+        // A dependency that does not parse → conservative volatile.
+        assert!(request_has_volatile_sql(
+            root,
+            ["@@@ not sql ("].into_iter()
+        ));
+        // Empty dependency queries are ignored.
+        assert!(!request_has_volatile_sql(root, ["", "   "].into_iter()));
     }
 }

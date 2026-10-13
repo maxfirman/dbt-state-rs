@@ -808,9 +808,18 @@ impl Sql for SqlService {
         // CONSERVATIVE fallback keyed on a documented volatile-function set
         // (sql_norm::VOLATILE_FUNCTIONS), NOT full volatile-evaluation
         // conformance (the hosted `transformed_nodes_by_query` runtime values
-        // remain unimplemented — see golden/replay_gaps.json).
+        // remain unimplemented — see golden/replay_gaps.json). The volatility
+        // check inspects the ROOT SQL **and every supplied dependency
+        // definition** (a view body `select current_timestamp()` makes the
+        // consumer nondeterministic even if its own SQL is deterministic), via a
+        // PARSE-based detector (no raw-text substring scan, so a clock keyword in
+        // a comment or string literal is not a false positive). Review #2 5th
+        // follow-up P1 #3.
         let volatile_blocks_clone = !req.tolerate_nondeterminism
-            && crate::sql_norm::sql_contains_volatile_function(&req.sql);
+            && crate::sql_norm::request_has_volatile_sql(
+                &req.sql,
+                req.query_dependencies.iter().map(|d| d.query.as_str()),
+            );
         if confirmed.is_none()
             && !volatile_blocks_clone
             && execution_type != EXECUTION_TYPE_DBT_DATA_TEST

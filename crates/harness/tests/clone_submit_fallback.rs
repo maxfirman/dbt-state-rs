@@ -1049,3 +1049,60 @@ async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
          tolerate_nondeterminism=false — cloning would serve a stale evaluation"
     );
 }
+
+/// P1 #3 (review #2 5th follow-up) — the volatility gate must inspect the
+/// DEPENDENCY GRAPH, not just the root SQL. A consumer whose own SQL is
+/// deterministic but which depends on a VIEW defined with `current_timestamp()`
+/// is nondeterministic; under `tolerate_nondeterminism=false` it must EXECUTE,
+/// not clone a stale evaluation.
+#[tokio::test]
+async fn volatile_dependency_definition_suppresses_clone() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VDEP_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VDEP_PROBE\"";
+    // DETERMINISTIC root SQL; the volatility is entirely in the view dependency.
+    let root_prod = "select loaded_at from CDO_DEMO_DB.prod_state_demo.vdep_v";
+    let dep = |schema: &str| {
+        qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{}\".\"VDEP_V\"", schema.to_uppercase()),
+        query: format!(
+            "create or replace view VDEP_V as (select current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.raw)"
+        ),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema.into(),
+    }
+    };
+
+    // Build + confirm the equivalent under A (tnd=true so it is clone-eligible).
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = root_prod.into();
+    base.query_dependencies = vec![dep("prod_state_demo")];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("A must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Submit B: deterministic root, VOLATILE view dependency, tnd=false → EXECUTE.
+    let mut dev = submit(b, "dev_clone_demo");
+    dev.sql = "select loaded_at from CDO_DEMO_DB.dev_clone_demo.vdep_v".into();
+    dev.query_dependencies = vec![dep("dev_clone_demo")];
+    dev.tolerate_nondeterminism = false;
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "a volatile VIEW DEPENDENCY (deterministic root) must suppress the clone"
+    );
+}
