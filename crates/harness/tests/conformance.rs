@@ -67,28 +67,25 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
 
 /// After `without_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
-/// payload is the first-build-vs-rebuild `explained_decision` rationale, AND the
+/// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
 /// target had NO confirmed history in the replay (`has_history == false`). This
 /// is a REPLAY-STATE artifact: the conformance replay starts from an EMPTY
 /// store, so a target that existed in the hosted session is absent locally on
 /// its FIRST appearance and the server correctly reports "table did not exist"
 /// while hosted — having prior history — reports a rebuild rationale.
 ///
-/// Crucially, missing-history is established from the REPLAY STATE (`has_history`,
-/// derived from whether a prior ConfirmExecution for this target was replayed),
-/// NOT from the local "did not exist" wording being tested. When the target WAS
-/// confirmed earlier in the replay, the server has the same history hosted did
-/// and MUST produce the same rationale — so this returns false and any
-/// difference is a real mismatch. Review #2 5th follow-up P1 #4 (previously this
-/// trusted the local explanation and exempted the whole explained_decision —
-/// including rejection codes and is_stale — even after a confirmed baseline).
+/// FIELD-NARROW (review #2 6th follow-up P1): the exemption tolerates a
+/// difference in `decision_description` ONLY, and only when the pair is a
+/// documented first-build→rebuild wording pair. EVERY other field — including
+/// `is_stale` (which hosted always reports FALSE on an EXECUTE) and BOTH
+/// rejection codes — must be byte-equal. A probe that also changes `is_stale`,
+/// a rejection code, or substitutes an unrelated description returns FALSE.
 fn execute_diff_is_only_rebuild_rationale(
     ours: &serde_json::Value,
     real: &serde_json::Value,
     has_history: bool,
 ) -> bool {
-    // Only a FIRST-build (no replay history) may legitimately diverge on the
-    // rebuild rationale. With history, the rationale must match exactly.
+    // Only a FIRST-build (no replay history) may legitimately diverge.
     if has_history {
         return false;
     }
@@ -98,32 +95,75 @@ fn execute_diff_is_only_rebuild_rationale(
         return false;
     }
     let (o, r) = (o.as_object().unwrap(), r.as_object().unwrap());
-    // Every field EXCEPT explained_decision must be byte-equal.
-    let keys: HashSet<&String> = o.keys().chain(r.keys()).collect();
-    for k in keys {
-        if k == "explained_decision" {
-            continue;
-        }
-        if o.get(k) != r.get(k) {
+    // Every top-level field EXCEPT explained_decision must be byte-equal.
+    for k in o.keys().chain(r.keys()).collect::<HashSet<_>>() {
+        if k != "explained_decision" && o.get(k) != r.get(k) {
             return false;
         }
     }
     let od = &o["explained_decision"];
     let rd = &r["explained_decision"];
-    // Same DECISION int (both EXECUTE); differing rationale only.
-    if od["decision"] != rd["decision"] {
+    if !od.is_object() || !rd.is_object() {
         return false;
     }
-    if od == rd {
-        return false; // no rationale difference => not this artifact
+    let (od, rd) = (od.as_object().unwrap(), rd.as_object().unwrap());
+    let geti = |m: &serde_json::Map<String, serde_json::Value>, k: &str| -> Option<i64> {
+        m.get(k).and_then(|v| v.as_i64())
+    };
+    // Both sides must be a non-stale EXECUTE (decision 1, is_stale false).
+    if od.get("decision") != rd.get("decision") {
+        return false;
     }
-    let local_desc = od["decision_description"].as_str().unwrap_or("");
-    let first_build = local_desc.contains("did not exist")
-        || local_desc.contains("no prior execution")
-        || local_desc.contains("has no prior");
-    // Local must be the first-build rationale (the empty-store truth); hosted
-    // differs (the rebuild rationale it recorded from real history).
-    first_build && od["decision_description"] != rd["decision_description"]
+    if od.get("is_stale") != Some(&serde_json::Value::Bool(false))
+        || rd.get("is_stale") != Some(&serde_json::Value::Bool(false))
+    {
+        return false;
+    }
+    // No explained_decision field OTHER than the known rationale axes
+    // (decision_description + the two rejection codes) may differ — so an
+    // unexpected extra field difference is a real mismatch.
+    for k in od.keys().chain(rd.keys()).collect::<HashSet<_>>() {
+        if !matches!(
+            k.as_str(),
+            "decision_description" | "skip_rejection_reason" | "clone_rejection_reason"
+        ) && od.get(k) != rd.get(k)
+        {
+            return false;
+        }
+    }
+    // LOCAL must be the empty-store FIRST build: codes (6,6) with a first-build
+    // description. (6 = NO_SUITABLE_MATCH_FOUND.)
+    let local_first_build = geti(od, "skip_rejection_reason") == Some(6)
+        && geti(od, "clone_rejection_reason") == Some(6)
+        && {
+            let d = od
+                .get("decision_description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            d.contains("did not exist")
+                || d.contains("no prior execution")
+                || d.contains("has no prior")
+        };
+    if !local_first_build {
+        return false;
+    }
+    // HOSTED must be a documented REBUILD rationale: either the same (6,6) codes
+    // or the observed (skip=8, clone=7) LATEST_QUERY_HASH_NOT_MATCH pair, with a
+    // rebuild description. Any other code/description combination is a real
+    // mismatch (not this replay-state artifact).
+    let hosted_codes_ok = (geti(rd, "skip_rejection_reason") == Some(6)
+        && geti(rd, "clone_rejection_reason") == Some(6))
+        || (geti(rd, "skip_rejection_reason") == Some(8)
+            && geti(rd, "clone_rejection_reason") == Some(7));
+    let hosted_desc = rd
+        .get("decision_description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let hosted_rebuild = hosted_desc.contains("query didn't match")
+        || hosted_desc.contains("upstream data is out of date")
+        || hosted_desc.contains("its data changed")
+        || hosted_desc.contains("query changed");
+    hosted_codes_ok && hosted_rebuild
 }
 
 /// Strip a set of NAMED response fields from every decision-variant payload
@@ -286,6 +326,43 @@ fn rebuild_rationale_exemption_is_history_gated_and_field_narrow() {
     assert!(!execute_diff_is_only_rebuild_rationale(
         &first_build,
         &code_diff,
+        false
+    ));
+    // 6th follow-up COMBINED probe: changing BOTH rejection codes AND is_stale
+    // AND the description to an unrelated rationale must NOT be tolerated, even
+    // with has_history=false (the previous version returned true here).
+    let combined = serde_json::json!({"response": {"ready_to_execute": {
+        "explained_decision": {"decision": 1, "skip_rejection_reason": 8, "clone_rejection_reason": 7,
+            "is_stale": true, "decision_description": "something completely unrelated happened"}
+    }}});
+    assert!(!execute_diff_is_only_rebuild_rationale(
+        &first_build,
+        &combined,
+        false
+    ));
+    // An ARBITRARY hosted description (not a documented rebuild rationale) is NOT
+    // tolerated even if every other field matches.
+    let arbitrary_desc = serde_json::json!({"response": {"ready_to_execute": {
+        "explained_decision": {"decision": 1, "skip_rejection_reason": 6, "clone_rejection_reason": 6,
+            "is_stale": false, "decision_description": "model was executed for some other reason"}
+    }}});
+    assert!(!execute_diff_is_only_rebuild_rationale(
+        &first_build,
+        &arbitrary_desc,
+        false
+    ));
+    // The seed first-build→"its data changed" pair IS a documented rebuild pair.
+    let seed_first = serde_json::json!({"response": {"ready_to_execute": {
+        "explained_decision": {"decision": 1, "skip_rejection_reason": 6, "clone_rejection_reason": 6,
+            "is_stale": false, "decision_description": "seed was loaded because it did not exist"}
+    }}});
+    let seed_rebuild = serde_json::json!({"response": {"ready_to_execute": {
+        "explained_decision": {"decision": 1, "skip_rejection_reason": 6, "clone_rejection_reason": 6,
+            "is_stale": false, "decision_description": "seed was loaded because its data changed"}
+    }}});
+    assert!(execute_diff_is_only_rebuild_rationale(
+        &seed_first,
+        &seed_rebuild,
         false
     ));
 }
