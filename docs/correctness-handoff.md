@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-13 (review #2 5th FOLLOW-UP). Read this before changing
+Updated 2026-10-13 (review #2 6th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -64,17 +64,27 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
+### Review #2 6th follow-up (2026-10-13)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 6TH FOLLOW-UP finding 1 (P0): structured-component dependency binding** | `abstract_object_name_schema_with` returned a string REJOINED with literal `.`, which `namespace_logic_hash` framed as one blob. A canonical component can itself contain a `.` (or match the schema-placeholder spelling), so `"DB.__dbt_state_ns__0"."S"."T"` and `"DB"."S"."__dbt_state_ns__0.T"` both rejoined to `DB.__dbt_state_ns__0.__dbt_state_ns__0.T` → a swapped binding CLONED unsafely. FIX: `abstract_object_name_components_with` returns the canonical COMPONENT SEQUENCE; the hash frames the component COUNT + each length-framed component + the definition, so every boundary is unambiguous. Bumped `dbt-state-ns-logic-v3` → `v4`. | `sql_norm.rs::abstract_object_name_components_with`; `fingerprint.rs` (v4, per-component framing); `fingerprint.rs::ns_component_boundary_{collision_binding_swap_differs,identical_submit_matches}`; `clone_submit_fallback.rs::server_gates_component_boundary_collision_swap_with_control` |
+| **#2 6TH FOLLOW-UP finding 2 (P1): parenless-context volatility only** | The AST volatility detector's BARE-identifier branch matched the whole `VOLATILE_FUNCTIONS` set, so a bare `random` (an ordinary column — `random()` needs parentheses) was treated as the volatile function, giving a column named `random` and a quoted `"RANDOM"` column different decisions. FIX: the bare branch now matches only `CONTEXT_PARENLESS_FUNCTIONS` (the context clock functions Snowflake documents as callable without parentheses: CURRENT_DATE/TIME/TIMESTAMP, LOCALTIME, LOCALTIMESTAMP); the parenthesized `Expr::Function` branch keeps the full set. | `sql_norm.rs::CONTEXT_PARENLESS_FUNCTIONS`; `sql_norm.rs::bare_identifier_volatility_is_parenless_context_only`; `clone_submit_fallback.rs::bare_random_column_is_deterministic_and_clones` |
+| **#2 6TH FOLLOW-UP finding 3 (P1): field-narrow rebuild-rationale exemption** | `execute_diff_is_only_rebuild_rationale` still exempted the whole `explained_decision` except the decision int, so a probe changing both rejection codes + `is_stale`=true + an arbitrary description returned true. FIX: both sides must be a NON-STALE EXECUTE (`is_stale` false on both); no `explained_decision` field other than the description and the two rejection codes may differ; LOCAL must be the empty-store first build (codes 6/6 + a first-build description); HOSTED must be a documented rebuild (codes 6/6 OR skip=8/clone=7, with a rebuild description). Anything else is a real mismatch. | `conformance.rs::execute_diff_is_only_rebuild_rationale`; extended `rebuild_rationale_exemption_is_history_gated_and_field_narrow` (combined/arbitrary/seed probes) |
+| **#2 6TH FOLLOW-UP finding 4 (P2): wired oracles + full-chain ordering** | `require_present_baseline_for_execute` was not wired into `clone_eligibility.sh` (deleting the volatile source baseline still printed `CE_OK`), and the source-age driver accepted a source confirm before its submit, a clone confirm after the dev resubmit, and an unbuilt clone source. FIX: `confirmed_targets` enforces submit→confirm ordering; new `require_source_age_chain` enforces the full event order (source submit → source confirm → RegisterClone → clone confirm → dev resubmit, resubmit after the clone confirm, resubmit target == clone target); new `experiments/oracles.py` holds the EXACT driver validation that both the shell drivers AND the fault tests call. `trace_validate_test.py` grows 15 → 22, with 7 tests driving the ACTUAL oracle functions. | `experiments/oracles.py`, `experiments/trace_validate.py` (confirmed_targets ordering, require_source_age_chain), `experiments/{clone_eligibility,registerclone_source_age}.sh`, `experiments/trace_validate_test.py` |
+
 ## Compatibility and upgrade effects
 
 **Fingerprint version bump v2→v3 (review #2 5th follow-up).** The persisted
 logic fingerprints are versioned by a leading tag (`dbt-state-sql-v3`,
-`dbt-state-ns-logic-v3`). The 5th-follow-up identifier-canonicalization fixes
-(reserved-word quoting, dotted quoted names) change what those hashes produce, so
-the tags were bumped from `v2` to `v3`. On upgrade, a submit's new-version hash
-will not match any pre-upgrade `v2` row, so the server safely REBUILDS rather
-than reusing a hash computed by the old (unsafe) normalizer. No migration is
-needed; stale `v2` rows simply never match and age out. (`dbt-state-seed-v2` is
-unaffected — seeds carry no SQL.)
+`dbt-state-ns-logic-v4`). The 5th-follow-up identifier-canonicalization fixes
+(reserved-word quoting, dotted quoted names) bumped the tags from `v2` to `v3`;
+the 6th-follow-up structured-component dependency-binding fix bumped
+`dbt-state-ns-logic` again to `v4` (the SQL-logic tag stays `v3`). On upgrade, a
+submit's new-version hash will not match any pre-upgrade row, so the server
+safely REBUILDS rather than reusing a hash computed by the old normalizer. No
+migration is needed; stale rows simply never match and age out.
+(`dbt-state-seed-v2` is unaffected — seeds carry no SQL.)
 
 Migration `0007_execution_results.sql` adds nullable `project_id`, binary
 `execution_results`, and an index on current confirmed targets. Results use the
@@ -735,20 +745,20 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **275 tests passed** across the workspace (adds this session's
-  review-#2 5TH FOLLOW-UP fixes on top of the earlier work: the reparse-invariant
-  identifier canonicalization (quoted reserved words keep their quotes) with the
-  fingerprint `v3` bump; the dotted/escaped quoted object-name parser; the
-  parse-based volatility detection over the whole dependency graph; the
-  replay-state-gated EXECUTE comparison + the `target_has_prior_build` rebuild
-  rationale server fix with its entry-7 field-scoped gap; and the event-ordered
-  trace validator). The 15 warehouse-free `trace_validate_test.py` checks are run
-  separately (`python3 experiments/trace_validate_test.py`). (Env note: the
-  shared Postgres test DB accumulates `difftest_` schemas — tests do not
-  auto-drop their isolated schema; drop them if the volume fills.)
-- Server library: **118 tests passed** with DATABASE_URL pointing to an
+- Workspace: **280 tests passed** across the workspace (adds this session's
+  review-#2 6TH FOLLOW-UP fixes on top of the earlier work: the structured
+  component-sequence dependency binding (fingerprint `ns-logic` `v4`); the
+  parenless-context-only volatility detection; the field-narrow rebuild-rationale
+  exemption; and the wired driver oracles with full-chain ordering). The 22
+  warehouse-free `trace_validate_test.py` checks (now driving the ACTUAL driver
+  oracles in `experiments/oracles.py`) are run separately
+  (`python3 experiments/trace_validate_test.py`). (Env note: the shared Postgres
+  test DB accumulates `difftest_` schemas — tests do not auto-drop their isolated
+  schema; drop them if the volume fills.)
+- Server library: **121 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database (adds the
-  reserved-word, dotted-name and parse-based-volatility `sql_norm` tests).
+  component-boundary, parenless-volatility and related `sql_norm`/`fingerprint`
+  tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
 - Conformance replay: **26 fixtures causally replayed** with REAL CLONE gating
   (the `ready_to_clone` arm now compares the local clone payload and replays its
