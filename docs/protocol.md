@@ -125,9 +125,11 @@ remaining policies and compatibility gaps.
    equivalent model under another physical name in the same `table_namespace`
    with matching schema-abstracted logic, is reused via CLONE — a confirmed clone
    target SKIPS a matching later submit, and a submit for an absent target whose
-   equivalent exists elsewhere returns `ready_to_clone`. Requested volatile
-   evaluation (`tolerate_nondeterminism=false`) still builds until runtime
-   transformations are implemented.
+   equivalent exists elsewhere returns `ready_to_clone`. The cross-name clone
+   fallback is suppressed only when `tolerate_nondeterminism=false` AND the SQL
+   genuinely contains a volatile function (e.g. `current_timestamp()`); a
+   deterministic model still clones. Runtime volatile-function VALUES
+   (`transformed_nodes_by_query`) are not yet evaluated (a conformance gap).
 
 These checks can over-execute compared with hosted behavior. A passing replay
 only establishes its reproducible captured cases.
