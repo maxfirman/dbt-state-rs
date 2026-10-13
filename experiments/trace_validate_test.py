@@ -126,4 +126,84 @@ expect_reject(
     lambda: tv.reject_intervening(sa_rec, model),
 )
 
+# ---- 5th follow-up faults -------------------------------------------------
+
+# (d1) EVENT ORDERING: move the SOURCE submit+confirm to AFTER the RegisterClone.
+# A later confirmation must not retroactively justify the earlier clone decision.
+sa_src_after = copy.deepcopy(sa)
+src_submit = sa_src_after.pop(0)      # entry 0 (source submit)
+src_confirm = sa_src_after.pop(0)     # entry 1 (source confirm)
+sa_src_after.extend([src_submit, src_confirm])  # now AFTER the RegisterClone
+expect_reject(
+    "source-age fault (d1): source baseline confirmed AFTER the clone is rejected (event order)",
+    lambda: tv.require_successful_register_clone(sa_src_after),
+)
+
+# (d2) SPECULATIVE METHOD: an intervening SubmitEnrichedSQLSpeculative (the real
+# proxy method, which has no from_speculative_submit flag) must be caught.
+sa_spec = copy.deepcopy(sa)
+sa_spec.insert(
+    4,
+    {"method": "SubmitEnrichedSQLSpeculative", "request": {"target_table": model}, "response": {}},
+)
+expect_reject(
+    "source-age fault (d2): intervening SubmitEnrichedSQLSpeculative is rejected",
+    lambda: tv.reject_intervening(sa_spec, model),
+)
+
+# (d3) PHYSICAL OUTCOME: the clone-creation confirm acknowledges the RPC but sets
+# failed_to_clone=true. A failed physical clone is NOT a usable baseline.
+sa_failed = copy.deepcopy(sa)
+for e in sa_failed:
+    if e.get("method") == "ConfirmExecution" and (e.get("request", {}) or {}).get(
+        "request_id"
+    ) == "01a1317a-e7fe-7e3f-9312-99e6f50bfc42":
+        e["request"]["failed_to_clone"] = True
+expect_reject(
+    "source-age fault (d3): failed_to_clone confirm is not a successful clone",
+    lambda: tv.require_successful_register_clone(sa_failed),
+)
+
+# (d4) MIRROR DISAGREEMENT: the two RegisterClone mirrors disagree on source.
+sa_mirror = copy.deepcopy(sa)
+for e in sa_mirror:
+    if e.get("method") == "RegisterClone":
+        e["response"]["response"]["ready_to_clone_v1"]["clone_source"] = "DB.OTHER.THING"
+expect_reject(
+    "source-age fault (d4): disagreeing RegisterClone mirrors are rejected",
+    lambda: tv.require_successful_register_clone(sa_mirror),
+)
+
+# (d5) VOLATILE EXECUTE MISSING-BASELINE: a negative treatment that EXECUTEs is
+# only evidence of SUPPRESSION if the equivalent it should have cloned has a
+# confirmed baseline. Deleting the source baseline must make the EXECUTE-path
+# check reject (the previous review's fault that stayed accepted).
+# Build a tiny synthetic volatile-style trace: a prod source built+confirmed,
+# then a dev EXECUTE for the "same" equivalent.
+vol_trace = [
+    {
+        "method": "SubmitEnrichedSQL",
+        "request": {"target_table": "DB.PROD.M", "default_schema": "prod"},
+        "response": {"response": {"ready_to_execute": {"request_id": "p1"}}},
+    },
+    {"method": "ConfirmExecution", "request": {"request_id": "p1", "last_modified_epoch": 100},
+     "response": {"success": True}},
+    {
+        "method": "SubmitEnrichedSQL",
+        "request": {"target_table": "DB.DEV.M", "default_schema": "dev"},
+        "response": {"response": {"ready_to_execute": {"request_id": "d1"}}},
+    },
+]
+dev_exec = vol_trace[2]
+expect_accept(
+    "volatile EXECUTE: present baseline for the equivalent is accepted",
+    lambda: tv.require_present_baseline_for_execute(vol_trace, dev_exec, "DB.PROD.M"),
+)
+vol_no_base = [e for i, e in enumerate(vol_trace) if i not in (0, 1)]
+dev_exec2 = vol_no_base[0]
+expect_reject(
+    "volatile EXECUTE fault: deleted equivalent baseline makes the EXECUTE non-evidence",
+    lambda: tv.require_present_baseline_for_execute(vol_no_base, dev_exec2, "DB.PROD.M"),
+)
+
 print(f"\nALL {passed} VALIDATOR FAULT-PATH TESTS PASSED")

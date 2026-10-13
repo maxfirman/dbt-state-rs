@@ -150,7 +150,8 @@ if (dev_req.get('freshness_tolerance_seconds'), dev_req.get('tolerate_nondetermi
 # clone response's own epoch. This rejects a deleted source baseline (P2 #5).
 if dev_v=="ready_to_clone":
     try:
-        src_epoch=tv.require_confirmed_source(chain, dev_p.get('clone_source'))
+        src_epoch=tv.require_confirmed_source(
+            chain, dev_p.get('clone_source'), before_index=tv.index_of(chain, dev_entry))
     except tv.ValidationError as e:
         print(e); sys.exit(1)
     up_epochs=[e for e in dev_up.values() if e is not None]
