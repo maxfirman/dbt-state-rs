@@ -721,15 +721,26 @@ mod tests {
         );
     }
 
-    /// REGRESSION (review #2 3rd follow-up, P0): CONTEXT-ONLY change on a
-    /// FULLY-QUALIFIED reference. The same root logic references `INPUT` resolved
-    /// in BLUE vs RED (different physical data) with the SAME dependency query
-    /// text but a DIFFERENT physical name/context. These are different physical
-    /// inputs → the identity MUST differ. (The abstracted name alone collapses
-    /// BLUE/RED to one token; the per-reference catalog/schema context must keep
-    /// them distinct when the data genuinely differs.)
+    /// CROSS-ENV POSITIVE (review #2 4th follow-up, P1 #2 — was the misleadingly
+    /// named `ns_fully_qualified_context_only_differs`). The same model built in
+    /// BLUE vs RED (a uniform schema rename of BOTH the reference and its
+    /// definition) is the SAME model across environments and MUST share identity
+    /// — this is the cross-environment reuse the service exists to provide.
+    ///
+    /// NOTE on the open resolution-context question (do NOT over-correct this
+    /// into inequality): a uniform schema rename is NOT a proof that two leaves
+    /// hold the same data, but in the LIVE world any genuine data difference
+    /// advances the leaf's physical `last_modified_epoch`, which the FRESHNESS
+    /// path handles — it is NOT a namespace-logic distinction. Live measurement
+    /// (experiments/resolution_context.sh) could not isolate a context-only
+    /// change from upstream freshness through Fusion: rebuilding the leaf with
+    /// different data advanced its freshness and the consumer EXECUTED on that
+    /// basis, with the dependency NAME/schema/text byte-identical. The pure
+    /// context-only namespace policy therefore remains UNRESOLVED (documented in
+    /// the handoff as potential-unsafe), and this test asserts only the
+    /// well-established cross-env positive.
     #[test]
-    fn ns_fully_qualified_context_only_differs() {
+    fn ns_uniform_schema_rename_is_cross_env_positive() {
         // Same dependency DEFINITION text, different physical schema/context.
         let blue = exec(
             "select id from DB.BLUE.INPUT",
@@ -759,15 +770,17 @@ mod tests {
         );
     }
 
-    /// REGRESSION (review #2 3rd follow-up, P0): an UNQUALIFIED root reference
-    /// resolved via `default_schema`/`default_catalog`, where ONLY the resolution
-    /// context changes and the dependency resolves to GENUINELY DIFFERENT data.
-    /// The dependency NAME differs (BLUE vs RED physical input) so this must
-    /// differ even though the dependency query TEXT is identical. (Isolates
-    /// context: the dependency SQL text is held constant, unlike the earlier
-    /// test which also changed `select 1`→`select 2`.)
+    /// CROSS-ENV POSITIVE via `default_schema` (review #2 4th follow-up, P1 #2 —
+    /// was the misleadingly named `ns_unqualified_context_only_differs`). An
+    /// UNQUALIFIED root reference resolved through a different `default_schema`
+    /// where the dependency is the SAME model across environments (its definition
+    /// references its env's RAW, which abstracts equal) MUST share identity.
+    /// As with the fully-qualified case, a genuine data difference would in the
+    /// live world advance the leaf's freshness (handled separately); the
+    /// context-only namespace policy stays UNRESOLVED. This asserts the
+    /// cross-env positive only.
     #[test]
-    fn ns_unqualified_context_only_differs() {
+    fn ns_unqualified_uniform_schema_rename_is_cross_env_positive() {
         let blue = qc::SqlExecution {
             default_schema: Some("BLUE".into()),
             default_catalog: "DB".into(),
@@ -781,8 +794,8 @@ mod tests {
                 )],
             )
         };
-        // Same dependency query TEXT, but a different physical leaf (RED.RAW):
-        // the reference resolves to different data, so identity must differ.
+        // Same dependency query TEXT; RED is the same model's env-renamed leaf
+        // (RED.RAW), i.e. a uniform schema rename, not a data change.
         let red = qc::SqlExecution {
             default_schema: Some("RED".into()),
             default_catalog: "DB".into(),
