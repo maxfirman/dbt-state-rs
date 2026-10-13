@@ -20,6 +20,7 @@
 # build. UNIQUE per-run names; only mutates CDO_DEMO_DB; fails hard on any failed
 # build/mutation (exit-status checked); asserts the captured epochs.
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ=~/projects/jaffle-shop
 GOLDEN_DIR="${GOLDEN_DIR:-/tmp/conf_golden}"
 PORT="${PORT:-50099}"
@@ -89,74 +90,56 @@ grep -iE "Cloned|Reused|Succeeded|No-op|no-op" /tmp/rc_dev2.txt | sed 's/^ *//' 
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 [ -n "$GF" ] || fail "no golden capture"
 echo "--- full $MODEL chain (RegisterClone + resubmit); epochs + interval asserted ---"
-python3 - "$GF" "$MODEL" <<'PY' || { echo "FATAL: source-age chain assertions failed"; exit 1; }
+python3 - "$GF" "$MODEL" "$SCRIPT_DIR" <<'PY' || { echo "FATAL: source-age chain assertions failed"; exit 1; }
 import json,sys
+sys.path.insert(0, sys.argv[3])
+import trace_validate as tv
 gf,model=sys.argv[1],sys.argv[2]
-rows=[json.loads(l) for l in open(gf) if l.strip()]
-# COMPLETE RPC history for this model (review #2 4th follow-up P1 #4): the
-# curated chain keeps only Submit/Confirm/RegisterClone, but the hosted entry-4
-# SKIP could be explained by INTERVENING history the curation drops. Audit ALL
-# methods (including RecordExecutions and speculative submissions) and FAIL if
-# any such entry is interleaved — so a causal claim is never made over a
-# filtered trace.
-all_for_model=[r for r in rows if model in json.dumps(r)]
-seq=[(r['method'], (r.get('request',{}) or {}).get('from_speculative_submit')) for r in all_for_model]
-print("RC_FULL_SEQUENCE "+json.dumps([m for m,_ in seq]))
-intervening=[m for m,_ in seq if m in ('RecordExecutions',)]
-speculative=[m for m,s in seq if s]
-if intervening:
-    print(f"ERROR: the raw history contains {intervening} for this model; the curated "
-          f"Submit/Confirm/RegisterClone chain would hide it — re-characterize before "
-          f"attributing any cause to the entry-4 SKIP"); sys.exit(1)
-if speculative:
-    print(f"ERROR: the raw history contains {len(speculative)} speculative submission(s); "
-          f"these affect reuse and must not be filtered out of the causal chain"); sys.exit(1)
+rows=tv.load(gf)
+# COMPLETE RPC history audit: no intervening RecordExecutions / speculative
+# submission for this model may be dropped by the chain filter.
+try:
+    tv.reject_intervening(rows, model)
+except tv.ValidationError as e:
+    print(e); sys.exit(1)
 chain=[r for r in rows if model in json.dumps(r)
        and r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone')]
-saw_register=False
-confirms=[]       # confirm epochs in order: [source build (T1), clone creation (T3)]
-dev=None
-for r in chain:
-    req=r.get('request',{}) or {}
-    m=r['method']
-    if m=='RegisterClone':
-        saw_register=True
-        print("RC_REGISTER "+json.dumps({"source":req.get('clone_source_table'),
-          "target":req.get('target_table'),
-          "src_epoch":req.get('clone_source_last_modified_epoch')}))
-    elif m=='ConfirmExecution':
-        confirms.append(req.get('last_modified_epoch'))
-        print("RC_CONFIRM lme="+str(req.get('last_modified_epoch')))
-    else:
-        resp=r.get('response',{}).get('response',{}) or {}
-        v=next(iter(resp.keys()),None); p=resp.get(v) or {}
-        ed=p.get('explained_decision',{})
-        tabs={t['name'].split('.')[-1].strip('"'):t.get('last_modified_epoch') for t in req.get('tables',[])}
-        rec={"schema":req.get('default_schema'),"decision":v,
-             "desc":ed.get('decision_description'),"is_stale":ed.get('is_stale'),"up":tabs}
-        print("RC "+json.dumps(rec))
-        if req.get('default_schema')=='dev_clone_demo':
-            dev=rec
+print("RC_FULL_SEQUENCE "+json.dumps([r['method'] for r in rows if model in json.dumps(r)]))
 
-# Assertions: the RegisterClone event occurred, both confirms exist, the dev
-# resubmit happened, and the DISTINGUISHING interval holds (upstream NEWER than
-# the source build T1 but OLDER than the clone creation T3).
-if not saw_register:
-    print("ERROR: no RegisterClone event captured (did an incremental model clone via pre_clone?)"); sys.exit(1)
-if len(confirms) < 2 or confirms[0] is None or confirms[1] is None:
-    print(f"ERROR: expected source-build + clone-creation confirms, got {confirms}"); sys.exit(1)
-if dev is None:
-    print("ERROR: no dev resubmit captured"); sys.exit(1)
-t1, t3 = confirms[0], confirms[1]
-up_epochs=[e for e in dev["up"].values() if e is not None
-           and True]  # all upstream/own epochs on the resubmit
-# the UPSTREAM epoch (not the model's own) must sit strictly between T1 and T3
-up_only=[e for k,e in dev["up"].items() if e is not None and "MODEL" not in k.upper()]
+# CORRELATED validation (review #2 4th follow-up P2 #5): the RegisterClone must
+# be a SUCCESSFUL ready_to_clone, its clone_source_table must have a
+# SUCCESSFULLY-CONFIRMED source build (T1) in this trace, and its OWN response
+# request_id must be acknowledged by a successful clone-creation confirm (T3).
+# This rejects fault (c): unable_to_clone + an unrelated confirmation id.
+try:
+    rc=tv.require_successful_register_clone(chain)
+except tv.ValidationError as e:
+    print(e); sys.exit(1)
+print("RC_REGISTER "+json.dumps(rc))
+
+# The dev resubmit must be captured.
+try:
+    dev_entry=tv.find_decision(chain,"SubmitEnrichedSQL","dev_clone_demo")
+except tv.ValidationError as e:
+    print(e); sys.exit(1)
+dev_v,dev_p=tv._resp_variant(dev_entry)
+dev_req=dev_entry.get('request',{}) or {}
+dev_up={t['name'].split('.')[-1].strip('"'):t.get('last_modified_epoch') for t in dev_req.get('tables',[])}
+print("RC "+json.dumps({"schema":dev_req.get('default_schema'),"decision":dev_v,
+      "desc":dev_p.get('explained_decision',{}).get('decision_description'),"up":dev_up}))
+
+t1,t3=rc["source_build_epoch"],rc["clone_creation_epoch"]
+if t1 is None or t3 is None:
+    print(f"ERROR: missing correlated source-build/clone-creation epochs: T1={t1} T3={t3}"); sys.exit(1)
+# The DISTINGUISHING interval: the dev resubmit's UPSTREAM epoch must sit
+# strictly between the confirmed source build (T1) and the clone creation (T3).
+up_only=[e for k,e in dev_up.items() if e is not None and "MODEL" not in k.upper()]
 if not up_only:
     print("ERROR: no upstream epoch on the dev resubmit"); sys.exit(1)
 up=max(up_only)
 if not (t1 < up < t3):
-    print(f"ERROR: distinguishing interval broken - need source build {t1} < upstream {up} < clone creation {t3}"); sys.exit(1)
-print(f"RC_OK: RegisterClone present; interval holds (T1={t1} < upstream={up} < T3={t3}); "
-      f"hosted dev decision={dev['decision']}")
+    print(f"ERROR: distinguishing interval broken - need confirmed source build {t1} "
+          f"< upstream {up} < clone creation {t3}"); sys.exit(1)
+print(f"RC_OK: successful RegisterClone of {rc['clone_source']} (confirmed source build "
+      f"{t1}); interval holds (T1={t1} < upstream={up} < T3={t3}); hosted dev decision={dev_v}")
 PY

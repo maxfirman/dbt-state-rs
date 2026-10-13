@@ -21,6 +21,7 @@
 # independent variable actually changed). UNIQUE per-run names; only mutates
 # CDO_DEMO_DB; FAILS HARD on any failed build/mutation (exit status checked).
 set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ=~/projects/jaffle-shop
 GOLDEN_DIR="${GOLDEN_DIR:-/tmp/conf_golden}"
 PORT="${PORT:-50099}"
@@ -101,58 +102,69 @@ grep -iE "Cloned|Reused|Succeeded" /tmp/ce_dev.txt | sed 's/^ *//' | tail -2
 GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 [ -n "$GF" ] || fail "no golden capture"
 echo "--- captured $MODEL chain + EFFECTIVE wire fields (independent var check) ---"
-python3 - "$GF" "$MODEL" "$ARM" <<'PY' || { echo "FATAL: clone-eligibility assertions failed"; exit 1; }
+python3 - "$GF" "$MODEL" "$ARM" "$SCRIPT_DIR" <<'PY' || { echo "FATAL: clone-eligibility assertions failed"; exit 1; }
 import json,sys
+sys.path.insert(0, sys.argv[4])
+import trace_validate as tv
 gf,model,arm=sys.argv[1],sys.argv[2],sys.argv[3]
-rows=[json.loads(l) for l in open(gf) if l.strip()]
+rows=tv.load(gf)
+# COMPLETE-history audit: no intervening RecordExecutions / speculative submit
+# for this model may be dropped by a method filter.
+try:
+    tv.reject_intervening(rows, model)
+except tv.ValidationError as e:
+    print(e); sys.exit(1)
 chain=[r for r in rows if model in json.dumps(r) and r['method'] in ('SubmitEnrichedSQL','ConfirmExecution')]
-dev=None
-source_build_epoch=None
 for r in chain:
     req=r.get('request',{}) or {}
     if r['method']=='ConfirmExecution':
-        print("CE_CONFIRM lme="+str(req.get('last_modified_epoch')))
-        if source_build_epoch is None:
-            source_build_epoch=req.get('last_modified_epoch')
+        print("CE_CONFIRM req_id="+str(req.get('request_id'))+" lme="+str(req.get('last_modified_epoch'))
+              +" success="+str((r.get('response',{}) or {}).get('success')))
         continue
-    resp=r.get('response',{}).get('response',{}) or {}
-    v=next(iter(resp.keys()),None); p=resp.get(v) or {}
-    ed=p.get('explained_decision',{})
+    v,p=tv._resp_variant(r); ed=p.get('explained_decision',{})
     tabs={t['name'].split('.')[-1].strip('"'):t.get('last_modified_epoch') for t in req.get('tables',[])}
-    rec={"arm":arm,"schema":req.get('default_schema'),
+    print("CE "+json.dumps({"arm":arm,"schema":req.get('default_schema'),
          "ftol":req.get('freshness_tolerance_seconds'),"tnd":req.get('tolerate_nondeterminism'),
-         "decision":v,"srr":ed.get('skip_rejection_reason'),"crr":ed.get('clone_rejection_reason'),
-         "desc":ed.get('decision_description'),"clone_source":p.get('clone_source'),
-         "clone_req_epoch":p.get('clone_required_last_modified_epoch'),"up":tabs}
-    print("CE "+json.dumps(rec))
-    if req.get('default_schema')=='dev_clone_demo':
-        dev=rec
+         "decision":v,"srr":ed.get('skip_rejection_reason'),"clone_source":p.get('clone_source'),
+         "clone_req_epoch":p.get('clone_required_last_modified_epoch'),"up":tabs}))
 
 # (1) a dev submit must have been captured.
-if dev is None:
-    print("ERROR: no dev submit captured"); sys.exit(1)
+try:
+    dev_entry=tv.find_decision(chain,"SubmitEnrichedSQL","dev_clone_demo")
+except tv.ValidationError as e:
+    print(e); sys.exit(1)
+dev_v,dev_p=tv._resp_variant(dev_entry)
+dev_req=dev_entry.get('request',{}) or {}
+dev_up={t['name'].split('.')[-1].strip('"'):t.get('last_modified_epoch') for t in dev_req.get('tables',[])}
 
 # (2) the intended independent variable must have reached the wire.
-exp={"stale_postol":(2700,True),"stale_zerotol":(0,True),"volatile":(2700,False)}[arm]
-if (dev["ftol"], dev["tnd"]) != exp:
+exp={"stale_postol":(2700,True),"stale_zerotol":(0,True),
+     "volatile":(2700,False),"volatile_det":(2700,False)}[arm]
+if (dev_req.get('freshness_tolerance_seconds'), dev_req.get('tolerate_nondeterminism')) != exp:
     print(f"ERROR: VARCHECK FAILED arm={arm} expected ftol/tnd {exp} got "
-          f"({dev['ftol']},{dev['tnd']}) - the independent variable did NOT reach the wire")
-    sys.exit(1)
+          f"({dev_req.get('freshness_tolerance_seconds')},{dev_req.get('tolerate_nondeterminism')})"); sys.exit(1)
 
-# (3) if the dev submit CLONED, the selected source must have a captured build
-# epoch and the staleness interval must hold (upstream NEWER than the source
-# build) - otherwise we cannot claim this is a STALE-source clone.
-if dev["decision"]=="ready_to_clone":
-    if dev["clone_req_epoch"] is None:
-        print("ERROR: ready_to_clone with no clone_required_last_modified_epoch"); sys.exit(1)
-    up_epochs=[e for e in dev["up"].values() if e is not None]
+# (3) if the dev submit CLONED, the SELECTED SOURCE must have a SUCCESSFULLY-
+# CONFIRMED build in THIS trace (correlated by request_id), and the staleness
+# interval must hold against that CONFIRMED source build epoch — not merely the
+# clone response's own epoch. This rejects a deleted source baseline (P2 #5).
+if dev_v=="ready_to_clone":
+    try:
+        src_epoch=tv.require_confirmed_source(chain, dev_p.get('clone_source'))
+    except tv.ValidationError as e:
+        print(e); sys.exit(1)
+    up_epochs=[e for e in dev_up.values() if e is not None]
     if not up_epochs:
         print("ERROR: ready_to_clone with no upstream epoch to check staleness"); sys.exit(1)
-    if not (max(up_epochs) > dev["clone_req_epoch"]):
+    # The clone-response epoch must agree with the confirmed source build.
+    if dev_p.get('clone_required_last_modified_epoch') not in (None, src_epoch):
+        print(f"ERROR: clone_required epoch {dev_p.get('clone_required_last_modified_epoch')} "
+              f"disagrees with the CONFIRMED source build {src_epoch}"); sys.exit(1)
+    if not (max(up_epochs) > src_epoch):
         print(f"ERROR: staleness interval broken - upstream {max(up_epochs)} is NOT newer "
-              f"than the clone source epoch {dev['clone_req_epoch']}"); sys.exit(1)
-    print(f"CE_OK arm={arm}: STALE-source clone - source epoch {dev['clone_req_epoch']} "
+              f"than the CONFIRMED source build {src_epoch}"); sys.exit(1)
+    print(f"CE_OK arm={arm}: STALE-source clone - CONFIRMED source build {src_epoch} "
           f"< upstream {max(up_epochs)}; ftol/tnd={exp} reached the wire")
 else:
-    print(f"CE_OK arm={arm}: decision={dev['decision']} (not a clone); ftol/tnd={exp} verified")
+    print(f"CE_OK arm={arm}: decision={dev_v} (not a clone); ftol/tnd={exp} verified")
 PY

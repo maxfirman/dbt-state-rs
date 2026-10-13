@@ -4,3 +4,7 @@
 .env
 golden/**/*.tmp
 /golden/golden_*.jsonl
+
+# Python bytecode from experiment helpers
+__pycache__/
+*.pyc
