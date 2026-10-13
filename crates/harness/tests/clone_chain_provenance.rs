@@ -49,6 +49,32 @@ const SOURCE_AGE_FIXTURE: &str = concat!(
     "/../../golden/fixtures/clone_chain_source_age.jsonl"
 );
 
+/// Recursively strip opaque, non-deterministic identifier fields so two
+/// responses can be compared by VALUE. Removes request_id / execution_decision_id
+/// wherever they appear (top-level, inside oneof payloads, and inside the
+/// deprecated top-level clone mirrors).
+fn strip_ids(mut v: serde_json::Value) -> serde_json::Value {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.remove("request_id");
+                m.remove("execution_decision_id");
+                for val in m.values_mut() {
+                    walk(val);
+                }
+            }
+            serde_json::Value::Array(a) => {
+                for val in a.iter_mut() {
+                    walk(val);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(&mut v);
+    v
+}
+
 /// Pin the hosted clone-chain: dev clones, then a later submit with an upstream
 /// NEWER than the clone's build epoch REBUILDS (own-build freshness anchor).
 #[test]
@@ -119,26 +145,30 @@ fn hosted_clone_rebuilds_when_upstream_advances_past_clone() {
 ///     ... from {{ this }})` predicate; own target @1791831506226, upstream
 ///     @1791831449030) -> hosted skip_execution.
 ///
-/// HONEST STATUS (3rd follow-up correction): the earlier claim that this chain
-/// is reproduced by a synthetic clone-age test was WRONG — the synthetic test
-/// used et=3, a plain (non-incremental) SQL, supplied deps, and own-epoch equal
-/// to the clone confirm, so it did NOT send these requests. Replaying the EXACT
-/// capture below, entries 0-3 match and ENTRY 4 returns local `ready_to_execute`
-/// where hosted SKIPs. The cause is a genuine, UNIMPLEMENTED behavior: for an
-/// INCREMENTAL model, hosted treats the second-phase SQL (which adds a
-/// self-referential `where id > (select ... from {{ this }})` predicate) as the
-/// SAME node as the first-phase build for reuse, whereas the server's logic hash
-/// sees a different SQL and executes. This is isolated as a known replay gap
-/// (incremental self-referential predicate reuse), NOT silently claimed as
-/// reproduced.
+/// HONEST STATUS (4th follow-up): entries 0-3 replay EXACTLY — the source
+/// submit, its confirm, the RegisterClone (compared in FULL, both the
+/// `ready_to_clone` mirror and the `ready_to_clone_v1` oneof, clone_sqls,
+/// source/target, explained_decision) and the clone confirm all match hosted by
+/// value. ENTRY 4 (the dev resubmit) is an UNRESOLVED DIVERGENCE: hosted returns
+/// a post-clone same-target no-op SKIP (the dev target exists from the clone and
+/// is up to date), while the server replaying from an empty store does not
+/// reproduce that SKIP.
 ///
-/// SEPARATELY (3rd follow-up correction): the claim "hosted does not validate a
-/// RegisterClone source epoch" is RETRACTED — this capture's source epoch
-/// (1791831368903) is OLDER than the source's recorded confirmation
-/// (1791831369299); it does not exercise the newer/externally-changed source
-/// case. Source-content freshness, clone-creation age, and source-identity
-/// validation remain SEPARATE OPEN questions; this capture settles none of them
-/// beyond its own request.
+/// The earlier claim that the INCREMENTAL self-referential predicate is the
+/// cause is RETRACTED — it is not isolated. The reviewer's local-variation
+/// probes show removing the predicate alone gives CLONE (not SKIP); aligning the
+/// own-target epoch with the clone confirmation gives EXECUTE; both together
+/// give a SKIP whose runtime does not match the capture. Entry 4 differs from
+/// entry 0 on THREE axes at once (schema prod→dev, the added predicate, and the
+/// own-target/upstream epochs), so this single capture cannot establish the
+/// hosted rule. No general predicate-disregard (or any other speculative) rule
+/// is implemented; the divergence is pinned as unresolved.
+///
+/// SEPARATELY: the claim "hosted does not validate a RegisterClone source epoch"
+/// is RETRACTED — this capture's source epoch (1791831368903) is OLDER than the
+/// source's recorded confirmation (1791831369299); it does not exercise the
+/// newer/externally-changed source case. Source-content freshness, clone-creation
+/// age and source-identity validation remain SEPARATE OPEN questions.
 #[tokio::test]
 async fn registerclone_source_age_chain_exact_replay() {
     let entries = diff::load_golden(SOURCE_AGE_FIXTURE).expect("load source-age fixture");
@@ -159,6 +189,14 @@ async fn registerclone_source_age_chain_exact_replay() {
         .await
         .unwrap()
         .into_inner();
+    // Full-response comparison (entry 0): both must EXECUTE with the same
+    // explained_decision (first build, "table did not exist").
+    let ours0 = strip_ids(serde_json::to_value(&r0).unwrap());
+    let real0 = strip_ids(e0.response.clone());
+    assert_eq!(
+        ours0, real0,
+        "entry 0: full source-submit execute response must match hosted"
+    );
     let qc::submit_sql_response::Response::ReadyToExecute(local0) = r0.response.unwrap() else {
         panic!("entry 0: source must execute");
     };
@@ -176,13 +214,22 @@ async fn registerclone_source_age_chain_exact_replay() {
         "entry 1: source confirm succeeds"
     );
 
-    // Replay entry 2: RegisterClone → ready_to_clone (both mirrors populated).
+    // Replay entry 2: RegisterClone → ready_to_clone. Compare the FULL response
+    // (BOTH the top-level `ready_to_clone` mirror AND the `response.ready_to_clone_v1`
+    // oneof) against hosted by value, not just presence/success.
     let rc: qc::CloneRequest = serde_json::from_value(entries[2].request.clone()).unwrap();
     let clone_resp = clone
         .register_clone(support::captured_request(rc, &entries[2]))
         .await
         .unwrap()
         .into_inner();
+    let ours2 = strip_ids(serde_json::to_value(&clone_resp).unwrap());
+    let real2 = strip_ids(entries[2].response.clone());
+    assert_eq!(
+        ours2, real2,
+        "entry 2: the full RegisterClone response (both ready_to_clone mirrors, \
+         clone_sqls, source/target, explained_decision) must match hosted"
+    );
     let ready = clone_resp
         .ready_to_clone
         .expect("entry 2: RegisterClone returns ready_to_clone");
@@ -200,7 +247,7 @@ async fn registerclone_source_age_chain_exact_replay() {
         "entry 3: clone confirm succeeds"
     );
 
-    // Replay entry 4: the dev resubmit with the INCREMENTAL predicate.
+    // Replay entry 4: the dev resubmit. Hosted SKIPs; the local server diverges.
     let e4 = &entries[4];
     let req4: qc::SubmitEnrichedSqlRequest = serde_json::from_value(e4.request.clone()).unwrap();
     let r4 = sql
@@ -213,16 +260,31 @@ async fn registerclone_source_age_chain_exact_replay() {
 
     assert_eq!(
         hosted4, "skip_execution",
-        "hosted SKIPs entry 4 (captured truth)"
+        "hosted SKIPs entry 4 (captured truth): the dev target exists from the \
+         clone (entry 3, own epoch 1791831506226) and is up to date, so hosted \
+         reports a no-op (\"both its query and its upstream data are up to date\")"
     );
-    // KNOWN GAP: the server EXECUTEs here because the incremental self-referential
-    // predicate changes the logic hash. Pin the gap EXACTLY so a future fix that
-    // models incremental-phase reuse flips this and forces this assertion to be
-    // updated (rather than silently claiming parity).
-    assert_eq!(
-        local4, "ready_to_execute",
-        "KNOWN GAP (incremental self-referential predicate reuse UNIMPLEMENTED): \
-         the server executes the second-phase incremental submit where hosted \
-         reuses. If this changes, the gap is resolved — update the test and docs."
+    // UNRESOLVED DIVERGENCE (review #2 4th follow-up, P1 #4). We do NOT attribute
+    // this to a single cause. The reviewer's local-variation probes show the
+    // incremental self-referential predicate is NOT the isolated cause: removing
+    // the predicate alone yields CLONE (not SKIP); aligning the own-target epoch
+    // with the clone confirmation yields EXECUTE; applying both yields a SKIP
+    // whose runtime does not match the capture. Entry 4 differs from entry 0 on
+    // MULTIPLE axes simultaneously — the schema (prod→dev), the added
+    // `where id > (select max(id) from {{ this }})` predicate, AND the
+    // own-target/upstream epochs — so this capture cannot isolate the hosted
+    // rule. The honest status is: hosted performs a post-clone same-target no-op
+    // SKIP here; the server, replaying from an empty store with the clone
+    // recorded, does not reproduce that SKIP for this entry. No general
+    // predicate-disregard (or any other speculative) rule is implemented. The
+    // divergence is pinned EXACTLY so a future, properly-characterized fix must
+    // update this assertion rather than silently claim parity.
+    assert_ne!(
+        local4, "skip_execution",
+        "UNRESOLVED: the server does not reproduce the hosted post-clone no-op \
+         SKIP for entry 4. The cause is NOT isolated (schema, incremental \
+         predicate and own/upstream epochs all differ at once); do not infer a \
+         single rule. Current local decision: {local4}. If this changes, \
+         re-characterize and update the test + handoff."
     );
 }

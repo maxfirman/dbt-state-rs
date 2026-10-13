@@ -93,6 +93,24 @@ python3 - "$GF" "$MODEL" <<'PY' || { echo "FATAL: source-age chain assertions fa
 import json,sys
 gf,model=sys.argv[1],sys.argv[2]
 rows=[json.loads(l) for l in open(gf) if l.strip()]
+# COMPLETE RPC history for this model (review #2 4th follow-up P1 #4): the
+# curated chain keeps only Submit/Confirm/RegisterClone, but the hosted entry-4
+# SKIP could be explained by INTERVENING history the curation drops. Audit ALL
+# methods (including RecordExecutions and speculative submissions) and FAIL if
+# any such entry is interleaved — so a causal claim is never made over a
+# filtered trace.
+all_for_model=[r for r in rows if model in json.dumps(r)]
+seq=[(r['method'], (r.get('request',{}) or {}).get('from_speculative_submit')) for r in all_for_model]
+print("RC_FULL_SEQUENCE "+json.dumps([m for m,_ in seq]))
+intervening=[m for m,_ in seq if m in ('RecordExecutions',)]
+speculative=[m for m,s in seq if s]
+if intervening:
+    print(f"ERROR: the raw history contains {intervening} for this model; the curated "
+          f"Submit/Confirm/RegisterClone chain would hide it — re-characterize before "
+          f"attributing any cause to the entry-4 SKIP"); sys.exit(1)
+if speculative:
+    print(f"ERROR: the raw history contains {len(speculative)} speculative submission(s); "
+          f"these affect reuse and must not be filtered out of the causal chain"); sys.exit(1)
 chain=[r for r in rows if model in json.dumps(r)
        and r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone')]
 saw_register=False
