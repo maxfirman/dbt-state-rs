@@ -170,30 +170,36 @@ pub fn split_object_name_components(name: &str) -> Vec<String> {
     parts
 }
 
-/// Schema-abstract a dependency's physical object NAME using the shared relative
-/// schema map. The name is split into REAL identifier components with
-/// [`split_object_name_components`] (a `.` inside `"…"` is part of the
-/// component). The catalog and table components are canonicalized with
-/// [`canonical_identifier`] (Snowflake semantics: unquoted folds to UPPERCASE,
-/// quoted is case-sensitive, so `INPUT` ≡ `"INPUT"` but `"input"` is distinct);
-/// only a THREE-part name has its middle (schema) component abstracted to a
-/// relative token.
-pub fn abstract_object_name_schema_with(name: &str, schemas: &SchemaMap) -> String {
+/// Schema-abstract a dependency's physical object NAME into its CANONICAL
+/// COMPONENT SEQUENCE (not a rejoined string). The name is split into real
+/// identifier components with [`split_object_name_components`] (a `.` inside
+/// `"…"` is part of the component). The catalog and table components are
+/// canonicalized with [`canonical_identifier`] (unquoted folds to UPPERCASE,
+/// quoted is case-sensitive); only a THREE-part name has its middle (schema)
+/// component abstracted to a relative token. Returning the components lets the
+/// caller length-frame each one so a component that itself contains a `.` (or
+/// matches the schema-placeholder spelling) cannot collide across a boundary
+/// with a differently-split name — review #2 6th follow-up P0.
+pub fn abstract_object_name_components_with(name: &str, schemas: &SchemaMap) -> Vec<String> {
     let parts = split_object_name_components(name);
     if parts.len() == 3 {
-        format!(
-            "{}.{}.{}",
+        vec![
             canonical_identifier(&parts[0]),
             schemas.placeholder_for(&parts[1]),
-            canonical_identifier(&parts[2])
-        )
+            canonical_identifier(&parts[2]),
+        ]
     } else {
-        parts
-            .iter()
-            .map(|p| canonical_identifier(p))
-            .collect::<Vec<_>>()
-            .join(".")
+        parts.iter().map(|p| canonical_identifier(p)).collect()
     }
+}
+
+/// Schema-abstract a dependency's physical object NAME using the shared relative
+/// schema map, returning a REJOINED string. DISPLAY/LEGACY ONLY — rejoining with
+/// `.` is ambiguous when a component contains a `.`, so persisted fingerprints
+/// must use [`abstract_object_name_components_with`] and length-frame each
+/// component. Retained for callers that only need a human-readable spelling.
+pub fn abstract_object_name_schema_with(name: &str, schemas: &SchemaMap) -> String {
+    abstract_object_name_components_with(name, schemas).join(".")
 }
 
 /// Legacy single-token overload of [`abstract_object_name_schema_with`].

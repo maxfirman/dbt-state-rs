@@ -1106,3 +1106,70 @@ async fn volatile_dependency_definition_suppresses_clone() {
         "a volatile VIEW DEPENDENCY (deterministic root) must suppress the clone"
     );
 }
+
+/// P0 #1 (review #2 6th follow-up) — COMPONENT-BOUNDARY collision through the
+/// real gRPC service, with a confirmed baseline + no-swap CONTROL. The two
+/// dependency names below are DISTINCT valid Snowflake relations whose canonical
+/// components, if rejoined with literal periods, collide
+/// (`DB.__dbt_state_ns__0.__dbt_state_ns__0.T`). A swap of their definitions
+/// must EXECUTE (binding preserved by structured, length-framed hashing), while
+/// an identical-binding control CLONEs (proving a candidate is present).
+#[tokio::test]
+async fn server_gates_component_boundary_collision_swap_with_control() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
+    let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
+    let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
+    let dep = |name: &str, body: &str| qc::QueryDependency {
+        name: name.into(),
+        query: format!("select {body} as id"),
+        default_catalog: "DB".into(),
+        default_schema: "S".into(),
+    };
+
+    // Baseline (prod): n1=1, n2=2. Build + confirm.
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CBCONS\"";
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = root.into();
+    base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // CONTROL (no swap): identical bindings → ready_to_clone (candidate present).
+    let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_CTL\"";
+    let mut ctl = submit(c, "dev_clone_demo");
+    ctl.sql = root.into();
+    ctl.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(ctl).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "CONTROL: identical boundary-collision bindings must clone the baseline"
+    );
+
+    // TREATMENT (swap): same root + representation, definitions swapped → EXECUTE.
+    let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_SWAP\"";
+    let mut swap = submit(d, "dev_clone_demo");
+    swap.sql = root.into();
+    swap.query_dependencies = vec![dep(n1, "2"), dep(n2, "1")];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "TREATMENT: the two placeholder-like names are distinct relations; a \
+         swapped binding must EXECUTE, not clone (no component-boundary collision)"
+    );
+}

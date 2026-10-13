@@ -108,7 +108,7 @@ pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String 
 /// executes. See experiments/clone_logic_sensitivity.sh.
 pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     use crate::sql_norm::{
-        abstract_object_name_schema_with, schema_of_object_name, schemas_in_sql, SchemaMap,
+        abstract_object_name_components_with, schema_of_object_name, schemas_in_sql, SchemaMap,
     };
     // Build ONE request-wide relative schema→token map covering every schema
     // that appears in the root SQL, in each dependency NAME, and in each
@@ -131,7 +131,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     let schemas = SchemaMap::from_schemas(all_schemas);
 
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-ns-logic-v3");
+    field(&mut h, b"dbt-state-ns-logic-v4");
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     // The default_schema is folded in as its RELATIVE token (not its physical
     // name), so the SAME model across environments (whose default_schema differs
@@ -161,20 +161,33 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     // discarded the binding; a single global schema placeholder (the first fix)
     // discarded multi-schema distinctness — review #2 finding 3 + its 2nd
     // follow-up. Length-framed per component.
-    let mut dependency_bindings: Vec<(String, String)> = req
+    // Dependencies: bind each dependency's schema-abstracted NAME to its
+    // schema-abstracted definition. The NAME is a STRUCTURED COMPONENT SEQUENCE
+    // (abstract_object_name_components_with), hashed component-by-component with
+    // explicit length framing — NOT a rejoined string — so a component that
+    // itself contains a `.` (or matches the schema-placeholder spelling) cannot
+    // collide across a boundary with a differently-split name (review #2 6th
+    // follow-up P0). Sorted by (components, query) so the binding multiset is
+    // order-independent while each (reference → definition) pair is preserved.
+    let mut dependency_bindings: Vec<(Vec<String>, String)> = req
         .query_dependencies
         .iter()
         .map(|d| {
             (
-                abstract_object_name_schema_with(&d.name, &schemas),
+                abstract_object_name_components_with(&d.name, &schemas),
                 normalized_ns_with(&req.dialect, &d.query, &schemas),
             )
         })
         .collect();
     dependency_bindings.sort();
     field(&mut h, &(dependency_bindings.len() as u64).to_le_bytes());
-    for (name, query) in dependency_bindings {
-        field(&mut h, name.as_bytes());
+    for (components, query) in dependency_bindings {
+        // Frame the component COUNT, then each component (each already length-
+        // framed by `field`), then the definition — an unambiguous encoding.
+        field(&mut h, &(components.len() as u64).to_le_bytes());
+        for c in &components {
+            field(&mut h, c.as_bytes());
+        }
         field(&mut h, query.as_bytes());
     }
     hex::encode(h.finalize())
@@ -1082,6 +1095,71 @@ mod tests {
             namespace_logic_hash(&base),
             namespace_logic_hash(&swapped),
             "escaped-quote components a\"b vs A\"B are distinct; a swap must differ"
+        );
+    }
+
+    /// REGRESSION (review #2 6th follow-up, P0): COMPONENT-BOUNDARY collision.
+    /// Abstracting then REJOINING components with literal `.` lost boundaries
+    /// when a canonical component itself contained a `.` (or matched the schema
+    /// placeholder spelling). `"DB.__dbt_state_ns__0"."S"."T"` and
+    /// `"DB"."S"."__dbt_state_ns__0.T"` both rejoined to
+    /// `DB.__dbt_state_ns__0.__dbt_state_ns__0.T`, so a swap of their definitions
+    /// conflated → unsafe clone. These are DISTINCT valid Snowflake relations;
+    /// a swap must change the identity. The binding key must preserve every
+    /// component boundary (structured, length-framed), not a rejoined string.
+    #[test]
+    fn ns_component_boundary_collision_binding_swap_differs() {
+        let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
+        let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
+        let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
+        let base = exec(
+            root,
+            vec![
+                dep(n1, "select 1 as id", "DB", "S"),
+                dep(n2, "select 2 as id", "DB", "S"),
+            ],
+        );
+        let swapped = exec(
+            root,
+            vec![
+                dep(n1, "select 2 as id", "DB", "S"),
+                dep(n2, "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "placeholder-like dependency names that span a component boundary are \
+             DISTINCT relations; a swap must change the identity (no rejoin collision)"
+        );
+    }
+
+    /// Control: the two placeholder-like names are themselves distinct bindings
+    /// even without a swap — an identical submit matches itself (sanity that we
+    /// did not simply make everything differ).
+    #[test]
+    fn ns_component_boundary_identical_submit_matches() {
+        let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
+        let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
+        let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
+        let a = exec(
+            root,
+            vec![
+                dep(n1, "select 1 as id", "DB", "S"),
+                dep(n2, "select 2 as id", "DB", "S"),
+            ],
+        );
+        let b = exec(
+            root,
+            vec![
+                dep(n1, "select 1 as id", "DB", "S"),
+                dep(n2, "select 2 as id", "DB", "S"),
+            ],
+        );
+        assert_eq!(
+            namespace_logic_hash(&a),
+            namespace_logic_hash(&b),
+            "identical bindings must share identity"
         );
     }
 }
