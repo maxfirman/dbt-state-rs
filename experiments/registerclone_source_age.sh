@@ -91,55 +91,15 @@ GF=$(ls -t "$GOLDEN_DIR"/golden_*.jsonl 2>/dev/null | head -1 || true)
 [ -n "$GF" ] || fail "no golden capture"
 echo "--- full $MODEL chain (RegisterClone + resubmit); epochs + interval asserted ---"
 python3 - "$GF" "$MODEL" "$SCRIPT_DIR" <<'PY' || { echo "FATAL: source-age chain assertions failed"; exit 1; }
-import json,sys
+import sys
 sys.path.insert(0, sys.argv[3])
-import trace_validate as tv
-gf,model=sys.argv[1],sys.argv[2]
-rows=tv.load(gf)
-# COMPLETE RPC history audit: no intervening RecordExecutions / speculative
-# submission for this model may be dropped by the chain filter.
+import oracles, trace_validate as tv
+gf, model = sys.argv[1], sys.argv[2]
 try:
-    tv.reject_intervening(rows, model)
+    r = oracles.source_age_oracle(gf, model)
 except tv.ValidationError as e:
     print(e); sys.exit(1)
-chain=[r for r in rows if model in json.dumps(r)
-       and r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone')]
-print("RC_FULL_SEQUENCE "+json.dumps([r['method'] for r in rows if model in json.dumps(r)]))
-
-# CORRELATED validation (review #2 4th follow-up P2 #5): the RegisterClone must
-# be a SUCCESSFUL ready_to_clone, its clone_source_table must have a
-# SUCCESSFULLY-CONFIRMED source build (T1) in this trace, and its OWN response
-# request_id must be acknowledged by a successful clone-creation confirm (T3).
-# This rejects fault (c): unable_to_clone + an unrelated confirmation id.
-try:
-    rc=tv.require_successful_register_clone(chain)
-except tv.ValidationError as e:
-    print(e); sys.exit(1)
-print("RC_REGISTER "+json.dumps(rc))
-
-# The dev resubmit must be captured.
-try:
-    dev_entry=tv.find_decision(chain,"SubmitEnrichedSQL","dev_clone_demo")
-except tv.ValidationError as e:
-    print(e); sys.exit(1)
-dev_v,dev_p=tv._resp_variant(dev_entry)
-dev_req=dev_entry.get('request',{}) or {}
-dev_up={t['name'].split('.')[-1].strip('"'):t.get('last_modified_epoch') for t in dev_req.get('tables',[])}
-print("RC "+json.dumps({"schema":dev_req.get('default_schema'),"decision":dev_v,
-      "desc":dev_p.get('explained_decision',{}).get('decision_description'),"up":dev_up}))
-
-t1,t3=rc["source_build_epoch"],rc["clone_creation_epoch"]
-if t1 is None or t3 is None:
-    print(f"ERROR: missing correlated source-build/clone-creation epochs: T1={t1} T3={t3}"); sys.exit(1)
-# The DISTINGUISHING interval: the dev resubmit's UPSTREAM epoch must sit
-# strictly between the confirmed source build (T1) and the clone creation (T3).
-up_only=[e for k,e in dev_up.items() if e is not None and "MODEL" not in k.upper()]
-if not up_only:
-    print("ERROR: no upstream epoch on the dev resubmit"); sys.exit(1)
-up=max(up_only)
-if not (t1 < up < t3):
-    print(f"ERROR: distinguishing interval broken - need confirmed source build {t1} "
-          f"< upstream {up} < clone creation {t3}"); sys.exit(1)
-print(f"RC_OK: successful RegisterClone of {rc['clone_source']} (confirmed source build "
-      f"{t1}); interval holds (T1={t1} < upstream={up} < T3={t3}); hosted dev decision={dev_v}")
+print(f"RC_OK: successful RegisterClone of {r['clone_source']} (confirmed source build "
+      f"{r['t1']}); interval holds (T1={r['t1']} < upstream={r['up']} < T3={r['t3']}); "
+      f"hosted dev decision={r['dev_decision']}")
 PY

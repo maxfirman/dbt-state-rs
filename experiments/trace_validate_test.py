@@ -6,6 +6,7 @@ reviewer's exact fault matrix. No warehouse, no proxy. Exit 0 on success.
 Run: python3 experiments/trace_validate_test.py
 """
 import copy
+import json
 import os
 import sys
 
@@ -205,5 +206,82 @@ expect_reject(
     "volatile EXECUTE fault: deleted equivalent baseline makes the EXECUTE non-evidence",
     lambda: tv.require_present_baseline_for_execute(vol_no_base, dev_exec2, "DB.PROD.M"),
 )
+
+# ---- 6th follow-up: exercise the ACTUAL DRIVER ORACLES (not just helpers) ----
+import oracles  # noqa: E402
+import tempfile  # noqa: E402
+
+
+def _tmp(trace):
+    f = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+    for r in trace:
+        f.write(json.dumps(r) + "\n")
+    f.close()
+    return f.name
+
+
+ZT_MODEL = "ce_model_214942"
+VOL_MODEL = "ce_model_215158"
+SA_MODEL = "rc_model_185510"
+
+# The clean fixtures must pass the real oracles.
+expect_accept(
+    "ORACLE clone_eligibility zero-tol clean passes",
+    lambda: oracles.clone_eligibility_oracle(ZEROTOL, ZT_MODEL, "stale_zerotol"),
+)
+expect_accept(
+    "ORACLE clone_eligibility volatile clean passes",
+    lambda: oracles.clone_eligibility_oracle(VOLATILE, VOL_MODEL, "volatile"),
+)
+expect_accept(
+    "ORACLE source_age clean passes",
+    lambda: oracles.source_age_oracle(SRCAGE, SA_MODEL),
+)
+
+# (e1) WIRED volatile baseline: deleting the source baseline (entries 0/1) from
+# the volatile capture must make the ACTUAL clone_eligibility oracle REJECT (the
+# reviewer's exact end-to-end fault that previously printed CE_OK / exit 0).
+vol_del = _tmp([e for i, e in enumerate(tv.load(VOLATILE)) if i not in (0, 1)])
+expect_reject(
+    "ORACLE clone_eligibility volatile deleted-baseline is rejected end-to-end",
+    lambda: oracles.clone_eligibility_oracle(vol_del, VOL_MODEL, "volatile"),
+)
+
+# (e2) source confirm BEFORE source submit — the real source-age oracle rejects.
+sa_rows = tv.load(SRCAGE)
+sa_swap = copy.deepcopy(sa_rows)
+sa_swap[0], sa_swap[1] = sa_swap[1], sa_swap[0]
+sa_swap_f = _tmp(sa_swap)
+expect_reject(
+    "ORACLE source_age fault: source confirm before its submit is rejected",
+    lambda: oracles.source_age_oracle(sa_swap_f, SA_MODEL),
+)
+
+# (e3) clone-creation confirm AFTER the dev resubmit — rejected by the oracle.
+sa_late = copy.deepcopy(sa_rows)
+_c3 = sa_late.pop(3)
+sa_late.append(_c3)
+sa_late_f = _tmp(sa_late)
+expect_reject(
+    "ORACLE source_age fault: clone confirm after resubmit is rejected",
+    lambda: oracles.source_age_oracle(sa_late_f, SA_MODEL),
+)
+
+# (e4) both mirrors' clone_source = same UNBUILT relation — rejected (no
+# confirmed baseline for the returned source).
+sa_unbuilt = copy.deepcopy(sa_rows)
+for e in sa_unbuilt:
+    if e.get("method") == "RegisterClone":
+        e["response"]["ready_to_clone"]["clone_source"] = "\"DB\".\"X\".\"UNBUILT\""
+        e["response"]["response"]["ready_to_clone_v1"]["clone_source"] = "\"DB\".\"X\".\"UNBUILT\""
+        e["request"]["clone_source_table"] = "\"DB\".\"X\".\"UNBUILT\""
+sa_unbuilt_f = _tmp(sa_unbuilt)
+expect_reject(
+    "ORACLE source_age fault: unbuilt clone source (both mirrors) is rejected",
+    lambda: oracles.source_age_oracle(sa_unbuilt_f, SA_MODEL),
+)
+
+for _f in (vol_del, sa_swap_f, sa_late_f, sa_unbuilt_f):
+    os.unlink(_f)
 
 print(f"\nALL {passed} VALIDATOR FAULT-PATH TESTS PASSED")

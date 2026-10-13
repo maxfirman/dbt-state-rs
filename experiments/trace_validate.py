@@ -98,20 +98,15 @@ def confirmed_request_ids(trace: list[dict], before_index: Optional[int] = None)
 
 def confirmed_targets(trace: list[dict], before_index: Optional[int] = None) -> dict[str, int]:
     """Map each SUCCESSFULLY-CONFIRMED decision's target_table FQN to the
-    confirmation's last_modified_epoch (baseline build epoch). EVENT-ORDERED:
-    with ``before_index`` set, both the decision AND its confirmation must occur
-    strictly before that position, so a later confirmation cannot justify an
-    earlier decision (5th follow-up P2 #5)."""
-    confirm_epoch: dict[str, Optional[int]] = {}
-    for i, e in enumerate(trace):
-        if before_index is not None and i >= before_index:
-            break
-        if e.get("method") != "ConfirmExecution":
-            continue
-        req = e.get("request", {}) or {}
-        if _confirm_is_successful(e) and req.get("request_id"):
-            confirm_epoch[req["request_id"]] = req.get("last_modified_epoch")
-    out: dict[str, int] = {}
+    confirmation's last_modified_epoch (baseline build epoch). EVENT-ORDERED on
+    two axes (5th+6th follow-up P2): (1) with ``before_index`` set, both the
+    decision AND its confirmation occur strictly before that position; and
+    (2) a confirmation is only paired with its decision when the SUBMIT/CLONE
+    that produced the response request_id occurs at an EARLIER index than the
+    ConfirmExecution — a confirm that precedes its own submit does not establish
+    a baseline."""
+    # Map response request_id -> (submit index, target FQN) for decisions.
+    submit_of: dict[str, tuple[int, str]] = {}
     for i, e in enumerate(trace):
         if before_index is not None and i >= before_index:
             break
@@ -119,8 +114,25 @@ def confirmed_targets(trace: list[dict], before_index: Optional[int] = None) -> 
             continue
         rid = _resp_request_id(e)
         tgt = (e.get("request", {}) or {}).get("target_table")
-        if rid and tgt and rid in confirm_epoch:
-            out[tgt] = confirm_epoch[rid]
+        if rid and tgt:
+            submit_of.setdefault(rid, (i, tgt))
+    out: dict[str, int] = {}
+    for i, e in enumerate(trace):
+        if before_index is not None and i >= before_index:
+            break
+        if e.get("method") != "ConfirmExecution":
+            continue
+        req = e.get("request", {}) or {}
+        rid = req.get("request_id")
+        if not (_confirm_is_successful(e) and rid):
+            continue
+        match submit_of.get(rid):
+            # The submit that produced this request_id must be EARLIER than the
+            # confirm acknowledging it.
+            case (submit_i, tgt) if submit_i < i:
+                out[tgt] = req.get("last_modified_epoch")
+            case _:
+                continue
     return out
 
 
@@ -232,19 +244,56 @@ def require_successful_register_clone(trace: list[dict]) -> dict:
     # The clone-creation confirm must acknowledge THIS request_id, successfully
     # AND physically (not failed_to_clone), AFTER the clone decision.
     t3 = None
+    clone_confirm_index = None
     for i, e in enumerate(trace):
         if i <= rc_index or e.get("method") != "ConfirmExecution":
             continue
         req = e.get("request", {}) or {}
         if req.get("request_id") == rid and _confirm_is_successful(e):
             t3 = req.get("last_modified_epoch")
+            clone_confirm_index = i
             break
     if t3 is None:
         _fail(
             f"the clone-creation confirm for request_id {rid} is missing, "
             f"unsuccessful, physically failed (failed_to_clone), or out of order"
         )
-    return {"clone_source": src, "source_build_epoch": src_epoch, "clone_creation_epoch": t3}
+    return {
+        "clone_source": src,
+        "source_build_epoch": src_epoch,
+        "clone_creation_epoch": t3,
+        "register_index": rc_index,
+        "clone_confirm_index": clone_confirm_index,
+    }
+
+
+def require_source_age_chain(trace: list[dict], dev_resubmit: dict) -> dict:
+    """Enforce the FULL causal chain in event order for the source-age
+    experiment (6th follow-up P2): source submit → source confirm → RegisterClone
+    → clone-creation confirm → dev resubmit, with the dev resubmit occurring
+    STRICTLY AFTER the clone-creation confirm. Builds on
+    `require_successful_register_clone` (which already orders source-submit <
+    source-confirm < RegisterClone < clone-confirm). Returns the correlated
+    facts plus the ordered indices."""
+    rc = require_successful_register_clone(trace)
+    resubmit_index = index_of(trace, dev_resubmit)
+    if not (rc["clone_confirm_index"] < resubmit_index):
+        _fail(
+            f"dev resubmit (index {resubmit_index}) must come AFTER the "
+            f"clone-creation confirm (index {rc['clone_confirm_index']}); the "
+            f"reuse decision cannot precede the clone it reuses"
+        )
+    # The resubmit must target the clone-creation target (the relation the clone
+    # built), correlating the reuse to the actual clone.
+    rc_entry = register_clone_entry(trace)
+    clone_target = (rc_entry.get("request", {}) or {}).get("target_table")
+    resubmit_target = (dev_resubmit.get("request", {}) or {}).get("target_table")
+    if clone_target and resubmit_target and clone_target != resubmit_target:
+        _fail(
+            f"dev resubmit target {resubmit_target!r} does not match the clone "
+            f"target {clone_target!r}; the reuse is not correlated to the clone"
+        )
+    return rc
 
 
 def require_present_baseline_for_execute(trace: list[dict], treatment: dict, equivalent: str):
