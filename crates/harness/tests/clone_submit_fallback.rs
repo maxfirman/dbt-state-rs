@@ -813,3 +813,142 @@ async fn dep_binding_swap_gated_against_present_baseline_with_control() {
          gate because the control proved a candidate exists"
     );
 }
+
+/// P0 #1 (review #2 4th follow-up) — TABLE-COMPONENT quoted-case binding, driven
+/// through the real gRPC service with a confirmed baseline + no-swap CONTROL.
+/// The reviewer's reproducer keys on the TABLE component (not the schema): a
+/// dependency named unquoted `DB.S.INPUT` and one named quoted-lowercase
+/// `DB.S."input"` are DISTINCT Snowflake relations (unquoted folds to uppercase
+/// `INPUT`; `"input"` is case-sensitive). The old `abstract_object_name_schema`
+/// lowercased the unquoted table and stripped quotes case-preserved, so both
+/// became `input` and a swap of their definitions was undetected (unsafe clone).
+///
+/// baseline (prod): INPUT=1, "input"=2 ; CONTROL (dev, same bindings) must
+/// CLONE (candidate present) ; TREATMENT (dev, definitions swapped) must EXECUTE.
+#[tokio::test]
+async fn server_gates_table_component_quoted_case_swap_with_control() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    // Two dependencies differing ONLY by table-component quoting/case.
+    let dep = |name: &str, body: &str| qc::QueryDependency {
+        name: name.into(),
+        query: format!("select {body} as id"),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: "S".into(),
+    };
+    let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.S.\"input\" b";
+
+    // Baseline: build + confirm the prod consumer (INPUT=1, "input"=2).
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"TBLCONS\"";
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = root.into();
+    base.query_dependencies = vec![
+        dep("CDO_DEMO_DB.S.INPUT", "1"),
+        dep("CDO_DEMO_DB.S.\"input\"", "2"),
+    ];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline consumer must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // CONTROL (no swap): identical bindings → ready_to_clone (candidate present).
+    let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"TBLCONS_CTL\"";
+    let mut no_swap = submit(c, "dev_clone_demo");
+    no_swap.sql = root.into();
+    no_swap.query_dependencies = vec![
+        dep("CDO_DEMO_DB.S.INPUT", "1"),
+        dep("CDO_DEMO_DB.S.\"input\"", "2"),
+    ];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(no_swap).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "CONTROL: identical table-component bindings must clone the present baseline"
+    );
+
+    // TREATMENT (swap): same root + representation, the two definitions swapped
+    // between the distinct relations → must EXECUTE (binding distinguished).
+    let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"TBLCONS_SWAP\"";
+    let mut swap = submit(d, "dev_clone_demo");
+    swap.sql = root.into();
+    swap.query_dependencies = vec![
+        dep("CDO_DEMO_DB.S.INPUT", "2"),
+        dep("CDO_DEMO_DB.S.\"input\"", "1"),
+    ];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        "ready_to_execute",
+        "TREATMENT: unquoted INPUT and quoted \"input\" are distinct relations; a \
+         swapped binding must EXECUTE, not clone the present candidate"
+    );
+}
+
+/// P0 #1 POSITIVE (review #2 4th follow-up) — quoted-UPPERCASE equals unquoted.
+/// Snowflake resolves unquoted `INPUT` to `INPUT`, so quoted `"INPUT"` is the
+/// SAME relation. A dev submit that spells every component as quoted-uppercase
+/// must still CLONE the prod baseline that spelled them unquoted — the
+/// normalization must not lose a legitimate CLONE on a pure spelling change.
+/// (Verified live that Snowflake stores unquoted identifiers uppercased:
+/// experiments/quoted_identifier_case.sh probe showed PROD_STATE_DEMO.QC_SRC_*.)
+#[tokio::test]
+async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let dep_unquoted = qc::QueryDependency {
+        name: "CDO_DEMO_DB.S.INPUT".into(),
+        query: "select 1 as id".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: "S".into(),
+    };
+    let dep_upper_quoted = qc::QueryDependency {
+        name: "\"CDO_DEMO_DB\".\"S\".\"INPUT\"".into(),
+        query: "select 1 as id".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: "S".into(),
+    };
+
+    // Baseline (prod): unquoted spellings everywhere.
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UCONS\"";
+    let mut base = submit(a, "prod_state_demo");
+    base.sql = "select id from CDO_DEMO_DB.S.INPUT".into();
+    base.query_dependencies = vec![dep_unquoted];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("baseline consumer must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_791_747_221_679),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Treatment (dev): quoted-UPPERCASE spellings — same identity → must CLONE.
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UCONS\"";
+    let mut upper = submit(b, "dev_clone_demo");
+    upper.sql = "select id from \"CDO_DEMO_DB\".\"S\".\"INPUT\"".into();
+    upper.query_dependencies = vec![dep_upper_quoted];
+    assert_eq!(
+        support::response_variant(&sql.submit_enriched_sql(upper).await.unwrap().into_inner()),
+        "ready_to_clone",
+        "quoted-UPPERCASE spelling is the SAME relation as unquoted; the baseline \
+         CLONE must be retained (not lost to a spelling difference)"
+    );
+}

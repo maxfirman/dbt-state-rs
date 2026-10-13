@@ -888,4 +888,87 @@ mod tests {
         let template = sql_logic_hash(&e, Some("some-body-hash"));
         assert_ne!(rendered, template, "template vs rendered must not collide");
     }
+
+    /// REGRESSION (review #2 4th follow-up, P0): QUOTED-CASE identity in the
+    /// TABLE component of a dependency binding key. The schema-only fix left
+    /// `abstract_object_name_schema_with` lowercasing unquoted table/catalog
+    /// parts and stripping quotes case-preserved, so `INPUT` and `"input"` both
+    /// became `input`. A root cross-joining `DB.S.INPUT` and `DB.S."input"`
+    /// references two DISTINCT relations; swapping their definitions changes the
+    /// result, so the identity MUST differ. (Snowflake: unquoted `INPUT`
+    /// resolves to `INPUT`; quoted `"input"` is a different, case-sensitive
+    /// relation.)
+    #[test]
+    fn ns_quoted_case_table_component_binding_swap_differs() {
+        let base = exec(
+            "select a.id from DB.S.INPUT a cross join DB.S.\"input\" b",
+            vec![
+                dep("DB.S.INPUT", "select 1 as id", "DB", "S"),
+                dep("DB.S.\"input\"", "select 2 as id", "DB", "S"),
+            ],
+        );
+        let swapped = exec(
+            "select a.id from DB.S.INPUT a cross join DB.S.\"input\" b",
+            vec![
+                dep("DB.S.INPUT", "select 2 as id", "DB", "S"),
+                dep("DB.S.\"input\"", "select 1 as id", "DB", "S"),
+            ],
+        );
+        assert_ne!(
+            namespace_logic_hash(&base),
+            namespace_logic_hash(&swapped),
+            "unquoted INPUT and quoted \"input\" are DISTINCT relations; a swap \
+             of their definitions must change the identity (not collapse via \
+             lowercasing the table component)"
+        );
+    }
+
+    /// POSITIVE EQUIVALENCE (review #2 4th follow-up, P0): Snowflake resolves an
+    /// unquoted identifier to its UPPERCASE spelling, so unquoted `INPUT` is the
+    /// SAME relation as quoted `"INPUT"`. Two otherwise-identical requests that
+    /// spell the same relation unquoted vs uppercase-quoted (in catalog, schema
+    /// AND table) MUST share identity — they are the same physical reference.
+    #[test]
+    fn ns_unquoted_equals_uppercase_quoted_all_components() {
+        let unquoted = exec(
+            "select id from DB.S.INPUT",
+            vec![dep("DB.S.INPUT", "select 1 as id", "DB", "S")],
+        );
+        let upper_quoted = exec(
+            "select id from \"DB\".\"S\".\"INPUT\"",
+            vec![dep("\"DB\".\"S\".\"INPUT\"", "select 1 as id", "DB", "S")],
+        );
+        assert_eq!(
+            namespace_logic_hash(&unquoted),
+            namespace_logic_hash(&upper_quoted),
+            "unquoted DB.S.INPUT and quoted \"DB\".\"S\".\"INPUT\" are the same \
+             Snowflake relation (unquoted folds to uppercase) and must share \
+             identity"
+        );
+    }
+
+    /// POSITIVE (review #2 4th follow-up, P0): unquoted `X` folds to uppercase so
+    /// a root `DB.X.INPUT` and `DB."X".INPUT` reference the SAME schema and must
+    /// share identity (the reviewer's probe: switching `X`→`"X"` must NOT lose an
+    /// otherwise-available CLONE). The genuinely-distinct lowercase-quoted case
+    /// (`"X"` vs `"x"` COEXISTING in one request) is covered by
+    /// `ns_quoted_case_distinct_schemas_do_not_collapse`; a LONE schema always
+    /// abstracts to the environment token regardless of spelling (that is the
+    /// intended cross-env collapse, not a case bug).
+    #[test]
+    fn ns_unquoted_schema_equals_uppercase_quoted() {
+        let unquoted = exec(
+            "select id from DB.X.INPUT",
+            vec![dep("DB.X.INPUT", "select 1 as id", "DB", "X")],
+        );
+        let upper_quoted = exec(
+            "select id from DB.\"X\".INPUT",
+            vec![dep("DB.\"X\".INPUT", "select 1 as id", "DB", "X")],
+        );
+        assert_eq!(
+            namespace_logic_hash(&unquoted),
+            namespace_logic_hash(&upper_quoted),
+            "unquoted X schema folds to uppercase == quoted \"X\" (CLONE retained)"
+        );
+    }
 }

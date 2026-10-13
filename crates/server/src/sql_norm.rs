@@ -124,30 +124,24 @@ impl SchemaMap {
 }
 
 /// Schema-abstract a dependency's physical object NAME using the shared relative
-/// schema map. Quoting rules: split on `.`, strip surrounding double-quotes
-/// (un-doubling embedded quotes, preserving case), lowercase unquoted parts;
-/// only a THREE-part name has its middle (schema) component abstracted.
+/// schema map. Quoting rules: split on `.`; the catalog and table components are
+/// canonicalized with [`canonical_identifier`] (Snowflake semantics: unquoted
+/// folds to UPPERCASE, quoted is case-sensitive, so `INPUT` ≡ `"INPUT"` but
+/// `"input"` is distinct); only a THREE-part name has its middle (schema)
+/// component abstracted to a relative token.
 pub fn abstract_object_name_schema_with(name: &str, schemas: &SchemaMap) -> String {
     let parts: Vec<&str> = name.split('.').collect();
-    let unquote = |p: &str| -> String {
-        let t = p.trim();
-        if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
-            t[1..t.len() - 1].replace("\"\"", "\"")
-        } else {
-            t.to_ascii_lowercase()
-        }
-    };
     if parts.len() == 3 {
         format!(
             "{}.{}.{}",
-            unquote(parts[0]),
+            canonical_identifier(parts[0]),
             schemas.placeholder_for(parts[1]),
-            unquote(parts[2])
+            canonical_identifier(parts[2])
         )
     } else {
         parts
             .iter()
-            .map(|p| unquote(p))
+            .map(|p| canonical_identifier(p))
             .collect::<Vec<_>>()
             .join(".")
     }
@@ -189,18 +183,51 @@ pub fn schema_of_object_name(name: &str) -> Option<String> {
     }
 }
 
-/// Canonical key for a schema component, honoring Snowflake identifier
-/// semantics: a QUOTED schema (`"X"`) is case-SENSITIVE, an unquoted one is
-/// case-insensitive (folded to lowercase). The two keyspaces are kept disjoint
-/// (`q:`/`u:` prefix) so `"X"`, `"x"`, and `X` are three distinct keys where
-/// Snowflake would treat them as distinct relations. Review #2 3rd follow-up P0.
-fn canonical_schema_key(raw: &str) -> String {
+/// Canonical form of a single identifier COMPONENT (catalog, schema or table)
+/// honoring Snowflake default identifier resolution
+/// (`QUOTED_IDENTIFIERS_IGNORE_CASE=false`):
+///
+/// * an UNQUOTED identifier is stored/resolved in UPPERCASE, so it is
+///   equivalent to its uppercase double-quoted spelling (`x` ≡ `X` ≡ `"X"`);
+/// * a DOUBLE-QUOTED identifier is case-SENSITIVE, kept exactly as written
+///   (un-doubling embedded quotes).
+///
+/// Hence `X`, `x` and `"X"` all canonicalize to `X`, while `"x"` canonicalizes
+/// to the distinct `x`. One shared keyspace (no quoted/unquoted prefix split):
+/// quoting does not by itself create a distinct identifier, only case under
+/// quoting does. (<https://docs.snowflake.com/en/sql-reference/identifiers-syntax>)
+/// Review #2 4th follow-up P0.
+pub(crate) fn canonical_identifier(raw: &str) -> String {
     let t = raw.trim();
     if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
-        format!("q:{}", t[1..t.len() - 1].replace("\"\"", "\""))
+        // Quoted: case-sensitive, exact (un-double embedded quotes).
+        t[1..t.len() - 1].replace("\"\"", "\"")
     } else {
-        format!("u:{}", t.to_ascii_lowercase())
+        // Unquoted: Snowflake folds to UPPERCASE.
+        t.to_ascii_uppercase()
     }
+}
+
+/// Canonical key for a schema component. Thin wrapper over
+/// [`canonical_identifier`] retained for the schema-token map call sites.
+fn canonical_schema_key(raw: &str) -> String {
+    canonical_identifier(raw)
+}
+
+/// True if `s` is a value an UNQUOTED Snowflake identifier can resolve to:
+/// a non-empty bareword of uppercase ASCII letters, digits or underscores that
+/// does not start with a digit, and contains no lowercase/special character.
+/// Such a resolved value can be emitted unquoted (its unquoted and
+/// quoted-uppercase spellings denote the same identifier); anything else must
+/// stay quoted to preserve its case-sensitive, delimited identity.
+fn is_bare_uppercase_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_uppercase() || c == '_' => {}
+        _ => return false,
+    }
+    s.chars()
+        .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
@@ -317,9 +344,31 @@ impl VisitorMut for Canonicalizer<'_> {
     }
 
     fn pre_visit_ident(&mut self, id: &mut Ident) -> ControlFlow<()> {
-        // Fold case of UNQUOTED identifiers/keywords; leave quoted idents alone.
-        if id.quote_style.is_none() {
-            id.value = id.value.to_ascii_lowercase();
+        // Resolve each identifier to its Snowflake canonical form: an UNQUOTED
+        // identifier folds to UPPERCASE (so `x`, `X` and `"X"` are the same
+        // relation/column), a QUOTED identifier is case-SENSITIVE and kept
+        // exactly. We then normalize the SPELLING so equal identities render
+        // identically: if the resolved value is a plain uppercase bareword
+        // (letters/digits/underscore, not starting with a digit) it is emitted
+        // UNQUOTED — this is exactly the set of names an unquoted identifier can
+        // resolve to, so a quoted-UPPERCASE spelling (`"X"`) collapses onto the
+        // unquoted spelling (`X`). Any other resolved value (lowercase/mixed
+        // case such as `"x"`, or containing dots/spaces/specials) is kept QUOTED
+        // with the case-exact value, staying distinct from every unquoted name.
+        // This replaces the old lowercase-only fold that preserved quote marks
+        // lexically and made `"X"` wrongly distinct from `X`. Review #2 4th
+        // follow-up P0.
+        let resolved = if id.quote_style.is_some() {
+            canonical_identifier(&format!("\"{}\"", id.value.replace('"', "\"\"")))
+        } else {
+            canonical_identifier(&id.value)
+        };
+        if is_bare_uppercase_identifier(&resolved) {
+            id.value = resolved;
+            id.quote_style = None;
+        } else {
+            id.value = resolved;
+            id.quote_style = Some('"');
         }
         ControlFlow::Continue(())
     }
