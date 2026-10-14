@@ -74,12 +74,18 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
 /// its FIRST appearance and the server correctly reports "table did not exist"
 /// while hosted — having prior history — reports a rebuild rationale.
 ///
-/// FIELD-NARROW (review #2 6th follow-up P1): the exemption tolerates a
-/// difference in `decision_description` ONLY, and only when the pair is a
-/// documented first-build→rebuild wording pair. EVERY other field — including
-/// `is_stale` (which hosted always reports FALSE on an EXECUTE) and BOTH
-/// rejection codes — must be byte-equal. A probe that also changes `is_stale`,
-/// a rejection code, or substitutes an unrelated description returns FALSE.
+/// FIELD-NARROW (review #2 6th/7th follow-up P1/P2): the exemption tolerates a
+/// difference in `decision_description` AND in the two rejection codes, but ONLY
+/// in the DOCUMENTED first-build→rebuild shape — LOCAL is the empty-store first
+/// build (codes 6/6 + a first-build description) and HOSTED is a documented
+/// rebuild (codes 6/6 OR the observed skip=8/clone=7 LATEST_QUERY_HASH_NOT_MATCH
+/// pair, with a rebuild description). `is_stale` must be FALSE on both (hosted
+/// never reports a stale EXECUTE), and NO other `explained_decision` field may
+/// differ. So the rejection codes are NOT required to be byte-equal — but any
+/// code combination other than the documented 6/6 or 8/7, any `is_stale`
+/// difference, or an unrelated description returns FALSE. A tolerated diff here
+/// is counted as a PARTIAL (history-dependent) comparison by the caller, not an
+/// exact payload match.
 fn execute_diff_is_only_rebuild_rationale(
     ours: &serde_json::Value,
     real: &serde_json::Value,
@@ -436,6 +442,11 @@ async fn conformance_replay_all_corpora() {
     let known: Vec<KnownGap> =
         serde_json::from_str(include_str!("../../../golden/replay_gaps.json")).unwrap();
     let mut seen_gaps = HashSet::new();
+    // (fixture, entry) pairs where a ready_to_execute payload matched EXCEPT for
+    // the documented first-build-vs-rebuild rationale (a replay-state artifact,
+    // not an exact payload match). Reported separately and bounded to an exact
+    // expected set so a NEW silent exemption fails the test (7th follow-up P2 #3).
+    let mut partial_history: HashSet<(String, usize)> = HashSet::new();
     for path in paths {
         let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
         let (addr, _) = support::start_server().await;
@@ -525,17 +536,25 @@ async fn conformance_replay_all_corpora() {
                                 seen_gaps.insert((gap.fixture.clone(), i));
                                 gaps += 1;
                             }
-                            if ours != real
-                                && !execute_diff_is_only_rebuild_rationale(
-                                    &ours,
-                                    &real,
-                                    has_history,
-                                )
-                            {
-                                mismatches.push(format!(
-                                    "{context} (ready_to_execute, has_history={has_history}): \
-                                     ours={ours} real={real}"
-                                ));
+                            if ours != real {
+                                if execute_diff_is_only_rebuild_rationale(&ours, &real, has_history)
+                                {
+                                    // The payload matches EXCEPT for the
+                                    // documented first-build-vs-rebuild rationale
+                                    // (a replay-state artifact). This is NOT an
+                                    // exact payload match — account for it
+                                    // separately so a NEW silent exemption is
+                                    // caught (review #2 7th follow-up P2 #3).
+                                    partial_history.insert((
+                                        path.file_name().unwrap().to_string_lossy().into_owned(),
+                                        i,
+                                    ));
+                                } else {
+                                    mismatches.push(format!(
+                                        "{context} (ready_to_execute, has_history={has_history}): \
+                                         ours={ours} real={real}"
+                                    ));
+                                }
                             }
                             let qc::submit_sql_response::Response::ReadyToExecute(local) =
                                 response.response.unwrap()
@@ -697,8 +716,13 @@ async fn conformance_replay_all_corpora() {
             }
         }
         total_asserted += asserted;
+        let partial_here = partial_history
+            .iter()
+            .filter(|(f, _)| *f == path.file_name().unwrap().to_string_lossy())
+            .count();
         eprintln!(
-            "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps}",
+            "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps} \
+             partial_history={partial_here}",
             path.display()
         );
     }
@@ -707,6 +731,30 @@ async fn conformance_replay_all_corpora() {
         seen_gaps.len(),
         known.len(),
         "every known gap must be exercised exactly once"
+    );
+    // The history-dependent rebuild-rationale exemption is a replay-state
+    // artifact (an empty store lacks the hosted prior history), NOT an exact
+    // payload match. Bound it to the EXACT set observed, so a new silent
+    // exemption (a regression that starts tolerating a different EXECUTE
+    // mismatch) fails here. Review #2 7th follow-up P2 #3.
+    let expected_partial_history: HashSet<(String, usize)> = [
+        ("c1_config_semantics.jsonl", 0),
+        ("c1_config_vs_logic.jsonl", 0),
+        ("clone_chain_upstream_drift.jsonl", 4),
+        ("golden_20261008T222744.061Z.jsonl", 14),
+        ("golden_20261009T083754.534Z.jsonl", 1),
+        ("golden_20261009T100637.316Z.jsonl", 4),
+        ("incremental_merge_reuse.jsonl", 0),
+        ("lag_freshness_own_build.jsonl", 5),
+    ]
+    .into_iter()
+    .map(|(f, e)| (f.to_string(), e))
+    .collect();
+    assert_eq!(
+        partial_history, expected_partial_history,
+        "the set of history-dependent rebuild-rationale exemptions changed; a new \
+         silent exemption (or a resolved one) must be reviewed and this expected \
+         set updated. got={partial_history:?}"
     );
     assert!(
         mismatches.is_empty(),
