@@ -269,19 +269,41 @@ expect_reject(
 
 # (e4) both mirrors' clone_source = same UNBUILT relation — rejected (no
 # confirmed baseline for the returned source).
-sa_unbuilt = copy.deepcopy(sa_rows)
-for e in sa_unbuilt:
+# (e4) RESPONSE-ONLY clone_source mutation (review #2 7th follow-up P2 #2): change
+# ONLY both response mirrors' clone_source to an unbuilt relation, LEAVING
+# request.clone_source_table intact. The validator must correlate the RETURNED
+# source (not the request), so this must be rejected — either because the
+# returned source has no confirmed baseline OR because it disagrees with the
+# request. (Previously this test also mutated request.clone_source_table, which
+# made the request-baseline check reject a DIFFERENT fault.)
+sa_resp_src = copy.deepcopy(sa_rows)
+for e in sa_resp_src:
     if e.get("method") == "RegisterClone":
         e["response"]["ready_to_clone"]["clone_source"] = "\"DB\".\"X\".\"UNBUILT\""
         e["response"]["response"]["ready_to_clone_v1"]["clone_source"] = "\"DB\".\"X\".\"UNBUILT\""
-        e["request"]["clone_source_table"] = "\"DB\".\"X\".\"UNBUILT\""
-sa_unbuilt_f = _tmp(sa_unbuilt)
+        # request.clone_source_table is intentionally LEFT UNCHANGED.
+sa_resp_src_f = _tmp(sa_resp_src)
 expect_reject(
-    "ORACLE source_age fault: unbuilt clone source (both mirrors) is rejected",
-    lambda: oracles.source_age_oracle(sa_unbuilt_f, SA_MODEL),
+    "ORACLE source_age fault: RESPONSE-ONLY unbuilt clone_source is rejected",
+    lambda: oracles.source_age_oracle(sa_resp_src_f, SA_MODEL),
 )
 
-for _f in (vol_del, sa_swap_f, sa_late_f, sa_unbuilt_f):
+# (e5) RESPONSE-ONLY clone_target mutation: change ONLY both response mirrors'
+# clone_target to a DIFFERENT target, leaving request.target_table intact. The
+# returned target must match the request (and the resubmit), so this is rejected.
+sa_resp_tgt = copy.deepcopy(sa_rows)
+for e in sa_resp_tgt:
+    if e.get("method") == "RegisterClone":
+        e["response"]["ready_to_clone"]["clone_target"] = "\"DB\".\"X\".\"OTHER_TARGET\""
+        e["response"]["response"]["ready_to_clone_v1"]["clone_target"] = "\"DB\".\"X\".\"OTHER_TARGET\""
+        # request.target_table is intentionally LEFT UNCHANGED.
+sa_resp_tgt_f = _tmp(sa_resp_tgt)
+expect_reject(
+    "ORACLE source_age fault: RESPONSE-ONLY mismatched clone_target is rejected",
+    lambda: oracles.source_age_oracle(sa_resp_tgt_f, SA_MODEL),
+)
+
+for _f in (vol_del, sa_swap_f, sa_late_f, sa_resp_src_f, sa_resp_tgt_f):
     os.unlink(_f)
 
 print(f"\nALL {passed} VALIDATOR FAULT-PATH TESTS PASSED")

@@ -238,9 +238,36 @@ def require_successful_register_clone(trace: list[dict]) -> dict:
     rid = v1.get("request_id") or top.get("request_id")
     if not rid:
         _fail("RegisterClone response carries no request_id to correlate its confirm")
-    # The clone source must have a confirmed source build BEFORE the clone.
-    src = (rc.get("request", {}) or {}).get("clone_source_table")
-    src_epoch = require_confirmed_source(trace, src, before_index=rc_index)
+
+    # Correlate the RETURNED (response-mirror) source/target — the physical
+    # relations the clone actually describes — with the request AND the trace,
+    # NOT merely the request fields. Both mirrors agree (checked above), so read
+    # from v1. Review #2 7th follow-up P2 #2: changing only the response source to
+    # an unbuilt relation (or the response target to a different one) previously
+    # still passed because validation used the request fields.
+    returned_source = v1.get("clone_source")
+    returned_target = v1.get("clone_target")
+    if not returned_source or not returned_target:
+        _fail("RegisterClone response mirrors carry an empty clone_source/clone_target")
+    req = rc.get("request", {}) or {}
+    req_source = req.get("clone_source_table")
+    req_target = req.get("target_table")
+    # Returned source must match the requested source (request↔response identity).
+    if req_source and returned_source != req_source:
+        _fail(
+            f"RegisterClone returned clone_source {returned_source!r} does not match the "
+            f"requested clone_source_table {req_source!r}"
+        )
+    # Returned target must match the requested target.
+    if req_target and returned_target != req_target:
+        _fail(
+            f"RegisterClone returned clone_target {returned_target!r} does not match the "
+            f"requested target_table {req_target!r}"
+        )
+    # The RETURNED source must itself have a confirmed source build BEFORE the
+    # clone — this is the authoritative physical-source check (not the request).
+    src_epoch = require_confirmed_source(trace, returned_source, before_index=rc_index)
+    src = returned_source
     # The clone-creation confirm must acknowledge THIS request_id, successfully
     # AND physically (not failed_to_clone), AFTER the clone decision.
     t3 = None
@@ -248,9 +275,9 @@ def require_successful_register_clone(trace: list[dict]) -> dict:
     for i, e in enumerate(trace):
         if i <= rc_index or e.get("method") != "ConfirmExecution":
             continue
-        req = e.get("request", {}) or {}
-        if req.get("request_id") == rid and _confirm_is_successful(e):
-            t3 = req.get("last_modified_epoch")
+        creq = e.get("request", {}) or {}
+        if creq.get("request_id") == rid and _confirm_is_successful(e):
+            t3 = creq.get("last_modified_epoch")
             clone_confirm_index = i
             break
     if t3 is None:
@@ -260,6 +287,7 @@ def require_successful_register_clone(trace: list[dict]) -> dict:
         )
     return {
         "clone_source": src,
+        "clone_target": returned_target,
         "source_build_epoch": src_epoch,
         "clone_creation_epoch": t3,
         "register_index": rc_index,
@@ -283,15 +311,15 @@ def require_source_age_chain(trace: list[dict], dev_resubmit: dict) -> dict:
             f"clone-creation confirm (index {rc['clone_confirm_index']}); the "
             f"reuse decision cannot precede the clone it reuses"
         )
-    # The resubmit must target the clone-creation target (the relation the clone
-    # built), correlating the reuse to the actual clone.
-    rc_entry = register_clone_entry(trace)
-    clone_target = (rc_entry.get("request", {}) or {}).get("target_table")
+    # The resubmit must target the RETURNED clone_target (the physical relation
+    # the clone response actually describes), correlating the reuse to the clone
+    # it reuses — not merely the request target.
+    returned_target = rc["clone_target"]
     resubmit_target = (dev_resubmit.get("request", {}) or {}).get("target_table")
-    if clone_target and resubmit_target and clone_target != resubmit_target:
+    if returned_target and resubmit_target and returned_target != resubmit_target:
         _fail(
-            f"dev resubmit target {resubmit_target!r} does not match the clone "
-            f"target {clone_target!r}; the reuse is not correlated to the clone"
+            f"dev resubmit target {resubmit_target!r} does not match the RETURNED clone "
+            f"target {returned_target!r}; the reuse is not correlated to the clone"
         )
     return rc
 
