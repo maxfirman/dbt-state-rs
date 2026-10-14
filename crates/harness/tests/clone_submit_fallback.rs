@@ -1327,3 +1327,194 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
          submit must NOT authorize a same-target SKIP after upgrade (got {variant})"
     );
 }
+
+/// P1 (review #2 8th follow-up) — the upgrade invalidation must hold in BOTH
+/// comparison modes. In `compare_unrendered_code=true` (template) mode the
+/// submit carries NO namespace hash, so the namespace-hash guard's `OR $8 IS
+/// NULL` fallback let a stale pre-fix clone's unchanged strict SQL hash still
+/// authorize SKIP. The mode-independent fix is the shared SQL/template
+/// fingerprint version bump (`dbt-state-sql-v3`→`v4`): a pre-fix persisted
+/// outcome's v3 rendered AND template hashes never match a new v4 submit, in
+/// either mode. This simulates the pre-fix persisted state by cloning +
+/// confirming through the real gRPC flow, then rewriting ALL stored logic hashes
+/// (sql, template, namespace) to stale values, and asserts the resubmit does NOT
+/// SKIP in EITHER comparison mode. A separate CONTROL proves a legitimate
+/// current-version template-mode reuse still SKIPs.
+#[tokio::test]
+async fn upgrade_invalidation_holds_in_both_comparison_modes() {
+    let (addr, schema, _state) = support::start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.W.INPUT b";
+    let dep = |schema_: &str, body: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{schema_}\".\"INPUT\""),
+        query: format!("select {body} as id"),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema_.into(),
+    };
+    let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UPGM\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UPGM\"";
+    let pool = support::schema_pool(&schema).await;
+
+    // Build + confirm the prod source, then clone + confirm the dev target.
+    let mut base = submit(prod, "prod_state_demo");
+    base.sql = root.into();
+    base.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("prod source must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(100),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let mut devclone = submit(dev, "dev_clone_demo");
+    devclone.sql = root.into();
+    devclone.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
+    let rc = sql
+        .submit_enriched_sql(devclone)
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
+        panic!("dev target must clone");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: c.request_id,
+        last_modified_epoch: Some(200),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Simulate the UPGRADE: rewrite ALL stored logic hashes to stale values (what
+    // a pre-fix build left and the current fingerprint version no longer
+    // computes), independent of comparison mode.
+    let updated = sqlx::query(
+        "UPDATE executions SET node_sql_hash = 'STALE_V3_SQL', \
+             node_template_hash = 'STALE_V3_TEMPLATE', \
+             node_namespace_logic_hash = 'STALE_V3_NS' \
+         WHERE target_table = $1 AND status = 'confirmed'",
+    )
+    .bind(dev)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        updated.rows_affected() >= 1,
+        "the clone row must exist to mutate"
+    );
+
+    // Resubmit in RENDERED mode (flag false) → must NOT skip the stale clone.
+    let mut rendered = submit(dev, "dev_clone_demo");
+    rendered.sql = root.into();
+    rendered.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
+    rendered.tables = vec![qc::TableModifiedInfo {
+        name: dev.into(),
+        last_modified_epoch: Some(200),
+    }];
+    assert_ne!(
+        support::response_variant(
+            &sql.submit_enriched_sql(rendered)
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "skip_execution",
+        "rendered-mode resubmit must NOT reuse the stale pre-fix clone"
+    );
+
+    // Resubmit in TEMPLATE mode (compare_unrendered_code=true) → must NOT skip
+    // the stale clone either (the mode-independent invalidation).
+    let mut templ = submit(dev, "dev_clone_demo");
+    templ.sql = root.into();
+    templ.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
+    templ.compare_unrendered_code = true;
+    templ.tables = vec![qc::TableModifiedInfo {
+        name: dev.into(),
+        last_modified_epoch: Some(200),
+    }];
+    assert_ne!(
+        support::response_variant(&sql.submit_enriched_sql(templ).await.unwrap().into_inner()),
+        "skip_execution",
+        "TEMPLATE-mode resubmit must NOT reuse the stale pre-fix clone (the \
+         compare_unrendered_code NULL-namespace path must not bypass invalidation)"
+    );
+}
+
+/// CONTROL for the above (review #2 8th follow-up) — a LEGITIMATE template-mode
+/// reuse of a CURRENT-version confirmed row must still SKIP. This proves the
+/// mode-independent invalidation does not over-reject: a row built by the
+/// current server (current fingerprint version) is reused in template mode, and
+/// a template-preserving rendered-SQL change still SKIPs (the rendered-OR-template
+/// matching rule is intact).
+#[tokio::test]
+async fn template_mode_legitimate_reuse_still_skips() {
+    let (addr, _schema) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let target = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"TMPL\"";
+    let mk = |rendered_literal: &str| {
+        let mut r = submit(target, "prod_state_demo");
+        r.sql =
+            format!("select '{rendered_literal}' as v from CDO_DEMO_DB.prod_state_demo.tmpl_up");
+        r.query_dependencies = vec![];
+        r.compare_unrendered_code = true;
+        r.tables = vec![qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(1_000),
+        }];
+        // The template (node_body_hash) is constant across rendered variants.
+        r.dbt_node_state = Some(qc::DbtNodeState {
+            node_unique_id: "model.jaffle.tmpl".into(),
+            node_body_hash: Some("CONSTANT_TEMPLATE_BODY".into()),
+            project_id: Some("p".into()),
+            ..Default::default()
+        });
+        r
+    };
+
+    // Build + confirm run1 (rendered literal 'aaa') on the CURRENT server.
+    let r0 = sql
+        .submit_enriched_sql(mk("aaa"))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("run1 must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(1_000),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // run2: a template-PRESERVING rendered-SQL change (literal 'bbb', same body
+    // hash) in template mode → must SKIP (rendered-OR-template matching).
+    assert_eq!(
+        support::response_variant(
+            &sql.submit_enriched_sql(mk("bbb"))
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "skip_execution",
+        "a current-version row must still be reused in template mode for a \
+         template-preserving rendered change (invalidation must not over-reject)"
+    );
+}

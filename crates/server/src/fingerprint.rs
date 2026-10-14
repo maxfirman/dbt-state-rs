@@ -44,7 +44,7 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-sql-v3");
+    field(&mut h, b"dbt-state-sql-v4");
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     field(&mut h, req.default_catalog.as_bytes());
     field(

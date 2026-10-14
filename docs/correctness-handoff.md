@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-14 (review #2 7th FOLLOW-UP). Read this before changing
+Updated 2026-10-14 (review #2 8th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -77,36 +77,54 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 
 | Finding | What changed | Where |
 |---|---|---|
-| **#2 7TH FOLLOW-UP finding 1 (P1): same-target reuse honors the namespace hash (upgrade invalidation)** | The strict same-target `find_confirmed` matched a confirmed (possibly cloned) row on the root-SQL/template hash ALONE, ignoring the namespace logic hash. A clone persists the requesting target's `sql_logic_hash` (unchanged across the binding-identity fixes), so after the ns-logic `v3→v4` bump a PRE-FIX clone whose stored namespace hash is now stale kept authorizing a same-target SKIP — serving the wrong cloned result. FIX: `find_confirmed` now also requires `node_namespace_logic_hash` to match when BOTH the row and the submit carry one (NULL on either side falls back to the strict hash for legacy/seed rows). The chosen fix is the precise ns-hash-match requirement (NOT a blanket `sql_logic_hash` bump, which would force a full rebuild of every deterministic model); it invalidates exactly the affected clones. The cross-env clone adoption path is unchanged. | `store.rs::find_confirmed` (ns-hash condition); `services.rs` call site; `clone_submit_fallback.rs::upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash` (persists a pre-fix clone via gRPC, rewrites the stored ns hash stale, resubmits → must not SKIP) |
+| **#2 7TH FOLLOW-UP finding 1 (P1): same-target reuse honors the namespace hash — PARTIAL, see 8TH** | The strict same-target `find_confirmed` matched a confirmed (possibly cloned) row on the root-SQL/template hash ALONE. FIX: `find_confirmed` also requires `node_namespace_logic_hash` to match when BOTH the row and the submit carry one (NULL on either side falls back to the strict hash). NOTE (corrected by the 8th follow-up): this guard is NOT clone-restricted — any row with a stale namespace hash (including an ordinarily built one) rebuilds, which is a safe but broader upgrade cost; and it is BYPASSED in `compare_unrendered_code=true` mode (the submit carries no namespace hash → the `OR $8 IS NULL` fallback), so it did not fully invalidate pre-fix outcomes. The strict `sql_logic_hash` already binds dependency names/definitions/contexts, so it alone distinguishes a swap in a fresh store; the real residual problem is trusting a pre-fix clone OUTCOME. | `store.rs::find_confirmed` (ns-hash condition); `clone_submit_fallback.rs::upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash` |
 | **#2 7TH FOLLOW-UP finding 2 (P2): RegisterClone RETURNED source/target correlation** | The validator checked the REQUEST `clone_source_table`/`target_table`, not the physical relations RETURNED in the response mirrors, so changing ONLY both response mirrors' `clone_source` (to an unbuilt relation) or `clone_target` (to a different target) still passed. FIX: `require_successful_register_clone` reads the RETURNED source/target from the (agreed) mirrors and correlates them — the returned source must equal the requested source AND have a confirmed build before the clone; the returned target must equal the requested target; `require_source_age_chain` correlates the resubmit against the RETURNED clone_target. The misleading combined mutation was removed from the test; SEPARATE response-only source and target mutation tests were added. | `experiments/trace_validate.py::{require_successful_register_clone,require_source_age_chain}`; `experiments/trace_validate_test.py` (23 fault tests) |
 | **#2 7TH FOLLOW-UP finding 3 (P2): history-dependent EXECUTE accounting + comment** | The first-build-vs-rebuild rationale exemption was counted as an ordinary exact `asserted` with no separate signal, so a new silent exemption would be invisible. FIX: a `partial_history` set records every `(fixture, entry)` where the exemption was used (NOT an exact match), prints it per-fixture, and bounds it to the EXACT expected set of 8, so a new or resolved exemption fails the test. Also corrected the stale `execute_diff_is_only_rebuild_rationale` header comment (it claimed both rejection codes must be byte-equal; the implementation intentionally permits the documented LOCAL 6/6 vs HOSTED 8/7 rebuild pair). | `conformance.rs::conformance_replay_all_corpora` (partial_history set + bound); `execute_diff_is_only_rebuild_rationale` doc comment |
+
+`decision::decide` remains pure. Store queries remain organization scoped.
+
+### Review #2 8th follow-up (2026-10-14)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 8TH FOLLOW-UP finding 1 (P1): template-mode bypass of upgrade invalidation** | The 7th-follow-up namespace-hash guard was bypassed when `compare_unrendered_code=true`: `ns_logic_hash` is only computed in rendered mode, so a template-mode submit's NULL namespace hash hit the `OR $8 IS NULL` fallback and the pre-fix clone's unchanged strict SQL hash still authorized a SKIP (confirmed live for both confirmed-before and confirmed-after-upgrade state). FIX: bump the shared SQL/template fingerprint `dbt-state-sql-v3 → v4` — a pre-fix outcome's v3 rendered AND template hashes never match a new v4 submit in EITHER mode, invalidating confirmed and pending pre-fix rows mode-independently; the namespace-hash guard is kept as a secondary check. The rendered-OR-template matching rule is preserved (a current-version row is still reused in template mode for a template-preserving rendered change). | `fingerprint.rs` (`dbt-state-sql-v4`); `clone_submit_fallback.rs::{upgrade_invalidation_holds_in_both_comparison_modes, template_mode_legitimate_reuse_still_skips}` |
+| **#2 8TH FOLLOW-UP rationale corrections** | (a) The invalidation is NOT clone-restricted — the `find_confirmed` query has no `clone_source_table` condition, so any pre-fix row (ordinary or clone) with a stale hash rebuilds (safe, but the upgrade cost is a full rebuild of pre-upgrade models, not only affected clones). The handoff's "only clones" wording is corrected. (b) The strict `sql_logic_hash` ALREADY binds dependency names/definitions/contexts; the misleading `find_confirmed` comment claiming it does not capture bindings is corrected — the real cause is trusting a pre-fix clone OUTCOME, which the version bump invalidates. | `docs/correctness-handoff.md` (this section + Compatibility); `store.rs::find_confirmed` comment |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
 ## Compatibility and upgrade effects
 
 **Fingerprint version bump v2→v3 (review #2 5th follow-up).** The persisted
-logic fingerprints are versioned by a leading tag (`dbt-state-sql-v3`,
+logic fingerprints are versioned by a leading tag (`dbt-state-sql-v4`,
 `dbt-state-ns-logic-v4`). The 5th-follow-up identifier-canonicalization fixes
 (reserved-word quoting, dotted quoted names) bumped the tags from `v2` to `v3`;
 the 6th-follow-up structured-component dependency-binding fix bumped
-`dbt-state-ns-logic` again to `v4` (the SQL-logic tag stays `v3`). On upgrade, a
-submit's new-version hash will not match any pre-upgrade row, so the server
-safely REBUILDS rather than reusing a hash computed by the old normalizer. No
-migration is needed; stale rows simply never match and age out.
-(`dbt-state-seed-v2` is unaffected — seeds carry no SQL.)
+`dbt-state-ns-logic` again to `v4`; the 8th-follow-up pre-fix-outcome
+invalidation bumped `dbt-state-sql` to `v4` as well (so template mode cannot
+bypass invalidation — see below). On upgrade, a submit's new-version hash will
+not match any pre-upgrade row, so the server safely REBUILDS rather than reusing
+a hash computed by the old normalizer. No migration is needed; stale rows simply
+never match and age out. (`dbt-state-seed-v2` is unaffected — seeds carry no SQL.)
 
-**Same-target reuse now requires the namespace hash to match (review #2 7th
-follow-up).** Previously the strict same-target match used only the root-SQL
-hash, so a PRE-FIX clone whose stored namespace hash was invalidated by the
-`v4` bump still authorized a same-target SKIP (its SQL hash was unchanged). The
-`find_confirmed` lookup now also requires `node_namespace_logic_hash` to match
-when both the row and the submit carry one, so an affected clone no longer
-authorizes reuse after upgrade. This is a targeted invalidation — the shared
-SQL-logic tag was deliberately NOT bumped, to avoid forcing a full rebuild of
-every deterministic model; only clones whose binding-aware identity changed are
-invalidated. Legacy/seed rows (NULL namespace hash) fall back to the strict
-hash, preserving their behavior.
+**Pre-fix outcome invalidation — SQL/template version bump (review #2 8th
+follow-up; supersedes the 7th-follow-up namespace-only approach).** The
+7th-follow-up `find_confirmed` namespace-hash guard was BYPASSED in
+`compare_unrendered_code=true` mode: a template-mode submit carries no namespace
+hash, so the `OR $8 IS NULL` fallback let a pre-fix clone's unchanged strict SQL
+hash still authorize a SKIP. The mode-independent fix is the shared SQL/template
+fingerprint version bump `dbt-state-sql-v3 → v4`: a pre-fix persisted outcome's
+v3 rendered AND template hashes never match a new v4 submit in EITHER comparison
+mode, so confirmed and pending pre-fix rows are invalidated and safely rebuilt.
+The namespace-hash guard is retained as a secondary check. IMPORTANT: this
+invalidation is NOT clone-restricted — every pre-fix row (clone or ordinary)
+whose v3 hash no longer matches rebuilds once. That is safe (a one-time rebuild)
+but the upgrade cost is a full rebuild of models built before the upgrade, not
+only affected clones. The rendered-OR-template matching rule is preserved: a
+current-version row is still reused in template mode for a template-preserving
+rendered-SQL change (`template_mode_legitimate_reuse_still_skips`). The strict
+`sql_logic_hash` already binds each dependency's name/definition/context, so in a
+fresh store it alone distinguishes a swap; the residual problem the bump fixes is
+trusting an OUTCOME created by a pre-fix (unsafe) clone decision.
 
 Migration `0007_execution_results.sql` adds nullable `project_id`, binary
 `execution_results`, and an index on current confirmed targets. Results use the
@@ -767,14 +785,16 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **281 tests passed** across the workspace (adds this session's
-  review-#2 7TH FOLLOW-UP fixes on top of the earlier work: the namespace-hash
-  requirement for same-target reuse — invalidating a pre-fix clone whose stored
-  namespace hash is stale, with the `upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash`
-  regression; the RETURNED-mirror RegisterClone source/target correlation; and
-  the history-dependent EXECUTE partial-comparison accounting). The 23
-  warehouse-free `trace_validate_test.py` checks (driving the ACTUAL driver
-  oracles in `experiments/oracles.py`) are run separately
+- Workspace: **283 tests passed** across the workspace (adds this session's
+  review-#2 8TH FOLLOW-UP fix: the mode-independent pre-fix-outcome invalidation
+  via the `dbt-state-sql-v3 → v4` bump, with the
+  `upgrade_invalidation_holds_in_both_comparison_modes` regression — rendered AND
+  template modes against a stale pre-fix clone — and the
+  `template_mode_legitimate_reuse_still_skips` control. On top of the earlier
+  work: the 7th-follow-up namespace-hash guard, the RETURNED-mirror RegisterClone
+  correlation, and the history-dependent EXECUTE partial-comparison accounting).
+  The 23 warehouse-free `trace_validate_test.py` checks (driving the ACTUAL
+  driver oracles in `experiments/oracles.py`) are run separately
   (`python3 experiments/trace_validate_test.py`). (Env note: the shared Postgres
   test DB accumulates `difftest_` schemas — tests do not auto-drop their isolated
   schema; drop them if the volume fills.)

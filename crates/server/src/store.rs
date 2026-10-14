@@ -182,15 +182,21 @@ impl Store {
                 node_sql_hash IS NOT DISTINCT FROM $4
                 OR ($7 IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM $7)
               )
-              -- Binding-aware identity: when BOTH the recorded row and the
-              -- submit carry a schema-abstracted namespace logic hash, it must
-              -- match. The strict root-SQL/template hash alone does not capture
-              -- the (dependency reference → definition) BINDING, so a confirmed
-              -- (possibly cloned) row whose namespace identity differs must not
-              -- authorize a same-target SKIP (review #2 7th follow-up P1 — this
-              -- also invalidates a pre-fix clone whose stored namespace hash is
-              -- stale after the normalization fix). A NULL on either side falls
-              -- back to the strict hash (legacy/seed rows carry no ns hash).
+              -- SECONDARY namespace-identity guard: when BOTH the recorded row
+              -- and the submit carry a schema-abstracted namespace logic hash,
+              -- it must match. NOTE: the strict root-SQL/template hash
+              -- (sql_logic_hash) ALREADY binds each dependency's name,
+              -- definition and context — so it alone distinguishes a swapped
+              -- dependency binding in a fresh store. This secondary check guards
+              -- the UPGRADE case, where a pre-fix row persisted a strict hash
+              -- that still matches but a now-stale namespace hash; it is not the
+              -- primary binding check. A NULL on either side (notably
+              -- compare_unrendered_code=true, which carries no namespace hash,
+              -- and legacy/seed rows) falls back to the strict hash — so this
+              -- alone does NOT cover template mode. Mode-independent invalidation
+              -- of pre-fix persisted OUTCOMES (which were created by an unsafe
+              -- pre-fix clone decision) is achieved by the shared
+              -- sql_logic_hash/template version bump (review #2 8th follow-up P1).
               AND (
                 node_namespace_logic_hash IS NULL
                 OR $8 IS NULL
