@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-14 (review #2 8th FOLLOW-UP). Read this before changing
+Updated 2026-10-14 (review #2 9th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -87,8 +87,16 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 
 | Finding | What changed | Where |
 |---|---|---|
-| **#2 8TH FOLLOW-UP finding 1 (P1): template-mode bypass of upgrade invalidation** | The 7th-follow-up namespace-hash guard was bypassed when `compare_unrendered_code=true`: `ns_logic_hash` is only computed in rendered mode, so a template-mode submit's NULL namespace hash hit the `OR $8 IS NULL` fallback and the pre-fix clone's unchanged strict SQL hash still authorized a SKIP (confirmed live for both confirmed-before and confirmed-after-upgrade state). FIX: bump the shared SQL/template fingerprint `dbt-state-sql-v3 → v4` — a pre-fix outcome's v3 rendered AND template hashes never match a new v4 submit in EITHER mode, invalidating confirmed and pending pre-fix rows mode-independently; the namespace-hash guard is kept as a secondary check. The rendered-OR-template matching rule is preserved (a current-version row is still reused in template mode for a template-preserving rendered change). | `fingerprint.rs` (`dbt-state-sql-v4`); `clone_submit_fallback.rs::{upgrade_invalidation_holds_in_both_comparison_modes, template_mode_legitimate_reuse_still_skips}` |
+| **#2 8TH FOLLOW-UP finding 1 (P1): template-mode bypass of upgrade invalidation** | The 7th-follow-up namespace-hash guard was bypassed when `compare_unrendered_code=true`: `ns_logic_hash` is only computed in rendered mode, so a template-mode submit's NULL namespace hash hit the `OR $8 IS NULL` fallback and the pre-fix clone's unchanged strict SQL hash still authorized a SKIP (reproduced via a LOCAL multi-revision gRPC + disposable-Postgres upgrade test — old revision → current revision against the same schema — for both confirmed-before and confirmed-after-upgrade state; NOT hosted-service characterization). FIX: bump the shared SQL/template fingerprint `dbt-state-sql-v3 → v4` — a pre-fix outcome's v3 rendered AND template hashes never match a new v4 submit in EITHER mode, invalidating confirmed and pending pre-fix rows mode-independently; the namespace-hash guard is kept as a secondary check. The rendered-OR-template matching rule is preserved (a current-version row is still reused in template mode for a template-preserving rendered change). | `fingerprint.rs` (`dbt-state-sql-v4`); `clone_submit_fallback.rs::{upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases, template_mode_legitimate_reuse_still_skips}` |
 | **#2 8TH FOLLOW-UP rationale corrections** | (a) The invalidation is NOT clone-restricted — the `find_confirmed` query has no `clone_source_table` condition, so any pre-fix row (ordinary or clone) with a stale hash rebuilds (safe, but the upgrade cost is a full rebuild of pre-upgrade models, not only affected clones). The handoff's "only clones" wording is corrected. (b) The strict `sql_logic_hash` ALREADY binds dependency names/definitions/contexts; the misleading `find_confirmed` comment claiming it does not capture bindings is corrected — the real cause is trusting a pre-fix clone OUTCOME, which the version bump invalidates. | `docs/correctness-handoff.md` (this section + Compatibility); `store.rs::find_confirmed` comment |
+
+`decision::decide` remains pure. Store queries remain organization scoped.
+
+### Review #2 9th follow-up (2026-10-14)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 9TH FOLLOW-UP (P2): the upgrade regression now uses FAITHFUL v3 fingerprints and guards the tag** | The 8th-follow-up upgrade regression seeded ARBITRARY sentinel strings (`STALE_V3_*`) that no engine version produces, so it passed on the vulnerable parent too and did not detect removal of the fix. FIX: a frozen `fingerprint::sql_logic_hash_with_version(…, b"dbt-state-sql-v3")` helper (the versioned core of `sql_logic_hash`, exposed via `pub mod fingerprint` + `pub fn sql_execution`) computes the EXACT v3 rendered/template hashes for the request; the regression seeds those onto the persisted row. On the v4 server the submit's v4 hash cannot match the stored v3 → EXECUTE; reverting the production tag to v3 makes the submit's hash collide → SKIP → the regression FAILS (verified by a manual revert). It covers all four cells {confirmed-on-old, pending-on-old then confirmed-on-new} × {rendered, template}, asserts EXECUTE specifically, uses ORDINARY (non-clone) rows so the SQL/template hash is the unambiguous reuse factor (the clone-origin stale-namespace path stays covered by `upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash`), and retains the legitimate current-version reuse control. A sanity test asserts v3≠v4 for the same request. All upgrade reproductions are LABELED as LOCAL multi-revision gRPC + Postgres tests, not hosted-service characterization. | `fingerprint.rs::sql_logic_hash_with_version`; `services.rs::sql_execution` (now `pub`); `clone_submit_fallback.rs::{upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases, frozen_v3_hash_differs_from_current_v4}` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -785,19 +793,22 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **283 tests passed** across the workspace (adds this session's
-  review-#2 8TH FOLLOW-UP fix: the mode-independent pre-fix-outcome invalidation
-  via the `dbt-state-sql-v3 → v4` bump, with the
-  `upgrade_invalidation_holds_in_both_comparison_modes` regression — rendered AND
-  template modes against a stale pre-fix clone — and the
-  `template_mode_legitimate_reuse_still_skips` control. On top of the earlier
-  work: the 7th-follow-up namespace-hash guard, the RETURNED-mirror RegisterClone
-  correlation, and the history-dependent EXECUTE partial-comparison accounting).
-  The 23 warehouse-free `trace_validate_test.py` checks (driving the ACTUAL
-  driver oracles in `experiments/oracles.py`) are run separately
-  (`python3 experiments/trace_validate_test.py`). (Env note: the shared Postgres
-  test DB accumulates `difftest_` schemas — tests do not auto-drop their isolated
-  schema; drop them if the volume fills.)
+- Workspace: **284 tests passed** across the workspace (adds this session's
+  review-#2 9TH FOLLOW-UP work: the FAITHFUL frozen-v3 upgrade regression
+  (`upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases` — all four
+  {confirmed/pending}×{rendered/template} cells asserting EXECUTE, tag-sensitive)
+  and its `frozen_v3_hash_differs_from_current_v4` sanity check, replacing the
+  arbitrary-sentinel 8th-follow-up test. On top of the earlier work: the
+  mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
+  namespace-hash guard, the RETURNED-mirror RegisterClone correlation, and the
+  history-dependent EXECUTE partial-comparison accounting). The 23 warehouse-free
+  `trace_validate_test.py` checks (driving the ACTUAL driver oracles in
+  `experiments/oracles.py`) are run separately
+  (`python3 experiments/trace_validate_test.py`). All upgrade reproductions are
+  LOCAL multi-revision gRPC + Postgres tests (not hosted-service
+  characterization). (Env note: the shared Postgres test DB accumulates
+  `difftest_` schemas — tests do not auto-drop their isolated schema; drop them
+  if the volume fills.)
 - Server library: **121 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database (the 7th follow-up
   added only harness-level tests).

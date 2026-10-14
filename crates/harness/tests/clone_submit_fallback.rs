@@ -1328,126 +1328,167 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
     );
 }
 
-/// P1 (review #2 8th follow-up) — the upgrade invalidation must hold in BOTH
-/// comparison modes. In `compare_unrendered_code=true` (template) mode the
-/// submit carries NO namespace hash, so the namespace-hash guard's `OR $8 IS
-/// NULL` fallback let a stale pre-fix clone's unchanged strict SQL hash still
-/// authorize SKIP. The mode-independent fix is the shared SQL/template
-/// fingerprint version bump (`dbt-state-sql-v3`→`v4`): a pre-fix persisted
-/// outcome's v3 rendered AND template hashes never match a new v4 submit, in
-/// either mode. This simulates the pre-fix persisted state by cloning +
-/// confirming through the real gRPC flow, then rewriting ALL stored logic hashes
-/// (sql, template, namespace) to stale values, and asserts the resubmit does NOT
-/// SKIP in EITHER comparison mode. A separate CONTROL proves a legitimate
-/// current-version template-mode reuse still SKIPs.
+/// P2 (review #2 9th follow-up) — the upgrade regression must use FAITHFUL
+/// pre-fix fingerprints, not arbitrary sentinels. The 8th-follow-up fix bumped
+/// the shared SQL/template fingerprint `dbt-state-sql-v3 → v4`. A faithful
+/// pre-fix (83f6b94) persisted row therefore stores the EXACT v3 rendered and
+/// template hashes for its request. We compute those with the frozen
+/// `fingerprint::sql_logic_hash_with_version(…, b"dbt-state-sql-v3")` helper and
+/// seed them onto the persisted row. On the current (v4) server the new submit's
+/// hash is v4 → it must NOT match the stored v3 → EXECUTE. Reverting the
+/// production tag to v3 would make the submit's hash collide with the stored
+/// value → SKIP → this test fails, so it genuinely guards the SQL/template bump.
+///
+/// This isolates the SQL/template hash as the deciding reuse factor by using
+/// ORDINARY (non-clone) rows: the clone-origin namespace-adoption path
+/// (`find_latest_confirmed_target`, which filters `clone_source_table IS NOT
+/// NULL`) does not apply, so a non-clone row is reused ONLY through
+/// `find_confirmed`'s rendered/template hash — exactly the identity the bump
+/// invalidates. (The clone-origin stale-namespace path is covered by
+/// `upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash`.) The reviewer
+/// confirmed an unchanged ordinary source also EXECUTEs after upgrade.
+///
+/// Covers all four cells: {outcome CONFIRMED on old, outcome left PENDING on old
+/// then confirmed on new} × {`compare_unrendered_code` false, true}, asserting
+/// EXECUTE in each. NOTE: this is a LOCAL multi-revision gRPC + Postgres upgrade
+/// test (frozen-v3 fingerprints standing in for the old revision), NOT
+/// hosted-service characterization.
 #[tokio::test]
-async fn upgrade_invalidation_holds_in_both_comparison_modes() {
+async fn upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases() {
+    use dbt_state_server::{fingerprint, services::sql_execution};
+
     let (addr, schema, _state) = support::start_server_with_state().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-
-    let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.W.INPUT b";
-    let dep = |schema_: &str, body: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{schema_}\".\"INPUT\""),
-        query: format!("select {body} as id"),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_.into(),
-    };
-    let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UPGM\"";
-    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UPGM\"";
     let pool = support::schema_pool(&schema).await;
 
-    // Build + confirm the prod source, then clone + confirm the dev target.
-    let mut base = submit(prod, "prod_state_demo");
-    base.sql = root.into();
-    base.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("prod source must execute");
+    // An ordinary model request held constant across build/confirm/resubmit so
+    // its CURRENT (v4) hash is well-defined; own-target epoch present so the
+    // only thing that can block reuse is the logic-hash identity. The literal is
+    // per-target so cases are logically distinct (no cross-name clone equivalence).
+    let request = |target: &str, uniq: &str| {
+        let mut r = submit(target, "prod_state_demo");
+        r.sql = format!("select id, '{uniq}' as tag from CDO_DEMO_DB.prod_state_demo.up_{uniq}");
+        r.query_dependencies = vec![];
+        r.tables = vec![qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(200),
+        }];
+        r
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(100),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-    let mut devclone = submit(dev, "dev_clone_demo");
-    devclone.sql = root.into();
-    devclone.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
-    let rc = sql
-        .submit_enriched_sql(devclone)
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
-        panic!("dev target must clone");
+
+    // Frozen v3 rendered + template hashes for the request.
+    let frozen_v3 = |target: &str, uniq: &str| {
+        let se = sql_execution(&request(target, uniq));
+        let body = se
+            .dbt_node_state
+            .as_ref()
+            .and_then(|s| s.node_body_hash.clone())
+            .unwrap_or_default();
+        (
+            fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3"),
+            fingerprint::sql_logic_hash_with_version(&se, Some(&body), b"dbt-state-sql-v3"),
+        )
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: c.request_id,
-        last_modified_epoch: Some(200),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
 
-    // Simulate the UPGRADE: rewrite ALL stored logic hashes to stale values (what
-    // a pre-fix build left and the current fingerprint version no longer
-    // computes), independent of comparison mode.
-    let updated = sqlx::query(
-        "UPDATE executions SET node_sql_hash = 'STALE_V3_SQL', \
-             node_template_hash = 'STALE_V3_TEMPLATE', \
-             node_namespace_logic_hash = 'STALE_V3_NS' \
-         WHERE target_table = $1 AND status = 'confirmed'",
-    )
-    .bind(dev)
-    .execute(&pool)
-    .await
-    .unwrap();
-    assert!(
-        updated.rows_affected() >= 1,
-        "the clone row must exist to mutate"
-    );
+    for (confirm_on_old, template_mode, tag) in [
+        (true, false, "CONFIRMED_RENDERED"),
+        (true, true, "CONFIRMED_TEMPLATE"),
+        (false, false, "PENDING_RENDERED"),
+        (false, true, "PENDING_TEMPLATE"),
+    ] {
+        let target = format!("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UPG_{tag}\"");
+        let uniq = tag.to_ascii_lowercase();
 
-    // Resubmit in RENDERED mode (flag false) → must NOT skip the stale clone.
-    let mut rendered = submit(dev, "dev_clone_demo");
-    rendered.sql = root.into();
-    rendered.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
-    rendered.tables = vec![qc::TableModifiedInfo {
-        name: dev.into(),
-        last_modified_epoch: Some(200),
-    }];
-    assert_ne!(
-        support::response_variant(
-            &sql.submit_enriched_sql(rendered)
+        // Build the ordinary model (stores CURRENT v4 hashes).
+        let r0 = sql
+            .submit_enriched_sql(request(&target, &uniq))
+            .await
+            .unwrap()
+            .into_inner();
+        let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+            panic!("case {tag}: first build must execute");
+        };
+
+        // Seed the FAITHFUL frozen v3 rendered+template hashes. For the
+        // "confirmed-on-old" lifecycle, confirm BEFORE seeding (the pre-fix
+        // server confirmed, then upgraded); for "pending-on-old then confirmed-
+        // on-new", seed while PENDING and confirm afterwards. Either way the
+        // persisted row ends CONFIRMED carrying the v3 hashes.
+        let v3 = frozen_v3(&target, &uniq);
+        let rid = x.request_id.clone();
+        let do_seed = |pool: &sqlx::PgPool, target: &str, v3: &(String, String)| {
+            let (pool, target, v30, v31) =
+                (pool.clone(), target.to_string(), v3.0.clone(), v3.1.clone());
+            async move {
+                let n = sqlx::query(
+                    "UPDATE executions SET node_sql_hash = $2, node_template_hash = $3 \
+                     WHERE target_table = $1",
+                )
+                .bind(&target)
+                .bind(&v30)
+                .bind(&v31)
+                .execute(&pool)
                 .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution",
-        "rendered-mode resubmit must NOT reuse the stale pre-fix clone"
-    );
+                .unwrap();
+                assert!(n.rows_affected() >= 1, "row must exist to seed");
+            }
+        };
+        let confirm_req = qc::ConfirmExecutionRequest {
+            request_id: rid,
+            last_modified_epoch: Some(200),
+            table_type: Some("TRANSIENT TABLE".into()),
+            execution_runtime_ms: Some(100),
+            ..Default::default()
+        };
+        if confirm_on_old {
+            exec.confirm_execution(confirm_req).await.unwrap();
+            do_seed(&pool, &target, &v3).await;
+        } else {
+            do_seed(&pool, &target, &v3).await;
+            exec.confirm_execution(confirm_req).await.unwrap();
+        }
 
-    // Resubmit in TEMPLATE mode (compare_unrendered_code=true) → must NOT skip
-    // the stale clone either (the mode-independent invalidation).
-    let mut templ = submit(dev, "dev_clone_demo");
-    templ.sql = root.into();
-    templ.query_dependencies = vec![dep("S", "1"), dep("W", "2")];
-    templ.compare_unrendered_code = true;
-    templ.tables = vec![qc::TableModifiedInfo {
-        name: dev.into(),
-        last_modified_epoch: Some(200),
-    }];
+        // Resubmit the IDENTICAL request under the given comparison mode → the
+        // stored v3 hash cannot match the v4 submit → EXECUTE.
+        let mut resub = request(&target, &uniq);
+        resub.compare_unrendered_code = template_mode;
+        let resp = sql.submit_enriched_sql(resub).await.unwrap().into_inner();
+        assert_eq!(
+            support::response_variant(&resp),
+            "ready_to_execute",
+            "case {tag}: a faithful v3 pre-fix outcome must be EXECUTED (not reused) \
+             on the v4 server (confirm_on_old={confirm_on_old}, template={template_mode})"
+        );
+    }
+}
+
+/// Sanity: the frozen v3 helper and the current v4 hash DIFFER for the same
+/// request, and the stored-v3-equals-recomputed-v3 relation holds. This is what
+/// makes the upgrade regression tag-sensitive — if production reverted to v3,
+/// the submit's hash would equal the seeded v3 value and the clone would be
+/// reused (SKIP), failing the regression above.
+#[tokio::test]
+async fn frozen_v3_hash_differs_from_current_v4() {
+    use dbt_state_server::{fingerprint, services::sql_execution};
+    let mut r = submit("\"DB\".\"S\".\"T\"", "s");
+    r.sql = "select 1 as id".into();
+    r.query_dependencies = vec![];
+    let se = sql_execution(&r);
+    let v3 = fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3");
+    let v4 = fingerprint::sql_logic_hash(&se, None);
     assert_ne!(
-        support::response_variant(&sql.submit_enriched_sql(templ).await.unwrap().into_inner()),
-        "skip_execution",
-        "TEMPLATE-mode resubmit must NOT reuse the stale pre-fix clone (the \
-         compare_unrendered_code NULL-namespace path must not bypass invalidation)"
+        v3, v4,
+        "the v3 and v4 fingerprints of the same request must differ (the tag bump \
+         is what invalidates pre-fix outcomes); if they were equal the upgrade \
+         regression could not detect a tag revert"
+    );
+    // And the frozen helper reproduces the current tag exactly.
+    assert_eq!(
+        fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v4"),
+        v4,
+        "the versioned helper with the current tag equals sql_logic_hash"
     );
 }
 

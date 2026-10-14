@@ -498,7 +498,10 @@ fn current_target_matches(
             || matches!((own[0].last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded))
 }
 
-fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
+/// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint
+/// functions consume. Exposed so an upgrade regression can compute a frozen
+/// prior-version fingerprint for the exact request (review #2 9th follow-up P2).
+pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
     qc::SqlExecution {
         target_table: req.target_table.clone(),
         dialect: req.dialect.clone(),

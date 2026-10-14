@@ -43,8 +43,22 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// `template` is the existing template-comparison mode, whose exact hosted
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
+    sql_logic_hash_with_version(req, template, b"dbt-state-sql-v4")
+}
+
+/// The versioned core of [`sql_logic_hash`]. The ONLY difference an engine
+/// version makes is the leading `version_tag`; everything else is fixed. Exposed
+/// so an UPGRADE regression can compute the EXACT hash a prior engine version
+/// would have stored (a frozen `dbt-state-sql-v3` hash), rather than seeding an
+/// arbitrary sentinel string that no version produces — so the test genuinely
+/// fails if the production tag is reverted. Review #2 9th follow-up P2.
+pub fn sql_logic_hash_with_version(
+    req: &qc::SqlExecution,
+    template: Option<&str>,
+    version_tag: &[u8],
+) -> String {
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-sql-v4");
+    field(&mut h, version_tag);
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     field(&mut h, req.default_catalog.as_bytes());
     field(
