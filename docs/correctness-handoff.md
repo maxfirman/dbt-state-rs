@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-13 (review #2 6th FOLLOW-UP). Read this before changing
+Updated 2026-10-14 (review #2 7th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -73,6 +73,16 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 | **#2 6TH FOLLOW-UP finding 3 (P1): field-narrow rebuild-rationale exemption** | `execute_diff_is_only_rebuild_rationale` still exempted the whole `explained_decision` except the decision int, so a probe changing both rejection codes + `is_stale`=true + an arbitrary description returned true. FIX: both sides must be a NON-STALE EXECUTE (`is_stale` false on both); no `explained_decision` field other than the description and the two rejection codes may differ; LOCAL must be the empty-store first build (codes 6/6 + a first-build description); HOSTED must be a documented rebuild (codes 6/6 OR skip=8/clone=7, with a rebuild description). Anything else is a real mismatch. | `conformance.rs::execute_diff_is_only_rebuild_rationale`; extended `rebuild_rationale_exemption_is_history_gated_and_field_narrow` (combined/arbitrary/seed probes) |
 | **#2 6TH FOLLOW-UP finding 4 (P2): wired oracles + full-chain ordering** | `require_present_baseline_for_execute` was not wired into `clone_eligibility.sh` (deleting the volatile source baseline still printed `CE_OK`), and the source-age driver accepted a source confirm before its submit, a clone confirm after the dev resubmit, and an unbuilt clone source. FIX: `confirmed_targets` enforces submit→confirm ordering; new `require_source_age_chain` enforces the full event order (source submit → source confirm → RegisterClone → clone confirm → dev resubmit, resubmit after the clone confirm, resubmit target == clone target); new `experiments/oracles.py` holds the EXACT driver validation that both the shell drivers AND the fault tests call. `trace_validate_test.py` grows 15 → 22, with 7 tests driving the ACTUAL oracle functions. | `experiments/oracles.py`, `experiments/trace_validate.py` (confirmed_targets ordering, require_source_age_chain), `experiments/{clone_eligibility,registerclone_source_age}.sh`, `experiments/trace_validate_test.py` |
 
+### Review #2 7th follow-up (2026-10-14)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 7TH FOLLOW-UP finding 1 (P1): same-target reuse honors the namespace hash (upgrade invalidation)** | The strict same-target `find_confirmed` matched a confirmed (possibly cloned) row on the root-SQL/template hash ALONE, ignoring the namespace logic hash. A clone persists the requesting target's `sql_logic_hash` (unchanged across the binding-identity fixes), so after the ns-logic `v3→v4` bump a PRE-FIX clone whose stored namespace hash is now stale kept authorizing a same-target SKIP — serving the wrong cloned result. FIX: `find_confirmed` now also requires `node_namespace_logic_hash` to match when BOTH the row and the submit carry one (NULL on either side falls back to the strict hash for legacy/seed rows). The chosen fix is the precise ns-hash-match requirement (NOT a blanket `sql_logic_hash` bump, which would force a full rebuild of every deterministic model); it invalidates exactly the affected clones. The cross-env clone adoption path is unchanged. | `store.rs::find_confirmed` (ns-hash condition); `services.rs` call site; `clone_submit_fallback.rs::upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash` (persists a pre-fix clone via gRPC, rewrites the stored ns hash stale, resubmits → must not SKIP) |
+| **#2 7TH FOLLOW-UP finding 2 (P2): RegisterClone RETURNED source/target correlation** | The validator checked the REQUEST `clone_source_table`/`target_table`, not the physical relations RETURNED in the response mirrors, so changing ONLY both response mirrors' `clone_source` (to an unbuilt relation) or `clone_target` (to a different target) still passed. FIX: `require_successful_register_clone` reads the RETURNED source/target from the (agreed) mirrors and correlates them — the returned source must equal the requested source AND have a confirmed build before the clone; the returned target must equal the requested target; `require_source_age_chain` correlates the resubmit against the RETURNED clone_target. The misleading combined mutation was removed from the test; SEPARATE response-only source and target mutation tests were added. | `experiments/trace_validate.py::{require_successful_register_clone,require_source_age_chain}`; `experiments/trace_validate_test.py` (23 fault tests) |
+| **#2 7TH FOLLOW-UP finding 3 (P2): history-dependent EXECUTE accounting + comment** | The first-build-vs-rebuild rationale exemption was counted as an ordinary exact `asserted` with no separate signal, so a new silent exemption would be invisible. FIX: a `partial_history` set records every `(fixture, entry)` where the exemption was used (NOT an exact match), prints it per-fixture, and bounds it to the EXACT expected set of 8, so a new or resolved exemption fails the test. Also corrected the stale `execute_diff_is_only_rebuild_rationale` header comment (it claimed both rejection codes must be byte-equal; the implementation intentionally permits the documented LOCAL 6/6 vs HOSTED 8/7 rebuild pair). | `conformance.rs::conformance_replay_all_corpora` (partial_history set + bound); `execute_diff_is_only_rebuild_rationale` doc comment |
+
+`decision::decide` remains pure. Store queries remain organization scoped.
+
 ## Compatibility and upgrade effects
 
 **Fingerprint version bump v2→v3 (review #2 5th follow-up).** The persisted
@@ -85,6 +95,18 @@ submit's new-version hash will not match any pre-upgrade row, so the server
 safely REBUILDS rather than reusing a hash computed by the old normalizer. No
 migration is needed; stale rows simply never match and age out.
 (`dbt-state-seed-v2` is unaffected — seeds carry no SQL.)
+
+**Same-target reuse now requires the namespace hash to match (review #2 7th
+follow-up).** Previously the strict same-target match used only the root-SQL
+hash, so a PRE-FIX clone whose stored namespace hash was invalidated by the
+`v4` bump still authorized a same-target SKIP (its SQL hash was unchanged). The
+`find_confirmed` lookup now also requires `node_namespace_logic_hash` to match
+when both the row and the submit carry one, so an affected clone no longer
+authorizes reuse after upgrade. This is a targeted invalidation — the shared
+SQL-logic tag was deliberately NOT bumped, to avoid forcing a full rebuild of
+every deterministic model; only clones whose binding-aware identity changed are
+invalidated. Legacy/seed rows (NULL namespace hash) fall back to the strict
+hash, preserving their behavior.
 
 Migration `0007_execution_results.sql` adds nullable `project_id`, binary
 `execution_results`, and an index on current confirmed targets. Results use the
@@ -745,20 +767,20 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **280 tests passed** across the workspace (adds this session's
-  review-#2 6TH FOLLOW-UP fixes on top of the earlier work: the structured
-  component-sequence dependency binding (fingerprint `ns-logic` `v4`); the
-  parenless-context-only volatility detection; the field-narrow rebuild-rationale
-  exemption; and the wired driver oracles with full-chain ordering). The 22
-  warehouse-free `trace_validate_test.py` checks (now driving the ACTUAL driver
+- Workspace: **281 tests passed** across the workspace (adds this session's
+  review-#2 7TH FOLLOW-UP fixes on top of the earlier work: the namespace-hash
+  requirement for same-target reuse — invalidating a pre-fix clone whose stored
+  namespace hash is stale, with the `upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash`
+  regression; the RETURNED-mirror RegisterClone source/target correlation; and
+  the history-dependent EXECUTE partial-comparison accounting). The 23
+  warehouse-free `trace_validate_test.py` checks (driving the ACTUAL driver
   oracles in `experiments/oracles.py`) are run separately
   (`python3 experiments/trace_validate_test.py`). (Env note: the shared Postgres
   test DB accumulates `difftest_` schemas — tests do not auto-drop their isolated
   schema; drop them if the volume fills.)
 - Server library: **121 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (adds the
-  component-boundary, parenless-volatility and related `sql_norm`/`fingerprint`
-  tests).
+  unreachable port, verifying the engine needs no database (the 7th follow-up
+  added only harness-level tests).
 - Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
 - Conformance replay: **26 fixtures causally replayed** with REAL CLONE gating
   (the `ready_to_clone` arm now compares the local clone payload and replays its
