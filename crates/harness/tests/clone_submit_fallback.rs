@@ -1219,3 +1219,111 @@ async fn bare_random_column_is_deterministic_and_clones() {
          tolerate_nondeterminism=false (random() with parens would be volatile)"
     );
 }
+
+/// P1 #1 (review #2 7th follow-up) — UPGRADE REGRESSION: a clone CONFIRMED by a
+/// PRE-FIX server must not authorize same-target SKIP reuse after upgrade. The
+/// pre-fix clone persisted the requesting target's strict `sql_logic_hash`
+/// (which did not change across the fix) alongside a now-STALE
+/// `node_namespace_logic_hash` (the fix bumped the namespace identity). The
+/// strict same-target `find_confirmed` matched on the SQL hash alone, so the
+/// stale clone kept authorizing SKIP after upgrade.
+///
+/// This simulates the persisted pre-fix state by cloning + confirming through
+/// the real gRPC flow, then rewriting the stored namespace hash to a stale value
+/// (what an older build left and the current build no longer computes), then
+/// resubmitting the IDENTICAL request. A row whose binding-aware identity no
+/// longer matches must NOT be reused: the resubmit must NOT SKIP. (A plain
+/// clean-store hash-inequality test cannot cover this — it needs a persisted
+/// pre-fix row.)
+#[tokio::test]
+async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
+    let (addr, schema, _state) = support::start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+
+    let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.U.INPUT b";
+    let dep = |schema_: &str, body: &str| qc::QueryDependency {
+        name: format!("\"CDO_DEMO_DB\".\"{schema_}\".\"INPUT\""),
+        query: format!("select {body} as id"),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: schema_.into(),
+    };
+    let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UPG\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UPG\"";
+
+    // Build + confirm the prod source.
+    let mut base = submit(prod, "prod_state_demo");
+    base.sql = root.into();
+    base.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
+    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+        panic!("prod source must execute");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: x.request_id,
+        last_modified_epoch: Some(100),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Dev clone from prod; confirm it (this is the "pre-fix clone" row).
+    let mut devclone = submit(dev, "dev_clone_demo");
+    devclone.sql = root.into();
+    devclone.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
+    let rc = sql
+        .submit_enriched_sql(devclone)
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
+        panic!("dev target must clone");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: c.request_id,
+        last_modified_epoch: Some(200),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+
+    // Simulate the UPGRADE: rewrite the confirmed dev clone row's stored
+    // namespace hash to a STALE value (what the pre-fix normalizer produced,
+    // which the current normalizer no longer computes). The SQL hash is left
+    // intact — exactly the pre-fix persisted shape that previously SKIPPED.
+    let pool = support::schema_pool(&schema).await;
+    let updated = sqlx::query(
+        "UPDATE executions SET node_namespace_logic_hash = 'STALE_PREFIX_NS_HASH' \
+         WHERE target_table = $1 AND status = 'confirmed'",
+    )
+    .bind(dev)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        updated.rows_affected() >= 1,
+        "the clone row must exist to mutate"
+    );
+
+    // Resubmit the IDENTICAL dev request. With a stale namespace hash on the
+    // persisted row, same-target reuse must NOT SKIP it.
+    let mut resub = submit(dev, "dev_clone_demo");
+    resub.sql = root.into();
+    resub.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
+    resub.tables = vec![qc::TableModifiedInfo {
+        name: dev.into(),
+        last_modified_epoch: Some(200),
+    }];
+    let variant =
+        support::response_variant(&sql.submit_enriched_sql(resub).await.unwrap().into_inner());
+    assert_ne!(
+        variant, "skip_execution",
+        "a persisted clone row whose namespace identity no longer matches the \
+         submit must NOT authorize a same-target SKIP after upgrade (got {variant})"
+    );
+}

@@ -164,6 +164,7 @@ impl Store {
         table_namespace: Option<&str>,
         dialect: &str,
         node_template_hash: Option<&str>,
+        node_namespace_logic_hash: Option<&str>,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -181,6 +182,20 @@ impl Store {
                 node_sql_hash IS NOT DISTINCT FROM $4
                 OR ($7 IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM $7)
               )
+              -- Binding-aware identity: when BOTH the recorded row and the
+              -- submit carry a schema-abstracted namespace logic hash, it must
+              -- match. The strict root-SQL/template hash alone does not capture
+              -- the (dependency reference → definition) BINDING, so a confirmed
+              -- (possibly cloned) row whose namespace identity differs must not
+              -- authorize a same-target SKIP (review #2 7th follow-up P1 — this
+              -- also invalidates a pre-fix clone whose stored namespace hash is
+              -- stale after the normalization fix). A NULL on either side falls
+              -- back to the strict hash (legacy/seed rows carry no ns hash).
+              AND (
+                node_namespace_logic_hash IS NULL
+                OR $8 IS NULL
+                OR node_namespace_logic_hash IS NOT DISTINCT FROM $8
+              )
               AND ($5 IS NULL OR table_namespace = $5)
               AND dialect = $6
             "#,
@@ -192,6 +207,7 @@ impl Store {
         .bind(table_namespace)
         .bind(dialect)
         .bind(node_template_hash)
+        .bind(node_namespace_logic_hash)
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()

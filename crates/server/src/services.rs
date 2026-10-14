@@ -669,6 +669,7 @@ impl Sql for SqlService {
                     table_namespace,
                     &req.dialect,
                     node_template_hash.as_deref(),
+                    ns_logic_hash.as_deref(),
                 )
                 .await
                 .map_err(db_err)?;
