@@ -56,3 +56,15 @@ asserts only the causally-reproducible transitions and hydrates/characterizes
 the rest. Interleaved multi-run captures (e.g. `lag_multi_upstream_policy.jsonl`)
 are in the replay's `CHARACTERIZATION_ONLY` exclusion list and validated by their
 own dedicated tests instead.
+
+## `golden/upgrade/`
+
+`prefix_clone_366be09.json` — a FROZEN capture of real persisted clone state
+from the OLD `366be09` server (review #2 10th follow-up): the actual CONFIRMED
+and PENDING clone rows (their v3 `node_sql_hash`, NULL `node_template_hash`,
+`clone_source_table`, `node_namespace_logic_hash`, status, epoch) plus the exact
+dev requests that produced them. It is a DURABLE, code-independent historical
+oracle: `clone_submit_fallback.rs::upgrade_rejects_frozen_366be09_clone_fixture_all_cases`
+loads these fixed bytes and asserts the current (v4) server EXECUTEs (does not
+reuse) the pre-fix clone in all four {confirmed, pending→confirmed}×{rendered,
+template} cells. Regenerate only by re-capturing from the recorded revision.

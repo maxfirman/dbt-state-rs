@@ -1328,16 +1328,15 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
     );
 }
 
-/// P2 (review #2 9th follow-up) — the upgrade regression must use FAITHFUL
-/// pre-fix fingerprints, not arbitrary sentinels. The 8th-follow-up fix bumped
-/// the shared SQL/template fingerprint `dbt-state-sql-v3 → v4`. A faithful
-/// pre-fix (83f6b94) persisted row therefore stores the EXACT v3 rendered and
-/// template hashes for its request. We compute those with the frozen
-/// `fingerprint::sql_logic_hash_with_version(…, b"dbt-state-sql-v3")` helper and
-/// seed them onto the persisted row. On the current (v4) server the new submit's
-/// hash is v4 → it must NOT match the stored v3 → EXECUTE. Reverting the
-/// production tag to v3 would make the submit's hash collide with the stored
-/// value → SKIP → this test fails, so it genuinely guards the SQL/template bump.
+/// P2 (review #2 9th/10th follow-up) — a TAG-ROLLBACK GUARD. This seeds the
+/// prior-tag digest produced by `fingerprint::sql_logic_hash_with_version(…,
+/// b"dbt-state-sql-v3")` — which is PARAMETERIZED PRODUCTION HASHING, not an
+/// independently frozen v3 oracle (it shares today's conversion/normalization/
+/// framing). Its value is that reverting the production tag `v4 → v3` makes the
+/// resubmit's hash collide with the seeded value → SKIP → this test fails,
+/// catching a tag rollback. The DURABLE historical oracle (real old-server
+/// bytes) is `upgrade_rejects_frozen_366be09_clone_fixture_all_cases`; this test
+/// is complementary ordinary-row coverage.
 ///
 /// This isolates the SQL/template hash as the deciding reuse factor by using
 /// ORDINARY (non-clone) rows: the clone-origin namespace-adoption path
@@ -1354,7 +1353,7 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
 /// test (frozen-v3 fingerprints standing in for the old revision), NOT
 /// hosted-service characterization.
 #[tokio::test]
-async fn upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases() {
+async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
     use dbt_state_server::{fingerprint, services::sql_execution};
 
     let (addr, schema, _state) = support::start_server_with_state().await;
@@ -1464,13 +1463,14 @@ async fn upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases() {
     }
 }
 
-/// Sanity: the frozen v3 helper and the current v4 hash DIFFER for the same
-/// request, and the stored-v3-equals-recomputed-v3 relation holds. This is what
-/// makes the upgrade regression tag-sensitive — if production reverted to v3,
-/// the submit's hash would equal the seeded v3 value and the clone would be
-/// reused (SKIP), failing the regression above.
+/// Sanity: the PARAMETERIZED production hasher with the predecessor tag and the
+/// current tag DIFFER for the same request. This is what makes the tag-rollback
+/// guard above sensitive — if production reverted to v3, the submit's hash would
+/// equal the seeded v3-tag value and the clone would be reused (SKIP), failing
+/// that guard. (This is not a frozen-oracle claim; see the module note on
+/// `sql_logic_hash_with_version`.)
 #[tokio::test]
-async fn frozen_v3_hash_differs_from_current_v4() {
+async fn parameterized_v3_tag_differs_from_current_v4() {
     use dbt_state_server::{fingerprint, services::sql_execution};
     let mut r = submit("\"DB\".\"S\".\"T\"", "s");
     r.sql = "select 1 as id".into();
@@ -1558,4 +1558,185 @@ async fn template_mode_legitimate_reuse_still_skips() {
         "a current-version row must still be reused in template mode for a \
          template-preserving rendered change (invalidation must not over-reject)"
     );
+}
+
+/// P2 (review #2 10th follow-up) — a DURABLE, INDEPENDENT historical oracle. The
+/// prior upgrade regression derived "old" fingerprints from today's production
+/// hashing (parameterized by tag), which is not an independent frozen
+/// implementation. This test instead loads FIXED BYTES captured from the OLD
+/// `366be09` server (`golden/upgrade/prefix_clone_366be09.json`): the actual
+/// persisted CONFIRMED and PENDING clone rows (their real v3 `node_sql_hash`,
+/// NULL `node_template_hash`, `clone_source_table`, `node_namespace_logic_hash`,
+/// status, epoch) plus the exact dev requests that produced them. Those bytes do
+/// not depend on today's code, so a sentinel-return mutation of the production
+/// hasher cannot subvert this test, and future changes to shared hashing
+/// functions do not silently redefine the "historical" state.
+///
+/// We seed each fixture row VERBATIM (preserving the original NULL template
+/// hash), then exercise the four clone cells {CONFIRMED on old, PENDING on old
+/// then confirmed on new} × {rendered, template}: the current (v4) server must
+/// EXECUTE the resubmit (the pre-fix clone outcome is invalidated), never reuse
+/// the stale v3 clone. For the pending case we assert a successful
+/// pending→confirmed transition on the current server before resubmitting.
+#[tokio::test]
+async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        target_table: String,
+        execution_type: i32,
+        status: String,
+        node_sql_hash: Option<String>,
+        node_template_hash: Option<String>,
+        node_namespace_logic_hash: Option<String>,
+        clone_source_table: Option<String>,
+        table_namespace: Option<String>,
+        dialect: String,
+        last_modified_epoch: Option<i64>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        namespace: String,
+        dev_request_sql_conf: String,
+        dev_request_sql_pend: String,
+        dev_request_deps: Vec<qc::QueryDependency>,
+        rows: Vec<Row>,
+    }
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/upgrade/prefix_clone_366be09.json"
+    );
+    let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
+
+    let (addr, schema, _state) = support::start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let pool = support::schema_pool(&schema).await;
+
+    // Build the dev request exactly as recorded (per-case SQL, same deps/ns).
+    let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
+        target_table: Some(target.into()),
+        dialect: "snowflake".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: Some("dev_clone_demo".into()),
+        execution_type: 1,
+        sql: case_sql.into(),
+        tolerate_nondeterminism: true,
+        freshness_tolerance_seconds: 2700,
+        compare_unrendered_code: template,
+        query_dependencies: fx.dev_request_deps.clone(),
+        tables: vec![qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(200),
+        }],
+        table_namespace: Some(fx.namespace.clone()),
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: "model.jaffle_shop.clone_probe".into(),
+            node_body_hash: Some("body".into()),
+            project_id: Some("p".into()),
+            ..Default::default()
+        }),
+        labels: [("dbt_node_name".to_string(), "clone_probe".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    for template_mode in [false, true] {
+        for row in &fx.rows {
+            let case_sql = if row.target_table.contains("CONF") {
+                &fx.dev_request_sql_conf
+            } else {
+                &fx.dev_request_sql_pend
+            };
+            // Re-seed the fixture row VERBATIM with a fresh request_id (idempotent
+            // across the two template-mode passes). Preserve the original NULL
+            // template hash and clone provenance.
+            let rid = format!(
+                "frozen-{}-{}",
+                if template_mode { "t" } else { "r" },
+                if row.target_table.contains("CONF") {
+                    "c"
+                } else {
+                    "p"
+                }
+            );
+            let confirmed_at: Option<&str> = if row.status == "confirmed" {
+                Some("now")
+            } else {
+                None
+            };
+            sqlx::query("DELETE FROM executions WHERE target_table = $1")
+                .bind(&row.target_table)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO executions \
+                 (org_id, target_table, execution_type, dialect, status, request_id, \
+                  node_sql_hash, node_template_hash, node_namespace_logic_hash, \
+                  clone_source_table, table_namespace, last_modified_epoch, confirmed_at) \
+                 VALUES ('local',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, \
+                         CASE WHEN $12 IS NULL THEN NULL ELSE now() END)",
+            )
+            .bind(&row.target_table)
+            .bind(row.execution_type)
+            .bind(&row.dialect)
+            .bind(&row.status)
+            .bind(&rid)
+            .bind(&row.node_sql_hash)
+            .bind(&row.node_template_hash)
+            .bind(&row.node_namespace_logic_hash)
+            .bind(&row.clone_source_table)
+            .bind(&row.table_namespace)
+            .bind(row.last_modified_epoch)
+            .bind(confirmed_at)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            // Pending lifecycle: confirm on the CURRENT server (assert success +
+            // pending→confirmed transition), simulating "confirmed after upgrade".
+            if row.status == "pending" {
+                let ok = exec
+                    .confirm_execution(qc::ConfirmExecutionRequest {
+                        request_id: rid.clone(),
+                        last_modified_epoch: Some(200),
+                        table_type: Some("TRANSIENT TABLE".into()),
+                        execution_runtime_ms: Some(100),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .success;
+                assert!(
+                    ok,
+                    "pending clone must confirm successfully on the new server"
+                );
+                let status: String =
+                    sqlx::query_scalar("SELECT status FROM executions WHERE request_id = $1")
+                        .bind(&rid)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                assert_eq!(status, "confirmed", "pending→confirmed transition");
+            }
+
+            // Resubmit the recorded dev request → the stored v3 clone outcome
+            // must NOT be reused on the v4 server, in either comparison mode.
+            let resp = sql
+                .submit_enriched_sql(dev_request(&row.target_table, case_sql, template_mode))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(
+                support::response_variant(&resp),
+                "ready_to_execute",
+                "frozen 366be09 clone ({}, template={template_mode}) must be EXECUTED \
+                 (not reused) on the v4 server",
+                row.status
+            );
+        }
+    }
 }

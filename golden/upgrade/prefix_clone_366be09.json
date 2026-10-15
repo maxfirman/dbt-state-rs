@@ -1,0 +1,50 @@
+{
+  "captured_from_revision": "366be09",
+  "dev_request_deps": [
+    {
+      "default_catalog": "DB",
+      "default_schema": "S",
+      "name": "\"DB.__dbt_state_ns__0\".\"S\".\"T\"",
+      "query": "select 1 as id"
+    },
+    {
+      "default_catalog": "DB",
+      "default_schema": "S",
+      "name": "\"DB\".\"S\".\"__dbt_state_ns__0.T\"",
+      "query": "select 2 as id"
+    }
+  ],
+  "dev_request_sql_conf": "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b where 11 = 11",
+  "dev_request_sql_pend": "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b where 22 = 22",
+  "namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+  "pending_request_id": "01a13ea7-440b-76c8-b96e-6b3fedb99a42",
+  "rows": [
+    {
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PFX_CONF\"",
+      "dialect": "snowflake",
+      "execution_type": 1,
+      "last_modified_epoch": 200,
+      "node_namespace_logic_hash": "1af1477b74f7631cfd33c2769f5f2247c63bfc1b9945b035b1303e5e68ded197",
+      "node_sql_hash": "ddca4d424177374c129db7b923352f8c89d402eba94108a6a8b3e47e9f219574",
+      "node_template_hash": null,
+      "request_id": "01a13ea7-43d4-704d-aafc-2f13037c926a",
+      "status": "confirmed",
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PFX_CONF\""
+    },
+    {
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PFX_PEND\"",
+      "dialect": "snowflake",
+      "execution_type": 1,
+      "last_modified_epoch": null,
+      "node_namespace_logic_hash": "603a281170562e1da97afafa5ba611a0a46a0e7ede8bb934081b6ae269af5819",
+      "node_sql_hash": "bfec3cd4c968649869df7450379cef6eb17eac53c07f32aad8a4e62d4275bd4f",
+      "node_template_hash": null,
+      "request_id": "01a13ea7-440b-76c8-b96e-6b3fedb99a42",
+      "status": "pending",
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PFX_PEND\""
+    }
+  ],
+  "scenario": "pre-fix clone (identical binding) persisted with v3 sql/template hashes"
+}

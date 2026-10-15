@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-14 (review #2 9th FOLLOW-UP). Read this before changing
+Updated 2026-10-15 (review #2 10th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -96,7 +96,15 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 
 | Finding | What changed | Where |
 |---|---|---|
-| **#2 9TH FOLLOW-UP (P2): the upgrade regression now uses FAITHFUL v3 fingerprints and guards the tag** | The 8th-follow-up upgrade regression seeded ARBITRARY sentinel strings (`STALE_V3_*`) that no engine version produces, so it passed on the vulnerable parent too and did not detect removal of the fix. FIX: a frozen `fingerprint::sql_logic_hash_with_version(…, b"dbt-state-sql-v3")` helper (the versioned core of `sql_logic_hash`, exposed via `pub mod fingerprint` + `pub fn sql_execution`) computes the EXACT v3 rendered/template hashes for the request; the regression seeds those onto the persisted row. On the v4 server the submit's v4 hash cannot match the stored v3 → EXECUTE; reverting the production tag to v3 makes the submit's hash collide → SKIP → the regression FAILS (verified by a manual revert). It covers all four cells {confirmed-on-old, pending-on-old then confirmed-on-new} × {rendered, template}, asserts EXECUTE specifically, uses ORDINARY (non-clone) rows so the SQL/template hash is the unambiguous reuse factor (the clone-origin stale-namespace path stays covered by `upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash`), and retains the legitimate current-version reuse control. A sanity test asserts v3≠v4 for the same request. All upgrade reproductions are LABELED as LOCAL multi-revision gRPC + Postgres tests, not hosted-service characterization. | `fingerprint.rs::sql_logic_hash_with_version`; `services.rs::sql_execution` (now `pub`); `clone_submit_fallback.rs::{upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases, frozen_v3_hash_differs_from_current_v4}` |
+| **#2 9TH FOLLOW-UP (P2): tag-rollback guard replacing the arbitrary-sentinel regression — see 10TH for the durable oracle** | The 8th-follow-up upgrade regression seeded ARBITRARY sentinel strings (`STALE_V3_*`) that no engine version produces, so it passed on the vulnerable parent too. FIX: seed the predecessor-tag digest from `fingerprint::sql_logic_hash_with_version(…, b"dbt-state-sql-v3")` (exposed via `pub mod fingerprint` + `pub fn sql_execution`). CORRECTION (10th follow-up): this helper is PARAMETERIZED PRODUCTION HASHING, not an independently frozen v3 oracle — it shares today's conversion/normalization/framing, so it only agrees with the old algorithm while those are unchanged, and a sentinel-return mutation of the helper still passes. Its real value is a TAG-ROLLBACK GUARD: reverting the production tag `v4 → v3` makes the resubmit collide with the seeded value → SKIP → the test FAILS (verified by a manual revert). It covers all four {confirmed/pending}×{rendered/template} cells over ORDINARY (non-clone) rows asserting EXECUTE, with a sanity test that the v3-tag and v4 digests differ. The DURABLE historical oracle is the frozen fixture (10th follow-up). All upgrade reproductions are LOCAL multi-revision gRPC + Postgres tests, not hosted-service characterization. | `fingerprint.rs::sql_logic_hash_with_version` (relabeled); `services.rs::sql_execution` (`pub`); `clone_submit_fallback.rs::{upgrade_tag_rollback_guard_ordinary_rows_all_cases, parameterized_v3_tag_differs_from_current_v4}` |
+
+`decision::decide` remains pure. Store queries remain organization scoped.
+
+### Review #2 10th follow-up (2026-10-15)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 10TH FOLLOW-UP (P2): a DURABLE frozen fixture of real old-server clone state** | The 9th-follow-up `sql_logic_hash_with_version` helper is parameterized PRODUCTION hashing, not an independent frozen oracle (a sentinel-return for the v3 tag still passed the tests; future shared-code changes would redefine the "historical" state). The original wrong-result CLONE matrix (template-mode + pending lifecycle) was also uncovered. FIX: checked in a FROZEN FIXTURE captured from the OLD `366be09` server — `golden/upgrade/prefix_clone_366be09.json` — holding the ACTUAL persisted CONFIRMED and PENDING clone rows (real v3 `node_sql_hash`, NULL `node_template_hash`, `clone_source_table`, `node_namespace_logic_hash`, status, epoch) and the exact dev requests. `upgrade_rejects_frozen_366be09_clone_fixture_all_cases` seeds those FIXED BYTES verbatim (preserving the NULL template hash + clone provenance) and exercises all four clone cells {confirmed, pending→confirmed-on-new} × {rendered, template}, asserting a successful pending→confirmed transition and EXECUTE in each. Because the hashes are fixed bytes independent of today's code, a sentinel mutation of the production hasher cannot subvert it; reverting the production tag `v4 → v3` makes it SKIP → FAIL (verified). The 9th-follow-up helper is relabeled a tag-rollback guard; the ordinary-row tests and reuse control are retained. | `golden/upgrade/prefix_clone_366be09.json`; `clone_submit_fallback.rs::upgrade_rejects_frozen_366be09_clone_fixture_all_cases`; `fingerprint.rs::sql_logic_hash_with_version` (relabeled) |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -793,13 +801,14 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **284 tests passed** across the workspace (adds this session's
-  review-#2 9TH FOLLOW-UP work: the FAITHFUL frozen-v3 upgrade regression
-  (`upgrade_regression_rejects_faithful_v3_prefix_outcome_all_cases` — all four
-  {confirmed/pending}×{rendered/template} cells asserting EXECUTE, tag-sensitive)
-  and its `frozen_v3_hash_differs_from_current_v4` sanity check, replacing the
-  arbitrary-sentinel 8th-follow-up test. On top of the earlier work: the
-  mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
+- Workspace: **285 tests passed** across the workspace (adds this session's
+  review-#2 10TH FOLLOW-UP work: the DURABLE frozen 366be09 clone fixture
+  (`upgrade_rejects_frozen_366be09_clone_fixture_all_cases` — all four
+  {confirmed, pending→confirmed}×{rendered, template} clone cells from real
+  old-server bytes, asserting EXECUTE), alongside the relabeled 9th-follow-up
+  tag-rollback guard (`upgrade_tag_rollback_guard_ordinary_rows_all_cases` +
+  `parameterized_v3_tag_differs_from_current_v4`). On top of the earlier work:
+  the mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
   namespace-hash guard, the RETURNED-mirror RegisterClone correlation, and the
   history-dependent EXECUTE partial-comparison accounting). The 23 warehouse-free
   `trace_validate_test.py` checks (driving the ACTUAL driver oracles in

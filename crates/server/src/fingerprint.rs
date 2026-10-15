@@ -47,11 +47,19 @@ pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String 
 }
 
 /// The versioned core of [`sql_logic_hash`]. The ONLY difference an engine
-/// version makes is the leading `version_tag`; everything else is fixed. Exposed
-/// so an UPGRADE regression can compute the EXACT hash a prior engine version
-/// would have stored (a frozen `dbt-state-sql-v3` hash), rather than seeding an
-/// arbitrary sentinel string that no version produces — so the test genuinely
-/// fails if the production tag is reverted. Review #2 9th follow-up P2.
+/// version makes is the leading `version_tag`; everything else is fixed.
+///
+/// IMPORTANT (review #2 10th follow-up): this is PARAMETERIZED PRODUCTION
+/// HASHING, NOT an independently frozen implementation of a prior algorithm. It
+/// shares today's request conversion, normalization, field framing and hashing,
+/// so it only reproduces an older version's digest as long as those shared
+/// functions are unchanged. It is useful as a TAG-ROLLBACK GUARD — reverting the
+/// production tag makes a regression that calls this with the current tag's
+/// predecessor collide — but it is NOT a durable historical oracle. The durable
+/// oracle is the frozen fixture of real old-server bytes
+/// (`golden/upgrade/prefix_clone_366be09.json`), which is independent of this
+/// code. Do not treat a `b"dbt-state-sql-v3"` call here as an authoritative v3
+/// digest.
 pub fn sql_logic_hash_with_version(
     req: &qc::SqlExecution,
     template: Option<&str>,
