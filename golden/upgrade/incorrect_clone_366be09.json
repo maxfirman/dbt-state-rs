@@ -1,0 +1,48 @@
+{
+  "captured_from_revision": "366be09",
+  "default_schema": "S",
+  "dev_request_sql_conf": "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b where 11 = 11",
+  "dev_request_sql_pend": "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b where 22 = 22",
+  "dev_request_swapped_deps": [
+    {
+      "default_catalog": "DB",
+      "default_schema": "S",
+      "name": "\"DB.__dbt_state_ns__0\".\"S\".\"T\"",
+      "query": "select 2 as id"
+    },
+    {
+      "default_catalog": "DB",
+      "default_schema": "S",
+      "name": "\"DB\".\"S\".\"__dbt_state_ns__0.T\"",
+      "query": "select 1 as id"
+    }
+  ],
+  "namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+  "rows": [
+    {
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ICC_CONF\"",
+      "dialect": "snowflake",
+      "execution_type": 1,
+      "last_modified_epoch": 200,
+      "node_namespace_logic_hash": "c898f78e5873d907df098e7f036516da1a5f79f362c0f434ca4bd84d0c006e63",
+      "node_sql_hash": "d7d9b0319537f496d97bd174dbec95ebc1c7c3a598f70c137d7a47f3529cd5c4",
+      "node_template_hash": null,
+      "status": "confirmed",
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_CONF\""
+    },
+    {
+      "clone_source_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ICC_PEND\"",
+      "dialect": "snowflake",
+      "execution_type": 1,
+      "last_modified_epoch": null,
+      "node_namespace_logic_hash": "f28975b3e7535568fad85a3c8e8a286f094c8261742d309d7a2834e9e3d4f4bc",
+      "node_sql_hash": "58b1be14cea3c85af5a8c4f831577fcb68b4b3d04b73b9b446688ee8dc844151",
+      "node_template_hash": null,
+      "status": "pending",
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_PEND\""
+    }
+  ],
+  "scenario": "ORIGINAL incorrect clone CREATION — swapped-binding dev request (required result 2) UNSAFELY cloned from prod source (result 1) via the pre-fix rejoin collision; default_schema=S so S->token0"
+}

@@ -1107,13 +1107,24 @@ async fn volatile_dependency_definition_suppresses_clone() {
     );
 }
 
-/// P0 #1 (review #2 6th follow-up) — COMPONENT-BOUNDARY collision through the
-/// real gRPC service, with a confirmed baseline + no-swap CONTROL. The two
-/// dependency names below are DISTINCT valid Snowflake relations whose canonical
-/// components, if rejoined with literal periods, collide
-/// (`DB.__dbt_state_ns__0.__dbt_state_ns__0.T`). A swap of their definitions
-/// must EXECUTE (binding preserved by structured, length-framed hashing), while
-/// an identical-binding control CLONEs (proving a candidate is present).
+/// P0 #1 (review #2 6th follow-up; STRENGTHENED review #2 11th follow-up) —
+/// COMPONENT-BOUNDARY collision through the real gRPC service, with a confirmed
+/// baseline + no-swap CONTROL. The two dependency names below are DISTINCT valid
+/// Snowflake relations whose canonical components, if rejoined with literal
+/// periods, collide (`DB.__dbt_state_ns__0.__dbt_state_ns__0.T`).
+///
+/// CRITICAL: the collision only manifests when the request's `default_schema`
+/// makes schema `S` map to the relative token **0** (`__dbt_state_ns__0`), which
+/// is exactly what the embedded placeholder text matches. So all three requests
+/// set `default_schema = "S"` (the 11th-follow-up correction): with the earlier
+/// `dev_clone_demo`/`prod_state_demo` defaults, `S` got a NON-zero token and the
+/// token-0 construction did NOT collide, so the TREATMENT passed even on the
+/// vulnerable (pre-fix) revision — a weak gate. With `default_schema = "S"` the
+/// pre-fix revision (366be09) returns `ready_to_clone` for the SWAP (verified by
+/// local old-revision gRPC testing: the base and swapped namespace hashes both
+/// equal `6243fdaf021893fa229db660636af8ea60a1ea2532588e83f806b26ac55fd545`), so
+/// this test now FAILS on the vulnerable implementation and passes only with the
+/// structured, length-framed component hashing.
 #[tokio::test]
 async fn server_gates_component_boundary_collision_swap_with_control() {
     let (addr, _schema) = start_server().await;
@@ -1131,10 +1142,12 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
         default_schema: "S".into(),
     };
 
-    // Baseline (prod): n1=1, n2=2. Build + confirm.
+    // Baseline (prod): n1=1, n2=2. Build + confirm. default_schema="S" so S maps
+    // to relative token 0 and the placeholder-text collision is exercised.
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CBCONS\"";
     let mut base = submit(a, "prod_state_demo");
     base.sql = root.into();
+    base.default_schema = Some("S".into());
     base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
     let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
     let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
@@ -1154,6 +1167,7 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_CTL\"";
     let mut ctl = submit(c, "dev_clone_demo");
     ctl.sql = root.into();
+    ctl.default_schema = Some("S".into());
     ctl.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
     assert_eq!(
         support::response_variant(&sql.submit_enriched_sql(ctl).await.unwrap().into_inner()),
@@ -1165,6 +1179,7 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
     let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_SWAP\"";
     let mut swap = submit(d, "dev_clone_demo");
     swap.sql = root.into();
+    swap.default_schema = Some("S".into());
     swap.query_dependencies = vec![dep(n1, "2"), dep(n2, "1")];
     assert_eq!(
         support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
@@ -1776,8 +1791,195 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
     );
 }
 
-/// REUSABLE CAPTURE DRIVER (review #2 10th follow-up corpus maintenance) — the
-/// exact code that produced `golden/upgrade/prefix_clone_366be09.json`, retained
+/// P2 (review #2 11th follow-up) — the ORIGINAL incorrect clone CREATION as a
+/// durable frozen fixture. Earlier I wrongly concluded this was "not capturable";
+/// it IS reproducible on `366be09` when the request's `default_schema = "S"` so
+/// schema `S` maps to relative token 0 and the embedded `__dbt_state_ns__0`
+/// placeholder text collides the two dependency names. `golden/upgrade/incorrect_clone_366be09.json`
+/// is the real persisted state: a CONFIRMED and a PENDING dev clone whose source
+/// (prod, result 1) was UNSAFELY cloned for a SWAPPED-binding request (required
+/// result 2), each recording the prod source as `clone_source_table`.
+///
+/// This loads the FIXED BYTES (independent of today's code), seeds them verbatim
+/// (preserving the NULL template hash + clone provenance), and asserts the
+/// current server EXECUTEs (does not reuse the WRONG clone) across all four cells
+/// {confirmed, pending→confirmed-on-new} × {rendered, template}. Captured via
+/// LOCAL old-revision gRPC testing (not hosted-service characterization).
+#[tokio::test]
+async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
+    #[derive(serde::Deserialize)]
+    struct Row {
+        target_table: String,
+        status: String,
+        node_sql_hash: Option<String>,
+        node_template_hash: Option<String>,
+        node_namespace_logic_hash: Option<String>,
+        clone_source_table: Option<String>,
+        table_namespace: Option<String>,
+        dialect: String,
+        last_modified_epoch: Option<i64>,
+    }
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        namespace: String,
+        default_schema: String,
+        dev_request_sql_conf: String,
+        dev_request_sql_pend: String,
+        dev_request_swapped_deps: Vec<qc::QueryDependency>,
+        rows: Vec<Row>,
+    }
+    const FIXTURE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/upgrade/incorrect_clone_366be09.json"
+    );
+    let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
+
+    // Shape invariant: exactly one confirmed + one pending UNSAFE clone row, each
+    // with clone provenance and a NULL template hash (the pre-fix state).
+    assert_eq!(fx.rows.len(), 2, "fixture must have exactly 2 clone rows");
+    assert_eq!(
+        fx.rows.iter().filter(|r| r.status == "confirmed").count(),
+        1,
+        "exactly one CONFIRMED unsafe-clone row"
+    );
+    assert_eq!(
+        fx.rows.iter().filter(|r| r.status == "pending").count(),
+        1,
+        "exactly one PENDING unsafe-clone row"
+    );
+    for r in &fx.rows {
+        assert!(
+            r.clone_source_table.is_some(),
+            "rows carry clone provenance"
+        );
+        assert!(
+            r.node_template_hash.is_none(),
+            "pre-fix clone has NULL template hash"
+        );
+    }
+
+    let (addr, schema, _state) = support::start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let pool = support::schema_pool(&schema).await;
+
+    let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
+        target_table: Some(target.into()),
+        dialect: "snowflake".into(),
+        default_catalog: "CDO_DEMO_DB".into(),
+        default_schema: Some(fx.default_schema.clone()),
+        execution_type: 1,
+        sql: case_sql.into(),
+        tolerate_nondeterminism: true,
+        freshness_tolerance_seconds: 2700,
+        compare_unrendered_code: template,
+        query_dependencies: fx.dev_request_swapped_deps.clone(),
+        tables: vec![qc::TableModifiedInfo {
+            name: target.into(),
+            last_modified_epoch: Some(200),
+        }],
+        table_namespace: Some(fx.namespace.clone()),
+        dbt_node_state: Some(qc::DbtNodeState {
+            node_unique_id: "model.jaffle_shop.clone_probe".into(),
+            node_body_hash: Some("body".into()),
+            project_id: Some("p".into()),
+            ..Default::default()
+        }),
+        labels: [("dbt_node_name".to_string(), "clone_probe".to_string())]
+            .into_iter()
+            .collect(),
+        ..Default::default()
+    };
+
+    let mut cases_run = 0usize;
+    for template_mode in [false, true] {
+        for row in &fx.rows {
+            let case_sql = if row.target_table.contains("CONF") {
+                &fx.dev_request_sql_conf
+            } else {
+                &fx.dev_request_sql_pend
+            };
+            let rid = format!(
+                "icc-{}-{}",
+                if template_mode { "t" } else { "r" },
+                if row.target_table.contains("CONF") {
+                    "c"
+                } else {
+                    "p"
+                }
+            );
+            sqlx::query("DELETE FROM executions WHERE target_table = $1")
+                .bind(&row.target_table)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO executions \
+                 (org_id, target_table, execution_type, dialect, status, request_id, \
+                  node_sql_hash, node_template_hash, node_namespace_logic_hash, \
+                  clone_source_table, table_namespace, last_modified_epoch, confirmed_at) \
+                 VALUES ('local',$1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10, \
+                         CASE WHEN $3 = 'confirmed' THEN now() ELSE NULL END)",
+            )
+            .bind(&row.target_table)
+            .bind(&row.dialect)
+            .bind(&row.status)
+            .bind(&rid)
+            .bind(&row.node_sql_hash)
+            .bind(&row.node_template_hash)
+            .bind(&row.node_namespace_logic_hash)
+            .bind(&row.clone_source_table)
+            .bind(&row.table_namespace)
+            .bind(row.last_modified_epoch)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            if row.status == "pending" {
+                let ok = exec
+                    .confirm_execution(qc::ConfirmExecutionRequest {
+                        request_id: rid.clone(),
+                        last_modified_epoch: Some(200),
+                        table_type: Some("TRANSIENT TABLE".into()),
+                        execution_runtime_ms: Some(100),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap()
+                    .into_inner()
+                    .success;
+                assert!(ok, "pending unsafe clone must confirm on the new server");
+                let status: String =
+                    sqlx::query_scalar("SELECT status FROM executions WHERE request_id = $1")
+                        .bind(&rid)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                assert_eq!(status, "confirmed", "pending→confirmed transition");
+            }
+
+            let resp = sql
+                .submit_enriched_sql(dev_request(&row.target_table, case_sql, template_mode))
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(
+                support::response_variant(&resp),
+                "ready_to_execute",
+                "frozen 366be09 INCORRECT clone ({}, template={template_mode}) must be \
+                 EXECUTED (its wrong result not reused) on the v4 server",
+                row.status
+            );
+            cases_run += 1;
+        }
+    }
+    assert_eq!(
+        cases_run, 4,
+        "all four incorrect-clone cases must run; got {cases_run}"
+    );
+}
+
 /// so the frozen fixture is REGENERABLE. It is `#[ignore]`d (it WRITES a file and
 /// is not a conformance assertion). To regenerate the fixture, check out the
 /// capture revision in a detached worktree, copy this test in, and run it:
@@ -1797,16 +1999,19 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
 /// authoritative only when captured on the recorded old revision.
 ///
 /// NOTE on scope: the committed fixture uses IDENTICAL bindings (old-clone
-/// INVALIDATION coverage). An "incorrect clone CREATION" (swapped-binding,
-/// wrong-result) fixture was investigated but is NOT capturable: on the real old
-/// revisions (verified at 366be09 and fa8a2c7, the split-on-dot ancestor) the
-/// component-boundary swapped-binding dev submit returns `ready_to_execute`, not
-/// a clone — the `namespace_logic_hash` does not collide end-to-end for that
-/// construction, so no old server actually creates the wrong clone. The
-/// swapped-binding distinction is covered at the unit/server level by
-/// `fingerprint::ns_component_boundary_collision_binding_swap_differs` and
-/// `server_gates_component_boundary_collision_swap_with_control`. We do not
-/// synthesize a fabricated unsafe-clone fixture (do-not-infer).
+/// INVALIDATION coverage). The "incorrect clone CREATION" (swapped-binding,
+/// wrong-result) scenario IS capturable (review #2 11th follow-up — correcting an
+/// earlier wrong "not capturable" claim): the collision only manifests when the
+/// request's `default_schema = "S"` so schema `S` maps to relative token 0 and
+/// the embedded `__dbt_state_ns__0` placeholder collides the two dependency
+/// names. My earlier probes used `dev_clone_demo`/`prod_state_demo`, which assign
+/// `S` a NON-zero token, so they did not collide. With `default_schema = "S"`,
+/// 366be09 UNSAFELY clones the swapped binding (base and swapped namespace hashes
+/// both `6243fdaf0218…`). That fixture is captured by
+/// `zz_capture_incorrect_clone_fixture` into
+/// `golden/upgrade/incorrect_clone_366be09.json` and exercised by
+/// `upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases`. (All via
+/// LOCAL old-revision gRPC testing.)
 #[tokio::test]
 #[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
 async fn zz_capture_prefix_clone_fixture() {
@@ -1929,4 +2134,134 @@ async fn zz_capture_prefix_clone_fixture() {
     )
     .unwrap();
     eprintln!("CAPTURED_FIXTURE /tmp/prefix_clone_366be09.json");
+}
+
+/// REUSABLE CAPTURE DRIVER (review #2 11th follow-up) — regenerates
+/// `golden/upgrade/incorrect_clone_366be09.json`, the ORIGINAL incorrect clone
+/// CREATION (swapped-binding, wrong-result). `#[ignore]`d (WRITES a file). Run on
+/// the capture revision (`366be09`) in a detached worktree. The key is
+/// `default_schema = "S"` so schema `S` maps to relative token 0 and the embedded
+/// `__dbt_state_ns__0` placeholder collides the two dependency names — which is
+/// why the old server UNSAFELY clones the swapped binding (it does not collide
+/// with a non-zero `S` token, which is the mistake the 11th-follow-up corrected).
+#[tokio::test]
+#[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
+async fn zz_capture_incorrect_clone_fixture() {
+    let (addr, schema, _state) = support::start_server_with_state().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let pool = support::schema_pool(&schema).await;
+    const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
+    let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
+    let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
+    let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
+    let dep = |name: &str, body: &str| qc::QueryDependency {
+        name: name.into(),
+        query: format!("select {body} as id"),
+        default_catalog: "DB".into(),
+        default_schema: "S".into(),
+    };
+    for (suffix, mark) in [("CONF", "11"), ("PEND", "22")] {
+        let prod = format!("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ICC_{suffix}\"");
+        let mut base = submit(&prod, "prod_state_demo");
+        base.sql = format!("{root} where {mark} = {mark}");
+        base.default_schema = Some("S".into());
+        base.table_namespace = Some(NS.into());
+        base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
+        let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
+        let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
+            panic!("prod {suffix} must execute");
+        };
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: x.request_id,
+            last_modified_epoch: Some(100),
+            table_type: Some("TRANSIENT TABLE".into()),
+            execution_runtime_ms: Some(100),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+    let dev_conf = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_CONF\"";
+    let dev_pend = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_PEND\"";
+    let dev = |t: &str, m: &str| {
+        let mut d = submit(t, "dev_clone_demo");
+        d.sql = format!("{root} where {m} = {m}");
+        d.default_schema = Some("S".into());
+        d.table_namespace = Some(NS.into());
+        d.query_dependencies = vec![dep(n1, "2"), dep(n2, "1")];
+        d.tables = vec![qc::TableModifiedInfo {
+            name: t.into(),
+            last_modified_epoch: Some(200),
+        }];
+        d
+    };
+    let rc = sql
+        .submit_enriched_sql(dev(dev_conf, "11"))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
+        panic!("CONF: old server must UNSAFELY clone the swapped binding (default_schema=S)");
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: c.request_id,
+        last_modified_epoch: Some(200),
+        table_type: Some("TRANSIENT TABLE".into()),
+        execution_runtime_ms: Some(100),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let rp = sql
+        .submit_enriched_sql(dev(dev_pend, "22"))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToClone(_) = rp.response.unwrap() else {
+        panic!("PEND: old server must UNSAFELY clone the swapped binding");
+    };
+    #[derive(serde::Serialize, sqlx::FromRow)]
+    struct Row {
+        target_table: String,
+        execution_type: i32,
+        status: String,
+        node_sql_hash: Option<String>,
+        node_template_hash: Option<String>,
+        node_namespace_logic_hash: Option<String>,
+        clone_source_table: Option<String>,
+        table_namespace: Option<String>,
+        dialect: String,
+        last_modified_epoch: Option<i64>,
+    }
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT target_table, execution_type, status, node_sql_hash, node_template_hash, \
+                node_namespace_logic_hash, clone_source_table, table_namespace, dialect, \
+                last_modified_epoch \
+         FROM executions WHERE target_table = ANY($1) ORDER BY target_table",
+    )
+    .bind(vec![dev_conf.to_string(), dev_pend.to_string()])
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let fixture = serde_json::json!({
+        "captured_from_revision": "366be09",
+        "scenario": "ORIGINAL incorrect clone CREATION — swapped-binding dev request (required result 2) UNSAFELY cloned from prod source (result 1) via the pre-fix rejoin collision; default_schema=S so S->token0",
+        "namespace": NS,
+        "default_schema": "S",
+        "dev_request_sql_conf": format!("{root} where 11 = 11"),
+        "dev_request_sql_pend": format!("{root} where 22 = 22"),
+        "dev_request_swapped_deps": [
+            {"name": n1, "query": "select 2 as id", "default_catalog": "DB", "default_schema": "S"},
+            {"name": n2, "query": "select 1 as id", "default_catalog": "DB", "default_schema": "S"}
+        ],
+        "rows": rows,
+    });
+    std::fs::write(
+        "/tmp/incorrect_clone_366be09.json",
+        serde_json::to_string_pretty(&fixture).unwrap(),
+    )
+    .unwrap();
+    eprintln!("CAPTURED_ICC /tmp/incorrect_clone_366be09.json");
 }

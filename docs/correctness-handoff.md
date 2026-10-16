@@ -1,6 +1,6 @@
 # Correctness handoff after offline hardening
 
-Updated 2026-10-15 (review #2 10th FOLLOW-UP). Read this before changing
+Updated 2026-10-16 (review #2 11th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
 now live-verified.
@@ -106,7 +106,15 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 |---|---|---|
 | **#2 10TH FOLLOW-UP (P2): a DURABLE frozen fixture of real old-server clone state** | The 9th-follow-up `sql_logic_hash_with_version` helper is parameterized PRODUCTION hashing, not an independent frozen oracle (a sentinel-return for the v3 tag still passed the tests; future shared-code changes would redefine the "historical" state). The original wrong-result CLONE matrix (template-mode + pending lifecycle) was also uncovered. FIX: checked in a FROZEN FIXTURE captured from the OLD `366be09` server — `golden/upgrade/prefix_clone_366be09.json` — holding the ACTUAL persisted CONFIRMED and PENDING clone rows (real v3 `node_sql_hash`, NULL `node_template_hash`, `clone_source_table`, `node_namespace_logic_hash`, status, epoch) and the exact dev requests. `upgrade_rejects_frozen_366be09_clone_fixture_all_cases` seeds those FIXED BYTES verbatim (preserving the NULL template hash + clone provenance) and exercises all four clone cells {confirmed, pending→confirmed-on-new} × {rendered, template}, asserting a successful pending→confirmed transition and EXECUTE in each. Because the hashes are fixed bytes independent of today's code, a sentinel mutation of the production hasher cannot subvert it; reverting the production tag `v4 → v3` makes it SKIP → FAIL (verified). The 9th-follow-up helper is relabeled a tag-rollback guard; the ordinary-row tests and reuse control are retained. | `golden/upgrade/prefix_clone_366be09.json`; `clone_submit_fallback.rs::upgrade_rejects_frozen_366be09_clone_fixture_all_cases`; `fingerprint.rs::sql_logic_hash_with_version` (relabeled) |
 
-| **#2 10TH FOLLOW-UP corpus maintenance (non-blocking, now done)** | (1) The frozen-fixture test now asserts the fixture SHAPE — exactly one confirmed + one pending clone row, clone provenance present, NULL template hash — and counts the four cases, so an emptied/shortened `rows` array FAILS instead of silently reducing checks. (2) A reusable, `#[ignore]`d CAPTURE DRIVER (`zz_capture_prefix_clone_fixture`) is retained so the fixture is regenerable from the recorded old revision. (3) An "incorrect clone CREATION" (swapped-binding, wrong-result) fixture was investigated and found NOT capturable: on the real old revisions (verified live at `366be09` and `fa8a2c7`, the split-on-dot ancestor) the component-boundary swapped-binding dev submit returns `ready_to_execute`, not a clone — no old server actually creates that wrong clone end-to-end. The swapped-binding distinction stays covered by `ns_component_boundary_collision_binding_swap_differs` + `server_gates_component_boundary_collision_swap_with_control`; no fabricated unsafe-clone fixture was synthesized (do-not-infer). | `clone_submit_fallback.rs::{upgrade_rejects_frozen_366be09_clone_fixture_all_cases (shape asserts), zz_capture_prefix_clone_fixture (ignored driver)}` |
+| **#2 10TH FOLLOW-UP corpus maintenance (non-blocking)** | (1) The frozen-fixture test asserts the fixture SHAPE — exactly one confirmed + one pending clone row, clone provenance present, NULL template hash — and counts the four cases, so an emptied/shortened `rows` array FAILS instead of silently reducing checks. (2) A reusable, `#[ignore]`d CAPTURE DRIVER (`zz_capture_prefix_clone_fixture`) is retained so the fixture is regenerable. (3) I claimed an "incorrect clone CREATION" fixture was NOT capturable — **that was WRONG and is CORRECTED in the 11th follow-up** (below): it IS capturable from `366be09` when `default_schema = "S"`. My probes had used a default schema that gave `S` a non-zero token, avoiding the token-0 placeholder collision. | `clone_submit_fallback.rs::{upgrade_rejects_frozen_366be09_clone_fixture_all_cases, zz_capture_prefix_clone_fixture}` |
+
+`decision::decide` remains pure. Store queries remain organization scoped.
+
+### Review #2 11th follow-up (2026-10-16)
+
+| Finding | What changed | Where |
+|---|---|---|
+| **#2 11TH FOLLOW-UP (P2): CORRECT the "not capturable" claim + strengthen the collision gate** | I was WRONG in the 10th follow-up: the component-boundary swapped-binding unsafe clone IS reproducible on `366be09` — but only when the request's `default_schema = "S"`, so schema `S` maps to relative token 0 and the embedded `__dbt_state_ns__0` placeholder collides the two dependency names. My earlier probes used `dev_clone_demo`/`prod_state_demo`, which give `S` a non-zero token, so the token-0 construction did not collide. VERIFIED (local old-revision gRPC): at 366be09 the base and swapped namespace hashes both equal `6243fdaf0218…` (collide=true) and the swapped dev submit returns `ready_to_clone`; at the current revision they differ (collide=false) and it EXECUTEs. FIXES: (a) `server_gates_component_boundary_collision_swap_with_control` now sets `default_schema = "S"` on all three requests, so it FAILS on the vulnerable revision (the swap CLONEs there) and passes only with the fix; (b) captured the real swapped-binding wrong-clone fixture `golden/upgrade/incorrect_clone_366be09.json` (confirmed + pending unsafe clones recording the prod source as `clone_source_table`) and added `upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases` (4 cells, asserts EXECUTE); (c) corrected the driver comment and 10th-follow-up handoff row. Evidence labeled LOCAL old-revision gRPC testing. | `clone_submit_fallback.rs::{server_gates_component_boundary_collision_swap_with_control (default_schema=S), upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases, zz_capture_incorrect_clone_fixture (ignored driver)}`; `golden/upgrade/incorrect_clone_366be09.json` |
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
@@ -803,23 +811,23 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
 Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
 
-- Workspace: **285 tests passed** across the workspace (adds this session's
-  review-#2 10TH FOLLOW-UP work: the DURABLE frozen 366be09 clone fixture
-  (`upgrade_rejects_frozen_366be09_clone_fixture_all_cases` — all four
-  {confirmed, pending→confirmed}×{rendered, template} clone cells from real
-  old-server bytes, asserting EXECUTE), alongside the relabeled 9th-follow-up
-  tag-rollback guard (`upgrade_tag_rollback_guard_ordinary_rows_all_cases` +
-  `parameterized_v3_tag_differs_from_current_v4`). On top of the earlier work:
-  the mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
+- Workspace: **286 tests passed** across the workspace (adds this session's
+  review-#2 11TH FOLLOW-UP work: the strengthened `default_schema=S`
+  component-boundary collision gate (now fails on the vulnerable revision) and
+  the real swapped-binding wrong-clone fixture
+  `upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases`, correcting
+  the earlier wrong "not capturable" claim. On top of the earlier work: the
+  durable frozen 366be09 clone fixture, the tag-rollback guard, the
+  mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
   namespace-hash guard, the RETURNED-mirror RegisterClone correlation, and the
   history-dependent EXECUTE partial-comparison accounting). The 23 warehouse-free
   `trace_validate_test.py` checks (driving the ACTUAL driver oracles in
   `experiments/oracles.py`) are run separately
   (`python3 experiments/trace_validate_test.py`). All upgrade reproductions are
   LOCAL multi-revision gRPC + Postgres tests (not hosted-service
-  characterization). (Env note: the shared Postgres test DB accumulates
-  `difftest_` schemas — tests do not auto-drop their isolated schema; drop them
-  if the volume fills.)
+  characterization), plus two `#[ignore]`d capture drivers. (Env note: the shared
+  Postgres test DB accumulates `difftest_` schemas — tests do not auto-drop their
+  isolated schema; drop them if the volume fills.)
 - Server library: **121 tests passed** with DATABASE_URL pointing to an
   unreachable port, verifying the engine needs no database (the 7th follow-up
   added only harness-level tests).

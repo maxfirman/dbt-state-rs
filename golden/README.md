@@ -68,3 +68,15 @@ oracle: `clone_submit_fallback.rs::upgrade_rejects_frozen_366be09_clone_fixture_
 loads these fixed bytes and asserts the current (v4) server EXECUTEs (does not
 reuse) the pre-fix clone in all four {confirmed, pending→confirmed}×{rendered,
 template} cells. Regenerate only by re-capturing from the recorded revision.
+
+`incorrect_clone_366be09.json` — a FROZEN capture (review #2 11th follow-up) of
+the ORIGINAL incorrect clone CREATION: on `366be09`, with `default_schema = "S"`
+(so schema `S` → relative token 0 and the embedded `__dbt_state_ns__0`
+placeholder collides the two component-boundary dependency names), a
+SWAPPED-binding dev request (required result 2) is UNSAFELY cloned from the prod
+source (result 1). Holds the CONFIRMED and PENDING unsafe-clone rows (each
+recording the prod source as `clone_source_table`). Loaded by
+`upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases`, which asserts
+the current server EXECUTEs (does not reuse the wrong clone) in all four cells.
+Regenerate via the `#[ignore]`d `zz_capture_incorrect_clone_fixture` driver on
+the recorded revision.
