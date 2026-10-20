@@ -140,7 +140,8 @@ impl Store {
         &self.pool
     }
 
-    /// Select current physical state before checking logic, kind and namespace.
+    /// Select current physical state within the warehouse connection before
+    /// checking logic, execution type and dialect options.
     /// An older matching execution cannot describe a target overwritten later.
     ///
     /// `node_template_hash` is the submit's unrendered-template identity, set
@@ -175,6 +176,8 @@ impl Store {
             FROM (
                 SELECT * FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                  AND warehouse_family = $9
+                  AND table_namespace IS NOT DISTINCT FROM $5
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
             ) current_execution
             WHERE execution_type = $3
@@ -214,12 +217,13 @@ impl Store {
         .bind(dialect)
         .bind(node_template_hash)
         .bind(node_namespace_logic_hash)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
     }
 
-    /// Tests have no physical target. Scope identity by project and namespace,
+    /// Tests have no physical target. Scope identity by project and warehouse,
     /// then compare the latest outcome's logic rather than resurrecting history.
     ///
     /// `node_template_hash` is the submit's unrendered-template identity, set
@@ -239,6 +243,7 @@ impl Store {
         table_namespace: Option<&str>,
         node_sql_hash: Option<&str>,
         node_template_hash: Option<&str>,
+        dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -251,6 +256,7 @@ impl Store {
                 WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
                   AND project_id IS NOT DISTINCT FROM $3
                   AND table_namespace IS NOT DISTINCT FROM $4
+                  AND warehouse_family = $7
                   AND status = 'confirmed'
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
             ) current_execution
@@ -266,6 +272,7 @@ impl Store {
         .bind(table_namespace)
         .bind(node_sql_hash)
         .bind(node_template_hash)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
@@ -279,6 +286,7 @@ impl Store {
         values_hash: &str,
         node_sql_hash: &str,
         table_namespace: Option<&str>,
+        dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -289,6 +297,8 @@ impl Store {
             FROM (
                 SELECT * FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                  AND warehouse_family = $6
+                  AND table_namespace IS NOT DISTINCT FROM $5
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
             ) current_execution
             WHERE execution_type = 9 AND values_hash = $3 AND node_sql_hash = $4
@@ -300,6 +310,7 @@ impl Store {
         .bind(values_hash)
         .bind(node_sql_hash)
         .bind(table_namespace)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
@@ -335,15 +346,10 @@ impl Store {
         dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         // PHYSICAL-STATE INVARIANT (review issue #1 follow-up): select the
-        // target's CURRENT state (latest confirmed row, ANY provenance / type /
-        // namespace / dialect) FIRST, then require that current row to match the
-        // submit's execution_type, namespace and dialect. If the target was last
-        // rebuilt with a different materialization strategy (e.g. table→
-        // incremental: execution_type 1→3, LIVE-VERIFIED client-reachable),
-        // namespace or dialect, the newest row fails the post-filter and we
-        // return None — a stale historical (clone-origin) row of the old type is
-        // never resurrected for clone adoption. Filtering those columns BEFORE
-        // the ORDER BY would skip the current row and pick the old match.
+        // target's CURRENT state within the physical warehouse scope (latest
+        // confirmed row, any provenance/type/dialect option) FIRST, then check
+        // execution_type and exact dialect. A build of another type or dialect
+        // option in the SAME warehouse cannot expose stale clone history.
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             WITH current_state AS (
@@ -353,6 +359,8 @@ impl Store {
                        input_tables, status, request_id, clone_source_table, dialect
                 FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                  AND warehouse_family = $6
+                  AND table_namespace IS NOT DISTINCT FROM $4
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC
                 LIMIT 1
             )
@@ -371,13 +379,14 @@ impl Store {
         .bind(execution_type)
         .bind(table_namespace)
         .bind(dialect)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
     }
 
-    /// True if ANY confirmed execution exists for this physical target
-    /// (regardless of execution_type, fingerprint, namespace or dialect). This
+    /// True if ANY confirmed execution exists for this target in its physical
+    /// warehouse scope (regardless of execution_type or fingerprint). This
     /// is the PHYSICAL-EXISTENCE signal used to distinguish a genuine first
     /// build from a rebuild whose logic fingerprint no longer matches — hosted
     /// reports the rebuild rationale ("query didn't match or upstream out of
@@ -386,14 +395,20 @@ impl Store {
         &self,
         org_id: &str,
         target_table: &str,
+        table_namespace: Option<&str>,
+        dialect: &str,
     ) -> sqlx::Result<bool> {
         let exists: Option<i32> = sqlx::query_scalar(
             r#"SELECT 1 FROM executions
                WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                 AND warehouse_family = $3
+                 AND table_namespace IS NOT DISTINCT FROM $4
                LIMIT 1"#,
         )
         .bind(org_id)
         .bind(target_table)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
+        .bind(table_namespace)
         .fetch_optional(&self.pool)
         .await?;
         Ok(exists.is_some())
@@ -408,6 +423,7 @@ impl Store {
         org_id: &str,
         table_namespace: &str,
         node_namespace_logic_hash: &str,
+        dialect: &str,
     ) -> sqlx::Result<Option<ExecutionRow>> {
         let row = sqlx::query_as::<_, RawRow>(
             r#"
@@ -417,6 +433,7 @@ impl Store {
                    execution_results, input_tables, status, request_id, clone_source_table
             FROM executions
             WHERE org_id = $1 AND table_namespace = $2
+              AND warehouse_family = $4
               AND node_namespace_logic_hash = $3 AND status = 'confirmed'
             ORDER BY confirmed_at DESC NULLS LAST, id DESC
             LIMIT 1
@@ -425,6 +442,7 @@ impl Store {
         .bind(org_id)
         .bind(table_namespace)
         .bind(node_namespace_logic_hash)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         row.map(TryInto::try_into).transpose()
@@ -446,18 +464,13 @@ impl Store {
         node_namespace_logic_hash: &str,
         execution_type: i32,
         exclude_target: &str,
+        dialect: &str,
     ) -> sqlx::Result<Option<CloneEquivalent>> {
         // PHYSICAL-STATE INVARIANT: a candidate source may only be cloned if its
         // CURRENT physical contents match the requested logic. We reduce to the
-        // latest confirmed row PER physical target (DISTINCT ON — the current
-        // state of each object) ACROSS ALL namespaces, and only then filter
-        // those current states by the requested namespace + logic + execution
-        // type. Computing the per-target current row within a single namespace
-        // (review issue #1 follow-up, transition 3) could surface a target's
-        // older same-namespace row as "current" after its newest state moved to
-        // a different namespace. A source rebuilt with different logic since it
-        // last matched is likewise excluded, because its newest row no longer
-        // carries the requested logic hash (A→B→A).
+        // latest confirmed row PER target in this physical warehouse scope
+        // (DISTINCT ON), then filter the current states by logic and execution
+        // type. Another connection's same-named target is a different object.
         type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
         let row: Option<CloneEquivRow> = sqlx::query_as(
             r#"
@@ -467,6 +480,8 @@ impl Store {
                        node_namespace_logic_hash, execution_type, table_namespace
                 FROM executions
                 WHERE org_id = $1 AND status = 'confirmed'
+                  AND warehouse_family = $6
+                  AND table_namespace = $2
                 ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC
             )
             SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms
@@ -484,6 +499,7 @@ impl Store {
         .bind(node_namespace_logic_hash)
         .bind(execution_type)
         .bind(exclude_target)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(
@@ -506,23 +522,12 @@ impl Store {
         org_id: &str,
         source_table: &str,
         table_namespace: Option<&str>,
+        dialect: &str,
     ) -> sqlx::Result<Option<String>> {
-        // PHYSICAL-STATE INVARIANT (review #2 2nd follow-up, P0 #2): select the
-        // source's CURRENT physical row (latest confirmed, ANY namespace) FIRST,
-        // and ONLY THEN require it to match the requested namespace. The previous
-        // query applied `($3 IS NULL OR table_namespace = $3)` in the SAME WHERE
-        // as the ORDER BY, so if the source's NEWEST build moved to a different
-        // namespace, that newest row was filtered out and an OLDER same-namespace
-        // row was returned — inheriting an OBSOLETE logic identity onto the
-        // clone-origin row (which could later authorize an unsafe SKIP of the
-        // cloned target). Now a namespace transition yields NO inherited hash
-        // (the current row is in a different namespace → post-filter drops it →
-        // inherit nothing → a later submit for the clone target EXECUTEs; safe).
-        //
-        // The current row's hash may also be NULL (its newest build used
-        // unrendered comparison or empty SQL): then we inherit nothing, same
-        // safe outcome. Selecting the latest row first guarantees a stale row is
-        // never resurrected.
+        // Select the latest source row within the requested physical warehouse
+        // scope. The namespace identifies the warehouse connection; a same-named
+        // relation in another namespace cannot overwrite this source. A NULL
+        // hash (for example template mode or empty SQL) inherits nothing.
         let row = sqlx::query_as::<_, RawRow>(
             r#"
             WITH current_state AS (
@@ -532,6 +537,8 @@ impl Store {
                        execution_results, input_tables, status, request_id, clone_source_table
                 FROM executions
                 WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
+                  AND warehouse_family = $4
+                  AND table_namespace IS NOT DISTINCT FROM $3
                 ORDER BY confirmed_at DESC NULLS LAST, id DESC
                 LIMIT 1
             )
@@ -546,6 +553,7 @@ impl Store {
         .bind(org_id)
         .bind(source_table)
         .bind(table_namespace)
+        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await?;
         Ok(row

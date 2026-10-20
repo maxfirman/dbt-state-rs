@@ -37,6 +37,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `store.rs` | Postgres access via sqlx: lookups, pending→confirmed lifecycle, batch hydrate. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
+| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity, clone eligibility and physical warehouse family. |
 | `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
 | `clone.rs` | Dialect-aware clone-DDL generation. |
 | `services.rs` | gRPC service impls binding the store + decision engine to the wire. |
@@ -60,11 +61,21 @@ and [correctness-handoff.md §C](correctness-handoff.md).
 `fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
 mode), dialect/default context, sorted semantic extras and supplied dependency
 SQL/context. It also derives a schema-abstracted cross-environment logic hash
-(`namespace_logic_hash`) used, scoped by `table_namespace`, for clone reuse: the
+(`namespace_logic_hash`) used, scoped by `table_namespace`, for Snowflake clone reuse: the
 same model built in different environments differs only by the physical schema
-qualifier, which the abstraction collapses. Seeds share their own versioned
-configuration hash. Unsupported SQL is retained exactly; old hashes cold miss
-rather than being reinterpreted.
+qualifier, which the abstraction collapses. Other dialects retain exact SQL and
+do not use schema-abstracted clone matching until their identifier/dependency
+rules are validated. Seeds share their own versioned configuration hash.
+Unsupported SQL is retained exactly; old hashes cold miss rather than being
+reinterpreted.
+
+The physical execution scope is organization + warehouse family + client
+`table_namespace` + exact target name. The namespace is derived by dbt from an
+adapter-specific warehouse identifier. Selecting latest history *within that
+physical scope* prevents a same-named table in another account/project/host from
+shadowing this one; execution type, dialect options and logic are checked only
+after selecting the current row. The namespace may be absent for nonstandard
+clients, in which case that family has an isolated absent-namespace scope.
 
 Migrations 0001–0008 provide execution history and separate UI capture tables.
 `executions` stores identity/context hashes (including the cross-environment

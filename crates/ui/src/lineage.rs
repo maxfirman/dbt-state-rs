@@ -40,22 +40,18 @@ pub struct Layout {
     pub height: f32,
 }
 
-/// Normalize a relation name to a comparison key (strip quotes + case).
-fn norm(name: &str) -> String {
-    name.replace('"', "").to_ascii_lowercase()
-}
-
 /// Build + lay out the lineage for a set of latest decisions.
 pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
     if decisions.is_empty() {
         return None;
     }
 
-    // Map a node's produced relation (target_table, normalized) -> node id.
+    // Preserve the client's physical relation spelling. Removing quotes or
+    // folding case can merge distinct warehouse objects in the lineage view.
     let mut produced: HashMap<String, String> = HashMap::new();
     for d in decisions {
         if let (Some(uid), Some(tt)) = (&d.node_unique_id, &d.target_table) {
-            produced.insert(norm(tt), uid.clone());
+            produced.insert(tt.clone(), uid.clone());
         }
     }
 
@@ -95,15 +91,15 @@ pub fn build(decisions: &[DecisionRow]) -> Option<Layout> {
                     // query_dependencies entries may be bare strings or objects
                     // with a "name" field, depending on capture shape.
                     t.as_str()
-                        .map(norm)
-                        .or_else(|| t.get("name").and_then(|n| n.as_str()).map(norm))
+                        .map(str::to_owned)
+                        .or_else(|| t.get("name").and_then(|n| n.as_str()).map(str::to_owned))
                 })
                 .collect();
         if upstreams.is_empty() {
             upstreams = serde_json::from_value::<Vec<serde_json::Value>>(d.input_tables.clone())
                 .unwrap_or_default()
                 .into_iter()
-                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(norm))
+                .filter_map(|t| t.get("name").and_then(|n| n.as_str()).map(str::to_owned))
                 .collect();
         }
         for inp in upstreams {

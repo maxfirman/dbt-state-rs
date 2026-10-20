@@ -1,5 +1,34 @@
 # Correctness handoff after offline hardening
 
+## Warehouse portability update (offline, 2026-10-20)
+
+The server now selects a warehouse interpretation once from the wire dialect.
+Only Snowflake opts into schema-abstracted cross-environment matching and the
+Snowflake volatile-function rules. Other dialects use exact rendered SQL for
+strict same-target identity; their SQL-submit clone fallback is disabled until
+their identifier, dependency and volatility rules can be validated. A direct
+RegisterClone may still use a supported, capability-checked template. BigQuery
+uses its published `CREATE TABLE ... CLONE` syntax; Databricks shallow cloning
+requires an explicitly identified Delta source. Redshift cloning remains
+unsupported. Clone requests with retention properties are rejected rather than
+silently dropping those properties.
+
+Physical history is scoped by organization, warehouse family, client
+`table_namespace` (including a distinct absent-namespace case), and exact target
+name. dbt derives `table_namespace` from a warehouse connection identifier
+(account/project/host), so equal names in separate warehouse connections have
+separate current rows. Earlier offline-only namespace-transition scenarios in
+the clone-history tests treated two different namespaces as one physical object;
+that assumption is superseded by the client source evidence. The invariant that
+current state is selected before matching logic still holds *inside each
+physical warehouse scope*.
+
+No other warehouse or hosted service was contacted for this update. The offline
+tests prove conservative local behavior and published DDL shape, not hosted
+decision parity or successful execution of non-Snowflake DDL. The next validation
+step is captured client traffic and a warehouse-specific metadata/DDL run for
+each adapter when access becomes available.
+
 Updated 2026-10-16 (review #2 11th FOLLOW-UP). Read this before changing
 decisions. The goal remains a conformant drop-in dbt State replacement; **the
 current server does not yet meet that goal**, but a growing set of behaviors is
@@ -331,18 +360,16 @@ recording proxy; see `experiments/clone_experiment.sh`,
     `services.rs`) would inherit an OBSOLETE hash onto the clone-origin row. Now
     reads the source's latest row's hash directly (may be NULL → inherit none →
     later submit EXECUTEs; safe).
-  - `find_clone_equivalent` reduced to latest-per-target WITHIN the requested
-    namespace, so a target whose newest state moved to another namespace could
-    surface its older same-namespace row as current. Now computes
-    current-state-per-target across ALL namespaces, then filters by namespace.
-    `table_namespace` is a stable adapter-level id (no target changes it across
-    captured traffic), so this is an OFFLINE invariant with no hosted-parity
-    claim (do-not-infer rule).
+  - The earlier offline `find_clone_equivalent` namespace-transition scenario
+    treated equal relation text in different adapter namespaces as one physical
+    target. Client source now establishes that the namespace is derived from the
+    warehouse connection. The current lookup selects latest-per-target *within*
+    the physical warehouse scope, preserving both connection histories.
 
   All three pinned by `crates/harness/tests/clone_history_provenance.rs`
   (`clone_adoption_must_not_resurrect_row_of_different_execution_type` —
   live-verified; `clone_source_logic_inherit_must_use_current_source_state` and
-  `clone_equivalent_must_reflect_current_namespace_of_source` — offline).
+  `clone_equivalent_is_scoped_to_source_warehouse` — offline).
 
 Remaining in this area: dropped/recreated sources mid-decision, server restart;
 clone row/time limits (`clone_time_travel_limit`, `OUTSIDE_TIME_TRAVEL_
@@ -531,11 +558,10 @@ assessment where the follow-up was right.
   `clone_chain_provenance.rs::{hosted_clone_age_not_source_age_shape_is_pinned,
   server_clone_age_anchor_skips_upstream_between_source_and_clone}`). The server's
   own-build anchor reproduces this, so no speculative source-epoch validation is
-  added (hosted does not do one). (b) The namespace-transition sub-case was NOT
-  actually hardened earlier — `find_source_ns_logic_hash` still filtered
-  namespace BEFORE the ORDER BY, leaking a stale same-namespace logic hash onto
-  the clone-origin row. NOW FIXED (latest-row-first CTE, then post-filter;
-  `clone_history_provenance.rs::clone_source_logic_inherit_must_reflect_current_namespace`).
+  added (hosted does not do one). (b) The earlier namespace-transition sub-case
+  was an offline assumption about physical identity. The lookup now selects the
+  current source inside the requested warehouse scope; see the portability
+  update above and `clone_source_logic_inherits_from_requested_warehouse`.
   Deeper multi-step chain limits remain OPEN.
 
 - **Finding 7 (lag/graph/ordering, physical identity across accounts).** Already

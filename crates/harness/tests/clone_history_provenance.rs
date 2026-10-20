@@ -521,20 +521,12 @@ async fn clone_source_logic_inherit_must_use_current_source_state() {
     );
 }
 
-/// Transition 3 — `find_clone_equivalent`: a physical target whose CURRENT state
-/// lives in a DIFFERENT namespace must not appear as a current clone source in
-/// the requested namespace via a stale same-namespace row.
-///
-/// NOT cleanly client-reachable: across all captured traffic no physical target
-/// ever changes `table_namespace` (it is a stable adapter-level id). Encoded as
-/// an OFFLINE invariant only — NO hosted-parity claim (do-not-infer rule). The
-/// bug: `find_clone_equivalent` reduced to latest-per-target WITHIN the
-/// requested namespace, so a target whose newest state moved to another
-/// namespace could still surface its older same-namespace row as "current".
-/// The fix computes current-state-per-target across ALL namespaces first, then
-/// filters by the requested namespace.
+/// Equal relation text in two adapter namespaces names two different physical
+/// objects. A later build in namespace NS2 must not hide a live NS source from
+/// the SQL-submit clone lookup. This supersedes the earlier offline assumption
+/// that a namespace transition could describe one physical warehouse object.
 #[tokio::test]
-async fn clone_equivalent_must_reflect_current_namespace_of_source() {
+async fn clone_equivalent_is_scoped_to_source_warehouse() {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -554,15 +546,12 @@ async fn clone_equivalent_must_reflect_current_namespace_of_source() {
     )
     .await;
 
-    // 2) Rebuild SOURCE with logic A but in a DIFFERENT namespace NS2 (newer
-    //    state). The source's CURRENT namespace is NS2, not NS.
+    // 2) Build the same textual name in a DIFFERENT warehouse namespace NS2.
     let mut src_ns2 = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
     src_ns2.table_namespace = Some(NS2.into());
     execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
 
-    // 3) A new target DEV (absent) submits logic A in namespace NS. The source's
-    //    CURRENT state is in NS2, so there is NO equivalent under another name in
-    //    NS → MUST EXECUTE, not clone the stale NS row of the source.
+    // 3) The original source remains current in NS, so DEV can clone from it.
     let dev_a = sql
         .submit_enriched_sql(submit(dev, "dev_clone_demo", 1, raw_epoch, ""))
         .await
@@ -570,29 +559,15 @@ async fn clone_equivalent_must_reflect_current_namespace_of_source() {
         .into_inner();
     assert_eq!(
         response_variant(&dev_a),
-        "ready_to_execute",
-        "the source's CURRENT state is in namespace NS2; its stale NS row must not \
-         make it a current clone source in NS"
+        "ready_to_clone",
+        "a same-named object in another warehouse cannot hide the NS clone source"
     );
 }
 
-/// REGRESSION (review #2 2nd follow-up, P0 #2): `find_source_ns_logic_hash` must
-/// select the clone SOURCE's CURRENT physical row (latest confirmed, ANY
-/// namespace) BEFORE filtering by the requested namespace. The previous query
-/// applied `($3 IS NULL OR table_namespace = $3)` in the SAME WHERE as the
-/// ORDER BY, so when the source's NEWEST build moved to a DIFFERENT namespace,
-/// that newest row was filtered out and an OLDER same-namespace row's logic hash
-/// was inherited onto the clone-origin row — later authorizing an unsafe SKIP of
-/// the cloned target against stale logic.
-///
-/// Scenario: build the source with logic A in namespace NS (older), rebuild it
-/// with logic B in namespace NS2 (newer — its CURRENT state). RegisterClone the
-/// source with namespace NS. Since the source's current state is in NS2 (not
-/// NS), the clone-origin row must inherit NO logic identity, so resubmitting the
-/// clone target with the stale logic A EXECUTES (never SKIPs against the
-/// obsolete inherited hash).
+/// A clone inherits source logic from the requested physical namespace. A
+/// same-named source in another warehouse does not replace that source's logic.
 #[tokio::test]
-async fn clone_source_logic_inherit_must_reflect_current_namespace() {
+async fn clone_source_logic_inherits_from_requested_warehouse() {
     let (addr, _schema) = start_server().await;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -614,14 +589,18 @@ async fn clone_source_logic_inherit_must_reflect_current_namespace() {
     )
     .await;
 
-    // 2) Rebuild SOURCE in a DIFFERENT namespace NS2 (newer → its CURRENT state).
-    let mut src_ns2 = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
+    // 2) Build different logic under the same textual name in NS2.
+    let mut src_ns2 = submit(
+        src,
+        "prod_state_demo",
+        1_791_743_760_000,
+        raw_epoch,
+        ", 42 as mark",
+    );
     src_ns2.table_namespace = Some(NS2.into());
     execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
 
-    // 3) RegisterClone the source under the OLD namespace NS. The source's
-    //    current row is in NS2, so the latest-row-first lookup post-filters it
-    //    out → inherit NO logic identity onto the clone-origin row.
+    // 3) Clone the NS source. The newer NS2 row describes a different object.
     let clone_resp = clone
         .register_clone(qc::CloneRequest {
             target_table: tgt.into(),
@@ -629,7 +608,7 @@ async fn clone_source_logic_inherit_must_reflect_current_namespace() {
             default_catalog: "CDO_DEMO_DB".into(),
             execution_type: 1,
             clone_source_table: src.into(),
-            clone_source_last_modified_epoch: Some(1_791_743_760_000),
+            clone_source_last_modified_epoch: Some(1_791_743_740_000),
             clone_source_table_type: Some("TRANSIENT TABLE".into()),
             table_namespace: Some(NS.into()),
             labels: [(
@@ -657,10 +636,7 @@ async fn clone_source_logic_inherit_must_reflect_current_namespace() {
         .success
     );
 
-    // 4) Resubmit the clone target with the OLD logic A under namespace NS.
-    //    Because the clone-origin row inherited NO logic identity (the source's
-    //    current state was in NS2), there is no proven equivalence → EXECUTE,
-    //    never SKIP against the stale inherited A-hash.
+    // 4) The cloned target holds logic A from NS and can reuse it.
     let tgt_a = sql
         .submit_enriched_sql(submit(tgt, "dev_clone_demo", 1, raw_epoch, ""))
         .await
@@ -668,8 +644,7 @@ async fn clone_source_logic_inherit_must_reflect_current_namespace() {
         .into_inner();
     assert_eq!(
         response_variant(&tgt_a),
-        "ready_to_execute",
-        "a source whose current state moved to another namespace must not leak \
-         its stale same-namespace logic into the clone target's reuse decision"
+        "skip_execution",
+        "a same-named NS2 object cannot erase the original source's logic"
     );
 }

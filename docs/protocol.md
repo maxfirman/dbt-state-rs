@@ -91,14 +91,17 @@ These are offline correctness safeguards, not a complete specification of the
 hosted service. [correctness-handoff.md](correctness-handoff.md) records the
 remaining policies and compatibility gaps.
 
-1. Select the newest confirmed physical target *before* matching its versioned
-   SQL fingerprint, execution type, namespace and dialect. An old matching row
+1. Select the newest confirmed physical target within its warehouse family and
+   `table_namespace` *before* matching its versioned SQL fingerprint, execution
+   type and dialect options. An old matching row
    cannot resurrect a target overwritten by a later build. Data tests use
    scoped project/namespace/node identity (including older label identity).
 2. Fingerprint root SQL, semantic extras, dialect/catalog/schema, and supplied
    dependency definitions/context. Snowflake SQL uses a restricted AST
    canonicalization preserving cast kinds, parameters and qualified functions;
-   parser failures and other dialects preserve exact SQL. Template comparison
+   parser failures and other dialects preserve exact SQL. Other dialects do not
+   produce a cross-environment equivalence identity until their relation and
+   dependency semantics are characterized. Template comparison
    (`compare_unrendered_code=true`) is a DUAL identity: the server records both
    the rendered logic hash and the unrendered-template hash and reuses when
    EITHER matches — a rebuild occurs only when BOTH the rendered SQL and the
@@ -249,9 +252,12 @@ COPY GRANTS
 
 The supported Snowflake kinds are TABLE and TRANSIENT TABLE. View sources
 return UNIMPLEMENTED.
-Other dialects: BigQuery `CREATE OR REPLACE TABLE ... CLONE ...`, Databricks/Spark
-`... SHALLOW CLONE ...`. Unknown dialects return UNIMPLEMENTED. Non-Snowflake variants are our own templates,
-not yet verified against the real service.
+Other dialects: BigQuery `CREATE TABLE ... CLONE ...`; Databricks/Spark
+`CREATE TABLE ... SHALLOW CLONE ...` only for an explicitly identified Delta
+source. Redshift and unknown dialects return UNIMPLEMENTED. Non-Snowflake
+variants follow published syntax but are not verified against the real service
+or executed against those warehouses. Requests carrying retention properties
+return UNIMPLEMENTED until those properties can be honored.
 
 ### Clone eligibility, rejection and lifecycle (live-verified 2026-10-11)
 

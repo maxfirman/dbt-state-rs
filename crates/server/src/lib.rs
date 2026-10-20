@@ -9,6 +9,7 @@ pub mod selector;
 pub mod services;
 pub mod sql_norm;
 pub mod store;
+pub mod warehouse;
 
 pub use dbt_state_proto::grpc_health;
 pub use dbt_state_proto::query_cache;

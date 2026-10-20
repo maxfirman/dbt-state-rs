@@ -21,17 +21,49 @@ pub fn clone_sqls(
     target: &str,
     source_table_type: Option<&str>,
 ) -> Result<Vec<String>, &'static str> {
+    clone_sqls_with_properties(dialect, source, target, source_table_type, None)
+}
+
+/// Plan clone SQL only when the source kind and request options are supported.
+/// Both RegisterClone and SQL-submit clone fallback use this path. Unsupported
+/// options are rejected so the client can build normally instead of silently
+/// creating a clone with different retention from the requested target.
+pub fn clone_sqls_with_properties(
+    dialect: &str,
+    source: &str,
+    target: &str,
+    source_table_type: Option<&str>,
+    properties: Option<&crate::query_cache::TableProperties>,
+) -> Result<Vec<String>, &'static str> {
+    if properties
+        .is_some_and(|p| p.hours_to_expiration.is_some() || p.partition_expiration_days.is_some())
+    {
+        return Err("clone table properties are not implemented");
+    }
     if source_table_type.is_some_and(|kind| kind.to_ascii_uppercase().contains("VIEW")) {
         return Err("cloning view sources is not implemented");
     }
-    match dialect.to_ascii_lowercase().as_str() {
-        "snowflake" => Ok(vec![snowflake_clone(source, target, source_table_type)]),
-        "bigquery" => Ok(vec![format!(
-            "CREATE OR REPLACE TABLE {target} CLONE {source}"
-        )]),
-        "databricks" | "spark" => Ok(vec![format!(
-            "CREATE OR REPLACE TABLE {target} SHALLOW CLONE {source}"
-        )]),
+    match crate::warehouse::Warehouse::from_dialect(dialect) {
+        crate::warehouse::Warehouse::Snowflake => {
+            Ok(vec![snowflake_clone(source, target, source_table_type)])
+        }
+        crate::warehouse::Warehouse::BigQuery => {
+            // GoogleSQL's CREATE TABLE ... CLONE syntax has no OR REPLACE form.
+            Ok(vec![format!("CREATE TABLE {target} CLONE {source}")])
+        }
+        crate::warehouse::Warehouse::Databricks => {
+            // Managed Iceberg supports DEEP but not SHALLOW CLONE. A generic
+            // "TABLE" type does not identify the storage format, so only an
+            // explicitly Delta source can use this unverified template.
+            let is_delta =
+                source_table_type.is_some_and(|kind| kind.to_ascii_uppercase().contains("DELTA"));
+            if !is_delta {
+                return Err("Databricks shallow clone requires a known Delta source");
+            }
+            Ok(vec![format!(
+                "CREATE TABLE {target} SHALLOW CLONE {source}"
+            )])
+        }
         _ => Err("clone DDL is not implemented for this dialect"),
     }
 }
@@ -76,14 +108,35 @@ mod tests {
     }
 
     #[test]
-    fn bigquery_and_databricks_variants() {
-        assert!(clone_sqls("bigquery", "s", "t", None).unwrap()[0].contains("CLONE s"));
-        assert!(clone_sqls("databricks", "s", "t", None).unwrap()[0].contains("SHALLOW CLONE"));
+    fn documented_non_snowflake_shapes_and_capabilities() {
+        assert_eq!(
+            clone_sqls("bigquery", "s", "t", Some("TABLE")).unwrap(),
+            ["CREATE TABLE t CLONE s"]
+        );
+        assert_eq!(
+            clone_sqls("databricks", "s", "t", Some("DELTA TABLE")).unwrap(),
+            ["CREATE TABLE t SHALLOW CLONE s"]
+        );
+        for kind in [None, Some("TABLE"), Some("ICEBERG TABLE")] {
+            assert!(clone_sqls("databricks", "s", "t", kind).is_err());
+        }
     }
 
     #[test]
     fn unsupported_clone_sources_and_dialects_do_not_emit_guessed_sql() {
         assert!(clone_sqls("snowflake", "s", "t", Some("VIEW")).is_err());
         assert!(clone_sqls("unknown", "s", "t", Some("TABLE")).is_err());
+        assert!(clone_sqls("redshift", "s", "t", Some("TABLE")).is_err());
+        assert!(clone_sqls_with_properties(
+            "bigquery",
+            "s",
+            "t",
+            Some("TABLE"),
+            Some(&crate::query_cache::TableProperties {
+                hours_to_expiration: Some(24),
+                partition_expiration_days: None,
+            }),
+        )
+        .is_err());
     }
 }

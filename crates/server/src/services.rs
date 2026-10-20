@@ -626,8 +626,10 @@ impl Sql for SqlService {
         });
         // Schema-abstracted cross-environment logic identity (clone adoption).
         // Only meaningful for rendered (non-template) comparison of real SQL.
-        let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
-            .then(|| crate::fingerprint::namespace_logic_hash(&sql_execution(&req)));
+        let ns_logic_hash = (!req.compare_unrendered_code
+            && !req.sql.trim().is_empty()
+            && crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse())
+        .then(|| crate::fingerprint::namespace_logic_hash(&sql_execution(&req)));
         let input_tables = decision::input_tables_of(&req);
         let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
         let project_id = req
@@ -655,6 +657,7 @@ impl Sql for SqlService {
                         table_namespace,
                         node_sql_hash.as_deref(),
                         node_template_hash.as_deref(),
+                        &req.dialect,
                     )
                     .await
                     .map_err(db_err)?,
@@ -761,7 +764,7 @@ impl Sql for SqlService {
         let target_has_prior_build = self
             .0
             .store
-            .target_has_confirmed_history(&org_id, &target_table)
+            .target_has_confirmed_history(&org_id, &target_table, table_namespace, &req.dialect)
             .await
             .map_err(db_err)?;
         let ctx = SubmitContext {
@@ -831,7 +834,7 @@ impl Sql for SqlService {
         // a comment or string literal is not a false positive). Review #2 5th
         // follow-up P1 #3.
         let volatile_blocks_clone = !req.tolerate_nondeterminism
-            && crate::sql_norm::request_has_volatile_sql(
+            && crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
                 &req.sql,
                 req.query_dependencies.iter().map(|d| d.query.as_str()),
             );
@@ -844,7 +847,14 @@ impl Sql for SqlService {
                 if let Some(eq) = self
                     .0
                     .store
-                    .find_clone_equivalent(&org_id, ns, ns_hash, execution_type, &target_table)
+                    .find_clone_equivalent(
+                        &org_id,
+                        ns,
+                        ns_hash,
+                        execution_type,
+                        &target_table,
+                        &req.dialect,
+                    )
                     .await
                     .map_err(db_err)?
                 {
@@ -905,11 +915,12 @@ impl Sql for SqlService {
                         capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
                         return Ok(Response::new(response));
                     }
-                    if let Ok(clone_sqls) = crate::clone::clone_sqls(
+                    if let Ok(clone_sqls) = crate::clone::clone_sqls_with_properties(
                         &req.dialect,
                         &eq.source_table,
                         &target_table,
                         eq.table_type.as_deref(),
+                        req.clone_table_properties.as_ref(),
                     ) {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
@@ -1085,7 +1096,7 @@ impl Sql for SqlService {
             &req.semantic_extras,
         );
         let confirmed = self.0.store.find_confirmed_values(
-            &org_id, &target_table, &req.values_hash, &seed_hash, namespace(req.table_namespace.as_deref()),
+            &org_id, &target_table, &req.values_hash, &seed_hash, namespace(req.table_namespace.as_deref()), &req.dialect,
         ).await.map_err(db_err)?.filter(|prev| {
             !req.values_hash.is_empty() && req.last_modified_epoch.is_some()
                 && matches!((req.last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded)
@@ -1094,7 +1105,12 @@ impl Sql for SqlService {
         let target_has_prior_build = self
             .0
             .store
-            .target_has_confirmed_history(&org_id, &target_table)
+            .target_has_confirmed_history(
+                &org_id,
+                &target_table,
+                namespace(req.table_namespace.as_deref()),
+                &req.dialect,
+            )
             .await
             .map_err(db_err)?;
         let ctx = SubmitContext {
@@ -1278,7 +1294,11 @@ impl Execution for ExecutionService {
                     // Match the submit path's logic key: whitespace-normalized
                     // rendered SQL + allowlisted semantic_extras.
                     node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
-                    node_namespace_logic_hash: Some(crate::fingerprint::namespace_logic_hash(sql)),
+                    node_namespace_logic_hash: crate::warehouse::Warehouse::from_dialect(
+                        &sql.dialect,
+                    )
+                    .supports_namespace_reuse()
+                    .then(|| crate::fingerprint::namespace_logic_hash(sql)),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()
@@ -1465,11 +1485,12 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let request_id = new_uuid_v7();
         let execution_decision_id = new_uuid_v7();
 
-        let clone_sqls = crate::clone::clone_sqls(
+        let clone_sqls = crate::clone::clone_sqls_with_properties(
             &req.dialect,
             &req.clone_source_table,
             &req.target_table,
             req.clone_source_table_type.as_deref(),
+            req.table_properties.as_ref(),
         )
         .map_err(Status::unimplemented)?;
 
@@ -1479,16 +1500,21 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         // same namespace. If the source was never recorded here, the clone row
         // carries no logic identity and a later submit falls back to EXECUTE
         // (safe: we never skip without proven logic equivalence).
-        let inherited_ns_logic = self
-            .0
-            .store
-            .find_source_ns_logic_hash(
-                &org_id,
-                &req.clone_source_table,
-                namespace(req.table_namespace.as_deref()),
-            )
-            .await
-            .map_err(db_err)?;
+        let inherited_ns_logic =
+            if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse() {
+                self.0
+                    .store
+                    .find_source_ns_logic_hash(
+                        &org_id,
+                        &req.clone_source_table,
+                        namespace(req.table_namespace.as_deref()),
+                        &req.dialect,
+                    )
+                    .await
+                    .map_err(db_err)?
+            } else {
+                None
+            };
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.

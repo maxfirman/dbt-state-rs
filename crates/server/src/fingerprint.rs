@@ -5,11 +5,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 fn normalized(dialect: &str, sql: &str) -> String {
-    if dialect.eq_ignore_ascii_case("snowflake") {
-        crate::sql_norm::normalize_sql(sql)
-    } else {
-        sql.to_owned()
-    }
+    crate::warehouse::Warehouse::from_dialect(dialect).normalized_sql(sql)
 }
 
 /// Schema-abstracted normalization for the cross-environment (namespace-scoped)
@@ -129,6 +125,15 @@ pub fn sql_logic_hash_with_version(
 /// the same logic (skips after a clone), while a genuine projection change
 /// executes. See experiments/clone_logic_sensitivity.sh.
 pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
+    if !crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse() {
+        // This public helper is also useful for comparing identities in tests.
+        // Give unverified dialects an exact, context-sensitive identity rather
+        // than applying Snowflake's lossy identifier/schema interpretation.
+        let mut h = Sha256::new();
+        field(&mut h, b"dbt-state-exact-ns-v1");
+        field(&mut h, sql_logic_hash(req, None).as_bytes());
+        return hex::encode(h.finalize());
+    }
     use crate::sql_norm::{
         abstract_object_name_components_with, schema_of_object_name, schemas_in_sql, SchemaMap,
     };
@@ -232,6 +237,32 @@ pub fn seed_logic_hash(
 mod tests {
     use super::*;
     use crate::query_cache as qc;
+
+    #[test]
+    fn bigquery_case_sensitive_dependency_bindings_stay_distinct() {
+        let dep = |name: &str, query: &str| qc::QueryDependency {
+            name: name.into(),
+            query: query.into(),
+            default_catalog: "project".into(),
+            default_schema: "dataset".into(),
+        };
+        let a = qc::SqlExecution {
+            dialect: "bigquery".into(),
+            default_catalog: "project".into(),
+            default_schema: Some("dataset".into()),
+            sql: "select a.id, b.id from `project.dataset.Table` a cross join `project.dataset.table` b".into(),
+            query_dependencies: vec![
+                dep("`project.dataset.Table`", "select 1 as id"),
+                dep("`project.dataset.table`", "select 2 as id"),
+            ],
+            ..Default::default()
+        };
+        let mut b = a.clone();
+        b.query_dependencies[0].query = "select 2 as id".into();
+        b.query_dependencies[1].query = "select 1 as id".into();
+        assert_ne!(sql_logic_hash(&a, None), sql_logic_hash(&b, None));
+        assert_ne!(namespace_logic_hash(&a), namespace_logic_hash(&b));
+    }
 
     fn dep(name: &str, query: &str, catalog: &str, schema: &str) -> qc::QueryDependency {
         qc::QueryDependency {
