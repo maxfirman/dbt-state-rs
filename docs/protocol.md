@@ -124,15 +124,17 @@ remaining policies and compatibility gaps.
    object, so it has no own-build epoch: it anchors drift on the epoch RECORDED
    for each upstream at its last confirmation (per input, strict `>`), rebuilding
    when the tested data changed (review #2 finding 1, verified live).
-5. Cross-environment reuse (live-verified): a clone-origin object, or an
-   equivalent model under another physical name in the same `table_namespace`
-   with matching schema-abstracted logic, is reused via CLONE — a confirmed clone
-   target SKIPS a matching later submit, and a submit for an absent target whose
+5. Snowflake cross-environment reuse (live-verified): an equivalent model under
+   another physical name in the same `table_namespace`, with matching
+   schema-abstracted logic, can be reused via CLONE. A confirmed clone target
+   SKIPS a later strict same-target match; a submit for an absent target whose
    equivalent exists elsewhere returns `ready_to_clone`. The cross-name clone
    fallback is suppressed only when `tolerate_nondeterminism=false` AND the SQL
    genuinely contains a volatile function (e.g. `current_timestamp()`); a
    deterministic model still clones. Runtime volatile-function VALUES
    (`transformed_nodes_by_query`) are not yet evaluated (a conformance gap).
+   Other dialects do not use the SQL-submit cross-name clone fallback until
+   their equivalence and volatility rules are characterized.
 
 These checks can over-execute compared with hosted behavior. A passing replay
 only establishes its reproducible captured cases.
@@ -278,7 +280,7 @@ return UNIMPLEMENTED until those properties can be honored.
 
 ### SQL-submit cross-name clone (`SubmitEnrichedSQL` → `ready_to_clone`)
 
-A `SubmitEnrichedSQL` for a target that does not yet exist, when an equivalent
+A Snowflake `SubmitEnrichedSQL` for a target that does not yet exist, when an equivalent
 model (same `table_namespace` + schema-abstracted logic + `execution_type`) was
 already built under a DIFFERENT physical name, returns `ready_to_clone` cloning
 that equivalent in: `ExplainedDecision{decision=3 (READY_TO_CLONE),
@@ -306,5 +308,5 @@ but with `int64` support, used for `execution_results` / telemetry config.
 See the service table above and the complete remaining feature/testing backlog in
 [correctness-handoff.md](correctness-handoff.md). Captured response examples and
 experiments are useful evidence for individual scenarios; complete hosted
-conformance has not been established. Telemetry, automatic SQL cloning, runtime
-transformations and several policy rules remain incomplete.
+conformance has not been established. Non-Snowflake automatic SQL cloning,
+telemetry, runtime transformations and several policy rules remain incomplete.

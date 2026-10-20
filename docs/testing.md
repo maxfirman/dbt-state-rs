@@ -6,7 +6,8 @@ characterized live against the real service via the recording proxy and the
 `experiments/` drivers (see [harness.md](harness.md)) — capture first, promote a
 golden fixture, then assert. Do not invent hosted behavior; document open
 questions in the [handoff](correctness-handoff.md), which also lists remaining
-work and the independent state-machine testing plan.
+work. The [conformance plan](conformance-plan.md) defines the next coverage and
+independent state-machine milestones, including release gates.
 
 ## Local checks
 
@@ -35,6 +36,9 @@ SQL normalization combines positive captured equivalences with negative cases
 no-panic property. Pure decision properties test determinism and existing
 freshness/policy assumptions for already selected candidates; they are not an
 independent oracle for the complete service or hosted lag semantics.
+`warehouse_portability.rs` covers independent physical histories across
+connection namespaces and conservative BigQuery same-target reuse without a
+warehouse connection; it does not establish hosted or warehouse parity.
 
 ## Captured traffic replay
 

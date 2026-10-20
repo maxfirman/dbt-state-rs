@@ -15,7 +15,7 @@
 ```bash
 cargo build                 # whole workspace
 cargo test                  # unit + integration (needs Postgres running)
-cargo test -p dbt-state-server --lib   # pure decision-engine tests (no DB)
+cargo test -p dbt-state-server --lib   # server library tests (no DB)
 ```
 
 Integration tests create a unique, isolated Postgres schema per test and run the

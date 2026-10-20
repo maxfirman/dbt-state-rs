@@ -20,6 +20,10 @@ traffic captured against the hosted service using the official dbt Fusion client
   conformant drop-in replacement. See the
   [correctness handoff](docs/correctness-handoff.md) for live-verified behavior,
   compatibility changes and concrete remaining tasks.
+- **Warehouse scope:** Snowflake is the only warehouse whose cross-environment
+  matching has been characterized against the hosted service. Other dialects
+  use conservative same-target reuse; BigQuery/Databricks clone DDL remains
+  unverified against those warehouses, and Redshift cloning is unsupported.
 
 ## Quick start
 
@@ -46,6 +50,7 @@ dbt build --profile <snowflake-profile> --target <target>
 | `crates/proto` | Generated tonic server+client stubs from the `.proto` files. |
 | `crates/server` | The dbt State server: decision engine + Postgres store + gRPC services. |
 | `crates/harness` | Test harness: recording proxy, golden fixtures, differential + fuzz tools. |
+| `crates/ui` | Optional read-only web console for decisions and lineage. |
 
 ## Documentation
 

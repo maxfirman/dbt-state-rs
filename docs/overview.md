@@ -40,10 +40,12 @@ they do not prove a complete semantic catalog or the hosted implementation's
 algorithm. Unsupported syntax is preserved exactly. See [protocol.md](protocol.md)
 and [`experiments/SQL_NORMALIZATION.md`](../experiments/SQL_NORMALIZATION.md).
 Clone DDL is generated from dialect templates, with unsupported operations
-reported explicitly. BigQuery/Databricks SQL is checked against published
-syntax and restrictions but has not been executed against those warehouses;
-Redshift cloning remains unsupported. Only Snowflake uses cross-environment
-schema-abstracted matching; other dialects use exact rendered SQL for reuse.
+reported explicitly. BigQuery and Databricks clone templates follow published
+syntax and selected source-type restrictions, but have not been executed against
+those warehouses or compared with hosted responses; Redshift cloning remains
+unsupported. Only Snowflake uses cross-environment schema-abstracted matching;
+other dialects use exact rendered SQL for strict same-target reuse and do not
+automatically clone across target names.
 
 ## Project goals
 

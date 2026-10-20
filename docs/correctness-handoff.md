@@ -2,7 +2,8 @@
 
 ## Warehouse portability update (offline, 2026-10-20)
 
-The server now selects a warehouse interpretation once from the wire dialect.
+The server derives warehouse policy from the wire dialect at the points where
+SQL identity, clone eligibility and physical history are handled.
 Only Snowflake opts into schema-abstracted cross-environment matching and the
 Snowflake volatile-function rules. Other dialects use exact rendered SQL for
 strict same-target identity; their SQL-submit clone fallback is disabled until
@@ -233,9 +234,9 @@ More work may execute: missing metadata, changed physical input names,
 dependency representation differences (SELECT versus full view DDL), another
 physical target, unsupported syntax, or requested volatile evaluation. These
 are intentional conservative fallbacks, **not claims of hosted conformance**.
-State selectors are now implemented (see §D). Deferral callers still receive
-UNIMPLEMENTED; this is an explicit feature gap and may abort client operations
-that previously succeeded incorrectly.
+State selectors and state-backed deferral are implemented and live-verified (see
+§D). Other unsupported RPCs and clone capabilities remain explicit gaps that
+may abort client operations.
 
 ## Remaining work, in priority order
 
@@ -764,6 +765,11 @@ captured.
 
 ### E. Independent testing foundation
 
+The implementation handoff for this work is the
+[conformance and safety test plan](conformance-plan.md). It separates offline
+wrong-result safety from hosted response parity and defines the staged release
+gate.
+
 The pure freshness properties encode current policy assumptions and only test
 an already selected candidate. They do not prove store selection, physical
 validity or official behavior. Build an independent state machine at the gRPC
@@ -835,47 +841,34 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ```
 
-Last run (Rust 1.98, disposable Postgres 17; 2026-10-13):
+Last offline validation for the warehouse-portability change (2026-10-20):
+`cargo test --workspace --quiet`, `cargo test -p dbt-state-server --lib --quiet`,
+`cargo fmt --all --check` and `git diff --check` passed. The first command
+included Postgres integration and conformance tests; no warehouse or hosted
+service was contacted. This did not rerun Clippy or the separate
+`python3 experiments/trace_validate_test.py` fault tests. Upgrade regressions
+using frozen old-server state remain local gRPC + Postgres tests; the two
+capture drivers are `#[ignore]`d. (The shared Postgres test DB accumulates
+`difftest_` schemas because those isolated schemas are not auto-dropped.)
 
-- Workspace: **286 tests passed** across the workspace (adds this session's
-  review-#2 11TH FOLLOW-UP work: the strengthened `default_schema=S`
-  component-boundary collision gate (now fails on the vulnerable revision) and
-  the real swapped-binding wrong-clone fixture
-  `upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases`, correcting
-  the earlier wrong "not capturable" claim. On top of the earlier work: the
-  durable frozen 366be09 clone fixture, the tag-rollback guard, the
-  mode-independent `dbt-state-sql-v3 → v4` invalidation, the 7th-follow-up
-  namespace-hash guard, the RETURNED-mirror RegisterClone correlation, and the
-  history-dependent EXECUTE partial-comparison accounting). The 23 warehouse-free
-  `trace_validate_test.py` checks (driving the ACTUAL driver oracles in
-  `experiments/oracles.py`) are run separately
-  (`python3 experiments/trace_validate_test.py`). All upgrade reproductions are
-  LOCAL multi-revision gRPC + Postgres tests (not hosted-service
-  characterization), plus two `#[ignore]`d capture drivers. (Env note: the shared
-  Postgres test DB accumulates `difftest_` schemas — tests do not auto-drop their
-  isolated schema; drop them if the volume fills.)
-- Server library: **121 tests passed** with DATABASE_URL pointing to an
-  unreachable port, verifying the engine needs no database (the 7th follow-up
-  added only harness-level tests).
-- Formatting and Clippy (all targets, fuzz feature, `-D warnings`): passed.
-- Conformance replay: **26 fixtures causally replayed** with REAL CLONE gating
-  (the `ready_to_clone` arm now compares the local clone payload and replays its
-  confirmation — review #2 2nd follow-up P1 #3). Exact-replay captures promoted:
-  `clone_fallback_swapped_bindings`, `clone_fallback_dep_binding_swap`,
-  `data_test_compare_unrendered`, `clone_fallback_stale_source`,
-  `clone_chain_upstream_drift`, `template_compare_unrendered`, and
-  `data_test_upstream_freshness` (whose test-node assertions replay, with the
-  externally-replaced upstream model isolated as a MISSING-HISTORY gap).
-  Captures that clone from a source built in a PRIOR session are keyed as
-  missing-source-history gaps in [golden/replay_gaps.json](../golden/replay_gaps.json)
-  (clone_chain entries, clone_failed_fallback, dep_binding_swap,
-  clone_submit_equivalent_fallback) rather than silently counted. The remaining
-  characterization-only captures (`lag_multi_upstream_policy`,
-  `selector_state_selection`, `clone_fallback_over_existing_target`,
-  `selector_last_write_wins`, `deferral_resolve`,
-  `clone_submit_allow_clones_false`, `clone_rebuild_execution_type`,
-  `clone_fallback_xenv_fresh`, `clone_chain_source_age`) are excluded and
-  validated by their dedicated tests.
+Conformance replay covers **26 causally replayed fixtures** with real clone
+gating (the `ready_to_clone` arm compares the local clone payload and replays
+its confirmation). Exact-replay captures promoted include
+`clone_fallback_swapped_bindings`, `clone_fallback_dep_binding_swap`,
+`data_test_compare_unrendered`, `clone_fallback_stale_source`,
+`clone_chain_upstream_drift`, `template_compare_unrendered`, and
+`data_test_upstream_freshness` (whose test-node assertions replay, with the
+externally replaced upstream model isolated as a missing-history gap).
+Captures that clone from a source built in a prior session are keyed as
+missing-source-history gaps in [golden/replay_gaps.json](../golden/replay_gaps.json)
+(`clone_chain` entries, `clone_failed_fallback`, `dep_binding_swap`,
+`clone_submit_equivalent_fallback`) rather than silently counted. The remaining
+characterization-only captures (`lag_multi_upstream_policy`,
+`selector_state_selection`, `clone_fallback_over_existing_target`,
+`selector_last_write_wins`, `deferral_resolve`,
+`clone_submit_allow_clones_false`, `clone_rebuild_execution_type`,
+`clone_fallback_xenv_fresh`, `clone_chain_source_age`) are excluded and
+validated by their dedicated tests.
 
 Live verification (clone + lag paths, §A and §C) was performed against the real
 service and Snowflake demo warehouse via the recording proxy; those captures are

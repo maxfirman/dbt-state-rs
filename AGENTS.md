@@ -12,15 +12,17 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 ## Layout
 - `crates/proto` — generated tonic stubs (server+client) from `proto/`.
 - `crates/server` — the server: `decision.rs` (pure engine), `store.rs` (sqlx),
-  `clone.rs` (DDL gen), `services.rs` (gRPC), `lib.rs` (`build_router`), `main.rs`.
+  `warehouse.rs` (dialect policy), `clone.rs` (DDL gen), `services.rs` (gRPC),
+  `lib.rs` (`build_router`), `main.rs`.
 - `crates/harness` — recording proxy, golden fixtures, differential + fuzz tools, tests.
+- `crates/ui` — optional read-only web console.
 → [docs/architecture.md](docs/architecture.md)
 
 ## Build / test
 ```bash
 cargo build
 cargo test                              # needs Postgres at $DATABASE_URL
-cargo test -p dbt-state-server --lib    # pure engine tests, no DB
+cargo test -p dbt-state-server --lib    # server library tests, no DB
 ```
 - `DATABASE_URL` default `postgres://dbtstate:dbtstate@localhost:55441/dbtstate`.
 - `protoc` is required and must be on `PATH` (or set `PROTOC`). `tonic-prost-build`
@@ -33,13 +35,16 @@ cargo test -p dbt-state-server --lib    # pure engine tests, no DB
   generated std-derive impl — do not rename the service to "fix" it.
 - **Decision engine is pure** (`decision.rs::decide`). Keep it I/O-free so the
   property tests (`decision_proptest.rs`) and conformance replay stay valid.
-- **Reuse requires current evidence.** Select latest physical history before
+- **Reuse requires current evidence.** Scope physical history by organization,
+  warehouse family, connection namespace and target; select its latest row before
   checking versioned SQL/dependency/context/config fingerprints. Compare exact
   physical upstream names and preserve unknown epochs. Own-target existence and
-  external edits are checked separately from upstream freshness. Cross-environment
-  reuse is via CLONE (keyed by `table_namespace` + schema-abstracted logic +
-  execution type), never a namespace-only SKIP — a SKIP still requires the strict
-  same-target match. The schema-abstracted logic identity binds each dependency's
+  external edits are checked separately from upstream freshness. Snowflake
+  cross-environment reuse is via CLONE (keyed by `table_namespace` +
+  schema-abstracted logic + execution type); other dialects retain exact SQL
+  and do not use automatic cross-target reuse. A namespace alone never justifies
+  SKIP; it still requires the strict same-target match. The schema-abstracted
+  logic identity binds each dependency's
   schema-abstracted NAME to its definition (NOT a bare multiset of definitions),
   so swapping two dependency definitions between references is NOT equivalent
   (review #2 finding 3). Data tests require scoped UID identity and complete

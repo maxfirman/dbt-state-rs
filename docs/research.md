@@ -1,9 +1,10 @@
 # dbt State protocol — research notes
 
 > These are the reverse-engineering notes compiled while building this project.
-> They are preserved for provenance and context. For the authoritative,
-> maintained protocol reference see [protocol.md](protocol.md); for the capture
-> workflow see [harness.md](harness.md).
+> They are preserved as a historical snapshot: phase labels, local tool versions
+> and implementation status below are not current. For the maintained protocol
+> reference see [protocol.md](protocol.md); for the capture workflow see
+> [harness.md](harness.md).
 
 ## What dbt State is
 dbt State (GA ~2026, "state-aware orchestration") makes dbt build on *change* instead of
@@ -88,8 +89,9 @@ Custom `Struct`/`Value`/`ListValue` (like google.protobuf.Struct but with int64 
 - jaffle-shop at `~/projects/jaffle-shop` (DuckDB local + Snowflake targets in profiles.yml).
   Log confirms: "dbt State is enabled (endpoint https://api.state.dbt.com:443, defer_to prod)".
   Response logs captured under `logs/run_cache/responses_*.jsonl` (REAL server responses!).
-- Rust 1.98, Postgres client (psql), Docker available. protoc NOT installed (tonic-prost-build
-  vendors protoc, so may not be needed).
+- Rust 1.98, Postgres client (psql), Docker available. This original toolchain
+  note is superseded: `protoc` is required on `PATH` or via `PROTOC`; see
+  [development.md](development.md#toolchain).
 - Reference clones under ~/projects: dbt-fusion (Rust client, authoritative proto+client),
   dbt-core (Python client + proto mirror), dbt-state-oss (poor ref server, good protocol notes).
 

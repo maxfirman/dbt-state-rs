@@ -12,6 +12,7 @@ State ("query cache") gRPC decision service.
 | [development.md](development.md) | Toolchain, build/run, Postgres, pointing the dbt client at the server. |
 | [harness.md](harness.md) | The recording proxy + how real golden traffic is captured. |
 | [testing.md](testing.md) | Testing strategy: conformance replay, property tests, differential fuzzing. |
+| [conformance-plan.md](conformance-plan.md) | Handoff plan for a versioned coverage ledger, independent state-machine tests and release gates. |
 | [ui.md](ui.md) | The read-only web console (Topcoat): what it shows, how to run it, design. |
 | [research.md](research.md) | Reverse-engineering notes and provenance from real traffic. |
 

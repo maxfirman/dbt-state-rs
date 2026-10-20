@@ -6,7 +6,7 @@ using the official Fusion dbt client as the traffic generator.
 
 ## Components
 ### 1. Recording proxy (`crates/harness`, bin `record-proxy`) — DONE, WORKING
-A local INSECURE tonic server implementing every query_cache service. The Fusion
+A local INSECURE tonic server forwarding every query_cache service. The Fusion
 client is pointed at it; the proxy forwards each call to the real service over TLS
 with a minted Bearer token, and appends decoded request/response JSON to a golden
 `.jsonl` file.
@@ -20,16 +20,17 @@ with a minted Bearer token, and appends decoded request/response JSON to a golde
 - `src/golden.rs` — append-only JSONL writer; one `GoldenEntry` per call
   {service, method, recorded_at, metadata[], request, response}.
 - `src/bin/record_proxy.rs` — tonic server impls for SQL, Execution, Clone,
-  ClientValidation, Explain (newtype `ProxyService(Arc<Proxy>)` to satisfy the
-  orphan rule; derives Clone for tonic). Each handler clones the decoded message,
-  forwards upstream with auth metadata, logs, returns the real response verbatim.
+  ClientValidation, Explain, SelectorService and ClientTelemetry (newtype
+  `ProxyService(Arc<Proxy>)` to satisfy the orphan rule; derives Clone for tonic).
+  Each handler clones the decoded message, forwards upstream with auth metadata,
+  logs, and returns the real response verbatim.
 
 ### How to run a capture
     # terminal: start proxy
-    cd ~/projects/dbt-state-rs && cargo build -p dbt-state-harness
+    cd /path/to/dbt-state-rs && cargo build -p dbt-state-harness
     RUST_LOG=info GOLDEN_DIR=./golden PROXY_LISTEN=127.0.0.1:50099 ./target/debug/record-proxy
     # then run Fusion dbt against it (Snowflake target — DuckDB does not trigger State):
-    cd ~/projects/jaffle-shop
+    cd /path/to/jaffle-shop
     DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50099 RUN_CACHE_API_SECURE=false \
       dbt build --profile snowflake --target analytics_dev --select <model> --skip-semantic-manifest-validation
     # To force EXECUTE: make a *semantic* SQL change (add a column). Comments alone are
@@ -54,9 +55,8 @@ restore` the project afterwards.
 - `selector_experiment.sh {baseline|query CRIT|mutate CRIT EDIT|all-clean}` —
   dbt State-powered `state:*` selectors (`GetStateSelection`). Builds a baseline
   in `prod_demo`, then runs `dbt compile --select state:<crit>` from `dev_clone`
-  (`defer_to_target: prod_demo`) to capture the selector verdicts. NOTE: the
-  recording proxy must proxy `SelectorService` (and `ClientTelemetry`) for these
-  calls to be captured — it now does.
+  (`defer_to_target: prod_demo`) to capture the selector verdicts. The recording
+  proxy forwards `SelectorService` and `ClientTelemetry`.
 
 Promote a useful capture into `golden/fixtures/` and drive it from a test.
 
@@ -126,16 +126,22 @@ ready_to_clone response: {request_id, clone_sqls:[
   decision_description:""}, clone_execution_results{fields:{}}, execution_decision_id}.
 CloneResponse populates BOTH ready_to_clone (field 3) AND ready_to_clone_v1 (deprecated
 oneof 1) with the same payload.
-=> SERVER generates the clone DDL (dialect-specific). Implemented in crates/server/src/clone.rs
-   (snowflake TRANSIENT/TABLE/VIEW, bigquery CLONE, databricks SHALLOW CLONE, else CTAS).
+=> SERVER generates the clone DDL (dialect-specific). Current implementation:
+   `crates/server/src/clone.rs` supports Snowflake TABLE/TRANSIENT TABLE,
+   BigQuery TABLE CLONE, and Databricks SHALLOW CLONE for an explicitly known
+   Delta source. View sources, Redshift and unknown dialects are rejected;
+   non-Snowflake templates have not been validated against warehouses or hosted
+   responses. See [protocol.md](protocol.md#clone-cloneregisterclone).
 
 ResolveDeferredRelations request: {profile_name, target_name(defer-to), project_name,
-project_id, node_unique_ids[]} -> {fqn_by_unique_id: {}} (real returned EMPTY map; the
-clone source came from profile auto-deferral, not server resolution). Our stub matches.
+project_id, node_unique_ids[]} -> {fqn_by_unique_id: {}} in this initial capture:
+no upstreams had been built in the defer-to environment yet. Later non-empty
+captures established the mapping; the server now resolves recorded
+`node_unique_id` → physical FQN there. See [protocol.md](protocol.md#state-writes-execution).
 
-Differential tests (crates/harness/tests/clone.rs): register_clone_matches_real_shape
-(asserts clone_sqls byte-match the real DDL, decision=3, source/target, oneof mirror) and
-resolve_deferred_relations_matches_real_shape. Both green.
+Differential tests (`crates/harness/tests/clone.rs`) pin the captured clone DDL,
+decision, source/target and both response mirrors. Deferral's non-empty mapping
+is covered by `crates/harness/tests/deferral.rs`.
 
 NOTE on live clone: forcing the Fusion client to clone against OUR server live is
 state-dependent (clone-if-missing only fires when the dev table is absent). The

@@ -77,15 +77,18 @@ shadowing this one; execution type, dialect options and logic are checked only
 after selecting the current row. The namespace may be absent for nonstandard
 clients, in which case that family has an isolated absent-namespace scope.
 
-Migrations 0001–0008 provide execution history and separate UI capture tables.
-`executions` stores identity/context hashes (including the cross-environment
-`node_namespace_logic_hash` and clone provenance `clone_source_table` from 0008),
-optional freshness snapshots, confirmed outcomes and complete protobuf result
-bytes. Models/seeds select the latest confirmed physical target before matching
-its fingerprint; cross-environment clone reuse additionally matches by namespace
-+ abstracted logic. Tests select
-by org/project/namespace/UID and then check logic/results. Pending rows do not
-permit reuse. Confirm writes an outcome once; Record batches are transactional.
+Migrations 0001–0012 define execution history, UI capture tables, selector and
+deferral `node_states`, template fingerprints, and the generated
+`warehouse_family` column/index. `executions` stores identity/context hashes
+(including the cross-environment `node_namespace_logic_hash` and clone
+provenance `clone_source_table` from 0008), optional freshness snapshots,
+confirmed outcomes and complete protobuf result bytes. Models/seeds select the
+latest confirmed physical target in the warehouse scope before matching its
+fingerprint; Snowflake cross-environment clone reuse additionally matches by
+namespace + abstracted logic. Data tests select by org/project/warehouse
+scope/UID and then check logic/results. Pending rows do not permit reuse.
+Confirm writes an outcome once; Record batches and their selector/deferral
+state updates are transactional.
 
 Every execution store query is org scoped from x-organization-id (default local).
 UI reads use DBT_STATE_UI_ORG_ID (default local) in every query. These scope
