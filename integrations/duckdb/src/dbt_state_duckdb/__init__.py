@@ -190,6 +190,9 @@ def install():
     # Materializations return after commit and both inside/outside post-hooks.
     # Wrap the original execution, including upstream's transport-failure bypass,
     # so completion evidence exists before on_run_result and confirmation.
+    from .completion import completed_result, install_result_guard, may_confirm
+
+    install_result_guard(DuckDBAdapterExtension)
     original_execute = runner.RunnerOverride._execute_with_cache
 
     def execute(self, dbt_runner, node, manifest, *, original, submit, should_confirm):
@@ -198,14 +201,8 @@ def install():
             cache = self._run_cache_get_or_create(
                 dbt_runner.config, dbt_runner.adapter, manifest
             )
-            if (
-                cache
-                and isinstance(cache._adapter_ext, DuckDBAdapterExtension)
-                and str(result.status) == "success"
-            ):
-                cache._adapter_ext.complete_write(
-                    cache._node_resolution.node_to_table(node)
-                )
+            if cache and isinstance(cache._adapter_ext, DuckDBAdapterExtension):
+                completed_result(cache, node, result)
             return result
 
         return original_execute(
@@ -215,7 +212,9 @@ def install():
             manifest,
             original=completed,
             submit=submit,
-            should_confirm=should_confirm,
+            should_confirm=lambda result: may_confirm(
+                self._run_cache, DuckDBAdapterExtension, result, should_confirm
+            ),
         )
 
     runner.RunnerOverride._execute_with_cache = execute
