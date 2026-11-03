@@ -207,3 +207,36 @@ physical row order. Explicit expression collations and a configured
 collated-input reorder with a BLOB output, so the regression demonstrates
 unknown input evidence without relying on an unsupported output type. Run
 that focused case with `VIEW_SCENARIO=collation` and the view test filter.
+
+### Cached data tests
+
+With `run_cache_enable_data_tests: true`, supported data tests reuse the complete
+`failures`, `should_error`, and `should_warn` result. A cached severity=error
+failure retains dbt's failing status and nonzero exit code; a warning retains its
+warning status. Completed test failures are clean invocation outcomes for evidence
+recovery. SQL execution errors and incomplete/unconfirmed results cannot certify
+a cached pass. Tests have no physical target and never receive a target build
+epoch: freshness comes from their recorded upstream evidence.
+
+Local requests carry a versioned project ID derived from the canonical project
+root and project name, separately from the DuckDB file/generation namespace.
+Same-named projects at different roots therefore have separate cached outcomes,
+while sharing the physical warehouse namespace. Moving a project root safely
+starts new test history. Organization isolation remains enforced by the service.
+
+`store_failures` / `store_failures_as` and the CLI `--store-failures` option use
+ordinary dbt execution, including failure-relation DDL; State reuse for those
+relations is unsupported until their separate lifecycle is validated.
+
+The real-client cached-test gate uses three dbt worker threads, independent SQL
+counts and literal duplicate/NULL inputs, positive cached pass/fail/warn outcomes,
+both mutation directions, same-named project and copied-file isolation, unknown
+input types, missing inputs, and repeated SQL errors. A separate gate verifies
+stored-failure fallback. Run both with the pinned Python environment:
+
+```bash
+DBT_STATE_DUCKDB_PYTHON=/tmp/dbt-duckdb-venv/bin/python \
+PYTHONPATH="$PWD/integrations/duckdb/src" \
+cargo test -p dbt-state-harness --test duckdb_data_tests_python -- --ignored
+cargo test -p dbt-state-harness --test duckdb_data_tests --test data_test_freshness
+```
