@@ -115,6 +115,9 @@ def install():
     from dbt_state.adapters import ADAPTER_EXTENSION_MAPPING
     from dbt_state.request_builder import RequestBuilder
 
+    from .data_tests import completed_invocation, install as install_data_tests
+
+    install_data_tests(DuckDBAdapterExtension)
     ADAPTER_EXTENSION_MAPPING["duckdb"] = DuckDBAdapterExtension
     from .views import install_view_requests
 
@@ -145,8 +148,14 @@ def install():
         # Register first so resource callbacks run before evidence is marked clean.
         ctx.call_on_close(lambda: finish(success))
         with ctx:
-            result = original_invoke(ctx)
-            success = bool(result[1])
+            from dbt.cli.exceptions import ResultExit
+
+            try:
+                result = original_invoke(ctx)
+            except ResultExit as outcome:
+                success = completed_invocation((outcome.result, False))
+                raise
+            success = completed_invocation(result)
             return result
 
     runner.RunnerOverride.set_runtime_config = configure
