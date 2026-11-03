@@ -155,3 +155,11 @@ copy/recreation, backup restoration with reset, damaged metadata, a frozen
 historical format captured using commit `3907d3c`, uncertain confirmation,
 process interruption and invocation/reset lock exclusion. Failed tests retain
 the temporary project and logs for reproduction.
+
+SQL formatting equivalence is limited to a [validated SELECT subset](../../docs/duckdb-sql-identity.md).
+Run its separate real-client rows/schema gate with:
+
+```sh
+DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
+  cargo test -p dbt-state-harness --test duckdb_identity_python -- --ignored
+```
