@@ -7,6 +7,7 @@ pub mod decision;
 pub mod fingerprint;
 pub mod selector;
 pub mod services;
+pub mod sql_identity;
 pub mod sql_norm;
 pub mod store;
 pub mod warehouse;

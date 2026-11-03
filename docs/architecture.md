@@ -36,6 +36,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres access via sqlx: lookups, pending→confirmed lifecycle, batch hydrate. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
+| `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
 | `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
 | `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity, clone eligibility and physical warehouse family. |
 | `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
@@ -63,9 +64,9 @@ mode), dialect/default context, sorted semantic extras and supplied dependency
 SQL/context. It also derives a schema-abstracted cross-environment logic hash
 (`namespace_logic_hash`) used, scoped by `table_namespace`, for Snowflake clone reuse: the
 same model built in different environments differs only by the physical schema
-qualifier, which the abstraction collapses. Other dialects retain exact SQL and
-do not use schema-abstracted clone matching until their identifier/dependency
-rules are validated. Seeds share their own versioned configuration hash.
+qualifier, which the abstraction collapses. DuckDB normalizes a small [validated formatting subset](duckdb-sql-identity.md);
+other dialects retain exact SQL. Neither uses schema-abstracted clone matching
+until its identifier/dependency and copy lifecycle rules are validated. Seeds share their own versioned configuration hash.
 Unsupported SQL is retained exactly; old hashes cold miss rather than being
 reinterpreted.
 

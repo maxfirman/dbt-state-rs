@@ -1,6 +1,5 @@
 """Pinned extension to the maintained Python State client for explicit local use."""
 
-import hashlib
 import os
 import sys
 import uuid
@@ -26,7 +25,11 @@ class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
         self.evidence = None
         self._uncertain_writes = set()
         try:
-            self.table_namespace = self._file_namespace()
+            from .recovery import begin
+
+            self.invocation = begin(self.path)
+            self.table_namespace = self.invocation.namespace
+            self.invocation.drainers.append(lambda: self._executor.shutdown(wait=True))
             from .evidence import EvidenceStore
 
             self.evidence = EvidenceStore(self.path)
@@ -38,41 +41,6 @@ class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
             events.fire_warn_event("DuckDB State metadata unavailable: {}", str(exc))
             self.table_namespace = "duckdb-unknown-" + str(uuid.uuid4())
 
-    def _file_namespace(self):
-        with duckdb.connect(str(self.path)) as metadata:
-            metadata.execute("CREATE SCHEMA IF NOT EXISTS _dbt_state")
-            metadata.execute(
-                "CREATE TABLE IF NOT EXISTS _dbt_state.database_identity "
-                "(id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL, generation VARCHAR NOT NULL)"
-            )
-            metadata.execute(
-                "INSERT INTO _dbt_state.database_identity VALUES (1, 1, ?) ON CONFLICT DO NOTHING",
-                [str(uuid.uuid4())],
-            )
-            evidence_tables = metadata.execute(
-                "SELECT table_name FROM information_schema.tables WHERE table_schema='_dbt_state' AND table_name IN ('evidence_clock','relation_evidence')"
-            ).fetchall()
-            if not evidence_tables:
-                # Missing evidence cannot restart its sequence in an old scope.
-                metadata.execute(
-                    "UPDATE _dbt_state.database_identity SET generation=? WHERE id=1",
-                    [str(uuid.uuid4())],
-                )
-            elif len(evidence_tables) != 2:
-                raise ValueError("Incomplete State evidence metadata")
-            rows = metadata.execute(
-                "SELECT version, generation FROM _dbt_state.database_identity"
-            ).fetchall()
-            if len(rows) != 1 or rows[0][0] != 1:
-                raise ValueError("Unsupported State metadata version")
-            generation = str(uuid.UUID(rows[0][1]))
-        stat = self.path.stat()
-        # Generation handles recreation; path and inode distinguish copied files.
-        scope = (
-            f"duckdb-file-v1\0{self.path}\0{stat.st_dev}\0{stat.st_ino}\0{generation}"
-        )
-        return hashlib.sha256(scope.encode()).hexdigest()
-
     def _observe(self, table, *, completed_write=False):
         if self.evidence is None or (
             table in self._uncertain_writes and not completed_write
@@ -81,6 +49,9 @@ class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
         try:
             return self.evidence.observe(table, completed_write=completed_write)
         except (duckdb.Error, OSError, ValueError, TypeError):
+            from .recovery import uncertain
+
+            uncertain()
             return None
 
     def get_last_modified_epoch(self, tables, table_overrides=None):
@@ -101,6 +72,10 @@ class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
         self.clear_cache([table])
         if self._observe(name, completed_write=True) is not None:
             self._uncertain_writes.discard(name)
+        else:
+            from .recovery import uncertain
+
+            uncertain()
 
     def current_timestamp_utc(self):
         # A wall clock is not valid freshness evidence for this warehouse.
@@ -150,6 +125,45 @@ def install():
     from contextvars import ContextVar
 
     local_duckdb = ContextVar("local_duckdb", default=False)
+    # Enter before dbt's on-run hooks, including invocations without model work.
+    # Keep the file lock until the CLI has joined workers and closed adapters.
+    from dbt.cli.main import cli
+
+    from .recovery import begin, finish, guard_outcome
+
+    original_config = runner.RunnerOverride.set_runtime_config
+    original_invoke = cli.invoke
+
+    def configure(self, config):
+        if config.credentials.type == "duckdb":
+            begin(config.credentials.path)
+        return original_config(self, config)
+
+    def invoke(ctx):
+        success = False
+        # Click closes adapter resources when the outermost context exits.
+        # Register first so resource callbacks run before evidence is marked clean.
+        ctx.call_on_close(lambda: finish(success))
+        with ctx:
+            result = original_invoke(ctx)
+            success = bool(result[1])
+            return result
+
+    runner.RunnerOverride.set_runtime_config = configure
+    cli.invoke = invoke
+    from dbt_state.grpc.client import QueryCacheGrpcClient
+
+    for method in (
+        "confirm_execution",
+        "record_executions",
+        "update_execution_metadata",
+    ):
+        setattr(
+            QueryCacheGrpcClient,
+            method,
+            guard_outcome(getattr(QueryCacheGrpcClient, method)),
+        )
+
     original_auth = runner.sso_auth
     original_create = runner.RunnerOverride._run_cache_get_or_create
 
@@ -208,6 +222,17 @@ def install():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "reset":
+        import argparse
+
+        from .recovery import reset
+
+        parser = argparse.ArgumentParser(
+            description="Reset State evidence without deleting user relations"
+        )
+        parser.add_argument("--database", required=True)
+        reset(parser.parse_args(sys.argv[2:]).database)
+        return
     install()
     from dbt.cli.main import cli
 

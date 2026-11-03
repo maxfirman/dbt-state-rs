@@ -39,7 +39,7 @@ def references(sql):
     # even if every physical leaf column and the final result are exact types.
     for node in query.walk():
         if isinstance(node, exp.Div):
-            raise ValueError("Unsupported approximate arithmetic")
+            raise TypeError("Unsupported approximate arithmetic")
         if isinstance(node, exp.Cast) and node.args["to"].this in {
             exp.DataType.Type.FLOAT,
             exp.DataType.Type.DOUBLE,
