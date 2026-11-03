@@ -39,7 +39,11 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// `template` is the existing template-comparison mode, whose exact hosted
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
-    sql_logic_hash_with_version(req, template, b"dbt-state-sql-v4")
+    let version = match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
+        crate::warehouse::Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1".as_slice(),
+        _ => b"dbt-state-sql-v4".as_slice(),
+    };
+    sql_logic_hash_with_version(req, template, version)
 }
 
 /// The versioned core of [`sql_logic_hash`]. The ONLY difference an engine

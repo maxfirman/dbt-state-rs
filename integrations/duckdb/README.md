@@ -116,3 +116,11 @@ Recovery markers, exclusive invocation locking and explicit reset are the next
 milestone. For this milestone use one invocation with exclusive write access;
 manual SQL edits are supported between runs. Backup restoration requires the
 forthcoming reset operation before reuse; it is not automatically detected.
+
+SQL formatting equivalence is limited to a [validated SELECT subset](../../docs/duckdb-sql-identity.md).
+Run its separate real-client rows/schema gate with:
+
+```sh
+DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
+  cargo test -p dbt-state-harness --test duckdb_identity_python -- --ignored
+```
