@@ -51,14 +51,14 @@ node identity across submit, record, and copy paths. The extension replaces its
 adapter-credential namespace with file/generation scope; no upstream source
 checkout or unbuildable monorepo packaging hooks are required.
 
-`_dbt_state.database_identity` is reserved for a versioned generation UUID.
+The `_dbt_state` schema holds reserved, versioned evidence and a generation UUID.
 Namespaces hash the canonical file path, device/inode identity and generation;
-copying a database to another path cannot share state. Metadata with an unknown
-version or invalid generation uses a fresh untrusted namespace for the current
-invocation and keeps all freshness unknown. Do not edit the reserved schema.
-Backups restored over the same file will need the explicit reset operation
-introduced by the recovery milestone; automatic restoration detection is not
-claimed.
+copying a database to another path cannot share history. Normal restarts retain
+the same scope and eligible results SKIP. Recreating a file, missing metadata,
+incompatible formats, malformed evidence, invalid clock ordering, and an
+unfinished prior invocation establish a fresh generation before State requests.
+Old history stays in Postgres but cannot authorize reuse in the new scope.
+Do not edit the reserved schema.
 
 Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
@@ -110,9 +110,48 @@ lexicographically as bytes, and concatenated, preserving duplicate rows while
 ignoring physical order. Unsupported scans remain unknown and cannot confirm.
 Changes to this format require a new version and invalidation.
 
-Missing both evidence tables rotates the generation before creating a new
-sequence; partial or incompatible metadata fails closed for the invocation.
-Recovery markers, exclusive invocation locking and explicit reset are the next
-milestone. For this milestone use one invocation with exclusive write access;
-manual SQL edits are supported between runs. Backup restoration requires the
-forthcoming reset operation before reuse; it is not automatically detected.
+## Reset, restoration and exclusive writers
+
+Reset preserves user tables, views and schemas, replaces the reserved evidence
+tables, and changes the generation. The next eligible run BUILDs and confirms;
+subsequent unchanged runs can SKIP. No server or cloud credential is required:
+
+```sh
+dbt-state-duckdb reset --database /absolute/path/warehouse.duckdb
+```
+
+Stop all dbt invocations and external writers before restoring a backup. Restore
+the file, then run this reset command **before using State again**. Restored
+metadata may contain a clean marker, generation and clock from an older point
+in history; automatic detection of arbitrary restoration is outside the
+contract. Reset is required even if the restored rows look unchanged.
+
+Each cooperating invocation and reset takes a nonblocking advisory lock beside
+the canonical database path (`warehouse.duckdb.dbt-state.lock`). An overlapping
+invocation/reset fails before warehouse execution; never remove the lock file
+while a process is running. Symlink aliases share the lock; hard-linked files
+are rejected. External tools do not honor this advisory lock: manual writes are
+supported only between invocations, and overlapping external writers are not
+supported. Normal dbt worker threads remain within the invocation's lock.
+
+Before project execution/on-run hooks, the integration commits a dirty marker.
+It clears this marker only after successful CLI completion, adapter cleanup and
+metadata worker draining. Failed/uncertain State completion RPCs or unknown
+known-write evidence leave the marker dirty even when dbt itself succeeds.
+Interrupted invocations therefore cold-build in a fresh generation on restart,
+including a crash between warehouse commit and confirmation or immediately
+after confirmation. This deliberately sacrifices reuse following uncertainty;
+it does not claim a transaction spanning DuckDB and Postgres.
+
+The recovery regression runs real dbt commands against the production router:
+
+```sh
+DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
+  cargo test -p dbt-state-harness --test duckdb_recovery -- --ignored --nocapture
+```
+
+It checks literal rows and public BUILD/confirmation/SKIP outcomes for reset,
+copy/recreation, backup restoration with reset, damaged metadata, a frozen
+historical format captured using commit `3907d3c`, uncertain confirmation,
+process interruption and invocation/reset lock exclusion. Failed tests retain
+the temporary project and logs for reproduction.
