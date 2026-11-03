@@ -67,8 +67,9 @@ running the Fusion client against a DuckDB target and observing zero State
 activity. Use a supported warehouse (this project was developed and validated
 against Snowflake) for Fusion validation. The optional [Python DuckDB local
 extension](../integrations/duckdb/README.md) now provides a credential-free
-cold-build compatibility gate with `./scripts/duckdb-smoke.sh`; durable reuse
-is a subsequent milestone.
+table BUILD/confirm/SKIP compatibility gate with `./scripts/duckdb-smoke.sh`.
+It uses versioned observed changes and durable ordinals rather than timestamps;
+see the extension README for the supported scalar subset and writer contract.
 
 ## Capturing real traffic / validating against the hosted service
 

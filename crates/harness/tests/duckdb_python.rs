@@ -3,14 +3,35 @@ mod support;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires pinned Python environment; run scripts/duckdb-smoke.sh"]
-async fn real_dbt_cold_build_and_file_isolation() {
+async fn real_dbt_durable_table_reuse_and_external_changes() {
     let python = std::env::var("DBT_STATE_DUCKDB_PYTHON").expect("pinned Python executable");
     let (addr, schema, state) = support::start_server_with_state().await;
     let temp = std::env::temp_dir().join(format!("duckdb-smoke-{}", uuid::Uuid::new_v4()));
     for (name, mode) in [
         ("first", "normal"),
         ("second", "normal"),
-        ("first", "normal"),
+        ("first", "skip"),
+        ("first", "rewrite"),
+        ("first", "input"),
+        ("first", "skip"),
+        ("first", "target"),
+        ("first", "target-schema"),
+        ("first", "drop"),
+        ("first", "schema"),
+        ("first", "sql"),
+        ("first", "identical"),
+        ("first", "skip"),
+        ("first", "transport"),
+        ("first", "rebuild"),
+        ("first", "skip"),
+        ("scalar", "normal"),
+        ("scalar", "skip"),
+        ("scalar", "target"),
+        ("scalar", "input"),
+        ("scalar", "skip"),
+        ("hooks", "normal"),
+        ("hooks", "skip"),
+        ("first", "unknown"),
         ("first", "unsupported"),
     ] {
         let result = tokio::process::Command::new(&python)
@@ -36,32 +57,29 @@ async fn real_dbt_cold_build_and_file_isolation() {
             String::from_utf8_lossy(&result.stderr)
         );
     }
-    // Pending executions prove the public service returned BUILD, and unknown
-    // freshness evidence must not be promoted into successful confirmations.
-    let rows: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
-        "SELECT node_unique_id, status, table_namespace, dialect FROM executions WHERE node_unique_id = 'model.duckdb_smoke.totals' ORDER BY id"
-    ).fetch_all(state.store.pool()).await.unwrap();
-    assert_eq!(rows.len(), 4, "silently disabled State must fail the gate");
-    assert!(rows.iter().all(|r| r.1 == "pending" && r.3 == "duckdb"));
-    assert!(rows
-        .iter()
-        .all(|r| r.2.as_ref().is_some_and(|v| !v.is_empty())));
+    let observations = |name: &str| -> Vec<serde_json::Value> {
+        std::fs::read_to_string(temp.join(name).join("observations.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    };
+    let first = observations("first");
+    let second = observations("second");
     assert_ne!(
-        rows[0].2, rows[1].2,
-        "distinct files need distinct namespaces"
+        first[0]["namespace"], second[0]["namespace"],
+        "independent files isolate history"
     );
-    assert_eq!(
-        rows[0].2, rows[2].2,
-        "normal restarts preserve file generation"
-    );
+    for event in &first[..first.len() - 1] {
+        assert_eq!(
+            event["namespace"], first[0]["namespace"],
+            "normal restarts preserve the generation"
+        );
+    }
     assert_ne!(
-        rows[0].2, rows[3].2,
-        "unknown metadata cannot match valid history"
-    );
-    let confirmed: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status = 'confirmed' AND node_unique_id IN ('model.duckdb_smoke.totals', 'seed.duckdb_smoke.numbers')").fetch_one(state.store.pool()).await.unwrap();
-    assert_eq!(
-        confirmed, 0,
-        "unknown epochs must never confirm model or seed outcomes"
+        first.last().unwrap()["namespace"],
+        first[0]["namespace"],
+        "incompatible metadata must not match valid history"
     );
     sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
         .execute(state.store.pool())
