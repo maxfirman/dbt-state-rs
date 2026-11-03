@@ -28,6 +28,29 @@ def references(sql):
         raise TypeError("Unsupported view query")
     # Table-valued functions, remote inputs and unqualified search-path lookup
     # require resolution semantics beyond this initial local-file contract.
+    if any(
+        isinstance(node, (exp.Limit, exp.Offset, exp.TableSample))
+        for node in query.walk()
+    ):
+        raise ValueError("Unsupported order-sensitive view query")
+    if any(node.args.get("on") for node in query.find_all(exp.Distinct)):
+        raise ValueError("Unsupported DISTINCT ON view query")
+    # Approximate intermediates can make an aggregate depend on scan order,
+    # even if every physical leaf column and the final result are exact types.
+    for node in query.walk():
+        if isinstance(node, exp.Div):
+            raise ValueError("Unsupported approximate arithmetic")
+        if isinstance(node, exp.Cast) and node.args["to"].this in {
+            exp.DataType.Type.FLOAT,
+            exp.DataType.Type.DOUBLE,
+        }:
+            raise ValueError("Unsupported approximate cast")
+        if (
+            isinstance(node, exp.Literal)
+            and node.is_number
+            and "e" in node.this.lower()
+        ):
+            raise ValueError("Unsupported approximate numeric literal")
     tables = find_tables(query)
     for table in tables:
         if not isinstance(table.this, exp.Identifier) or not table.db:
@@ -37,7 +60,6 @@ def references(sql):
         "TRY_CAST",
         "SUM",
         "COUNT",
-        "AVG",
         "MIN",
         "MAX",
         "CONCAT",

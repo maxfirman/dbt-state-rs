@@ -33,7 +33,13 @@ with duckdb.connect(str(root / "warehouse.duckdb")) as db:
     )
 
 
-def run(expected, columns=("id", "amount"), unknown=False, unconfirmed=()):
+def run(
+    expected,
+    columns=("id", "amount"),
+    unknown=False,
+    unconfirmed=(),
+    reference_sql=None,
+):
     result = subprocess.run(
         [
             sys.executable,
@@ -57,7 +63,8 @@ def run(expected, columns=("id", "amount"), unknown=False, unconfirmed=()):
     assert result.returncode == 0, result.stdout + result.stderr
     with duckdb.connect(str(root / "warehouse.duckdb")) as db:
         reference = db.execute(
-            "select " + ",".join(columns) + " from raw.numbers order by id,amount"
+            reference_sql
+            or ("select " + ",".join(columns) + " from raw.numbers order by id,amount")
         ).fetchall()
         for name in ("direct", "nested", "result"):
             actual = db.execute(
@@ -177,3 +184,25 @@ with duckdb.connect(str(root / "warehouse.duckdb")) as db:
     )
 run({"direct": "build", "nested": "build", "result": "build"}, unknown=True)
 run({"direct": "build", "nested": "build", "result": "build"}, unknown=True)
+
+# Physical reorder alone is deliberately not a content change. LIMIT without
+# a deterministic ordering is outside reuse eligibility, so a downstream table
+# cannot retain the row selected before this rewrite.
+with duckdb.connect(str(root / "warehouse.duckdb")) as db:
+    db.execute(
+        "create or replace view raw.wrapper as select id, amount from raw.numbers limit 1"
+    )
+run(
+    {"direct": "build", "nested": "build", "result": "build"},
+    reference_sql="select id,amount from raw.numbers limit 1",
+)
+with duckdb.connect(str(root / "warehouse.duckdb")) as db:
+    db.execute(
+        "create temporary table reordered as select * from raw.numbers order by id desc; delete from raw.numbers; insert into raw.numbers select * from reordered"
+    )
+run(
+    {"direct": "build", "nested": "build", "result": "build"},
+    reference_sql="select id,amount from raw.numbers limit 1",
+)
+with duckdb.connect(str(root / "warehouse.duckdb")) as db:
+    assert db.execute("select * from dev.result").fetchall() == [(3, None)]

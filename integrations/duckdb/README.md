@@ -140,7 +140,10 @@ and removal through a view -> nested view -> table graph with four workers.
 
 The initial subset accepts SELECT/UNION queries over schema-qualified local
 relations, with ordinary projections and a small set of deterministic built-in
-functions (casts, aggregates, concat/chr/unhex, coalesce/nullif and lower/upper).
+functions (exact casts, sum/count/min/max, concat/chr/unhex, coalesce/nullif and
+lower/upper). Order-sensitive LIMIT/OFFSET/SAMPLE/DISTINCT ON, approximate
+intermediates and AVG are outside this subset. The same eligibility gate applies
+to submitted models/tests as well as physical view definitions.
 Search-path-dependent unqualified physical references, cycles, missing
 relations, table functions, external relations and unsupported functions/syntax
 produce explicit unknown dependency evidence. dbt executes these workloads
