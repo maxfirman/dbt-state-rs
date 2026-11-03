@@ -54,6 +54,20 @@ class EvidenceStore:
 
                     sh, ch = view_fingerprint(db, table)
                 elif kind == [("BASE TABLE",)]:
+                    # DESCRIBE omits column collation. Non-binary comparisons
+                    # can choose different tied values after a physical reorder,
+                    # which a relational content fingerprint intentionally ignores.
+                    ddl = db.execute(
+                        "SELECT sql FROM duckdb_tables() WHERE database_name=? AND schema_name=? AND table_name=?",
+                        [relation.catalog, relation.db, relation.name],
+                    ).fetchall()
+                    if (
+                        len(ddl) != 1
+                        or not ddl[0][0]
+                        or re.search(r"\bCOLLATE\b", ddl[0][0], re.IGNORECASE)
+                    ):
+                        db.execute("ROLLBACK")
+                        return None
                     # DESCRIBE and SELECT use the same committed transaction snapshot.
                     schema = db.execute("DESCRIBE SELECT * FROM " + table).fetchall()
                     if any(

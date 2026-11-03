@@ -29,7 +29,9 @@ def references(sql):
     # Table-valued functions, remote inputs and unqualified search-path lookup
     # require resolution semantics beyond this initial local-file contract.
     if any(
-        isinstance(node, (exp.Limit, exp.Offset, exp.TableSample))
+        isinstance(
+            node, (exp.Limit, exp.Offset, exp.TableSample, exp.Window, exp.Collate)
+        )
         for node in query.walk()
     ):
         raise ValueError("Unsupported order-sensitive view query")
@@ -51,6 +53,8 @@ def references(sql):
             and "e" in node.this.lower()
         ):
             raise ValueError("Unsupported approximate numeric literal")
+    if any(join.args.get("method") for join in query.find_all(exp.Join)):
+        raise ValueError("Unsupported order-dependent join method")
     tables = find_tables(query)
     for table in tables:
         if not isinstance(table.this, exp.Identifier) or not table.db:
@@ -216,6 +220,18 @@ def install_view_requests(adapter_type):
         if local:
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)
+            settings = self._adapter_ext.adapter.config.credentials.settings or {}
+            if any(str(key).lower() == "default_collation" for key in settings):
+                marker = self._adapter_ext._sql(
+                    exp.table_(
+                        "unsupported_collation",
+                        db="_dbt_state",
+                        catalog=self._adapter_ext.default_catalog,
+                        quoted=True,
+                    )
+                )
+                traversal.seen_tables.add(marker)
+                traversal.unresolvable_tables.add(marker)
             names = traversal.seen_tables | (
                 {request.target_table} if request.target_table else set()
             )
