@@ -49,44 +49,65 @@ class EvidenceStore:
                     "SELECT table_type FROM information_schema.tables WHERE table_catalog=? AND table_schema=? AND table_name=?",
                     [relation.catalog, relation.db, relation.name],
                 ).fetchall()
-                if kind != [("BASE TABLE",)]:
-                    db.execute("ROLLBACK")
-                    return None
-                # DESCRIBE and SELECT use the same committed transaction snapshot.
-                schema = db.execute("DESCRIBE SELECT * FROM " + table).fetchall()
-                if any(
-                    t not in _TYPES and not re.fullmatch(r"DECIMAL\(\d+,\d+\)", t)
-                    for _, t, *_ in schema
-                ):
-                    db.execute("ROLLBACK")
-                    return None
-                sh = hashlib.sha256(
-                    b"duckdb-schema-v1"
-                    + b"".join(
-                        frame(str(i).encode())
-                        + b"".join(frame(str(v).encode()) for v in col)
-                        for i, col in enumerate(schema)
-                    )
-                ).hexdigest()
-                encoded = []
-                for row in db.execute("SELECT * FROM " + table).fetchall():
-                    fields = []
-                    for (_, typ, *_), value in zip(schema, row):
-                        if value is None:
-                            fields.append(b"N")
-                        else:
-                            if isinstance(value, bytes):
-                                payload = value
-                            elif isinstance(value, Decimal):
-                                scale = int(typ.split(",")[1][:-1])
-                                payload = format(value, f".{scale}f").encode()
+                if kind == [("VIEW",)]:
+                    from .views import view_fingerprint
+
+                    sh, ch = view_fingerprint(db, table)
+                elif kind == [("BASE TABLE",)]:
+                    # DESCRIBE omits column collation. Non-binary comparisons
+                    # can choose different tied values after a physical reorder,
+                    # which a relational content fingerprint intentionally ignores.
+                    ddl = db.execute(
+                        "SELECT sql FROM duckdb_tables() WHERE database_name=? AND schema_name=? AND table_name=?",
+                        [relation.catalog, relation.db, relation.name],
+                    ).fetchall()
+                    if (
+                        len(ddl) != 1
+                        or not ddl[0][0]
+                        or re.search(r"\bCOLLATE\b", ddl[0][0], re.IGNORECASE)
+                    ):
+                        db.execute("ROLLBACK")
+                        return None
+                    # DESCRIBE and SELECT use the same committed transaction snapshot.
+                    schema = db.execute("DESCRIBE SELECT * FROM " + table).fetchall()
+                    if any(
+                        t not in _TYPES and not re.fullmatch(r"DECIMAL\(\d+,\d+\)", t)
+                        for _, t, *_ in schema
+                    ):
+                        db.execute("ROLLBACK")
+                        return None
+                    sh = hashlib.sha256(
+                        b"duckdb-schema-v1"
+                        + b"".join(
+                            frame(str(i).encode())
+                            + b"".join(frame(str(v).encode()) for v in col)
+                            for i, col in enumerate(schema)
+                        )
+                    ).hexdigest()
+                    encoded = []
+                    for row in db.execute("SELECT * FROM " + table).fetchall():
+                        fields = []
+                        for (_, typ, *_), value in zip(schema, row):
+                            if value is None:
+                                fields.append(b"N")
                             else:
-                                payload = str(value).encode("utf-8")
-                            fields.append(b"V" + frame(typ.encode()) + frame(payload))
-                    encoded.append(frame(b"".join(fields)))
-                ch = hashlib.sha256(
-                    b"duckdb-content-v1" + b"".join(sorted(encoded))
-                ).hexdigest()
+                                if isinstance(value, bytes):
+                                    payload = value
+                                elif isinstance(value, Decimal):
+                                    scale = int(typ.split(",")[1][:-1])
+                                    payload = format(value, f".{scale}f").encode()
+                                else:
+                                    payload = str(value).encode("utf-8")
+                                fields.append(
+                                    b"V" + frame(typ.encode()) + frame(payload)
+                                )
+                        encoded.append(frame(b"".join(fields)))
+                    ch = hashlib.sha256(
+                        b"duckdb-content-v1" + b"".join(sorted(encoded))
+                    ).hexdigest()
+                else:
+                    db.execute("ROLLBACK")
+                    return None
                 previous = db.execute(
                     "SELECT version, schema_hash, content_hash, ordinal FROM _dbt_state.relation_evidence WHERE name = ?",
                     [table],
