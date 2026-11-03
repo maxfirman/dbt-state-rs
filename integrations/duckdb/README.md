@@ -164,6 +164,24 @@ DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
   cargo test -p dbt-state-harness --test duckdb_identity_python -- --ignored
 ```
 
+The focused interruption matrix also exercises the gaps before materialization,
+while actual DuckDB SQL is running, a dbt SQL execution error,
+before/during/after the evidence transaction, and before confirmation. It verifies
+literal physical rows after each process termination, then requires a fresh-generation BUILD/confirmation and subsequent
+SKIP. The public protocol regressions check correlated, immutable confirmation
+retries and rejected Record batches without reading private store tables:
+
+```sh
+DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
+  cargo test -p dbt-state-harness --test duckdb_interruptions -- --ignored
+cargo test -p dbt-state-harness --test duckdb_outcomes
+```
+
+Set `INTERRUPT_ONLY_PHASE` to a named phase from `tests/interruptions.py` to replay
+one interruption. Warehouse completion, evidence commit and State confirmation
+are separate durability boundaries; recovery invalidates uncertain scope rather
+than claiming atomicity across DuckDB and Postgres or exactly-once execution.
+
 ## View evidence and dependencies
 
 Supported local views can BUILD, confirm and SKIP across dbt processes. Each
