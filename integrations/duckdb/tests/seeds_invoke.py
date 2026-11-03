@@ -31,9 +31,25 @@ from query_cache_common.models.services.sql_service_models import (
     SkipExecutionResponse,
 )
 
+# Inject organization metadata at the transport seam for the isolation scenario.
+# Every production RPC, including confirmation and recording, uses this channel.
+if os.environ.get("SEED_ORG"):
+    import grpc
+    from dbt_state.grpc.interceptors import OrgIdInterceptor
+
+    insecure_channel = grpc.insecure_channel
+
+    def org_channel(*args, **kwargs):
+        return grpc.intercept_channel(
+            insecure_channel(*args, **kwargs), OrgIdInterceptor(os.environ["SEED_ORG"])
+        )
+
+    grpc.insecure_channel = org_channel
+
 install()
 expected = json.loads(os.environ["SEED_EXPECT"])
 observed, pending, confirmed = {}, {}, set()
+namespaces = set()
 for method in ("submit_values", "submit_sql"):
     original = getattr(QueryCacheGrpcClient, method)
 
@@ -41,6 +57,7 @@ for method in ("submit_values", "submit_sql"):
         response = _original(self, request, *args, **kwargs)
         name = request.dbt_node_state.node_unique_id.rsplit(".", 1)[-1]
         if name in expected:
+            namespaces.add(request.table_namespace)
             assert isinstance(
                 response, (ReadyToExecuteResponse, SkipExecutionResponse)
             ), response
@@ -88,3 +105,5 @@ assert confirmed == {n for n, v in expected.items() if v == "build"} - set(
 ), confirmed
 
 assert not published, published
+
+assert len(namespaces) == bool(expected) and None not in namespaces, namespaces

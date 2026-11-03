@@ -72,7 +72,7 @@ advance the sequence again. A known successful ordinary build advances it once,
 including when State submit failed and dbt built without a State request.
 
 The selected first-release incremental strategy is dbt-duckdb's `delete+insert`;
-seeds, tests and incremental lifecycle support have separate milestones. View support is described below.
+incremental lifecycle support has a separate milestone. Seed, test and view support is described below.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
 server does not implement ClientTelemetry. Existing Snowflake replay remains
 the hosted conformance contract.
@@ -258,3 +258,33 @@ PYTHONPATH="$PWD/integrations/duckdb/src" \
 cargo test -p dbt-state-harness --test duckdb_data_tests_python -- --ignored
 cargo test -p dbt-state-harness --test duckdb_data_tests --test data_test_freshness
 ```
+
+## Seeds
+
+Seeds use the upstream SubmitValues request, shared server decisions and ordinary
+`dbt seed` materialization. Successful committed loads advance physical evidence
+before confirmation and dependent model submission. Unchanged CSV/configuration
+and current target evidence permit SKIP across processes; a file hash alone does
+not authorize reuse. Configuration-only changes also record a known write even
+when resulting rows are identical. Schema/type transitions follow dbt's normal
+rules: use `--full-refresh` where required. Unsupported physical types such as
+DOUBLE still execute normally and never receive invented seed evidence.
+
+The fixed real-client seed gate checks literal duplicate/NULL rows, column types
+and downstream aggregates independently. It covers CSV and quoting/type config
+changes, failed conversion/retry, returned unsuccessful adapter outcomes,
+write-only failure publication, dropped/edited seed targets, and a copied database
+at another path, and organization isolation. It requires positive seed/model SKIP and correlated successful
+confirmation, and rejects successful publication for failed or unknown seeds.
+Run with the same pinned environment as the smoke gate:
+
+```sh
+DBT_STATE_DUCKDB_PYTHON=integrations/duckdb/.venv/bin/python \
+  cargo test -p dbt-state-harness --test duckdb_seeds_python -- --ignored --nocapture
+```
+
+The completion guard also covers ordinary DuckDB model materializations. A
+returned error/partial outcome keeps target evidence unknown for the invocation
+and recovery dirty, so neither confirmation nor write-only recording can certify
+an old target. Completed data-test failure/warning results use their distinct
+aggregate-result lifecycle and remain cacheable.

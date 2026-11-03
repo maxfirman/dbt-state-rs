@@ -35,6 +35,7 @@ def run(
     types=("INTEGER", "INTEGER"),
     returned_error=False,
     database=None,
+    org="",
 ):
     result = subprocess.run(
         [
@@ -51,6 +52,7 @@ def run(
         text=True,
         env={
             **os.environ,
+            "SEED_ORG": org,
             "SEED_RETURN_ERROR": str(int(returned_error)),
             "SEED_EXPECT": json.dumps(expected),
             "SEED_FAIL": str(int(fail)),
@@ -76,6 +78,13 @@ totals = [(1, 10), (2, 40), (3, None)]
 run({"numbers": "build", "totals": "build"}, rows, totals)
 run({"numbers": "skip", "totals": "skip"}, rows, totals)
 
+if os.environ.get("SEED_SCENARIO") == "organization":
+    run({"numbers": "build", "totals": "build"}, rows, totals, org="seed-org-b")
+    run({"numbers": "skip", "totals": "skip"}, rows, totals, org="seed-org-b")
+    run({"numbers": "build", "totals": "build"}, rows, totals)
+    run({"numbers": "skip", "totals": "skip"}, rows, totals)
+    sys.exit(0)
+
 if os.environ.get("SEED_SCENARIO") == "returned-error":
     (root / "seeds/numbers.csv").write_text("id,amount\n1,11\n")
     run(
@@ -93,6 +102,13 @@ if os.environ.get("SEED_SCENARIO") == "returned-error":
 # model SQL route. Four workers must see completion before dependent submission.
 (root / "seeds/numbers.csv").write_text("id,amount\n1,11\n2,30\n2,30\n3,\n")
 rows, totals = [(1, 11), (2, 30), (2, 30), (3, None)], [(1, 11), (2, 60), (3, None)]
+run({"numbers": "build", "totals": "build"}, rows, totals)
+run({"numbers": "skip", "totals": "skip"}, rows, totals)
+# Configuration alone invalidates the values cache, even with identical bytes
+# and output rows, and the known write advances downstream freshness.
+(root / "seeds/schema.yml").write_text(
+    "version: 2\nseeds:\n  - name: numbers\n    config:\n      quote_columns: true\n"
+)
 run({"numbers": "build", "totals": "build"}, rows, totals)
 run({"numbers": "skip", "totals": "skip"}, rows, totals)
 (root / "seeds/schema.yml").write_text(
@@ -163,6 +179,25 @@ run(
     database=root / "copy/warehouse.duckdb",
 )
 (root / "profiles.yml").write_text(profile)
+run({"numbers": "skip", "totals": "skip"}, rows, totals, types=("INTEGER", "BIGINT"))
+
+# The same physical file and values cannot inherit another organization's
+# successful history; both Values and dependent SQL use the transport scope.
+run(
+    {"numbers": "build", "totals": "build"},
+    rows,
+    totals,
+    types=("INTEGER", "BIGINT"),
+    org="seed-org-b",
+)
+run(
+    {"numbers": "skip", "totals": "skip"},
+    rows,
+    totals,
+    types=("INTEGER", "BIGINT"),
+    org="seed-org-b",
+)
+run({"numbers": "build", "totals": "build"}, rows, totals, types=("INTEGER", "BIGINT"))
 run({"numbers": "skip", "totals": "skip"}, rows, totals, types=("INTEGER", "BIGINT"))
 
 # A legal dbt schema transition to unsupported evidence types executes normally
