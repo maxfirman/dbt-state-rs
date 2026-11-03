@@ -8,3 +8,6 @@ golden/**/*.tmp
 # Python bytecode from experiment helpers
 __pycache__/
 *.pyc
+
+# Local DuckDB compatibility environment
+/integrations/duckdb/.venv/

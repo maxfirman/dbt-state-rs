@@ -65,7 +65,10 @@ dbt State only engages for its supported warehouses (Snowflake, BigQuery,
 Databricks, Redshift). **DuckDB does not trigger dbt State at all** — verified by
 running the Fusion client against a DuckDB target and observing zero State
 activity. Use a supported warehouse (this project was developed and validated
-against Snowflake) to exercise the protocol end-to-end.
+against Snowflake) for Fusion validation. The optional [Python DuckDB local
+extension](../integrations/duckdb/README.md) now provides a credential-free
+cold-build compatibility gate with `./scripts/duckdb-smoke.sh`; durable reuse
+is a subsequent milestone.
 
 ## Capturing real traffic / validating against the hosted service
 
