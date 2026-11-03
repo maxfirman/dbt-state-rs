@@ -33,7 +33,20 @@ confirm = QueryCacheGrpcClient.confirm_execution
 
 
 def observe_confirmation(self, request, *args, **kwargs):
+    if os.environ.get("FAIL_CONFIRM") == "1":
+        rpc = self.execution_stub.ConfirmExecution
+
+        def unavailable(*args, **kwargs):
+            raise RuntimeError("Injected confirmation transport failure")
+
+        self.execution_stub.ConfirmExecution = unavailable
+        try:
+            return confirm(self, request, *args, **kwargs)
+        finally:
+            self.execution_stub.ConfirmExecution = rpc
     response = confirm(self, request, *args, **kwargs)
+    if os.environ.get("CRASH_AFTER_CONFIRM") == "1":
+        os._exit(73)
     if observed and request.request_id == getattr(observed[0], "request_id", None):
         assert response.success
         assert request.last_modified_epoch > max(
@@ -54,6 +67,11 @@ def observe(self, request, *args, **kwargs):
         and request.dbt_node_state.node_unique_id == "model.duckdb_smoke.totals"
     ):
         raise RuntimeError("Injected transport failure before submit")
+    if os.environ.get("PAUSE_STATE_PATH"):
+        marker = Path(os.environ["PAUSE_STATE_PATH"])
+        marker.write_text("ready")
+        while not marker.with_suffix(".release").exists():
+            time.sleep(0.05)
     response = submit(self, request, *args, **kwargs)
     if request.dbt_node_state.node_unique_id == "model.duckdb_smoke.totals":
         observed.append(response)

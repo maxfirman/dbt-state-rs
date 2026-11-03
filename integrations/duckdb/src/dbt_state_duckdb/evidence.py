@@ -39,20 +39,6 @@ def frame(value):
 class EvidenceStore:
     def __init__(self, path):
         self.path = str(path)
-        with _LOCK, duckdb.connect(self.path) as db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS _dbt_state.evidence_clock (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, ordinal BIGINT NOT NULL)"
-            )
-            db.execute(
-                "INSERT INTO _dbt_state.evidence_clock VALUES (1, 1, 0) ON CONFLICT DO NOTHING"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS _dbt_state.relation_evidence (name VARCHAR PRIMARY KEY, version INTEGER NOT NULL, schema_hash VARCHAR NOT NULL, content_hash VARCHAR NOT NULL, ordinal BIGINT NOT NULL)"
-            )
-            if db.execute(
-                "SELECT version FROM _dbt_state.evidence_clock"
-            ).fetchall() != [(1,)]:
-                raise ValueError("Unsupported evidence version")
 
     def observe(self, table, *, completed_write=False):
         with _LOCK, duckdb.connect(self.path) as db:
