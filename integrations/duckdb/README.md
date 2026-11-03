@@ -62,7 +62,7 @@ claimed.
 
 Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
-extension types, views, attached/external relations, and result copying have
+extension types, attached/external relations, and result copying have
 unknown evidence. User source-freshness overrides never substitute wall time.
 Arbitrary hooks writing other relations and unsupported/custom materializations
 are outside this table contract. The tested post-hook writes its own model
@@ -72,7 +72,7 @@ advance the sequence again. A known successful ordinary build advances it once,
 including when State submit failed and dbt built without a State request.
 
 The selected first-release incremental strategy is dbt-duckdb's `delete+insert`;
-seeds, views, tests and incremental lifecycle support have separate milestones.
+seeds, tests and incremental lifecycle support have separate milestones. View support is described below.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
 server does not implement ClientTelemetry. Existing Snowflake replay remains
 the hosted conformance contract.
@@ -116,3 +116,34 @@ Recovery markers, exclusive invocation locking and explicit reset are the next
 milestone. For this milestone use one invocation with exclusive write access;
 manual SQL edits are supported between runs. Backup restoration requires the
 forthcoming reset operation before reuse; it is not automatically detected.
+
+## View evidence and dependencies
+
+Supported local views can BUILD, confirm and SKIP across dbt processes. Each
+view observation hashes its committed DuckDB catalog definition and its bound
+DESCRIBE schema, using `duckdb-view-definition-v1` and
+`duckdb-view-schema-v1` prefixes. Schema fields use the length framing above,
+in column order. The shared durable ordinal records an observed definition or
+schema change, or a known successful view DDL write; it does not timestamp the
+rows a view returns. Freshness still comes from the recursively resolved leaf
+tables, and each physical dependency view's name, definition and resolution
+context participates in the request identity. DuckDB view requests intentionally
+include dependencies, unlike the captured Snowflake view policy.
+
+Metadata traversal reads current physical definitions in a fresh transaction
+for every request. Compiled view SQL never populates the physical definition
+cache. These uncached reads and post-commit completion observations ensure a
+child in the same dbt DAG sees its parent's committed definition/schema. A
+wildcard view whose stored schema no longer binds receives unknown own-target
+evidence and rebuilds; the fixed real-client gate exercises both column addition
+and removal through a view -> nested view -> table graph with four workers.
+
+The initial subset accepts SELECT/UNION queries over schema-qualified local
+relations, with ordinary projections and a small set of deterministic built-in
+functions (casts, aggregates, concat/chr/unhex, coalesce/nullif and lower/upper).
+Search-path-dependent unqualified physical references, cycles, missing
+relations, table functions, external relations and unsupported functions/syntax
+produce explicit unknown dependency evidence. dbt executes these workloads
+normally; unknown inputs cannot authorize SKIP. Fresh physical metadata is
+required even when the compiled model text is unchanged. This scope does not
+add result copying or alter Snowflake requests or policy.
