@@ -113,8 +113,13 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
     match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
         crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),
         crate::warehouse::Warehouse::DuckDb => {
-            if req.execution_type != 1
-                || !req.query_dependencies.is_empty()
+            if !(req.execution_type == 1
+                || (req.execution_type == 5
+                    && req
+                        .semantic_extras
+                        .get("duckdb_incremental_contract")
+                        .map(String::as_str)
+                        == Some("delete-insert-fixed-v1")))
                 || !matches!(req.default_schema.as_deref(), Some("prod" | "dev"))
                 || req
                     .semantic_extras
@@ -124,7 +129,8 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
             {
                 return None;
             }
-            let inputs = crate::sql_identity::duckdb_copy_inputs(&req.sql, &req.default_catalog)?;
+            let graph = crate::sql_identity::duckdb_copy_graph(req)?;
+            let inputs = &graph.inputs;
             let mut metadata = std::collections::HashMap::new();
             for table in &req.tables {
                 if table.last_modified_epoch.is_none()
@@ -149,13 +155,28 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
             {
                 return None;
             }
-            let mut abstracted = req.clone();
-            abstracted.default_schema = Some("supported-environment".into());
-            Some(sql_logic_hash_with_version(
-                &abstracted,
-                None,
-                b"dbt-state-duckdb-copy-v1",
-            ))
+            let mut h = Sha256::new();
+            field(&mut h, b"dbt-state-duckdb-copy-v2");
+            field(&mut h, &req.execution_type.to_le_bytes());
+            extras(&mut h, &req.semantic_extras);
+            field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
+            for (binding, query, slots, catalog, schema) in graph.queries {
+                field(&mut h, &(binding.len() as u64).to_le_bytes());
+                for part in binding {
+                    field(&mut h, part.as_bytes());
+                }
+                field(&mut h, query.as_bytes());
+                field(&mut h, &(slots.len() as u64).to_le_bytes());
+                for slot in slots {
+                    field(&mut h, &(slot.len() as u64).to_le_bytes());
+                    for part in slot {
+                        field(&mut h, part.as_bytes());
+                    }
+                }
+                field(&mut h, catalog.as_bytes());
+                field(&mut h, schema.as_bytes());
+            }
+            Some(hex::encode(h.finalize()))
         }
         _ => None,
     }

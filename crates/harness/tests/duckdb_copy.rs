@@ -158,3 +158,83 @@ async fn failed_sql_copy_records_actual_build_and_becomes_an_ordinary_source() {
     assert_eq!(copy.clone_source, "\"db\".\"dev\".\"result\"");
     assert_eq!(copy.clone_required_last_modified_epoch, Some(30));
 }
+
+fn graph_request(schema: &str) -> qc::SubmitEnrichedSqlRequest {
+    let mut req = request(schema);
+    req.sql = format!("select id, amount + 1 as amount from db.{schema}.upper_view");
+    req.query_dependencies = vec![
+        qc::QueryDependency {
+            name: format!("db.{schema}.upper_view"),
+            query: format!(
+                "CREATE VIEW {schema}.upper_view AS SELECT id, amount FROM {schema}.lower_view"
+            ),
+            default_catalog: "db".into(),
+            default_schema: schema.into(),
+        },
+        qc::QueryDependency {
+            name: format!("db.{schema}.lower_view"),
+            query: "CREATE VIEW lower_view AS SELECT id, amount FROM raw.input".into(),
+            default_catalog: "db".into(),
+            default_schema: schema.into(),
+        },
+    ];
+    req
+}
+
+#[tokio::test]
+async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
+    let (addr, _) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let response = sql
+        .submit_enriched_sql(graph_request("prod"))
+        .await
+        .unwrap()
+        .into_inner();
+    let Some(qc::submit_sql_response::Response::ReadyToExecute(build)) = response.response else {
+        panic!("build")
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: build.request_id,
+        last_modified_epoch: Some(20),
+        table_type: Some("DUCKDB CTAS TABLE".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let dev = graph_request("dev");
+    let response = sql
+        .submit_enriched_sql(dev.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response_variant(&response), "ready_to_clone");
+    for case in 0..6 {
+        let mut req = dev.clone();
+        match case {
+            0 => {
+                req.query_dependencies[1].query =
+                    "select id, amount + 3 as amount from raw.input".into()
+            }
+            1 => req.query_dependencies[1].query = "select id, amount from other.input".into(),
+            2 => req.query_dependencies[1].default_schema = "other".into(),
+            3 => req
+                .query_dependencies
+                .push(req.query_dependencies[0].clone()),
+            4 => req.query_dependencies.swap(0, 1), // restore order below, but swap bound definitions
+            _ => req.query_dependencies[1].query = "select id, amount from lower_view".into(),
+        }
+        if case == 4 {
+            let query = req.query_dependencies[0].query.clone();
+            req.query_dependencies[0].query = req.query_dependencies[1].query.clone();
+            req.query_dependencies[1].query = query;
+        }
+        let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
+        assert_eq!(
+            response_variant(&response),
+            "ready_to_execute",
+            "negative {case}"
+        );
+    }
+}
