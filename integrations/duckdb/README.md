@@ -1,10 +1,8 @@
 # Local DuckDB State client
 
 This installable extension uses the maintained `dbt-state` Python plugin and
-real dbt Core execution. It is a compatibility milestone for issue #4, not yet
-a reusable cache: unknown freshness evidence deliberately produces BUILD and
-leaves model/seed requests pending. Durable observations and confirmation are
-tracked in issue #5.
+real dbt Core execution. Small deterministic SQL table workloads now BUILD,
+confirm after committed completion, and SKIP in subsequent dbt processes.
 
 Run the credential-free smoke gate from the repository root:
 
@@ -18,10 +16,15 @@ production gRPC router against a fresh migrated Postgres schema, and executes
 real `dbt build` processes with two dbt worker threads. The project contains a
 seed, a table model and a singular data test. Independent literal assertions
 check output rows (including duplicate seed rows) and the dbt test outcome.
-The test asserts production execution records for the cold BUILD responses,
-transported node identity, isolated namespaces for same-named relations in two
-files, stable namespaces on restart, conservative fallback after incompatible
-metadata, and no successful model/seed confirmations with unknown evidence.
+The gate positively observes BUILD/SKIP and successful confirmations through the
+upstream public client. Separate processes check unchanged restarts, identical
+manual rewrites, input edits (including duplicates and NULL), own-target edits,
+drops and schema changes, logic changes, and identical-result known writes.
+Independent SQL recomputes expected tables; literal examples guard the oracle.
+It also covers scalar representations, post-hook completion, unknown types and
+metadata, same-named tables in independent files, and ordinary execution after
+an injected State transport failure. Evidence reads see frozen/regressed wall
+time while transport retains its real deadline clock.
 The optional Rust test is ignored in the default suite until the later CI gate
 milestone; this script explicitly runs it.
 
@@ -57,12 +60,59 @@ Backups restored over the same file will need the explicit reset operation
 introduced by the recovery milestone; automatic restoration detection is not
 claimed.
 
-Views, external sources, custom materializations and result copying have no
-reuse support in this milestone. The adapter supplies unknown freshness,
-including for user source-freshness overrides, and never fabricates clock-based
-epochs. The selected first-release incremental strategy is dbt-duckdb's
-`delete+insert`; execution/reuse coverage belongs to the incremental ticket.
+Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
+VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
+extension types, views, attached/external relations, and result copying have
+unknown evidence. User source-freshness overrides never substitute wall time.
+Arbitrary hooks writing other relations and unsupported/custom materializations
+are outside this table contract. The tested post-hook writes its own model
+result; evidence is collected after materialization return, which follows dbt's
+commit and outside-transaction post-hooks. Repeated completion reads do not
+advance the sequence again. A known successful ordinary build advances it once,
+including when State submit failed and dbt built without a State request.
+
+The selected first-release incremental strategy is dbt-duckdb's `delete+insert`;
+seeds, views, tests and incremental lifecycle support have separate milestones.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
-server does not implement ClientTelemetry; model decision RPCs use the existing
-production SQL and Execution services. Existing Snowflake replay remains the
-hosted conformance contract.
+server does not implement ClientTelemetry. Existing Snowflake replay remains
+the hosted conformance contract.
+
+## Evidence format and ordering
+
+`_dbt_state.evidence_clock` version 1 holds one durable positive int64 ordinal
+for the entire file/generation. `_dbt_state.relation_evidence` stores version 1
+schema/content SHA-256 digests and each relation's ordinal. These are protocol
+`last_modified_epoch` values interpreted as DuckDB **ordinals**, not Unix
+milliseconds. Current shared freshness/target policies compare ordering only;
+Snowflake timestamps and decision policy are unchanged. A future policy needing
+elapsed time must explicitly support this distinction before enabling it here.
+
+A single process-wide lock serializes fresh transaction snapshots, scans and
+metadata writes. Unchanged supported observations retain their ordinal. Changed
+schema/content, first observations and known committed writes allocate the next
+global ordinal in the same transaction as the digest. Identical known writes
+therefore advance ordering; a manual rewrite with identical observed contents
+and schema does not. Operations in the same clock tick, regressed wall time and
+normal restarts preserve ordering without consulting a clock. This is observed
+change evidence, not a complete write log: edits reversed between observations
+may be invisible. Epoch caches and asynchronous epoch futures are bypassed;
+completion clears other adapter metadata before downstream execution proceeds.
+
+The byte format uses eight-byte unsigned big-endian length framing. Schema
+hashes start with ASCII `duckdb-schema-v1`, then, for each column in ordinal
+order, framed decimal ordinal and framed UTF-8 `str` values from DuckDB 1.4.1's
+DESCRIBE tuple (name, type, nullability, key, default, extra). Content hashes
+start with ASCII `duckdb-content-v1`. Each row concatenates fields: byte `N`
+for NULL, otherwise byte `V`, framed DuckDB type, and framed payload. Payloads
+are UTF-8 decimal integers, ASCII `True`/`False`, exact UTF-8 VARCHAR, raw BLOB,
+or exact decimal text with the type's fixed scale. Each row is framed, sorted
+lexicographically as bytes, and concatenated, preserving duplicate rows while
+ignoring physical order. Unsupported scans remain unknown and cannot confirm.
+Changes to this format require a new version and invalidation.
+
+Missing both evidence tables rotates the generation before creating a new
+sequence; partial or incompatible metadata fails closed for the invocation.
+Recovery markers, exclusive invocation locking and explicit reset are the next
+milestone. For this milestone use one invocation with exclusive write access;
+manual SQL edits are supported between runs. Backup restoration requires the
+forthcoming reset operation before reuse; it is not automatically detected.
