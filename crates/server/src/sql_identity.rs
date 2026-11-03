@@ -171,3 +171,70 @@ impl VisitorMut for DuckDbSubset {
         }
     }
 }
+
+/// Fully qualified local relation; AST parsing keeps quoting and component
+/// boundaries checked before these names are interpolated into CTAS.
+pub fn duckdb_relation(name: &str) -> Option<Vec<String>> {
+    let statements =
+        Parser::parse_sql(&DuckDbDialect {}, &format!("SELECT id FROM {name}")).ok()?;
+    if statements.len() != 1 {
+        return None;
+    }
+    let Statement::Query(q) = &statements[0] else {
+        return None;
+    };
+    let SetExpr::Select(s) = q.body.as_ref() else {
+        return None;
+    };
+    if s.from.len() != 1 || !s.from[0].joins.is_empty() {
+        return None;
+    }
+    let TableFactor::Table {
+        name: object,
+        alias: None,
+        args: None,
+        ..
+    } = &s.from[0].relation
+    else {
+        return None;
+    };
+    // Serialization roundtrip rejects trailing clauses/comments/statement text.
+    if object.to_string() != name {
+        return None;
+    }
+    let parts: Option<Vec<_>> = object
+        .0
+        .iter()
+        .map(|p| match p {
+            ObjectNamePart::Identifier(i) => Some(i.value.clone()),
+            _ => None,
+        })
+        .collect();
+    parts.filter(|p| p.len() == 3)
+}
+
+pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> {
+    validated_duckdb_sql(sql)?;
+    struct Inputs<'a> {
+        catalog: &'a str,
+        names: Vec<Vec<String>>,
+    }
+    impl VisitorMut for Inputs<'_> {
+        type Break = ();
+        fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
+            match duckdb_relation(&name.to_string()) {
+                Some(parts) if parts[0] == self.catalog && parts[1] != "_dbt_state" => {
+                    self.names.push(parts);
+                    ControlFlow::Continue(())
+                }
+                _ => ControlFlow::Break(()),
+            }
+        }
+    }
+    let mut inputs = Inputs {
+        catalog,
+        names: Vec::new(),
+    };
+    canonicalized(sql, &DuckDbDialect {}, &mut inputs)?;
+    Some(inputs.names)
+}

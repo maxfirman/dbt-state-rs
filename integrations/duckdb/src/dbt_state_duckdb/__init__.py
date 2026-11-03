@@ -8,12 +8,13 @@ from pathlib import Path
 import duckdb
 from dbt_state.adapters.base import BaseAdapterExtension
 from .views import ViewMetadata
+from .copy import TableCopy
 
 
-class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
+class DuckDBAdapterExtension(TableCopy, ViewMetadata, BaseAdapterExtension):
     """Local table observations; unknown evidence never receives invented epochs."""
 
-    CLONE_CHAIN_DEPTH_LIMIT = 0
+    CLONE_CHAIN_DEPTH_LIMIT = 1
     SYSTEM_METADATA_SCHEMAS = ("information_schema", "_dbt_state")
 
     def __init__(self, adapter, **kwargs):
@@ -122,6 +123,9 @@ def install():
     from .views import install_view_requests
 
     install_view_requests(DuckDBAdapterExtension)
+    from .copy import install_copy
+
+    install_copy(DuckDBAdapterExtension)
     # Upstream's early noninteractive guard predates its insecure transport path.
     # Avoid constructing the hosted auth helper solely in this explicit mode;
     # QueryCacheGrpcClient still chooses the configured insecure channel itself.

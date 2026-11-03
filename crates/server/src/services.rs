@@ -626,10 +626,9 @@ impl Sql for SqlService {
         });
         // Schema-abstracted cross-environment logic identity (clone adoption).
         // Only meaningful for rendered (non-template) comparison of real SQL.
-        let ns_logic_hash = (!req.compare_unrendered_code
-            && !req.sql.trim().is_empty()
-            && crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse())
-        .then(|| crate::fingerprint::namespace_logic_hash(&sql_execution(&req)));
+        let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
+            .then(|| crate::fingerprint::copy_logic_hash(&sql_execution(&req)))
+            .flatten();
         let input_tables = decision::input_tables_of(&req);
         let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
         let project_id = req
@@ -833,7 +832,8 @@ impl Sql for SqlService {
         // PARSE-based detector (no raw-text substring scan, so a clock keyword in
         // a comment or string literal is not a false positive). Review #2 5th
         // follow-up P1 #3.
-        let volatile_blocks_clone = !req.tolerate_nondeterminism
+        let volatile_blocks_clone = !(req.dialect == "duckdb" && ns_logic_hash.is_some())
+            && !req.tolerate_nondeterminism
             && crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
                 &req.sql,
                 req.query_dependencies.iter().map(|d| d.query.as_str()),
@@ -921,7 +921,16 @@ impl Sql for SqlService {
                         &target_table,
                         eq.table_type.as_deref(),
                         req.clone_table_properties.as_ref(),
-                    ) {
+                    )
+                    .and_then(|sqls| {
+                        if req.dialect.eq_ignore_ascii_case("duckdb")
+                            && eq.last_modified_epoch.is_none()
+                        {
+                            Err("DuckDB source requires recorded physical evidence")
+                        } else {
+                            Ok(sqls)
+                        }
+                    }) {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
                         // Persist a pending row keyed on the submit target so the
@@ -1240,6 +1249,7 @@ impl Execution for ExecutionService {
                 req.table_type.as_deref(),
                 req.execution_runtime_ms,
                 req.execution_results.as_ref(),
+                req.failed_to_clone,
             )
             .await
             .map_err(db_err)?;
@@ -1294,11 +1304,7 @@ impl Execution for ExecutionService {
                     // Match the submit path's logic key: whitespace-normalized
                     // rendered SQL + allowlisted semantic_extras.
                     node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
-                    node_namespace_logic_hash: crate::warehouse::Warehouse::from_dialect(
-                        &sql.dialect,
-                    )
-                    .supports_namespace_reuse()
-                    .then(|| crate::fingerprint::namespace_logic_hash(sql)),
+                    node_namespace_logic_hash: crate::fingerprint::copy_logic_hash(sql),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()

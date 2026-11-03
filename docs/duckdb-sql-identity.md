@@ -28,10 +28,10 @@ The strict fingerprint still includes root catalog/schema, dependency names,
 each dependency's catalog/schema and definition, and semantic extras. Sorting
 bindings makes dependency list order immaterial without conflating swapped
 definitions. Exact dependency-name strings preserve quoted dots without
-rejoining or erasing components. No schema substitution, namespace adoption or
-automatic cross-target copying is enabled for DuckDB in this milestone. Those
-require the separate checked graph resolution, source validation and execution
-work in issue #13; a validated strict SQL string alone does not authorize copying.
+rejoining or erasing components. A validated strict SQL string alone does not authorize copying. The separate
+[table copy contract](duckdb-result-copy.md) enables a conservative physical
+base-input slice with explicit eligibility, source validation and execution;
+view dependency graphs remain excluded.
 
 DuckDB uses the new `dbt-state-duckdb-sql-v1` strict/template version tag. Older
 DuckDB histories cold miss. Snowflake retains `dbt-state-sql-v4`,

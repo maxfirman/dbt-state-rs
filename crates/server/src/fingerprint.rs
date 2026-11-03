@@ -106,6 +106,61 @@ pub fn sql_logic_hash_with_version(
     hex::encode(h.finalize())
 }
 
+/// Eligibility is explicit: formatting validation alone never grants copying.
+/// This first slice shares exact physical base inputs and substitutes only the
+/// declared prod/dev resolution context. View graphs are intentionally excluded.
+pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
+    match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
+        crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),
+        crate::warehouse::Warehouse::DuckDb => {
+            if req.execution_type != 1
+                || !req.query_dependencies.is_empty()
+                || !matches!(req.default_schema.as_deref(), Some("prod" | "dev"))
+                || req
+                    .semantic_extras
+                    .get("duckdb_copy_contract")
+                    .map(String::as_str)
+                    != Some("rows-schema-v1")
+            {
+                return None;
+            }
+            let inputs = crate::sql_identity::duckdb_copy_inputs(&req.sql, &req.default_catalog)?;
+            let mut metadata = std::collections::HashMap::new();
+            for table in &req.tables {
+                if table.last_modified_epoch.is_none()
+                    && req.target_table.as_deref() != Some(table.name.as_str())
+                {
+                    return None;
+                }
+                let name = crate::sql_identity::duckdb_relation(&table.name)?;
+                if metadata.insert(name, table.last_modified_epoch).is_some() {
+                    return None;
+                }
+            }
+            if inputs
+                .iter()
+                .any(|name| metadata.get(name).is_none_or(|epoch| epoch.is_none()))
+            {
+                return None;
+            }
+            let parts = crate::sql_identity::duckdb_relation(req.target_table.as_deref()?)?;
+            if parts[0] != req.default_catalog
+                || Some(parts[1].as_str()) != req.default_schema.as_deref()
+            {
+                return None;
+            }
+            let mut abstracted = req.clone();
+            abstracted.default_schema = Some("supported-environment".into());
+            Some(sql_logic_hash_with_version(
+                &abstracted,
+                None,
+                b"dbt-state-duckdb-copy-v1",
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// Cross-environment logic identity, scoped by `table_namespace`.
 ///
 /// The same dbt model built in different environments (e.g. prod and a dev

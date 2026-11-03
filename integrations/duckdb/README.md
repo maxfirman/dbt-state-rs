@@ -319,3 +319,20 @@ returned error/partial outcome keeps target evidence unknown for the invocation
 and recovery dirty, so neither confirmation nor write-only recording can certify
 an old target. Completed data-test failure/warning results use their distinct
 aggregate-result lifecycle and remain cacheable.
+
+## Result copying
+
+Eligible table models in profile schemas `prod` and `dev` can copy results with
+CTAS and later SKIP. The first slice requires shared, fully qualified physical
+base-table inputs in one file and the validated simple SELECT subset. It keeps
+physical inputs distinct, inspects source properties and current source evidence,
+and falls back to ordinary dbt materialization for unsupported requirements or
+failed copies. It permits one copy hop. Views and incremental copy initialization
+are separate slices. See [the copy contract](../../docs/duckdb-result-copy.md),
+including permitted stale-source policy and the Snowflake confirmation assessment.
+
+```sh
+DBT_STATE_DUCKDB_PYTHON=integrations/duckdb/.venv/bin/python \
+  cargo test -p dbt-state-harness --test duckdb_copy_python -- --ignored --nocapture
+cargo test -p dbt-state-harness --test duckdb_copy --test clone_lifecycle
+```
