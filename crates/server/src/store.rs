@@ -477,7 +477,7 @@ impl Store {
             WITH current_state AS (
                 SELECT DISTINCT ON (target_table)
                        target_table, table_type, last_modified_epoch, execution_runtime_ms,
-                       node_namespace_logic_hash, execution_type, table_namespace
+                       node_namespace_logic_hash, execution_type, table_namespace, clone_source_table
                 FROM executions
                 WHERE org_id = $1 AND status = 'confirmed'
                   AND warehouse_family = $6
@@ -490,6 +490,7 @@ impl Store {
               AND node_namespace_logic_hash = $3
               AND execution_type = $4
               AND target_table <> $5
+              AND ($6 <> 'duckdb' OR clone_source_table IS NULL)
             ORDER BY last_modified_epoch DESC NULLS LAST, target_table
             LIMIT 1
             "#,
@@ -709,6 +710,7 @@ impl Store {
         table_type: Option<&str>,
         execution_runtime_ms: Option<i64>,
         execution_results: Option<&qc::Struct>,
+        failed_to_clone: bool,
     ) -> sqlx::Result<bool> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
@@ -719,6 +721,10 @@ impl Store {
                 table_type = $4,
                 execution_runtime_ms = $5,
                 execution_results = $6,
+                clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
+                node_namespace_logic_hash = CASE
+                    WHEN $7 AND node_sql_hash IS NULL THEN NULL
+                    ELSE node_namespace_logic_hash END,
                 confirmed_at = now()
             WHERE org_id = $1
               AND request_id = $2
@@ -731,6 +737,7 @@ impl Store {
         .bind(table_type)
         .bind(execution_runtime_ms)
         .bind(execution_results.map(Message::encode_to_vec))
+        .bind(failed_to_clone)
         .execute(&self.pool)
         .await?
         .rows_affected();

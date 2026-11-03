@@ -65,8 +65,9 @@ SQL/context. It also derives a schema-abstracted cross-environment logic hash
 (`namespace_logic_hash`) used, scoped by `table_namespace`, for Snowflake clone reuse: the
 same model built in different environments differs only by the physical schema
 qualifier, which the abstraction collapses. DuckDB normalizes a small [validated formatting subset](duckdb-sql-identity.md);
-other dialects retain exact SQL. Neither uses schema-abstracted clone matching
-until its identifier/dependency and copy lifecycle rules are validated. Seeds share their own versioned configuration hash.
+other dialects retain exact SQL. A separate checked
+[DuckDB table copy slice](duckdb-result-copy.md) substitutes only supported
+environment context while retaining exact physical base inputs. Seeds share their own versioned configuration hash.
 Unsupported SQL is retained exactly; old hashes cold miss rather than being
 reinterpreted.
 

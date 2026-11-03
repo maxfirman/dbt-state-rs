@@ -3,8 +3,8 @@
 //! A parser accepting a dialect is not evidence that two SQL statements or
 //! physical relations are equivalent. Only Snowflake's schema abstraction has
 //! been characterized against the hosted service. Other warehouses retain exact
-//! rendered SQL, except DuckDB's validated formatting subset. Neither opts into
-//! cross-environment clone reuse yet.
+//! rendered SQL, except DuckDB's validated formatting subset. DuckDB copying
+//! uses separate request eligibility rather than this warehouse-wide capability.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warehouse {

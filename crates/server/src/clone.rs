@@ -64,6 +64,25 @@ pub fn clone_sqls_with_properties(
                 "CREATE TABLE {target} SHALLOW CLONE {source}"
             )])
         }
+        crate::warehouse::Warehouse::DuckDb => {
+            if source_table_type != Some("DUCKDB CTAS TABLE") {
+                return Err("DuckDB copy requires inspected CTAS-compatible source");
+            }
+            let source_parts =
+                crate::sql_identity::duckdb_relation(source).ok_or("invalid source")?;
+            let target_parts =
+                crate::sql_identity::duckdb_relation(target).ok_or("invalid target")?;
+            if source_parts[0] != target_parts[0]
+                || source_parts[1] == target_parts[1]
+                || !matches!(source_parts[1].as_str(), "prod" | "dev")
+                || !matches!(target_parts[1].as_str(), "prod" | "dev")
+            {
+                return Err("DuckDB copies require one file and supported environments");
+            }
+            Ok(vec![format!(
+                "CREATE OR REPLACE TABLE {target} AS SELECT * FROM {source}"
+            )])
+        }
         _ => Err("clone DDL is not implemented for this dialect"),
     }
 }
