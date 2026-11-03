@@ -62,7 +62,7 @@ Do not edit the reserved schema.
 
 Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
-extension types, attached/external relations, and result copying have
+extension types, collated tables, attached/external relations, and result copying have
 unknown evidence. User source-freshness overrides never substitute wall time.
 Arbitrary hooks writing other relations and unsupported/custom materializations
 are outside this table contract. The tested post-hook writes its own model
@@ -188,7 +188,8 @@ and removal through a view -> nested view -> table graph with four workers.
 The initial subset accepts SELECT/UNION queries over schema-qualified local
 relations, with ordinary projections and a small set of deterministic built-in
 functions (exact casts, sum/count/min/max, concat/chr/unhex, coalesce/nullif and
-lower/upper). Order-sensitive LIMIT/OFFSET/SAMPLE/DISTINCT ON, approximate
+lower/upper). Order-sensitive LIMIT/OFFSET/SAMPLE/DISTINCT ON, windows, collations, special
+join methods, approximate
 intermediates and AVG are outside this subset. The same eligibility gate applies
 to submitted models/tests as well as physical view definitions.
 Search-path-dependent unqualified physical references, cycles, missing
@@ -198,3 +199,11 @@ normally; unknown inputs cannot authorize SKIP. Fresh physical metadata is
 required even when the compiled model text is unchanged. This scope does not
 add result copying or alter Snowflake requests or policy.
 
+
+Physical tables whose stored DDL contains COLLATE have unknown evidence: DuckDB
+DESCRIBE omits column collation, and MIN/MAX over collated ties can depend on
+physical row order. Explicit expression collations and a configured
+`default_collation` also prevent local reuse. The fixed gate includes a
+collated-input reorder with a BLOB output, so the regression demonstrates
+unknown input evidence without relying on an unsupported output type. Run
+that focused case with `VIEW_SCENARIO=collation` and the view test filter.
