@@ -200,6 +200,14 @@ required even when the compiled model text is unchanged. This scope does not
 add result copying or alter Snowflake requests or policy.
 
 
+Physical tables whose stored DDL contains COLLATE have unknown evidence: DuckDB
+DESCRIBE omits column collation, and MIN/MAX over collated ties can depend on
+physical row order. Explicit expression collations and a configured
+`default_collation` also prevent local reuse. The fixed gate includes a
+collated-input reorder with a BLOB output, so the regression demonstrates
+unknown input evidence without relying on an unsupported output type. Run
+that focused case with `VIEW_SCENARIO=collation` and the view test filter.
+
 ### Cached data tests
 
 With `run_cache_enable_data_tests: true`, supported data tests reuse the complete
@@ -232,10 +240,3 @@ PYTHONPATH="$PWD/integrations/duckdb/src" \
 cargo test -p dbt-state-harness --test duckdb_data_tests_python -- --ignored
 cargo test -p dbt-state-harness --test duckdb_data_tests --test data_test_freshness
 ```
-Physical tables whose stored DDL contains COLLATE have unknown evidence: DuckDB
-DESCRIBE omits column collation, and MIN/MAX over collated ties can depend on
-physical row order. Explicit expression collations and a configured
-`default_collation` also prevent local reuse. The fixed gate includes a
-collated-input reorder with a BLOB output, so the regression demonstrates
-unknown input evidence without relying on an unsupported output type. Run
-that focused case with `VIEW_SCENARIO=collation` and the view test filter.
