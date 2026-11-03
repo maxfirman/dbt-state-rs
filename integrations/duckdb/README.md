@@ -258,3 +258,34 @@ PYTHONPATH="$PWD/integrations/duckdb/src" \
 cargo test -p dbt-state-harness --test duckdb_data_tests_python -- --ignored
 cargo test -p dbt-state-harness --test duckdb_data_tests --test data_test_freshness
 ```
+
+### Parallel workers
+
+The supported writer contract permits normal dbt workers in one invocation.
+Evidence scans and completion writes share a process lock and durable global
+ordinal; each scan uses a fresh committed snapshot. Successful materialization
+publishes completion evidence before returning to dbt's DAG scheduler, so children
+observe their committed parents. DuckDB epoch reads bypass asynchronous timestamp
+caches. Independent SQL branches still run on separate dbt worker connections.
+
+The four-worker fan-out/fan-in gate delays public RPC responses until three
+independent branches have submitted concurrently. It checks correlated parent
+confirmation/input epochs, unique globally ordered completions, literal joined
+rows with duplicates and NULLs, and column types. Unchanged runs must SKIP;
+logic changes producing identical rows must advance evidence and rebuild their
+children even with a frozen evidence wall clock. A genuine SQL worker error
+withholds the join, leaves recovery dirty, and requires fresh-generation BUILD
+then SKIP on restart.
+
+```sh
+PYTHONPATH="$PWD/integrations/duckdb/src" \
+DBT_STATE_DUCKDB_PYTHON=/tmp/dbt-duckdb-venv/bin/python \
+  cargo test -p dbt-state-harness --test duckdb_parallel -- --ignored
+```
+
+The invocation/reset advisory file lock rejects overlapping cooperating State
+commands and remains held until workers and metadata jobs finish (covered by
+`duckdb_recovery`). It cannot prohibit arbitrary external writers. Give one
+invocation exclusive write access to the DuckDB file; manual edits are supported
+between invocations. Concurrent external writes and overlapping ordinary dbt
+commands remain outside this support contract.
