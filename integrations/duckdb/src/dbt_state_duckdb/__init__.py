@@ -7,9 +7,10 @@ from pathlib import Path
 
 import duckdb
 from dbt_state.adapters.base import BaseAdapterExtension
+from .views import ViewMetadata
 
 
-class DuckDBAdapterExtension(BaseAdapterExtension):
+class DuckDBAdapterExtension(ViewMetadata, BaseAdapterExtension):
     """Local table observations; unknown evidence never receives invented epochs."""
 
     CLONE_CHAIN_DEPTH_LIMIT = 0
@@ -84,7 +85,8 @@ class DuckDBAdapterExtension(BaseAdapterExtension):
         return {self._sql(table): None for table in table_batch}
 
     def _fetch_view_definitions(self, table_batch):
-        # View reuse is unsupported until durable evidence and traversal are added.
+        # Unused by DuckDB: ViewMetadata traverses one fresh physical snapshot.
+        # Keep the asynchronous upstream hook conservative if called separately.
         from dbt_state.adapters.common import ViewFetchResult
 
         return ViewFetchResult(
@@ -114,6 +116,9 @@ def install():
     from dbt_state.request_builder import RequestBuilder
 
     ADAPTER_EXTENSION_MAPPING["duckdb"] = DuckDBAdapterExtension
+    from .views import install_view_requests
+
+    install_view_requests(DuckDBAdapterExtension)
     # Upstream's early noninteractive guard predates its insecure transport path.
     # Avoid constructing the hosted auth helper solely in this explicit mode;
     # QueryCacheGrpcClient still chooses the configured insecure channel itself.
