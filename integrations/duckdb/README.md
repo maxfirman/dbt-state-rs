@@ -237,7 +237,12 @@ query does not explicitly use the overridden name; precise
 overload/search-path resolution is outside the initial subset. Order-sensitive
 LIMIT/OFFSET/SAMPLE/DISTINCT ON, windows, collations, special join methods,
 approximate intermediates and AVG are outside this subset. The same eligibility gate applies
-to submitted models/tests as well as physical view definitions.
+to submitted models/tests as well as physical view definitions. Explicit `rowid`
+column references (including qualified and quoted forms) also have unknown
+evidence: unchanged visible rows can acquire different physical row identifiers.
+The guard applies to incremental initialization branches before any CTAS too.
+Aliases and string literals named `rowid` remain supported; actual column reads
+are conservatively excluded even when a user-defined visible column has that name.
 Search-path-dependent unqualified physical references, cycles, missing
 relations, table functions, external relations and unsupported functions/syntax
 produce explicit unknown dependency evidence. dbt executes these workloads

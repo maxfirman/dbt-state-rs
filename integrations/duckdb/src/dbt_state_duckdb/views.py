@@ -7,13 +7,12 @@ they never claim to timestamp the data returned by querying a view.
 import hashlib
 
 import duckdb
+from dbt_common.exceptions import DbtRuntimeError
 from dbt_state.adapters.common import ViewDefinition, ViewTraversalResult
 from dbt_state.errors import AdapterExtensionError
-from dbt_common.exceptions import DbtRuntimeError
 from dbt_state.utils import find_tables
 from sqlglot import exp, parse, parse_one
 from sqlglot.errors import SqlglotError
-
 
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
@@ -32,6 +31,14 @@ def references(sql, function_catalog=None):
         query = query.expression
     if not isinstance(query, (exp.Select, exp.Union)):
         raise TypeError("Unsupported view query")
+    # Hidden rowid exposes physical position, which unordered visible-column
+    # fingerprints deliberately do not track. Reject qualified/quoted reads
+    # too; aliases and string literals called rowid are not column reads.
+    if any(
+        isinstance(node, exp.Column) and node.name.lower() == "rowid"
+        for node in query.walk()
+    ):
+        raise ValueError("Unsupported physical rowid reference")
     # Table-valued functions, remote inputs and unqualified search-path lookup
     # require resolution semantics beyond this initial local-file contract.
     if any(

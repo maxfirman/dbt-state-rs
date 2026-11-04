@@ -91,10 +91,11 @@ if os.environ.get("EXPECT_NO_COPY") == "1":
     )
 
     register = QueryCacheGrpcClient.register_clone
+    copy_proposals = []
 
     def reject_copy(self, request, *args, **kwargs):
         response = register(self, request, *args, **kwargs)
-        assert not isinstance(response, ReadyToCloneResponse), response
+        copy_proposals.append(response)
         return response
 
     QueryCacheGrpcClient.register_clone = reject_copy
@@ -108,6 +109,12 @@ except SystemExit as result:
 if os.environ.get("FAIL_STATE") == "1":
     assert not observed
     sys.exit(0)
+if os.environ.get("EXPECT_NO_COPY") == "1":
+    # Assert outside the client's fallback handlers, which can swallow errors
+    # raised while processing a proposed compile-time copy.
+    assert not any(isinstance(r, ReadyToCloneResponse) for r in copy_proposals), (
+        copy_proposals
+    )
 assert len(observed) == 1, "State must return a model decision through its public RPC"
 expected_response = (
     ReadyToExecuteResponse
