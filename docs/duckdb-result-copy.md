@@ -8,21 +8,31 @@ This is a local contract, not hosted DuckDB conformance.
 
 Eligibility uses the validated [SQL formatting subset](duckdb-sql-identity.md),
 fully qualified physical base-table inputs in the same catalog, known and unique
-input evidence, and no view definitions. It substitutes only the root `prod`/`dev`
-resolution context. Physical input names stay exact: `raw.input` and
-`other.input` are distinct even if their rows are identical. Dependency graphs
-are excluded, so swapped or ambiguous view bindings cannot authorize copying.
-Unqualified inputs, other environment schemas, remote/attached inputs and
-unsupported syntax use ordinary dbt execution. View graph expansion is documented separately; the narrower
-[RegisterClone incremental contract](duckdb-incremental.md) validates template
-identity before pre-compilation CTAS.
+input evidence, and supported multi-level view chains. It substitutes only
+declared `prod`/`dev` view bindings and their explicit resolution contexts. Physical input names stay exact: `raw.input` and
+`other.input` are distinct even if their rows are identical. Each dependency reference is bound to its checked definition and resolution
+context. Graphs use the same single-input SELECT subset at each level, including
+checked physical `CREATE VIEW` wrappers. Structured identifier components keep
+quoted dots distinct. Two-part and unqualified references resolve only against
+explicit catalog/schema context; duplicate, case-ambiguous, cyclic, unreachable
+or unknown bindings reject copying. The Python physical-view collector currently
+rejects search-path-dependent unqualified definitions, so those build normally.
+Only views in the declared environment have their schema substituted; physical
+base relations and views in other schemas keep exact names. Other environment
+schemas, remote/attached inputs and unsupported syntax use ordinary execution.
+The narrower [RegisterClone incremental contract](duckdb-incremental.md)
+validates template identity before pre-compilation CTAS.
 
 `fingerprint::copy_logic_hash` returns optional eligibility through the shared
 Submit/Record pipeline. It is separate from the warehouse-wide Snowflake
-namespace capability. DuckDB's new `dbt-state-duckdb-copy-v1` namespace identity
+namespace capability. DuckDB's new `dbt-state-duckdb-copy-v2` namespace identity
 cannot reinterpret old history. Existing strict DuckDB identities and all
-Snowflake fingerprint bytes remain unchanged. The initial policy permits one
-copy hop: DuckDB copy-origin histories are excluded as automatic copy sources.
+Snowflake fingerprint bytes remain unchanged. The policy permits two automatic copy hops. Depth is derived from confirmed
+provenance at each child's submission time, within the same organization, file
+generation and warehouse family; missing ancestry remains ineligible. Later
+ancestor rebuilds cannot shorten an existing chain. Selection uses the newest
+opposite-environment source; a source at depth two or a stricter client limit
+causes ordinary execution. This does not alter Snowflake's chain policy.
 
 The client declares the `rows-schema-v1` capability only for ordinary table
 models with no unsupported physical-property requirements. Contracts,
@@ -93,3 +103,10 @@ distinct physical inputs, and permitted stale-source copying. The precise
 protocol gate additionally covers context allowlists, unknown/missing/duplicate
 metadata, unsupported expiration properties and the actual fallback source
 provenance. Existing Snowflake clone tests and golden replay remain required.
+
+The real view-graph gate additionally checks quoted/dotted physical view chains,
+prod→dev→prod copies with exact source/target correlation and independently checked
+contents/types at both hops, later SKIPs, third-hop fallback, changed view logic,
+distinct physical leaves and explicitly permitted stale-source contents. Protocol
+regressions cover swapped definitions, cycles, duplicate bindings, context changes,
+unqualified resolution with explicit context and dependency-list permutations.

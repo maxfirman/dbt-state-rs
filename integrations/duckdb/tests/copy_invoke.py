@@ -94,6 +94,13 @@ if confirmations:
     assert confirmations[0].last_modified_epoch is not None
 with Path(os.environ["COPY_OBSERVATIONS"]).open("a") as out:
     out.write(
-        json.dumps({"decision": kind, "fallback": bool(os.environ.get("COPY_FAILURE"))})
+        json.dumps(
+            {
+                "decision": kind,
+                "fallback": bool(os.environ.get("COPY_FAILURE")),
+                "source": getattr(observed[0], "clone_source", None),
+                "target": getattr(observed[0], "clone_target", None),
+            }
+        )
         + "\n"
     )

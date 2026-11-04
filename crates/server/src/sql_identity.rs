@@ -287,7 +287,8 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
         let mut key = vec![if view { "view" } else { "physical" }.into()];
         key.extend(name.iter().cloned());
         if view && name[1] == env {
-            key[2] = "environment".into();
+            key[2] = String::new();
+            key.insert(1, "environment".into());
         }
         key
     }
@@ -393,9 +394,9 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
             refs.slots,
             catalog,
             if schema == env {
-                "environment".into()
+                "environment:".into()
             } else {
-                schema
+                format!("schema:{schema}")
             },
         ));
     }

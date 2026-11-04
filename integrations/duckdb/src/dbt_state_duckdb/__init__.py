@@ -14,7 +14,7 @@ from .copy import TableCopy
 class DuckDBAdapterExtension(TableCopy, ViewMetadata, BaseAdapterExtension):
     """Local table observations; unknown evidence never receives invented epochs."""
 
-    CLONE_CHAIN_DEPTH_LIMIT = 1
+    CLONE_CHAIN_DEPTH_LIMIT = 2
     SYSTEM_METADATA_SCHEMAS = ("information_schema", "_dbt_state")
 
     def __init__(self, adapter, **kwargs):

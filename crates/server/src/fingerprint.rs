@@ -107,8 +107,9 @@ pub fn sql_logic_hash_with_version(
 }
 
 /// Eligibility is explicit: formatting validation alone never grants copying.
-/// This first slice shares exact physical base inputs and substitutes only the
-/// declared prod/dev resolution context. View graphs are intentionally excluded.
+/// Supported view graphs bind each structured reference to its checked definition
+/// and context. Only declared prod/dev view bindings substitute environments;
+/// physical base inputs retain their exact names.
 pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
     match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
         crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),

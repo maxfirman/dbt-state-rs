@@ -149,12 +149,13 @@ async fn failed_sql_copy_records_actual_build_and_becomes_an_ordinary_source() {
     .unwrap();
     let mut next = request("prod");
     next.target_table = Some("\"db\".\"prod\".\"next\"".into());
+    next.clone_chain_depth_limit = Some(1);
     let result = sql.submit_enriched_sql(next).await.unwrap().into_inner();
     let Some(qc::submit_sql_response::Response::ReadyToClone(copy)) = result.response else {
         panic!("ordinary fallback should be a valid source")
     };
-    // One-hop copies cannot be sources. Selecting the newest ordinary fallback
-    // through the public service proves it retained no false copy provenance.
+    // With a one-hop client limit, selecting this fallback proves it became an
+    // ordinary source rather than retaining false copy provenance.
     assert_eq!(copy.clone_source, "\"db\".\"dev\".\"result\"");
     assert_eq!(copy.clone_required_last_modified_epoch, Some(30));
 }
@@ -210,6 +211,30 @@ async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
         .unwrap()
         .into_inner();
     assert_eq!(response_variant(&response), "ready_to_clone");
+    // An unqualified reference resolves through the explicit query context.
+    let mut unqualified = dev.clone();
+    unqualified.sql = "select id, amount + 1 as amount from upper_view".into();
+    assert_eq!(
+        response_variant(
+            &sql.submit_enriched_sql(unqualified)
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "ready_to_clone"
+    );
+    // Dependency list order changes no reference-to-definition bindings.
+    let mut reordered = dev.clone();
+    reordered.query_dependencies.reverse();
+    assert_eq!(
+        response_variant(
+            &sql.submit_enriched_sql(reordered)
+                .await
+                .unwrap()
+                .into_inner()
+        ),
+        "ready_to_clone"
+    );
     for case in 0..6 {
         let mut req = dev.clone();
         match case {
@@ -236,5 +261,67 @@ async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
             "ready_to_execute",
             "negative {case}"
         );
+    }
+}
+
+#[tokio::test]
+async fn graph_copy_chain_supports_two_hops_and_rejects_a_third() {
+    let (addr, _) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let mut previous = String::new();
+    for (step, schema) in ["prod", "dev", "prod", "dev"].iter().enumerate() {
+        if step == 3 {
+            // A later ordinary rebuild of an ancestor must not shorten the
+            // already confirmed third relation's two-hop provenance.
+            let mut rebuild = graph_request("dev");
+            rebuild.target_table = Some("\"db\".\"dev\".\"result1\"".into());
+            rebuild.allow_clones = Some(false);
+            let response = sql.submit_enriched_sql(rebuild).await.unwrap().into_inner();
+            let Some(qc::submit_sql_response::Response::ReadyToExecute(build)) = response.response
+            else {
+                panic!("ordinary ancestor rebuild");
+            };
+            exec.confirm_execution(qc::ConfirmExecutionRequest {
+                request_id: build.request_id,
+                last_modified_epoch: Some(35),
+                table_type: Some("DUCKDB CTAS TABLE".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        }
+        let mut req = graph_request(schema);
+        req.target_table = Some(format!("\"db\".\"{schema}\".\"result{step}\""));
+        let response = sql
+            .submit_enriched_sql(req.clone())
+            .await
+            .unwrap()
+            .into_inner();
+        let id = match response.response {
+            Some(qc::submit_sql_response::Response::ReadyToExecute(build))
+                if step == 0 || step == 3 =>
+            {
+                build.request_id
+            }
+            Some(qc::submit_sql_response::Response::ReadyToClone(copy))
+                if step == 1 || step == 2 =>
+            {
+                assert_eq!(copy.clone_source, previous);
+                assert_eq!(copy.clone_target, req.target_table.clone().unwrap());
+                copy.request_id
+            }
+            _ => panic!("unexpected decision at step {step}"),
+        };
+        previous = req.target_table.unwrap();
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: id,
+            last_modified_epoch: Some(20 + step as i64 * 10),
+            table_type: Some("DUCKDB CTAS TABLE".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
     }
 }

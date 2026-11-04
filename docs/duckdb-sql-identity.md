@@ -31,7 +31,8 @@ definitions. Exact dependency-name strings preserve quoted dots without
 rejoining or erasing components. A validated strict SQL string alone does not authorize copying. The separate
 [table copy contract](duckdb-result-copy.md) enables a conservative physical
 base-input slice with explicit eligibility, source validation and execution;
-view dependency graphs remain excluded.
+supported single-input multi-level view chains use the same checked graph
+representation and exact physical leaves.
 
 DuckDB uses the new `dbt-state-duckdb-sql-v1` strict/template version tag. Older
 DuckDB histories cold miss. Snowflake retains `dbt-state-sql-v4`,
