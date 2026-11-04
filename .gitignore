@@ -11,3 +11,6 @@ __pycache__/
 
 # Local DuckDB compatibility environment
 /integrations/duckdb/.venv/
+
+# Credential-free DuckDB CI artifacts
+/artifacts/

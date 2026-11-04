@@ -43,8 +43,10 @@ Clone DDL is generated from dialect templates, with unsupported operations
 reported explicitly. BigQuery and Databricks clone templates follow published
 syntax and selected source-type restrictions, but have not been executed against
 those warehouses or compared with hosted responses; Redshift cloning remains
-unsupported. Only Snowflake uses cross-environment schema-abstracted matching;
-other dialects use exact rendered SQL for strict same-target reuse and do not
+unsupported. Snowflake uses its captured cross-environment schema-abstracted
+matching contract. The [local DuckDB workflow](duckdb.md) separately supports a
+conservative checked copy subset with independent reuse-safety tests. Other
+dialects use exact rendered SQL for strict same-target reuse and do not
 automatically clone across target names.
 
 ## Project goals

@@ -1,5 +1,8 @@
 # Local DuckDB State client
 
+For the complete credential-free project, supported feature matrix, recovery
+procedure and mandatory CI commands, start with the [DuckDB workflow](../../docs/duckdb.md).
+
 This installable extension uses the maintained `dbt-state` Python plugin and
 real dbt Core execution. Small deterministic SQL table workloads now BUILD,
 confirm after committed completion, and SKIP in subsequent dbt processes.
@@ -25,8 +28,9 @@ It also covers scalar representations, post-hook completion, unknown types and
 metadata, same-named tables in independent files, and ordinary execution after
 an injected State transport failure. Evidence reads see frozen/regressed wall
 time while transport retains its real deadline clock.
-The optional Rust test is ignored in the default suite until the later CI gate
-milestone; this script explicitly runs it.
+Real-client Rust tests are ignored by plain `cargo test` because they require
+the pinned Python environment. The mandatory `scripts/duckdb-ci.sh` gate installs
+that environment and explicitly runs every fixed case plus bounded generation.
 
 For your own project, install with `uv pip install ./integrations/duckdb`, then:
 

@@ -22,6 +22,18 @@ Rust 1.98 is selected by rust-toolchain.toml. Integration tests create isolated
 Postgres schemas and run all migrations. Capture's database test lives in
 `crates/server/tests/capture.rs`, keeping library tests independent of Postgres.
 
+## DuckDB acceptance gate
+
+Every PR runs `./scripts/duckdb-ci.sh --jobs 4` alongside the ordinary workspace
+suite. It installs the locked Python environment, builds all targets once, and
+runs every fixed real-dbt/production-gRPC case plus four generated seeds with
+four random episodes and independent-oracle mutation probes. Postgres schemas
+and DuckDB files are isolated per case. The [workflow guide](duckdb.md) lists
+coverage, runtime measurements, supported versions, recovery and replay commands.
+Weekly/manual extended runs keep larger generated failure traces for replay.
+DuckDB checks establish local reuse safety; Snowflake capture replay remains the
+hosted-conformance evidence.
+
 ## Offline regression tests
 
 `crates/harness/tests/offline_regressions.rs` exercises public gRPC decisions and

@@ -161,7 +161,14 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
             field(&mut h, &req.execution_type.to_le_bytes());
             extras(&mut h, &req.semantic_extras);
             field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
-            for (binding, query, slots, catalog, schema) in graph.queries {
+            for crate::sql_identity::DuckDbCopyQuery {
+                binding,
+                query,
+                slots,
+                catalog,
+                schema,
+            } in graph.queries
+            {
                 field(&mut h, &(binding.len() as u64).to_le_bytes());
                 for part in binding {
                     field(&mut h, part.as_bytes());

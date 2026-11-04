@@ -242,8 +242,19 @@ pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> 
 /// Checked graph representation. SQL relation slots are framed separately from
 /// their structured bindings, so no identifier spelling can impersonate a slot.
 pub(crate) struct DuckDbCopyGraph {
-    pub queries: Vec<(Vec<String>, String, Vec<Vec<String>>, String, String)>,
+    pub queries: Vec<DuckDbCopyQuery>,
     pub inputs: Vec<Vec<String>>,
+}
+
+// Field declaration order preserves the previous tuple's lexicographic sort,
+// and fingerprint framing keeps these fields in exactly this order.
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+pub(crate) struct DuckDbCopyQuery {
+    pub binding: Vec<String>,
+    pub query: String,
+    pub slots: Vec<Vec<String>>,
+    pub catalog: String,
+    pub schema: String,
 }
 
 pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Option<DuckDbCopyGraph> {
@@ -388,17 +399,17 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
             .as_deref()
             .map(|n| abstract_name(n, env, true))
             .unwrap_or_default();
-        graph.queries.push((
-            key,
+        graph.queries.push(DuckDbCopyQuery {
+            binding: key,
             query,
-            refs.slots,
+            slots: refs.slots,
             catalog,
-            if schema == env {
+            schema: if schema == env {
                 "environment:".into()
             } else {
                 format!("schema:{schema}")
             },
-        ));
+        });
     }
     if visited.len() != definitions.len() {
         return None;

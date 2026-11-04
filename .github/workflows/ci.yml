@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      generated_steps:
+        description: Random episodes per seed in the extended DuckDB run
+        type: number
+        default: 40
+  schedule:
+    - cron: '17 3 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,7 +43,8 @@ jobs:
         run: cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 
   test:
-    name: Build & Test
+    name: Build & Test + DuckDB
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -76,3 +84,65 @@ jobs:
         # unit + integration tests, including the conformance replay of the
         # committed golden fixtures against a fresh Postgres.
         run: cargo test --workspace
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: integrations/duckdb/uv.lock
+      - name: All fixed real-dbt cases and bounded generation (four seeds, four episodes)
+        run: ./scripts/duckdb-ci.sh --jobs 4
+      - name: Retain logs, timing, seeds and replayable traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-acceptance
+          path: artifacts/duckdb
+          retention-days: 14
+
+  duckdb-extended:
+    name: DuckDB extended generated traces
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dbtstate
+          POSTGRES_PASSWORD: dbtstate
+          POSTGRES_DB: dbtstate
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U dbtstate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+      DBT_STATE_GENERATED_SEEDS: '0,1,2,3,4,5,6,7'
+      DBT_STATE_GENERATED_STEPS: ${{ inputs.generated_steps || 40 }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: integrations/duckdb/uv.lock
+      - name: Extended generation
+        run: ./scripts/duckdb-ci.sh --generated-only
+      - name: Retain extended replay artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-extended
+          path: artifacts/duckdb
+          retention-days: 30
