@@ -339,3 +339,7 @@ DBT_STATE_DUCKDB_PYTHON=integrations/duckdb/.venv/bin/python \
   cargo test -p dbt-state-harness --test duckdb_copy_python -- --ignored --nocapture
 cargo test -p dbt-state-harness --test duckdb_copy --test clone_lifecycle
 ```
+
+The [generated physical-state gate](../../docs/duckdb-generated.md) complements
+these fixed real-dbt checks with reproducible lifecycle traces, independent
+rows/schema checks, real server restarts and oracle mutation probes.
