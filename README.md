@@ -21,8 +21,9 @@ traffic captured against the hosted service using the official dbt Fusion client
   [correctness handoff](docs/correctness-handoff.md) for live-verified behavior,
   compatibility changes and concrete remaining tasks.
 - **Warehouse scope:** Snowflake is the only warehouse whose cross-environment
-  matching has been characterized against the hosted service. Other dialects
-  use conservative same-target reuse; BigQuery/Databricks clone DDL remains
+  matching has been characterized against the hosted service. DuckDB has a
+  separate tested local copy/reuse contract. Other dialects use conservative
+  same-target reuse; BigQuery/Databricks clone DDL remains
   unverified against those warehouses, and Redshift cloning is unsupported.
 
 ## Quick start
@@ -42,6 +43,11 @@ export RUN_CACHE_API_URL=127.0.0.1:50051
 export RUN_CACHE_API_SECURE=false
 dbt build --profile <snowflake-profile> --target <target>
 ```
+
+For credential-free local exploration with a real Python dbt project, see the
+[DuckDB workflow](docs/duckdb.md). It includes seeds, tables, views, cached tests,
+pinned incremental execution and prod/dev result copying. DuckDB reuse-safety
+checks run in CI alongside the Snowflake hosted capture replay.
 
 ## Workspace layout
 

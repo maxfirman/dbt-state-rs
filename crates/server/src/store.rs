@@ -236,6 +236,7 @@ impl Store {
     /// FOLLOW-UP: the data-test lookup previously compared only `node_sql_hash`,
     /// so a cuc data test with an unchanged template but a changed interpolated
     /// rendered literal wrongly EXECUTED where the hosted service reuses it.
+    #[allow(clippy::too_many_arguments)] // Explicit independent identity/scope dimensions.
     pub async fn find_confirmed_test(
         &self,
         org_id: &str,
@@ -789,6 +790,7 @@ impl Store {
     ///
     /// Scoped by `org_id` to honor the global org-isolation invariant, even
     /// though `request_id` is a unique server-minted UUID.
+    #[allow(clippy::too_many_arguments)] // Mirrors the correlated wire outcome fields.
     pub async fn confirm(
         &self,
         org_id: &str,
