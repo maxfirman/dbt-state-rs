@@ -172,9 +172,41 @@ impl VisitorMut for DuckDbSubset {
     }
 }
 
-/// Fully qualified local relation; AST parsing keeps quoting and component
-/// boundaries checked before these names are interpolated into CTAS.
-pub fn duckdb_relation(name: &str) -> Option<Vec<String>> {
+/// A checked, fully qualified local relation. Components retain their parsed
+/// spelling and boundaries, including dots within quoted identifiers.
+pub struct DuckDbRelation {
+    components: [String; 3],
+}
+
+impl DuckDbRelation {
+    pub fn catalog(&self) -> &str {
+        &self.components[0]
+    }
+
+    pub fn schema(&self) -> &str {
+        &self.components[1]
+    }
+
+    pub fn name(&self) -> &str {
+        &self.components[2]
+    }
+
+    pub fn is_copy_environment(&self) -> bool {
+        matches!(self.schema(), "prod" | "dev")
+    }
+
+    pub fn is_state_schema(&self) -> bool {
+        self.schema() == "_dbt_state"
+    }
+
+    pub(crate) fn into_components(self) -> Vec<String> {
+        self.components.into()
+    }
+}
+
+/// AST parsing checks quoting and component boundaries before these names are
+/// interpolated into CTAS. Keep the original SQL for rendering, not raw values.
+pub fn duckdb_relation(name: &str) -> Option<DuckDbRelation> {
     let statements =
         Parser::parse_sql(&DuckDbDialect {}, &format!("SELECT id FROM {name}")).ok()?;
     if statements.len() != 1 {
@@ -210,7 +242,9 @@ pub fn duckdb_relation(name: &str) -> Option<Vec<String>> {
             _ => None,
         })
         .collect();
-    parts.filter(|p| p.len() == 3)
+    Some(DuckDbRelation {
+        components: parts?.try_into().ok()?,
+    })
 }
 
 pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> {
@@ -223,8 +257,10 @@ pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> 
         type Break = ();
         fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
             match duckdb_relation(&name.to_string()) {
-                Some(parts) if parts[0] == self.catalog && parts[1] != "_dbt_state" => {
-                    self.names.push(parts);
+                Some(relation)
+                    if relation.catalog() == self.catalog && !relation.is_state_schema() =>
+                {
+                    self.names.push(relation.into_components());
                     ControlFlow::Continue(())
                 }
                 _ => ControlFlow::Break(()),
@@ -283,13 +319,16 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
     let mut definitions = BTreeMap::new();
     let mut keys = BTreeSet::new();
     for dep in &req.query_dependencies {
-        let name = duckdb_relation(&dep.name)?;
-        if name[0] != req.default_catalog
-            || name[1] == "_dbt_state"
+        let relation = duckdb_relation(&dep.name)?;
+        if relation.catalog() != req.default_catalog
+            || relation.is_state_schema()
             || dep.default_catalog != req.default_catalog
             || dep.default_schema.is_empty()
-            || !keys.insert(folded(&name))
         {
+            return None;
+        }
+        let name = relation.into_components();
+        if !keys.insert(folded(&name)) {
             return None;
         }
         definitions.insert(name, dep);

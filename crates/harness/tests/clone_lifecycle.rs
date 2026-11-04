@@ -314,6 +314,8 @@ async fn clone_happy_path_register_confirm_shapes() {
 
 /// A successful ordinary build after a failed RegisterClone has no source SQL
 /// evidence. Source-derived identity must not authorize adoption of that build.
+// The deprecated oneof must still mirror the current field on the wire.
+#[allow(deprecated)]
 #[tokio::test]
 async fn failed_clone_confirmation_does_not_certify_source_logic() {
     let (addr, _) = start_server().await;

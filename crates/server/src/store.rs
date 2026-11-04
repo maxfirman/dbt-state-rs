@@ -511,10 +511,9 @@ impl Store {
                 let Some(source) = crate::sql_identity::duckdb_relation(&source_table) else {
                     continue;
                 };
-                if target
-                    .as_ref()
-                    .is_none_or(|t| t[0] != source[0] || t[1] == source[1])
-                {
+                if target.as_ref().is_none_or(|t| {
+                    t.catalog() != source.catalog() || t.schema() == source.schema()
+                }) {
                     continue;
                 }
                 let Some(depth) = self
