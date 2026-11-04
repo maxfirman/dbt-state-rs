@@ -9,12 +9,18 @@ import hashlib
 import duckdb
 from dbt_state.adapters.common import ViewDefinition, ViewTraversalResult
 from dbt_state.errors import AdapterExtensionError
+from dbt_common.exceptions import DbtRuntimeError
 from dbt_state.utils import find_tables
 from sqlglot import exp, parse, parse_one
 from sqlglot.errors import SqlglotError
 
 
-def references(sql):
+FUNCTION_CATALOG_SQL = (
+    "SELECT function_name, internal FROM system.main.duckdb_functions()"
+)
+
+
+def references(sql, function_catalog=None):
     try:
         statements = parse(sql, dialect="duckdb")
     except SqlglotError as exc:
@@ -74,24 +80,38 @@ def references(sql):
         "LOWER",
         "UPPER",
     }
-    if any(
-        isinstance(node, exp.Func) and node.sql_name() not in safe_functions
-        for node in query.walk()
-    ):
+    functions = {node.sql_name() for node in query.walk() if isinstance(node, exp.Func)}
+    if not functions <= safe_functions:
         raise ValueError("Unsupported function in view query")
+    if function_catalog is None:
+        raise ValueError("Missing function binding evidence")
+    internal, uncertain = set(), set()
+    for name, builtin in function_catalog:
+        (internal if builtin else uncertain).add(name.upper())
+    # DuckDB resolves operators (including + and ||) through mutable function
+    # bindings too. The AST's Func nodes do not enumerate every implicit call.
+    # Conservatively reject every query if any built-in name is overridden,
+    # regardless of current search path, overload signature or apparent usage.
+    if internal & uncertain:
+        raise ValueError("Overridden built-in function or operator")
+    # CAST/TRY_CAST/COALESCE are parser constructs, absent from the function
+    # catalog. Every callable name needs current built-in evidence.
+    intrinsic = {"CAST", "TRY_CAST", "COALESCE"}
+    if functions & uncertain or not functions <= internal | intrinsic:
+        raise ValueError("Uncertain function binding in view query")
     return tables
 
 
 def physical_view(db, table):
     relation = parse_one(table, into=exp.Table, dialect="duckdb")
     rows = db.execute(
-        "SELECT sql FROM duckdb_views() WHERE database_name=? AND schema_name=? AND view_name=?",
+        "SELECT sql FROM system.main.duckdb_views() WHERE database_name=? AND schema_name=? AND view_name=?",
         [relation.catalog, relation.db, relation.name],
     ).fetchall()
     if len(rows) != 1 or not rows[0][0]:
         raise ValueError("Missing physical view definition")
     sql = rows[0][0]
-    references(sql)
+    references(sql, db.execute(FUNCTION_CATALOG_SQL).fetchall())
     schema = db.execute("DESCRIBE SELECT * FROM " + table).fetchall()
     return sql, schema
 
@@ -129,13 +149,22 @@ class ViewMetadata:
             )
         )
         try:
-            tables = (
-                references(sql_or_tables)
-                if isinstance(sql_or_tables, str)
-                else sql_or_tables
+            # The real worker cursor includes temporary macros and plugin UDFs
+            # invisible to a separately opened evidence connection.
+            _, session_functions = self.adapter.execute(
+                FUNCTION_CATALOG_SQL, auto_begin=False, fetch=True
             )
             with duckdb.connect(str(self.path)) as db:
                 db.execute("BEGIN TRANSACTION")
+                function_catalog = (
+                    list(session_functions.rows)
+                    + db.execute(FUNCTION_CATALOG_SQL).fetchall()
+                )
+                tables = (
+                    references(sql_or_tables, function_catalog)
+                    if isinstance(sql_or_tables, str)
+                    else sql_or_tables
+                )
                 active, visited = set(), set()
 
                 def visit(raw):
@@ -155,7 +184,7 @@ class ViewMetadata:
                     elif kind == [("VIEW",)]:
                         sql, _ = physical_view(db, name)
                         active.add(name)
-                        for dependency in references(sql):
+                        for dependency in references(sql, function_catalog):
                             visit(dependency)
                         active.remove(name)
                         definitions[name] = ViewDefinition(
@@ -176,6 +205,7 @@ class ViewMetadata:
             duckdb.Error,
             SqlglotError,
             AdapterExtensionError,
+            DbtRuntimeError,
             ValueError,
             TypeError,
         ):
@@ -218,13 +248,18 @@ def install_view_requests(adapter_type):
             speculative,
         )
         if local:
+            from .hooks import semantic_contract, supported_hooks
+
+            request.semantic_extras.update(semantic_contract(node))
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)
             settings = self._adapter_ext.adapter.config.credentials.settings or {}
-            if any(str(key).lower() == "default_collation" for key in settings):
+            if any(
+                str(key).lower() == "default_collation" for key in settings
+            ) or not supported_hooks(node):
                 marker = self._adapter_ext._sql(
                     exp.table_(
-                        "unsupported_collation",
+                        "unsupported_execution_context",
                         db="_dbt_state",
                         catalog=self._adapter_ext.default_catalog,
                         quoted=True,
@@ -239,9 +274,9 @@ def install_view_requests(adapter_type):
             request.tables = [
                 shared_models.TableModifiedInfo(
                     name=name,
-                    last_modified_epoch=None
-                    if name in traversal.unresolvable_tables
-                    else epoch,
+                    last_modified_epoch=(
+                        None if name in traversal.unresolvable_tables else epoch
+                    ),
                 )
                 for name, epoch in epochs.items()
             ]
@@ -257,3 +292,24 @@ def install_view_requests(adapter_type):
         return request, duration
 
     RequestBuilder.build_submit_enriched_sql_request = build
+
+    original_values = RequestBuilder.build_submit_values_request
+
+    def values(self, node):
+        request = original_values(self, node)
+        if isinstance(self._adapter_ext, adapter_type):
+            from .hooks import hook_config, semantic_contract
+
+            request.semantic_extras.update(semantic_contract(node))
+            # Seed hooks have no validated local execution subset yet. Retain
+            # ordinary BUILD and never certify their current target for reuse.
+            if (
+                any(hook_config(node))
+                or self._adapter_ext.traverse_view_definitions(
+                    "SELECT 1"
+                ).unresolvable_tables
+            ):
+                request.last_modified_epoch = None
+        return request
+
+    RequestBuilder.build_submit_values_request = values

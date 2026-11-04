@@ -69,7 +69,7 @@ class EvidenceStore:
             # can choose different tied values after a physical reorder,
             # which a relational content fingerprint intentionally ignores.
             ddl = db.execute(
-                "SELECT sql FROM duckdb_tables() WHERE database_name=? AND schema_name=? AND table_name=?",
+                "SELECT sql FROM system.main.duckdb_tables() WHERE database_name=? AND schema_name=? AND table_name=?",
                 [relation.catalog, relation.db, relation.name],
             ).fetchall()
             if (

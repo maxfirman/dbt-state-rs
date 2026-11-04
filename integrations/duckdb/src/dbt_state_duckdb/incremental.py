@@ -92,13 +92,21 @@ def initialization_identity(builder, node):
     # Validate both branches before any profile-based CTAS. An unchanged raw
     # template is insufficient for random(), LIMIT, remote inputs or unknown
     # metadata. Self reads are intentionally separate from external freshness.
-    from .views import references
+    from .views import FUNCTION_CATALOG_SQL, references
+    from dbt_common.exceptions import DbtRuntimeError
     import duckdb
     from sqlglot import exp, parse_one
 
     target = parse_one(node.relation_name, into=exp.Table, dialect="duckdb")
     try:
+        _, session_functions = builder._adapter_ext.adapter.execute(
+            FUNCTION_CATALOG_SQL, auto_begin=False, fetch=True
+        )
         with duckdb.connect(str(builder._adapter_ext.path)) as db:
+            function_catalog = (
+                list(session_functions.rows)
+                + db.execute(FUNCTION_CATALOG_SQL).fetchall()
+            )
             for incremental in (False, True):
                 sql = (
                     jinja2.Environment()
@@ -109,7 +117,7 @@ def initialization_identity(builder, node):
                         this=node.relation_name,
                     )
                 )
-                for table in references(sql):
+                for table in references(sql, function_catalog):
                     if table == target:
                         continue
                     if (
@@ -128,7 +136,7 @@ def initialization_identity(builder, node):
                         is None
                     ):
                         return None
-    except (ValueError, TypeError, duckdb.Error, jinja2.TemplateError):
+    except (ValueError, TypeError, duckdb.Error, jinja2.TemplateError, DbtRuntimeError):
         return None
     config = node.config.to_dict()
     for key in ("alias", "schema", "database", "tags", "group"):
@@ -140,7 +148,7 @@ def initialization_identity(builder, node):
     )
     data = [node.unique_id, node.raw_code, config, macros]
     return (
-        "duckdb-incremental-init-v1:"
+        "duckdb-incremental-init-v2:"
         + hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()
@@ -159,20 +167,18 @@ def incremental_relation_contract(db, name, node):
 
     table = parse_one(name, into=exp.Table, dialect="duckdb")
     exists = db.execute(
-        "select count(*) from information_schema.tables where table_catalog=? and table_schema=? and table_name=?",
+        "select 1 from information_schema.tables where table_catalog=? and table_schema=? and table_name=? limit 1",
         [table.catalog, table.db, table.name],
-    ).fetchone()[0]
-    if not exists:
+    ).fetchone()
+    if exists is None:
         return True
     key = node.config.get("unique_key")
     if not supported_incremental(node):
         return False
     try:
         return (
-            db.execute(f'SELECT count(*) FROM {name} WHERE "{key}" IS NULL').fetchone()[
-                0
-            ]
-            == 0
+            db.execute(f'SELECT 1 FROM {name} WHERE "{key}" IS NULL LIMIT 1').fetchone()
+            is None
         )
     except Exception:
         return False

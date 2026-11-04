@@ -55,6 +55,8 @@ for method in ("submit_values", "submit_sql"):
 
     def observe(self, request, *args, _original=original, **kwargs):
         response = _original(self, request, *args, **kwargs)
+        assert request.semantic_extras["duckdb_local_contract"] == "functions-hooks-v1"
+        assert "duckdb_hooks_v1" in request.semantic_extras
         name = request.dbt_node_state.node_unique_id.rsplit(".", 1)[-1]
         if name in expected:
             namespaces.add(request.table_namespace)
