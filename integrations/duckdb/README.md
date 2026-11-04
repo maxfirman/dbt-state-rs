@@ -68,12 +68,26 @@ Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
 extension types, collated tables and attached/external relations have unknown
 evidence. User source-freshness overrides never substitute wall time.
-Arbitrary hooks writing other relations and unsupported/custom materializations
-are outside this table contract. The tested post-hook writes its own model
-result; evidence is collected after materialization return, which follows dbt's
-commit and outside-transaction post-hooks. Repeated completion reads do not
+Only static own-target UPDATE post-hooks with column/literal integer arithmetic
+are eligible for reuse. The only supported late-rendered context is `{{ this }}`;
+functions, subqueries, predicates, other relations and opaque/dynamic hook forms
+have unknown evidence. All pre-hooks have unknown evidence because they execute
+after State's inspection and can change session function bindings. Seed hooks
+also have unknown evidence. These workloads execute ordinarily on every run.
+The full pre/post-hook configuration is part of the versioned local identity,
+including empty hook lists, so changing or removing a hook rebuilds. The tested
+post-hook writes its own model result; evidence is collected after materialization
+return, which follows dbt's commit and outside-transaction post-hooks. Repeated completion reads do not
 advance the sequence again. A known successful ordinary build advances it once,
 including when State submit failed and dbt built without a State request.
+
+SQL and seed requests always include the local `functions-hooks-v1` execution
+contract marker, including workloads without hooks. Upgrading cold-misses earlier
+unverified outcomes even if a former hook or warehouse macro has already been
+removed. Incremental initialization uses the `duckdb-incremental-init-v2` identity;
+pre-upgrade sources cannot populate a development target before the new SQL
+contract is checked. Rebuild the production source under the new contract before
+expecting initialization copies again.
 
 The selected incremental strategy is explicit `delete+insert`, with a single
 non-NULL key and `on_schema_change='fail'`. Real profile-based development
@@ -218,7 +232,8 @@ both the dbt worker session and the persistent database. Any user-defined overri
 of a built-in function or operator name, including a temporary macro, produces
 unknown evidence for every query and prevents reuse and incremental
 initialization copying. Operators and implicit calls also use mutable function
-bindings. This conservative check rejects overrides in every schema; precise
+bindings. This conservative check rejects overrides in every schema even when the current
+query does not explicitly use the overridden name; precise
 overload/search-path resolution is outside the initial subset. Order-sensitive
 LIMIT/OFFSET/SAMPLE/DISTINCT ON, windows, collations, special join methods,
 approximate intermediates and AVG are outside this subset. The same eligibility gate applies

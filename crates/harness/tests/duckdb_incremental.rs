@@ -27,7 +27,7 @@ fn submit(schema: &str) -> qc::SubmitEnrichedSqlRequest {
             last_modified_epoch: Some(10),
         }],
         dbt_node_state: Some(qc::DbtNodeState {
-            node_hash: "duckdb-incremental-init-v1:test".into(),
+            node_hash: "duckdb-incremental-init-v2:test".into(),
             ..Default::default()
         }),
         ..Default::default()
@@ -51,7 +51,7 @@ fn register() -> qc::CloneRequest {
             ),
             (
                 "duckdb_incremental_identity".into(),
-                "duckdb-incremental-init-v1:test".into(),
+                "duckdb-incremental-init-v2:test".into(),
             ),
         ]
         .into(),
@@ -109,7 +109,7 @@ async fn incremental_register_requires_current_source_and_adopts_only_matching_l
             7 => {
                 bad.labels.insert(
                     "duckdb_incremental_identity".into(),
-                    "duckdb-incremental-init-v1:changed".into(),
+                    "duckdb-incremental-init-v2:changed".into(),
                 );
             }
             _ => bad.labels.clear(),
@@ -186,6 +186,48 @@ async fn incremental_register_requires_current_source_and_adopts_only_matching_l
     })
     .await
     .unwrap();
+    assert!(copies
+        .register_clone(register())
+        .await
+        .unwrap()
+        .into_inner()
+        .unable_to_clone
+        .is_some());
+}
+
+#[tokio::test]
+async fn legacy_incremental_sources_cannot_initialize_new_targets() {
+    let (addr, _) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut copies = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let mut legacy = submit("prod");
+    legacy.dbt_node_state.as_mut().unwrap().node_hash = "duckdb-incremental-init-v1:test".into();
+    let response = sql.submit_enriched_sql(legacy).await.unwrap().into_inner();
+    let Some(qc::submit_sql_response::Response::ReadyToExecute(build)) = response.response else {
+        panic!("BUILD")
+    };
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: build.request_id,
+        last_modified_epoch: Some(20),
+        table_type: Some("DUCKDB CTAS TABLE".into()),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    let mut request = register();
+    request.labels.insert(
+        "duckdb_incremental_identity".into(),
+        "duckdb-incremental-init-v1:test".into(),
+    );
+    assert!(copies
+        .register_clone(request)
+        .await
+        .unwrap()
+        .into_inner()
+        .unable_to_clone
+        .is_some());
     assert!(copies
         .register_clone(register())
         .await

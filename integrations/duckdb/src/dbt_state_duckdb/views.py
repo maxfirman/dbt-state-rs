@@ -248,13 +248,18 @@ def install_view_requests(adapter_type):
             speculative,
         )
         if local:
+            from .hooks import semantic_contract, supported_hooks
+
+            request.semantic_extras.update(semantic_contract(node))
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)
             settings = self._adapter_ext.adapter.config.credentials.settings or {}
-            if any(str(key).lower() == "default_collation" for key in settings):
+            if any(
+                str(key).lower() == "default_collation" for key in settings
+            ) or not supported_hooks(node):
                 marker = self._adapter_ext._sql(
                     exp.table_(
-                        "unsupported_collation",
+                        "unsupported_execution_context",
                         db="_dbt_state",
                         catalog=self._adapter_ext.default_catalog,
                         quoted=True,
@@ -287,3 +292,24 @@ def install_view_requests(adapter_type):
         return request, duration
 
     RequestBuilder.build_submit_enriched_sql_request = build
+
+    original_values = RequestBuilder.build_submit_values_request
+
+    def values(self, node):
+        request = original_values(self, node)
+        if isinstance(self._adapter_ext, adapter_type):
+            from .hooks import hook_config, semantic_contract
+
+            request.semantic_extras.update(semantic_contract(node))
+            # Seed hooks have no validated local execution subset yet. Retain
+            # ordinary BUILD and never certify their current target for reuse.
+            if (
+                any(hook_config(node))
+                or self._adapter_ext.traverse_view_definitions(
+                    "SELECT 1"
+                ).unresolvable_tables
+            ):
+                request.last_modified_epoch = None
+        return request
+
+    RequestBuilder.build_submit_values_request = values

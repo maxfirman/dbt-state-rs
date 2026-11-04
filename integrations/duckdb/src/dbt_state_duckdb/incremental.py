@@ -148,7 +148,7 @@ def initialization_identity(builder, node):
     )
     data = [node.unique_id, node.raw_code, config, macros]
     return (
-        "duckdb-incremental-init-v1:"
+        "duckdb-incremental-init-v2:"
         + hashlib.sha256(
             json.dumps(data, sort_keys=True, default=str).encode()
         ).hexdigest()

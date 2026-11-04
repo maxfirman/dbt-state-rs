@@ -77,6 +77,8 @@ def observe(self, request, *args, **kwargs):
         observed.append(response)
         requests.append(request)
         assert request.table_namespace
+        assert request.semantic_extras["duckdb_local_contract"] == "functions-hooks-v1"
+        assert "duckdb_hooks_v1" in request.semantic_extras
 
     return response
 

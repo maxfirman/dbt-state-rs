@@ -1510,7 +1510,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                         .get("duckdb_incremental_contract")
                         .map(String::as_str)
                         == Some("delete-insert-fixed-v1")
-                        && identity.starts_with("duckdb-incremental-init-v1:")
+                        && identity.starts_with("duckdb-incremental-init-v2:")
                         && req.clone_source_table_type.as_deref() == Some("DUCKDB CTAS TABLE") =>
                 {
                     self.0
