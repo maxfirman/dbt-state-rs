@@ -1492,6 +1492,51 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             )));
         }
 
+        // Unlike Snowflake, DuckDB accepts this pre-compilation path only for
+        // the pinned incremental contract and a physically current source.
+        // The later SQL submit still must match the inherited logic/config hash.
+        let duckdb = crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            == crate::warehouse::Warehouse::DuckDb;
+        let duckdb_source_logic = if duckdb {
+            match (
+                req.execution_type,
+                namespace(req.table_namespace.as_deref()),
+                req.clone_source_last_modified_epoch,
+                req.labels.get("duckdb_incremental_identity"),
+            ) {
+                (5, Some(ns), Some(epoch), Some(identity))
+                    if req
+                        .labels
+                        .get("duckdb_incremental_contract")
+                        .map(String::as_str)
+                        == Some("delete-insert-fixed-v1")
+                        && identity.starts_with("duckdb-incremental-init-v1:")
+                        && req.clone_source_table_type.as_deref() == Some("DUCKDB CTAS TABLE") =>
+                {
+                    self.0
+                        .store
+                        .find_duckdb_incremental_source(
+                            &org_id,
+                            &req.clone_source_table,
+                            ns,
+                            epoch,
+                            identity,
+                        )
+                        .await
+                        .map_err(db_err)?
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if duckdb && duckdb_source_logic.is_none() {
+            return Ok(Response::new(unable_to_clone_response(
+                req.clone_source_table.clone(),
+                req.target_table.clone(),
+                REJECTION_FORCED_NOT_ELIGIBLE,
+            )));
+        }
         let request_id = new_uuid_v7();
         let execution_decision_id = new_uuid_v7();
 
@@ -1510,21 +1555,23 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         // same namespace. If the source was never recorded here, the clone row
         // carries no logic identity and a later submit falls back to EXECUTE
         // (safe: we never skip without proven logic equivalence).
-        let inherited_ns_logic =
-            if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse() {
-                self.0
-                    .store
-                    .find_source_ns_logic_hash(
-                        &org_id,
-                        &req.clone_source_table,
-                        namespace(req.table_namespace.as_deref()),
-                        &req.dialect,
-                    )
-                    .await
-                    .map_err(db_err)?
-            } else {
-                None
-            };
+        let inherited_ns_logic = if duckdb {
+            duckdb_source_logic.flatten()
+        } else if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse()
+        {
+            self.0
+                .store
+                .find_source_ns_logic_hash(
+                    &org_id,
+                    &req.clone_source_table,
+                    namespace(req.table_namespace.as_deref()),
+                    &req.dialect,
+                )
+                .await
+                .map_err(db_err)?
+        } else {
+            None
+        };
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
@@ -1601,13 +1648,17 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             "clone decision: READY_TO_CLONE"
         );
 
-        let ready = ready_to_clone_response(
+        let mut ready = ready_to_clone_response(
             request_id,
             clone_sqls,
             req.clone_source_table.clone(),
             req.target_table.clone(),
             execution_decision_id,
         );
+
+        if duckdb {
+            ready.clone_required_last_modified_epoch = req.clone_source_last_modified_epoch;
+        }
 
         // The real CloneResponse populates both the new `ready_to_clone` field
         // (3) and the deprecated `ready_to_clone_v1` oneof (1) with the same

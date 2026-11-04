@@ -20,7 +20,8 @@ rejects search-path-dependent unqualified definitions, so those build normally.
 Only views in the declared environment have their schema substituted; physical
 base relations and views in other schemas keep exact names. Other environment
 schemas, remote/attached inputs and unsupported syntax use ordinary execution.
-RegisterClone/incremental initialization is a separate milestone.
+The narrower [RegisterClone incremental contract](duckdb-incremental.md)
+validates template identity before pre-compilation CTAS.
 
 `fingerprint::copy_logic_hash` returns optional eligibility through the shared
 Submit/Record pipeline. It is separate from the warehouse-wide Snowflake

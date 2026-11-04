@@ -62,8 +62,8 @@ Do not edit the reserved schema.
 
 Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
-extension types, collated tables, attached/external relations, and result copying have
-unknown evidence. User source-freshness overrides never substitute wall time.
+extension types, collated tables and attached/external relations have unknown
+evidence. User source-freshness overrides never substitute wall time.
 Arbitrary hooks writing other relations and unsupported/custom materializations
 are outside this table contract. The tested post-hook writes its own model
 result; evidence is collected after materialization return, which follows dbt's
@@ -71,8 +71,11 @@ commit and outside-transaction post-hooks. Repeated completion reads do not
 advance the sequence again. A known successful ordinary build advances it once,
 including when State submit failed and dbt built without a State request.
 
-The selected first-release incremental strategy is dbt-duckdb's `delete+insert`;
-incremental lifecycle support has a separate milestone. Seed, test and view support is described below.
+The selected incremental strategy is explicit `delete+insert`, with a single
+non-NULL key and `on_schema_change='fail'`. Real profile-based development
+initialization, ordinary updates and reuse are described in
+[the incremental contract](../../docs/duckdb-incremental.md). Seed, test and view
+support is described below.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
 server does not implement ClientTelemetry. Existing Snowflake replay remains
 the hosted conformance contract.
@@ -323,13 +326,14 @@ aggregate-result lifecycle and remain cacheable.
 ## Result copying
 
 Eligible table models in profile schemas `prod` and `dev` can copy results with
-CTAS and later SKIP. The first slice requires shared, fully qualified physical
-base-table inputs in one file and the validated simple SELECT subset. It keeps
-physical inputs distinct, inspects source properties and current source evidence,
-and falls back to ordinary dbt materialization for unsupported requirements or
-failed copies. It permits one copy hop. Views and incremental copy initialization
-are separate slices. See [the copy contract](../../docs/duckdb-result-copy.md),
-including permitted stale-source policy and the Snowflake confirmation assessment.
+CTAS and later SKIP. Validated view graphs preserve exact base-table names and
+bind references to their definitions. The common path validates source
+properties and current physical evidence, supports up to two bounded copy hops,
+and falls back to ordinary dbt execution on unsupported requirements or failed
+copies. Incremental models also have a narrower pre-compilation initialization
+contract. See [result copying](../../docs/duckdb-result-copy.md) and
+[incremental execution](../../docs/duckdb-incremental.md), including permitted
+stale-source policy and the Snowflake confirmation assessment.
 
 ```sh
 DBT_STATE_DUCKDB_PYTHON=integrations/duckdb/.venv/bin/python \
