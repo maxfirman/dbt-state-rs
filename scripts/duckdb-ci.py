@@ -10,7 +10,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 FIXED = (
-    'duckdb_python', 'duckdb_identity_python', 'duckdb_recovery',
+    'duckdb_python', 'duckdb_functions_python', 'duckdb_identity_python', 'duckdb_recovery',
     'duckdb_interruptions', 'duckdb_parallel', 'duckdb_seeds_python',
     'duckdb_data_tests_python', 'duckdb_copy_python',
     'duckdb_incremental_python', 'duckdb_workflow',

@@ -82,6 +82,20 @@ def observe(self, request, *args, **kwargs):
 
 
 QueryCacheGrpcClient.submit_sql = observe
+
+if os.environ.get("EXPECT_NO_COPY") == "1":
+    from query_cache_common.models.services.clone_service_models import (
+        ReadyToCloneResponse,
+    )
+
+    register = QueryCacheGrpcClient.register_clone
+
+    def reject_copy(self, request, *args, **kwargs):
+        response = register(self, request, *args, **kwargs)
+        assert not isinstance(response, ReadyToCloneResponse), response
+        return response
+
+    QueryCacheGrpcClient.register_clone = reject_copy
 from dbt.cli.main import cli
 
 try:

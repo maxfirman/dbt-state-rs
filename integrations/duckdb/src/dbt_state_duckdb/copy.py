@@ -93,15 +93,21 @@ def inspected_table(db, name):
     ).fetchall()
     if kinds != [("BASE TABLE",)]:
         return False
-    if db.execute(
-        "SELECT count(*) FROM duckdb_constraints() WHERE database_name=? AND schema_name=? AND table_name=?",
-        identity,
-    ).fetchone()[0]:
+    if (
+        db.execute(
+            "SELECT 1 FROM system.main.duckdb_constraints() WHERE database_name=? AND schema_name=? AND table_name=? LIMIT 1",
+            identity,
+        ).fetchone()
+        is not None
+    ):
         return False
-    if db.execute(
-        "SELECT count(*) FROM duckdb_indexes() WHERE database_name=? AND schema_name=? AND table_name=?",
-        identity,
-    ).fetchone()[0]:
+    if (
+        db.execute(
+            "SELECT 1 FROM system.main.duckdb_indexes() WHERE database_name=? AND schema_name=? AND table_name=? LIMIT 1",
+            identity,
+        ).fetchone()
+        is not None
+    ):
         return False
     columns = db.execute("DESCRIBE " + name).fetchall()
     # CTAS preserves only data and column names/types, not defaults or NOT NULL.

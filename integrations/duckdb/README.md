@@ -213,9 +213,15 @@ and removal through a view -> nested view -> table graph with four workers.
 The initial subset accepts SELECT/UNION queries over schema-qualified local
 relations, with ordinary projections and a small set of deterministic built-in
 functions (exact casts, sum/count/min/max, concat/chr/unhex, coalesce/nullif and
-lower/upper). Order-sensitive LIMIT/OFFSET/SAMPLE/DISTINCT ON, windows, collations, special
-join methods, approximate
-intermediates and AVG are outside this subset. The same eligibility gate applies
+lower/upper). Callable names also require current built-in catalog evidence from
+both the dbt worker session and the persistent database. Any user-defined override
+of a built-in function or operator name, including a temporary macro, produces
+unknown evidence for every query and prevents reuse and incremental
+initialization copying. Operators and implicit calls also use mutable function
+bindings. This conservative check rejects overrides in every schema; precise
+overload/search-path resolution is outside the initial subset. Order-sensitive
+LIMIT/OFFSET/SAMPLE/DISTINCT ON, windows, collations, special join methods,
+approximate intermediates and AVG are outside this subset. The same eligibility gate applies
 to submitted models/tests as well as physical view definitions.
 Search-path-dependent unqualified physical references, cycles, missing
 relations, table functions, external relations and unsupported functions/syntax
