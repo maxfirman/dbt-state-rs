@@ -122,3 +122,10 @@ run(
     source=("prod", "stale_source"),
 )
 run("dev", "stale_copy", "skip", expected=[(1, 111), (2, 121), (2, 121), (3, None)])
+# A search-path-dependent physical definition is deliberately unresolved by
+# evidence traversal, although the ordinary DuckDB execution can evaluate it.
+with duckdb.connect(str(path)) as db:
+    db.execute('create table main."in.put" as select * from raw."in.put"')
+    db.execute('create or replace view dev."low.er" as select id, amount from "in.put"')
+run("dev", "ambiguous", "build")
+run("dev", "ambiguous", "build")

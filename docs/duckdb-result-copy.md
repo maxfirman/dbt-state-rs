@@ -7,7 +7,7 @@ client executes and confirms it, and the next process can SKIP the target.
 This is a local contract, not hosted DuckDB conformance.
 
 Eligibility uses the validated [SQL formatting subset](duckdb-sql-identity.md),
-fully qualified physical base-table inputs in the same catalog, known and unique
+resolved local physical base-table inputs in the same catalog, known and unique
 input evidence, and supported multi-level view chains. It substitutes only
 declared `prod`/`dev` view bindings and their explicit resolution contexts. Physical input names stay exact: `raw.input` and
 `other.input` are distinct even if their rows are identical. Each dependency reference is bound to its checked definition and resolution
@@ -32,7 +32,10 @@ provenance at each child's submission time, within the same organization, file
 generation and warehouse family; missing ancestry remains ineligible. Later
 ancestor rebuilds cannot shorten an existing chain. Selection uses the newest
 opposite-environment source; a source at depth two or a stricter client limit
-causes ordinary execution. This does not alter Snowflake's chain policy.
+causes ordinary execution. The upstream Python client reserves one hop when
+executing its configured defer-to production profile; the real automatic-chain
+gate uses explicit physical references and `--no-defer` to request both supported
+hops in either profile. This does not alter Snowflake's chain policy.
 
 The client declares the `rows-schema-v1` capability only for ordinary table
 models with no unsupported physical-property requirements. Contracts,
@@ -107,6 +110,7 @@ provenance. Existing Snowflake clone tests and golden replay remain required.
 The real view-graph gate additionally checks quoted/dotted physical view chains,
 prod→dev→prod copies with exact source/target correlation and independently checked
 contents/types at both hops, later SKIPs, third-hop fallback, changed view logic,
-distinct physical leaves and explicitly permitted stale-source contents. Protocol
+distinct physical leaves, executable but unresolved search-path definitions,
+and explicitly permitted stale-source contents. Protocol
 regressions cover swapped definitions, cycles, duplicate bindings, context changes,
 unqualified resolution with explicit context and dependency-list permutations.
