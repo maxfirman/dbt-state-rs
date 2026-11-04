@@ -62,8 +62,8 @@ Do not edit the reserved schema.
 
 Table evidence supports BOOLEAN, signed/unsigned integers through HUGEINT,
 VARCHAR, BLOB and fixed-scale DECIMAL. FLOAT/DOUBLE, dates/times, complex and
-extension types, collated tables, attached/external relations, and result copying have
-unknown evidence. User source-freshness overrides never substitute wall time.
+extension types, collated tables and attached/external relations have unknown
+evidence. User source-freshness overrides never substitute wall time.
 Arbitrary hooks writing other relations and unsupported/custom materializations
 are outside this table contract. The tested post-hook writes its own model
 result; evidence is collected after materialization return, which follows dbt's
