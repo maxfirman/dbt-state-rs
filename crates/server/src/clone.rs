@@ -72,10 +72,10 @@ pub fn clone_sqls_with_properties(
                 crate::sql_identity::duckdb_relation(source).ok_or("invalid source")?;
             let target_parts =
                 crate::sql_identity::duckdb_relation(target).ok_or("invalid target")?;
-            if source_parts[0] != target_parts[0]
-                || source_parts[1] == target_parts[1]
-                || !matches!(source_parts[1].as_str(), "prod" | "dev")
-                || !matches!(target_parts[1].as_str(), "prod" | "dev")
+            if source_parts.catalog() != target_parts.catalog()
+                || source_parts.schema() == target_parts.schema()
+                || !source_parts.is_copy_environment()
+                || !target_parts.is_copy_environment()
             {
                 return Err("DuckDB copies require one file and supported environments");
             }

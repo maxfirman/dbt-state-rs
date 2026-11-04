@@ -140,7 +140,10 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
                     return None;
                 }
                 let name = crate::sql_identity::duckdb_relation(&table.name)?;
-                if metadata.insert(name, table.last_modified_epoch).is_some() {
+                if metadata
+                    .insert(name.into_components(), table.last_modified_epoch)
+                    .is_some()
+                {
                     return None;
                 }
             }
@@ -151,8 +154,8 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
                 return None;
             }
             let parts = crate::sql_identity::duckdb_relation(req.target_table.as_deref()?)?;
-            if parts[0] != req.default_catalog
-                || Some(parts[1].as_str()) != req.default_schema.as_deref()
+            if parts.catalog() != req.default_catalog
+                || Some(parts.schema()) != req.default_schema.as_deref()
             {
                 return None;
             }
