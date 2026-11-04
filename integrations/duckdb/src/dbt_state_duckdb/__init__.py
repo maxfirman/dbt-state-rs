@@ -126,6 +126,9 @@ def install():
     from .copy import install_copy
 
     install_copy(DuckDBAdapterExtension)
+    from .incremental import install_workload_gate
+
+    install_workload_gate(DuckDBAdapterExtension)
     # Upstream's early noninteractive guard predates its insecure transport path.
     # Avoid constructing the hosted auth helper solely in this explicit mode;
     # QueryCacheGrpcClient still chooses the configured insecure channel itself.

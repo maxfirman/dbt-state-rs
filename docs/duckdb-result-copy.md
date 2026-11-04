@@ -13,8 +13,9 @@ resolution context. Physical input names stay exact: `raw.input` and
 `other.input` are distinct even if their rows are identical. Dependency graphs
 are excluded, so swapped or ambiguous view bindings cannot authorize copying.
 Unqualified inputs, other environment schemas, remote/attached inputs and
-unsupported syntax use ordinary dbt execution. View graph expansion and
-RegisterClone/incremental initialization are separate milestones.
+unsupported syntax use ordinary dbt execution. View graph expansion is documented separately; the narrower
+[RegisterClone incremental contract](duckdb-incremental.md) validates template
+identity before pre-compilation CTAS.
 
 `fingerprint::copy_logic_hash` returns optional eligibility through the shared
 Submit/Record pipeline. It is separate from the warehouse-wide Snowflake

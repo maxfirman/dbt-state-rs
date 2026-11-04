@@ -515,6 +515,40 @@ impl Store {
         ))
     }
 
+    /// Compile-time DuckDB initialization needs current, confirmed ET5 source
+    /// provenance. Select physical history first; a later incompatible write
+    /// must hide an older eligible source.
+    pub async fn find_duckdb_incremental_source(
+        &self,
+        org_id: &str,
+        source: &str,
+        namespace: &str,
+        epoch: i64,
+        identity: &str,
+    ) -> sqlx::Result<Option<Option<String>>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            r#"WITH current_state AS (
+                SELECT execution_type, node_namespace_logic_hash, last_modified_epoch,
+                       table_type, clone_source_table, node_hash
+                FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND table_namespace = $3
+                  AND warehouse_family = 'duckdb' AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            ) SELECT node_namespace_logic_hash FROM current_state
+              WHERE execution_type = 5 AND last_modified_epoch = $4
+                AND table_type = 'DUCKDB CTAS TABLE' AND clone_source_table IS NULL
+                AND node_hash = $5"#,
+        )
+        .bind(org_id)
+        .bind(source)
+        .bind(namespace)
+        .bind(epoch)
+        .bind(identity)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.0))
+    }
+
     /// Look up the clone source's confirmed logic identity by its physical
     /// target name within a namespace. Returns the inherited
     /// `node_namespace_logic_hash` to stamp on a clone-origin row.

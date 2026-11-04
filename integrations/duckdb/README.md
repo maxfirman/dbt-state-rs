@@ -71,8 +71,11 @@ commit and outside-transaction post-hooks. Repeated completion reads do not
 advance the sequence again. A known successful ordinary build advances it once,
 including when State submit failed and dbt built without a State request.
 
-The selected first-release incremental strategy is dbt-duckdb's `delete+insert`;
-incremental lifecycle support has a separate milestone. Seed, test and view support is described below.
+The selected incremental strategy is explicit `delete+insert`, with a single
+non-NULL key and `on_schema_change='fail'`. Real profile-based development
+initialization, ordinary updates and reuse are described in
+[the incremental contract](../../docs/duckdb-incremental.md). Seed, test and view
+support is described below.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
 server does not implement ClientTelemetry. Existing Snowflake replay remains
 the hosted conformance contract.

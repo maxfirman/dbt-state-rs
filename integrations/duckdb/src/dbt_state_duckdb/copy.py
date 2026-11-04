@@ -40,7 +40,9 @@ def ctas_satisfies_requirements(node):
         "concurrent_batches",
     }
     properties = config.to_dict()
-    if config.materialized != "table":
+    from .incremental import supported_incremental
+
+    if config.materialized != "table" and not supported_incremental(node):
         return False
     if properties.get("contract", {}).get("enforced"):
         return False
@@ -122,7 +124,13 @@ class TableCopy:
     def get_relation_table_type(self, node, relation):
         name = self._sql(self._to_fqn(relation.render()))
         with duckdb.connect(str(self.path)) as db:
-            if ctas_satisfies_requirements(node) and inspected_table(db, name):
+            from .incremental import incremental_relation_contract
+
+            if (
+                ctas_satisfies_requirements(node)
+                and inspected_table(db, name)
+                and incremental_relation_contract(db, name, node)
+            ):
                 return "DUCKDB CTAS TABLE"
         return None
 
@@ -177,12 +185,45 @@ def install_copy(adapter_type):
         if isinstance(self._adapter_ext, adapter_type):
             if ctas_satisfies_requirements(node):
                 request.semantic_extras["duckdb_copy_contract"] = "rows-schema-v1"
+                if node.config.materialized == "incremental":
+                    from .incremental import initialization_identity
+
+                    identity = initialization_identity(self, node)
+                    request.dbt_node_state.node_hash = (
+                        identity or "duckdb-incremental-no-init"
+                    )
+                    request.semantic_extras["duckdb_incremental_contract"] = (
+                        "delete-insert-fixed-v1"
+                    )
             else:
                 # Even an existing compatible source may not satisfy this node.
                 request.clone_chain_depth_limit = 0
         return request, duration
 
     RequestBuilder.build_submit_enriched_sql_request = build
+    original_clone_request = RequestBuilder.build_clone_request
+
+    def clone_request(self, node, *args, **kwargs):
+        request = original_clone_request(self, node, *args, **kwargs)
+        if isinstance(self._adapter_ext, adapter_type):
+            from .incremental import supported_incremental
+
+            if supported_incremental(node) and ctas_satisfies_requirements(node):
+                from .incremental import initialization_identity
+
+                identity = initialization_identity(self, node)
+                if identity:
+                    request.labels["duckdb_incremental_contract"] = (
+                        "delete-insert-fixed-v1"
+                    )
+                    request.labels["duckdb_incremental_identity"] = identity
+                else:
+                    request.clone_chain_depth_limit = 0
+            else:
+                request.clone_chain_depth_limit = 0
+        return request
+
+    RequestBuilder.build_clone_request = clone_request
     original_process = RunCache._process_query_cache_response
 
     def process(self, node, response):
@@ -207,3 +248,51 @@ def install_copy(adapter_type):
         return original_process(self, node, response)
 
     RunCache._process_query_cache_response = process
+
+    # Profile-based initialization happens during compilation, before SQL exists.
+    # It bypasses _process_query_cache_response in the upstream client.
+    original_try_clone = RunCache._try_clone
+
+    def try_clone(self, node):
+        if not isinstance(self._adapter_ext, adapter_type):
+            return original_try_clone(self, node)
+        if (
+            not ctas_satisfies_requirements(node)
+            or self._dev_cloner is None
+            or self.is_write_only
+        ):
+            return False
+        response = self._submit_clone_request(node)
+        if not isinstance(response, ReadyToCloneResponse):
+            return False
+        expected = response.clone_required_last_modified_epoch
+        target = self._adapter_ext._sql(self._node_resolution.node_to_table(node))
+        if expected is None or response.clone_target != target:
+            return False
+        token = _SOURCE.set((response.clone_source, response.clone_target, expected))
+        try:
+            self._dev_cloner.clone(
+                self._adapter,
+                node,
+                response.clone_sqls,
+                response.clone_source,
+                response.clone_target,
+            )
+            self._adapter_ext.commit_if_open()
+            self.confirm_execution(node, response.request_id)
+            self._decision_logger.log_dev_clone(
+                node.name, response.clone_source, response.clone_target
+            )
+            return True
+        except Exception:
+            # Leave registration pending: it has no submitted transformation
+            # that could certify an ordinary fallback as the source's logic.
+            # The following SQL submission records the actual build instead.
+            from .recovery import uncertain
+
+            uncertain()
+            return False
+        finally:
+            _SOURCE.reset(token)
+
+    RunCache._try_clone = try_clone
