@@ -291,6 +291,20 @@ def install_copy(adapter_type):
             from .recovery import uncertain
 
             uncertain()
+            # Source discovery can leave dbt's metadata transaction open. A
+            # separately committed CTAS must be visible to ordinary compilation:
+            # roll back that old snapshot and reconcile the actual target with
+            # dbt's relation cache, without certifying the copy as successful.
+            connection = self._adapter.connections.get_thread_connection()
+            if connection.transaction_open:
+                # Pinned dbt-duckdb's handle wrapper has no rollback() method;
+                # the inherited rollback_if_open silently leaves SQL active.
+                self._adapter.execute("ROLLBACK", auto_begin=False)
+                connection.transaction_open = False
+            with duckdb.connect(str(self._adapter_ext.path)) as db:
+                if inspected_table(db, target):
+                    self._adapter_ext.cache_node_relation(node)
+            self._adapter_ext.clear_cache([target])
             return False
         finally:
             _SOURCE.reset(token)
