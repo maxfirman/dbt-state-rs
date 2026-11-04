@@ -235,7 +235,7 @@ async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
         ),
         "ready_to_clone"
     );
-    for case in 0..6 {
+    for case in 0..8 {
         let mut req = dev.clone();
         match case {
             0 => {
@@ -248,7 +248,16 @@ async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
                 .query_dependencies
                 .push(req.query_dependencies[0].clone()),
             4 => req.query_dependencies.swap(0, 1), // restore order below, but swap bound definitions
-            _ => req.query_dependencies[1].query = "select id, amount from lower_view".into(),
+            5 => req.query_dependencies[1].query = "select id, amount from lower_view".into(),
+            6 => {
+                req.sql = req.sql.replace("dev.upper_view", "environment.upper_view");
+                req.query_dependencies[0].name = "db.environment.upper_view".into();
+            }
+            _ => {
+                let mut duplicate = req.query_dependencies[0].clone();
+                duplicate.name = "db.dev.UPPER_VIEW".into();
+                req.query_dependencies.push(duplicate);
+            }
         }
         if case == 4 {
             let query = req.query_dependencies[0].query.clone();
