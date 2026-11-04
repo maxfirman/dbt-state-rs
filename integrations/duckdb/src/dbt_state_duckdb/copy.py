@@ -195,6 +195,15 @@ def install_copy(adapter_type):
                     request.semantic_extras["duckdb_incremental_contract"] = (
                         "delete-insert-fixed-v1"
                     )
+                    # The cold branch can render identically across different
+                    # incremental templates. Bind the initialization contract to
+                    # automatic SQL copying too, so a rejected precompile copy
+                    # cannot re-enter through the rendered-SQL fallback.
+                    request.semantic_extras["duckdb_incremental_identity"] = (
+                        identity or "unavailable"
+                    )
+                    if identity is None:
+                        request.clone_chain_depth_limit = 0
             else:
                 # Even an existing compatible source may not satisfy this node.
                 request.clone_chain_depth_limit = 0

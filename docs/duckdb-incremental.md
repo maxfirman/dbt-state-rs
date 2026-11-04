@@ -45,7 +45,11 @@ a source whose latest outcome is itself a copy is not eligible here.
 The identity binds node UID, template text, effective configuration (except
 physical relation location and nonsemantic labels) and supplied macro contents.
 It is stored in the existing opaque local `node_hash` field and transmitted in
-RegisterClone labels; no wire field or service name changes. Snowflake hashes
+RegisterClone labels and SQL semantic extras. Binding it to automatic SQL
+copying also prevents a rejected initialization template from re-entering through
+an identical rendered cold branch. If this identity is unavailable, automatic
+incremental copying is disabled; strict same-target reuse remains possible.
+No wire field or service name changes. Snowflake hashes
 and RegisterClone policy are unaffected. A changed template/configuration is
 rejected before CTAS: copying first and discovering the mismatch in subsequent
 SQL would let a delta query retain obsolete source rows.

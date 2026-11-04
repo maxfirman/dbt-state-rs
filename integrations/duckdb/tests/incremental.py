@@ -85,6 +85,14 @@ run("dev", "build", [(1, 111), (3, 130)], register=1)
 )
 sql("drop table dev.result")
 run("dev", "build", [(1, 11), (3, 30)], register=1)
+# The absent-target SQL is identical to prod, but the incremental template
+# differs. Reject both precompile initialization and SQL automatic copying;
+# otherwise the stale retained id2 would sneak back through the cold branch.
+(root / "models/result.sql").write_text(
+    plain + "\n{% if is_incremental() %} where id > 0 {% endif %}"
+)
+sql("drop table dev.result")
+run("dev", "build", [(1, 11), (3, 30)], register=1)
 (root / "models/result.sql").write_text(plain)
 sql("drop table dev.result")
 run(
@@ -99,7 +107,7 @@ run(
 run("dev", "build", [(1, 11), (2, 20), (3, 30)])
 run("dev", "skip", [(1, 11), (2, 20), (3, 30)])
 sql("drop table prod.result")
-run("prod", "build", [(1, 11), (3, 30)])
+run("prod", "build", [(1, 11), (3, 30)], extra={"RUN_CACHE_ALLOW_CLONES": "false"})
 sql("drop table dev.result")
 run(
     "dev",
@@ -122,7 +130,7 @@ run("dev", "build", [(1, 11), (3, 30)])
 run("dev", "skip", [(1, 11), (3, 30)])
 # Re-record the production source in this generation, then reject an external edit.
 sql("drop table prod.result")
-run("prod", "build", [(1, 11), (3, 30)])
+run("prod", "build", [(1, 11), (3, 30)], extra={"RUN_CACHE_ALLOW_CLONES": "false"})
 sql("update prod.result set amount=999; drop table dev.result")
 # SQL-submit proposal also validates the edited physical source and builds normally.
 run("dev", "copy", [(1, 11), (3, 30)], register=1)
@@ -137,8 +145,8 @@ conditional = (
     + "\n{% if is_incremental() %} where amount > (select coalesce(max(amount),0) from {{ this }}) {% endif %}"
 )
 (root / "models/result.sql").write_text(conditional)
-run("prod", "build", [(1, 11), (3, 30)])
-run("prod", "build", [(1, 11), (3, 30)])
+run("prod", "build", [(1, 11), (3, 30)], extra={"RUN_CACHE_ALLOW_CLONES": "false"})
+run("prod", "build", [(1, 11), (3, 30)], extra={"RUN_CACHE_ALLOW_CLONES": "false"})
 run("prod", "skip", [(1, 11), (3, 30)])
 sql("update raw.input set amount=40 where id=1")
 run("prod", "build", [(1, 40), (3, 30)])
