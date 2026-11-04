@@ -861,7 +861,11 @@ impl Sql for SqlService {
                     // An equivalent exists under another name. If the target
                     // forbids clones, suppress the clone and emit the hosted
                     // CLONE_CHAIN_LIMIT_EXCEEDED execute shape; otherwise clone.
-                    if clones_forbidden {
+                    if clones_forbidden
+                        || (req.dialect.eq_ignore_ascii_case("duckdb")
+                            && eq.duckdb_copy_depth
+                                >= req.clone_chain_depth_limit.unwrap_or(2).min(2) as usize)
+                    {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
                         // Persist an ordinary (non-clone) pending row so the

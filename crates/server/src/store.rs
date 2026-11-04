@@ -102,6 +102,7 @@ pub struct CloneEquivalent {
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
+    pub duckdb_copy_depth: usize,
 }
 
 /// A node's recorded comparison state for `state:*` selectors, keyed by the
@@ -472,7 +473,7 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and execution
         // type. Another connection's same-named target is a different object.
         type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
-        let row: Option<CloneEquivRow> = sqlx::query_as(
+        let rows: Vec<CloneEquivRow> = sqlx::query_as(
             r#"
             WITH current_state AS (
                 SELECT DISTINCT ON (target_table)
@@ -490,9 +491,8 @@ impl Store {
               AND node_namespace_logic_hash = $3
               AND execution_type = $4
               AND target_table <> $5
-              AND ($6 <> 'duckdb' OR clone_source_table IS NULL)
             ORDER BY last_modified_epoch DESC NULLS LAST, target_table
-            LIMIT 1
+            LIMIT CASE WHEN $6 = 'duckdb' THEN NULL ELSE 1 END
             "#,
         )
         .bind(org_id)
@@ -501,18 +501,71 @@ impl Store {
         .bind(execution_type)
         .bind(exclude_target)
         .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
-        Ok(row.map(
-            |(source_table, table_type, last_modified_epoch, execution_runtime_ms)| {
-                CloneEquivalent {
-                    source_table,
-                    table_type,
-                    last_modified_epoch,
-                    execution_runtime_ms,
+        let duckdb = dialect.eq_ignore_ascii_case("duckdb");
+        let target = crate::sql_identity::duckdb_relation(exclude_target);
+        for (source_table, table_type, last_modified_epoch, execution_runtime_ms) in rows {
+            let depth = if duckdb {
+                let Some(source) = crate::sql_identity::duckdb_relation(&source_table) else {
+                    continue;
+                };
+                if target
+                    .as_ref()
+                    .is_none_or(|t| t[0] != source[0] || t[1] == source[1])
+                {
+                    continue;
                 }
-            },
-        ))
+                let Some(depth) = self
+                    .duckdb_copy_depth(org_id, table_namespace, &source_table)
+                    .await?
+                else {
+                    continue;
+                };
+                depth
+            } else {
+                0
+            };
+            return Ok(Some(CloneEquivalent {
+                source_table,
+                table_type,
+                last_modified_epoch,
+                execution_runtime_ms,
+                duckdb_copy_depth: depth,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Follow immutable provenance at each copy's submission time. Later
+    /// rebuilds of an ancestor cannot shorten an already completed copy chain.
+    /// Missing history and more than two ancestors remain ineligible.
+    async fn duckdb_copy_depth(
+        &self,
+        org_id: &str,
+        namespace: &str,
+        target: &str,
+    ) -> sqlx::Result<Option<usize>> {
+        let mut name = target.to_owned();
+        let mut cutoff: Option<chrono::DateTime<chrono::Utc>> = None;
+        let mut child_id: Option<i64> = None;
+        for depth in 0..=2 {
+            let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family='duckdb' AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
+            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).fetch_optional(&self.pool).await?;
+            let Some((id, source, created_at)) = row else {
+                return Ok(None);
+            };
+            match source {
+                None => return Ok(Some(depth)),
+                Some(source) => {
+                    name = source;
+                    cutoff = Some(created_at);
+                    child_id = Some(id);
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Look up the clone source's confirmed logic identity by its physical
