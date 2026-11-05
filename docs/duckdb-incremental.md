@@ -88,6 +88,9 @@ intermediate values can depend on timezone/calendar settings that are not bound 
 the workload. This includes TIMESTAMPTZ, TIMETZ and their aliases even when the
 output columns have supported ordinary types. The versioned SQL contract also
 invalidates earlier unchecked SQL outcomes and initialization source identities.
+The same recursive validation rejects FLOAT/DOUBLE inside nested cast targets
+in either branch, including ARRAY/STRUCT and TRY_CAST forms. Supported outer
+types and an exact final output do not certify approximate intermediates.
 
 CTAS validates the exact plan, source/target environments, source properties and
 source evidence in the transaction that reads the source. It records completion

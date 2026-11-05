@@ -255,6 +255,10 @@ on worker timezone/calendar settings even when the final result is VARCHAR or
 BOOLEAN. This includes TRY_CAST, casts within stored views, and both branches
 of incremental initialization templates. Other supported built-in casts,
 including naive TIMESTAMP casts, retain reuse.
+FLOAT/DOUBLE types are rejected recursively as well, including inside ARRAY
+and STRUCT cast targets and TRY_CAST. Approximate intermediates can make SUM
+depend on physical row order even when the inputs are VARCHAR and the final
+result is BIGINT. Exact nested integer casts remain eligible for reuse.
 
 Reuse requires the actual dbt worker's
 `scalar_subquery_error_on_multiple_rows` setting to be true. With permissive
@@ -265,7 +269,7 @@ the worker session, including plugin configuration, rather than only the profile
 The same worker check requires the default empty collation; cursor plugins
 that enable `nocase` or another collation force ordinary execution even when
 the profile has no collation setting. An unknown collation is also unsupported.
-SQL requests include the `types-scalars-v3` contract marker, and incremental
+SQL requests include the `types-scalars-v4` contract marker, and incremental
 initialization identities bind this version too. Earlier SQL outcomes and
 initialization sources must rebuild before they can supply reusable evidence
 under these checks; seed-only histories retain their existing contract.

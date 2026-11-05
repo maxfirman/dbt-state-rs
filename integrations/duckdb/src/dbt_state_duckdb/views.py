@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
 )
-SQL_CONTRACT = "types-scalars-v3"
+SQL_CONTRACT = "types-scalars-v4"
 
 
 def supported_execution_context(adapter_ext):
@@ -97,7 +97,7 @@ def references(sql, function_catalog=None):
         # Approximate intermediates can make aggregates depend on scan order.
         if isinstance(node, exp.Div):
             raise TypeError("Unsupported approximate arithmetic")
-        if isinstance(node, exp.Cast) and node.args["to"].this in {
+        if isinstance(node, exp.DataType) and node.this in {
             exp.DataType.Type.FLOAT,
             exp.DataType.Type.DOUBLE,
         }:

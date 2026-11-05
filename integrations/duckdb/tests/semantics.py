@@ -218,7 +218,7 @@ elif sys.argv[2] == "collation":
     run("build", [(1, False), (2, False)], cold)
     run("build", [(1, True), (2, True)], hot)
 
-else:
+elif sys.argv[2] == "timezone":
     zone_file = root / "timezone.txt"
     zone_file.write_text("UTC")
     (root / "session_timezone.py").write_text(
@@ -280,3 +280,63 @@ else:
     sql("drop table dev.totals")
     run("build", [(1, "cold"), (2, "cold")], cold)
     run("build", [(1, "2019-12-31 16:00:00-08"), (2, "2019-12-31 16:00:00-08")], hot)
+
+else:
+    sql("drop table raw.inputs; create table raw.inputs(value varchar)")
+    sql("insert into raw.inputs values ('[10000000000000000]'), ('[-10000000000000000]'), ('[1]')")
+    query = "select cast(sum(cast(value as double[])[1]) as bigint) as total from warehouse.raw.inputs"
+    model.write_text(query)
+    run("build", [(1,)], query)
+    sql("delete from raw.inputs; insert into raw.inputs values ('[10000000000000000]'), ('[1]'), ('[-10000000000000000]')")
+    run("build", [(0,)], query)
+
+    # Exact nested types remain reusable, including after a physical reorder.
+    exact = query.replace("double[]", "bigint[]")
+    model.write_text(exact)
+    run("build", [(1,)], exact)
+    sql("delete from raw.inputs; insert into raw.inputs values ('[10000000000000000]'), ('[-10000000000000000]'), ('[1]')")
+    run("skip", [(1,)], exact)
+
+    # A stored view must not hide an approximate intermediate from the root.
+    sql("create view raw.nested_sum as " + query)
+    model.write_text("select total from warehouse.raw.nested_sum")
+    run("build", [(1,)], "select * from raw.nested_sum")
+    sql("delete from raw.inputs; insert into raw.inputs values ('[10000000000000000]'), ('[1]'), ('[-10000000000000000]')")
+    run("build", [(0,)], "select * from raw.nested_sum")
+
+    # REAL/FLOAT inside a STRUCT and TRY_CAST uses the same recursive guard.
+    with duckdb.connect(str(path)) as db:
+        db.execute("delete from raw.inputs")
+        db.executemany("insert into raw.inputs values (?)", [
+            ("{'v': 10000000000000000}",),
+            ("{'v': -10000000000000000}",),
+            ("{'v': 1}",),
+        ])
+    structured = "select cast(sum(try_cast(value as struct(v real)).v) as bigint) as total from warehouse.raw.inputs"
+    model.write_text(structured)
+    run("build", [(1,)], structured)
+    with duckdb.connect(str(path)) as db:
+        db.execute("delete from raw.inputs")
+        db.executemany("insert into raw.inputs values (?)", [
+            ("{'v': 10000000000000000}",),
+            ("{'v': 1}",),
+            ("{'v': -10000000000000000}",),
+        ])
+    run("build", [(0,)], structured)
+
+    # Reject a hot-only nested float cast before an absent dev target can be
+    # initialized from the production result and compile the wrong branch.
+    sql("delete from raw.inputs; insert into raw.inputs values ('[10000000000000000]'), ('[-10000000000000000]'), ('[1]')")
+    model.write_text(
+        config + "select 1 as id, {% if is_incremental() %} "
+        "cast(sum(cast(value as double[])[1]) as bigint) "
+        "{% else %} cast(99 as bigint) {% endif %} as total "
+        "{% if is_incremental() %} from warehouse.raw.inputs {% endif %}"
+    )
+    cold = "select 1 as id, cast(99 as bigint) as total"
+    hot = "select 1 as id, cast(1 as bigint) as total"
+    run("build", [(1, 99)], cold, "prod")
+    run("build", [(1, 1)], hot, "prod")
+    sql("drop table dev.totals")
+    run("build", [(1, 99)], cold)
+    run("build", [(1, 1)], hot)
