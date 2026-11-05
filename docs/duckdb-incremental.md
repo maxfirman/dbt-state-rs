@@ -17,6 +17,19 @@ select updates to old keys. Duplicate result keys remain duplicates. NULL keys
 accumulate under ordinary dbt execution; existing targets with NULL keys bypass
 State, and such sources cannot initialize another environment.
 
+Self-reading incremental SQL requires a fixed-point proof before reuse. The
+initial supported shape is a single base-table SELECT of unchanged, unqualified
+columns with exactly `watermark > (SELECT MAX(watermark) FROM {{ this }})`,
+optionally wrapping MAX in COALESCE with a literal fallback. The watermark must
+be projected unchanged under its original name. Joins, aliases, transformed
+projections, extra predicates and view inputs fall outside this narrow proof.
+After successful execution, unchanged inputs cannot pass this strict bound
+again. Other direct or indirect self reads execute ordinarily on every run;
+their completed target alone does not prove another execution would be a no-op.
+Both rendered branches must satisfy this rule before development initialization
+or automatic copying is eligible. External-input-only incrementals retain their
+existing reuse behavior.
+
 Schema evolution requires an explicit full refresh or ordinary execution with a
 different schema policy. The supported `fail` mode lets dbt reject added,
 removed or incompatible columns; State does not implement schema migration.
@@ -93,5 +106,7 @@ RegisterClone/CTAS/confirmation, subsequent SQL submission and restart reuse,
 logic mismatch before initialization, disabled copying, edited/deleted sources,
 CTAS-plan failure with ordinary fallback, conditional branch transitions, and
 ordinary unsupported workloads. Literal expected rows and exact column types
-are independent of production fingerprint and decision code. Existing
+also cover self-updating models, indirect self reads and unsafe transformed
+watermarks alongside the supported fixed-point watermark.
+They are independent of production fingerprint and decision code. Existing
 Snowflake clone regressions and captured conformance replay remain required.

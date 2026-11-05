@@ -1,6 +1,83 @@
 """The explicit first-release incremental workload contract."""
 
 
+def reusable_self_read(sql, target):
+    """Prove the narrow, unchanged-column MAX-watermark fixed point.
+
+    Own-target freshness is deliberately excluded by State. Arbitrary self
+    reads therefore cannot reuse their previous result. After this query has
+    run, every selected watermark is in the target and no unchanged input can
+    pass the strict bound again. Reject all other query shapes conservatively.
+    """
+    from sqlglot import exp, parse_one
+    from sqlglot.errors import SqlglotError
+
+    def simple_select(query, allowed):
+        return isinstance(query, exp.Select) and all(
+            key in allowed or not value for key, value in query.args.items()
+        )
+
+    def plain_column(column):
+        return (
+            isinstance(column, exp.Column)
+            and not column.table
+            and not column.is_star
+        )
+
+    try:
+        query = parse_one(sql, dialect="duckdb")
+        target = parse_one(target, into=exp.Table, dialect="duckdb")
+        if not simple_select(query, {"expressions", "from_", "where"}):
+            return False
+        source = query.args.get("from_")
+        if source is None or not isinstance(source.this, exp.Table) or source.this.alias:
+            return False
+        if not query.expressions or not all(map(plain_column, query.expressions)):
+            return False
+        where = query.args.get("where")
+        bound = where.this if where is not None else None
+        if not isinstance(bound, exp.GT) or not plain_column(bound.this):
+            return False
+        watermark = bound.this.name.lower()
+        if sum(c.name.lower() == watermark for c in query.expressions) != 1:
+            return False
+        if not isinstance(bound.expression, exp.Subquery):
+            return False
+        inner = bound.expression.this
+        if (
+            not simple_select(inner, {"expressions", "from_"})
+            or len(inner.expressions) != 1
+        ):
+            return False
+        tables = list(query.find_all(exp.Table))
+        inner_from = inner.args.get("from_")
+        if inner_from is None or len(tables) != 2:
+            return False
+        own = inner_from.this
+        if not isinstance(own, exp.Table) or own.alias:
+            return False
+
+        def identity(table):
+            return tuple(part.name.lower() for part in table.parts)
+
+        if identity(own) != identity(target) or identity(source.this) == identity(target):
+            return False
+        maximum = inner.expressions[0]
+        if isinstance(maximum, exp.Coalesce):
+            if len(maximum.expressions) != 1 or not isinstance(
+                maximum.expressions[0], exp.Literal
+            ):
+                return False
+            maximum = maximum.this
+        return (
+            isinstance(maximum, exp.Max)
+            and plain_column(maximum.this)
+            and maximum.this.name.lower() == watermark
+        )
+    except (SqlglotError, ValueError, TypeError):
+        return False
+
+
 def supported_incremental(node):
     import re
 
@@ -91,7 +168,8 @@ def initialization_identity(builder, node):
         return None
     # Validate both branches before any profile-based CTAS. An unchanged raw
     # template is insufficient for random(), LIMIT, remote inputs or unknown
-    # metadata. Self reads are intentionally separate from external freshness.
+    # metadata. Self reads also require a proven fixed point: own-target
+    # evidence is intentionally separate from external freshness.
     from .views import FUNCTION_CATALOG_SQL, references
     from dbt_common.exceptions import DbtRuntimeError
     import duckdb
@@ -119,6 +197,8 @@ def initialization_identity(builder, node):
                 )
                 for table in references(sql, function_catalog):
                     if table == target:
+                        if not reusable_self_read(sql, node.relation_name):
+                            return None
                         continue
                     if (
                         table.catalog != builder._adapter_ext.default_catalog

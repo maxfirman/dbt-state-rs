@@ -256,14 +256,25 @@ def install_view_requests(adapter_type):
         )
         if local:
             from .hooks import semantic_contract, supported_hooks
+            from .incremental import reusable_self_read
 
             request.semantic_extras.update(semantic_contract(node))
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)
             settings = self._adapter_ext.adapter.config.credentials.settings or {}
+            # State excludes the target from upstream freshness. Its latest
+            # output certifies reuse only when another execution is a no-op.
+            unsafe_self_read = (
+                node.config.materialized == "incremental"
+                and request.target_table in traversal.seen_tables
+                and (
+                    traversal.view_definitions
+                    or not reusable_self_read(sql, request.target_table)
+                )
+            )
             if any(
                 str(key).lower() == "default_collation" for key in settings
-            ) or not supported_hooks(node):
+            ) or not supported_hooks(node) or unsafe_self_read:
                 marker = self._adapter_ext._sql(
                     exp.table_(
                         "unsupported_execution_context",

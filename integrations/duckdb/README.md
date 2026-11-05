@@ -92,7 +92,10 @@ expecting initialization copies again.
 The selected incremental strategy is explicit `delete+insert`, with a single
 non-NULL key and `on_schema_change='fail'`. Real profile-based development
 initialization, ordinary updates and reuse are described in
-[the incremental contract](../../docs/duckdb-incremental.md). Seed, test and view
+[the incremental contract](../../docs/duckdb-incremental.md). Self reads execute
+ordinarily unless they match its narrow unchanged-column MAX-watermark proof;
+the same restriction applies before incremental initialization copies.
+Seed, test and view
 support is described below.
 The upstream client emits an UNIMPLEMENTED telemetry warning because this
 server does not implement ClientTelemetry. Existing Snowflake replay remains
