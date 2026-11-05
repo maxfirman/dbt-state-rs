@@ -55,7 +55,8 @@ metadata, external source edits and later incompatible overwrites cannot supply
 this provenance. This first initialization slice uses an ordinary source;
 a source whose latest outcome is itself a copy is not eligible here.
 
-The identity binds node UID, template text, effective configuration (except
+The identity binds the SQL execution-contract version, node UID, template text,
+effective configuration (except
 physical relation location and nonsemantic labels) and supplied macro contents.
 It is stored in the existing opaque local `node_hash` field and transmitted in
 RegisterClone labels and SQL semantic extras. Binding it to automatic SQL
@@ -75,6 +76,10 @@ catalog and known evidence. Inputs in other environment schemas, views,
 order-sensitive SQL and unknown evidence take ordinary absent-target execution.
 This deliberately narrower contract avoids equating unchanged template text
 with unchanged physical input resolution or deterministic results.
+Named type casts in either branch also prevent initialization: their mutable
+definitions are not part of the relation evidence. The execution-context check
+requires strict scalar-subquery cardinality in the actual worker session and
+rejects configured default collations before initialization as well as SQL reuse.
 
 CTAS validates the exact plan, source/target environments, source properties and
 source evidence in the transaction that reads the source. It records completion

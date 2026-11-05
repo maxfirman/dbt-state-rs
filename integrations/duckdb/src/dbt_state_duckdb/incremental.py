@@ -170,13 +170,20 @@ def initialization_identity(builder, node):
     # template is insufficient for random(), LIMIT, remote inputs or unknown
     # metadata. Self reads also require a proven fixed point: own-target
     # evidence is intentionally separate from external freshness.
-    from .views import FUNCTION_CATALOG_SQL, references
+    from .views import (
+        FUNCTION_CATALOG_SQL,
+        SQL_CONTRACT,
+        references,
+        supported_execution_context,
+    )
     from dbt_common.exceptions import DbtRuntimeError
     import duckdb
     from sqlglot import exp, parse_one
 
     target = parse_one(node.relation_name, into=exp.Table, dialect="duckdb")
     try:
+        if not supported_execution_context(builder._adapter_ext):
+            return None
         _, session_functions = builder._adapter_ext.adapter.execute(
             FUNCTION_CATALOG_SQL, auto_begin=False, fetch=True
         )
@@ -226,7 +233,9 @@ def initialization_identity(builder, node):
     macros = sorted(
         (m.unique_id, m.macro_sql) for m in builder._manifest.macros.values()
     )
-    data = [node.unique_id, node.raw_code, config, macros]
+    # Bind the proof version before compilation too: an older source may have
+    # completed under permissive scalar settings with otherwise identical SQL.
+    data = [SQL_CONTRACT, node.unique_id, node.raw_code, config, macros]
     return (
         "duckdb-incremental-init-v2:"
         + hashlib.sha256(

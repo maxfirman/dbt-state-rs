@@ -246,6 +246,21 @@ evidence: unchanged visible rows can acquire different physical row identifiers.
 The guard applies to incremental initialization branches before any CTAS too.
 Aliases and string literals named `rowid` remain supported; actual column reads
 are conservatively excluded even when a user-defined visible column has that name.
+Named user-defined types in casts are also unsupported, including qualified,
+`::`, TRY_CAST and nested type references. Their definitions can change an
+intermediate comparison while all physical leaf/output types remain supported.
+Built-in casts retain their existing eligibility.
+
+Reuse requires the actual dbt worker's
+`scalar_subquery_error_on_multiple_rows` setting to be true. With permissive
+cardinality, scalar subqueries may select by physical scan order, which the
+unordered evidence does not preserve. A disabled or unknown setting forces
+ordinary execution and disables incremental initialization copies. This checks
+the worker session, including plugin configuration, rather than only the profile.
+SQL requests include the `types-scalars-v1` contract marker, and incremental
+initialization identities bind this version too. Earlier SQL outcomes and
+initialization sources must rebuild before they can supply reusable evidence
+under these checks; seed-only histories retain their existing contract.
 Search-path-dependent unqualified physical references, cycles, missing
 relations, table functions, external relations and unsupported functions/syntax
 produce explicit unknown dependency evidence. dbt executes these workloads

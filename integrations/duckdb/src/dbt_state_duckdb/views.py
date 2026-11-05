@@ -17,6 +17,25 @@ from sqlglot.errors import SqlglotError
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
 )
+SQL_CONTRACT = "types-scalars-v1"
+
+
+def supported_execution_context(adapter_ext):
+    settings = adapter_ext.adapter.config.credentials.settings or {}
+    if any(str(key).lower() == "default_collation" for key in settings):
+        return False
+    try:
+        # Inspect the actual worker cursor, including plugin session settings.
+        # Permissive scalar subqueries can choose a row by physical scan order,
+        # which the unordered visible-column evidence deliberately omits.
+        _, result = adapter_ext.adapter.execute(
+            "SELECT system.main.current_setting('scalar_subquery_error_on_multiple_rows')",
+            auto_begin=False,
+            fetch=True,
+        )
+        return len(result.rows) == 1 and result.rows[0][0] is True
+    except DbtRuntimeError:
+        return False
 
 
 def references(sql, function_catalog=None):
@@ -50,9 +69,18 @@ def references(sql, function_catalog=None):
         raise ValueError("Unsupported order-sensitive view query")
     if any(node.args.get("on") for node in query.find_all(exp.Distinct)):
         raise ValueError("Unsupported DISTINCT ON view query")
-    # Approximate intermediates can make an aggregate depend on scan order,
-    # even if every physical leaf column and the final result are exact types.
+    # Inspect intermediate expressions too: supported leaf/output types do not
+    # prove that evaluation ignores mutable type bindings or physical row order.
     for node in query.walk():
+        # A named type can be redefined without changing leaf/output evidence
+        # (e.g. ENUM ordering used by an intermediate comparison). Check every
+        # nested type too, including TRY_CAST and PostgreSQL-style :: casts.
+        if (
+            isinstance(node, exp.DataType)
+            and node.this == exp.DataType.Type.USERDEFINED
+        ):
+            raise ValueError("Unsupported named type binding")
+        # Approximate intermediates can make aggregates depend on scan order.
         if isinstance(node, exp.Div):
             raise TypeError("Unsupported approximate arithmetic")
         if isinstance(node, exp.Cast) and node.args["to"].this in {
@@ -259,9 +287,11 @@ def install_view_requests(adapter_type):
             from .incremental import reusable_self_read
 
             request.semantic_extras.update(semantic_contract(node))
+            # Earlier outcomes did not prove strict scalar cardinality or
+            # reject mutable type bindings. Do not reinterpret that history.
+            request.semantic_extras["duckdb_sql_contract"] = SQL_CONTRACT
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)
-            settings = self._adapter_ext.adapter.config.credentials.settings or {}
             # State excludes the target from upstream freshness. Its latest
             # output certifies reuse only when another execution is a no-op.
             unsafe_self_read = (
@@ -272,9 +302,11 @@ def install_view_requests(adapter_type):
                     or not reusable_self_read(sql, request.target_table)
                 )
             )
-            if any(
-                str(key).lower() == "default_collation" for key in settings
-            ) or not supported_hooks(node) or unsafe_self_read:
+            if (
+                not supported_execution_context(self._adapter_ext)
+                or not supported_hooks(node)
+                or unsafe_self_read
+            ):
                 marker = self._adapter_ext._sql(
                     exp.table_(
                         "unsupported_execution_context",
