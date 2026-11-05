@@ -39,7 +39,11 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// `template` is the existing template-comparison mode, whose exact hosted
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
-    sql_logic_hash_with_version(req, template, b"dbt-state-sql-v4")
+    let version = match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
+        crate::warehouse::Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1".as_slice(),
+        _ => b"dbt-state-sql-v4".as_slice(),
+    };
+    sql_logic_hash_with_version(req, template, version)
 }
 
 /// The versioned core of [`sql_logic_hash`]. The ONLY difference an engine
@@ -100,6 +104,93 @@ pub fn sql_logic_hash_with_version(
         }
     }
     hex::encode(h.finalize())
+}
+
+/// Eligibility is explicit: formatting validation alone never grants copying.
+/// Supported view graphs bind each structured reference to its checked definition
+/// and context. Only declared prod/dev view bindings substitute environments;
+/// physical base inputs retain their exact names.
+pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
+    match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
+        crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),
+        crate::warehouse::Warehouse::DuckDb => {
+            if !(req.execution_type == 1
+                || (req.execution_type == 5
+                    && req
+                        .semantic_extras
+                        .get("duckdb_incremental_contract")
+                        .map(String::as_str)
+                        == Some("delete-insert-fixed-v1")))
+                || !matches!(req.default_schema.as_deref(), Some("prod" | "dev"))
+                || req
+                    .semantic_extras
+                    .get("duckdb_copy_contract")
+                    .map(String::as_str)
+                    != Some("rows-schema-v1")
+            {
+                return None;
+            }
+            let graph = crate::sql_identity::duckdb_copy_graph(req)?;
+            let inputs = &graph.inputs;
+            let mut metadata = std::collections::HashMap::new();
+            for table in &req.tables {
+                if table.last_modified_epoch.is_none()
+                    && req.target_table.as_deref() != Some(table.name.as_str())
+                {
+                    return None;
+                }
+                let name = crate::sql_identity::duckdb_relation(&table.name)?;
+                if metadata
+                    .insert(name.into_components(), table.last_modified_epoch)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+            if inputs
+                .iter()
+                .any(|name| metadata.get(name).is_none_or(|epoch| epoch.is_none()))
+            {
+                return None;
+            }
+            let parts = crate::sql_identity::duckdb_relation(req.target_table.as_deref()?)?;
+            if parts.catalog() != req.default_catalog
+                || Some(parts.schema()) != req.default_schema.as_deref()
+            {
+                return None;
+            }
+            let mut h = Sha256::new();
+            field(&mut h, b"dbt-state-duckdb-copy-v2");
+            field(&mut h, &req.execution_type.to_le_bytes());
+            extras(&mut h, &req.semantic_extras);
+            field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
+            for crate::sql_identity::DuckDbCopyQuery {
+                binding,
+                query,
+                slots,
+                catalog,
+                schema,
+            } in graph.queries
+            {
+                field(&mut h, &(binding.len() as u64).to_le_bytes());
+                for part in binding {
+                    field(&mut h, part.as_bytes());
+                }
+                field(&mut h, query.as_bytes());
+                field(&mut h, &(slots.len() as u64).to_le_bytes());
+                for slot in slots {
+                    field(&mut h, &(slot.len() as u64).to_le_bytes());
+                    for part in slot {
+                        field(&mut h, part.as_bytes());
+                    }
+                }
+                field(&mut h, catalog.as_bytes());
+                field(&mut h, schema.as_bytes());
+            }
+            Some(hex::encode(h.finalize()))
+        }
+        _ => None,
+    }
 }
 
 /// Cross-environment logic identity, scoped by `table_namespace`.

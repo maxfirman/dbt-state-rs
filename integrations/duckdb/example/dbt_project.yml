@@ -1,0 +1,13 @@
+name: local_workflow
+version: '1.0'
+config-version: 2
+profile: local_workflow
+models:
+  local_workflow:
+    +materialized: table
+seeds:
+  local_workflow:
+    +schema: raw
+    +column_types:
+      id: integer
+      amount: integer

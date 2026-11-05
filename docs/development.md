@@ -62,10 +62,17 @@ dbt build --profile <profile> --target <target> --skip-semantic-manifest-validat
 ### Warehouse note
 
 dbt State only engages for its supported warehouses (Snowflake, BigQuery,
-Databricks, Redshift). **DuckDB does not trigger dbt State at all** — verified by
+Databricks, Redshift). **Fusion with DuckDB does not trigger dbt State** — verified by
 running the Fusion client against a DuckDB target and observing zero State
 activity. Use a supported warehouse (this project was developed and validated
-against Snowflake) to exercise the protocol end-to-end.
+against Snowflake) for Fusion validation. The optional [Python DuckDB local
+extension](../integrations/duckdb/README.md) now provides a credential-free
+complete [local workflow](duckdb.md) for seeds, tables, views, cached tests,
+pinned incremental execution and prod/dev copying. Run every fixed/generated
+acceptance case with `./scripts/duckdb-ci.sh`; `duckdb-smoke.sh` is only the initial
+compatibility slice.
+It uses versioned observed changes and durable ordinals rather than timestamps;
+see the extension README for the supported scalar subset and writer contract.
 
 ## Capturing real traffic / validating against the hosted service
 

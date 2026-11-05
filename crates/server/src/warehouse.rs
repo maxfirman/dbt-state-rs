@@ -3,11 +3,13 @@
 //! A parser accepting a dialect is not evidence that two SQL statements or
 //! physical relations are equivalent. Only Snowflake's schema abstraction has
 //! been characterized against the hosted service. Other warehouses retain exact
-//! rendered SQL and do not opt into cross-environment clone reuse yet.
+//! rendered SQL, except DuckDB's validated formatting subset. DuckDB copying
+//! uses separate request eligibility rather than this warehouse-wide capability.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warehouse {
     Snowflake,
+    DuckDb,
     BigQuery,
     Databricks,
     Redshift,
@@ -29,6 +31,7 @@ impl Warehouse {
             .to_ascii_lowercase();
         match family.as_str() {
             "snowflake" if trimmed.eq_ignore_ascii_case("snowflake") => Self::Snowflake,
+            "duckdb" if trimmed.eq_ignore_ascii_case("duckdb") => Self::DuckDb,
             "bigquery" if trimmed.eq_ignore_ascii_case("bigquery") => Self::BigQuery,
             "databricks" | "spark"
                 if trimmed.eq_ignore_ascii_case("databricks")
@@ -44,6 +47,7 @@ impl Warehouse {
     pub fn family_key(self, dialect: &str) -> String {
         match self {
             Self::Snowflake => "snowflake".into(),
+            Self::DuckDb => "duckdb".into(),
             Self::BigQuery => "bigquery".into(),
             Self::Databricks => "databricks".into(),
             Self::Redshift => "redshift".into(),
@@ -57,10 +61,7 @@ impl Warehouse {
     }
 
     pub fn normalized_sql(self, sql: &str) -> String {
-        match self {
-            Self::Snowflake => crate::sql_norm::normalize_sql(sql),
-            _ => sql.to_owned(),
-        }
+        crate::sql_identity::normalized_sql(self, sql)
     }
 
     pub fn supports_namespace_reuse(self) -> bool {

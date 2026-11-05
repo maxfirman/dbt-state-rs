@@ -1,0 +1,18 @@
+local_workflow:
+  target: prod
+  outputs:
+    prod:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_WORKFLOW_PATH') }}"
+      schema: prod
+      threads: 4
+      run_cache_enabled: true
+      run_cache_enable_data_tests: true
+    dev:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_WORKFLOW_PATH') }}"
+      schema: dev
+      threads: 4
+      run_cache_enabled: true
+      run_cache_enable_data_tests: true
+      defer_to_target: prod

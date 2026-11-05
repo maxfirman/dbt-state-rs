@@ -38,23 +38,15 @@ pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
 /// schema→token map so the caller can share ONE consistent mapping across the
 /// root SQL and every dependency name/definition.
 pub fn normalize_sql_namespace_abstracted_with(sql: &str, schemas: &SchemaMap) -> String {
-    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
-        Ok(mut stmts) => {
-            let mut canon = Canonicalizer {
-                abstract_schema: true,
-                schemas: Some(schemas),
-            };
-            for s in stmts.iter_mut() {
-                let _ = s.visit(&mut canon);
-            }
-            stmts
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        }
-        _ => sql.to_string(),
-    }
+    crate::sql_identity::canonicalized(
+        sql,
+        &SnowflakeDialect {},
+        &mut Canonicalizer {
+            abstract_schema: true,
+            schemas: Some(schemas),
+        },
+    )
+    .unwrap_or_else(|| sql.to_string())
 }
 
 /// A relative schema → positional-token map, shared across a request's root SQL
@@ -461,25 +453,15 @@ fn projection_expr(stmts: &[sqlparser::ast::Statement]) -> Option<&Expr> {
 }
 
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
-    match Parser::parse_sql(&SnowflakeDialect {}, sql) {
-        Ok(mut stmts) => {
-            let mut canon = Canonicalizer {
-                abstract_schema,
-                schemas: None,
-            };
-            for s in stmts.iter_mut() {
-                let _ = s.visit(&mut canon);
-            }
-            stmts
-                .iter()
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-                .join("; ")
-        }
-        // Preserve unsupported syntax exactly. A partial tokenizer cannot prove
-        // equivalence for dialect extensions, escaped strings or malformed SQL.
-        _ => sql.to_string(),
-    }
+    crate::sql_identity::canonicalized(
+        sql,
+        &SnowflakeDialect {},
+        &mut Canonicalizer {
+            abstract_schema,
+            schemas: None,
+        },
+    )
+    .unwrap_or_else(|| sql.to_string())
 }
 
 /// Placeholder PREFIX substituted for the schema component under schema

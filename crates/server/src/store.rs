@@ -102,6 +102,7 @@ pub struct CloneEquivalent {
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
+    pub duckdb_copy_depth: usize,
 }
 
 /// A node's recorded comparison state for `state:*` selectors, keyed by the
@@ -235,6 +236,7 @@ impl Store {
     /// FOLLOW-UP: the data-test lookup previously compared only `node_sql_hash`,
     /// so a cuc data test with an unchanged template but a changed interpolated
     /// rendered literal wrongly EXECUTED where the hosted service reuses it.
+    #[allow(clippy::too_many_arguments)] // Explicit independent identity/scope dimensions.
     pub async fn find_confirmed_test(
         &self,
         org_id: &str,
@@ -472,12 +474,12 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and execution
         // type. Another connection's same-named target is a different object.
         type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
-        let row: Option<CloneEquivRow> = sqlx::query_as(
+        let rows: Vec<CloneEquivRow> = sqlx::query_as(
             r#"
             WITH current_state AS (
                 SELECT DISTINCT ON (target_table)
                        target_table, table_type, last_modified_epoch, execution_runtime_ms,
-                       node_namespace_logic_hash, execution_type, table_namespace
+                       node_namespace_logic_hash, execution_type, table_namespace, clone_source_table
                 FROM executions
                 WHERE org_id = $1 AND status = 'confirmed'
                   AND warehouse_family = $6
@@ -491,7 +493,7 @@ impl Store {
               AND execution_type = $4
               AND target_table <> $5
             ORDER BY last_modified_epoch DESC NULLS LAST, target_table
-            LIMIT 1
+            LIMIT CASE WHEN $6 = 'duckdb' THEN NULL ELSE 1 END
             "#,
         )
         .bind(org_id)
@@ -500,18 +502,104 @@ impl Store {
         .bind(execution_type)
         .bind(exclude_target)
         .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
+        .fetch_all(&self.pool)
+        .await?;
+        let duckdb = dialect.eq_ignore_ascii_case("duckdb");
+        let target = crate::sql_identity::duckdb_relation(exclude_target);
+        for (source_table, table_type, last_modified_epoch, execution_runtime_ms) in rows {
+            let depth = if duckdb {
+                let Some(source) = crate::sql_identity::duckdb_relation(&source_table) else {
+                    continue;
+                };
+                if target.as_ref().is_none_or(|t| {
+                    t.catalog() != source.catalog() || t.schema() == source.schema()
+                }) {
+                    continue;
+                }
+                let Some(depth) = self
+                    .duckdb_copy_depth(org_id, table_namespace, &source_table)
+                    .await?
+                else {
+                    continue;
+                };
+                depth
+            } else {
+                0
+            };
+            return Ok(Some(CloneEquivalent {
+                source_table,
+                table_type,
+                last_modified_epoch,
+                execution_runtime_ms,
+                duckdb_copy_depth: depth,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Follow immutable provenance at each copy's submission time. Later
+    /// rebuilds of an ancestor cannot shorten an already completed copy chain.
+    /// Missing history and more than two ancestors remain ineligible.
+    async fn duckdb_copy_depth(
+        &self,
+        org_id: &str,
+        namespace: &str,
+        target: &str,
+    ) -> sqlx::Result<Option<usize>> {
+        let mut name = target.to_owned();
+        let mut cutoff: Option<chrono::DateTime<chrono::Utc>> = None;
+        let mut child_id: Option<i64> = None;
+        for depth in 0..=2 {
+            let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family='duckdb' AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
+            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).fetch_optional(&self.pool).await?;
+            let Some((id, source, created_at)) = row else {
+                return Ok(None);
+            };
+            match source {
+                None => return Ok(Some(depth)),
+                Some(source) => {
+                    name = source;
+                    cutoff = Some(created_at);
+                    child_id = Some(id);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Compile-time DuckDB initialization needs current, confirmed ET5 source
+    /// provenance. Select physical history first; a later incompatible write
+    /// must hide an older eligible source.
+    pub async fn find_duckdb_incremental_source(
+        &self,
+        org_id: &str,
+        source: &str,
+        namespace: &str,
+        epoch: i64,
+        identity: &str,
+    ) -> sqlx::Result<Option<Option<String>>> {
+        let row: Option<(Option<String>,)> = sqlx::query_as(
+            r#"WITH current_state AS (
+                SELECT execution_type, node_namespace_logic_hash, last_modified_epoch,
+                       table_type, clone_source_table, node_hash
+                FROM executions
+                WHERE org_id = $1 AND target_table = $2 AND table_namespace = $3
+                  AND warehouse_family = 'duckdb' AND status = 'confirmed'
+                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            ) SELECT node_namespace_logic_hash FROM current_state
+              WHERE execution_type = 5 AND last_modified_epoch = $4
+                AND table_type = 'DUCKDB CTAS TABLE' AND clone_source_table IS NULL
+                AND node_hash = $5"#,
+        )
+        .bind(org_id)
+        .bind(source)
+        .bind(namespace)
+        .bind(epoch)
+        .bind(identity)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(
-            |(source_table, table_type, last_modified_epoch, execution_runtime_ms)| {
-                CloneEquivalent {
-                    source_table,
-                    table_type,
-                    last_modified_epoch,
-                    execution_runtime_ms,
-                }
-            },
-        ))
+        Ok(row.map(|r| r.0))
     }
 
     /// Look up the clone source's confirmed logic identity by its physical
@@ -701,6 +789,7 @@ impl Store {
     ///
     /// Scoped by `org_id` to honor the global org-isolation invariant, even
     /// though `request_id` is a unique server-minted UUID.
+    #[allow(clippy::too_many_arguments)] // Mirrors the correlated wire outcome fields.
     pub async fn confirm(
         &self,
         org_id: &str,
@@ -709,6 +798,7 @@ impl Store {
         table_type: Option<&str>,
         execution_runtime_ms: Option<i64>,
         execution_results: Option<&qc::Struct>,
+        failed_to_clone: bool,
     ) -> sqlx::Result<bool> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
@@ -719,6 +809,10 @@ impl Store {
                 table_type = $4,
                 execution_runtime_ms = $5,
                 execution_results = $6,
+                clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
+                node_namespace_logic_hash = CASE
+                    WHEN $7 AND node_sql_hash IS NULL THEN NULL
+                    ELSE node_namespace_logic_hash END,
                 confirmed_at = now()
             WHERE org_id = $1
               AND request_id = $2
@@ -731,6 +825,7 @@ impl Store {
         .bind(table_type)
         .bind(execution_runtime_ms)
         .bind(execution_results.map(Message::encode_to_vec))
+        .bind(failed_to_clone)
         .execute(&self.pool)
         .await?
         .rows_affected();

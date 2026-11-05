@@ -50,6 +50,12 @@ generated std-derive impl while keeping the on-wire name — see
 
 `target_table?`, `dialect`, `default_catalog`, `default_schema?`,
 `execution_type` (enum below), `sql` (raw compiled SQL),
+For the optional local DuckDB extension, `last_modified_epoch` is a durable
+file/generation-wide ordinal, rather than Unix milliseconds. Shared freshness
+policy currently compares ordering only. See the [evidence contract](../integrations/duckdb/README.md#evidence-format-and-ordering)
+for the versioned scalar representation, observation semantics and limitations.
+Other warehouses retain their existing timestamp interpretation.
+
 `tables[]` = `{name, last_modified_epoch?}` (per-input freshness),
 `query_dependencies[]`, `semantic_extras{}`, `freshness_tolerance_seconds`,
 `lenient_dependencies[]`, `tolerate_nondeterminism`, `labels{}`

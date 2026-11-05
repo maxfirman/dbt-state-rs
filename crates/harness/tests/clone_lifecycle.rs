@@ -311,3 +311,78 @@ async fn clone_happy_path_register_confirm_shapes() {
             .success
     );
 }
+
+/// A successful ordinary build after a failed RegisterClone has no source SQL
+/// evidence. Source-derived identity must not authorize adoption of that build.
+// The deprecated oneof must still mirror the current field on the wire.
+#[allow(deprecated)]
+#[tokio::test]
+async fn failed_clone_confirmation_does_not_certify_source_logic() {
+    let (addr, _) = start_server().await;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch);
+    let source = sql
+        .submit_enriched_sql(submit(PROD, "prod_state_demo", 100, 10, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    confirm(&mut exec, source, 100).await;
+    let response = clone
+        .register_clone(qc::CloneRequest {
+            target_table: DEV.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 3,
+            clone_source_table: PROD.into(),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = response.ready_to_clone.expect("copy proposal");
+    assert_eq!(
+        Some(&ready),
+        match response.response.as_ref() {
+            Some(qc::clone_response::Response::ReadyToCloneV1(mirror)) => Some(mirror),
+            _ => None,
+        }
+    );
+    let confirmation = qc::ConfirmExecutionRequest {
+        request_id: ready.request_id,
+        failed_to_clone: true,
+        last_modified_epoch: Some(200),
+        table_type: Some("TABLE".into()),
+        ..Default::default()
+    };
+    assert!(
+        exec.confirm_execution(confirmation.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+    // Duplicate success acknowledgement cannot replace the first actual outcome.
+    let mut duplicate = confirmation;
+    duplicate.failed_to_clone = false;
+    assert!(
+        exec.confirm_execution(duplicate)
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+    let result = sql
+        .submit_enriched_sql(submit(DEV, "dev_clone_demo", 200, 10, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        response_variant(&result),
+        "ready_to_clone",
+        "ordinary fallback is not certified as the source model"
+    );
+}

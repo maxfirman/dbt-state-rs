@@ -626,10 +626,9 @@ impl Sql for SqlService {
         });
         // Schema-abstracted cross-environment logic identity (clone adoption).
         // Only meaningful for rendered (non-template) comparison of real SQL.
-        let ns_logic_hash = (!req.compare_unrendered_code
-            && !req.sql.trim().is_empty()
-            && crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse())
-        .then(|| crate::fingerprint::namespace_logic_hash(&sql_execution(&req)));
+        let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
+            .then(|| crate::fingerprint::copy_logic_hash(&sql_execution(&req)))
+            .flatten();
         let input_tables = decision::input_tables_of(&req);
         let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
         let project_id = req
@@ -833,7 +832,8 @@ impl Sql for SqlService {
         // PARSE-based detector (no raw-text substring scan, so a clock keyword in
         // a comment or string literal is not a false positive). Review #2 5th
         // follow-up P1 #3.
-        let volatile_blocks_clone = !req.tolerate_nondeterminism
+        let volatile_blocks_clone = !(req.dialect == "duckdb" && ns_logic_hash.is_some())
+            && !req.tolerate_nondeterminism
             && crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
                 &req.sql,
                 req.query_dependencies.iter().map(|d| d.query.as_str()),
@@ -861,7 +861,11 @@ impl Sql for SqlService {
                     // An equivalent exists under another name. If the target
                     // forbids clones, suppress the clone and emit the hosted
                     // CLONE_CHAIN_LIMIT_EXCEEDED execute shape; otherwise clone.
-                    if clones_forbidden {
+                    if clones_forbidden
+                        || (req.dialect.eq_ignore_ascii_case("duckdb")
+                            && eq.duckdb_copy_depth
+                                >= req.clone_chain_depth_limit.unwrap_or(2).min(2) as usize)
+                    {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
                         // Persist an ordinary (non-clone) pending row so the
@@ -921,7 +925,16 @@ impl Sql for SqlService {
                         &target_table,
                         eq.table_type.as_deref(),
                         req.clone_table_properties.as_ref(),
-                    ) {
+                    )
+                    .and_then(|sqls| {
+                        if req.dialect.eq_ignore_ascii_case("duckdb")
+                            && eq.last_modified_epoch.is_none()
+                        {
+                            Err("DuckDB source requires recorded physical evidence")
+                        } else {
+                            Ok(sqls)
+                        }
+                    }) {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
                         // Persist a pending row keyed on the submit target so the
@@ -1240,6 +1253,7 @@ impl Execution for ExecutionService {
                 req.table_type.as_deref(),
                 req.execution_runtime_ms,
                 req.execution_results.as_ref(),
+                req.failed_to_clone,
             )
             .await
             .map_err(db_err)?;
@@ -1294,11 +1308,7 @@ impl Execution for ExecutionService {
                     // Match the submit path's logic key: whitespace-normalized
                     // rendered SQL + allowlisted semantic_extras.
                     node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
-                    node_namespace_logic_hash: crate::warehouse::Warehouse::from_dialect(
-                        &sql.dialect,
-                    )
-                    .supports_namespace_reuse()
-                    .then(|| crate::fingerprint::namespace_logic_hash(sql)),
+                    node_namespace_logic_hash: crate::fingerprint::copy_logic_hash(sql),
                     node_configs_hash: sql
                         .dbt_node_state
                         .as_ref()
@@ -1482,6 +1492,51 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             )));
         }
 
+        // Unlike Snowflake, DuckDB accepts this pre-compilation path only for
+        // the pinned incremental contract and a physically current source.
+        // The later SQL submit still must match the inherited logic/config hash.
+        let duckdb = crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            == crate::warehouse::Warehouse::DuckDb;
+        let duckdb_source_logic = if duckdb {
+            match (
+                req.execution_type,
+                namespace(req.table_namespace.as_deref()),
+                req.clone_source_last_modified_epoch,
+                req.labels.get("duckdb_incremental_identity"),
+            ) {
+                (5, Some(ns), Some(epoch), Some(identity))
+                    if req
+                        .labels
+                        .get("duckdb_incremental_contract")
+                        .map(String::as_str)
+                        == Some("delete-insert-fixed-v1")
+                        && identity.starts_with("duckdb-incremental-init-v2:")
+                        && req.clone_source_table_type.as_deref() == Some("DUCKDB CTAS TABLE") =>
+                {
+                    self.0
+                        .store
+                        .find_duckdb_incremental_source(
+                            &org_id,
+                            &req.clone_source_table,
+                            ns,
+                            epoch,
+                            identity,
+                        )
+                        .await
+                        .map_err(db_err)?
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if duckdb && duckdb_source_logic.is_none() {
+            return Ok(Response::new(unable_to_clone_response(
+                req.clone_source_table.clone(),
+                req.target_table.clone(),
+                REJECTION_FORCED_NOT_ELIGIBLE,
+            )));
+        }
         let request_id = new_uuid_v7();
         let execution_decision_id = new_uuid_v7();
 
@@ -1500,21 +1555,23 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         // same namespace. If the source was never recorded here, the clone row
         // carries no logic identity and a later submit falls back to EXECUTE
         // (safe: we never skip without proven logic equivalence).
-        let inherited_ns_logic =
-            if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse() {
-                self.0
-                    .store
-                    .find_source_ns_logic_hash(
-                        &org_id,
-                        &req.clone_source_table,
-                        namespace(req.table_namespace.as_deref()),
-                        &req.dialect,
-                    )
-                    .await
-                    .map_err(db_err)?
-            } else {
-                None
-            };
+        let inherited_ns_logic = if duckdb {
+            duckdb_source_logic.flatten()
+        } else if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse()
+        {
+            self.0
+                .store
+                .find_source_ns_logic_hash(
+                    &org_id,
+                    &req.clone_source_table,
+                    namespace(req.table_namespace.as_deref()),
+                    &req.dialect,
+                )
+                .await
+                .map_err(db_err)?
+        } else {
+            None
+        };
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
@@ -1591,13 +1648,17 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             "clone decision: READY_TO_CLONE"
         );
 
-        let ready = ready_to_clone_response(
+        let mut ready = ready_to_clone_response(
             request_id,
             clone_sqls,
             req.clone_source_table.clone(),
             req.target_table.clone(),
             execution_decision_id,
         );
+
+        if duckdb {
+            ready.clone_required_last_modified_epoch = req.clone_source_last_modified_epoch;
+        }
 
         // The real CloneResponse populates both the new `ready_to_clone` field
         // (3) and the deprecated `ready_to_clone_v1` oneof (1) with the same
