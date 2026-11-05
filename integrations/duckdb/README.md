@@ -257,7 +257,10 @@ cardinality, scalar subqueries may select by physical scan order, which the
 unordered evidence does not preserve. A disabled or unknown setting forces
 ordinary execution and disables incremental initialization copies. This checks
 the worker session, including plugin configuration, rather than only the profile.
-SQL requests include the `types-scalars-v1` contract marker, and incremental
+The same worker check requires the default empty collation; cursor plugins
+that enable `nocase` or another collation force ordinary execution even when
+the profile has no collation setting. An unknown collation is also unsupported.
+SQL requests include the `types-scalars-v2` contract marker, and incremental
 initialization identities bind this version too. Earlier SQL outcomes and
 initialization sources must rebuild before they can supply reusable evidence
 under these checks; seed-only histories retain their existing contract.

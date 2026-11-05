@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
 )
-SQL_CONTRACT = "types-scalars-v1"
+SQL_CONTRACT = "types-scalars-v2"
 
 
 def supported_execution_context(adapter_ext):
@@ -26,14 +26,20 @@ def supported_execution_context(adapter_ext):
         return False
     try:
         # Inspect the actual worker cursor, including plugin session settings.
-        # Permissive scalar subqueries can choose a row by physical scan order,
-        # which the unordered visible-column evidence deliberately omits.
+        # Collation changes can alter literal comparisons with no table inputs.
+        # Permissive scalar subqueries can choose by physical scan order, which
+        # the unordered visible-column evidence deliberately omits.
         _, result = adapter_ext.adapter.execute(
-            "SELECT system.main.current_setting('scalar_subquery_error_on_multiple_rows')",
+            "SELECT system.main.current_setting('scalar_subquery_error_on_multiple_rows'), "
+            "system.main.current_setting('default_collation')",
             auto_begin=False,
             fetch=True,
         )
-        return len(result.rows) == 1 and result.rows[0][0] is True
+        return (
+            len(result.rows) == 1
+            and result.rows[0][0] is True
+            and result.rows[0][1] == ""
+        )
     except DbtRuntimeError:
         return False
 

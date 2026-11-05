@@ -79,7 +79,10 @@ with unchanged physical input resolution or deterministic results.
 Named type casts in either branch also prevent initialization: their mutable
 definitions are not part of the relation evidence. The execution-context check
 requires strict scalar-subquery cardinality in the actual worker session and
-rejects configured default collations before initialization as well as SQL reuse.
+rejects configured default collations and nonempty or unknown worker collations
+before initialization as well as SQL reuse. Cursor plugin settings are included
+in this check. The SQL contract version is bound into initialization identities,
+so earlier sources that lack this proof must rebuild before supplying a copy.
 
 CTAS validates the exact plan, source/target environments, source properties and
 source evidence in the transaction that reads the source. It records completion

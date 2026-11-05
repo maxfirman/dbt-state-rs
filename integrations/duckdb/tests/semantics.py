@@ -35,7 +35,7 @@ def sql(statement):
         db.execute(statement)
 
 
-def run(decision, expected, reference, target="dev"):
+def run(decision, expected, reference, target="dev", nocase=False):
     subprocess.run(
         [
             sys.executable,
@@ -58,6 +58,8 @@ def run(decision, expected, reference, target="dev"):
     with duckdb.connect(str(path)) as db:
         actual = db.execute(f"select * from {target}.totals order by all").fetchall()
         db.execute("SET scalar_subquery_error_on_multiple_rows=false")
+        if nocase:
+            db.execute("SET default_collation='nocase'")
         current = db.execute(reference + " order by all").fetchall()
         assert actual == current == expected, (actual, current, expected)
 
@@ -112,7 +114,7 @@ if len(sys.argv) == 2 or sys.argv[2] == "types":
     sql("drop table dev.totals")
     run("build", [(1, True), (2, True)], cold)
     run("build", [(1, False), (2, False)], hot)
-else:
+elif sys.argv[2] == "scalar":
     profile = root / "profiles.yml"
     profile.write_text(profile.read_text().replace(
         "      run_cache_enabled: true\n",
@@ -171,3 +173,45 @@ else:
     run("build", [(2,)], query)
     sql("create or replace table raw.inputs as select id from raw.inputs order by id asc")
     run("build", [(1,)], query)
+
+else:
+    query = "select 'a' = 'A' as same"
+    model.write_text(query)
+    run("build", [(False,)], query)
+    run("skip", [(False,)], query)
+    (root / "session_collation.py").write_text(
+        "from dbt.adapters.duckdb.plugins import BasePlugin\n"
+        "class Plugin(BasePlugin):\n"
+        "    def configure_cursor(self, cursor):\n"
+        "        cursor.execute(\"SET default_collation='nocase'\")\n"
+    )
+    profile = root / "profiles.yml"
+    binary_profile = profile.read_text()
+    profile.write_text(binary_profile.replace(
+        "      run_cache_enabled: true\n",
+        "      run_cache_enabled: true\n      plugins:\n"
+        "        - module: session_collation\n",
+    ))
+    run("build", [(True,)], query, nocase=True)
+    run("build", [(True,)], query, nocase=True)
+
+    # Removing the plugin must restore binary results and ordinary reuse.
+    collated_profile = profile.read_text()
+    profile.write_text(binary_profile)
+    run("build", [(False,)], query)
+    run("skip", [(False,)], query)
+
+    # An unsupported worker collation must be rejected before compile-time
+    # initialization, which could otherwise change the branch of an absent dev.
+    profile.write_text(collated_profile)
+    model.write_text(
+        config + "select id, {% if is_incremental() %} 'a' = 'A' "
+        "{% else %} false {% endif %} as same from warehouse.raw.inputs"
+    )
+    cold = "select id, false as same from raw.inputs"
+    hot = "select id, true as same from raw.inputs"
+    run("build", [(1, False), (2, False)], cold, "prod")
+    run("build", [(1, True), (2, True)], hot, "prod")
+    sql("drop table dev.totals")
+    run("build", [(1, False), (2, False)], cold)
+    run("build", [(1, True), (2, True)], hot)
