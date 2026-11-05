@@ -83,6 +83,11 @@ rejects configured default collations and nonempty or unknown worker collations
 before initialization as well as SQL reuse. Cursor plugin settings are included
 in this check. The SQL contract version is bound into initialization identities,
 so earlier sources that lack this proof must rebuild before supplying a copy.
+Timezone-aware casts in either branch also prevent initialization because their
+intermediate values can depend on timezone/calendar settings that are not bound to
+the workload. This includes TIMESTAMPTZ, TIMETZ and their aliases even when the
+output columns have supported ordinary types. The versioned SQL contract also
+invalidates earlier unchecked SQL outcomes and initialization source identities.
 
 CTAS validates the exact plan, source/target environments, source properties and
 source evidence in the transaction that reads the source. It records completion

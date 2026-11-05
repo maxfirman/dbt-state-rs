@@ -35,7 +35,7 @@ def sql(statement):
         db.execute(statement)
 
 
-def run(decision, expected, reference, target="dev", nocase=False):
+def run(decision, expected, reference, target="dev", nocase=False, timezone=None):
     subprocess.run(
         [
             sys.executable,
@@ -60,6 +60,8 @@ def run(decision, expected, reference, target="dev", nocase=False):
         db.execute("SET scalar_subquery_error_on_multiple_rows=false")
         if nocase:
             db.execute("SET default_collation='nocase'")
+        if timezone is not None:
+            db.execute("SET TimeZone=?", [timezone])
         current = db.execute(reference + " order by all").fetchall()
         assert actual == current == expected, (actual, current, expected)
 
@@ -174,7 +176,7 @@ elif sys.argv[2] == "scalar":
     sql("create or replace table raw.inputs as select id from raw.inputs order by id asc")
     run("build", [(1,)], query)
 
-else:
+elif sys.argv[2] == "collation":
     query = "select 'a' = 'A' as same"
     model.write_text(query)
     run("build", [(False,)], query)
@@ -215,3 +217,66 @@ else:
     sql("drop table dev.totals")
     run("build", [(1, False), (2, False)], cold)
     run("build", [(1, True), (2, True)], hot)
+
+else:
+    zone_file = root / "timezone.txt"
+    zone_file.write_text("UTC")
+    (root / "session_timezone.py").write_text(
+        "from pathlib import Path\n"
+        "from dbt.adapters.duckdb.plugins import BasePlugin\n"
+        "class Plugin(BasePlugin):\n"
+        "    def configure_cursor(self, cursor):\n"
+        "        zone = Path(__file__).with_name('timezone.txt').read_text()\n"
+        "        cursor.execute('SET TimeZone=?', [zone])\n"
+    )
+    profile = root / "profiles.yml"
+    profile.write_text(profile.read_text().replace(
+        "      run_cache_enabled: true\n",
+        "      run_cache_enabled: true\n      plugins:\n"
+        "        - module: session_timezone\n",
+    ))
+    query = "select cast(cast('2020-01-01 00:00:00+00' as timestamptz) as varchar) as value"
+    model.write_text(query)
+    run("build", [("2020-01-01 00:00:00+00",)], query, timezone="UTC")
+    zone_file.write_text("America/Los_Angeles")
+    run("build", [("2019-12-31 16:00:00-08",)], query, timezone="America/Los_Angeles")
+
+    # Naive timestamps are independent of TimeZone and retain normal reuse.
+    query = "select cast(cast('2020-01-01 00:00:00' as timestamp) as varchar) as value"
+    model.write_text(query)
+    run("build", [("2020-01-01 00:00:00",)], query, timezone="America/Los_Angeles")
+    zone_file.write_text("UTC")
+    run("skip", [("2020-01-01 00:00:00",)], query, timezone="UTC")
+
+    # TIME WITH TIME ZONE is outside the same conservative cast contract.
+    query = "select cast(cast('12:00:00+00' as time with time zone) as varchar) as value"
+    model.write_text(query)
+    run("build", [("12:00:00+00",)], query, timezone="UTC")
+    run("build", [("12:00:00+00",)], query, timezone="UTC")
+
+    # The root never mentions the type. Validate TRY_CAST and the long alias
+    # within the stored view definition before certifying its VARCHAR result.
+    sql(
+        "create view raw.zoned as select cast(try_cast("
+        "'2020-01-01 00:00:00+00' as timestamp with time zone) as varchar) as value"
+    )
+    query = "select * from warehouse.raw.zoned"
+    model.write_text(query)
+    run("build", [("2020-01-01 00:00:00+00",)], query, timezone="UTC")
+    zone_file.write_text("America/Los_Angeles")
+    run("build", [("2019-12-31 16:00:00-08",)], query, timezone="America/Los_Angeles")
+
+    # Reject an unsafe hot branch before a dev copy can change which branch
+    # compiles for an absent target. Only ordinary cold execution yields 'cold'.
+    model.write_text(
+        config + "select id, {% if is_incremental() %} "
+        "cast(cast('2020-01-01 00:00:00+00' as timestamptz) as varchar) "
+        "{% else %} 'cold' {% endif %} as value from warehouse.raw.inputs"
+    )
+    cold = "select id, 'cold' as value from raw.inputs"
+    hot = "select id, '2019-12-31 16:00:00-08' as value from raw.inputs"
+    run("build", [(1, "cold"), (2, "cold")], cold, "prod")
+    run("build", [(1, "2019-12-31 16:00:00-08"), (2, "2019-12-31 16:00:00-08")], hot, "prod")
+    sql("drop table dev.totals")
+    run("build", [(1, "cold"), (2, "cold")], cold)
+    run("build", [(1, "2019-12-31 16:00:00-08"), (2, "2019-12-31 16:00:00-08")], hot)

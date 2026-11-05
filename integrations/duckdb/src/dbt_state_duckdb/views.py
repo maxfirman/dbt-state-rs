@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
 )
-SQL_CONTRACT = "types-scalars-v2"
+SQL_CONTRACT = "types-scalars-v3"
 
 
 def supported_execution_context(adapter_ext):
@@ -86,6 +86,14 @@ def references(sql, function_catalog=None):
             and node.this == exp.DataType.Type.USERDEFINED
         ):
             raise ValueError("Unsupported named type binding")
+        # Intermediate timezone-aware casts can produce ordinary VARCHAR/BOOL
+        # results whose values depend on worker TimeZone/Calendar settings.
+        # Reject the type anywhere in the tree, including nested/TRY_CAST forms.
+        if isinstance(node, exp.DataType) and node.this in {
+            exp.DataType.Type.TIMESTAMPTZ,
+            exp.DataType.Type.TIMETZ,
+        }:
+            raise ValueError("Unsupported timezone-sensitive cast")
         # Approximate intermediates can make aggregates depend on scan order.
         if isinstance(node, exp.Div):
             raise TypeError("Unsupported approximate arithmetic")
@@ -293,8 +301,8 @@ def install_view_requests(adapter_type):
             from .incremental import reusable_self_read
 
             request.semantic_extras.update(semantic_contract(node))
-            # Earlier outcomes did not prove strict scalar cardinality or
-            # reject mutable type bindings. Do not reinterpret that history.
+            # Earlier outcomes did not prove this SQL/context subset.
+            # Do not reinterpret that history under the stricter contract.
             request.semantic_extras["duckdb_sql_contract"] = SQL_CONTRACT
             request.default_schema = self._adapter_ext.adapter.config.credentials.schema
             traversal = self._adapter_ext.traverse_view_definitions(sql)

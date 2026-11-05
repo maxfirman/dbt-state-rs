@@ -249,7 +249,12 @@ are conservatively excluded even when a user-defined visible column has that nam
 Named user-defined types in casts are also unsupported, including qualified,
 `::`, TRY_CAST and nested type references. Their definitions can change an
 intermediate comparison while all physical leaf/output types remain supported.
-Built-in casts retain their existing eligibility.
+Timezone-aware types (`TIMESTAMPTZ`/`TIMETZ`, including their long aliases)
+are excluded anywhere in the query's type tree. Intermediate casts can depend
+on worker timezone/calendar settings even when the final result is VARCHAR or
+BOOLEAN. This includes TRY_CAST, casts within stored views, and both branches
+of incremental initialization templates. Other supported built-in casts,
+including naive TIMESTAMP casts, retain reuse.
 
 Reuse requires the actual dbt worker's
 `scalar_subquery_error_on_multiple_rows` setting to be true. With permissive
@@ -260,7 +265,7 @@ the worker session, including plugin configuration, rather than only the profile
 The same worker check requires the default empty collation; cursor plugins
 that enable `nocase` or another collation force ordinary execution even when
 the profile has no collation setting. An unknown collation is also unsupported.
-SQL requests include the `types-scalars-v2` contract marker, and incremental
+SQL requests include the `types-scalars-v3` contract marker, and incremental
 initialization identities bind this version too. Earlier SQL outcomes and
 initialization sources must rebuild before they can supply reusable evidence
 under these checks; seed-only histories retain their existing contract.
