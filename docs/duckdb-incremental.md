@@ -91,6 +91,9 @@ invalidates earlier unchecked SQL outcomes and initialization source identities.
 The same recursive validation rejects FLOAT/DOUBLE inside nested cast targets
 in either branch, including ARRAY/STRUCT and TRY_CAST forms. Supported outer
 types and an exact final output do not certify approximate intermediates.
+Division operators `/` and `//` in either branch also prevent initialization.
+The gate does not prove integral operand resolution for `//`; decimal operands
+can select floating-point arithmetic even with BIGINT inputs and outputs.
 
 CTAS validates the exact plan, source/target environments, source properties and
 source evidence in the transaction that reads the source. It records completion

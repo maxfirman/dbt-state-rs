@@ -17,7 +17,7 @@ from sqlglot.errors import SqlglotError
 FUNCTION_CATALOG_SQL = (
     "SELECT function_name, internal FROM system.main.duckdb_functions()"
 )
-SQL_CONTRACT = "types-scalars-v4"
+SQL_CONTRACT = "types-scalars-v5"
 
 
 def supported_execution_context(adapter_ext):
@@ -95,7 +95,9 @@ def references(sql, function_catalog=None):
         }:
             raise ValueError("Unsupported timezone-sensitive cast")
         # Approximate intermediates can make aggregates depend on scan order.
-        if isinstance(node, exp.Div):
+        # // can resolve through DOUBLE for decimal operands. Without resolved
+        # operand types, its name does not prove integral arithmetic.
+        if isinstance(node, (exp.Div, exp.IntDiv)):
             raise TypeError("Unsupported approximate arithmetic")
         if isinstance(node, exp.DataType) and node.this in {
             exp.DataType.Type.FLOAT,

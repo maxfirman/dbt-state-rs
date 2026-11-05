@@ -281,7 +281,7 @@ elif sys.argv[2] == "timezone":
     run("build", [(1, "cold"), (2, "cold")], cold)
     run("build", [(1, "2019-12-31 16:00:00-08"), (2, "2019-12-31 16:00:00-08")], hot)
 
-else:
+elif sys.argv[2] == "nested-float":
     sql("drop table raw.inputs; create table raw.inputs(value varchar)")
     sql("insert into raw.inputs values ('[10000000000000000]'), ('[-10000000000000000]'), ('[1]')")
     query = "select cast(sum(cast(value as double[])[1]) as bigint) as total from warehouse.raw.inputs"
@@ -330,6 +330,53 @@ else:
     model.write_text(
         config + "select 1 as id, {% if is_incremental() %} "
         "cast(sum(cast(value as double[])[1]) as bigint) "
+        "{% else %} cast(99 as bigint) {% endif %} as total "
+        "{% if is_incremental() %} from warehouse.raw.inputs {% endif %}"
+    )
+    cold = "select 1 as id, cast(99 as bigint) as total"
+    hot = "select 1 as id, cast(1 as bigint) as total"
+    run("build", [(1, 99)], cold, "prod")
+    run("build", [(1, 1)], hot, "prod")
+    sql("drop table dev.totals")
+    run("build", [(1, 99)], cold)
+    run("build", [(1, 1)], hot)
+
+else:
+    sql("drop table raw.inputs; create table raw.inputs(value bigint)")
+    sql("insert into raw.inputs values (10000000000000000), (-10000000000000000), (1)")
+    query = "select cast(sum(value // 1.0) as bigint) as total from warehouse.raw.inputs"
+    model.write_text(query)
+    run("build", [(1,)], query)
+    sql("delete from raw.inputs; insert into raw.inputs values (10000000000000000), (1), (-10000000000000000)")
+    run("build", [(0,)], query)
+
+    # Exact arithmetic remains reusable after an identical-content reorder.
+    exact = query.replace("// 1.0", "* 1")
+    model.write_text(exact)
+    run("build", [(1,)], exact)
+    sql("delete from raw.inputs; insert into raw.inputs values (10000000000000000), (-10000000000000000), (1)")
+    run("skip", [(1,)], exact)
+
+    # Integral-looking // is conservative fallback too: the gate does not
+    # inspect resolved operand types before establishing eligibility.
+    integral = query.replace("1.0", "1")
+    model.write_text(integral)
+    run("build", [(1,)], integral)
+    run("build", [(1,)], integral)
+
+    # The root query has no division; fresh stored-view traversal must reject it.
+    sql("create view raw.quotient as " + query)
+    model.write_text("select total from warehouse.raw.quotient")
+    run("build", [(1,)], "select * from raw.quotient")
+    sql("delete from raw.inputs; insert into raw.inputs values (10000000000000000), (1), (-10000000000000000)")
+    run("build", [(0,)], "select * from raw.quotient")
+
+    # Check both branches before development initialization, including a hot
+    # expression whose outer BIGINT output hides the approximate intermediate.
+    sql("delete from raw.inputs; insert into raw.inputs values (10000000000000000), (-10000000000000000), (1)")
+    model.write_text(
+        config + "select 1 as id, {% if is_incremental() %} "
+        "cast(sum(value // 1.0) as bigint) "
         "{% else %} cast(99 as bigint) {% endif %} as total "
         "{% if is_incremental() %} from warehouse.raw.inputs {% endif %}"
     )

@@ -259,6 +259,11 @@ FLOAT/DOUBLE types are rejected recursively as well, including inside ARRAY
 and STRUCT cast targets and TRY_CAST. Approximate intermediates can make SUM
 depend on physical row order even when the inputs are VARCHAR and the final
 result is BIGINT. Exact nested integer casts remain eligible for reuse.
+Both `/` and `//` bypass reuse. Decimal operands can make `//` resolve through
+DOUBLE, and the current gate does not prove the resolved operand types. This
+conservative restriction also applies to integer-looking `//` expressions,
+stored view definitions and both incremental template branches before CTAS.
+Exact addition and multiplication retain their existing eligibility.
 
 Reuse requires the actual dbt worker's
 `scalar_subquery_error_on_multiple_rows` setting to be true. With permissive
@@ -269,7 +274,7 @@ the worker session, including plugin configuration, rather than only the profile
 The same worker check requires the default empty collation; cursor plugins
 that enable `nocase` or another collation force ordinary execution even when
 the profile has no collation setting. An unknown collation is also unsupported.
-SQL requests include the `types-scalars-v4` contract marker, and incremental
+SQL requests include the `types-scalars-v5` contract marker, and incremental
 initialization identities bind this version too. Earlier SQL outcomes and
 initialization sources must rebuild before they can supply reusable evidence
 under these checks; seed-only histories retain their existing contract.
