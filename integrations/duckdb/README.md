@@ -400,6 +400,14 @@ contract. See [result copying](../../docs/duckdb-result-copy.md) and
 [incremental execution](../../docs/duckdb-incremental.md), including permitted
 stale-source policy and the Snowflake confirmation assessment.
 
+The implementation keeps capability checks and pinned client entry adapters in
+`copy.py`. `result_copy.py` owns the shared attempt lifecycle: target validation,
+scoped source provenance, transactional CTAS with source revalidation, completion
+evidence, and path-specific recovery. SQL-response copies retain the pinned
+client's hooks and confirmation flow; failed initialization copies leave their
+registration pending and repair dbt metadata visibility before compilation
+continues. Ordinary model execution remains in the existing runner.
+
 ```sh
 DBT_STATE_DUCKDB_PYTHON=integrations/duckdb/.venv/bin/python \
   cargo test -p dbt-state-harness --test duckdb_copy_python -- --ignored --nocapture
