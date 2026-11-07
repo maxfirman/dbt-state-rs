@@ -3,6 +3,7 @@
 use tonic::{Request, Response, Status};
 
 use crate::decision::{self, SubmitContext, Verdict};
+use crate::history::{namespace, node_unique_id};
 use crate::query_cache as qc;
 use crate::store::{ConfirmedExecution, InputTable, PendingExecution};
 use crate::AppState;
@@ -23,25 +24,6 @@ const EXECUTION_TYPE_VALUES: i32 = 9;
 // ModelExecutionType::DBT_DATA_TEST (shared.proto). Test nodes are keyed by
 // node_unique_id, not target_table/node_body_hash (which collide across tests).
 const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-
-fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
-    use qc::value::Kind;
-    let Some(results) = results else {
-        return false;
-    };
-    let failures = matches!(
-        results.fields.get("failures").and_then(|v| v.kind.as_ref()),
-        Some(Kind::IntValue(_))
-    ) || matches!(results.fields.get("failures").and_then(|v| v.kind.as_ref()),
-        Some(Kind::DoubleValue(n)) if n.is_finite());
-    failures
-        && ["should_error", "should_warn"].iter().all(|key| {
-            matches!(
-                results.fields.get(*key).and_then(|v| v.kind.as_ref()),
-                Some(Kind::BoolValue(_))
-            )
-        })
-}
 
 /// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
 /// runtime (if any) just like the hosted service.
@@ -452,72 +434,8 @@ fn new_uuid_v7() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// Older clients publish identity only in labels.
-fn node_unique_id(
-    state: Option<&qc::DbtNodeState>,
-    labels: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    state
-        .map(|s| s.node_unique_id.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            labels
-                .get("dbt_node_unique_id")
-                .map(String::as_str)
-                .filter(|s| !s.is_empty())
-        })
-        .map(str::to_owned)
-}
-
-fn namespace(value: Option<&str>) -> Option<&str> {
-    value.filter(|s| !s.is_empty())
-}
-
-fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {
-    let mut names = std::collections::HashSet::new();
-    req.query_dependencies
-        .iter()
-        .all(|d| !d.name.trim().is_empty() && !d.query.trim().is_empty() && names.insert(&d.name))
-}
-
-fn current_target_matches(
-    req: &qc::SubmitEnrichedSqlRequest,
-    prev: &crate::store::ExecutionRow,
-) -> bool {
-    let Some(target) = req.target_table.as_deref().filter(|s| !s.is_empty()) else {
-        return false;
-    };
-    if prev.target_table != target {
-        return false;
-    }
-    let own: Vec<_> = req.tables.iter().filter(|t| t.name == target).collect();
-    // Missing/ambiguous target evidence cannot establish that an object exists.
-    own.len() == 1
-        && own[0].last_modified_epoch.is_some()
-        && (req.ignore_external_modifications
-            || matches!((own[0].last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded))
-}
-
-/// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint
-/// functions consume. Exposed so an upgrade regression can compute a frozen
-/// prior-version fingerprint for the exact request (review #2 9th follow-up P2).
-pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
-    qc::SqlExecution {
-        target_table: req.target_table.clone(),
-        dialect: req.dialect.clone(),
-        default_catalog: req.default_catalog.clone(),
-        default_schema: req.default_schema.clone(),
-        execution_type: req.execution_type,
-        sql: req.sql.clone(),
-        tables: req.tables.clone(),
-        query_dependencies: req.query_dependencies.clone(),
-        semantic_extras: req.semantic_extras.clone(),
-        labels: req.labels.clone(),
-        dbt_node_state: req.dbt_node_state.clone(),
-        table_namespace: req.table_namespace.clone(),
-        from_speculative_submit: false,
-    }
-}
+// Preserve the public conversion path used by upgrade regressions.
+pub use crate::history::sql_execution;
 
 /// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
 /// or `None` when the node_state lacks the scope keys (project_id/target_name/
@@ -604,168 +522,18 @@ impl Sql for SqlService {
 
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
-        let node_body_hash = decision::node_body_hash_of(&req);
-        // `node_sql_hash` ALWAYS carries the RENDERED logic identity. In
-        // `compare_unrendered_code` mode we ADDITIONALLY compute the unrendered
-        // TEMPLATE identity (`node_template_hash`): the hosted service rebuilds a
-        // cuc node ONLY when BOTH the rendered SQL and the template change, i.e.
-        // it reuses when EITHER is unchanged (documented + verified live — see
-        // crates/harness/tests/template_comparison.rs). Both hashes fold in the
-        // same dependency/context/extras components, so a genuine dependency or
-        // context change invalidates BOTH and rebuilds. When cuc is off,
-        // node_template_hash is None and only the rendered hash is matched.
-        let node_sql_hash = Some(crate::fingerprint::sql_logic_hash(
-            &sql_execution(&req),
-            None,
-        ));
-        let node_template_hash = req.compare_unrendered_code.then(|| {
-            crate::fingerprint::sql_logic_hash(
-                &sql_execution(&req),
-                Some(node_body_hash.as_deref().unwrap_or("")),
-            )
-        });
-        // Schema-abstracted cross-environment logic identity (clone adoption).
-        // Only meaningful for rendered (non-template) comparison of real SQL.
-        let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
-            .then(|| crate::fingerprint::copy_logic_hash(&sql_execution(&req)))
-            .flatten();
-        let input_tables = decision::input_tables_of(&req);
-        let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
-        let project_id = req
-            .dbt_node_state
-            .as_ref()
-            .and_then(|s| s.project_id.clone());
-        let table_namespace = namespace(req.table_namespace.as_deref());
-
-        // Whether the server has ANY confirmed execution describing this exact
-        // physical target (regardless of logic/provenance). NOT used to gate the
-        // cross-name clone fallback — LIVE-VERIFIED (experiments/
-        // p0_fallback_over_existing.sh) that the hosted service answers
-        // `ready_to_clone` for an equivalent under another name EVEN WHEN the
-        // target already exists with its own confirmed history holding different
-        // logic. The gate is purely "does an equivalent exist for THIS logic".
-        let candidate = if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
-            match unique_id.as_deref() {
-                Some(uid) => self
-                    .0
-                    .store
-                    .find_confirmed_test(
-                        &org_id,
-                        uid,
-                        project_id.as_deref(),
-                        table_namespace,
-                        node_sql_hash.as_deref(),
-                        node_template_hash.as_deref(),
-                        &req.dialect,
-                    )
-                    .await
-                    .map_err(db_err)?,
-                None => None,
-            }
-        } else {
-            let strict = self
-                .0
-                .store
-                .find_confirmed(
-                    &org_id,
-                    &target_table,
-                    execution_type,
-                    node_sql_hash.as_deref(),
-                    table_namespace,
-                    &req.dialect,
-                    node_template_hash.as_deref(),
-                    ns_logic_hash.as_deref(),
-                )
-                .await
-                .map_err(db_err)?;
-            // CROSS-ENVIRONMENT CLONE ADOPTION. When the strict (exact rendered
-            // SQL) match misses, the physical target may still be reusable if it
-            // was CLONED from (or is otherwise) the SAME model in the namespace:
-            // its schema-abstracted logic identity equals this submit's. This
-            // reproduces the hosted post-clone SKIP, which is logic-sensitive
-            // (a genuine SQL change still executes). Verified live; see
-            // experiments/clone_logic_sensitivity.sh. Freshness still governs
-            // via decide(); we only supply the candidate here.
-            match strict {
-                Some(row) => Some(row),
-                None => {
-                    // The CURRENT physical state of this target (latest confirmed
-                    // row, any provenance). Selecting the latest first guarantees
-                    // a stale clone-origin row cannot be resurrected for adoption
-                    // after an ordinary rebuild (review issue #1 P0#2): the row
-                    // is adopted (→ possible SKIP) only if it is ITSELF the
-                    // current state AND clone-origin AND logic-compatible.
-                    let latest_for_target = self
-                        .0
-                        .store
-                        .find_latest_confirmed_target(
-                            &org_id,
-                            &target_table,
-                            execution_type,
-                            table_namespace,
-                            &req.dialect,
-                        )
-                        .await
-                        .map_err(db_err)?;
-                    match ns_logic_hash.as_deref() {
-                        Some(ns_hash) => latest_for_target
-                            .filter(|prev| {
-                                // Only CLONE-ORIGIN rows are adopted cross-environment.
-                                // A clone establishes a physical object with the
-                                // source's logic; a later submit skips when its
-                                // schema-abstracted logic matches. Ordinary (non-clone)
-                                // rows are NOT adopted here: that would let a genuine
-                                // resolution-context change (e.g. default_schema) skip,
-                                // which the hosted service rebuilds. Broader
-                                // cross-environment reuse without a clone is a separate
-                                // provenance feature (see correctness-handoff.md §A).
-                                prev.clone_source_table.is_some()
-                                    && prev.node_namespace_logic_hash.as_deref() == Some(ns_hash)
-                            })
-                            .map(|mut prev| {
-                                // A clone-origin row records NO upstream inputs (the
-                                // clone had none). Adopt the submit's CURRENT inputs
-                                // as the recorded set so the freshness check compares
-                                // each upstream against the clone's own build epoch
-                                // (prev.last_modified_epoch) rather than treating the
-                                // empty recorded set as a dependency-set change. The
-                                // own-build anchor stays the authoritative clone epoch.
-                                if prev.input_tables.is_empty() {
-                                    prev.input_tables = input_tables.clone();
-                                }
-                                prev
-                            }),
-                        None => None,
-                    }
-                }
-            }
-        };
-        // Runtime volatile-function evidence is not implemented. Build instead
-        // of claiming reuse when evaluation is requested. Empty template/SQL is
-        // likewise insufficient. Automatic cross-target cloning remains a gap.
-        let confirmed = candidate.filter(|prev| {
-            req.tolerate_nondeterminism
-                && complete_dependencies(&req)
-                && !req.sql.trim().is_empty()
-                && (!req.compare_unrendered_code
-                    || node_body_hash.as_ref().is_some_and(|s| !s.is_empty()))
-                && if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
-                    reusable_test_results(prev.execution_results.as_ref())
-                } else {
-                    current_target_matches(&req, prev)
-                }
-        });
-
-        // PHYSICAL-EXISTENCE signal (fingerprint-agnostic): did this target ever
-        // have a confirmed build? When no fingerprint matched (confirmed is
-        // None) but the target existed, this is a REBUILD and hosted reports the
-        // rebuild rationale (not "did not exist"). Review #2 5th follow-up P1 #4.
-        let target_has_prior_build = self
-            .0
-            .store
-            .target_has_confirmed_history(&org_id, &target_table, table_namespace, &req.dialect)
+        let crate::history::SqlHistory {
+            confirmed,
+            target_has_prior_build,
+            node_body_hash,
+            node_sql_hash,
+            node_template_hash,
+            ns_logic_hash,
+            input_tables,
+        } = crate::history::prepare_sql(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
+        let table_namespace = namespace(req.table_namespace.as_deref());
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: node_body_hash.as_deref(),
@@ -1097,33 +865,13 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone();
         // execution_type is implicitly VALUES(9) for seeds.
         let execution_type = EXECUTION_TYPE_VALUES;
-        let values_hash = if req.values_hash.is_empty() {
-            None
-        } else {
-            Some(req.values_hash.clone())
-        };
-
-        let seed_hash = crate::fingerprint::seed_logic_hash(
-            &req.dialect,
-            &req.default_catalog,
-            &req.semantic_extras,
-        );
-        let confirmed = self.0.store.find_confirmed_values(
-            &org_id, &target_table, &req.values_hash, &seed_hash, namespace(req.table_namespace.as_deref()), &req.dialect,
-        ).await.map_err(db_err)?.filter(|prev| {
-            !req.values_hash.is_empty() && req.last_modified_epoch.is_some()
-                && matches!((req.last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded)
-        });
-        let input_tables: Vec<InputTable> = Vec::new();
-        let target_has_prior_build = self
-            .0
-            .store
-            .target_has_confirmed_history(
-                &org_id,
-                &target_table,
-                namespace(req.table_namespace.as_deref()),
-                &req.dialect,
-            )
+        let crate::history::ValuesHistory {
+            confirmed,
+            target_has_prior_build,
+            seed_hash,
+            values_hash,
+            input_tables,
+        } = crate::history::prepare_values(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
         let ctx = SubmitContext {

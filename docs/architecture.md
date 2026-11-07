@@ -35,6 +35,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 |---|---|
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres access via sqlx: lookups, pending→confirmed lifecycle, batch hydrate. |
+| `history.rs` | Shared SQL/model, data-test and seed history preparation: identities, scoped lookup ordering, clone adoption and reuse-evidence checks. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
 | `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
@@ -50,14 +51,26 @@ so tests exercise the exact same wiring as production.
 
 ### Decision engine and persistence
 
-`decide(ctx, confirmed) -> Verdict` stays pure. The store/service validate the
-candidate fingerprint, physical target and cached test result before invoking
-it. The engine compares exact physical input names and optional epochs;
+`decide(ctx, confirmed) -> Verdict` stays pure. `history.rs` prepares the candidate
+using warehouse-specific fingerprints and scoped store lookups, then validates
+physical target evidence or complete cached test results. SQL submit and seed
+submit consume prepared history, including identity and input evidence needed
+for recording. Submit retains selector updates, the call to `decide()`,
+cross-target copy selection, pending writes and wire responses. The engine
+compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
 from upstream drift. Freshness drift is an upstream newer than the node's own
 last-build epoch (ANY/ALL policy), verified live; `freshness_tolerance_seconds`
 is intentionally not applied. See [protocol.md](protocol.md#current-decision-semantics)
 and [correctness-handoff.md §C](correctness-handoff.md).
+
+History preparation keeps the existing sequential, independent Postgres reads:
+strict lookup, latest-target lookup on a model miss, then prior-build existence.
+Tests use their scoped UID lookup; seeds use their values/configuration lookup.
+The latest-target lookup runs even without a copy identity and omits irrelevant
+cached result bytes, while result-serving lookups still report corrupt results.
+Preparation returns database errors for submit to translate to the existing wire
+error. `services::sql_execution` remains a public re-export for upgrade tests.
 
 `fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
 mode), dialect/default context, sorted semantic extras and supplied dependency

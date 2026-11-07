@@ -5,6 +5,7 @@ pub mod clone;
 pub mod config;
 pub mod decision;
 pub mod fingerprint;
+mod history;
 pub mod selector;
 pub mod services;
 pub mod sql_identity;

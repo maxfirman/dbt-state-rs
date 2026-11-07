@@ -328,7 +328,7 @@ impl Store {
     /// rebuild is the current state and this returns it. The CALLER then adopts
     /// the row only if it is itself clone-origin AND its inherited
     /// schema-abstracted logic matches the submit (see
-    /// `services.rs::submit_enriched_sql`). Selecting the latest row first and
+    /// `history::prepare_sql`). Selecting the latest row first and
     /// filtering afterwards guarantees a stale clone-origin row cannot be
     /// resurrected once the object has been overwritten by a non-clone build.
     ///
