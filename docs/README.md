@@ -15,6 +15,11 @@ State ("query cache") gRPC decision service.
 | [conformance-plan.md](conformance-plan.md) | Handoff plan for a versioned coverage ledger, independent state-machine tests and release gates. |
 | [ui.md](ui.md) | The read-only web console (Topcoat): what it shows, how to run it, design. |
 | [research.md](research.md) | Reverse-engineering notes and provenance from real traffic. |
+| [GLOSSARY.md](../GLOSSARY.md) | Domain language, including hosted conformance, reuse safety and freshness evidence. |
+| [ADR 0001](adr/0001-duckdb-support-and-conformance.md) | DuckDB workflow and acceptance-gate decisions, Snowflake compatibility policy and implementation status. |
+| [ADR 0002](adr/0002-duckdb-local-workflow.md) | Python client integration decisions, local environment scope, copy capabilities and validated coverage. |
+| [ADR 0003](adr/0003-duckdb-observed-change-evidence.md) | DuckDB observed-change freshness, durable evidence and reset after backup restoration. |
+| [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md) | Shared SQL identity and copy lifecycle with explicit warehouse semantics. |
 
 Reading order for a newcomer: **overview → protocol → architecture → testing**.
 For hands-on work: **development → harness**.

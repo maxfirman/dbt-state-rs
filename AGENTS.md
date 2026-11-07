@@ -83,3 +83,9 @@ cargo test -p dbt-state-server --lib    # server library tests, no DB
 - Keep golden session files out of the tree; only `golden/fixtures/` is tracked
   (see `golden/README.md`).
 - Don't commit unless asked; prefer small, focused commits.
+
+## Agent guidance
+
+- Before GitHub issue operations, read [issue-tracker.md](docs/agents/issue-tracker.md).
+- Before triaging issues, read [triage-labels.md](docs/agents/triage-labels.md).
+- Before domain exploration or design, read [domain.md](docs/agents/domain.md).
