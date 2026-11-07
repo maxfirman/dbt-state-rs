@@ -96,57 +96,6 @@ def supported_incremental(node):
     )
 
 
-def state_workload(node):
-    """Unsupported work still executes through the ordinary dbt runner."""
-    kind = str(node.resource_type)
-    if kind in {"test", "seed"}:
-        return True
-    if kind != "model" or getattr(node, "language", None) != "sql":
-        return False
-    materialized = node.config.materialized
-    if materialized in {"table", "view"}:
-        return True
-    from .copy import ctas_satisfies_requirements
-
-    return supported_incremental(node) and ctas_satisfies_requirements(node)
-
-
-def install_workload_gate(adapter_type):
-    from dbt_state.run_cache import RunCache
-
-    for method in ("on_compile", "on_execute", "on_run_result"):
-        original = getattr(RunCache, method)
-
-        def gated(self, node, *args, _original=original, _method=method, **kwargs):
-            if isinstance(self._adapter_ext, adapter_type):
-                if not state_workload(node):
-                    return None
-                if (
-                    node.config.materialized == "incremental"
-                    and _method == "on_execute"
-                ):
-                    import duckdb
-
-                    name = self._adapter_ext._sql(
-                        self._node_resolution.node_to_table(node)
-                    )
-                    with duckdb.connect(str(self._adapter_ext.path)) as db:
-                        if not incremental_relation_contract(db, name, node):
-                            return None
-                if node.config.materialized == "incremental" and any(
-                    m.package_name not in {"dbt", "dbt_duckdb"}
-                    and (
-                        "delete_insert" in m.name
-                        or m.name.startswith("materialization_incremental")
-                    )
-                    for m in self._manifest.macros.values()
-                ):
-                    return None
-            return _original(self, node, *args, **kwargs)
-
-        setattr(RunCache, method, gated)
-
-
 def initialization_identity(builder, node):
     """Versioned template/config identity available before compilation.
 

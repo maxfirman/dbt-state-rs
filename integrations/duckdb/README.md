@@ -400,8 +400,16 @@ contract. See [result copying](../../docs/duckdb-result-copy.md) and
 [incremental execution](../../docs/duckdb-incremental.md), including permitted
 stale-source policy and the Snowflake confirmation assessment.
 
-The implementation keeps capability checks and pinned client entry adapters in
-`copy.py`. `result_copy.py` owns the shared attempt lifecycle: target validation,
+`qualification.py` assembles SQL, seed and initialization request evidence and
+gates supported workloads through one set of request adapters. It combines
+execution-context, hook, self-read, incremental and copy requirements while
+retaining their distinct supported subsets and exact versioned identity tags.
+Specialized SQL/view, hook and incremental validators remain in `views.py`,
+`hooks.py` and `incremental.py`. Seeds retain their narrower qualification path.
+
+`copy.py` keeps physical capability checks and pinned Result copy entry adapters;
+its configuration capability helper re-exports the shared qualification rule.
+`result_copy.py` owns the shared attempt lifecycle: target validation,
 scoped source provenance, transactional CTAS with source revalidation, completion
 evidence, and path-specific recovery. SQL-response copies retain the pinned
 client's hooks and confirmation flow; failed initialization copies leave their

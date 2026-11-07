@@ -46,6 +46,11 @@ The property that reusing a result satisfies the workload's declared logic,
 freshness and isolation requirements.
 _Avoid_: Hosted conformance
 
+**Reuse qualification**:
+Assessment of whether a workload and its available evidence meet the
+requirements for considering a recorded result for reuse.
+_Avoid_: Reuse decision (qualification alone does not select a result)
+
 **Reference execution**:
 An independent execution of a test workload used to establish its expected
 result, with any permitted stale results specified separately.
