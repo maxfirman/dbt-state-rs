@@ -1092,24 +1092,76 @@ impl ClientValidation for ClientValidationService {
 }
 
 #[derive(Clone)]
-pub struct ExplainService;
+pub struct ExplainService(pub AppState);
 
 #[tonic::async_trait]
 impl Explain for ExplainService {
     async fn get_explain_messages(
         &self,
-        _request: Request<qc::GetExplainMessagesRequest>,
+        request: Request<qc::GetExplainMessagesRequest>,
     ) -> Result<Response<qc::GetExplainMessagesResponse>, Status> {
-        // No human-readable explain text generated yet; return an empty list.
-        Ok(Response::new(qc::GetExplainMessagesResponse {
-            messages: Vec::new(),
-        }))
+        // Org scoping first (AGENTS.md): never re-derive another tenant's
+        // decisions. Mirrors SelectorServiceImpl's org_id_checked pattern.
+        let org_id = org_id_checked(&self.0, &request)?;
+        let req = request.into_inner();
+
+        // Re-derive each requested decision's tree + description on demand from
+        // the persisted node_decisions rows (ADR 0005). Untracked ids (absent
+        // from the store) produce no message, so the response can be shorter
+        // than the request — matching the hosted "omit untracked" behavior.
+        let rows = self
+            .0
+            .store
+            .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
+            .await
+            .map_err(db_err)?;
+
+        let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let Some(edid) = row.execution_decision_id.clone() else {
+                continue;
+            };
+            let Some(decision) = crate::explain::DecisionClass::from_decision_str(&row.decision)
+            else {
+                // Unknown decision class — skip rather than invent a tree.
+                continue;
+            };
+            let node = crate::explain::ExplainNode {
+                execution_decision_id: edid.clone(),
+                decision,
+                execution_type: row.execution_type,
+                decision_description: row.decision_description.clone(),
+                is_stale: row.is_stale,
+                target_table: row.target_table.clone(),
+                clone_source: row.clone_source.clone(),
+                input_tables: row.input_tables(),
+                // The matched-execution freshness anchor lands with ticket #30
+                // (the `matched_execution_id` column). Until then the per-upstream
+                // FRESH/OUTDATED subtree is rendered structurally and fenced in
+                // the conformance gate.
+                anchor: None,
+            };
+            by_id.insert(edid, node);
+        }
+
+        // Preserve the request order, emitting only tracked ids.
+        let messages = req
+            .execution_decision_ids
+            .iter()
+            .filter_map(|id| by_id.get(id))
+            .map(crate::explain::explain_entry)
+            .collect();
+
+        Ok(Response::new(qc::GetExplainMessagesResponse { messages }))
     }
 
     async fn get_upstream_dependency_changes(
         &self,
         _request: Request<qc::GetUpstreamDependencyChangesRequest>,
     ) -> Result<Response<qc::GetUpstreamDependencyChangesResponse>, Status> {
+        // Intentionally an empty, non-asserted stub (ticket #29 AC): the hosted
+        // service's UpstreamDependencyChanges narrative is not yet characterized.
         Ok(Response::new(qc::GetUpstreamDependencyChangesResponse {
             dependency_changes: Vec::new(),
         }))

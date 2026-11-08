@@ -333,9 +333,11 @@ async fn submit_values_execute_confirm_skip() {
     ));
 }
 
-/// Item 4: trivial services return OK empty responses.
+/// Item 4: the Explain service now re-derives the structured tree on demand.
+/// A submitted node's `execution_decision_id` yields its cataloged explain tree
+/// via `GetExplainMessages` (ADR 0005); the SelectorService remains implemented.
 #[tokio::test]
-async fn explain_placeholder_and_implemented_selector() {
+async fn explain_rederives_tree_and_selector_is_implemented() {
     use qc::explain_client::ExplainClient;
     use qc::selector_service_client::SelectorServiceClient;
 
@@ -343,15 +345,71 @@ async fn explain_placeholder_and_implemented_selector() {
     let addr = server.addr;
     let ch = channel(addr).await;
 
+    // Submit a never-seen node so it EXECUTEs (first build). The server mints an
+    // execution_decision_id and records the decision (best-effort capture).
+    let entries = diff::load_golden(GOLDEN).expect("load golden");
+    let req = submit_req_from_golden(find_first_execute(&entries));
+    let mut sql = SqlClient::new(ch.clone());
+    let resp = sql
+        .submit_enriched_sql(req)
+        .await
+        .expect("submit")
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(exec) = resp.response.expect("response")
+    else {
+        panic!("expected ready_to_execute");
+    };
+    let edid = exec.execution_decision_id.expect("minted edid");
+
+    // An UNTRACKED id yields no message (tracked ids are omitted when absent).
     let mut explain = ExplainClient::new(ch.clone());
-    let msgs = explain
+    let untracked = explain
         .get_explain_messages(qc::GetExplainMessagesRequest {
-            execution_decision_ids: vec!["x".to_string()],
+            execution_decision_ids: vec!["definitely-not-a-real-edid".to_string()],
         })
         .await
         .expect("get_explain_messages")
         .into_inner();
-    assert!(msgs.messages.is_empty(), "explain messages must be empty");
+    assert!(
+        untracked.messages.is_empty(),
+        "untracked ids must be omitted from the response"
+    );
+
+    // The tracked id yields exactly one re-derived message. Capture is a
+    // best-effort async write, so poll briefly until it lands.
+    let mut got = None;
+    for _ in 0..50 {
+        let r = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .expect("get_explain_messages")
+            .into_inner();
+        if let Some(m) = r.messages.into_iter().next() {
+            got = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = got.expect("the tracked decision's explain message must be re-derived");
+    assert_eq!(msg.execution_decision_id, edid);
+    assert_eq!(msg.decision, 1, "EXECUTE decision int");
+    // First build → the table-analysis-only shape (catalog "First build").
+    assert_eq!(
+        msg.explain_lines.len(),
+        1,
+        "first build: table analysis only"
+    );
+    let ta = &msg.explain_lines[0];
+    assert!(ta.text.starts_with("table analysis ("));
+    assert_eq!(ta.children.len(), 2);
+    assert_eq!(ta.children[0].text, "the model table does not exist");
+    assert_eq!(ta.children[0].marker, Some(2));
+    assert_eq!(
+        ta.children[1].text,
+        "there is no other table that the model could be cloned from"
+    );
 
     // SelectorService.GetStateSelection is implemented (state:* selectors). With
     // an empty node set it returns an empty selection — not UNIMPLEMENTED.

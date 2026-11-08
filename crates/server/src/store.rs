@@ -488,6 +488,61 @@ impl Store {
             .filter_map(|(uid, fqn)| fqn.map(|f| (uid, f)))
             .collect())
     }
+
+    /// Fetch the persisted `node_decisions` rows for the requested
+    /// `execution_decision_id`s, scoped by `org_id`, for `GetExplainMessages`
+    /// re-derivation (ADR 0005). Returns at most one row per id (the capture
+    /// writes one decision per id); ids absent from the store (untracked nodes)
+    /// are simply omitted — the caller builds no message for them. Org scoping
+    /// is mandatory (AGENTS.md): never read another tenant's decisions.
+    pub async fn fetch_explain_decisions(
+        &self,
+        org_id: &str,
+        execution_decision_ids: &[String],
+    ) -> sqlx::Result<Vec<ExplainDecisionRow>> {
+        if execution_decision_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // DISTINCT ON keeps one row per id (the latest by id) in case a best-
+        // effort capture wrote more than once for the same decision id.
+        let rows: Vec<ExplainDecisionRow> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT ON (execution_decision_id)
+                   execution_decision_id, decision, execution_type,
+                   decision_description, is_stale, target_table, clone_source,
+                   input_tables
+            FROM node_decisions
+            WHERE org_id = $1
+              AND execution_decision_id = ANY($2)
+            ORDER BY execution_decision_id, id DESC
+            "#,
+        )
+        .bind(org_id)
+        .bind(execution_decision_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// A `node_decisions` row projected for explain re-derivation (ADR 0005).
+#[derive(sqlx::FromRow)]
+pub struct ExplainDecisionRow {
+    pub execution_decision_id: Option<String>,
+    pub decision: String,
+    pub execution_type: i32,
+    pub decision_description: Option<String>,
+    pub is_stale: bool,
+    pub target_table: Option<String>,
+    pub clone_source: Option<String>,
+    pub input_tables: serde_json::Value,
+}
+
+impl ExplainDecisionRow {
+    /// Decode the JSONB `input_tables` column into the typed shape.
+    pub fn input_tables(&self) -> Vec<InputTable> {
+        serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()
+    }
 }
 
 #[derive(sqlx::FromRow)]
