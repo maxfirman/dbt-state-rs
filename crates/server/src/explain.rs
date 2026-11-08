@@ -192,8 +192,44 @@ pub fn decision_description(node: &ExplainNode) -> String {
     }
 }
 
+/// Whether (execution_type, decision) is a CHARACTERIZED combination that the
+/// hosted service was observed to render and that we therefore reproduce. This
+/// is a strict positive allowlist; everything else returns an empty tree.
+///
+/// Characterized matrix (verified against the explain fixtures — which carry
+/// ONLY execution_type 1/10/8 — and docs/explain-catalog.md):
+///   - model/table (ET_FULL=1) and view (ET_VIEW=10): Skip | Build | Clone.
+///   - data test (ET_DBT_DATA_TEST=8): Skip only (Build/Clone unobserved — F4).
+///   - everything else (seed ET_VALUES=9, snapshot ET_SNAPSHOT=7, incremental,
+///     any other execution_type): NONE.
+///
+/// Anything outside this set is "Unobserved — do not implement until captured"
+/// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
+/// hard rule is "mark as unimplemented rather than invent ... never ship
+/// invented output". Without this fence `explain_lines` dispatches on
+/// `DecisionClass` alone and renders a model-shaped tree for seed/snapshot/
+/// incremental decisions (e.g. a seed reload persists "seed was loaded because
+/// its data changed" and would fall through to the SHAPE-7 "the model query has
+/// changed" tree). PR #31 round-4 F7.
+fn is_characterized(execution_type: i32, decision: DecisionClass) -> bool {
+    match execution_type {
+        ET_FULL | ET_VIEW => matches!(
+            decision,
+            DecisionClass::Skip | DecisionClass::Build | DecisionClass::Clone
+        ),
+        ET_DBT_DATA_TEST => matches!(decision, DecisionClass::Skip),
+        _ => false,
+    }
+}
+
 /// Build the structured tree. Dispatches on decision class + node kind.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    // F7 fence (PR #31 round 4): never render an invented tree for an
+    // uncharacterized node kind. This subsumes the old data-test-EXECUTE guard
+    // that lived inside `execute_tree`.
+    if !is_characterized(node.execution_type, node.decision) {
+        return Vec::new();
+    }
     match node.decision {
         DecisionClass::Skip => skip_tree(node),
         DecisionClass::Build => execute_tree(node),
@@ -417,19 +453,18 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
 fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    // Data-test EXECUTE is UNOBSERVED / unimplemented: explain-catalog.md
-    // ("Data test EXECUTE (only SKIP captured)", ~line 222) and spec #27
-    // "Out of Scope" have NO hosted evidence and NO fixture for its shape, and
-    // the spec's hard rule is "mark as unimplemented rather than invent ...
-    // never ship invented output". A data test also produces no physical object,
-    // so none of the object-bearing branches below (first-build table analysis,
-    // table_analysis_exists) can be structurally valid for it. Emit nothing —
-    // mirroring the `skip_tree` data-test guard — rather than a wrong,
-    // model-shaped tree. (The persisted data-test execute description contains
-    // "no prior execution", which would otherwise trip `is_first_build`.)
-    if node.is_data_test() {
-        return Vec::new();
-    }
+    // Data-test EXECUTE is UNOBSERVED / unimplemented (explain-catalog.md
+    // "Data test EXECUTE (only SKIP captured)", ~line 222; spec #27 Out-of-Scope).
+    // As of PR #31 round-4 F7 this is now fenced upstream by `is_characterized`
+    // in `explain_lines` (ET_DBT_DATA_TEST allows only Skip), so this branch is
+    // unreachable for a data test. Kept as commented defense-in-depth so the two
+    // places cannot silently disagree; `is_first_build`'s `!is_data_test()`
+    // hardening remains the belt-and-braces guard against the data-test execute
+    // description ("no prior execution") tripping the first-build heuristic.
+    debug_assert!(
+        !node.is_data_test(),
+        "data-test EXECUTE must be fenced by explain_lines::is_characterized before reaching execute_tree"
+    );
     // First build (no matched anchor and no genuine upstreams recorded against a
     // prior build): table-analysis-only shape. We distinguish it from the
     // node-query-changed rebuild by the persisted description wording.
@@ -955,6 +990,61 @@ mod tests {
         );
         assert_eq!(lines[1].text, "query analysis (vs clone)");
         assert_eq!(lines[2].text, "data freshness analysis (vs clone)");
+    }
+
+    // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
+    // explain_lines dispatches on DecisionClass alone; without an
+    // execution-type fence, seed (ET_VALUES=9), snapshot (ET_SNAPSHOT=7) and
+    // incremental decisions render model-shaped trees that the hosted service
+    // was never observed to produce (docs/explain-catalog.md "Unobserved — do
+    // not implement until captured"; spec #27 Out-of-Scope). They must emit
+    // nothing.
+    const ET_SNAPSHOT: i32 = 7;
+    const ET_VALUES: i32 = 9;
+
+    #[test]
+    fn seed_skip_emits_nothing() {
+        // ET_VALUES=9 seed SKIP: unobserved → no invented model-SKIP tree.
+        let mut n = node(
+            DecisionClass::Skip,
+            ET_VALUES,
+            "seed was a no-op because its data has not changed",
+        );
+        n.input_tables = vec![tbl("\"DB\".\"S\".\"T\"")];
+        assert!(
+            explain_lines(&n).is_empty(),
+            "seed SKIP is unobserved → must emit no invented lines, got {:?}",
+            render(&n)
+        );
+    }
+
+    #[test]
+    fn seed_execute_emits_nothing() {
+        // The finding's concrete reachable case: submit_values captures seed
+        // decision ids; a seed reload persists "seed was loaded because its
+        // data changed", which would otherwise fall through to SHAPE-7
+        // "the model query has changed".
+        let n = node(
+            DecisionClass::Build,
+            ET_VALUES,
+            "seed was loaded because its data changed",
+        );
+        assert!(
+            explain_lines(&n).is_empty(),
+            "seed EXECUTE is unobserved → must emit no invented lines, got {:?}",
+            render(&n)
+        );
+    }
+
+    #[test]
+    fn snapshot_execute_emits_nothing() {
+        // ET_SNAPSHOT=7 snapshot: unobserved → no invented tree.
+        let n = node(DecisionClass::Build, ET_SNAPSHOT, "snapshot was executed");
+        assert!(
+            explain_lines(&n).is_empty(),
+            "snapshot is unobserved → must emit no invented lines, got {:?}",
+            render(&n)
+        );
     }
 
     #[test]
