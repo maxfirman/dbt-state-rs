@@ -28,16 +28,6 @@ struct KnownGap {
     /// least one named field genuinely differs (so a resolved gap is flagged).
     #[serde(default)]
     ignore_fields: Vec<String>,
-    /// Explain-arm fence (ticket #29): when true, this gap documents that the
-    /// re-derived explain tree for a GetExplainMessages entry diverges from the
-    /// hosted tree in the per-upstream FRESHNESS SUBTREE (and, pre-#30, in the
-    /// decision class itself, because the empty-store replay lacks the hosted
-    /// prior history so a hosted SKIP/CLONE is a local first-build EXECUTE). The
-    /// arm still runs end-to-end and asserts the fenced content genuinely
-    /// differs (stale-exemption guard); #30 removes this once the
-    /// `matched_execution_id` anchor makes the freshness subtree re-derivable.
-    #[serde(default)]
-    explain_freshness_subtree: bool,
 }
 
 fn real_variant(resp: &serde_json::Value) -> Option<String> {
@@ -893,63 +883,19 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
     serde_json::Value::Array(lines.iter().map(conv).collect())
 }
 
-/// Fence the per-upstream FRESHNESS SUBTREE out of a normalized explain tree:
-/// remove any `upstream dependencies` listing (wherever it appears — under
-/// `data freshness analysis`, `… (vs clone)`, or the OUTDATED `query analysis`),
-/// and the `an upstream model query has changed` / `upstream data is outdated`
-/// FAIL summary lines that only appear in the anchor-driven OUTDATED shape. The
-/// returned value is the tree MINUS the anchor-dependent subtree; the second
-/// return is the collected fenced subtrees (so the arm can assert they differ).
-fn fence_freshness_subtree(tree: &serde_json::Value) -> (serde_json::Value, serde_json::Value) {
-    let mut fenced_out = Vec::new();
-    fn walk(v: &serde_json::Value, fenced_out: &mut Vec<serde_json::Value>) -> serde_json::Value {
-        match v {
-            serde_json::Value::Array(items) => serde_json::Value::Array(
-                items
-                    .iter()
-                    .filter_map(|item| {
-                        let text = item.get("text").and_then(|t| t.as_str()).unwrap_or("");
-                        if text == "upstream dependencies"
-                            || text == "an upstream model query has changed"
-                            || text == "upstream data is outdated"
-                        {
-                            fenced_out.push(item.clone());
-                            None
-                        } else {
-                            Some(walk(item, fenced_out))
-                        }
-                    })
-                    .collect(),
-            ),
-            serde_json::Value::Object(obj) => {
-                let mut m = serde_json::Map::new();
-                for (k, val) in obj {
-                    if k == "children" {
-                        m.insert(k.clone(), walk(val, fenced_out));
-                    } else {
-                        m.insert(k.clone(), val.clone());
-                    }
-                }
-                serde_json::Value::Object(m)
-            }
-            other => other.clone(),
-        }
-    }
-    let pruned = walk(tree, &mut fenced_out);
-    (pruned, serde_json::Value::Array(fenced_out))
-}
-
 /// Replay one `GetExplainMessages` capture: remap the hosted ids to the locally
 /// minted ones, call the server (polling briefly for the best-effort capture to
-/// land), and compare the re-derived tree to the hosted tree after normalization
-/// and freshness-subtree fencing. Returns the number of messages asserted.
+/// land), and compare the re-derived tree to the hosted tree after
+/// normalization. Returns the number of messages asserted.
 ///
-/// Every hosted message whose hosted edid maps to a submit in THIS fixture must
-/// have a matching documented known gap (the empty-store replay lacks the hosted
-/// prior history, so a hosted SKIP/CLONE is a local first-build EXECUTE, AND the
-/// per-upstream freshness subtree needs the #30 anchor). The arm still asserts
-/// the fence is REAL — the fenced content must genuinely differ between local
-/// and hosted — so a resolved gap (e.g. once #30 lands) is flagged as stale.
+/// Ticket #30: the per-upstream freshness subtree is NO LONGER fenced — the FULL
+/// normalized tree is compared exactly. In the generic in-order replay a tracked
+/// message whose referenced submit had hosted prior-session history (absent from
+/// this capture, which carries no ConfirmExecution) is a local first-build
+/// EXECUTE rather than the hosted SKIP/CLONE, so it needs a documented
+/// missing-history known gap; the arm asserts the divergence is REAL (stale-
+/// exemption guard). The exact anchored freshness-subtree rendering is proven by
+/// the seeded-history oracle tests above.
 #[allow(clippy::too_many_arguments)]
 async fn replay_explain_messages(
     ch: tonic::transport::Channel,
@@ -1041,53 +987,58 @@ async fn replay_explain_messages(
         let local_id = &edid_remap[hosted_id];
         let local = local_by_id.get(local_id).expect("tracked message present");
 
-        // Normalize both trees (mask the runtime slots on BOTH sides).
+        // Normalize both trees (mask the runtime slots on BOTH sides). Ticket
+        // #30: the per-upstream freshness subtree is NO LONGER fenced — the FULL
+        // normalized tree is compared exactly, including the `upstream
+        // dependencies` FRESH/OUTDATED listings, the «gap» line and the OUTDATED
+        // EXECUTE sub-shape. The `matched_execution_id` anchor makes that subtree
+        // re-derivable (asserted exactly by the seeded-history oracle tests
+        // `explain_skip_tree_matches_hosted_oracle_when_history_seeded` and
+        // `explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded`).
         let hosted_tree = normalize_explain_lines(
             &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
                 .unwrap_or_default(),
         );
         let local_tree = normalize_explain_lines(&local.explain_lines);
 
-        // Fence the per-upstream freshness subtree from both.
-        let (hosted_fenced, hosted_sub) = fence_freshness_subtree(&hosted_tree);
-        let (local_fenced, local_sub) = fence_freshness_subtree(&local_tree);
-
         let decision_matches = local.decision == m["decision"].as_i64().unwrap_or(-1) as i32;
         let desc_matches =
             local.decision_description == m["decision_description"].as_str().unwrap_or("");
-        let fenced_matches = hosted_fenced == local_fenced;
+        let tree_matches = hosted_tree == local_tree;
 
-        if decision_matches && desc_matches && fenced_matches {
-            // Exact match (outside the fenced freshness subtree). The freshness
-            // subtree itself may still differ — that is the #30 anchor gap and
-            // is accounted for by the fence. Asserted.
+        if decision_matches && desc_matches && tree_matches {
+            // Exact match across the WHOLE tree (freshness subtree included).
             asserted += 1;
             continue;
         }
 
-        // Otherwise this message requires a documented known gap. It records the
-        // empty-store missing-history decision divergence AND/OR the fenced
-        // freshness subtree pending the #30 anchor.
+        // Otherwise this message requires a documented known gap. In the generic
+        // in-order replay these are empty-store MISSING-HISTORY decision
+        // divergences: the referenced submit had hosted prior-session history (or
+        // a prior-session clone source) that this capture does NOT contain and
+        // carries NO ConfirmExecution, so the local decision is a first-build
+        // EXECUTE rather than the hosted SKIP/CLONE, and the re-derived tree
+        // differs in decision class (and consequently its shape). This is the
+        // SAME artifact the Submit replay documents; the exact freshness-subtree
+        // rendering is proven by the seeded-history oracle tests. It is NOT a
+        // freshness-subtree fence — the subtree is compared in full above.
         let gap = known
             .iter()
-            .find(|g| g.fixture == fixture && g.entry == entry_idx && g.explain_freshness_subtree);
+            .find(|g| g.fixture == fixture && g.entry == entry_idx);
         match gap {
             Some(gap) => {
                 assert!(
                     !gap.reason.trim().is_empty(),
                     "{context}: gap needs a reason"
                 );
-                // Stale-exemption guard: the fenced content (freshness subtree)
-                // OR the decision/description must genuinely differ — otherwise
-                // the exemption is stale and must be removed.
-                let something_differs = hosted_sub != local_sub
-                    || !decision_matches
-                    || !desc_matches
-                    || !fenced_matches;
+                // Stale-exemption guard: the decision/description/tree must
+                // genuinely differ — otherwise the exemption is stale and must be
+                // removed (e.g. if history becomes seedable in-arm).
+                let something_differs = !decision_matches || !desc_matches || !tree_matches;
                 assert!(
                     something_differs,
                     "{context}: explain gap is resolved (local matches hosted exactly); \
-                     remove the explain_freshness_subtree exemption"
+                     remove the exemption"
                 );
                 seen_gaps.insert((gap.fixture.clone(), entry_idx));
                 asserted += 1;
@@ -1096,8 +1047,8 @@ async fn replay_explain_messages(
                 mismatches.push(format!(
                     "{context}: explain tree differs for id {hosted_id} \
                      (decision_matches={decision_matches} desc_matches={desc_matches} \
-                     fenced_matches={fenced_matches}); add an explain_freshness_subtree \
-                     replay_gaps entry or fix the generator.\n  hosted_fenced={hosted_fenced}\n  local_fenced={local_fenced}"
+                     tree_matches={tree_matches}); add a keyed replay_gaps entry or fix the \
+                     generator.\n  hosted={hosted_tree}\n  local={local_tree}"
                 ));
             }
         }
@@ -1109,12 +1060,13 @@ async fn replay_explain_messages(
 ///
 /// The generic replay above cannot exact-match a hosted SKIP tree because the
 /// empty store lacks the hosted prior build, so every explain message there is a
-/// documented gap. This test seeds that history from a SELF-CONTAINED build +
-/// confirm (using the tolerance fixture's own submit), produces a genuine local
-/// SKIP, and asserts the re-derived tree — normalized and with the per-upstream
-/// freshness subtree fenced — EXACTLY matches the hosted SHAPE-8 tree captured in
-/// `explain_tolerance.jsonl`. This is the real oracle cross-check for the
-/// non-anchor SKIP tree; #30 extends it to the fenced freshness subtree.
+/// documented missing-history gap. This test seeds that history from a
+/// SELF-CONTAINED build + confirm (using the tolerance fixture's own submit),
+/// produces a genuine local SKIP, and asserts the re-derived tree — normalized —
+/// EXACTLY matches the hosted SHAPE-8 tree captured in `explain_tolerance.jsonl`,
+/// INCLUDING the per-upstream FRESH freshness subtree (re-derived via the
+/// `matched_execution_id` anchor, ticket #30 — no fencing). This is the real
+/// oracle cross-check for the anchored SKIP tree.
 #[tokio::test]
 async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     use qc::explain_client::ExplainClient;
@@ -1219,29 +1171,137 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         "SKIP description must be a pinned catalog variant, got: {}",
         msg.decision_description
     );
-    // Tree (normalized) minus the fenced per-upstream freshness subtree matches
-    // the hosted tree exactly.
+    // The FULL normalized tree — including the per-upstream FRESH freshness
+    // subtree — matches the hosted SKIP tree exactly via the matched_execution_id
+    // anchor (ticket #30). No freshness-subtree fencing.
     let local_tree = normalize_explain_lines(&msg.explain_lines);
     let hosted_tree = normalize_explain_lines(
         &serde_json::from_value::<Vec<qc::ExplainLine>>(hosted_explain["explain_lines"].clone())
             .unwrap(),
     );
-    let (local_fenced, _local_sub) = fence_freshness_subtree(&local_tree);
-    let (hosted_fenced, _hosted_sub) = fence_freshness_subtree(&hosted_tree);
-    assert_eq!(
-        local_fenced, hosted_fenced,
-        "non-anchor SKIP tree must match hosted oracle exactly (freshness subtree fenced)"
-    );
-    // For THIS single-fresh-upstream node the FULL normalized tree (including the
-    // per-upstream freshness subtree) already matches hosted: masking the
-    // «FQN»/«rel_time» runtime slots collapses the placeholder onto the hosted
-    // text, and the single upstream is genuinely FRESH (badge 1) — which the
-    // generator emits as the non-anchor default. The #30 anchor is what lets the
-    // generator distinguish FRESH from OUTDATED for a DRIFTED upstream (the
-    // tolerance fixture's EXECUTE entry 3), not this fresh case.
     assert_eq!(
         local_tree, hosted_tree,
-        "the whole normalized SKIP tree matches hosted for a single fresh upstream"
+        "the whole normalized SKIP tree (freshness subtree included) matches hosted \
+         via the matched_execution_id anchor"
+    );
+}
+
+/// HOSTED-ORACLE CROSS-CHECK for the re-derived OUTDATED-EXECUTE explain tree
+/// (catalog SHAPE 9), the anchor-dependent subtree ticket #30 closes.
+///
+/// The tolerance fixture's entry-3 EXECUTE is a REBUILD of ET_MODEL whose
+/// strict SQL fingerprint still matches the prior build (so `decide` has a
+/// matched `confirmed` row) but whose upstream ET_UP is now NEWER than the
+/// node's own last-build epoch — so freshness forces an EXECUTE and the hosted
+/// tree renders the per-upstream OUTDATED subtree (`upstream dependencies` →
+/// OUTDATED badge + «gap» + «rel_time», `an upstream model query has changed`,
+/// `upstream data is outdated`). This is re-derivable ONLY against the matched
+/// `executions` row (the #30 `matched_execution_id` anchor), so we seed a
+/// build+confirm, drive the genuine local OUTDATED EXECUTE, and assert the
+/// re-derived tree (normalized) matches the hosted SHAPE-9 tree EXACTLY — with
+/// NO fencing of the freshness subtree.
+#[tokio::test]
+async fn explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded() {
+    use qc::explain_client::ExplainClient;
+    const TOLERANCE: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/explain_tolerance.jsonl"
+    );
+    let entries = diff::load_golden(TOLERANCE).expect("load explain_tolerance");
+    // Entry 0 = the first (SKIP, upstream fresh) submit of ET_MODEL; entry 2 =
+    // the rebuild submit with a NEWER ET_UP (the hosted OUTDATED EXECUTE); entry
+    // 3 = its hosted SHAPE-9 explain tree. We reproduce the OUTDATED EXECUTE
+    // locally by seeding the prior build from entry 0, then submitting entry 2.
+    let submit0: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(entries[0].request.clone()).unwrap();
+    let submit2: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(entries[2].request.clone()).unwrap();
+    let hosted_explain = &entries[3].response["messages"][0];
+
+    let server = support::start_server().await;
+    let ch = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+
+    // 1) Seed the prior build: first submit → EXECUTE (first build), confirm it
+    //    with the node's own build epoch (strictly newer than entry-0's ET_UP,
+    //    so that build was fresh) so entry 2's NEWER ET_UP is genuinely OUTDATED
+    //    against it.
+    let r1 = sql
+        .submit_enriched_sql(submit0.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(exec1) = r1.response.unwrap() else {
+        panic!("first submit must EXECUTE");
+    };
+    let own_epoch = submit0
+        .tables
+        .iter()
+        .find(|t| Some(t.name.as_str()) == submit0.target_table.as_deref())
+        .and_then(|t| t.last_modified_epoch)
+        .unwrap();
+    exec.confirm_execution(qc::ConfirmExecutionRequest {
+        request_id: exec1.request_id,
+        last_modified_epoch: Some(own_epoch),
+        table_type: Some("TABLE".into()),
+        execution_runtime_ms: Some(2200),
+        execution_results: None,
+        failed_to_clone: false,
+        labels: Default::default(),
+    })
+    .await
+    .unwrap();
+
+    // 2) Entry-2 submit (same SQL, NEWER ET_UP) → EXECUTE driven by upstream
+    //    drift (the strict fingerprint matched, so `decide` holds the matched
+    //    row — the anchor #30 records).
+    let r2 = sql
+        .submit_enriched_sql(submit2.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(exec2) = r2.response.unwrap() else {
+        panic!("entry-2 submit must EXECUTE (upstream OUTDATED)");
+    };
+    let edid = exec2.execution_decision_id.unwrap();
+
+    // 3) GetExplainMessages → the re-derived OUTDATED EXECUTE tree.
+    let mut explain = ExplainClient::new(ch);
+    let mut msg = None;
+    for _ in 0..100 {
+        let resp = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if let Some(m) = resp.messages.into_iter().next() {
+            msg = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = msg.expect("OUTDATED EXECUTE explain message re-derived");
+
+    assert_eq!(
+        msg.decision,
+        hosted_explain["decision"].as_i64().unwrap() as i32,
+        "decision int must match the hosted OUTDATED EXECUTE (1)"
+    );
+    // The FULL normalized tree — including the per-upstream OUTDATED freshness
+    // subtree and the SHAPE-9 query-analysis UPSTREAM_QUERY_CHANGED subtree —
+    // matches hosted exactly, with NO freshness-subtree fencing.
+    let local_tree = normalize_explain_lines(&msg.explain_lines);
+    let hosted_tree = normalize_explain_lines(
+        &serde_json::from_value::<Vec<qc::ExplainLine>>(hosted_explain["explain_lines"].clone())
+            .unwrap(),
+    );
+    assert_eq!(
+        local_tree, hosted_tree,
+        "the whole normalized OUTDATED EXECUTE tree (SHAPE 9) must match hosted exactly \
+         via the matched_execution_id anchor"
     );
 }
 

@@ -282,6 +282,7 @@ fn capture_submit(
     req: &qc::SubmitEnrichedSqlRequest,
     response: &qc::SubmitSqlResponse,
     input_tables: &[crate::store::InputTable],
+    matched_execution_id: Option<i64>,
 ) {
     use crate::capture::{CaptureInput, DecisionKind};
     let ns = req.dbt_node_state.as_ref();
@@ -320,6 +321,7 @@ fn capture_submit(
             .map(|d| d.name.clone())
             .collect(),
         execution_runtime_ms: runtime_of(response),
+        matched_execution_id,
     };
     let _ = DecisionKind::Build; // keep import used across cfgs
     spawn_capture(state, input);
@@ -388,6 +390,7 @@ fn capture_submit_values(
     meta: &CaptureMeta,
     req: &qc::SubmitValuesRequest,
     response: &qc::SubmitSqlResponse,
+    matched_execution_id: Option<i64>,
 ) {
     use crate::capture::CaptureInput;
     let ns = req.dbt_node_state.as_ref();
@@ -426,6 +429,7 @@ fn capture_submit_values(
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         execution_runtime_ms: runtime_of(response),
+        matched_execution_id,
     };
     spawn_capture(state, input);
 }
@@ -590,7 +594,7 @@ impl Sql for SqlService {
                             request_id,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
                     }
                     if let Ok(clone_sqls) = crate::clone::clone_sqls_with_properties(
@@ -633,7 +637,7 @@ impl Sql for SqlService {
                             eq.execution_runtime_ms,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
                     }
                 }
@@ -685,8 +689,21 @@ impl Sql for SqlService {
             }
         };
 
-        // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+        // Best-effort capture for the UI domain model (non-blocking). On a
+        // SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint still
+        // matched, `confirmed` is the matched prior `executions` row — record
+        // its id as the explain freshness anchor (ADR 0005 / ticket #30). It is
+        // `None` for a genuine first-build / fingerprint-miss EXECUTE (confirmed
+        // is None) and never reached here for CLONE (those return early above).
+        let matched_execution_id = confirmed.as_ref().map(|r| r.id);
+        capture_submit(
+            &self.0,
+            &cap_meta,
+            &req,
+            &response,
+            input_tables,
+            matched_execution_id,
+        );
 
         Ok(Response::new(response))
     }
@@ -775,7 +792,13 @@ impl Sql for SqlService {
             }
         };
 
-        capture_submit_values(&self.0, &cap_meta, &req, &response);
+        capture_submit_values(
+            &self.0,
+            &cap_meta,
+            &req,
+            &response,
+            confirmed.as_ref().map(|r| r.id),
+        );
         Ok(Response::new(response))
     }
 
@@ -1040,6 +1063,9 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     input_tables: Vec::new(),
                     query_dependencies: Vec::new(),
                     execution_runtime_ms: None,
+                    // CLONE registration matches no prior `executions` row to
+                    // anchor freshness against (ADR 0005): NULL.
+                    matched_execution_id: None,
                 },
             );
         }
@@ -1136,11 +1162,14 @@ impl Explain for ExplainService {
                 target_table: row.target_table.clone(),
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
-                // The matched-execution freshness anchor lands with ticket #30
-                // (the `matched_execution_id` column). Until then the per-upstream
-                // FRESH/OUTDATED subtree is rendered structurally and fenced in
-                // the conformance gate.
-                anchor: None,
+                // The matched prior `executions` row (ADR 0005 / ticket #30),
+                // joined via `node_decisions.matched_execution_id`. Present for a
+                // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
+                // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
+                // re-derives the per-upstream FRESH/OUTDATED freshness subtree
+                // against it via the shared pure helper, so the explanation
+                // matches the decision exactly.
+                anchor: row.anchor(&org_id),
             };
             by_id.insert(edid, node);
         }

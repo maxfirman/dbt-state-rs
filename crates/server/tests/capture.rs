@@ -70,6 +70,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         input_tables: vec![],
         query_dependencies: vec![],
         execution_runtime_ms: Some(42),
+        matched_execution_id: None,
     }
 }
 
@@ -115,4 +116,61 @@ async fn capture_builds_domain_hierarchy_and_counts() {
             .unwrap();
     assert_eq!(built, 1);
     assert_eq!(reused, 1);
+}
+
+/// Ticket #30: the capture write records `matched_execution_id` on a SKIP/reuse
+/// decision (the `executions.id` the decision matched) and leaves it NULL on a
+/// build/first-build. Verified at the store seam by reading the persisted
+/// `node_decisions.matched_execution_id` column back.
+#[tokio::test]
+async fn capture_records_matched_execution_id_on_skip_only() {
+    let (pool, _schema) = schema_pool().await;
+
+    // Seed a confirmed executions row to anchor the SKIP against (satisfies the
+    // nullable FK). Its id is what a reuse decision records.
+    let anchor_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO executions (
+            org_id, target_table, execution_type, dialect, input_tables,
+            status, request_id, last_modified_epoch
+        ) VALUES ('local', '"DB"."S"."T"', 1, 'snowflake', '[]'::jsonb,
+                  'confirmed', 'seed-req', 100)
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    // A SKIP records the matched id; a build records NULL.
+    let mut skip = sample(DecisionKind::Skip, "inv-1", "reused");
+    skip.matched_execution_id = Some(anchor_id);
+    capture_decision(&pool, skip).await;
+
+    let mut build = sample(DecisionKind::Build, "inv-1", "fresh");
+    build.matched_execution_id = None;
+    capture_decision(&pool, build).await;
+
+    let skip_matched: Option<i64> = sqlx::query_scalar(
+        "SELECT matched_execution_id FROM node_decisions WHERE decision = 'skip'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        skip_matched,
+        Some(anchor_id),
+        "a SKIP records the matched executions.id"
+    );
+
+    let build_matched: Option<i64> = sqlx::query_scalar(
+        "SELECT matched_execution_id FROM node_decisions WHERE decision = 'build'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        build_matched, None,
+        "a build/first-build leaves matched_execution_id NULL"
+    );
 }

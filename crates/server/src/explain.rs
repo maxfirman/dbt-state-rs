@@ -30,10 +30,8 @@ const BADGE_FRESH: i32 = 1;
 const BADGE_OUTDATED: i32 = 3;
 const BADGE_NODE_QUERY_CHANGED: i32 = 4;
 const BADGE_NODE_QUERY_UNCHANGED: i32 = 5;
-// UPSTREAM_QUERY_CHANGED is only ever emitted inside the OUTDATED-driven EXECUTE
-// sub-shape (catalog SHAPE 9), which is entirely anchor-dependent and lands with
-// ticket #30 — hence currently unused.
-#[allow(dead_code)]
+// UPSTREAM_QUERY_CHANGED is emitted inside the OUTDATED-driven EXECUTE sub-shape
+// (catalog SHAPE 9), which is anchor-dependent (ADR 0005 / ticket #30).
 const BADGE_UPSTREAM_QUERY_CHANGED: i32 = 6;
 const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 
@@ -288,8 +286,7 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
 /// `executions` anchor (ADR 0005 / ticket #30): without the anchor we cannot
 /// know each upstream's FRESH/OUTDATED verdict or the gap. It is re-derived from
 /// the shared pure `decision::upstream_freshness` helper so it can never drift
-/// from the decision. The conformance gate masks the runtime slots and FENCES
-/// this subtree (replay_gaps.json) until #30 records the anchor.
+/// from the decision.
 fn upstream_dependencies_freshness(
     node: &ExplainNode,
     upstreams: &[&InputTable],
@@ -300,50 +297,104 @@ fn upstream_dependencies_freshness(
     let children = upstreams
         .iter()
         .map(|up| {
-            let drifted = verdicts
+            let verdict = verdicts
                 .as_ref()
-                .and_then(|v| v.iter().find(|u| u.name == up.name))
-                .map(|u| u.drifted);
+                .and_then(|v| v.iter().find(|u| u.name == up.name));
+            let drifted = verdict.map(|u| u.drifted);
             let badge = match drifted {
                 Some(true) => Some(BADGE_OUTDATED),
                 Some(false) => Some(BADGE_FRESH),
-                // No anchor yet (#30): emit the FRESH badge as the pinned
-                // happy-path default; the gate fences the badge regardless.
+                // No anchor (first-build/clone cases ADR 0005 leaves NULL): emit
+                // the FRESH badge as the pinned happy-path default for the
+                // structural listing. An anchored decision always resolves to
+                // Some above.
                 None => Some(BADGE_FRESH),
             };
-            let anchor_line = if node.is_data_test() {
-                line("no updates since test last executed")
-            } else {
-                line(format!(
-                    "no updates since {} last executed",
-                    quote(&anchor_name)
-                ))
+            // The first child line is anchor-relative: FRESH renders
+            // "no updates since …", OUTDATED renders the "«gap»"
+            // (`updated N seconds after … last executed`).
+            let gap_or_fresh = match drifted {
+                Some(true) => gap_line(node, &anchor_name, verdict),
+                _ => fresh_anchor_line(node, &anchor_name),
             };
             qc::ExplainLine {
                 text: quote(&up.name),
                 marker: None,
                 badge,
-                children: vec![anchor_line, line(rel_time_line(up))],
+                children: vec![gap_or_fresh, line(rel_time_line(up))],
             }
         })
         .collect();
     section("upstream dependencies", children)
 }
 
+/// The FRESH first child: `no updates since «FQN» last executed` (model anchor)
+/// or `no updates since test last executed` (data test).
+fn fresh_anchor_line(node: &ExplainNode, anchor_name: &str) -> qc::ExplainLine {
+    if node.is_data_test() {
+        line("no updates since test last executed")
+    } else {
+        line(format!(
+            "no updates since {} last executed",
+            quote(anchor_name)
+        ))
+    }
+}
+
+/// The OUTDATED first child, the `«gap»`:
+/// `updated N seconds after «FQN» last executed`, where N is the upstream's
+/// epoch minus the freshness anchor epoch (both milliseconds → whole seconds).
+/// The exact N is a runtime slot the gate masks to `«gap»`; we still render a
+/// faithful value from the verdict's two epochs.
+fn gap_line(
+    node: &ExplainNode,
+    anchor_name: &str,
+    verdict: Option<&decision::UpstreamVerdict>,
+) -> qc::ExplainLine {
+    let seconds = verdict
+        .and_then(|v| v.current_epoch.map(|c| (c - v.anchor_epoch).max(0) / 1000))
+        .unwrap_or(0);
+    let anchor_ref = if node.is_data_test() {
+        "test".to_string()
+    } else {
+        quote(anchor_name)
+    };
+    line(format!(
+        "updated {} seconds after {} last executed",
+        seconds, anchor_ref
+    ))
+}
+
 /// The humanized `last updated: …` line for an upstream. The absolute/relative
-/// wall-clock text is a runtime slot the gate masks (`«rel_time»`); we render a
-/// best-effort placeholder until #30 supplies the anchor for the exact wording.
-fn rel_time_line(_up: &InputTable) -> String {
-    "last updated: (pending freshness anchor)".to_string()
+/// wall-clock text is a runtime slot the gate masks (`«rel_time»`). We render a
+/// faithful `last updated: <epoch_ms> (UTC)` from the upstream's recorded epoch;
+/// the exact humanized phrasing ("7 seconds ago, 2026-11-08 17:11:54 UTC") is a
+/// client-side wall-clock-relative rendering out of this server's scope — the
+/// gate masks it on both sides.
+fn rel_time_line(up: &InputTable) -> String {
+    match up.last_modified_epoch {
+        Some(epoch) => format!("last updated: {epoch} (UTC)"),
+        None => "last updated: unknown".to_string(),
+    }
 }
 
 /// Re-derive the per-upstream FRESH/OUTDATED verdicts from the shared pure
 /// helper, but ONLY when the matched `executions` anchor is present (ADR 0005).
-/// Returns None when the anchor is absent (pre-#30) — the caller then renders
-/// the structural listing with the fenced default badge.
+/// Returns None when the anchor is absent (first-build/clone) — the caller then
+/// renders the structural listing with the FRESH default badge.
 fn anchored_verdicts(node: &ExplainNode) -> Option<Vec<decision::UpstreamVerdict>> {
     let prev = node.anchor.as_ref()?;
-    let ctx = SubmitContext {
+    let ctx = anchored_ctx(node);
+    let f = decision::upstream_freshness(&ctx, prev);
+    Some(f.upstreams)
+}
+
+/// Build the `SubmitContext` the freshness helper needs to re-derive verdicts
+/// against the anchor. Mirrors the decision-time context for the fields the
+/// helper reads (input set, target, execution type); policy is ANY (the helper
+/// returns policy-neutral per-upstream verdicts regardless).
+fn anchored_ctx(node: &ExplainNode) -> SubmitContext<'_> {
+    SubmitContext {
         execution_type: node.execution_type,
         node_body_hash: None,
         input_tables: &node.input_tables,
@@ -351,9 +402,16 @@ fn anchored_verdicts(node: &ExplainNode) -> Option<Vec<decision::UpstreamVerdict
         target_table: node.target_table.as_deref(),
         stale_upstream_policy: StaleUpstreamPolicy::Any,
         target_has_prior_build: true,
-    };
-    let f = decision::upstream_freshness(&ctx, prev);
-    Some(f.upstreams)
+    }
+}
+
+/// Whether the anchored decision has ANY drifted (OUTDATED) upstream — the
+/// signal that selects the SHAPE-9 OUTDATED EXECUTE tree over the SHAPE-7
+/// node-query-changed tree.
+fn has_outdated_upstream(node: &ExplainNode) -> bool {
+    anchored_verdicts(node)
+        .map(|v| v.iter().any(|u| u.drifted))
+        .unwrap_or(false)
 }
 
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
@@ -364,6 +422,13 @@ fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     // node-query-changed rebuild by the persisted description wording.
     if is_first_build(node) {
         return vec![first_build_table_analysis(node)];
+    }
+    // Upstream-drift EXECUTE (catalog SHAPE 9): the node query is UNCHANGED but
+    // at least one upstream is OUTDATED against the matched build. This is
+    // entirely anchor-driven (ADR 0005 / ticket #30) — re-derivable only when
+    // the matched `executions` row is present and a per-upstream verdict drifted.
+    if has_outdated_upstream(node) {
+        return execute_outdated_tree(node);
     }
     // Node-query-changed rebuild (SHAPE 7): table exists, query CHANGED, upstream
     // queries unchanged, upstream data up to date.
@@ -376,6 +441,73 @@ fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             Some(MARKER_SUCCESS),
             None,
         )],
+    ));
+    out
+}
+
+/// The upstream-drift EXECUTE tree (catalog SHAPE 9). The node's own query is
+/// unchanged, but ≥1 upstream is OUTDATED, so hosted renders:
+///   query analysis → node-query-unchanged
+///                  → `upstream dependencies` (OUTDATED parents, each with
+///                    `query or upstream query changed` <UPSTREAM_QUERY_CHANGED>)
+///                  → `an upstream model query has changed` [FAIL]
+///   data freshness analysis → `upstream dependencies` (OUTDATED freshness
+///                    subtree with «gap»/«rel_time») → `upstream data is
+///                    outdated` [FAIL]
+fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let upstreams = node.genuine_upstreams();
+    let verdicts = anchored_verdicts(node);
+    // The OUTDATED upstreams, in the node's recorded input order.
+    let outdated: Vec<&InputTable> = upstreams
+        .iter()
+        .copied()
+        .filter(|up| {
+            verdicts
+                .as_ref()
+                .and_then(|v| v.iter().find(|u| u.name == up.name))
+                .map(|u| u.drifted)
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let mut out = vec![table_analysis_exists(node)];
+
+    // query analysis: node-query unchanged + the OUTDATED upstreams' logic-diff
+    // listing + the FAIL summary.
+    let mut query_children = vec![leaf(
+        format!("the {} query has not changed", node.noun()),
+        Some(MARKER_SUCCESS),
+        Some(BADGE_NODE_QUERY_UNCHANGED),
+    )];
+    let query_listing: Vec<qc::ExplainLine> = outdated
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![leaf(
+                "query or upstream query changed",
+                None,
+                Some(BADGE_UPSTREAM_QUERY_CHANGED),
+            )],
+        })
+        .collect();
+    query_children.push(section("upstream dependencies", query_listing));
+    query_children.push(leaf(
+        "an upstream model query has changed",
+        Some(MARKER_FAIL),
+        None,
+    ));
+    out.push(section("query analysis", query_children));
+
+    // data freshness analysis: the per-upstream OUTDATED freshness subtree + the
+    // FAIL summary.
+    out.push(section(
+        "data freshness analysis",
+        vec![
+            upstream_dependencies_freshness(node, &upstreams),
+            leaf("upstream data is outdated", Some(MARKER_FAIL), None),
+        ],
     ));
     out
 }

@@ -504,17 +504,29 @@ impl Store {
             return Ok(Vec::new());
         }
         // DISTINCT ON keeps one row per id (the latest by id) in case a best-
-        // effort capture wrote more than once for the same decision id.
+        // effort capture wrote more than once for the same decision id. The
+        // LEFT JOIN pulls the matched `executions` anchor (ADR 0005 / ticket
+        // #30) when the decision recorded one — the freshness-subtree anchor the
+        // explain generator re-derives against. Both the decision and the anchor
+        // are org-scoped (AGENTS.md).
         let rows: Vec<ExplainDecisionRow> = sqlx::query_as(
             r#"
-            SELECT DISTINCT ON (execution_decision_id)
-                   execution_decision_id, decision, execution_type,
-                   decision_description, is_stale, target_table, clone_source,
-                   input_tables
-            FROM node_decisions
-            WHERE org_id = $1
-              AND execution_decision_id = ANY($2)
-            ORDER BY execution_decision_id, id DESC
+            SELECT DISTINCT ON (d.execution_decision_id)
+                   d.execution_decision_id, d.decision, d.execution_type,
+                   d.decision_description, d.is_stale, d.target_table, d.clone_source,
+                   d.input_tables,
+                   d.matched_execution_id,
+                   a.last_modified_epoch AS anchor_last_modified_epoch,
+                   a.input_tables        AS anchor_input_tables,
+                   a.target_table        AS anchor_target_table,
+                   a.execution_type      AS anchor_execution_type
+            FROM node_decisions d
+            LEFT JOIN executions a
+                   ON a.id = d.matched_execution_id
+                  AND a.org_id = d.org_id
+            WHERE d.org_id = $1
+              AND d.execution_decision_id = ANY($2)
+            ORDER BY d.execution_decision_id, d.id DESC
             "#,
         )
         .bind(org_id)
@@ -525,7 +537,8 @@ impl Store {
     }
 }
 
-/// A `node_decisions` row projected for explain re-derivation (ADR 0005).
+/// A `node_decisions` row projected for explain re-derivation (ADR 0005), joined
+/// with its matched `executions` anchor (ticket #30) when one was recorded.
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
     pub execution_decision_id: Option<String>,
@@ -536,12 +549,56 @@ pub struct ExplainDecisionRow {
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: serde_json::Value,
+    /// The matched prior `executions` row id (NULL when the decision matched no
+    /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
+    pub matched_execution_id: Option<i64>,
+    /// Anchor columns from the joined `executions` row (NULL when unmatched).
+    pub anchor_last_modified_epoch: Option<i64>,
+    pub anchor_input_tables: Option<serde_json::Value>,
+    pub anchor_target_table: Option<String>,
+    pub anchor_execution_type: Option<i32>,
 }
 
 impl ExplainDecisionRow {
     /// Decode the JSONB `input_tables` column into the typed shape.
     pub fn input_tables(&self) -> Vec<InputTable> {
         serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()
+    }
+
+    /// Reconstruct the matched `executions` anchor row (ADR 0005 / ticket #30)
+    /// for the explain freshness subtree, when the decision recorded one. Only
+    /// the fields the pure freshness helper reads are populated (the per-upstream
+    /// FRESH/OUTDATED verdict needs the anchor's own-build epoch + recorded
+    /// upstream input set); the rest carry inert defaults. `None` when no prior
+    /// build was matched (the EXECUTE first-build / CLONE cases ADR 0005 leaves
+    /// NULL), in which case the generator renders the anchor-independent tree.
+    pub fn anchor(&self, org_id: &str) -> Option<ExecutionRow> {
+        let id = self.matched_execution_id?;
+        let input_tables = self
+            .anchor_input_tables
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<Vec<InputTable>>(v.clone()).ok())
+            .unwrap_or_default();
+        Some(ExecutionRow {
+            id,
+            org_id: org_id.to_string(),
+            target_table: self.anchor_target_table.clone().unwrap_or_default(),
+            execution_type: self
+                .anchor_execution_type
+                .unwrap_or(self.execution_type),
+            node_body_hash: None,
+            node_sql_hash: None,
+            node_namespace_logic_hash: None,
+            table_namespace: None,
+            node_unique_id: None,
+            last_modified_epoch: self.anchor_last_modified_epoch,
+            execution_runtime_ms: None,
+            execution_results: None,
+            input_tables,
+            status: "confirmed".to_string(),
+            request_id: String::new(),
+            clone_source_table: None,
+        })
     }
 }
 
