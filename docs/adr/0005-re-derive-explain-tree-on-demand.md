@@ -1,0 +1,104 @@
+# Re-derive the `dbt state explain` tree on demand
+
+## Status
+
+Decided (wayfinder ticket #21, map #19 — faithful warehouse-general
+`dbt state explain` support). Decision only; implementation lands in the
+follow-on Explain build effort. Not yet implemented.
+
+## Decision
+
+The server does NOT store the structured `ExplainLine` / `ExplainBadge` /
+`ExplainMarker` tree at decision time. `ExplainService.GetExplainMessages`
+**re-derives** the tree on demand from already-persisted rows, keyed by the
+`execution_decision_id`s the client sends. `decision.rs::decide` stays pure and
+I/O-free.
+
+The one piece of new persisted state this requires is a single nullable column
+on `node_decisions`: `matched_execution_id BIGINT REFERENCES executions(id)`,
+recording which confirmed `executions` row the SKIP/reuse decision matched (the
+caller already holds this id). Everything else is re-derived.
+
+## Why re-derive (not persist the tree)
+
+Characterization capture (ticket #20,
+`golden/fixtures/explain_snowflake_happy.jsonl`) plus a column-level inventory of
+`node_decisions` / `executions` showed every explain line maps to either a
+persisted field or a value re-computable at explain time:
+
+| Explain line needs | Source |
+|---|---|
+| decision class, `is_stale`, `decision_description` | `node_decisions` (persisted) |
+| `TARGET_TABLE_EXISTS`, `NODE_QUERY_CHANGED` / `NODE_QUERY_UNCHANGED` | hashes + physical-existence probe (re-derivable) |
+| decision-time upstream set + epochs | `node_decisions.input_tables` (persisted) |
+| matched prior build's upstream set + own-build epoch (freshness anchor) | `executions` row via the new `matched_execution_id` FK |
+| per-upstream `FRESH` / `OUTDATED`, considered/drifted counts, name-set diff | re-derived from the two `input_tables` snapshots + anchor epoch |
+
+`explain` is already an on-demand client flow (ticket #20: re-Submit every node,
+then `GetExplainMessages`), so re-deriving at explain time matches how the hosted
+service is exercised. Storing the tree would add a write path and schema for data
+that is a pure function of rows we already keep — against the project's "minimal
+persisted state, pure engine" preference.
+
+## The one gap this closes with persistence, and why
+
+`decision.rs::evaluate_freshness` computes the per-upstream drift verdict
+(`current_epoch > own_build_epoch` per parent), the considered/drifted counts,
+and the name-set diff, then **discards** them — only the aggregate `is_stale` and
+the decision class survive into `node_decisions`. Those discarded per-upstream
+signals are exactly what the `data freshness analysis` lines render.
+
+They are re-derivable, but only against the **exact** `executions` row the
+decision matched. `node_decisions` did not record that row's id, and
+"latest confirmed for target" drifts as the append-only ledger grows, so
+re-selecting the prior row at explain time could pick a different row than the
+decision actually used — corrupting the freshness lines. Recording
+`matched_execution_id` makes re-derivation exact and cheap.
+
+### Why the column is nullable (NOT for backward compatibility)
+
+It is nullable because the match is **intrinsically optional**, not to ease a
+migration. dbt-state-rs is pre-production, so there is no historical data to
+preserve and the migration is a plain `ALTER TABLE ... ADD COLUMN` with no
+backfill and no dual-write transition. The column is `NULL` whenever the decision
+matched no prior row:
+
+- every **EXECUTE** (first build or fingerprint miss): `decide` ran with
+  `confirmed = None` — there is no `executions.id` to point at;
+- **CLONE** / cross-env clone-adoption: different provenance shape;
+- the `node_decisions` capture write is best-effort and separate from the
+  `executions` write, so the id can legitimately be absent.
+
+So `NULL` means "no matched prior build", a large fraction of rows, not "legacy
+row". A future reader must not tighten it to `NOT NULL`. The re-derivation
+branches on presence — exactly the `Some(prev)` vs `None` split `decide` already
+has — rendering the EXECUTE tree from `node_decisions` alone when the FK is
+absent, and joining `executions` for the freshness anchor when present.
+
+## Scope / deferrals
+
+- The per-upstream drift verdict, counts, and name-set diff are re-derived via a
+  **shared pure helper** that both `decide` and the explain path call, so the two
+  cannot drift.
+- `WITHIN_TOLERANCE` is out of scope here: `freshness_tolerance_seconds` is
+  deliberately never applied (the engine refuses to widen the skip window) and
+  the happy-path capture never produced that badge. It is an unobserved-behavior
+  question pending a within-freshness-tolerance capture (map "Not yet specified"),
+  not a re-derivation gap.
+- `ExplainService` gains a DB handle by becoming `ExplainService(pub AppState)`,
+  mirroring `SelectorServiceImpl`; the router constructor passes `state.clone()`.
+
+## Consequences
+
+- One additive, nullable column; no new table; no new write path in the decision
+  engine; `decide` stays pure.
+- Explain reads cost one lookup by `execution_decision_id` plus (for reuse
+  decisions) one join to the matched `executions` row.
+- The shared freshness helper becomes the single source of truth for per-upstream
+  verdicts, used by both the decision and the explanation of it.
+
+Evidence: ticket #20 capture (`golden/fixtures/explain_snowflake_happy.jsonl`,
+`experiments/explain_experiment.sh`); `crates/server/migrations/0001_init.sql`
+(executions), `0003_ui_domain.sql` (node_decisions);
+`crates/server/src/decision.rs::evaluate_freshness`;
+`crates/server/src/services.rs::ExplainService`.
