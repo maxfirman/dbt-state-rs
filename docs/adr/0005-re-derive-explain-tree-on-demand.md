@@ -29,7 +29,7 @@ persisted field or a value re-computable at explain time:
 | Explain line needs | Source |
 |---|---|
 | decision class, `is_stale`, `decision_description` | `node_decisions` (persisted) |
-| `TARGET_TABLE_EXISTS`, `NODE_QUERY_CHANGED` / `NODE_QUERY_UNCHANGED` | hashes + physical-existence probe (re-derivable) |
+| `TARGET_TABLE_EXISTS`, `NODE_QUERY_CHANGED` / `NODE_QUERY_UNCHANGED` | hashes + decision class / persisted `decision_description` (NO live physical-existence probe — see "Own-target existence" below) |
 | decision-time upstream set + epochs | `node_decisions.input_tables` (persisted) |
 | matched prior build's upstream set + own-build epoch (freshness anchor) | `executions` row via the new `matched_execution_id` FK |
 | per-upstream `FRESH` / `OUTDATED`, considered/drifted counts, name-set diff | re-derived from the two `input_tables` snapshots + anchor epoch |
@@ -65,7 +65,15 @@ matched no prior row:
 
 - every **EXECUTE** (first build or fingerprint miss): `decide` ran with
   `confirmed = None` — there is no `executions.id` to point at;
-- **CLONE** / cross-env clone-adoption: different provenance shape;
+- **cross-name CLONE** decision (`ready_to_clone`): its match is a
+  `CloneEquivalent`, which carries no `executions.id`, so the column is NULL.
+  This is the CLONE *decision* ONLY. Clone **adoption** reuse — a SKIP or a
+  freshness-driven EXECUTE that reuses a clone-origin `executions` row through
+  `decide` — is NOT NULL: `confirmed` is `Some(that row)` and
+  `services.rs` records `matched_execution_id = confirmed.id` (PR #31 round-3
+  F5). The explain path therefore joins the clone-origin anchor and must apply
+  the clone-adoption input normalization (`store::ExplainDecisionRow::anchor`)
+  that mirrors `history::prepare_sql`;
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
 
@@ -89,6 +97,28 @@ absent, and joining `executions` for the freshness anchor when present.
   mirroring `SelectorServiceImpl`; the router constructor passes `state.clone()`.
 
 ## Consequences
+
+### Own-target existence is inferred, not probed (known limitation)
+
+The `table analysis` existence line (`TARGET_TABLE_EXISTS` for a table that
+exists, "table does not exist" for a first build) is NOT re-derived from a live
+physical-existence probe — the explain service performs ONE DB read
+(`fetch_explain_decisions`) and the pure generator; it never queries the
+warehouse catalog. Own-target existence is inferred from the persisted decision
+class plus the `decision_description` wording (the first-build descriptions
+contain "did not exist" / "no prior execution").
+
+KNOWN CONSEQUENCE (PR #31 round-3 F6): a dropped-own-target rebuild with
+UNCHANGED SQL persists the GENERIC rebuild description (not "did not exist"), so
+the generator cannot tell it apart from a node-query-changed rebuild and renders
+the SHAPE-7 "table exists already / query changed" tree — wrong on both counts
+(the table is gone; the query did not change). This is accepted, not fixed: that
+generic description is the SAME string the hosted-characterized SHAPE-7
+node-query-changed EXECUTE carries, so any guard that suppressed the
+dropped-target tree would also regress the captured SHAPE-7 fixture. The correct
+hosted shape for a dropped-then-rebuilt target is UNOBSERVED. Closing it needs a
+Snowflake capture plus a persisted own-target existence signal on
+`ExplainDecisionRow` (follow-up).
 
 - One additive, nullable column; no new table; no new write path in the decision
   engine; `decide` stays pure.

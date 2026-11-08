@@ -11,10 +11,20 @@
 --   * a genuine first-build / fingerprint-miss EXECUTE (`decide` ran with
 --     confirmed = None — there is no `executions.id` to point at);
 --   * a cross-name CLONE adoption (its match is a `CloneEquivalent`, which
---     carries no `executions.id`);
+--     carries no `executions.id`). NOTE this is the cross-NAME CLONE *decision*
+--     only; clone ADOPTION reuse (SKIP / freshness EXECUTE of a clone-origin
+--     row) is NOT NULL here (see the precision note below);
 --   * the best-effort `node_decisions` capture, which is separate from the
 --     `executions` write and may legitimately lack the id.
 -- So NULL means "no matched prior build" — a large fraction of rows — NOT
 -- "legacy row". A future reader MUST NOT tighten this to NOT NULL.
+--
+-- PRECISION (PR #31 round-3 F5): the cross-NAME CLONE *decision*
+-- (`ready_to_clone`) records NULL here — it matches a `CloneEquivalent`, which
+-- carries no `executions.id`. But clone ADOPTION that resolves to a SKIP or a
+-- freshness-driven EXECUTE through `decide` (reuse of a clone-origin
+-- `executions` row) DOES record the matched id: `confirmed` is `Some(that row)`
+-- and `services.rs` sets `matched_execution_id = confirmed.id`. Do not conflate
+-- the two clone flows: only the cross-name CLONE decision is NULL.
 ALTER TABLE node_decisions
     ADD COLUMN matched_execution_id BIGINT REFERENCES executions(id);

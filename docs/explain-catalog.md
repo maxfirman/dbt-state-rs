@@ -195,7 +195,7 @@ Each tree signal maps to a re-derivable source (see ADR 0005):
 
 | Line / badge | Re-derivation source |
 |---|---|
-| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + physical-existence probe |
+| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + persisted `decision_description` (NO live physical-existence probe — see [§ dropped-target known limitation](#known-limitation--dropped-own-target-rebuild-mislabel)) |
 | `<NODE_QUERY_CHANGED>` / `<NODE_QUERY_UNCHANGED>` | node SQL/template fingerprint vs matched row |
 | per-upstream `<FRESH>` / `<OUTDATED>` + `«gap»` | decision-time `input_tables` (node_decisions) vs matched `executions.input_tables` + `executions.last_modified_epoch` (own-build anchor), via `matched_execution_id` |
 | `<UPSTREAM_QUERY_CHANGED>` + "an upstream model query has changed" | per-upstream name-set / logic diff (same two snapshots) |
@@ -220,3 +220,34 @@ future-capture fog item on map #19):
   this enum may be vestigial. `EB_UNSPECIFIED` (0).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
+
+## Known limitation — dropped-own-target rebuild mislabel
+
+Explain has NO own-target physical-existence signal and runs NO live warehouse
+probe: the `table analysis` existence line (`<TARGET_TABLE_EXISTS>` vs "table
+does not exist") is inferred from the persisted decision class + the
+`decision_description` wording, not from a catalog lookup. (The
+"physical-existence probe" phrasing in earlier drafts of the re-derivation
+binding above was aspirational — no such probe exists in the code.)
+
+CONSEQUENCE (PR #31 round-3 F6): if a confirmed model's own target is later
+DROPPED and then rebuilt with UNCHANGED SQL, the decision persists the GENERIC
+rebuild description ("model was executed because either its query didn't match
+or its upstream data is out of date") — the SAME string a node-query-changed
+rebuild uses. With no anchor and no "did not exist" wording, the generator falls
+to SHAPE 7 and renders "the model table exists already" `<TARGET_TABLE_EXISTS>`
++ "the model query has changed" `<NODE_QUERY_CHANGED>` + "upstream data is up to
+date" — wrong on both counts (the table is gone; the query did not change).
+
+This is NOT fixed, deliberately. The dropped-target EXECUTE is INDISTINGUISHABLE
+by any persisted signal from the hosted-characterized SHAPE-7 node-query-changed
+EXECUTE (both anchor-less, both carrying that one generic rebuild description —
+see `decision.rs::decision_descriptions_match_hosted_wording` and the SHAPE-7
+conformance fixture). Any guard that suppressed the dropped-target tree would
+also regress the captured SHAPE-7 fixture. The correct hosted shape for a
+dropped-then-rebuilt target is UNOBSERVED (no Snowflake capture; DuckDB does not
+trigger dbt State explain). Closing it needs a capture PLUS a persisted
+own-target existence signal on `ExplainDecisionRow` so `execute_tree` can select
+a "table does not exist" branch (follow-up). Until then, per the do-not-invent
+fencing rule above, we accept the known mislabel rather than ship a guard that
+breaks a hosted-faithful common case.

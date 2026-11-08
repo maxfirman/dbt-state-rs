@@ -390,3 +390,155 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
         "ordinary fallback is not certified as the source model"
     );
 }
+
+/// REGRESSION (PR #31 round-3 finding F5): the explain tree for a clone-adoption
+/// freshness-driven EXECUTE must re-derive the SAME per-upstream freshness
+/// verdicts the DECISION used, not the raw (empty) clone-origin anchor.
+///
+/// `history::prepare_sql` adopts a clone-origin row whose recorded `input_tables`
+/// is EMPTY by substituting the submit's CURRENT upstreams in memory (so the
+/// freshness check compares each upstream against the clone's own build epoch).
+/// That normalization is NOT persisted. Before the store fix, the explain path
+/// reloaded the RAW clone-origin row via `matched_execution_id` with its empty
+/// input set, so `decision::upstream_freshness` saw an empty recorded set vs a
+/// non-empty current set → `DependencySetChanged`, dropping every per-upstream
+/// verdict. An upstream-drift EXECUTE then mis-rendered as the SHAPE-7
+/// "the model query has changed / upstream data is up to date" tree instead of
+/// the correct SHAPE-9 OUTDATED-upstream tree.
+///
+/// This drives register-clone → confirm → cross-env submit whose upstream RAW is
+/// NEWER than the clone build epoch (so freshness forces an EXECUTE), then calls
+/// GetExplainMessages and asserts the SHAPE-9 OUTDATED freshness subtree renders
+/// (OUTDATED badge + "upstream data is outdated" [FAIL]), NOT the SHAPE-7
+/// query-changed tree. Fails before the `store::ExplainDecisionRow::anchor()`
+/// clone-adoption normalization, passes after.
+#[tokio::test]
+async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
+    use qc::explain_client::ExplainClient;
+
+    const BADGE_OUTDATED: i32 = 3;
+    const BADGE_NODE_QUERY_CHANGED: i32 = 4;
+
+    let server = start_server().await;
+    let addr = server.addr;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+
+    let prod_epoch = 1_791_743_740_667i64;
+    let clone_epoch = 1_791_743_784_002i64;
+    // RAW older than the clone build (so clone adoption is possible at all) for
+    // the register/confirm, then a NEWER RAW on the drift submit below.
+    let raw_old = 1_791_320_590_839i64;
+    // RAW strictly NEWER than the clone build epoch ⇒ upstream OUTDATED ⇒ the
+    // adopted clone-origin row forces a freshness-driven EXECUTE.
+    let raw_new = clone_epoch + 60_000;
+
+    // 1) Build + confirm the prod SOURCE (records source logic).
+    let r0 = sql
+        .submit_enriched_sql(submit(PROD, "prod_state_demo", prod_epoch, raw_old, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response_variant(&r0), "ready_to_execute");
+    confirm(&mut exec, r0, prod_epoch).await;
+
+    // 2) RegisterClone(source=prod, target=dev) + confirm the clone build.
+    let clone_resp = clone
+        .register_clone(qc::CloneRequest {
+            target_table: DEV.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 3,
+            clone_source_table: PROD.into(),
+            clone_source_last_modified_epoch: Some(prod_epoch),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            labels: [(
+                "dbt_node_unique_id".to_string(),
+                "model.jaffle_shop.clone_probe".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: ready.request_id,
+            last_modified_epoch: Some(clone_epoch),
+            table_type: Some("TRANSIENT TABLE".into()),
+            failed_to_clone: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .success
+    );
+
+    // 3) Dev submit with the SAME model logic but an upstream RAW NEWER than the
+    //    clone build epoch ⇒ EXECUTE driven by upstream drift. The clone-origin
+    //    row is adopted (matched_execution_id set), so explain joins it.
+    let dev = sql
+        .submit_enriched_sql(submit(DEV, "dev_clone_demo", clone_epoch, raw_new, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(dev_exec) = dev.response.unwrap() else {
+        panic!("a clone-adopted submit with a NEWER upstream must EXECUTE (upstream drift)");
+    };
+    let edid = dev_exec.execution_decision_id.expect("edid");
+
+    // 4) GetExplainMessages → the re-derived EXECUTE tree. Poll for the
+    //    best-effort capture.
+    let mut explain = ExplainClient::new(ch);
+    let mut msg = None;
+    for _ in 0..100 {
+        let resp = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if let Some(m) = resp.messages.into_iter().next() {
+            msg = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = msg.expect("clone-adoption EXECUTE explain message re-derived");
+
+    // Flatten every line's text + badge so we can assert the SHAPE.
+    fn collect(lines: &[qc::ExplainLine], out: &mut Vec<(String, Option<i32>)>) {
+        for l in lines {
+            out.push((l.text.clone(), l.badge));
+            collect(&l.children, out);
+        }
+    }
+    let mut flat = Vec::new();
+    collect(&msg.explain_lines, &mut flat);
+
+    let has_outdated_badge = flat.iter().any(|(_, b)| *b == Some(BADGE_OUTDATED));
+    let has_outdated_summary = flat.iter().any(|(t, _)| t == "upstream data is outdated");
+    let has_query_changed_badge = flat
+        .iter()
+        .any(|(_, b)| *b == Some(BADGE_NODE_QUERY_CHANGED));
+    let has_up_to_date = flat.iter().any(|(t, _)| t == "upstream data is up to date");
+
+    assert!(
+        has_outdated_badge && has_outdated_summary,
+        "clone-adoption upstream-drift EXECUTE must render the SHAPE-9 OUTDATED freshness \
+         subtree (OUTDATED badge + \"upstream data is outdated\"); got tree: {flat:?}"
+    );
+    assert!(
+        !(has_query_changed_badge && has_up_to_date),
+        "must NOT mis-render as the SHAPE-7 query-changed tree \
+         (\"the model query has changed\" + \"upstream data is up to date\"); got tree: {flat:?}"
+    );
+}

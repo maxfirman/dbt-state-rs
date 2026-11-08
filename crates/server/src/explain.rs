@@ -445,6 +445,20 @@ fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     }
     // Node-query-changed rebuild (SHAPE 7): table exists, query CHANGED, upstream
     // queries unchanged, upstream data up to date.
+    //
+    // KNOWN LIMITATION (PR #31 round-3 F6 — DOCUMENTED, not guarded): a
+    // dropped-own-target rebuild with UNCHANGED SQL also lands here and
+    // mis-labels as "table exists already" + "the model query has changed".
+    // Explain has no own-target existence signal and runs no physical probe, and
+    // the dropped-target rebuild persists the SAME generic rebuild description as
+    // a genuine node-query-change (see `decision.rs`
+    // `decision_descriptions_match_hosted_wording`), so it is indistinguishable
+    // from the hosted-characterized SHAPE-7 node-query-changed EXECUTE. Any guard
+    // suppressing it would regress the captured SHAPE-7 fixture; the correct
+    // hosted shape for a dropped-then-rebuilt target is unobserved. Closing it
+    // needs a capture + a persisted own-target existence signal (follow-up). See
+    // docs/explain-catalog.md "Known limitation — dropped-own-target rebuild"
+    // and ADR 0005 "Own-target existence is inferred, not probed".
     let mut out = vec![table_analysis_exists(node)];
     out.push(query_analysis_changed(node));
     out.push(section(

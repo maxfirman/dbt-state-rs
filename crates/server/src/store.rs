@@ -519,7 +519,8 @@ impl Store {
                    a.last_modified_epoch AS anchor_last_modified_epoch,
                    a.input_tables        AS anchor_input_tables,
                    a.target_table        AS anchor_target_table,
-                   a.execution_type      AS anchor_execution_type
+                   a.execution_type      AS anchor_execution_type,
+                   a.clone_source_table  AS anchor_clone_source_table
             FROM node_decisions d
             LEFT JOIN executions a
                    ON a.id = d.matched_execution_id
@@ -557,6 +558,11 @@ pub struct ExplainDecisionRow {
     pub anchor_input_tables: Option<serde_json::Value>,
     pub anchor_target_table: Option<String>,
     pub anchor_execution_type: Option<i32>,
+    /// The anchor's `clone_source_table` (NULL for ordinary rows). A non-NULL
+    /// value marks the anchor as a CLONE-ORIGIN row, whose recorded upstream
+    /// set is empty — the signal the clone-adoption normalization in `anchor()`
+    /// keys on (see `history.rs::prepare_sql` / ADR 0005).
+    pub anchor_clone_source_table: Option<String>,
 }
 
 impl ExplainDecisionRow {
@@ -574,18 +580,35 @@ impl ExplainDecisionRow {
     /// NULL), in which case the generator renders the anchor-independent tree.
     pub fn anchor(&self, org_id: &str) -> Option<ExecutionRow> {
         let id = self.matched_execution_id?;
-        let input_tables = self
+        let mut input_tables = self
             .anchor_input_tables
             .as_ref()
             .and_then(|v| serde_json::from_value::<Vec<InputTable>>(v.clone()).ok())
             .unwrap_or_default();
+        // CLONE-ADOPTION INPUT NORMALIZATION (ADR 0005). Mirror EXACTLY the
+        // in-memory substitution the decision applied in
+        // `history.rs::prepare_sql`: when the matched anchor is a CLONE-ORIGIN
+        // row (`clone_source_table` set) whose recorded upstream set is EMPTY (a
+        // clone records no upstreams), adopt the DECISION-TIME inputs — the
+        // persisted `node_decisions.input_tables` (`self.input_tables()`) — as
+        // the anchor's recorded set. Without this, the explain path feeds
+        // `decision::upstream_freshness` an empty recorded set vs the non-empty
+        // current set → `DependencySetChanged` (no per-upstream verdicts), so an
+        // upstream-drift EXECUTE mis-renders as the SHAPE-7 query-changed tree
+        // and a SKIP's freshness subtree is unanchored. The decision compared
+        // each upstream against the clone's own build epoch
+        // (`anchor_last_modified_epoch`); re-deriving against the same
+        // normalized inputs keeps explanation and decision in lockstep. These
+        // two normalizations MUST stay identical — change both together.
+        let clone_source_table = self.anchor_clone_source_table.clone();
+        if clone_source_table.is_some() && input_tables.is_empty() {
+            input_tables = self.input_tables();
+        }
         Some(ExecutionRow {
             id,
             org_id: org_id.to_string(),
             target_table: self.anchor_target_table.clone().unwrap_or_default(),
-            execution_type: self
-                .anchor_execution_type
-                .unwrap_or(self.execution_type),
+            execution_type: self.anchor_execution_type.unwrap_or(self.execution_type),
             node_body_hash: None,
             node_sql_hash: None,
             node_namespace_logic_hash: None,
@@ -597,7 +620,7 @@ impl ExplainDecisionRow {
             input_tables,
             status: "confirmed".to_string(),
             request_id: String::new(),
-            clone_source_table: None,
+            clone_source_table,
         })
     }
 }
