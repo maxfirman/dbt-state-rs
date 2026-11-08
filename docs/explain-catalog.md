@@ -253,12 +253,12 @@ future-capture fog item on map #19):
   this enum may be vestigial. `EB_UNSPECIFIED` (0).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
-- **Dependency-set change** (`decision::FreshnessEvidence::DependencySetChanged`
-  / `UpstreamFreshness.name_set_diff`): UNREACHABLE on the characterized hosted
-  version, like `WITHIN_TOLERANCE` above. #32 drove three live Snowflake
-  scenarios through the recording proxy to make a node's GENUINE upstream NAME
-  set change (added/removed/ambiguous) while keeping its own fingerprint
-  matchable, and NONE produced a distinct dependency-set subtree:
+- **Dependency-set change** (`decision::FreshnessEvidence::DependencySetChanged`):
+  UNREACHABLE on the characterized hosted version, like `WITHIN_TOLERANCE` above.
+  #32 drove three live Snowflake scenarios through the recording proxy to make a
+  node's GENUINE upstream NAME set change (added/removed/ambiguous) while keeping
+  its own fingerprint matchable, and NONE produced a distinct dependency-set
+  subtree:
   - **ref swap / add / remove** (`explain_dep_set_variants.sh` variant S): the
     upstream physical FQN is embedded in the consumer's RENDERED SQL, so changing
     which upstream a `ref()` resolves to necessarily changes `node_sql_hash`.
@@ -279,12 +279,14 @@ future-capture fog item on map #19):
     comment registers NO dependency (and the comment is normalized out of the
     fingerprint), so it cannot add a genuine upstream either.
   `Explain.GetUpstreamDependencyChanges` never fired in any of these flows.
-  CONCLUSION for #33: there is no hosted dependency-set-change subtree to build;
-  `name_set_diff` has no reader, and a name-set change with a MATCHABLE own
-  fingerprint (the only case that would need a distinct subtree) is not
-  client-reachable. The `DependencySetChanged` evidence variant itself stays
-  reachable and is still consumed by the SKIP/EXECUTE fold → #33 drops the FIELD
-  (not the variant), not builds a subtree.
+  RESOLUTION (#33): there is no hosted dependency-set-change subtree to build,
+  and a name-set change with a MATCHABLE own fingerprint (the only case that
+  would need a distinct subtree) is not client-reachable, so the explain
+  generator stays on its generic path for `DependencySetChanged`. The
+  per-name diff that `upstream_freshness` used to retain was unused by any
+  faithful output and has been DROPPED (the `DependencySetChanged` decision
+  variant itself stays — it is still produced by the set-change short-circuit
+  and consumed by the SKIP/EXECUTE fold). See `decision.rs::upstream_freshness`.
   Drivers: `experiments/explain_dependency_set_changed.sh`,
   `experiments/explain_dep_set_variants.sh`,
   `experiments/explain_dep_set_comment_ref.sh`.

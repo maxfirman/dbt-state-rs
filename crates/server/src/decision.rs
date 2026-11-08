@@ -200,27 +200,6 @@ pub(crate) struct UpstreamVerdict {
     pub unprovable: bool,
 }
 
-/// The diff between the current and recorded GENUINE upstream name sets (the
-/// node's own target table excluded). `ambiguous` is set when duplicate/
-/// ambiguous genuine names make the set smaller than the genuine input count.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct NameSetDiff {
-    /// Present in the current submit but not in the recorded run.
-    pub added: Vec<String>,
-    /// Present in the recorded run but not in the current submit.
-    pub removed: Vec<String>,
-    /// Duplicate / ambiguous genuine upstream names present.
-    pub ambiguous: bool,
-}
-
-impl NameSetDiff {
-    /// True when the current and recorded upstream sets match exactly and carry
-    /// no duplicate/ambiguous names.
-    pub fn is_clean(&self) -> bool {
-        self.added.is_empty() && self.removed.is_empty() && !self.ambiguous
-    }
-}
-
 /// Why the per-upstream freshness evidence resolved the way it did. These are
 /// the mutually-exclusive outcomes `decide` folds into SKIP/EXECUTE and the
 /// explain path renders as the "data freshness analysis" branch.
@@ -241,10 +220,13 @@ pub(crate) enum FreshnessEvidence {
 }
 
 /// Shared, pure per-upstream freshness reasoning: the single source of truth for
-/// the per-upstream FRESH/OUTDATED verdict, the considered/drifted counts and
-/// the upstream name-set diff. Both `decide` (via `evaluate_freshness`) and the
-/// explain generator (ADR 0005) call THIS helper, so the decision and its
-/// explanation can never drift. Pure: no I/O, no DB, no async.
+/// the per-upstream FRESH/OUTDATED verdict and the considered/drifted counts.
+/// It also detects a changed genuine upstream name set (added/removed/ambiguous)
+/// and short-circuits to `DependencySetChanged`; the hosted service surfaces no
+/// per-name diff for that case (#32), so the changed names are not retained.
+/// Both `decide` (via `evaluate_freshness`) and the explain generator (ADR 0005)
+/// call THIS helper, so the decision and its explanation can never drift. Pure:
+/// no I/O, no DB, no async.
 ///
 /// This returns the raw per-upstream signals WITHOUT applying the ANY/ALL
 /// `stale_upstream_policy`; policy folding into a rebuild/skip is the caller's
@@ -257,25 +239,6 @@ pub(crate) enum FreshnessEvidence {
 /// decision fold, so the former struct-level dead-code allow is removed.
 #[derive(Debug, Clone)]
 pub(crate) struct UpstreamFreshness {
-    // TODO(#32→#33): `name_set_diff` is still only written (the set-change
-    // branch reads the local `name_set_diff.is_clean()` before moving it in); no
-    // reader consumes this FIELD yet. The explain generator does NOT read it.
-    // #32 CAPTURE FINDING: a genuine upstream name-set change WITH A MATCHABLE
-    // own fingerprint — the only thing that would need a distinct hosted
-    // subtree — is UNREACHABLE through a real dbt client on the characterized
-    // hosted version (an added/removed upstream is embedded in the rendered SQL
-    // so it surfaces as a node/upstream-query change; duplicate refs are
-    // client-deduped so the `ambiguous` set never reaches the wire). The
-    // `DependencySetChanged` EVIDENCE VARIANT itself stays reachable and is
-    // still consumed by the SKIP/EXECUTE fold below; it is this
-    // added/removed/ambiguous DIFF field that has no reader. Hosted has no
-    // dependency-set-diff subtree to mirror. See docs/explain-catalog.md §
-    // "Unobserved — do not implement until captured" (Dependency-set change) and
-    // the three experiments/explain_dep_set_*.sh drivers. => #33 should DROP
-    // this FIELD (not the variant), not build a subtree. Kept allow(dead_code)
-    // on this one field until #33.
-    #[allow(dead_code)]
-    pub name_set_diff: NameSetDiff,
     pub evidence: FreshnessEvidence,
     /// Per-genuine-upstream verdicts; populated only when `Evaluated`.
     pub upstreams: Vec<UpstreamVerdict>,
@@ -311,24 +274,19 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
         .map(|t| t.name.as_str())
         .collect();
     let genuine_count = ctx.input_tables.iter().filter(|t| genuine(&t.name)).count();
-    let name_set_diff = NameSetDiff {
-        added: current_names
-            .difference(&recorded_names)
-            .map(|s| s.to_string())
-            .collect(),
-        removed: recorded_names
-            .difference(&current_names)
-            .map(|s| s.to_string())
-            .collect(),
-        // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
-        ambiguous: current_names.len() != genuine_count,
-    };
-
     // Missing, additional or ambiguous dependency evidence: the recorded run no
-    // longer describes this submit's dependency set → safety rebuild.
-    if !name_set_diff.is_clean() {
+    // longer describes this submit's dependency set → safety rebuild. We only
+    // need to KNOW the set changed, not WHICH names changed: #32 captured that
+    // the hosted service renders no dependency-set-diff subtree (it surfaces a
+    // node/upstream-query change by physical FQN and never lists the
+    // added/removed/ambiguous names), so the diff itself has no faithful reader.
+    // See docs/explain-catalog.md § "Unobserved" (Dependency-set change).
+    let added = !current_names.is_subset(&recorded_names);
+    let removed = !recorded_names.is_subset(&current_names);
+    // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
+    let ambiguous = current_names.len() != genuine_count;
+    if added || removed || ambiguous {
         return UpstreamFreshness {
-            name_set_diff,
             evidence: FreshnessEvidence::DependencySetChanged,
             upstreams: Vec::new(),
             anchor_epoch: None,
@@ -347,7 +305,6 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
         .collect();
     if genuine_upstreams.is_empty() {
         return UpstreamFreshness {
-            name_set_diff,
             evidence: FreshnessEvidence::NoUpstreams,
             upstreams: Vec::new(),
             anchor_epoch: None,
@@ -368,7 +325,6 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
         None => {
             // Object-producing node with no build epoch → cannot prove freshness.
             return UpstreamFreshness {
-                name_set_diff,
                 evidence: FreshnessEvidence::NoBuildAnchor,
                 upstreams: Vec::new(),
                 anchor_epoch: None,
@@ -440,7 +396,6 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
 
     let considered = upstreams.len();
     UpstreamFreshness {
-        name_set_diff,
         evidence: FreshnessEvidence::Evaluated,
         upstreams,
         anchor_epoch: own_build_epoch,
@@ -1153,14 +1108,15 @@ mod tests {
     //
     // These characterize the STRUCTURE the explain generator renders (per-ADR
     // 0005): the per-upstream FRESH/OUTDATED verdict, the considered/drifted
-    // counts, and the upstream name-set diff. `decide` and the explain path both
-    // call this ONE helper, so its returned struct is the single source of truth
-    // for the "data freshness analysis" lines. The proptests in
-    // decision_proptest.rs remain the regression oracle for `decide` itself.
+    // counts, and the dependency-set-change short-circuit. `decide` and the
+    // explain path both call this ONE helper, so its returned struct is the
+    // single source of truth for the "data freshness analysis" lines. The
+    // proptests in decision_proptest.rs remain the regression oracle for
+    // `decide` itself.
 
     /// Clean per-upstream evaluation: one fresh, one outdated, against the
     /// node's OWN build epoch (strict `>`). Counts and per-upstream verdicts are
-    /// exposed; the name-set diff is clean.
+    /// exposed; the clean (unchanged) name set reaches `Evaluated`.
     #[test]
     fn upstream_freshness_reports_per_upstream_verdicts_and_counts() {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
@@ -1168,11 +1124,12 @@ mod tests {
         let prev = confirmed("h", recorded, Some(100));
         let f = upstream_freshness(&ctx("h", &current), &prev);
 
+        // A clean, unchanged name set does not short-circuit to
+        // DependencySetChanged; it reaches the per-upstream evaluation.
         assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
         assert_eq!(f.anchor_epoch, Some(100), "anchor is the own-build epoch");
         assert_eq!(f.considered, 2);
         assert_eq!(f.drifted, 1);
-        assert!(f.name_set_diff.is_clean());
 
         // Per-upstream FRESH/OUTDATED verdicts are returned, not discarded.
         let a = f.upstreams.iter().find(|u| u.name == "a").unwrap();
@@ -1183,22 +1140,34 @@ mod tests {
         assert_eq!(b.current_epoch, Some(999));
     }
 
-    /// A name-set mismatch (an added upstream the recorded run never saw) is
-    /// reported as the dependency set changing — the diff names the delta.
+    /// A changed genuine upstream name set short-circuits to
+    /// `DependencySetChanged` regardless of HOW it changed (added, removed, or
+    /// duplicate/ambiguous). #32 captured that the hosted service surfaces no
+    /// per-name diff for this case, so the helper no longer retains WHICH names
+    /// changed — only that the set is dirty drives the rebuild.
     #[test]
-    fn upstream_freshness_reports_name_set_diff() {
-        let recorded = vec![tbl("a", 100)];
-        let current = vec![tbl("a", 100), tbl("new_dep", 100)];
-        let prev = confirmed("h", recorded, Some(100));
-        let f = upstream_freshness(&ctx("h", &current), &prev);
+    fn upstream_freshness_reports_name_set_change() {
+        let is_set_change = |rec: Vec<InputTable>, cur: &[InputTable]| {
+            let prev = confirmed("h", rec, Some(100));
+            let f = upstream_freshness(&ctx("h", cur), &prev);
+            matches!(f.evidence, FreshnessEvidence::DependencySetChanged)
+        };
 
-        assert!(matches!(
-            f.evidence,
-            FreshnessEvidence::DependencySetChanged
-        ));
-        assert!(!f.name_set_diff.is_clean());
-        assert_eq!(f.name_set_diff.added, vec!["new_dep".to_string()]);
-        assert!(f.name_set_diff.removed.is_empty());
+        // ADDED: a current upstream the recorded run never saw.
+        assert!(
+            is_set_change(vec![tbl("a", 100)], &[tbl("a", 100), tbl("new_dep", 100)]),
+            "an added genuine upstream is a dependency-set change"
+        );
+        // REMOVED: a recorded upstream absent from the current submit.
+        assert!(
+            is_set_change(vec![tbl("a", 100), tbl("gone", 100)], &[tbl("a", 100)]),
+            "a removed genuine upstream is a dependency-set change"
+        );
+        // AMBIGUOUS: the same current name appears twice (distinct count < inputs).
+        assert!(
+            is_set_change(vec![tbl("a", 100)], &[tbl("a", 100), tbl("a", 200)]),
+            "a duplicate/ambiguous current upstream is a dependency-set change"
+        );
     }
 
     /// No genuine upstreams → the helper reports `NoUpstreams`: a hash match
