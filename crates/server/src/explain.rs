@@ -1047,6 +1047,93 @@ mod tests {
         );
     }
 
+    /// EXHAUSTIVE FENCE MATRIX. Sweep every `ModelExecutionType` value
+    /// (shared.proto 0..=11, plus a couple of out-of-range sentinels) crossed
+    /// with every `DecisionClass`, and assert the fence contract exactly:
+    /// a CHARACTERIZED (execution_type, decision) pair renders a non-empty
+    /// cataloged tree; every other pair renders NOTHING.
+    ///
+    /// This is the generative guard the point tests above only sample. F4 and
+    /// F7 were the SAME omission (data-test EXECUTE, then seed/snapshot/
+    /// incremental) surfacing one kind at a time because no test swept the whole
+    /// matrix; keep this exhaustive so a newly rendered kind fails HERE, up
+    /// front, rather than in a review round. When a kind graduates from
+    /// unobserved to characterized, add it to BOTH `is_characterized` and the
+    /// expected set below in one edit (the two cannot silently drift: a kind
+    /// that renders but is not expected characterized, or vice versa, fails).
+    #[test]
+    fn fence_matrix_is_exhaustive_and_matches_is_characterized() {
+        // The ONLY pairs the fence may render, verified against the explain
+        // fixtures (execution_type 1/10/8) + docs/explain-catalog.md.
+        let characterized = |et: i32, d: DecisionClass| -> bool {
+            matches!(
+                (et, d),
+                (1, DecisionClass::Skip)        // model/table SKIP
+                    | (1, DecisionClass::Build) // model/table EXECUTE
+                    | (1, DecisionClass::Clone) // model/table CLONE
+                    | (10, DecisionClass::Skip) // view SKIP
+                    | (10, DecisionClass::Build)
+                    | (10, DecisionClass::Clone)
+                    | (8, DecisionClass::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
+            )
+        };
+
+        // A persisted description that DOES let a Build render SHAPE-7 for a
+        // characterized kind (node-query-changed), so a rendered-vs-empty
+        // mismatch is attributable to the fence, not a missing description.
+        let desc = |d: DecisionClass| {
+            match d {
+            DecisionClass::Skip => {
+                "model was a no-op because both its query and its upstream data are up to date"
+            }
+            DecisionClass::Build => {
+                "model was executed because either its query didn't match or its upstream data is out of date"
+            }
+            DecisionClass::Clone => {
+                "an equivalent model exists under another name so we cloned that one"
+            }
+        }
+        };
+
+        // 0..=11 covers the whole shared.proto ModelExecutionType enum; the
+        // sentinels guard the `_ => false` arm against an unknown/garbage value.
+        let execution_types = (0i32..=11).chain([99, -1]);
+        let decisions = [
+            DecisionClass::Skip,
+            DecisionClass::Build,
+            DecisionClass::Clone,
+        ];
+        for et in execution_types {
+            for &d in &decisions {
+                // is_characterized is the fence predicate; the local table is an
+                // INDEPENDENT restatement of the catalog so the two cross-check.
+                assert_eq!(
+                    is_characterized(et, d),
+                    characterized(et, d),
+                    "is_characterized disagrees with the catalog matrix for \
+                     (execution_type={et}, {d:?})"
+                );
+
+                let mut n = node(d, et, desc(d));
+                // CLONE needs a source to render its table-analysis line; give
+                // one so a characterized CLONE is genuinely non-empty.
+                if d == DecisionClass::Clone {
+                    n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+                }
+                let empty = explain_lines(&n).is_empty();
+                assert_eq!(
+                    !empty,
+                    characterized(et, d),
+                    "fence mismatch for (execution_type={et}, {d:?}): \
+                     characterized={} but rendered_non_empty={}; tree={:?}",
+                    characterized(et, d),
+                    !empty,
+                    render(&n)
+                );
+            }
+        }
+    }
+
     #[test]
     fn decision_description_prefers_persisted_situation_string() {
         let n = node(

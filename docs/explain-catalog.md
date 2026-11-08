@@ -30,6 +30,39 @@ Related decisions: the tree is **re-derived on demand** per
   (#26) MUST normalize these slots.
 - **Markers / badges** shown as `[MARKER] <BADGE>`. Omitted = none on that line.
 
+## Execution type (node kind) coverage
+
+The `execution_type` integer (dbt `ModelExecutionType`, `shared.proto`) selects
+which node kind a decision is for. The explain generator is a strict positive
+**allowlist** over `(execution_type × decision class)`: a CHARACTERIZED pair
+renders its cataloged tree; everything else renders NOTHING (unobserved — never
+invent). This table is the single lookup for "what does integer N mean, and do
+we render it?" — enforced by `explain.rs::is_characterized` and the exhaustive
+`fence_matrix_is_exhaustive_and_matches_is_characterized` test (they must agree,
+so a kind cannot graduate in one place and not the other).
+
+| `execution_type` | Node kind | Explain coverage |
+|---|---|---|
+| 1 | FULL (table / model) | ✅ characterized — SKIP, EXECUTE, CLONE |
+| 2 | APPEND (incremental) | ❌ unobserved → empty tree |
+| 3 | MERGE (incremental) | ❌ unobserved → empty tree |
+| 4 | INSERT_OVERWRITE (incremental) | ❌ unobserved → empty tree |
+| 5 | DELETE_INSERT (incremental) | ❌ unobserved → empty tree |
+| 6 | MICROBATCH (incremental) | ❌ unobserved → empty tree |
+| 7 | SNAPSHOT | ❌ unobserved → empty tree |
+| 8 | DBT_DATA_TEST | ⚠️ SKIP only characterized; EXECUTE/CLONE unobserved → empty tree |
+| 9 | VALUES (seed) | ❌ unobserved → empty tree |
+| 10 | VIEW | ✅ characterized — SKIP, EXECUTE, CLONE |
+| 11 | DBT_CUSTOM | ❌ unobserved → empty tree |
+| 0 / other | UNSPECIFIED / unknown | ❌ unobserved → empty tree |
+
+Source of truth for the integer→kind mapping: `shared.proto` (`ModelExecutionType`)
+and [`docs/protocol.md`](protocol.md). Clone ADOPTION (a later submit reusing a
+clone-origin row) is execution-type-agnostic — it is reachable at type 1 (model),
+so its freshness-anchored explain subtree is characterized there even though the
+original clone was captured via a MERGE (type 3) RegisterClone. The unobserved
+kinds are elaborated in [§ unobserved](#unobserved--do-not-implement-until-captured).
+
 ## Observed vocabulary (complete across #20/#23/#24)
 
 | Enum | Value | Observed? |
