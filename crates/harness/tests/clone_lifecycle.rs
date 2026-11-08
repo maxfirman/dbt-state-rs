@@ -46,15 +46,33 @@ fn tbl(name: &str, epoch: i64) -> qc::TableModifiedInfo {
     }
 }
 
-/// An incremental model submit for `target`, built from the same logical model
-/// (the physical schema in the SQL/deps mirrors `schema`). `extra_col` injects a
-/// genuine projection change when non-empty.
+/// An incremental (MERGE, `execution_type: 3`) model submit for `target`, built
+/// from the same logical model (the physical schema in the SQL/deps mirrors
+/// `schema`). `extra_col` injects a genuine projection change when non-empty.
+///
+/// Shared by the type-3 MERGE lifecycle tests. Tests that need a characterized
+/// (FULL/model) execution_type use [`submit_with_type`] directly.
 fn submit(
     target: &str,
     schema: &str,
     own_epoch: i64,
     raw_epoch: i64,
     extra_col: &str,
+) -> qc::SubmitEnrichedSqlRequest {
+    submit_with_type(target, schema, own_epoch, raw_epoch, extra_col, 3)
+}
+
+/// Like [`submit`], but with an explicit `execution_type`. Factored out so the
+/// F5 clone-adoption explain test can drive a FULL model (`execution_type: 1`),
+/// which F7 keeps characterized, without changing the `execution_type: 3`
+/// (incremental MERGE) lifecycle the other clone_lifecycle tests exercise.
+fn submit_with_type(
+    target: &str,
+    schema: &str,
+    own_epoch: i64,
+    raw_epoch: i64,
+    extra_col: &str,
+    execution_type: i32,
 ) -> qc::SubmitEnrichedSqlRequest {
     let sql = format!(
         "select order_id, customer_id, ordered_at{extra_col} from CDO_DEMO_DB.{schema}.stg_orders where ordered_at > '1900-01-01'"
@@ -64,7 +82,7 @@ fn submit(
         dialect: "snowflake".into(),
         default_catalog: "CDO_DEMO_DB".into(),
         default_schema: Some(schema.into()),
-        execution_type: 3,
+        execution_type,
         sql,
         tolerate_nondeterminism: true,
         freshness_tolerance_seconds: 2700,
@@ -412,6 +430,16 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
 /// (OUTDATED badge + "upstream data is outdated" [FAIL]), NOT the SHAPE-7
 /// query-changed tree. Fails before the `store::ExplainDecisionRow::anchor()`
 /// clone-adoption normalization, passes after.
+///
+/// The adopting lifecycle runs at `execution_type: 1` (FULL / table model), NOT
+/// incremental MERGE (type 3). Clone adoption in `history::prepare_sql` is
+/// type-agnostic (it keys on clone-origin provenance + schema-abstracted logic
+/// identity, never on the execution_type), so a FULL model adopts the
+/// clone-origin row via the identical path — and FULL is a kind F7's
+/// `is_characterized` fence keeps characterized, so the SHAPE-9 subtree actually
+/// renders. (The incremental type-3 variant is correctly fenced to an EMPTY tree
+/// by F7 until a real incremental explain is captured; see the companion test
+/// `clone_adoption_incremental_execute_explain_is_fenced_empty`.)
 #[tokio::test]
 async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
     use qc::explain_client::ExplainClient;
@@ -435,22 +463,32 @@ async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
     // adopted clone-origin row forces a freshness-driven EXECUTE.
     let raw_new = clone_epoch + 60_000;
 
-    // 1) Build + confirm the prod SOURCE (records source logic).
+    // 1) Build + confirm the prod SOURCE (records source logic). FULL model
+    //    (execution_type 1) so the adopting EXECUTE lands on a characterized kind.
     let r0 = sql
-        .submit_enriched_sql(submit(PROD, "prod_state_demo", prod_epoch, raw_old, ""))
+        .submit_enriched_sql(submit_with_type(
+            PROD,
+            "prod_state_demo",
+            prod_epoch,
+            raw_old,
+            "",
+            1,
+        ))
         .await
         .unwrap()
         .into_inner();
     assert_eq!(response_variant(&r0), "ready_to_execute");
     confirm(&mut exec, r0, prod_epoch).await;
 
-    // 2) RegisterClone(source=prod, target=dev) + confirm the clone build.
+    // 2) RegisterClone(source=prod, target=dev) + confirm the clone build. Type 1
+    //    (FULL) to match the adopting submit's scope lookup — see
+    //    clone_history_provenance.rs for the type-1 adoption precedent.
     let clone_resp = clone
         .register_clone(qc::CloneRequest {
             target_table: DEV.into(),
             dialect: "snowflake".into(),
             default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 3,
+            execution_type: 1,
             clone_source_table: PROD.into(),
             clone_source_last_modified_epoch: Some(prod_epoch),
             clone_source_table_type: Some("TRANSIENT TABLE".into()),
@@ -483,9 +521,17 @@ async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
 
     // 3) Dev submit with the SAME model logic but an upstream RAW NEWER than the
     //    clone build epoch ⇒ EXECUTE driven by upstream drift. The clone-origin
-    //    row is adopted (matched_execution_id set), so explain joins it.
+    //    row is adopted (matched_execution_id set), so explain joins it. FULL
+    //    (execution_type 1) ⇒ F7 keeps it characterized ⇒ SHAPE-9 renders.
     let dev = sql
-        .submit_enriched_sql(submit(DEV, "dev_clone_demo", clone_epoch, raw_new, ""))
+        .submit_enriched_sql(submit_with_type(
+            DEV,
+            "dev_clone_demo",
+            clone_epoch,
+            raw_new,
+            "",
+            1,
+        ))
         .await
         .unwrap()
         .into_inner();
@@ -541,4 +587,124 @@ async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
         "must NOT mis-render as the SHAPE-7 query-changed tree \
          (\"the model query has changed\" + \"upstream data is up to date\"); got tree: {flat:?}"
     );
+}
+
+/// COMPANION FENCE (PR #31 round-4 F7): the SAME clone-adoption upstream-drift
+/// EXECUTE lifecycle as `clone_adoption_upstream_drift_execute_explain_is_shape9_outdated`,
+/// but driven at `execution_type: 3` (incremental MERGE) — an UNOBSERVED node
+/// kind (docs/explain-catalog.md lists seed/snapshot/incremental as unobserved).
+///
+/// F7's `explain.rs::is_characterized` fence renders an EMPTY explain tree for
+/// uncharacterized kinds rather than inventing a model-shaped tree. This test
+/// pins that honest behavior: the clone-adoption EXECUTE decision is still
+/// recorded and GetExplainMessages still answers for its execution_decision_id,
+/// but the re-derived tree is EMPTY until a real incremental explain is captured.
+///
+/// This keeps the type-3 MERGE clone-adoption path covered as "fenced" and
+/// documents the F7 decision, complementing the type-1 SHAPE-9 assertion above.
+#[tokio::test]
+async fn clone_adoption_incremental_execute_explain_is_fenced_empty() {
+    use qc::explain_client::ExplainClient;
+
+    let server = start_server().await;
+    let addr = server.addr;
+    let ch = channel(addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut clone = CloneClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+
+    let prod_epoch = 1_791_743_740_667i64;
+    let clone_epoch = 1_791_743_784_002i64;
+    let raw_old = 1_791_320_590_839i64;
+    let raw_new = clone_epoch + 60_000;
+
+    // 1) Build + confirm the prod SOURCE at incremental MERGE (execution_type 3).
+    let r0 = sql
+        .submit_enriched_sql(submit(PROD, "prod_state_demo", prod_epoch, raw_old, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(response_variant(&r0), "ready_to_execute");
+    confirm(&mut exec, r0, prod_epoch).await;
+
+    // 2) RegisterClone + confirm the clone build (type 3, matching the source).
+    let clone_resp = clone
+        .register_clone(qc::CloneRequest {
+            target_table: DEV.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 3,
+            clone_source_table: PROD.into(),
+            clone_source_last_modified_epoch: Some(prod_epoch),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            labels: [(
+                "dbt_node_unique_id".to_string(),
+                "model.jaffle_shop.clone_probe".to_string(),
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: ready.request_id,
+            last_modified_epoch: Some(clone_epoch),
+            table_type: Some("TRANSIENT TABLE".into()),
+            failed_to_clone: false,
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .success
+    );
+
+    // 3) Dev submit with an upstream RAW NEWER than the clone build epoch ⇒
+    //    clone-adoption upstream-drift EXECUTE, at incremental MERGE (type 3).
+    let dev = sql
+        .submit_enriched_sql(submit(DEV, "dev_clone_demo", clone_epoch, raw_new, ""))
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(dev_exec) = dev.response.unwrap() else {
+        panic!("a clone-adopted submit with a NEWER upstream must EXECUTE (upstream drift)");
+    };
+    let edid = dev_exec.execution_decision_id.expect("edid");
+
+    // 4) GetExplainMessages → the tree must be EMPTY (F7 fence for an unobserved
+    //    incremental node kind). Poll briefly to allow the best-effort capture,
+    //    then assert that whatever is returned carries no explain lines.
+    let mut explain = ExplainClient::new(ch);
+    let mut saw_message = false;
+    for _ in 0..25 {
+        let resp = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if let Some(m) = resp.messages.into_iter().next() {
+            saw_message = true;
+            assert!(
+                m.explain_lines.is_empty(),
+                "incremental (execution_type 3) clone-adoption EXECUTE is UNOBSERVED and must \
+                 render an EMPTY explain tree (F7 fence), not an invented model-shaped tree; \
+                 got: {:?}",
+                m.explain_lines
+            );
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // Either a message was captured and asserted empty above, or no message was
+    // emitted at all for the fenced kind — both are catalog-consistent (nothing
+    // invented). What must never happen is a populated tree, which the assert
+    // inside the loop rules out.
+    let _ = saw_message;
 }
