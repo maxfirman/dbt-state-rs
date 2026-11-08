@@ -376,26 +376,40 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     let mut upstreams = Vec::with_capacity(genuine_upstreams.len());
     let mut drifted = 0usize;
     for current in &genuine_upstreams {
-        // Locate the single recorded counterpart (name set already validated as
-        // an exact, non-ambiguous match above, so exactly one exists).
-        let recorded_epoch = prev
+        // Locate the recorded counterpart(s). The name set was validated above
+        // as an exact, non-ambiguous match on the CURRENT side, but a confirmed
+        // row may still record the SAME physical relation MORE THAN ONCE (the
+        // recorded set collapses duplicates when compared as a BTreeSet). `main`
+        // treated such a duplicate recorded baseline as ambiguous and forced a
+        // rebuild in BOTH `evaluate_freshness` and `data_test_upstream_freshness`
+        // (`matches.next().is_some()` after the first → rebuild): we cannot prove
+        // which epoch to anchor against, so we must not skip. Count the matches
+        // and mark an ambiguous (>1) baseline unprovable (F1 regression).
+        let mut recorded = prev
             .input_tables
             .iter()
-            .find(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name))
-            .and_then(|t| t.last_modified_epoch);
+            .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
+        let first_recorded = recorded.next();
+        let ambiguous_recorded = recorded.next().is_some();
+        let recorded_epoch = first_recorded.and_then(|t| t.last_modified_epoch);
         // The anchor for THIS upstream: own-build epoch for object nodes, the
         // upstream's own recorded baseline for a data test.
         let anchor = match own_build_epoch {
             Some(e) => e,
             None => recorded_epoch.unwrap_or(0),
         };
-        // Freshness is UNPROVABLE when the current epoch is unknown, or (data
-        // test) the upstream has no recorded baseline epoch to anchor against.
+        // Freshness is UNPROVABLE when the current epoch is unknown, when the
+        // recorded baseline is ambiguous (duplicate recorded counterparts), or
+        // (data test) the upstream has no recorded baseline epoch to anchor
+        // against.
         let unprovable = current.last_modified_epoch.is_none()
+            || ambiguous_recorded
             || (own_build_epoch.is_none() && recorded_epoch.is_none());
         let is_drift = match current.last_modified_epoch {
             // Unknown current epoch → unprovable → OUTDATED.
             None => true,
+            // Ambiguous recorded baseline → unprovable → OUTDATED (force rebuild).
+            Some(_) if ambiguous_recorded => true,
             // Data test with no recorded baseline epoch → unprovable → OUTDATED.
             Some(_) if own_build_epoch.is_none() && recorded_epoch.is_none() => true,
             Some(current_epoch) => current_epoch > anchor,
@@ -1246,6 +1260,74 @@ mod tests {
             matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }),
             "an unprovable upstream epoch must execute regardless of ALL policy"
         );
+    }
+
+    // ---- DUPLICATE RECORDED UPSTREAM (ambiguous baseline) — F1 regression ----
+    //
+    // The pre-extraction engine (`main`) rejected a confirmed baseline that
+    // recorded MORE THAN ONE counterpart for a single current upstream (same
+    // `physical_relation_key`) in BOTH `evaluate_freshness` (object nodes) and
+    // `data_test_upstream_freshness`: `matches.next().is_some()` after the first
+    // match forced a safety rebuild — the recorded baseline is ambiguous, so we
+    // cannot prove which epoch to anchor against and must not skip. The #28
+    // refactor replaced that per-upstream uniqueness check with a single
+    // `.find()` (takes the FIRST recorded row), silently anchoring on whichever
+    // duplicate comes first — a skip where `main` rebuilt (unsafe reuse). The
+    // name-set diff does NOT catch this: `recorded_names` is a BTreeSet so the
+    // duplicate collapses to one entry and `ambiguous` only measures the CURRENT
+    // side. These pin the restored behavior for an object node AND a data test.
+
+    /// OBJECT NODE: a confirmed row recording two physical counterparts for the
+    /// same upstream (`a@200`, `a@50`) is an ambiguous baseline. A clean current
+    /// submit (`a@100`, older than both) must REBUILD, not anchor on the first
+    /// recorded row and SKIP. (`main` parity: `evaluate_freshness` uniqueness.)
+    #[test]
+    fn duplicate_recorded_upstream_executes_object_node() {
+        let recorded = vec![tbl("a", 200), tbl("a", 50)]; // same name twice
+        let current = vec![tbl("a", 100)]; // clean single current upstream
+        let prev = confirmed("h", recorded, Some(100));
+        let v = decide(&ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "a duplicate recorded upstream is an ambiguous baseline → rebuild"
+        );
+    }
+
+    /// DATA TEST: the same ambiguity on a data test (no own-build epoch, which
+    /// anchors per-upstream on the RECORDED baseline). Two recorded `a` rows
+    /// mean no single provable baseline → EXECUTE. (`main` parity:
+    /// `data_test_upstream_freshness` uniqueness.)
+    #[test]
+    fn duplicate_recorded_upstream_executes_data_test() {
+        let recorded = vec![tbl("DB.S.A", 200), tbl("DB.S.A", 50)]; // same name twice
+        let mut prev = confirmed("h", recorded, None); // data tests have no build epoch
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.A", 100)];
+        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "a data test with a duplicate recorded upstream has no provable baseline → rebuild"
+        );
+    }
+
+    /// The ambiguity is surfaced on the shared helper itself: the matched
+    /// upstream is `unprovable` and `drifted`, so the fold forces EXECUTE. This
+    /// pins the mechanism (not just the folded verdict) the explain path reads.
+    #[test]
+    fn upstream_freshness_marks_duplicate_recorded_unprovable() {
+        let recorded = vec![tbl("a", 200), tbl("a", 50)];
+        let current = vec![tbl("a", 100)];
+        let prev = confirmed("h", recorded, Some(100));
+        let f = upstream_freshness(&ctx("h", &current), &prev);
+
+        assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
+        assert_eq!(f.considered, 1);
+        let u = &f.upstreams[0];
+        assert!(
+            u.unprovable,
+            "a duplicate recorded counterpart makes the upstream unprovable"
+        );
+        assert!(u.drifted, "an unprovable upstream is OUTDATED");
     }
 }
 

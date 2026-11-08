@@ -312,7 +312,7 @@ fn capture_submit(
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
-        clone_source: None,
+        clone_source: clone_source_of(response),
         clone_sqls: None,
         input_tables: input_tables.to_vec(),
         query_dependencies: req
@@ -380,6 +380,23 @@ fn decision_description_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
 fn runtime_of(resp: &qc::SubmitSqlResponse) -> Option<i64> {
     match &resp.response {
         Some(qc::submit_sql_response::Response::SkipExecution(s)) => s.execution_runtime_ms,
+        _ => None,
+    }
+}
+
+/// The CLONE source relation carried by a `ReadyToClone` response, if any.
+///
+/// A cross-name CLONE decision returned via `SubmitEnrichedSQL` carries the
+/// physical relation it would be cloned FROM in `ReadyToClone.clone_source`
+/// (a `String`). `capture_submit` must persist it so the explain CLONE renderer
+/// (`explain.rs::clone_tree`) can emit `could be cloned from "<source>"` instead
+/// of an empty string. Non-clone variants have no source; an empty string maps
+/// to `None` (nothing to render). (F2: previously hard-coded `None` here.)
+fn clone_source_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
+    match &resp.response {
+        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => {
+            Some(c.clone_source.clone()).filter(|s| !s.is_empty())
+        }
         _ => None,
     }
 }
@@ -1135,6 +1152,18 @@ impl Explain for ExplainService {
         // the persisted node_decisions rows (ADR 0005). Untracked ids (absent
         // from the store) produce no message, so the response can be shorter
         // than the request — matching the hosted "omit untracked" behavior.
+        //
+        // EVENTUAL CONSISTENCY (F3 — intentional, DO NOT make this read
+        // synchronous): the `node_decisions` row for an `execution_decision_id`
+        // is written by the Submit path's capture, which is a deliberate
+        // fire-and-forget async best-effort write (`spawn_capture`; see
+        // `capture_submit` and ADR 0005's "capture is best-effort and
+        // separate"). So a decision id issued only microseconds earlier may not
+        // yet be visible here; such an absent row is simply treated as untracked
+        // and omitted (same as a genuinely unknown id). This is by design —
+        // coupling this read to the capture write would change Submit semantics
+        // for every node. Clients that need the row observe eventual consistency
+        // (the harness polls briefly). Do not add retry/polling to the service.
         let rows = self
             .0
             .store
