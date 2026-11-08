@@ -21,6 +21,22 @@ cargo test -p dbt-state-server --lib   # server library tests (no DB)
 Integration tests create a unique, isolated Postgres schema per test and run the
 migrations into it, so they are independent and repeatable.
 
+## Pre-commit hook
+
+A tracked git hook in [`.githooks/`](../.githooks/) runs `cargo fmt --all --check`
+(~0.5s, no compilation) so a formatting miss is caught locally instead of as a
+red CI round-trip. Enable it once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It is formatting-only by design: clippy, `cargo check`, and the test suite either
+recompile the workspace or build the heavy `duckdb_*` test binaries, so they stay
+in CI, not the inner commit loop. A docs/config-only commit skips the check. To
+bypass once (e.g. committing a deliberate work-in-progress): `git commit
+--no-verify`.
+
 ## Postgres
 
 Any reachable instance works. A disposable container:

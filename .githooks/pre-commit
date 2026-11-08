@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Fast pre-commit guard: formatting only.
+#
+# Runs `cargo fmt --all --check` (~0.5s, no compilation) so a formatting miss is
+# caught here instead of as a full red CI round-trip (the CI `lint` job fails on
+# the same command). Deliberately the ONLY check: clippy/check/test either
+# recompile the workspace or build the heavy duckdb_* test binaries, so they
+# stay in CI, not in the inner commit loop.
+#
+# Enable once per clone:  git config core.hooksPath .githooks
+set -euo pipefail
+
+# Skip when no staged Rust file changed — a docs/config-only commit pays nothing.
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$'; then
+    exit 0
+fi
+
+if ! cargo fmt --all --check; then
+    echo >&2
+    echo "pre-commit: rustfmt found unformatted code. Fix with:" >&2
+    echo "    cargo fmt --all" >&2
+    echo "then re-stage and commit. (Bypass once with: git commit --no-verify)" >&2
+    exit 1
+fi
