@@ -5,6 +5,7 @@ pub mod clone;
 pub mod config;
 pub mod decision;
 mod execution;
+pub mod explain;
 pub mod fingerprint;
 mod history;
 pub mod selector;
@@ -100,7 +101,7 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))
         .add_service(CloneServer::new(CloneServiceImpl(state.clone())))
         .add_service(ClientValidationServer::new(ClientValidationService))
-        .add_service(ExplainServer::new(ExplainService))
+        .add_service(ExplainServer::new(ExplainService(state.clone())))
         .add_service(SelectorServiceServer::new(SelectorServiceImpl(
             state.clone(),
         )))

@@ -488,6 +488,141 @@ impl Store {
             .filter_map(|(uid, fqn)| fqn.map(|f| (uid, f)))
             .collect())
     }
+
+    /// Fetch the persisted `node_decisions` rows for the requested
+    /// `execution_decision_id`s, scoped by `org_id`, for `GetExplainMessages`
+    /// re-derivation (ADR 0005). Returns at most one row per id (the capture
+    /// writes one decision per id); ids absent from the store (untracked nodes)
+    /// are simply omitted — the caller builds no message for them. Org scoping
+    /// is mandatory (AGENTS.md): never read another tenant's decisions.
+    pub async fn fetch_explain_decisions(
+        &self,
+        org_id: &str,
+        execution_decision_ids: &[String],
+    ) -> sqlx::Result<Vec<ExplainDecisionRow>> {
+        if execution_decision_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // DISTINCT ON keeps one row per id (the latest by id) in case a best-
+        // effort capture wrote more than once for the same decision id. The
+        // LEFT JOIN pulls the matched `executions` anchor (ADR 0005 / ticket
+        // #30) when the decision recorded one — the freshness-subtree anchor the
+        // explain generator re-derives against. Both the decision and the anchor
+        // are org-scoped (AGENTS.md).
+        let rows: Vec<ExplainDecisionRow> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT ON (d.execution_decision_id)
+                   d.execution_decision_id, d.decision, d.execution_type,
+                   d.decision_description, d.is_stale, d.target_table, d.clone_source,
+                   d.input_tables,
+                   d.matched_execution_id,
+                   a.last_modified_epoch AS anchor_last_modified_epoch,
+                   a.input_tables        AS anchor_input_tables,
+                   a.target_table        AS anchor_target_table,
+                   a.execution_type      AS anchor_execution_type,
+                   a.clone_source_table  AS anchor_clone_source_table
+            FROM node_decisions d
+            LEFT JOIN executions a
+                   ON a.id = d.matched_execution_id
+                  AND a.org_id = d.org_id
+            WHERE d.org_id = $1
+              AND d.execution_decision_id = ANY($2)
+            ORDER BY d.execution_decision_id, d.id DESC
+            "#,
+        )
+        .bind(org_id)
+        .bind(execution_decision_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+}
+
+/// A `node_decisions` row projected for explain re-derivation (ADR 0005), joined
+/// with its matched `executions` anchor (ticket #30) when one was recorded.
+#[derive(sqlx::FromRow)]
+pub struct ExplainDecisionRow {
+    pub execution_decision_id: Option<String>,
+    pub decision: String,
+    pub execution_type: i32,
+    pub decision_description: Option<String>,
+    pub is_stale: bool,
+    pub target_table: Option<String>,
+    pub clone_source: Option<String>,
+    pub input_tables: serde_json::Value,
+    /// The matched prior `executions` row id (NULL when the decision matched no
+    /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
+    pub matched_execution_id: Option<i64>,
+    /// Anchor columns from the joined `executions` row (NULL when unmatched).
+    pub anchor_last_modified_epoch: Option<i64>,
+    pub anchor_input_tables: Option<serde_json::Value>,
+    pub anchor_target_table: Option<String>,
+    pub anchor_execution_type: Option<i32>,
+    /// The anchor's `clone_source_table` (NULL for ordinary rows). A non-NULL
+    /// value marks the anchor as a CLONE-ORIGIN row, whose recorded upstream
+    /// set is empty — the signal the clone-adoption normalization in `anchor()`
+    /// keys on (see `history.rs::prepare_sql` / ADR 0005).
+    pub anchor_clone_source_table: Option<String>,
+}
+
+impl ExplainDecisionRow {
+    /// Decode the JSONB `input_tables` column into the typed shape.
+    pub fn input_tables(&self) -> Vec<InputTable> {
+        serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()
+    }
+
+    /// Reconstruct the matched `executions` anchor row (ADR 0005 / ticket #30)
+    /// for the explain freshness subtree, when the decision recorded one. Only
+    /// the fields the pure freshness helper reads are populated (the per-upstream
+    /// FRESH/OUTDATED verdict needs the anchor's own-build epoch + recorded
+    /// upstream input set); the rest carry inert defaults. `None` when no prior
+    /// build was matched (the EXECUTE first-build / CLONE cases ADR 0005 leaves
+    /// NULL), in which case the generator renders the anchor-independent tree.
+    pub fn anchor(&self, org_id: &str) -> Option<ExecutionRow> {
+        let id = self.matched_execution_id?;
+        let mut input_tables = self
+            .anchor_input_tables
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<Vec<InputTable>>(v.clone()).ok())
+            .unwrap_or_default();
+        // CLONE-ADOPTION INPUT NORMALIZATION (ADR 0005). Mirror EXACTLY the
+        // in-memory substitution the decision applied in
+        // `history.rs::prepare_sql`: when the matched anchor is a CLONE-ORIGIN
+        // row (`clone_source_table` set) whose recorded upstream set is EMPTY (a
+        // clone records no upstreams), adopt the DECISION-TIME inputs — the
+        // persisted `node_decisions.input_tables` (`self.input_tables()`) — as
+        // the anchor's recorded set. Without this, the explain path feeds
+        // `decision::upstream_freshness` an empty recorded set vs the non-empty
+        // current set → `DependencySetChanged` (no per-upstream verdicts), so an
+        // upstream-drift EXECUTE mis-renders as the SHAPE-7 query-changed tree
+        // and a SKIP's freshness subtree is unanchored. The decision compared
+        // each upstream against the clone's own build epoch
+        // (`anchor_last_modified_epoch`); re-deriving against the same
+        // normalized inputs keeps explanation and decision in lockstep. These
+        // two normalizations MUST stay identical — change both together.
+        let clone_source_table = self.anchor_clone_source_table.clone();
+        if clone_source_table.is_some() && input_tables.is_empty() {
+            input_tables = self.input_tables();
+        }
+        Some(ExecutionRow {
+            id,
+            org_id: org_id.to_string(),
+            target_table: self.anchor_target_table.clone().unwrap_or_default(),
+            execution_type: self.anchor_execution_type.unwrap_or(self.execution_type),
+            node_body_hash: None,
+            node_sql_hash: None,
+            node_namespace_logic_hash: None,
+            table_namespace: None,
+            node_unique_id: None,
+            last_modified_epoch: self.anchor_last_modified_epoch,
+            execution_runtime_ms: None,
+            execution_results: None,
+            input_tables,
+            status: "confirmed".to_string(),
+            request_id: String::new(),
+            clone_source_table,
+        })
+    }
 }
 
 #[derive(sqlx::FromRow)]

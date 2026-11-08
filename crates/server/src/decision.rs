@@ -179,192 +179,308 @@ pub(crate) fn physical_relation_key(name: &str) -> &str {
     name
 }
 
-fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
-    // A safety rebuild (missing/ambiguous/unknown evidence) always rebuilds; its
-    // is_stale is irrelevant (executes report false). Only a genuine tolerated
-    // skip surfaces drift_present=true.
-    let rebuild = || Freshness {
-        should_rebuild: true,
-        drift_present: true,
-    };
-    let tolerance_ms = ctx.freshness_tolerance_seconds.saturating_mul(1000);
+/// The FRESH/OUTDATED verdict for a single genuine upstream parent, together
+/// with the two epochs the verdict was derived from. `drifted == true` means
+/// OUTDATED (the explain `OUTDATED` badge); `false` means FRESH.
+///
+/// `anchor_epoch` is the epoch this upstream was compared against with strict
+/// `>`: the node's OWN last-build epoch for object-producing nodes, or this
+/// upstream's RECORDED baseline epoch for a data test (which has no own build).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpstreamVerdict {
+    pub name: String,
+    pub current_epoch: Option<i64>,
+    pub anchor_epoch: i64,
+    pub drifted: bool,
+    /// True when this upstream's freshness could not be PROVEN (unknown current
+    /// epoch, or a data-test upstream with no recorded baseline epoch). The
+    /// pre-extraction engine short-circuited to a rebuild on the first such
+    /// upstream regardless of policy, so the fold must force EXECUTE when any
+    /// upstream is unprovable (an unprovable upstream is always also `drifted`).
+    pub unprovable: bool,
+}
 
-    let genuine = |name: &str| ctx.target_table != Some(name);
-    let current_names: std::collections::BTreeSet<_> = ctx
-        .input_tables
-        .iter()
-        .filter(|t| genuine(&t.name))
-        .map(|t| t.name.as_str())
-        .collect();
-    let recorded_names: std::collections::BTreeSet<_> = prev
-        .input_tables
-        .iter()
-        .filter(|t| genuine(&t.name))
-        .map(|t| t.name.as_str())
-        .collect();
-    if current_names != recorded_names
-        || current_names.len() != ctx.input_tables.iter().filter(|t| genuine(&t.name)).count()
-    {
-        return rebuild(); // Missing, additional or ambiguous dependency evidence.
-    }
+/// The diff between the current and recorded GENUINE upstream name sets (the
+/// node's own target table excluded). `ambiguous` is set when duplicate/
+/// ambiguous genuine names make the set smaller than the genuine input count.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct NameSetDiff {
+    /// Present in the current submit but not in the recorded run.
+    pub added: Vec<String>,
+    /// Present in the recorded run but not in the current submit.
+    pub removed: Vec<String>,
+    /// Duplicate / ambiguous genuine upstream names present.
+    pub ambiguous: bool,
+}
 
-    // Freshness anchor: the node's OWN last build epoch. A node is stale when an
-    // upstream input is newer than the object we last built. This was verified
-    // live against api.state.dbt.com (Fusion client, Snowflake) — see the lag
-    // characterization in docs/correctness-handoff.md and the golden fixture:
-    // the service rebuilds iff `max_upstream_epoch > own_last_build_epoch`,
-    // comparing against the own-build epoch (NOT the upstream epoch recorded at
-    // that build) and WITHOUT `freshness_tolerance_seconds` absorbing the gap
-    // (a 300s tolerance did not absorb a 120s upstream-newer-than-build gap).
-    //
-    // `freshness_tolerance_seconds` is intentionally NOT applied here. Applying
-    // it (widening the skip window) would reintroduce an unsafe skip that serves
-    // data staler than the hosted service would: the only safe direction when a
-    // policy is uncertain is to execute more, never skip more. See the F-series
-    // tests below for the pinned boundary.
-    let _ = tolerance_ms; // field preserved on the wire; see note above.
-
-    // Evaluate each genuine upstream input (excluding the node's own table).
-    // The own-build epoch only matters when there is an upstream to compare it
-    // against: a node with no genuine upstreams (e.g. a source-less model or a
-    // data test with no input freshness) is never stale on this axis, even if
-    // it never recorded a build epoch.
-    let genuine_upstreams: Vec<&InputTable> = ctx
-        .input_tables
-        .iter()
-        .filter(|t| ctx.target_table != Some(&t.name))
-        .collect();
-    if genuine_upstreams.is_empty() {
-        // No upstream inputs to compare → a hash match alone is safe to skip.
-        return Freshness {
-            should_rebuild: false,
-            drift_present: false,
-        };
-    }
-
-    let own_build_epoch = match prev.last_modified_epoch {
-        Some(epoch) => epoch,
-        None => {
-            // No own-build epoch recorded. Data tests (execution_type = 8) never
-            // produce a physical object, so they have NO own-build epoch — yet
-            // the hosted service still invalidates a cached test result when the
-            // tested (upstream) data changed. VERIFIED LIVE (issue #2 finding 1,
-            // experiments/data_test_freshness{,_control}.sh): a test confirmed
-            // against INPUT@E re-runs when a later submit presents INPUT@>E, and
-            // skips when INPUT@<=E. With no own-build epoch, a data test's
-            // freshness anchor is therefore the RECORDED UPSTREAM epoch, compared
-            // per input. Delegate to that evaluation below.
-            //
-            // For object-producing node types a missing build epoch means we
-            // cannot prove freshness at all → execute conservatively rather than
-            // risk serving stale data.
-            if ctx.execution_type == ET_DBT_DATA_TEST {
-                return data_test_upstream_freshness(ctx, prev, &genuine_upstreams);
-            }
-            return rebuild();
-        }
-    };
-
-    let mut considered = 0usize;
-    let mut drifted = 0usize;
-
-    // Compare genuine inputs against recorded physical identities.
-    for current in genuine_upstreams {
-        considered += 1;
-
-        let Some(current_epoch) = current.last_modified_epoch else {
-            return rebuild();
-        };
-        // The recorded dependency set is still validated for identity/ambiguity
-        // (missing, extra or duplicate names already forced stale above and
-        // here), but the drift decision anchors on the own-build epoch.
-        let mut matches = prev
-            .input_tables
-            .iter()
-            .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
-        if matches.next().is_none() {
-            return rebuild();
-        }
-        if matches.next().is_some() {
-            return rebuild();
-        }
-        let is_drift = current_epoch > own_build_epoch;
-        if is_drift {
-            drifted += 1;
-        }
-    }
-
-    if considered == 0 {
-        // Defensive: unreachable given the genuine_upstreams emptiness check.
-        return Freshness {
-            should_rebuild: false,
-            drift_present: false,
-        };
-    }
-
-    let drift_present = drifted > 0;
-    let should_rebuild = match ctx.stale_upstream_policy {
-        // ANY drift makes it rebuild.
-        StaleUpstreamPolicy::Any => drift_present,
-        // Rebuild only when every direct parent drifted.
-        StaleUpstreamPolicy::All => drifted == considered,
-    };
-    Freshness {
-        should_rebuild,
-        drift_present,
+impl NameSetDiff {
+    /// True when the current and recorded upstream sets match exactly and carry
+    /// no duplicate/ambiguous names.
+    pub fn is_clean(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && !self.ambiguous
     }
 }
 
-/// Freshness for a data test (execution_type = 8) that has NO own-build epoch.
+/// Why the per-upstream freshness evidence resolved the way it did. These are
+/// the mutually-exclusive outcomes `decide` folds into SKIP/EXECUTE and the
+/// explain path renders as the "data freshness analysis" branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum FreshnessEvidence {
+    /// The genuine upstream name set changed (added/removed/ambiguous). The
+    /// recorded dependency evidence no longer applies → safety rebuild.
+    DependencySetChanged,
+    /// No genuine upstreams to compare. A hash/identity match alone is safe to
+    /// skip; there is no freshness axis to violate.
+    NoUpstreams,
+    /// An object-producing node has upstreams but no recorded own-build epoch,
+    /// so freshness cannot be proven → safety rebuild.
+    NoBuildAnchor,
+    /// The upstreams were evaluated against an anchor: per-upstream verdicts and
+    /// the considered/drifted counts are populated.
+    Evaluated,
+}
+
+/// Shared, pure per-upstream freshness reasoning: the single source of truth for
+/// the per-upstream FRESH/OUTDATED verdict, the considered/drifted counts and
+/// the upstream name-set diff. Both `decide` (via `evaluate_freshness`) and the
+/// explain generator (ADR 0005) call THIS helper, so the decision and its
+/// explanation can never drift. Pure: no I/O, no DB, no async.
 ///
-/// A data test produces no physical object, so it is confirmed with
-/// `last_modified_epoch = None`. Its freshness anchor is therefore the epoch
-/// RECORDED for each upstream at the test's last confirmation (not an own-build
-/// epoch). The test is stale when a current upstream is strictly newer than the
-/// epoch recorded for that same upstream. The caller has already validated the
-/// upstream NAME set (missing/extra/ambiguous inputs forced a rebuild), so each
-/// current upstream has exactly one recorded counterpart here.
+/// This returns the raw per-upstream signals WITHOUT applying the ANY/ALL
+/// `stale_upstream_policy`; policy folding into a rebuild/skip is the caller's
+/// job (`evaluate_freshness`), so the explain path sees the same per-parent
+/// verdicts the policy was applied to.
 ///
-/// VERIFIED LIVE (issue #2 finding 1). ANY-style: any drifted upstream re-runs
-/// the test. An unknown current epoch or an upstream with no recorded baseline
-/// cannot be proven fresh → rebuild (we never skip on unprovable freshness).
-fn data_test_upstream_freshness(
-    _ctx: &SubmitContext,
-    prev: &ExecutionRow,
-    genuine_upstreams: &[&InputTable],
-) -> Freshness {
-    let rebuild = || Freshness {
-        should_rebuild: true,
-        drift_present: true,
+/// The per-`UpstreamVerdict` `name`/`current_epoch` and this struct's
+/// `upstreams`/`anchor_epoch`/`considered`/`drifted` are now consumed by the
+/// explain generator (ADR 0005, ticket #29/#30 anchor render path) and the
+/// decision fold, so the former struct-level dead-code allow is removed.
+#[derive(Debug, Clone)]
+pub(crate) struct UpstreamFreshness {
+    // TODO(#30 follow-up): `name_set_diff` is still only written (the set-change
+    // branch reads the local `name_set_diff.is_clean()` before moving it in); no
+    // reader consumes this field yet. The explain generator does NOT read it.
+    // Wire it into the DependencySetChanged explain subtree or drop the field;
+    // do not silence more broadly than this one field.
+    #[allow(dead_code)]
+    pub name_set_diff: NameSetDiff,
+    pub evidence: FreshnessEvidence,
+    /// Per-genuine-upstream verdicts; populated only when `Evaluated`.
+    pub upstreams: Vec<UpstreamVerdict>,
+    /// The anchor epoch for object-producing nodes (own last-build epoch); None
+    /// for data tests (which anchor per upstream on the recorded baseline).
+    pub anchor_epoch: Option<i64>,
+    /// Number of genuine upstreams considered (len of `upstreams` when Evaluated).
+    pub considered: usize,
+    /// Number of considered upstreams that drifted (OUTDATED).
+    pub drifted: usize,
+}
+
+pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> UpstreamFreshness {
+    // The tolerance is deliberately NOT applied here: a non-zero
+    // `freshness_tolerance_seconds` does not absorb upstream drift (verified
+    // live; a 300s tolerance did not absorb a 120s upstream-newer-than-build
+    // gap). The field is preserved on the wire only.
+    let _ = ctx.freshness_tolerance_seconds.saturating_mul(1000);
+
+    let genuine = |name: &str| ctx.target_table != Some(name);
+
+    // Name-set diff over GENUINE upstreams (the node's own target excluded).
+    let current_names: std::collections::BTreeSet<&str> = ctx
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .map(|t| t.name.as_str())
+        .collect();
+    let recorded_names: std::collections::BTreeSet<&str> = prev
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .map(|t| t.name.as_str())
+        .collect();
+    let genuine_count = ctx.input_tables.iter().filter(|t| genuine(&t.name)).count();
+    let name_set_diff = NameSetDiff {
+        added: current_names
+            .difference(&recorded_names)
+            .map(|s| s.to_string())
+            .collect(),
+        removed: recorded_names
+            .difference(&current_names)
+            .map(|s| s.to_string())
+            .collect(),
+        // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
+        ambiguous: current_names.len() != genuine_count,
     };
-    let mut drift_present = false;
-    for current in genuine_upstreams {
-        let Some(current_epoch) = current.last_modified_epoch else {
-            // Unknown current upstream epoch: cannot prove freshness → rebuild.
-            return rebuild();
+
+    // Missing, additional or ambiguous dependency evidence: the recorded run no
+    // longer describes this submit's dependency set → safety rebuild.
+    if !name_set_diff.is_clean() {
+        return UpstreamFreshness {
+            name_set_diff,
+            evidence: FreshnessEvidence::DependencySetChanged,
+            upstreams: Vec::new(),
+            anchor_epoch: None,
+            considered: 0,
+            drifted: 0,
         };
-        // The recorded epoch for this exact upstream. A single unambiguous match
-        // is guaranteed by the caller's name-set validation; defend anyway.
-        let mut matches = prev
+    }
+
+    // The genuine upstreams to evaluate (own target excluded). A node with none
+    // (a source-less model, or a data test with no input freshness) is never
+    // stale on this axis — a hash/identity match alone is safe to skip.
+    let genuine_upstreams: Vec<&InputTable> = ctx
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .collect();
+    if genuine_upstreams.is_empty() {
+        return UpstreamFreshness {
+            name_set_diff,
+            evidence: FreshnessEvidence::NoUpstreams,
+            upstreams: Vec::new(),
+            anchor_epoch: None,
+            considered: 0,
+            drifted: 0,
+        };
+    }
+
+    // Freshness anchor. For object-producing nodes it is the node's OWN
+    // last-build epoch (strict `>`), verified live against api.state.dbt.com.
+    // A missing own-build epoch means either a data test (which has no physical
+    // object and anchors per-upstream on the RECORDED baseline — issue #2
+    // finding 1) or an object-producing node we cannot prove fresh.
+    let data_test = ctx.execution_type == ET_DBT_DATA_TEST;
+    let own_build_epoch = match prev.last_modified_epoch {
+        Some(epoch) => Some(epoch),
+        None if data_test => None, // per-upstream recorded-baseline anchor below
+        None => {
+            // Object-producing node with no build epoch → cannot prove freshness.
+            return UpstreamFreshness {
+                name_set_diff,
+                evidence: FreshnessEvidence::NoBuildAnchor,
+                upstreams: Vec::new(),
+                anchor_epoch: None,
+                considered: 0,
+                drifted: 0,
+            };
+        }
+    };
+
+    // Per-upstream FRESH/OUTDATED verdicts. Any upstream whose evidence cannot
+    // establish freshness (unknown current epoch, missing/ambiguous recorded
+    // baseline, or a data test with no recorded baseline epoch) is OUTDATED
+    // against a `0` anchor — identical to the old safety-rebuild short-circuits,
+    // because `evaluate_freshness` turns any such drift into a rebuild and the
+    // ANY/ALL fold treats "all drifted" as rebuild. We never skip on unprovable
+    // freshness.
+    let mut upstreams = Vec::with_capacity(genuine_upstreams.len());
+    let mut drifted = 0usize;
+    for current in &genuine_upstreams {
+        // Locate the recorded counterpart(s). The name set was validated above
+        // as an exact, non-ambiguous match on the CURRENT side, but a confirmed
+        // row may still record the SAME physical relation MORE THAN ONCE (the
+        // recorded set collapses duplicates when compared as a BTreeSet). `main`
+        // treated such a duplicate recorded baseline as ambiguous and forced a
+        // rebuild in BOTH `evaluate_freshness` and `data_test_upstream_freshness`
+        // (`matches.next().is_some()` after the first → rebuild): we cannot prove
+        // which epoch to anchor against, so we must not skip. Count the matches
+        // and mark an ambiguous (>1) baseline unprovable (F1 regression).
+        let mut recorded = prev
             .input_tables
             .iter()
             .filter(|t| physical_relation_key(&t.name) == physical_relation_key(&current.name));
-        let Some(recorded) = matches.next() else {
-            return rebuild(); // no recorded baseline for this upstream
+        let first_recorded = recorded.next();
+        let ambiguous_recorded = recorded.next().is_some();
+        let recorded_epoch = first_recorded.and_then(|t| t.last_modified_epoch);
+        // The anchor for THIS upstream: own-build epoch for object nodes, the
+        // upstream's own recorded baseline for a data test.
+        let anchor = match own_build_epoch {
+            Some(e) => e,
+            None => recorded_epoch.unwrap_or(0),
         };
-        if matches.next().is_some() {
-            return rebuild(); // ambiguous recorded baseline
-        }
-        let Some(recorded_epoch) = recorded.last_modified_epoch else {
-            return rebuild(); // recorded baseline carried no epoch
+        // Freshness is UNPROVABLE when the current epoch is unknown, when the
+        // recorded baseline is ambiguous (duplicate recorded counterparts), or
+        // (data test) the upstream has no recorded baseline epoch to anchor
+        // against.
+        let unprovable = current.last_modified_epoch.is_none()
+            || ambiguous_recorded
+            || (own_build_epoch.is_none() && recorded_epoch.is_none());
+        let is_drift = match current.last_modified_epoch {
+            // Unknown current epoch → unprovable → OUTDATED.
+            None => true,
+            // Ambiguous recorded baseline → unprovable → OUTDATED (force rebuild).
+            Some(_) if ambiguous_recorded => true,
+            // Data test with no recorded baseline epoch → unprovable → OUTDATED.
+            Some(_) if own_build_epoch.is_none() && recorded_epoch.is_none() => true,
+            Some(current_epoch) => current_epoch > anchor,
         };
-        if current_epoch > recorded_epoch {
-            drift_present = true;
+        if is_drift {
+            drifted += 1;
         }
+        upstreams.push(UpstreamVerdict {
+            name: current.name.clone(),
+            current_epoch: current.last_modified_epoch,
+            anchor_epoch: anchor,
+            drifted: is_drift,
+            unprovable,
+        });
     }
-    Freshness {
-        should_rebuild: drift_present,
-        drift_present,
+
+    let considered = upstreams.len();
+    UpstreamFreshness {
+        name_set_diff,
+        evidence: FreshnessEvidence::Evaluated,
+        upstreams,
+        anchor_epoch: own_build_epoch,
+        considered,
+        drifted,
+    }
+}
+
+/// Fold the shared per-upstream freshness signals into a rebuild/skip decision,
+/// applying the ANY/ALL `stale_upstream_policy`. This is the ONLY place the
+/// policy is applied; `upstream_freshness` stays policy-neutral so the explain
+/// path can render the same per-parent verdicts the policy acted on.
+fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
+    let f = upstream_freshness(ctx, prev);
+    match f.evidence {
+        // Missing/ambiguous evidence or an unprovable anchor always rebuilds;
+        // its is_stale is irrelevant (executes report false).
+        FreshnessEvidence::DependencySetChanged | FreshnessEvidence::NoBuildAnchor => Freshness {
+            should_rebuild: true,
+            drift_present: true,
+        },
+        // Nothing to compare → a hash match alone is safe to skip.
+        FreshnessEvidence::NoUpstreams => Freshness {
+            should_rebuild: false,
+            drift_present: false,
+        },
+        FreshnessEvidence::Evaluated => {
+            // Any upstream whose freshness could not be proven forces a rebuild
+            // regardless of policy — the pre-extraction engine short-circuited
+            // to a rebuild on the first such upstream before reaching the
+            // ANY/ALL fold.
+            let any_unprovable = f.upstreams.iter().any(|u| u.unprovable);
+            // A data test (no own-build epoch) gates ANY-style on its tested
+            // data regardless of the configured policy; object-producing nodes
+            // honor the ANY/ALL policy.
+            let data_test = f.anchor_epoch.is_none();
+            let drift_present = f.drifted > 0;
+            let should_rebuild = if any_unprovable {
+                true
+            } else if data_test {
+                drift_present
+            } else {
+                match ctx.stale_upstream_policy {
+                    StaleUpstreamPolicy::Any => drift_present,
+                    StaleUpstreamPolicy::All => f.drifted == f.considered,
+                }
+            };
+            Freshness {
+                should_rebuild,
+                drift_present,
+            }
+        }
     }
 }
 
@@ -1019,6 +1135,199 @@ mod tests {
             ),
             "upstream 1ms newer than own build is stale regardless of tolerance"
         );
+    }
+
+    // ---- Shared pure helper: `upstream_freshness` (#28) --------------------
+    //
+    // These characterize the STRUCTURE the explain generator renders (per-ADR
+    // 0005): the per-upstream FRESH/OUTDATED verdict, the considered/drifted
+    // counts, and the upstream name-set diff. `decide` and the explain path both
+    // call this ONE helper, so its returned struct is the single source of truth
+    // for the "data freshness analysis" lines. The proptests in
+    // decision_proptest.rs remain the regression oracle for `decide` itself.
+
+    /// Clean per-upstream evaluation: one fresh, one outdated, against the
+    /// node's OWN build epoch (strict `>`). Counts and per-upstream verdicts are
+    /// exposed; the name-set diff is clean.
+    #[test]
+    fn upstream_freshness_reports_per_upstream_verdicts_and_counts() {
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let current = vec![tbl("a", 100), tbl("b", 999)]; // b drifted
+        let prev = confirmed("h", recorded, Some(100));
+        let f = upstream_freshness(&ctx("h", &current), &prev);
+
+        assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
+        assert_eq!(f.anchor_epoch, Some(100), "anchor is the own-build epoch");
+        assert_eq!(f.considered, 2);
+        assert_eq!(f.drifted, 1);
+        assert!(f.name_set_diff.is_clean());
+
+        // Per-upstream FRESH/OUTDATED verdicts are returned, not discarded.
+        let a = f.upstreams.iter().find(|u| u.name == "a").unwrap();
+        let b = f.upstreams.iter().find(|u| u.name == "b").unwrap();
+        assert!(!a.drifted, "a (epoch 100 == own build) is FRESH");
+        assert!(b.drifted, "b (epoch 999 > own build 100) is OUTDATED");
+        assert_eq!(a.current_epoch, Some(100));
+        assert_eq!(b.current_epoch, Some(999));
+    }
+
+    /// A name-set mismatch (an added upstream the recorded run never saw) is
+    /// reported as the dependency set changing — the diff names the delta.
+    #[test]
+    fn upstream_freshness_reports_name_set_diff() {
+        let recorded = vec![tbl("a", 100)];
+        let current = vec![tbl("a", 100), tbl("new_dep", 100)];
+        let prev = confirmed("h", recorded, Some(100));
+        let f = upstream_freshness(&ctx("h", &current), &prev);
+
+        assert!(matches!(
+            f.evidence,
+            FreshnessEvidence::DependencySetChanged
+        ));
+        assert!(!f.name_set_diff.is_clean());
+        assert_eq!(f.name_set_diff.added, vec!["new_dep".to_string()]);
+        assert!(f.name_set_diff.removed.is_empty());
+    }
+
+    /// No genuine upstreams → the helper reports `NoUpstreams`: a hash match
+    /// alone is safe to skip, nothing to render on the freshness axis.
+    #[test]
+    fn upstream_freshness_reports_no_upstreams() {
+        let prev = confirmed("h", vec![], Some(100));
+        let f = upstream_freshness(&ctx("h", &[]), &prev);
+        assert!(matches!(f.evidence, FreshnessEvidence::NoUpstreams));
+        assert_eq!(f.considered, 0);
+        assert_eq!(f.drifted, 0);
+    }
+
+    /// An object-producing node with upstreams but no recorded own-build epoch
+    /// cannot prove freshness → `NoBuildAnchor`.
+    #[test]
+    fn upstream_freshness_reports_missing_build_anchor() {
+        let recorded = vec![tbl("a", 100)];
+        let current = vec![tbl("a", 100)];
+        let prev = confirmed("h", recorded, None); // no own-build epoch
+        let f = upstream_freshness(&ctx("h", &current), &prev);
+        assert!(matches!(f.evidence, FreshnessEvidence::NoBuildAnchor));
+    }
+
+    /// A data test (no own-build epoch) anchors on the RECORDED UPSTREAM epoch
+    /// per input; a drifted upstream is OUTDATED against its own recorded
+    /// baseline, not an own-build epoch.
+    #[test]
+    fn upstream_freshness_data_test_anchors_on_recorded_upstream() {
+        let recorded = vec![tbl("DB.S.INPUT", 100)];
+        let mut prev = confirmed("h", recorded, None);
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.INPUT", 200)]; // newer than recorded 100
+        let mut c = ctx("h", &current);
+        c.execution_type = ET_DBT_DATA_TEST;
+        let f = upstream_freshness(&c, &prev);
+
+        assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
+        assert_eq!(f.considered, 1);
+        assert_eq!(f.drifted, 1);
+        let u = &f.upstreams[0];
+        assert_eq!(
+            u.anchor_epoch, 100,
+            "data test anchors on recorded upstream"
+        );
+        assert!(u.drifted, "200 > recorded 100 is OUTDATED");
+    }
+
+    /// REGRESSION (behavior parity): under the ALL policy, an upstream whose
+    /// CURRENT epoch is unknown cannot be proven fresh. The pre-extraction
+    /// engine short-circuited to a rebuild on the first such upstream REGARDLESS
+    /// of policy (it never reached the ANY/ALL fold). The extracted helper must
+    /// preserve that: an unprovable upstream forces EXECUTE even when a sibling
+    /// is fresh and the policy is ALL (which would otherwise require every
+    /// parent to drift). This is the exact edge the `tables_strategy` proptests
+    /// never generate (they only emit `Some` epochs), so it is pinned here.
+    #[test]
+    fn unprovable_current_epoch_executes_under_all_policy() {
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let current = vec![
+            tbl("a", 100), // fresh
+            InputTable {
+                name: "b".into(),
+                last_modified_epoch: None, // unknown → unprovable
+            },
+        ];
+        let prev = confirmed("h", recorded, Some(100));
+        let mut c = ctx("h", &current);
+        c.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert!(
+            matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }),
+            "an unprovable upstream epoch must execute regardless of ALL policy"
+        );
+    }
+
+    // ---- DUPLICATE RECORDED UPSTREAM (ambiguous baseline) — F1 regression ----
+    //
+    // The pre-extraction engine (`main`) rejected a confirmed baseline that
+    // recorded MORE THAN ONE counterpart for a single current upstream (same
+    // `physical_relation_key`) in BOTH `evaluate_freshness` (object nodes) and
+    // `data_test_upstream_freshness`: `matches.next().is_some()` after the first
+    // match forced a safety rebuild — the recorded baseline is ambiguous, so we
+    // cannot prove which epoch to anchor against and must not skip. The #28
+    // refactor replaced that per-upstream uniqueness check with a single
+    // `.find()` (takes the FIRST recorded row), silently anchoring on whichever
+    // duplicate comes first — a skip where `main` rebuilt (unsafe reuse). The
+    // name-set diff does NOT catch this: `recorded_names` is a BTreeSet so the
+    // duplicate collapses to one entry and `ambiguous` only measures the CURRENT
+    // side. These pin the restored behavior for an object node AND a data test.
+
+    /// OBJECT NODE: a confirmed row recording two physical counterparts for the
+    /// same upstream (`a@200`, `a@50`) is an ambiguous baseline. A clean current
+    /// submit (`a@100`, older than both) must REBUILD, not anchor on the first
+    /// recorded row and SKIP. (`main` parity: `evaluate_freshness` uniqueness.)
+    #[test]
+    fn duplicate_recorded_upstream_executes_object_node() {
+        let recorded = vec![tbl("a", 200), tbl("a", 50)]; // same name twice
+        let current = vec![tbl("a", 100)]; // clean single current upstream
+        let prev = confirmed("h", recorded, Some(100));
+        let v = decide(&ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "a duplicate recorded upstream is an ambiguous baseline → rebuild"
+        );
+    }
+
+    /// DATA TEST: the same ambiguity on a data test (no own-build epoch, which
+    /// anchors per-upstream on the RECORDED baseline). Two recorded `a` rows
+    /// mean no single provable baseline → EXECUTE. (`main` parity:
+    /// `data_test_upstream_freshness` uniqueness.)
+    #[test]
+    fn duplicate_recorded_upstream_executes_data_test() {
+        let recorded = vec![tbl("DB.S.A", 200), tbl("DB.S.A", 50)]; // same name twice
+        let mut prev = confirmed("h", recorded, None); // data tests have no build epoch
+        prev.execution_type = ET_DBT_DATA_TEST;
+        let current = vec![tbl("DB.S.A", 100)];
+        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        assert!(
+            matches!(v, Verdict::Execute { .. }),
+            "a data test with a duplicate recorded upstream has no provable baseline → rebuild"
+        );
+    }
+
+    /// The ambiguity is surfaced on the shared helper itself: the matched
+    /// upstream is `unprovable` and `drifted`, so the fold forces EXECUTE. This
+    /// pins the mechanism (not just the folded verdict) the explain path reads.
+    #[test]
+    fn upstream_freshness_marks_duplicate_recorded_unprovable() {
+        let recorded = vec![tbl("a", 200), tbl("a", 50)];
+        let current = vec![tbl("a", 100)];
+        let prev = confirmed("h", recorded, Some(100));
+        let f = upstream_freshness(&ctx("h", &current), &prev);
+
+        assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
+        assert_eq!(f.considered, 1);
+        let u = &f.upstreams[0];
+        assert!(
+            u.unprovable,
+            "a duplicate recorded counterpart makes the upstream unprovable"
+        );
+        assert!(u.drifted, "an unprovable upstream is OUTDATED");
     }
 }
 

@@ -66,6 +66,16 @@ pub struct CaptureInput {
     /// lineage reconstruction.
     pub query_dependencies: Vec<String>,
     pub execution_runtime_ms: Option<i64>,
+    /// The `executions.id` of the prior confirmed row this SKIP/reuse decision
+    /// matched (ADR 0005 / ticket #30). `Some` only when `decide` evaluated
+    /// freshness against a matched prior build (a SKIP, or a freshness-driven
+    /// rebuild EXECUTE whose fingerprint still matched); `None` for a genuine
+    /// first-build / fingerprint-miss EXECUTE and for CLONE adoption (which has
+    /// no `executions.id`). The explain path joins this row to re-derive the
+    /// per-upstream FRESH/OUTDATED freshness subtree so the explanation matches
+    /// the decision exactly. Best-effort and separate from the `executions`
+    /// write — the column is intrinsically nullable.
+    pub matched_execution_id: Option<i64>,
 }
 
 /// Record a decision. Best-effort: logs a warning on failure, never panics.
@@ -189,10 +199,10 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             decision_description, request_id, execution_decision_id,
             node_body_hash, values_hash, table_namespace, target_table,
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
-            execution_runtime_ms, query_dependencies
+            execution_runtime_ms, query_dependencies, matched_execution_id
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25)
+                $19,$20,$21,$22,$23,$24,$25,$26)
         "#,
     )
     .bind(&i.org_id)
@@ -220,6 +230,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(input_tables)
     .bind(i.execution_runtime_ms)
     .bind(serde_json::to_value(&i.query_dependencies).unwrap_or_default())
+    .bind(i.matched_execution_id)
     .execute(pool)
     .await?;
 

@@ -333,9 +333,11 @@ async fn submit_values_execute_confirm_skip() {
     ));
 }
 
-/// Item 4: trivial services return OK empty responses.
+/// Item 4: the Explain service now re-derives the structured tree on demand.
+/// A submitted node's `execution_decision_id` yields its cataloged explain tree
+/// via `GetExplainMessages` (ADR 0005); the SelectorService remains implemented.
 #[tokio::test]
-async fn explain_placeholder_and_implemented_selector() {
+async fn explain_rederives_tree_and_selector_is_implemented() {
     use qc::explain_client::ExplainClient;
     use qc::selector_service_client::SelectorServiceClient;
 
@@ -343,15 +345,71 @@ async fn explain_placeholder_and_implemented_selector() {
     let addr = server.addr;
     let ch = channel(addr).await;
 
+    // Submit a never-seen node so it EXECUTEs (first build). The server mints an
+    // execution_decision_id and records the decision (best-effort capture).
+    let entries = diff::load_golden(GOLDEN).expect("load golden");
+    let req = submit_req_from_golden(find_first_execute(&entries));
+    let mut sql = SqlClient::new(ch.clone());
+    let resp = sql
+        .submit_enriched_sql(req)
+        .await
+        .expect("submit")
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(exec) = resp.response.expect("response")
+    else {
+        panic!("expected ready_to_execute");
+    };
+    let edid = exec.execution_decision_id.expect("minted edid");
+
+    // An UNTRACKED id yields no message (tracked ids are omitted when absent).
     let mut explain = ExplainClient::new(ch.clone());
-    let msgs = explain
+    let untracked = explain
         .get_explain_messages(qc::GetExplainMessagesRequest {
-            execution_decision_ids: vec!["x".to_string()],
+            execution_decision_ids: vec!["definitely-not-a-real-edid".to_string()],
         })
         .await
         .expect("get_explain_messages")
         .into_inner();
-    assert!(msgs.messages.is_empty(), "explain messages must be empty");
+    assert!(
+        untracked.messages.is_empty(),
+        "untracked ids must be omitted from the response"
+    );
+
+    // The tracked id yields exactly one re-derived message. Capture is a
+    // best-effort async write, so poll briefly until it lands.
+    let mut got = None;
+    for _ in 0..50 {
+        let r = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .expect("get_explain_messages")
+            .into_inner();
+        if let Some(m) = r.messages.into_iter().next() {
+            got = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = got.expect("the tracked decision's explain message must be re-derived");
+    assert_eq!(msg.execution_decision_id, edid);
+    assert_eq!(msg.decision, 1, "EXECUTE decision int");
+    // First build → the table-analysis-only shape (catalog "First build").
+    assert_eq!(
+        msg.explain_lines.len(),
+        1,
+        "first build: table analysis only"
+    );
+    let ta = &msg.explain_lines[0];
+    assert!(ta.text.starts_with("table analysis ("));
+    assert_eq!(ta.children.len(), 2);
+    assert_eq!(ta.children[0].text, "the model table does not exist");
+    assert_eq!(ta.children[0].marker, Some(2));
+    assert_eq!(
+        ta.children[1].text,
+        "there is no other table that the model could be cloned from"
+    );
 
     // SelectorService.GetStateSelection is implemented (state:* selectors). With
     // an empty node set it returns an empty selection — not UNIMPLEMENTED.
@@ -370,4 +428,138 @@ async fn explain_placeholder_and_implemented_selector() {
         sel.node_unique_ids.is_empty(),
         "empty submission must select nothing"
     );
+}
+
+/// F2 REGRESSION — the CLONE explain tree must render the ACTUAL clone source,
+/// not an empty string. A cross-name CLONE captured via `SubmitEnrichedSQL`
+/// (the production `ReadyToClone` path) must persist `clone_source` so the
+/// explain renderer emits `the model table could be cloned from "<source>"`.
+/// Before the fix, `capture_submit` hard-coded `clone_source: None`, so the
+/// re-derived tree showed `could be cloned from ""` (empty). This drives the
+/// WHOLE path end-to-end (submit → best-effort capture → GetExplainMessages)
+/// without ever handing the source to the renderer manually.
+#[tokio::test]
+async fn explain_clone_tree_renders_actual_clone_source() {
+    use qc::explain_client::ExplainClient;
+
+    const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
+    // A cross-name CLONE submit: same `table_namespace` + schema-abstracted
+    // logic as an already-built equivalent under a DIFFERENT physical name.
+    fn submit(target: &str, schema: &str) -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            target_table: Some(target.into()),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            default_schema: Some(schema.into()),
+            execution_type: 1,
+            sql: format!("select id from CDO_DEMO_DB.{schema}.lp_up_a"),
+            tolerate_nondeterminism: true,
+            freshness_tolerance_seconds: 2700,
+            tables: vec![],
+            table_namespace: Some(NS.into()),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.jaffle_shop.f2_clone_probe".into(),
+                node_body_hash: Some("body".into()),
+                project_id: Some("p".into()),
+                ..Default::default()
+            }),
+            labels: [("dbt_node_name".to_string(), "f2_clone_probe".to_string())]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    let server = start_server().await;
+    let ch = channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"F2_CLONE_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"F2_CLONE_PROBE\"";
+    let a_epoch = 1_791_747_221_679i64;
+
+    // Build + confirm the equivalent under name A.
+    let r0 = sql
+        .submit_enriched_sql(submit(a, "prod_state_demo"))
+        .await
+        .expect("submit A")
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.expect("A response")
+    else {
+        panic!("first build of A must execute");
+    };
+    assert!(
+        exec.confirm_execution(qc::ConfirmExecutionRequest {
+            request_id: x.request_id,
+            last_modified_epoch: Some(a_epoch),
+            table_type: Some("TRANSIENT TABLE".into()),
+            execution_runtime_ms: Some(15275),
+            ..Default::default()
+        })
+        .await
+        .expect("confirm A")
+        .into_inner()
+        .success
+    );
+
+    // Submit for absent B (same namespace + logic) → ReadyToClone A→B. This is
+    // the production SubmitEnrichedSQL CLONE path whose capture must persist the
+    // source.
+    let rb = sql
+        .submit_enriched_sql(submit(b, "dev_clone_demo"))
+        .await
+        .expect("submit B")
+        .into_inner();
+    assert_eq!(
+        response_variant(&rb),
+        "ready_to_clone",
+        "cross-name equivalent must clone"
+    );
+    let c = match rb.response {
+        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c,
+        other => panic!("expected ready_to_clone, got {other:?}"),
+    };
+    assert_eq!(c.clone_source, a, "the response's clone source is A");
+    let edid = c
+        .execution_decision_id
+        .clone()
+        .expect("clone minted an execution_decision_id");
+
+    // Re-derive the explain tree for the CLONE decision. Capture is a
+    // best-effort async write, so poll briefly until it lands.
+    let mut explain = ExplainClient::new(ch);
+    let mut got = None;
+    for _ in 0..50 {
+        let r = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .expect("get_explain_messages")
+            .into_inner();
+        if let Some(m) = r.messages.into_iter().next() {
+            got = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = got.expect("the CLONE decision's explain message must be re-derived");
+    assert_eq!(msg.decision, 3, "READY_TO_CLONE decision int");
+
+    // The clone-source line is children[1] of the `table analysis` section. It
+    // must name the ACTUAL source relation A — NOT an empty string.
+    let ta = &msg.explain_lines[0];
+    assert!(ta.text.starts_with("table analysis ("));
+    let clone_line = &ta.children[1];
+    assert_eq!(
+        clone_line.text,
+        format!("the model table could be cloned from {a}"),
+        "the rendered clone source must be the actual source relation, not empty"
+    );
+    assert!(
+        !clone_line.text.ends_with("could be cloned from "),
+        "clone source must never render empty (the F2 regression)"
+    );
+    assert_eq!(clone_line.marker, Some(1), "MARKER_SUCCESS");
 }

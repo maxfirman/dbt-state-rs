@@ -30,6 +30,39 @@ Related decisions: the tree is **re-derived on demand** per
   (#26) MUST normalize these slots.
 - **Markers / badges** shown as `[MARKER] <BADGE>`. Omitted = none on that line.
 
+## Execution type (node kind) coverage
+
+The `execution_type` integer (dbt `ModelExecutionType`, `shared.proto`) selects
+which node kind a decision is for. The explain generator is a strict positive
+**allowlist** over `(execution_type × decision class)`: a CHARACTERIZED pair
+renders its cataloged tree; everything else renders NOTHING (unobserved — never
+invent). This table is the single lookup for "what does integer N mean, and do
+we render it?" — enforced by `explain.rs::is_characterized` and the exhaustive
+`fence_matrix_is_exhaustive_and_matches_is_characterized` test (they must agree,
+so a kind cannot graduate in one place and not the other).
+
+| `execution_type` | Node kind | Explain coverage |
+|---|---|---|
+| 1 | FULL (table / model) | ✅ characterized — SKIP, EXECUTE, CLONE |
+| 2 | APPEND (incremental) | ❌ unobserved → empty tree |
+| 3 | MERGE (incremental) | ❌ unobserved → empty tree |
+| 4 | INSERT_OVERWRITE (incremental) | ❌ unobserved → empty tree |
+| 5 | DELETE_INSERT (incremental) | ❌ unobserved → empty tree |
+| 6 | MICROBATCH (incremental) | ❌ unobserved → empty tree |
+| 7 | SNAPSHOT | ❌ unobserved → empty tree |
+| 8 | DBT_DATA_TEST | ⚠️ SKIP only characterized; EXECUTE/CLONE unobserved → empty tree |
+| 9 | VALUES (seed) | ❌ unobserved → empty tree |
+| 10 | VIEW | ✅ characterized — SKIP, EXECUTE, CLONE |
+| 11 | DBT_CUSTOM | ❌ unobserved → empty tree |
+| 0 / other | UNSPECIFIED / unknown | ❌ unobserved → empty tree |
+
+Source of truth for the integer→kind mapping: `shared.proto` (`ModelExecutionType`)
+and [`docs/protocol.md`](protocol.md). Clone ADOPTION (a later submit reusing a
+clone-origin row) is execution-type-agnostic — it is reachable at type 1 (model),
+so its freshness-anchored explain subtree is characterized there even though the
+original clone was captured via a MERGE (type 3) RegisterClone. The unobserved
+kinds are elaborated in [§ unobserved](#unobserved--do-not-implement-until-captured).
+
 ## Observed vocabulary (complete across #20/#23/#24)
 
 | Enum | Value | Observed? |
@@ -195,7 +228,7 @@ Each tree signal maps to a re-derivable source (see ADR 0005):
 
 | Line / badge | Re-derivation source |
 |---|---|
-| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + physical-existence probe |
+| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + persisted `decision_description` (NO live physical-existence probe — see [§ dropped-target known limitation](#known-limitation--dropped-own-target-rebuild-mislabel)) |
 | `<NODE_QUERY_CHANGED>` / `<NODE_QUERY_UNCHANGED>` | node SQL/template fingerprint vs matched row |
 | per-upstream `<FRESH>` / `<OUTDATED>` + `«gap»` | decision-time `input_tables` (node_decisions) vs matched `executions.input_tables` + `executions.last_modified_epoch` (own-build anchor), via `matched_execution_id` |
 | `<UPSTREAM_QUERY_CHANGED>` + "an upstream model query has changed" | per-upstream name-set / logic diff (same two snapshots) |
@@ -220,3 +253,34 @@ future-capture fog item on map #19):
   this enum may be vestigial. `EB_UNSPECIFIED` (0).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
+
+## Known limitation — dropped-own-target rebuild mislabel
+
+Explain has NO own-target physical-existence signal and runs NO live warehouse
+probe: the `table analysis` existence line (`<TARGET_TABLE_EXISTS>` vs "table
+does not exist") is inferred from the persisted decision class + the
+`decision_description` wording, not from a catalog lookup. (The
+"physical-existence probe" phrasing in earlier drafts of the re-derivation
+binding above was aspirational — no such probe exists in the code.)
+
+CONSEQUENCE (PR #31 round-3 F6): if a confirmed model's own target is later
+DROPPED and then rebuilt with UNCHANGED SQL, the decision persists the GENERIC
+rebuild description ("model was executed because either its query didn't match
+or its upstream data is out of date") — the SAME string a node-query-changed
+rebuild uses. With no anchor and no "did not exist" wording, the generator falls
+to SHAPE 7 and renders "the model table exists already" `<TARGET_TABLE_EXISTS>`
++ "the model query has changed" `<NODE_QUERY_CHANGED>` + "upstream data is up to
+date" — wrong on both counts (the table is gone; the query did not change).
+
+This is NOT fixed, deliberately. The dropped-target EXECUTE is INDISTINGUISHABLE
+by any persisted signal from the hosted-characterized SHAPE-7 node-query-changed
+EXECUTE (both anchor-less, both carrying that one generic rebuild description —
+see `decision.rs::decision_descriptions_match_hosted_wording` and the SHAPE-7
+conformance fixture). Any guard that suppressed the dropped-target tree would
+also regress the captured SHAPE-7 fixture. The correct hosted shape for a
+dropped-then-rebuilt target is UNOBSERVED (no Snowflake capture; DuckDB does not
+trigger dbt State explain). Closing it needs a capture PLUS a persisted
+own-target existence signal on `ExplainDecisionRow` so `execute_tree` can select
+a "table does not exist" branch (follow-up). Until then, per the do-not-invent
+fencing rule above, we accept the known mislabel rather than ship a guard that
+breaks a hosted-faithful common case.

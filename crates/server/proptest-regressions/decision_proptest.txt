@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 3b14bd9a113dfb2dccd28d1059cab3a875ac28ed18d62770749b39648c7fb24f # shrinks to recorded = [], current = [], tol = 0, p = Any, built = None
+cc e8295f1022f740e8924f0ce2e7695727ba897c685a294d202033043a3f3cbde6 # shrinks to recorded = [InputTable { name: "upstream_1", last_modified_epoch: None }, InputTable { name: "upstream_2", last_modified_epoch: None }, InputTable { name: "upstream_1", last_modified_epoch: None }, InputTable { name: "upstream_3", last_modified_epoch: None }], current = [InputTable { name: "upstream_1", last_modified_epoch: Some(0) }, InputTable { name: "upstream_2", last_modified_epoch: Some(0) }, InputTable { name: "upstream_3", last_modified_epoch: Some(0) }], tol = 0, p = Any, built = Some(0)

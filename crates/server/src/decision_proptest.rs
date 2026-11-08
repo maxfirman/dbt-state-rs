@@ -97,6 +97,25 @@ fn tables_strategy() -> impl Strategy<Value = Vec<InputTable>> {
     })
 }
 
+/// Strategy for a RECORDED (prev) upstream set that, unlike `tables_strategy`,
+/// can contain DUPLICATE physical names and `None` epochs. `tables_strategy`
+/// uses a `btree_map` keyed by name, so it can NEVER emit a duplicate recorded
+/// counterpart — exactly the ambiguous-history shape the F1 regression lived in
+/// (a duplicate recorded upstream made the engine silently anchor on the first
+/// match and SKIP instead of rebuilding). A `Vec` of (name, epoch) with a small
+/// name space makes duplicates and overlap with the current set common.
+fn recorded_tables_strategy() -> impl Strategy<Value = Vec<InputTable>> {
+    prop::collection::vec((0u8..4, prop::option::of(0i64..2_000_000)), 0..6).prop_map(|tables| {
+        tables
+            .into_iter()
+            .map(|(n, e)| InputTable {
+                name: format!("upstream_{n}"),
+                last_modified_epoch: e,
+            })
+            .collect()
+    })
+}
+
 fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> ExecutionRow {
     ExecutionRow {
         id: 1,
@@ -244,6 +263,36 @@ proptest! {
                 skip_would_be_safe(&current, &prev, tol, p, None),
                 "engine SKIPped but the oracle says the skip is UNSAFE \
                  (upstream drift beyond tolerance would leave stale state)"
+            );
+        }
+    }
+
+    // 7b. SKIP-SAFETY OVER AMBIGUOUS / INCOMPLETE RECORDED HISTORY. Same master
+    //    invariant as `skip_is_always_safe`, but the RECORDED set is drawn from
+    //    `recorded_tables_strategy`, which can contain DUPLICATE physical names
+    //    and `None` epochs — the shape `tables_strategy`'s `btree_map` can never
+    //    produce. This is exactly the F1 regression's input space: a duplicate
+    //    recorded upstream made the engine anchor on the first match and SKIP
+    //    instead of rebuilding. The oracle treats a non-unique recorded
+    //    counterpart (`matches.len() != 1`) and any `None` epoch as UNSAFE, so
+    //    the engine must EXECUTE on such history. A regression here fails this
+    //    property instead of waiting for a review round.
+    #[test]
+    fn skip_is_always_safe_over_ambiguous_history(
+        recorded in recorded_tables_strategy(),
+        current in tables_strategy(),
+        tol in 0i64..3600,
+        p in policy_strategy(),
+        built in prop::option::of(0i64..2_000_000),
+    ) {
+        let prev = confirmed_row("h", recorded, built);
+        let v = decide(&ctx(&current, tol, p, None), Some(&prev));
+        if is_skip(&v) {
+            prop_assert!(
+                skip_would_be_safe(&current, &prev, tol, p, None),
+                "engine SKIPped against ambiguous/incomplete recorded history \
+                 but the oracle says the skip is UNSAFE (duplicate or epoch-less \
+                 recorded counterpart cannot prove freshness)"
             );
         }
     }

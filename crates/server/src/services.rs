@@ -282,6 +282,7 @@ fn capture_submit(
     req: &qc::SubmitEnrichedSqlRequest,
     response: &qc::SubmitSqlResponse,
     input_tables: &[crate::store::InputTable],
+    matched_execution_id: Option<i64>,
 ) {
     use crate::capture::{CaptureInput, DecisionKind};
     let ns = req.dbt_node_state.as_ref();
@@ -311,7 +312,7 @@ fn capture_submit(
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
-        clone_source: None,
+        clone_source: clone_source_of(response),
         clone_sqls: None,
         input_tables: input_tables.to_vec(),
         query_dependencies: req
@@ -320,6 +321,7 @@ fn capture_submit(
             .map(|d| d.name.clone())
             .collect(),
         execution_runtime_ms: runtime_of(response),
+        matched_execution_id,
     };
     let _ = DecisionKind::Build; // keep import used across cfgs
     spawn_capture(state, input);
@@ -382,12 +384,30 @@ fn runtime_of(resp: &qc::SubmitSqlResponse) -> Option<i64> {
     }
 }
 
+/// The CLONE source relation carried by a `ReadyToClone` response, if any.
+///
+/// A cross-name CLONE decision returned via `SubmitEnrichedSQL` carries the
+/// physical relation it would be cloned FROM in `ReadyToClone.clone_source`
+/// (a `String`). `capture_submit` must persist it so the explain CLONE renderer
+/// (`explain.rs::clone_tree`) can emit `could be cloned from "<source>"` instead
+/// of an empty string. Non-clone variants have no source; an empty string maps
+/// to `None` (nothing to render). (F2: previously hard-coded `None` here.)
+fn clone_source_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
+    match &resp.response {
+        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => {
+            Some(c.clone_source.clone()).filter(|s| !s.is_empty())
+        }
+        _ => None,
+    }
+}
+
 /// Build + spawn capture for a SubmitValues (seed) decision.
 fn capture_submit_values(
     state: &AppState,
     meta: &CaptureMeta,
     req: &qc::SubmitValuesRequest,
     response: &qc::SubmitSqlResponse,
+    matched_execution_id: Option<i64>,
 ) {
     use crate::capture::CaptureInput;
     let ns = req.dbt_node_state.as_ref();
@@ -426,6 +446,7 @@ fn capture_submit_values(
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
         execution_runtime_ms: runtime_of(response),
+        matched_execution_id,
     };
     spawn_capture(state, input);
 }
@@ -590,7 +611,7 @@ impl Sql for SqlService {
                             request_id,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
                     }
                     if let Ok(clone_sqls) = crate::clone::clone_sqls_with_properties(
@@ -633,7 +654,7 @@ impl Sql for SqlService {
                             eq.execution_runtime_ms,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
                     }
                 }
@@ -685,8 +706,21 @@ impl Sql for SqlService {
             }
         };
 
-        // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
+        // Best-effort capture for the UI domain model (non-blocking). On a
+        // SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint still
+        // matched, `confirmed` is the matched prior `executions` row — record
+        // its id as the explain freshness anchor (ADR 0005 / ticket #30). It is
+        // `None` for a genuine first-build / fingerprint-miss EXECUTE (confirmed
+        // is None) and never reached here for CLONE (those return early above).
+        let matched_execution_id = confirmed.as_ref().map(|r| r.id);
+        capture_submit(
+            &self.0,
+            &cap_meta,
+            &req,
+            &response,
+            input_tables,
+            matched_execution_id,
+        );
 
         Ok(Response::new(response))
     }
@@ -775,7 +809,13 @@ impl Sql for SqlService {
             }
         };
 
-        capture_submit_values(&self.0, &cap_meta, &req, &response);
+        capture_submit_values(
+            &self.0,
+            &cap_meta,
+            &req,
+            &response,
+            confirmed.as_ref().map(|r| r.id),
+        );
         Ok(Response::new(response))
     }
 
@@ -1040,6 +1080,9 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     input_tables: Vec::new(),
                     query_dependencies: Vec::new(),
                     execution_runtime_ms: None,
+                    // CLONE registration matches no prior `executions` row to
+                    // anchor freshness against (ADR 0005): NULL.
+                    matched_execution_id: None,
                 },
             );
         }
@@ -1092,24 +1135,91 @@ impl ClientValidation for ClientValidationService {
 }
 
 #[derive(Clone)]
-pub struct ExplainService;
+pub struct ExplainService(pub AppState);
 
 #[tonic::async_trait]
 impl Explain for ExplainService {
     async fn get_explain_messages(
         &self,
-        _request: Request<qc::GetExplainMessagesRequest>,
+        request: Request<qc::GetExplainMessagesRequest>,
     ) -> Result<Response<qc::GetExplainMessagesResponse>, Status> {
-        // No human-readable explain text generated yet; return an empty list.
-        Ok(Response::new(qc::GetExplainMessagesResponse {
-            messages: Vec::new(),
-        }))
+        // Org scoping first (AGENTS.md): never re-derive another tenant's
+        // decisions. Mirrors SelectorServiceImpl's org_id_checked pattern.
+        let org_id = org_id_checked(&self.0, &request)?;
+        let req = request.into_inner();
+
+        // Re-derive each requested decision's tree + description on demand from
+        // the persisted node_decisions rows (ADR 0005). Untracked ids (absent
+        // from the store) produce no message, so the response can be shorter
+        // than the request — matching the hosted "omit untracked" behavior.
+        //
+        // EVENTUAL CONSISTENCY (F3 — intentional, DO NOT make this read
+        // synchronous): the `node_decisions` row for an `execution_decision_id`
+        // is written by the Submit path's capture, which is a deliberate
+        // fire-and-forget async best-effort write (`spawn_capture`; see
+        // `capture_submit` and ADR 0005's "capture is best-effort and
+        // separate"). So a decision id issued only microseconds earlier may not
+        // yet be visible here; such an absent row is simply treated as untracked
+        // and omitted (same as a genuinely unknown id). This is by design —
+        // coupling this read to the capture write would change Submit semantics
+        // for every node. Clients that need the row observe eventual consistency
+        // (the harness polls briefly). Do not add retry/polling to the service.
+        let rows = self
+            .0
+            .store
+            .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
+            .await
+            .map_err(db_err)?;
+
+        let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
+            std::collections::HashMap::new();
+        for row in rows {
+            let Some(edid) = row.execution_decision_id.clone() else {
+                continue;
+            };
+            let Some(decision) = crate::explain::DecisionClass::from_decision_str(&row.decision)
+            else {
+                // Unknown decision class — skip rather than invent a tree.
+                continue;
+            };
+            let node = crate::explain::ExplainNode {
+                execution_decision_id: edid.clone(),
+                decision,
+                execution_type: row.execution_type,
+                decision_description: row.decision_description.clone(),
+                is_stale: row.is_stale,
+                target_table: row.target_table.clone(),
+                clone_source: row.clone_source.clone(),
+                input_tables: row.input_tables(),
+                // The matched prior `executions` row (ADR 0005 / ticket #30),
+                // joined via `node_decisions.matched_execution_id`. Present for a
+                // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
+                // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
+                // re-derives the per-upstream FRESH/OUTDATED freshness subtree
+                // against it via the shared pure helper, so the explanation
+                // matches the decision exactly.
+                anchor: row.anchor(&org_id),
+            };
+            by_id.insert(edid, node);
+        }
+
+        // Preserve the request order, emitting only tracked ids.
+        let messages = req
+            .execution_decision_ids
+            .iter()
+            .filter_map(|id| by_id.get(id))
+            .map(crate::explain::explain_entry)
+            .collect();
+
+        Ok(Response::new(qc::GetExplainMessagesResponse { messages }))
     }
 
     async fn get_upstream_dependency_changes(
         &self,
         _request: Request<qc::GetUpstreamDependencyChangesRequest>,
     ) -> Result<Response<qc::GetUpstreamDependencyChangesResponse>, Status> {
+        // Intentionally an empty, non-asserted stub (ticket #29 AC): the hosted
+        // service's UpstreamDependencyChanges narrative is not yet characterized.
         Ok(Response::new(qc::GetUpstreamDependencyChangesResponse {
             dependency_changes: Vec::new(),
         }))
