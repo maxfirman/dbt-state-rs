@@ -73,25 +73,3 @@ class TableCopy:
         from .result_copy import execute_copy
 
         return execute_copy(self, clone_sqls, clone_source, clone_target)
-
-
-def install_copy(adapter_type):
-    from dbt_state.run_cache import RunCache
-    from .result_copy import ResultCopy
-
-    original_process = RunCache._process_query_cache_response
-
-    def process(self, node, response):
-        if isinstance(self._adapter_ext, adapter_type):
-            return ResultCopy(self, node).process(response, original_process)
-        return original_process(self, node, response)
-
-    RunCache._process_query_cache_response = process
-    original_try_clone = RunCache._try_clone
-
-    def try_clone(self, node):
-        if isinstance(self._adapter_ext, adapter_type):
-            return ResultCopy(self, node).initialize()
-        return original_try_clone(self, node)
-
-    RunCache._try_clone = try_clone

@@ -20,21 +20,3 @@ def may_confirm(cache, extension_type, result, original):
     if cache and isinstance(cache._adapter_ext, extension_type):
         return str(result.status) == "success" and original(result)
     return original(result)
-
-
-def install_result_guard(extension_type):
-    from dbt_state.run_cache import RunCache
-
-    original = RunCache.on_run_result
-
-    def on_result(cache, node, result):
-        # Data-test aggregate outcomes use their separate complete-result route;
-        # an ordinary failed materialization is never a successful Values/SQL row.
-        if (
-            isinstance(cache._adapter_ext, extension_type)
-            and str(result.status) != "success"
-        ):
-            return
-        return original(cache, node, result)
-
-    RunCache.on_run_result = on_result

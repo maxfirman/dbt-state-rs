@@ -425,3 +425,13 @@ cargo test -p dbt-state-harness --test duckdb_copy --test clone_lifecycle
 The [generated physical-state gate](../../docs/duckdb-generated.md) complements
 these fixed real-dbt checks with reproducible lifecycle traces, independent
 rows/schema checks, real server restarts and oracle mutation probes.
+
+## Pinned client integration
+
+`client.py` owns all mutations of the pinned dbt-state client's classes and
+callbacks, including request qualification, Result copy entry points, local
+authentication, invocation recovery, and completion-before-confirmation ordering.
+The package's `install()` delegates to this one owner. Qualification, completed
+outcome rules, evidence recovery and Result copy policy remain in their own
+modules; those modules do not install upstream patches. The real-dbt acceptance
+suite verifies this integration against the locked Python client.
