@@ -8,9 +8,10 @@ document: it grows as unobserved node kinds (seed/snapshot/incremental) are
 captured.
 
 Source fixtures (wayfinder map #19):
-- `golden/fixtures/explain_snowflake_happy.jsonl` (#20) — model SKIP/EXECUTE, data test SKIP, UNKNOWN unit tests.
-- `golden/fixtures/explain_clone_deferral.jsonl` (#23) — CLONE tree, deferral.
-- `golden/fixtures/explain_tolerance.jsonl` (#24) — within-lag-tolerance SKIP, upstream-OUTDATED EXECUTE.
+- `golden/fixtures/explain_happy_history.jsonl` (#34) — HISTORY-BEARING model/view/data-test SKIP batch (supersedes the empty-store `explain_snowflake_happy.jsonl` from #20).
+- `golden/fixtures/explain_clone_history.jsonl` (#34) — HISTORY-BEARING CLONE tree with the clone source built in-window (supersedes the empty-store `explain_clone_deferral.jsonl` from #23).
+- `golden/fixtures/explain_tolerance_history.jsonl` (#34) — HISTORY-BEARING within-lag-tolerance SKIP + upstream-OUTDATED EXECUTE, asserted directly in the main gate.
+- `golden/fixtures/explain_tolerance.jsonl` (#24) — retained as the seeded-oracle source for `explain_skip_tree_matches_hosted_oracle_*` / `explain_outdated_execute_tree_matches_hosted_oracle_*` (excluded from the generic replay; see `conformance.rs` CHARACTERIZATION_ONLY).
 
 Related decisions: the tree is **re-derived on demand** per
 [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md); the
@@ -193,11 +194,18 @@ was not captured — see unobserved.)
   - upstream model queries have not changed           [SUCCESS]
 - data freshness analysis (vs clone)
   - upstream dependencies
-    - "«FQN»"  <FRESH>
-      - no updates since "«FQN»" last executed         (clone-target anchor)
+    - "«FQN»"                                          (no badge; clone has no own-build anchor)
       - last updated: «rel_time»
   - upstream data is up to date                       [SUCCESS]
 ```
+
+The CLONE `upstream dependencies` listing differs from the SKIP one: a clone has
+NO own-build anchor (ADR 0005 — a CLONE records no `matched_execution_id`), so
+hosted emits **no `<FRESH>`/`<OUTDATED>` badge and no `no updates since … last
+executed` anchor line** — just the humanized `last updated: …` child per
+upstream. VERIFIED LIVE by the history-bearing `explain_clone_history.jsonl`
+(#34); the earlier catalog draft (and generator) wrongly reused the anchored
+SKIP listing here. Rendered by `explain.rs::clone_upstream_dependencies`.
 
 ## UNKNOWN (untracked kinds, e.g. unit tests)
 

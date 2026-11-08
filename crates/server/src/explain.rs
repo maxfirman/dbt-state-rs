@@ -679,7 +679,7 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let upstreams = node.genuine_upstreams();
     let mut freshness_children = Vec::new();
     if !upstreams.is_empty() {
-        freshness_children.push(upstream_dependencies_freshness(node, &upstreams));
+        freshness_children.push(clone_upstream_dependencies(&upstreams));
     }
     freshness_children.push(leaf(
         "upstream data is up to date",
@@ -691,6 +691,29 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         freshness_children,
     ));
     out
+}
+
+/// The CLONE `upstream dependencies` listing. Unlike the SKIP/anchored listing
+/// ([`upstream_dependencies_freshness`]), a clone has NO own-build anchor (ADR
+/// 0005: a CLONE records no `matched_execution_id`), so the hosted service does
+/// NOT emit a FRESH/OUTDATED badge or the anchor-relative `no updates since …`
+/// line — it lists each upstream with ONLY the humanized `last updated: …`
+/// child. VERIFIED LIVE (golden/fixtures/explain_clone_history.jsonl, the
+/// history-bearing CLONE capture from #34). The earlier generator reused the
+/// anchored SKIP listing here and wrongly emitted a `<FRESH>` badge plus a
+/// `no updates since … last executed` line that hosted never renders for a
+/// clone.
+fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
+    let children = upstreams
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line(rel_time_line(up))],
+        })
+        .collect();
+    section("upstream dependencies", children)
 }
 
 // ── FQN / quoting helpers (the single dialect-specific seam) ────────────────
@@ -990,6 +1013,29 @@ mod tests {
         );
         assert_eq!(lines[1].text, "query analysis (vs clone)");
         assert_eq!(lines[2].text, "data freshness analysis (vs clone)");
+        // CLONE upstream listing (#34): a clone has no own-build anchor, so the
+        // upstream is listed with NO badge and ONLY a `last updated: …` child —
+        // NOT the SKIP-style `<FRESH>` badge + `no updates since …` anchor line.
+        // Pinned to golden/fixtures/explain_clone_history.jsonl.
+        let deps = &lines[2].children[0];
+        assert_eq!(deps.text, "upstream dependencies");
+        let up = &deps.children[0];
+        assert_eq!(up.text, "\"DB\".\"S\".\"UP\"");
+        assert_eq!(
+            up.badge, None,
+            "clone upstream carries no FRESH/OUTDATED badge"
+        );
+        assert_eq!(up.marker, None);
+        assert_eq!(up.children.len(), 1, "only the `last updated` child");
+        assert!(
+            up.children[0].text.starts_with("last updated:"),
+            "clone upstream's sole child is the humanized last-updated line, got {:?}",
+            up.children[0].text
+        );
+        assert_eq!(
+            lines[2].children[1].text, "upstream data is up to date",
+            "the clone freshness section still ends with the up-to-date line"
+        );
     }
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
