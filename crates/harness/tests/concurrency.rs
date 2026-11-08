@@ -24,7 +24,7 @@ mod support;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
 use qc::sql_client::SqlClient;
-use support::{channel, response_variant, schema_pool, start_server};
+use support::{channel, response_variant, start_server};
 
 const ETYPE_FULL: i32 = 1;
 
@@ -82,7 +82,8 @@ fn ready_id(resp: &qc::SubmitSqlResponse) -> String {
 /// of A's logic + fresh upstream SKIPS, while B's logic rebuilds.
 #[tokio::test]
 async fn confirmation_order_defines_current_state_not_submission_order() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -150,7 +151,8 @@ async fn confirmation_order_defines_current_state_not_submission_order() {
 /// always well-defined (newest confirmed_at), never a silent corruption.
 #[tokio::test]
 async fn late_confirmation_deterministically_becomes_current() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -218,7 +220,8 @@ async fn late_confirmation_deterministically_becomes_current() {
 /// recorded model.
 #[tokio::test]
 async fn submit_and_record_agree_on_model_fingerprint() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -279,7 +282,8 @@ async fn submit_and_record_agree_on_model_fingerprint() {
 /// confirm via the submit path so the probe hashes line up deterministically.)
 #[tokio::test]
 async fn conflicting_confirmed_rows_last_confirmed_is_current() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -298,7 +302,7 @@ async fn conflicting_confirmed_rows_last_confirmed_is_current() {
     }
 
     // Both rows persist (no dedupe across conflicting confirmed builds).
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM executions WHERE target_table = $1 AND status='confirmed'",
     )

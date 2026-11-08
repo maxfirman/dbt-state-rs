@@ -74,7 +74,8 @@ async fn c1_config_vs_logic_change_is_characterized() {
     );
 
     // Now MEASURE our server: replay [0]+confirm, then [2] (config-only change).
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

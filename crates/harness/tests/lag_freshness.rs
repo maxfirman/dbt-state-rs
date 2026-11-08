@@ -122,7 +122,8 @@ async fn server_reproduces_rebuild_on_upstream_newer_than_build() {
         "ready_to_execute"
     );
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

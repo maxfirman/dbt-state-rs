@@ -6,19 +6,8 @@ mod support;
 async fn generated_physical_state_and_oracle_mutations() {
     let python = std::env::var("DBT_STATE_DUCKDB_PYTHON").expect("pinned Python executable");
     let binary = std::env::var("DBT_STATE_SERVER_BIN").expect("normal production server binary");
-    let admin = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(1)
-        .connect(&support::dsn())
-        .await
-        .expect("connect admin");
-    let schema = format!("generated_{}", uuid::Uuid::new_v4().simple());
-    sqlx::query(&format!("CREATE SCHEMA \"{schema}\""))
-        .execute(&admin)
-        .await
-        .unwrap();
-    let mut dsn = reqwest::Url::parse(&support::dsn()).unwrap();
-    dsn.query_pairs_mut()
-        .append_pair("options[search_path]", &schema);
+    let database = support::TestDatabase::new("generated").await;
+    let dsn = database.scoped_dsn();
     let artifacts = std::env::var_os("DBT_STATE_GENERATED_ARTIFACTS")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
@@ -52,10 +41,6 @@ async fn generated_physical_state_and_oracle_mutations() {
     }
     let result = command.output().await;
     // Python stops its production binary before returning, including failures.
-    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
-        .execute(&admin)
-        .await
-        .unwrap();
     let result = result.expect("execute generated runner");
     println!("{}", String::from_utf8_lossy(&result.stdout));
     assert!(

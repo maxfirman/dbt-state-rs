@@ -41,7 +41,8 @@ fn ready(response: qc::SubmitSqlResponse) -> String {
 
 #[tokio::test]
 async fn duckdb_correlated_confirmation_retry_preserves_first_outcome_and_order() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut execution = ExecutionClient::new(ch);
@@ -153,7 +154,8 @@ async fn duckdb_correlated_confirmation_retry_preserves_first_outcome_and_order(
 
 #[tokio::test]
 async fn duckdb_rejected_record_batch_leaves_execution_and_deferral_unpublished() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut execution = ExecutionClient::new(ch);

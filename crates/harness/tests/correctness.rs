@@ -18,7 +18,7 @@ use qc::sql_client::SqlClient;
 
 #[path = "support.rs"]
 mod support;
-use support::{channel, request_with_org, response_variant, schema_pool, start_server};
+use support::{channel, request_with_org, response_variant, start_server};
 
 const ETYPE_FULL: i32 = 1;
 const ETYPE_VIEW: i32 = 10;
@@ -89,7 +89,8 @@ fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
 /// confirm cannot silently rewrite skippable history.
 #[tokio::test]
 async fn reconfirm_does_not_mutate_recorded_outcome() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -124,7 +125,7 @@ async fn reconfirm_does_not_mutate_recorded_outcome() {
     );
 
     // ...but the stored outcome must be the FIRST confirm's values.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let (epoch, runtime): (Option<i64>, Option<i64>) = sqlx::query_as(
         "SELECT last_modified_epoch, execution_runtime_ms FROM executions WHERE request_id=$1",
     )
@@ -148,7 +149,8 @@ async fn reconfirm_does_not_mutate_recorded_outcome() {
 /// succeed, and must leave the original (correct-org) pending row unconfirmed.
 #[tokio::test]
 async fn confirm_is_org_scoped() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -203,7 +205,8 @@ async fn confirm_is_org_scoped() {
 /// would not be. See crates/harness/tests/clone_submit_fallback.rs.
 #[tokio::test]
 async fn namespace_alone_cannot_prove_cross_target_reuse() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -250,7 +253,8 @@ async fn namespace_alone_cannot_prove_cross_target_reuse() {
 /// but a different execution_type.
 #[tokio::test]
 async fn namespace_match_respects_execution_type() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -297,7 +301,8 @@ async fn namespace_match_respects_execution_type() {
 /// the ORDER BY confirmed_at DESC tie-break is honored deterministically.
 #[tokio::test]
 async fn physical_target_selects_newest_confirmed() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -400,7 +405,8 @@ fn enriched_record(target: &str, body_hash: &str, epoch: Option<i64>) -> qc::Exe
 /// atomic all-or-nothing. The valid records in the same batch must not leak in.
 #[tokio::test]
 async fn record_executions_batch_is_atomic_on_invalid_record() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
@@ -428,7 +434,7 @@ async fn record_executions_batch_is_atomic_on_invalid_record() {
     );
 
     // Nothing from the batch may have persisted.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
         .fetch_one(&pool)
         .await
@@ -447,7 +453,8 @@ async fn record_executions_batch_is_atomic_on_invalid_record() {
 /// INVALID_ARGUMENT. A rejected request must have NO persisted side effect.
 #[tokio::test]
 async fn rejected_record_batch_does_not_leak_node_state() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
@@ -500,7 +507,7 @@ async fn rejected_record_batch_does_not_leak_node_state() {
     assert!(res.is_err(), "invalid batch must be rejected");
 
     // Neither the execution ledger NOR the logical node_states may have changed.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
         .fetch_one(&pool)
         .await
@@ -531,12 +538,13 @@ async fn rejected_record_batch_does_not_leak_node_state() {
 /// partial publish.
 #[tokio::test]
 async fn node_state_write_failure_rolls_back_whole_record_batch() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
     // Inject a deterministic fault: any INSERT into node_states will fail.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     sqlx::query("ALTER TABLE node_states ADD CONSTRAINT fault_injection CHECK (false)")
         .execute(&pool)
         .await
@@ -613,7 +621,8 @@ async fn node_state_write_failure_rolls_back_whole_record_batch() {
 /// for deferral in the same request.
 #[tokio::test]
 async fn successful_record_batch_publishes_execution_and_node_state_together() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
@@ -659,7 +668,7 @@ async fn successful_record_batch_publishes_execution_and_node_state_together() {
         .records_stored;
     assert_eq!(stored, 1);
 
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
         .fetch_one(&pool)
         .await
@@ -682,7 +691,8 @@ async fn successful_record_batch_publishes_execution_and_node_state_together() {
 /// upstream at the newer recorded epoch is fresh and SKIPs.
 #[tokio::test]
 async fn record_executions_duplicate_fingerprint_newest_wins() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -702,7 +712,7 @@ async fn record_executions_duplicate_fingerprint_newest_wins() {
     .unwrap();
 
     // Both rows persisted (no dedupe).
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM executions WHERE node_body_hash='h-dup'")
             .fetch_one(&pool)
@@ -757,7 +767,8 @@ fn test_submit(unique_id: &str, shared_body: &str) -> qc::SubmitEnrichedSqlReque
 /// store/handler level, independent of the golden fixture.
 #[tokio::test]
 async fn data_tests_do_not_collide_on_shared_body_hash() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -839,7 +850,8 @@ fn model_sql(target: &str, sql: &str, body_hash: &str) -> qc::SubmitEnrichedSqlR
 /// reuse. Confirms we match on the whitespace-normalized SQL, not the body hash.
 #[tokio::test]
 async fn whitespace_only_sql_change_skips() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -870,7 +882,8 @@ async fn whitespace_only_sql_change_skips() {
 /// A real SQL text change must EXECUTE (normalized SQL differs).
 #[tokio::test]
 async fn real_sql_change_executes() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -900,7 +913,8 @@ async fn real_sql_change_executes() {
 /// even when the SQL is unchanged.
 #[tokio::test]
 async fn semantic_extras_change_executes_sql_unchanged() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

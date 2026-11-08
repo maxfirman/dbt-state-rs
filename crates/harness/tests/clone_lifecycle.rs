@@ -118,7 +118,8 @@ async fn confirm(
 /// -> cross-environment reuse (same logic skips; changed logic executes).
 #[tokio::test]
 async fn clone_register_confirm_then_cross_env_submit_skips() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
@@ -220,7 +221,8 @@ async fn clone_register_confirm_then_cross_env_submit_skips() {
 /// clone-origin row cannot be adopted and the submit executes.
 #[tokio::test]
 async fn cross_env_submit_without_source_logic_executes() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
@@ -286,7 +288,8 @@ async fn clone_happy_path_register_confirm_shapes() {
         .find(|e| e.method == "ConfirmExecution")
         .unwrap();
 
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut clone = CloneClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -318,7 +321,8 @@ async fn clone_happy_path_register_confirm_shapes() {
 #[allow(deprecated)]
 #[tokio::test]
 async fn failed_clone_confirmation_does_not_certify_source_logic() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());

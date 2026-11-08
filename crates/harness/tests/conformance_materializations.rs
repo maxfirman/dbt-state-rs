@@ -48,7 +48,8 @@ async fn custom_materialization_is_reused_like_any_node() {
     );
 
     // Replay against our server.
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -77,7 +78,8 @@ async fn custom_materialization_is_reused_like_any_node() {
 async fn externally_modified_view_rebuilds() {
     use qc::execution_client::ExecutionClient;
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -165,7 +167,8 @@ async fn snapshot_is_reused_when_unchanged() {
         "skip_execution"
     );
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

@@ -45,10 +45,15 @@ fn results(failures: i64) -> qc::Struct {
     .unwrap()
 }
 
-async fn clients() -> (SqlClient<Channel>, ExecutionClient<Channel>) {
-    let (addr, _) = start_server().await;
+async fn clients() -> (
+    support::TestServer,
+    SqlClient<Channel>,
+    ExecutionClient<Channel>,
+) {
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
-    (SqlClient::new(ch.clone()), ExecutionClient::new(ch))
+    (server, SqlClient::new(ch.clone()), ExecutionClient::new(ch))
 }
 
 async fn confirm(
@@ -76,7 +81,7 @@ async fn confirm(
 
 #[tokio::test]
 async fn overwritten_history_and_execution_types_cannot_be_resurrected() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let a = model("DB.S.T", "select 1");
     confirm(
         &mut exec,
@@ -124,7 +129,7 @@ async fn overwritten_history_and_execution_types_cannot_be_resurrected() {
 
 #[tokio::test]
 async fn missing_changed_and_cross_target_objects_do_not_skip() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("DB.S.T", "select 1");
     req.table_namespace = Some("ns".into());
     confirm(
@@ -182,7 +187,7 @@ async fn missing_changed_and_cross_target_objects_do_not_skip() {
 
 #[tokio::test]
 async fn data_test_identity_logic_and_results_round_trip() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("test-id", "select 7 as failures");
     req.target_table = None;
     req.tables.clear();
@@ -270,7 +275,7 @@ async fn data_test_identity_logic_and_results_round_trip() {
 
 #[tokio::test]
 async fn unknown_freshness_and_distinct_schema_inputs_are_not_hidden() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("DB.S.T", "select * from DB.A.U join DB.B.U using(id)");
     req.tables
         .extend([table("DB.A.U", Some(1000)), table("DB.B.U", Some(100))]);
@@ -304,7 +309,7 @@ async fn unknown_freshness_and_distinct_schema_inputs_are_not_hidden() {
 
 #[tokio::test]
 async fn dependency_context_and_volatile_policy_prevent_unsupported_reuse() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("DB.S.T", "select * from V");
     req.query_dependencies = vec![qc::QueryDependency {
         name: "DB.S.V".into(),
@@ -351,7 +356,7 @@ async fn dependency_context_and_volatile_policy_prevent_unsupported_reuse() {
 
 #[tokio::test]
 async fn seeds_match_configuration_current_object_and_latest_build() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = qc::SubmitValuesRequest {
         target_table: "DB.S.SEED".into(),
         dialect: "snowflake".into(),
@@ -402,7 +407,8 @@ async fn seeds_match_configuration_current_object_and_latest_build() {
 
 #[tokio::test]
 async fn unsupported_history_queries_are_errors_not_empty_successes() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     // SelectorService.GetStateSelection is implemented, but it must still reject
     // a malformed request (here: a default request with an empty project_id)
@@ -432,7 +438,7 @@ async fn unsupported_history_queries_are_errors_not_empty_successes() {
 
 #[tokio::test]
 async fn batch_recording_preserves_results_and_shares_submit_fingerprints() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("test-id", "select 7 as failures");
     req.execution_type = 8;
     req.target_table = None;
@@ -503,7 +509,7 @@ async fn batch_recording_preserves_results_and_shares_submit_fingerprints() {
 
 #[tokio::test]
 async fn non_finite_protobuf_results_and_duplicate_confirmation_are_lossless() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("test-id", "select 0 as failures");
     req.execution_type = 8;
     req.target_table = None;
@@ -545,7 +551,7 @@ async fn non_finite_protobuf_results_and_duplicate_confirmation_are_lossless() {
 
 #[tokio::test]
 async fn missing_or_incomplete_test_results_require_execution() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("test", "select 0 as failures");
     req.execution_type = 8;
     req.target_table = None;
@@ -603,7 +609,7 @@ async fn missing_or_incomplete_test_results_require_execution() {
 
 #[tokio::test]
 async fn incomplete_or_ambiguous_dependency_evidence_requires_execution() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("DB.S.T", "select * from U");
     req.tables.push(table("DB.S.U", Some(100)));
     confirm(
@@ -632,7 +638,8 @@ async fn incomplete_or_ambiguous_dependency_evidence_requires_execution() {
 
 #[tokio::test]
 async fn corrupted_history_errors_and_old_fingerprints_cold_miss() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -647,7 +654,7 @@ async fn corrupted_history_errors_and_old_fingerprints_cold_miss() {
         None,
     )
     .await;
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     sqlx::query("UPDATE executions SET input_tables = '{}'::jsonb")
         .execute(&pool)
         .await
@@ -684,7 +691,8 @@ async fn corrupted_history_errors_and_old_fingerprints_cold_miss() {
 
 #[tokio::test]
 async fn clone_errors_do_not_leave_pending_executions() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let mut clone = qc::clone_client::CloneClient::new(channel(addr).await);
     for (dialect, kind) in [("snowflake", "VIEW"), ("unknown", "TABLE")] {
         let err = clone
@@ -699,7 +707,7 @@ async fn clone_errors_do_not_leave_pending_executions() {
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unimplemented);
     }
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
         .fetch_one(&pool)
         .await
@@ -709,7 +717,7 @@ async fn clone_errors_do_not_leave_pending_executions() {
 
 #[tokio::test]
 async fn ordering_is_irrelevant_but_incomplete_view_definitions_cannot_reuse() {
-    let (mut sql, mut exec) = clients().await;
+    let (_server, mut sql, mut exec) = clients().await;
     let mut req = model("DB.S.T", "select * from V union all select * from W");
     req.query_dependencies = vec![
         qc::QueryDependency {

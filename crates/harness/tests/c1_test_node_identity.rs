@@ -89,7 +89,8 @@ async fn c1_data_test_node_matched_by_unique_id() {
     // Replay against our server: execute + confirm the customer_id test, then
     // submit the customer_name test. The hosted service executes it; our server
     // MUST do the same (not skip by colliding on the shared body hash).
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

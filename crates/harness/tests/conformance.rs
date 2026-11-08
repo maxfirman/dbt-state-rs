@@ -449,7 +449,8 @@ async fn conformance_replay_all_corpora() {
     let mut partial_history: HashSet<(String, usize)> = HashSet::new();
     for path in paths {
         let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-        let (addr, _) = support::start_server().await;
+        let server = support::start_server().await;
+        let addr = server.addr;
         let ch = support::channel(addr).await;
         let mut sql = SqlClient::new(ch.clone());
         let mut exec = ExecutionClient::new(ch.clone());

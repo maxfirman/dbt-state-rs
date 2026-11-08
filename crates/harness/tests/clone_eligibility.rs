@@ -110,7 +110,8 @@ fn hosted_clones_stale_source_with_captured_provenance() {
 /// LESS than hosted.
 #[tokio::test]
 async fn server_clones_stale_cross_name_equivalent_like_hosted() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -256,7 +257,8 @@ async fn clone_eligibility_variant(
     tnd: bool,
     volatile_sql: bool,
 ) -> String {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

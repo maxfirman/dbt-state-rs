@@ -56,7 +56,8 @@ async fn variant(
 
 #[tokio::test]
 async fn same_relation_text_is_independent_across_warehouse_connections() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);
@@ -75,7 +76,8 @@ async fn same_relation_text_is_independent_across_warehouse_connections() {
 
 #[tokio::test]
 async fn bigquery_reuses_exact_sql_but_does_not_clone_unverified_equivalence() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);

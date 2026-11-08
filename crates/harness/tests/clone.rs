@@ -39,7 +39,8 @@ async fn register_clone_matches_real_shape() {
         .as_i64()
         .unwrap();
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut client = CloneClient::new(ch);
 
@@ -105,7 +106,8 @@ async fn deferred_relations_empty_when_nothing_built() {
         .expect("real fqn_by_unique_id");
     assert!(real_map.is_empty(), "this capture has an empty resolution");
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut client = ExecutionClient::new(ch);
     let resp = client
@@ -155,7 +157,8 @@ async fn register_clone_rejected_when_allow_clones_false() {
         Some(10)
     );
 
-    let (addr, schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut client = CloneClient::new(ch);
     let resp = client
@@ -190,7 +193,7 @@ async fn register_clone_rejected_when_allow_clones_false() {
     }
 
     // No pending clone history must be written on a rejection.
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
         .fetch_one(&pool)
         .await

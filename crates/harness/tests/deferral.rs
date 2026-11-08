@@ -85,7 +85,8 @@ async fn resolve(
 /// physical FQNs; unbuilt nodes are omitted.
 #[tokio::test]
 async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -125,7 +126,8 @@ async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
 /// org must not resolve for this (org, project, defer-to env).
 #[tokio::test]
 async fn resolution_is_scoped_by_org_project_and_env() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -163,7 +165,8 @@ async fn resolution_is_scoped_by_org_project_and_env() {
 /// Missing project_id / target / ids yield an empty map (never an error).
 #[tokio::test]
 async fn missing_scope_yields_empty_map_not_error() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
     let uid = "model.jaffle_shop.x";

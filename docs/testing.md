@@ -18,8 +18,20 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ```
 
-Rust 1.98 is selected by rust-toolchain.toml. Integration tests create isolated
-Postgres schemas and run all migrations. Capture's database test lives in
+Rust 1.98 is selected by rust-toolchain.toml. Integration tests keep an owned
+`TestServer` from `tests/support.rs` alive for their clients and row assertions.
+It creates an isolated Postgres schema and runs all migrations. Dropping the owner
+stops and joins its server runtime, including detached captures, before removing
+the schema. Cleanup also runs on assertion panics and failed server startup;
+a separate cleanup runtime makes this work with current-thread Tokio tests.
+Row assertions use the owner's already-scoped pool. The generated runner uses
+`TestDatabase` for the same schema ownership while retaining its production binary.
+
+Fixed real-dbt cases use `server.python_project(...)` to own their temporary files
+and shared process configuration. Successful projects are removed; a panic or
+unsuccessful Python process retains the project, with stdout/stderr logs for
+process failures. The failure reports its path. Python projects borrow their
+server owner so they cannot outlive it. Capture's database test lives in
 `crates/server/tests/capture.rs`, keeping library tests independent of Postgres.
 
 ## DuckDB acceptance gate

@@ -128,7 +128,8 @@ async fn execute_and_confirm(
 /// must EXECUTE, not clone the stale A description of PROD.
 #[tokio::test]
 async fn cross_name_clone_source_must_reflect_current_logic() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -192,7 +193,8 @@ async fn cross_name_clone_source_must_reflect_current_logic() {
 /// `skip_execution` and matches the hosted `ready_to_clone`.
 #[tokio::test]
 async fn clone_adoption_must_not_resurrect_rebuilt_target() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
@@ -326,7 +328,8 @@ async fn clone_adoption_must_not_resurrect_rebuilt_target() {
 /// clone-origin → no adoption → falls through to the cross-name clone fallback.
 #[tokio::test]
 async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
@@ -436,7 +439,8 @@ async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
 /// OFFLINE invariant (store determinism); not a hosted-parity claim.
 #[tokio::test]
 async fn clone_source_logic_inherit_must_use_current_source_state() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());
@@ -527,7 +531,8 @@ async fn clone_source_logic_inherit_must_use_current_source_state() {
 /// that a namespace transition could describe one physical warehouse object.
 #[tokio::test]
 async fn clone_equivalent_is_scoped_to_source_warehouse() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -568,7 +573,8 @@ async fn clone_equivalent_is_scoped_to_source_warehouse() {
 /// same-named source in another warehouse does not replace that source's logic.
 #[tokio::test]
 async fn clone_source_logic_inherits_from_requested_warehouse() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());

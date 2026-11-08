@@ -45,7 +45,8 @@ fn results() -> qc::Struct {
 
 #[tokio::test]
 async fn duckdb_cached_tests_require_complete_scoped_confirmed_evidence() {
-    let (addr, schema, state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let channel = support::channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut execution = ExecutionClient::new(channel);
@@ -144,8 +145,4 @@ async fn duckdb_cached_tests_require_complete_scoped_confirmed_evidence() {
         .unwrap()
         .into_inner();
     assert_eq!(support::response_variant(&response), "skip_execution");
-    sqlx::query(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
-        .execute(state.store.pool())
-        .await
-        .unwrap();
 }

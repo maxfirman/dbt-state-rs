@@ -36,7 +36,7 @@ use qc::sql_client::SqlClient;
 
 #[path = "support.rs"]
 mod support;
-use support::{channel, response_variant, schema_pool, start_server};
+use support::{channel, response_variant, start_server};
 
 const ETYPE_FULL: i32 = 1;
 const ETYPE_VIEW: i32 = 10;
@@ -148,7 +148,8 @@ async fn execute_and_confirm(
 //    reference an object that was never created.
 #[tokio::test]
 async fn unconfirmed_execution_never_skips() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
 
@@ -182,7 +183,7 @@ async fn unconfirmed_execution_never_skips() {
     );
 
     // There must be zero confirmed rows for this fingerprint.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let confirmed: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM executions WHERE status='confirmed' AND node_body_hash=$1",
     )
@@ -200,7 +201,8 @@ async fn unconfirmed_execution_never_skips() {
 //    the original still executes.
 #[tokio::test]
 async fn confirming_wrong_request_id_leaves_original_pending() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -236,7 +238,8 @@ async fn confirming_wrong_request_id_leaves_original_pending() {
 //    itself be confirmed; the original hash still skips.
 #[tokio::test]
 async fn changed_contract_forces_rebuild() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -279,7 +282,8 @@ async fn changed_contract_forces_rebuild() {
 //    rebuild; reverting the upstream to the recorded epoch skips again.
 #[tokio::test]
 async fn modified_upstream_forces_stale_rebuild_then_recovers() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -317,7 +321,8 @@ async fn modified_upstream_forces_stale_rebuild_then_recovers() {
 // 5. ADDED then DELETED upstream.
 #[tokio::test]
 async fn added_then_deleted_upstream() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -353,7 +358,8 @@ async fn added_then_deleted_upstream() {
 // 6. SCHEMA CHANGE: identical timestamps do not prove equivalent objects.
 #[tokio::test]
 async fn cross_schema_upstream_requires_provenance() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -387,7 +393,8 @@ async fn cross_schema_upstream_requires_provenance() {
 //    execution_type).
 #[tokio::test]
 async fn execution_type_isolation() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -416,7 +423,8 @@ async fn execution_type_isolation() {
 //    server has no --full-refresh signal and must skip on an unchanged match).
 #[tokio::test]
 async fn unchanged_confirmed_node_skips_on_rerun() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -444,7 +452,8 @@ async fn unchanged_confirmed_node_skips_on_rerun() {
 // 9. STALE-POLICY ANY vs ALL end-to-end over two upstreams, one drifted.
 #[tokio::test]
 async fn stale_policy_any_vs_all_end_to_end() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -534,7 +543,8 @@ async fn stale_policy_any_vs_all_end_to_end() {
 #[tokio::test]
 async fn concurrent_identical_submits_then_single_confirm_skips() {
     const N: usize = 12;
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     let req = submit(
@@ -564,7 +574,7 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
     assert_eq!(request_ids.len(), N);
 
     // Exactly N pending rows were written (no dedupe), all distinct ids.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status='pending'")
         .fetch_one(&pool)
         .await
@@ -604,7 +614,8 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
 //     exists AND upstreams are not drifted. Every unsafe situation executes.
 #[tokio::test]
 async fn skip_safety_end_to_end_matrix() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

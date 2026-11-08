@@ -35,7 +35,8 @@ fn minimal_submit() -> qc::SubmitEnrichedSqlRequest {
 /// (UNAUTHENTICATED), not silently scoped to the default tenant.
 #[tokio::test]
 async fn require_org_header_rejects_missing_header() {
-    let (addr, _schema) = start_server_require_org().await;
+    let server = start_server_require_org().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let err = SqlClient::new(ch)
         .submit_enriched_sql(minimal_submit()) // no x-organization-id metadata
@@ -48,7 +49,8 @@ async fn require_org_header_rejects_missing_header() {
 /// accepted and scoped to that org.
 #[tokio::test]
 async fn require_org_header_accepts_present_header() {
-    let (addr, _schema) = start_server_require_org().await;
+    let server = start_server_require_org().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let resp = SqlClient::new(ch)
         .submit_enriched_sql(request_with_org(minimal_submit(), "acme"))
@@ -62,7 +64,8 @@ async fn require_org_header_accepts_present_header() {
 /// bucketed into the `local` tenant — preserving the insecure local-dev flow.
 #[tokio::test]
 async fn default_mode_allows_missing_header() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let resp = SqlClient::new(ch)
         .submit_enriched_sql(minimal_submit())
@@ -76,7 +79,8 @@ async fn default_mode_allows_missing_header() {
 /// empty string must not slip through as a valid tenant.
 #[tokio::test]
 async fn require_org_header_rejects_empty_header() {
-    let (addr, _schema) = start_server_require_org().await;
+    let server = start_server_require_org().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let err = SqlClient::new(ch)
         .submit_enriched_sql(request_with_org(minimal_submit(), ""))

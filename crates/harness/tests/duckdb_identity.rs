@@ -50,7 +50,8 @@ async fn assert_variant(
 
 #[tokio::test]
 async fn duckdb_formatting_preserves_identifiers_context_configuration_and_bindings() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);
@@ -113,7 +114,8 @@ async fn duckdb_formatting_preserves_identifiers_context_configuration_and_bindi
 
 #[tokio::test]
 async fn duckdb_dotted_reference_bindings_do_not_collapse_or_swap() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);
@@ -146,7 +148,8 @@ async fn duckdb_dotted_reference_bindings_do_not_collapse_or_swap() {
 
 #[tokio::test]
 async fn unsupported_duckdb_syntax_and_implicit_column_names_keep_exact_identity() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);
@@ -169,7 +172,8 @@ async fn unsupported_duckdb_syntax_and_implicit_column_names_keep_exact_identity
 
 #[tokio::test]
 async fn recorded_duckdb_formatting_uses_the_same_identity_as_submission() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);
@@ -202,7 +206,9 @@ async fn recorded_duckdb_formatting_uses_the_same_identity_as_submission() {
 
 #[tokio::test]
 async fn old_exact_duckdb_history_cold_misses_after_identity_upgrade() {
-    let (addr, _, state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
+    let state = server.state.clone();
     let channel = channel(addr).await;
     let mut sql = SqlClient::new(channel.clone());
     let mut exec = ExecutionClient::new(channel);

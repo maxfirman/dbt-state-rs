@@ -104,7 +104,8 @@ async fn confirm(exec: &mut ExecutionClient<Channel>, request_id: String) {
 /// Template CHANGED, rendered SAME -> SKIP (the finding-6 fix).
 #[tokio::test]
 async fn template_changed_rendered_same_skips() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -132,7 +133,8 @@ async fn template_changed_rendered_same_skips() {
 /// Template SAME, rendered CHANGED -> SKIP (the other documented cell).
 #[tokio::test]
 async fn rendered_changed_template_same_skips() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -159,7 +161,8 @@ async fn rendered_changed_template_same_skips() {
 /// Template CHANGED AND rendered CHANGED -> EXECUTE (only when BOTH change).
 #[tokio::test]
 async fn template_and_rendered_both_changed_executes() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -186,7 +189,8 @@ async fn template_and_rendered_both_changed_executes() {
 /// rendered and template identities fold in dependency definitions).
 #[tokio::test]
 async fn dependency_change_executes_under_cuc() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

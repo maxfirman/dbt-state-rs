@@ -22,7 +22,7 @@ use qc::sql_client::SqlClient;
 // Shared isolated-schema server setup (see tests/support.rs).
 #[path = "support.rs"]
 mod support;
-use support::{channel, request_with_org, response_variant, schema_pool, start_server};
+use support::{channel, request_with_org, response_variant, start_server};
 
 // Decision/rejection constants mirrored from the server (shared.proto + decision.rs)
 // so we can assert the exact response field values stay unchanged.
@@ -84,7 +84,8 @@ fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
 /// must SKIP (A's own confirmed history applies).
 #[tokio::test]
 async fn org_isolation_state_does_not_leak() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -165,7 +166,8 @@ async fn org_isolation_state_does_not_leak() {
 /// ready_to_execute (empty-state execute), because there is no confirmed match.
 #[tokio::test]
 async fn near_empty_submit_executes_without_panic() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch);
 
@@ -193,7 +195,8 @@ async fn near_empty_submit_executes_without_panic() {
 /// return success=false (and must not error), echoing the request_id back.
 #[tokio::test]
 async fn confirm_unknown_request_id_returns_false() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
@@ -211,7 +214,8 @@ async fn confirm_unknown_request_id_returns_false() {
 /// confirmed). Verifies the current store.confirm behavior is idempotent.
 #[tokio::test]
 async fn confirm_is_idempotent_for_duplicate_request_id() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -244,7 +248,7 @@ async fn confirm_is_idempotent_for_duplicate_request_id() {
     );
 
     // Exactly one row should still exist for this request_id (no duplication).
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE request_id = $1")
         .bind(&req_id)
         .fetch_one(&pool)
@@ -260,7 +264,8 @@ async fn confirm_is_idempotent_for_duplicate_request_id() {
 async fn concurrent_distinct_submits_all_execute() {
     const N: usize = 20;
 
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     // Spawn N tasks, each sharing the same underlying channel (cheaply cloned),
@@ -290,7 +295,7 @@ async fn concurrent_distinct_submits_all_execute() {
     assert_eq!(executed, N, "all {N} submits must return ready_to_execute");
 
     // The DB must hold exactly N pending rows.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status = 'pending'")
         .fetch_one(&pool)
         .await
@@ -306,7 +311,8 @@ async fn concurrent_distinct_submits_all_execute() {
 /// identical no-metadata submit must SKIP (proving it mapped to a stable org).
 #[tokio::test]
 async fn no_metadata_defaults_to_local_org() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

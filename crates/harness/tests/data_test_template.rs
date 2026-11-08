@@ -129,7 +129,8 @@ async fn submit_execute_id(
 /// template identity, not only the rendered hash.
 #[tokio::test]
 async fn data_test_rendered_only_change_skips_under_cuc() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -166,7 +167,8 @@ async fn data_test_rendered_only_change_skips_under_cuc() {
 /// Template SAME, rendered SAME, upstream SAME -> SKIP (the plain reuse cell).
 #[tokio::test]
 async fn data_test_unchanged_skips_under_cuc() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -193,7 +195,8 @@ async fn data_test_unchanged_skips_under_cuc() {
 /// change). Mirrors the model truth table for data tests.
 #[tokio::test]
 async fn data_test_both_changed_executes_under_cuc() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -221,7 +224,8 @@ async fn data_test_both_changed_executes_under_cuc() {
 /// finding-1 data-test freshness anchor is preserved alongside dual identity).
 #[tokio::test]
 async fn data_test_upstream_drift_executes_even_under_cuc() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

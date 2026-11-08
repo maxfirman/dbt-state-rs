@@ -60,7 +60,8 @@ fn register() -> qc::CloneRequest {
 }
 #[tokio::test]
 async fn incremental_register_requires_current_source_and_adopts_only_matching_logic() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut copies = CloneClient::new(ch.clone());
@@ -197,7 +198,8 @@ async fn incremental_register_requires_current_source_and_adopts_only_matching_l
 
 #[tokio::test]
 async fn legacy_incremental_sources_cannot_initialize_new_targets() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut copies = CloneClient::new(ch.clone());

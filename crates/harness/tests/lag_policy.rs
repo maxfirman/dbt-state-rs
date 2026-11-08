@@ -132,7 +132,8 @@ fn tbl(name: &str, epoch: i64) -> qc::TableModifiedInfo {
 /// to ANY → the same drift EXECUTES with is_stale=FALSE.
 #[tokio::test]
 async fn server_reproduces_all_policy_tolerated_stale_skip() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

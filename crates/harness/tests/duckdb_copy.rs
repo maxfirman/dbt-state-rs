@@ -23,7 +23,8 @@ fn request(schema: &str) -> qc::SubmitEnrichedSqlRequest {
 }
 #[tokio::test]
 async fn eligible_table_copy_confirms_then_skips_preserving_physical_inputs() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -110,7 +111,8 @@ async fn eligible_table_copy_confirms_then_skips_preserving_physical_inputs() {
 
 #[tokio::test]
 async fn failed_sql_copy_records_actual_build_and_becomes_an_ordinary_source() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -184,7 +186,8 @@ fn graph_request(schema: &str) -> qc::SubmitEnrichedSqlRequest {
 
 #[tokio::test]
 async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -275,7 +278,8 @@ async fn view_graph_copy_binds_definitions_context_and_exact_leaves() {
 
 #[tokio::test]
 async fn graph_copy_chain_supports_two_hops_and_rejects_a_third() {
-    let (addr, _) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

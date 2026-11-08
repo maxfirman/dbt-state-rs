@@ -16,7 +16,7 @@ use qc::sql_client::SqlClient;
 // while keeping the server/sqlx/tokio deps dev-only.
 #[path = "support.rs"]
 mod support;
-use support::{channel, response_variant, schema_pool, start_server};
+use support::{channel, response_variant, start_server};
 
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -47,7 +47,8 @@ async fn execute_then_confirm_then_skip() {
     let exec_entry = find_first_execute(&entries);
     let req = submit_req_from_golden(exec_entry);
 
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -103,7 +104,8 @@ async fn execute_then_confirm_then_skip() {
 #[tokio::test]
 async fn validate_client_version_supported() {
     use qc::client_validation_client::ClientValidationClient;
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut client = ClientValidationClient::new(ch);
     let resp = client
@@ -125,7 +127,8 @@ async fn skip_echoes_confirmed_runtime_ms() {
     let exec_entry = find_first_execute(&entries);
     let req = submit_req_from_golden(exec_entry);
 
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -179,7 +182,8 @@ async fn skip_echoes_confirmed_runtime_ms() {
 /// executions, assert records_stored==2 and that 2 rows exist in the store.
 #[tokio::test]
 async fn record_executions_stores_batch() {
-    let (addr, schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut exec = ExecutionClient::new(ch);
 
@@ -234,7 +238,7 @@ async fn record_executions_stores_batch() {
     assert_eq!(resp.records_stored, 2, "both records must be stored");
 
     // Assert the rows actually exist and are confirmed.
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM executions WHERE status = 'confirmed'")
             .fetch_one(&pool)
@@ -248,7 +252,8 @@ async fn record_executions_stores_batch() {
 /// identical submit skips.
 #[tokio::test]
 async fn submit_values_execute_confirm_skip() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -334,7 +339,8 @@ async fn explain_placeholder_and_implemented_selector() {
     use qc::explain_client::ExplainClient;
     use qc::selector_service_client::SelectorServiceClient;
 
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     let mut explain = ExplainClient::new(ch.clone());

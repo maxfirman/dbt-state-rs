@@ -54,7 +54,8 @@ async fn incremental_merge_reuse_reproduced() {
         "skip_execution"
     );
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -94,7 +95,8 @@ async fn seed_values_hash_lifecycle_reproduced() {
     assert_eq!(vhash(0), vhash(1), "first two share values_hash");
     assert_ne!(vhash(1), vhash(2), "content change moves values_hash");
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

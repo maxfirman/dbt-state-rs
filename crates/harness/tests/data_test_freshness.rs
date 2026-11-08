@@ -141,7 +141,8 @@ async fn submit_execute_id(
 /// data changed, and SKIP when the upstream is unchanged.
 #[tokio::test]
 async fn data_test_reruns_when_upstream_data_changed() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

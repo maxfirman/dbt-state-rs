@@ -91,7 +91,8 @@ fn hosted_submit_fallback_shape_is_pinned() {
 /// cloning A→B. A subsequent confirm + re-submit for B then SKIPS (adopted).
 #[tokio::test]
 async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -176,7 +177,8 @@ async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
 /// normally (no spurious clone).
 #[tokio::test]
 async fn no_equivalent_executes_normally() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch);
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
@@ -300,7 +302,8 @@ fn hosted_allow_clones_false_suppression_shape_is_pinned() {
 /// dependency-definition sensitivity (reintroducing the conflation risk) fails.
 #[tokio::test]
 async fn finding3_dependency_definition_keys_clone_eligibility() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -376,7 +379,8 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
 /// the hosted service — not a generic execute and not a clone.
 #[tokio::test]
 async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -494,7 +498,8 @@ fn hosted_swapped_bindings_execute_not_clone() {
 /// differ so no clone equivalent is found.
 #[tokio::test]
 async fn server_does_not_clone_swapped_binding_equivalent() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -612,7 +617,8 @@ fn hosted_dep_binding_swap_executes_shape_is_pinned() {
 /// and the submit EXECUTES.
 #[tokio::test]
 async fn server_executes_swapped_dependency_binding_with_views() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -679,7 +685,8 @@ async fn server_executes_swapped_dependency_binding_with_views() {
 /// (no equivalent found for the swapped binding).
 #[tokio::test]
 async fn server_executes_quoted_case_swapped_binding() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -750,7 +757,8 @@ async fn server_executes_quoted_case_swapped_binding() {
 /// because the control proves a candidate is present.
 #[tokio::test]
 async fn dep_binding_swap_gated_against_present_baseline_with_control() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -827,7 +835,8 @@ async fn dep_binding_swap_gated_against_present_baseline_with_control() {
 /// CLONE (candidate present) ; TREATMENT (dev, definitions swapped) must EXECUTE.
 #[tokio::test]
 async fn server_gates_table_component_quoted_case_swap_with_control() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -903,7 +912,8 @@ async fn server_gates_table_component_quoted_case_swap_with_control() {
 /// experiments/quoted_identifier_case.sh probe showed PROD_STATE_DEMO.QC_SRC_*.)
 #[tokio::test]
 async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -961,7 +971,8 @@ async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
 /// clone_eligibility.sh volatile_det. The earlier blanket gate wrongly executed.
 #[tokio::test]
 async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1007,7 +1018,8 @@ async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
 /// golden/fixtures/clone_fallback_volatile.jsonl.
 #[tokio::test]
 async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1057,7 +1069,8 @@ async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
 /// not clone a stale evaluation.
 #[tokio::test]
 async fn volatile_dependency_definition_suppresses_clone() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1127,7 +1140,8 @@ async fn volatile_dependency_definition_suppresses_clone() {
 /// structured, length-framed component hashing.
 #[tokio::test]
 async fn server_gates_component_boundary_collision_swap_with_control() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1196,7 +1210,8 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
 /// volatility branch must not misclassify it.
 #[tokio::test]
 async fn bare_random_column_is_deterministic_and_clones() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1252,7 +1267,8 @@ async fn bare_random_column_is_deterministic_and_clones() {
 /// pre-fix row.)
 #[tokio::test]
 async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1311,7 +1327,7 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
     // namespace hash to a STALE value (what the pre-fix normalizer produced,
     // which the current normalizer no longer computes). The SQL hash is left
     // intact — exactly the pre-fix persisted shape that previously SKIPPED.
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     let updated = sqlx::query(
         "UPDATE executions SET node_namespace_logic_hash = 'STALE_PREFIX_NS_HASH' \
          WHERE target_table = $1 AND status = 'confirmed'",
@@ -1371,11 +1387,12 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
 async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
     use dbt_state_server::{fingerprint, services::sql_execution};
 
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
 
     // An ordinary model request held constant across build/confirm/resubmit so
     // its CURRENT (v4) hash is well-defined; own-target epoch present so the
@@ -1515,7 +1532,8 @@ async fn parameterized_v3_tag_differs_from_current_v4() {
 /// matching rule is intact).
 #[tokio::test]
 async fn template_mode_legitimate_reuse_still_skips() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -1651,11 +1669,12 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
     }
     let mut cases_run = 0usize;
 
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
 
     // Build the dev request exactly as recorded (per-case SQL, same deps/ns).
     let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
@@ -1858,11 +1877,12 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
         );
     }
 
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
 
     let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
         target_table: Some(target.into()),
@@ -2015,11 +2035,12 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
 #[tokio::test]
 #[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
 async fn zz_capture_prefix_clone_fixture() {
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
 
     let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
     let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
@@ -2147,11 +2168,12 @@ async fn zz_capture_prefix_clone_fixture() {
 #[tokio::test]
 #[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
 async fn zz_capture_incorrect_clone_fixture() {
-    let (addr, schema, _state) = support::start_server_with_state().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
-    let pool = support::schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
     let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
     let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";

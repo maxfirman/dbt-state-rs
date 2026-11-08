@@ -174,7 +174,8 @@ async fn registerclone_source_age_chain_exact_replay() {
     let entries = diff::load_golden(SOURCE_AGE_FIXTURE).expect("load source-age fixture");
     assert_eq!(entries.len(), 5, "the full 5-message chain");
 
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut clone = CloneClient::new(ch.clone());

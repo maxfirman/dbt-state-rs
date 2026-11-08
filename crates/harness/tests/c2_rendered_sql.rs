@@ -70,7 +70,8 @@ async fn rendered_sql_change_forces_execute() {
         "skip_execution"
     );
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql_c = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -141,7 +142,8 @@ async fn compare_unrendered_code_skips_rendered_change() {
         "skip_execution"
     );
 
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql_c = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);
@@ -174,7 +176,8 @@ async fn compare_unrendered_code_skips_rendered_change() {
 /// submit the literal form for the SAME target → must EXECUTE, not skip.
 #[tokio::test]
 async fn quoted_reserved_word_change_forces_execute_same_target() {
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql_c = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

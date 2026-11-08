@@ -33,7 +33,7 @@ use dbt_state_harness::diff::{load_golden, GoldenEntry};
 use dbt_state_proto::query_cache as qc;
 use qc::selector_service_client::SelectorServiceClient;
 use serde_json::Value;
-use support::{channel, request_with_org, schema_pool, start_server};
+use support::{channel, request_with_org, start_server};
 
 const FIXTURE: &str = "../../golden/fixtures/selector_state_selection.jsonl";
 
@@ -113,8 +113,9 @@ fn selector_request(entry: &GoldenEntry) -> qc::SelectorRequest {
 #[tokio::test]
 async fn get_state_selection_reproduces_hosted_responses() {
     let entries = load_golden(FIXTURE).expect("load selector fixture");
-    let (addr, schema) = start_server().await;
-    let pool = schema_pool(&schema).await;
+    let server = start_server().await;
+    let addr = server.addr;
+    let pool = server.state.store.pool().clone();
 
     // Seed the recorded comparison state directly (the captured dbt_node_state
     // IS what the hosted service recorded; the SQL decision path is irrelevant
@@ -206,7 +207,8 @@ async fn get_state_selection_reproduces_hosted_responses() {
 async fn last_write_wins_baseline_reproduces_hosted() {
     const LWW_FIXTURE: &str = "../../golden/fixtures/selector_last_write_wins.jsonl";
     let entries = load_golden(LWW_FIXTURE).expect("load last-write-wins fixture");
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     let mut selector_checks = 0usize;

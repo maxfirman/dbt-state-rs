@@ -46,7 +46,8 @@ fn model(target: &str, sql: &str) -> qc::SubmitEnrichedSqlRequest {
 
 /// Replay (baseline execute+confirm, then variant submit) and return our verdict.
 async fn verdict_for(baseline_sql: &str, variant_sql: &str, target: &str) -> &'static str {
-    let (addr, _schema) = support::start_server().await;
+    let server = support::start_server().await;
+    let addr = server.addr;
     let ch = support::channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch);

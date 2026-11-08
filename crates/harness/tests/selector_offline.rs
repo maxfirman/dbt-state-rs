@@ -16,7 +16,7 @@ use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
 use qc::selector_service_client::SelectorServiceClient;
 use qc::sql_client::SqlClient;
-use support::{channel, request_with_org, schema_pool, start_server, start_server_with_state};
+use support::{channel, request_with_org, start_server};
 
 // SelectorCriteria wire ints.
 const MODIFIED: i32 = 1;
@@ -109,7 +109,8 @@ async fn select(
 
 #[tokio::test]
 async fn record_path_then_select_classifies_against_recorded_state() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     // Record a baseline for model.a (via a real SQL submit).
@@ -161,7 +162,8 @@ async fn record_path_then_select_classifies_against_recorded_state() {
 
 #[tokio::test]
 async fn relation_differs_from_recorded_null_but_is_excluded_from_modified() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     SqlClient::new(ch.clone())
         .submit_enriched_sql(request_with_org(submit_req("model.a", "DB.S.A"), ORG))
@@ -190,7 +192,8 @@ async fn relation_differs_from_recorded_null_but_is_excluded_from_modified() {
 
 #[tokio::test]
 async fn new_node_matches_every_modified_sub_selector() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     // No baseline recorded at all -> model.z is new.
     let nodes = vec![node_data("model.z")];
@@ -213,7 +216,8 @@ async fn new_node_matches_every_modified_sub_selector() {
 
 #[tokio::test]
 async fn scoping_isolates_by_org_project_and_target() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     // Record model.a under (ORG, PROJECT, TARGET=prod).
     SqlClient::new(ch.clone())
@@ -249,7 +253,8 @@ async fn scoping_isolates_by_org_project_and_target() {
 
 #[tokio::test]
 async fn record_executions_also_populates_selector_state() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     // Hydrate via RecordExecutions (the bypass path) rather than Submit/Confirm.
@@ -292,7 +297,8 @@ async fn record_executions_also_populates_selector_state() {
 
 #[tokio::test]
 async fn unknown_criteria_and_missing_project_are_rejected() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
 
     // SC_UNSPECIFIED (0) and out-of-range are rejected, not guessed.
@@ -341,7 +347,8 @@ async fn unknown_criteria_and_missing_project_are_rejected() {
 /// contract is what we reproduce.
 #[tokio::test]
 async fn selector_baseline_is_last_write_wins() {
-    let (addr, _schema) = start_server().await;
+    let server = start_server().await;
+    let addr = server.addr;
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
 
@@ -388,7 +395,9 @@ async fn selector_baseline_is_last_write_wins() {
 /// `selector_write_failures` gauge increments.
 #[tokio::test]
 async fn selector_state_write_failures_are_observable() {
-    let (addr, schema, state) = start_server_with_state().await;
+    let server = start_server().await;
+    let addr = server.addr;
+    let state = server.state.clone();
     let ch = channel(addr).await;
     let mut sql = SqlClient::new(ch.clone());
 
@@ -396,7 +405,7 @@ async fn selector_state_write_failures_are_observable() {
 
     // Drop the selector store table in the server's schema to force an upsert
     // error on the next record (the executions ledger is untouched).
-    let pool = schema_pool(&schema).await;
+    let pool = server.state.store.pool().clone();
     sqlx::query("DROP TABLE node_states")
         .execute(&pool)
         .await
