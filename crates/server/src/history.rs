@@ -219,23 +219,6 @@ fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
         })
 }
 
-/// Older clients publish identity only in labels.
-pub(crate) fn node_unique_id(
-    state: Option<&qc::DbtNodeState>,
-    labels: &std::collections::HashMap<String, String>,
-) -> Option<String> {
-    state
-        .map(|s| s.node_unique_id.as_str())
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            labels
-                .get("dbt_node_unique_id")
-                .map(String::as_str)
-                .filter(|s| !s.is_empty())
-        })
-        .map(str::to_owned)
-}
-
 pub(crate) fn namespace(value: Option<&str>) -> Option<&str> {
     value.filter(|s| !s.is_empty())
 }

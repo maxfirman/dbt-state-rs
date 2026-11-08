@@ -3,11 +3,27 @@
 //! and the gRPC adapter owns wire responses. Submit selector writes are best effort;
 //! Record publishes its complete batch and selector state in one transaction.
 
-use crate::history::node_unique_id;
 use crate::query_cache as qc;
 use crate::store::{ConfirmedExecution, InputTable, PendingExecution, Store};
 use crate::AppState;
 use tonic::Status;
+
+/// Older clients publish identity only in labels.
+fn node_unique_id(
+    state: Option<&qc::DbtNodeState>,
+    labels: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    state
+        .map(|s| s.node_unique_id.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            labels
+                .get("dbt_node_unique_id")
+                .map(String::as_str)
+                .filter(|s| !s.is_empty())
+        })
+        .map(str::to_owned)
+}
 
 pub(crate) struct ExecutionEvidence(PendingExecution);
 
