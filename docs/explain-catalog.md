@@ -253,6 +253,41 @@ future-capture fog item on map #19):
   this enum may be vestigial. `EB_UNSPECIFIED` (0).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
+- **Dependency-set change** (`decision::FreshnessEvidence::DependencySetChanged`
+  / `UpstreamFreshness.name_set_diff`): UNREACHABLE on the characterized hosted
+  version, like `WITHIN_TOLERANCE` above. #32 drove three live Snowflake
+  scenarios through the recording proxy to make a node's GENUINE upstream NAME
+  set change (added/removed/ambiguous) while keeping its own fingerprint
+  matchable, and NONE produced a distinct dependency-set subtree:
+  - **ref swap / add / remove** (`explain_dep_set_variants.sh` variant S): the
+    upstream physical FQN is embedded in the consumer's RENDERED SQL, so changing
+    which upstream a `ref()` resolves to necessarily changes `node_sql_hash`.
+    Hosted then rebuilds via the node/upstream-query-changed path, never a pure
+    name-set diff. An added/removed upstream with a MATCHABLE own fingerprint is
+    therefore structurally impossible through a real dbt client.
+  - **view indirection** (`explain_dependency_set_changed.sh`): the consumer's
+    submitted `tables` set tracks only its DIRECT upstream (it is not the
+    transitive closure through a view). Repointing a view's own upstream surfaces
+    on the consumer as an UPSTREAM_QUERY_CHANGED EXECUTE whose explain tree is
+    `query analysis → upstream dependencies → "«view FQN»" → "view ignored"` then
+    `"an upstream model query has changed" [FAIL]` — the upstream is named by its
+    physical FQN; NO added/removed/ambiguous dependency NAME is surfaced.
+  - **duplicate ref** (variant D): the client DEDUPES two `ref()`s to the same
+    model, so the submitted `tables` multiset carries a single occurrence — the
+    `ambiguous` set is never put on the wire.
+  - **comment ref** (`explain_dep_set_comment_ref.sh`): a `ref()` inside a SQL
+    comment registers NO dependency (and the comment is normalized out of the
+    fingerprint), so it cannot add a genuine upstream either.
+  `Explain.GetUpstreamDependencyChanges` never fired in any of these flows.
+  CONCLUSION for #33: there is no hosted dependency-set-change subtree to build;
+  `name_set_diff` has no reader, and a name-set change with a MATCHABLE own
+  fingerprint (the only case that would need a distinct subtree) is not
+  client-reachable. The `DependencySetChanged` evidence variant itself stays
+  reachable and is still consumed by the SKIP/EXECUTE fold → #33 drops the FIELD
+  (not the variant), not builds a subtree.
+  Drivers: `experiments/explain_dependency_set_changed.sh`,
+  `experiments/explain_dep_set_variants.sh`,
+  `experiments/explain_dep_set_comment_ref.sh`.
 
 ## Known limitation — dropped-own-target rebuild mislabel
 

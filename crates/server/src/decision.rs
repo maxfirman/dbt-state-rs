@@ -257,11 +257,23 @@ pub(crate) enum FreshnessEvidence {
 /// decision fold, so the former struct-level dead-code allow is removed.
 #[derive(Debug, Clone)]
 pub(crate) struct UpstreamFreshness {
-    // TODO(#30 follow-up): `name_set_diff` is still only written (the set-change
+    // TODO(#32→#33): `name_set_diff` is still only written (the set-change
     // branch reads the local `name_set_diff.is_clean()` before moving it in); no
-    // reader consumes this field yet. The explain generator does NOT read it.
-    // Wire it into the DependencySetChanged explain subtree or drop the field;
-    // do not silence more broadly than this one field.
+    // reader consumes this FIELD yet. The explain generator does NOT read it.
+    // #32 CAPTURE FINDING: a genuine upstream name-set change WITH A MATCHABLE
+    // own fingerprint — the only thing that would need a distinct hosted
+    // subtree — is UNREACHABLE through a real dbt client on the characterized
+    // hosted version (an added/removed upstream is embedded in the rendered SQL
+    // so it surfaces as a node/upstream-query change; duplicate refs are
+    // client-deduped so the `ambiguous` set never reaches the wire). The
+    // `DependencySetChanged` EVIDENCE VARIANT itself stays reachable and is
+    // still consumed by the SKIP/EXECUTE fold below; it is this
+    // added/removed/ambiguous DIFF field that has no reader. Hosted has no
+    // dependency-set-diff subtree to mirror. See docs/explain-catalog.md §
+    // "Unobserved — do not implement until captured" (Dependency-set change) and
+    // the three experiments/explain_dep_set_*.sh drivers. => #33 should DROP
+    // this FIELD (not the variant), not build a subtree. Kept allow(dead_code)
+    // on this one field until #33.
     #[allow(dead_code)]
     pub name_set_diff: NameSetDiff,
     pub evidence: FreshnessEvidence,
