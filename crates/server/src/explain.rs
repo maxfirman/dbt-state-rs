@@ -417,6 +417,19 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
 fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    // Data-test EXECUTE is UNOBSERVED / unimplemented: explain-catalog.md
+    // ("Data test EXECUTE (only SKIP captured)", ~line 222) and spec #27
+    // "Out of Scope" have NO hosted evidence and NO fixture for its shape, and
+    // the spec's hard rule is "mark as unimplemented rather than invent ...
+    // never ship invented output". A data test also produces no physical object,
+    // so none of the object-bearing branches below (first-build table analysis,
+    // table_analysis_exists) can be structurally valid for it. Emit nothing —
+    // mirroring the `skip_tree` data-test guard — rather than a wrong,
+    // model-shaped tree. (The persisted data-test execute description contains
+    // "no prior execution", which would otherwise trip `is_first_build`.)
+    if node.is_data_test() {
+        return Vec::new();
+    }
     // First build (no matched anchor and no genuine upstreams recorded against a
     // prior build): table-analysis-only shape. We distinguish it from the
     // node-query-changed rebuild by the persisted description wording.
@@ -514,15 +527,22 @@ fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 
 /// A first build renders the table-analysis-only shape. Detected by the
 /// persisted first-build description ("did not exist" / "no prior execution").
+/// Hardened against the data-test execute wording: a data test has no physical
+/// object, so a "first build table analysis" is meaningless for it, and its
+/// pinned description ("...has no prior execution or its query changed") would
+/// otherwise trip the substring heuristic. Guarding on `!is_data_test()` keeps
+/// this robust even if the `execute_tree` data-test guard is later refactored.
 fn is_first_build(node: &ExplainNode) -> bool {
-    node.decision_description
-        .as_deref()
-        .map(|d| {
-            d.contains("did not exist")
-                || d.contains("no prior execution")
-                || d.contains("has no prior")
-        })
-        .unwrap_or(false)
+    !node.is_data_test()
+        && node
+            .decision_description
+            .as_deref()
+            .map(|d| {
+                d.contains("did not exist")
+                    || d.contains("no prior execution")
+                    || d.contains("has no prior")
+            })
+            .unwrap_or(false)
 }
 
 /// First build — `table analysis` only: the table does not exist and there is
@@ -838,6 +858,28 @@ mod tests {
             ),
         ];
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn data_test_execute_emits_nothing() {
+        // F4 regression (PR #31): a data-test EXECUTE must NOT render a
+        // model-shaped first-build `table analysis` tree. The pinned data-test
+        // execute description contains "no prior execution", which used to trip
+        // the `is_first_build` substring heuristic. Data-test EXECUTE is
+        // UNOBSERVED/unimplemented (explain-catalog.md ~line 222, spec #27
+        // Out-of-Scope "only SKIP captured"), so we emit nothing rather than
+        // invent a structurally-impossible tree.
+        let mut n = node(
+            DecisionClass::Build,
+            ET_DBT_DATA_TEST,
+            "data test was executed because it has no prior execution or its query changed",
+        );
+        n.target_table = None; // tests produce no physical object
+        assert!(
+            explain_lines(&n).is_empty(),
+            "data-test EXECUTE is unobserved → must emit no invented lines, got {:?}",
+            render(&n)
+        );
     }
 
     #[test]
