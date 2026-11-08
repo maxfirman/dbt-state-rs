@@ -4,6 +4,7 @@ pub mod capture;
 pub mod clone;
 pub mod config;
 pub mod decision;
+mod execution;
 pub mod fingerprint;
 mod history;
 pub mod selector;

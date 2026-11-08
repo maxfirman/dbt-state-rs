@@ -3,9 +3,9 @@
 use tonic::{Request, Response, Status};
 
 use crate::decision::{self, SubmitContext, Verdict};
-use crate::history::{namespace, node_unique_id};
+use crate::execution::{record_node_state, store_status as db_err};
+use crate::history::namespace;
 use crate::query_cache as qc;
-use crate::store::{ConfirmedExecution, InputTable, PendingExecution};
 use crate::AppState;
 
 use qc::client_validation_server::ClientValidation;
@@ -435,67 +435,7 @@ fn new_uuid_v7() -> String {
 }
 
 // Preserve the public conversion path used by upgrade regressions.
-pub use crate::history::sql_execution;
-
-/// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
-/// or `None` when the node_state lacks the scope keys (project_id/target_name/
-/// node_unique_id) the selector needs. Pure — performs no I/O.
-fn node_state_upsert(
-    org_id: &str,
-    node_state: Option<&qc::DbtNodeState>,
-    target_table: Option<&str>,
-) -> Option<crate::store::NodeStateUpsert> {
-    let ns = node_state?;
-    let (project_id, target_name) = (ns.project_id.clone()?, ns.target_name.clone());
-    if project_id.is_empty() || target_name.is_empty() || ns.node_unique_id.is_empty() {
-        return None;
-    }
-    Some(crate::store::NodeStateUpsert {
-        org_id: org_id.to_string(),
-        project_id,
-        target_name,
-        node_unique_id: ns.node_unique_id.clone(),
-        node_body_hash: ns.node_body_hash.clone(),
-        node_configs_hash: ns.node_configs_hash.clone(),
-        node_persisted_descriptions_hash: ns.node_persisted_descriptions_hash.clone(),
-        node_macros_hash: ns.node_macros_hash.clone(),
-        node_contract_hash: ns.node_contract_hash.clone(),
-        node_database_representation: ns.node_database_representation.clone(),
-        // The physical FQN this node was built as in `target_name` — used to
-        // resolve deferral (ResolveDeferredRelations). Empty targets (data
-        // tests) record NULL and are not deferrable.
-        target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
-    })
-}
-
-/// Record a node's comparison state for `state:*` selectors from a submitted
-/// `dbt_node_state` (latest wins). CHARACTERIZED LIVE: the hosted service
-/// records the client-supplied hashes verbatim on every Submit/Record — keyed
-/// by the logical (org, project_id, target env, node_unique_id) — regardless of
-/// the SKIP/EXECUTE verdict, and the selector compares against them (see
-/// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
-/// keys (target_name/project_id) the selector needs; the executions decision
-/// ledger is unaffected.
-async fn record_node_state(
-    state: &AppState,
-    org_id: &str,
-    node_state: Option<&qc::DbtNodeState>,
-    target_table: Option<&str>,
-) {
-    let Some(upsert) = node_state_upsert(org_id, node_state, target_table) else {
-        return;
-    };
-    if let Err(e) = state.store.upsert_node_state(&upsert).await {
-        // Recording selector state must never fail the decision path. Count the
-        // failure so it is observable (metric/alert) rather than silently lost:
-        // the execution ledger may advance while `state:*` selectors read a
-        // stale baseline, and that divergence must be measurable in deployment.
-        state
-            .selector_write_failures
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::warn!(error = %e, "failed to record node state for selectors");
-    }
-}
+pub use crate::execution::sql_execution;
 
 #[derive(Clone)]
 pub struct SqlService(pub AppState);
@@ -525,19 +465,19 @@ impl Sql for SqlService {
         let crate::history::SqlHistory {
             confirmed,
             target_has_prior_build,
-            node_body_hash,
-            node_sql_hash,
-            node_template_hash,
-            ns_logic_hash,
-            input_tables,
+            evidence,
         } = crate::history::prepare_sql(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
+        let row = evidence.row();
+        let node_body_hash = &row.node_body_hash;
+        let ns_logic_hash = &row.node_namespace_logic_hash;
+        let input_tables = &row.input_tables;
         let table_namespace = namespace(req.table_namespace.as_deref());
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: node_body_hash.as_deref(),
-            input_tables: &input_tables,
+            input_tables,
             freshness_tolerance_seconds: req.freshness_tolerance_seconds,
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
@@ -638,42 +578,8 @@ impl Sql for SqlService {
                         let execution_decision_id = new_uuid_v7();
                         // Persist an ordinary (non-clone) pending row so the
                         // forthcoming ConfirmExecution records the normal build.
-                        let pending = PendingExecution {
-                            org_id: org_id.clone(),
-                            project_id: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.project_id.clone()),
-                            target_table: target_table.clone(),
-                            execution_type,
-                            node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                            node_body_hash: node_body_hash.clone(),
-                            node_sql_hash: node_sql_hash.clone(),
-                            node_namespace_logic_hash: ns_logic_hash.clone(),
-                            node_configs_hash: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.node_configs_hash.clone()),
-                            node_contract_hash: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.node_contract_hash.clone()),
-                            node_unique_id: node_unique_id(
-                                req.dbt_node_state.as_ref(),
-                                &req.labels,
-                            ),
-                            table_namespace: req.table_namespace.clone(),
-                            dialect: req.dialect.clone(),
-                            input_tables: input_tables.clone(),
-                            values_hash: None,
-                            request_id: request_id.clone(),
-                            execution_decision_id: Some(execution_decision_id.clone()),
-                            clone_source_table: None,
-                            node_template_hash: node_template_hash.clone(),
-                        };
-                        self.0
-                            .store
-                            .insert_pending(&pending)
+                        evidence
+                            .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
                             .await
                             .map_err(db_err)?;
                         let response = execute_response(
@@ -684,7 +590,7 @@ impl Sql for SqlService {
                             request_id,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
                         return Ok(Response::new(response));
                     }
                     if let Ok(clone_sqls) = crate::clone::clone_sqls_with_properties(
@@ -708,42 +614,13 @@ impl Sql for SqlService {
                         // Persist a pending row keyed on the submit target so the
                         // forthcoming ConfirmExecution finalizes it, inheriting the
                         // equivalent's logic identity (so later submits reuse it).
-                        let pending = PendingExecution {
-                            org_id: org_id.clone(),
-                            project_id: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.project_id.clone()),
-                            target_table: target_table.clone(),
-                            execution_type,
-                            node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                            node_body_hash: node_body_hash.clone(),
-                            node_sql_hash: node_sql_hash.clone(),
-                            node_namespace_logic_hash: ns_logic_hash.clone(),
-                            node_configs_hash: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.node_configs_hash.clone()),
-                            node_contract_hash: req
-                                .dbt_node_state
-                                .as_ref()
-                                .and_then(|s| s.node_contract_hash.clone()),
-                            node_unique_id: node_unique_id(
-                                req.dbt_node_state.as_ref(),
-                                &req.labels,
-                            ),
-                            table_namespace: req.table_namespace.clone(),
-                            dialect: req.dialect.clone(),
-                            input_tables: input_tables.clone(),
-                            values_hash: None,
-                            request_id: request_id.clone(),
-                            execution_decision_id: Some(execution_decision_id.clone()),
-                            clone_source_table: Some(eq.source_table.clone()),
-                            node_template_hash: node_template_hash.clone(),
-                        };
-                        self.0
-                            .store
-                            .insert_pending(&pending)
+                        evidence
+                            .write_pending(
+                                &self.0.store,
+                                &request_id,
+                                &execution_decision_id,
+                                Some(&eq.source_table),
+                            )
                             .await
                             .map_err(db_err)?;
 
@@ -756,7 +633,7 @@ impl Sql for SqlService {
                             eq.execution_runtime_ms,
                             execution_decision_id,
                         );
-                        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
                         return Ok(Response::new(response));
                     }
                 }
@@ -793,39 +670,8 @@ impl Sql for SqlService {
                 let request_id = new_uuid_v7();
                 // Persist a pending row so the forthcoming ConfirmExecution can
                 // finalize this fingerprint into skippable history.
-                let pending = PendingExecution {
-                    org_id: org_id.clone(),
-                    project_id: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.project_id.clone()),
-                    target_table: target_table.clone(),
-                    execution_type,
-                    node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                    node_body_hash: node_body_hash.clone(),
-                    node_sql_hash: node_sql_hash.clone(),
-                    node_namespace_logic_hash: ns_logic_hash.clone(),
-                    node_configs_hash: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_configs_hash.clone()),
-                    node_contract_hash: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
-                    table_namespace: req.table_namespace.clone(),
-                    dialect: req.dialect.clone(),
-                    input_tables: input_tables.clone(),
-                    values_hash: None,
-                    request_id: request_id.clone(),
-                    execution_decision_id: Some(execution_decision_id.clone()),
-                    clone_source_table: None,
-                    node_template_hash: node_template_hash.clone(),
-                };
-                self.0
-                    .store
-                    .insert_pending(&pending)
+                evidence
+                    .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
                     .await
                     .map_err(db_err)?;
                 execute_response(
@@ -840,7 +686,7 @@ impl Sql for SqlService {
         };
 
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &response, &input_tables);
+        capture_submit(&self.0, &cap_meta, &req, &response, input_tables);
 
         Ok(Response::new(response))
     }
@@ -868,16 +714,17 @@ impl Sql for SqlService {
         let crate::history::ValuesHistory {
             confirmed,
             target_has_prior_build,
-            seed_hash,
-            values_hash,
-            input_tables,
+            evidence,
         } = crate::history::prepare_values(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
+        let row = evidence.row();
+        let values_hash = &row.values_hash;
+        let input_tables = &row.input_tables;
         let ctx = SubmitContext {
             execution_type,
             node_body_hash: None,
-            input_tables: &input_tables,
+            input_tables,
             freshness_tolerance_seconds: 0,
             target_table: Some(target_table.as_str()),
             stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
@@ -913,42 +760,8 @@ impl Sql for SqlService {
                 is_stale,
             } => {
                 let request_id = new_uuid_v7();
-                let pending = PendingExecution {
-                    org_id: org_id.clone(),
-                    project_id: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.project_id.clone()),
-                    target_table: target_table.clone(),
-                    execution_type,
-                    node_hash: req.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                    node_body_hash: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_body_hash.clone()),
-                    node_sql_hash: Some(seed_hash.clone()),
-                    node_namespace_logic_hash: None,
-                    node_configs_hash: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_configs_hash.clone()),
-                    node_contract_hash: req
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
-                    table_namespace: req.table_namespace.clone(),
-                    dialect: req.dialect.clone(),
-                    input_tables: input_tables.clone(),
-                    values_hash: values_hash.clone(),
-                    request_id: request_id.clone(),
-                    execution_decision_id: Some(execution_decision_id.clone()),
-                    clone_source_table: None,
-                    node_template_hash: None,
-                };
-                self.0
-                    .store
-                    .insert_pending(&pending)
+                evidence
+                    .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
                     .await
                     .map_err(db_err)?;
                 execute_response(
@@ -1019,149 +832,7 @@ impl Execution for ExecutionService {
         let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
 
-        let mut rows: Vec<ConfirmedExecution> = Vec::with_capacity(req.records.len());
-        // Collect selector/deferral state upserts to apply in the SAME
-        // transaction as the executions insert. Review #2 finding 5: writing
-        // node_states per-record inside this loop (before full validation and
-        // outside the batch transaction) leaked logical state when a later
-        // record was invalid or the batch insert failed, and committing the
-        // executions batch BEFORE a best-effort node_states write left a durable
-        // execution row with no logical state on a node_states failure. Both are
-        // now written atomically (insert_confirmed_batch_with_node_states): a
-        // rejected request or any write failure has NO persisted side effect.
-        let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
-        for record in &req.records {
-            let outcome = record.outcome.clone().unwrap_or_default();
-            let input = record
-                .input
-                .as_ref()
-                .ok_or_else(|| Status::invalid_argument("ExecutionRecord missing input"))?;
-
-            let row = match input {
-                qc::execution_record::Input::EnrichedSql(sql) => ConfirmedExecution {
-                    org_id: org_id.clone(),
-                    project_id: sql
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.project_id.clone()),
-                    target_table: sql.target_table.clone().unwrap_or_default(),
-                    execution_type: sql.execution_type,
-                    node_hash: sql.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                    // SQLExecution carries hashes via dbt_node_state (may be absent);
-                    // node_body_hash may therefore be null.
-                    node_body_hash: sql
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_body_hash.clone()),
-                    // Match the submit path's logic key: whitespace-normalized
-                    // rendered SQL + allowlisted semantic_extras.
-                    node_sql_hash: Some(crate::fingerprint::sql_logic_hash(sql, None)),
-                    node_namespace_logic_hash: crate::fingerprint::copy_logic_hash(sql),
-                    node_configs_hash: sql
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_configs_hash.clone()),
-                    node_contract_hash: sql
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: node_unique_id(sql.dbt_node_state.as_ref(), &sql.labels),
-                    table_namespace: sql.table_namespace.clone(),
-                    dialect: sql.dialect.clone(),
-                    input_tables: sql
-                        .tables
-                        .iter()
-                        .map(|t| InputTable {
-                            name: t.name.clone(),
-                            last_modified_epoch: t.last_modified_epoch,
-                        })
-                        .collect(),
-                    values_hash: None,
-                    request_id: new_uuid_v7(),
-                    execution_decision_id: Some(new_uuid_v7()),
-                    last_modified_epoch: outcome.last_modified_epoch,
-                    table_type: outcome.table_type.clone(),
-                    execution_runtime_ms: outcome.execution_runtime_ms,
-                    execution_results: outcome.execution_results.clone(),
-                    node_template_hash: None,
-                },
-                qc::execution_record::Input::Values(values) => ConfirmedExecution {
-                    org_id: org_id.clone(),
-                    project_id: values
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.project_id.clone()),
-                    target_table: values.target_table.clone(),
-                    execution_type: EXECUTION_TYPE_VALUES,
-                    node_hash: values.dbt_node_state.as_ref().map(|s| s.node_hash.clone()),
-                    node_body_hash: values
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_body_hash.clone()),
-                    node_sql_hash: Some(crate::fingerprint::seed_logic_hash(
-                        &values.dialect,
-                        &values.default_catalog,
-                        &values.semantic_extras,
-                    )),
-                    node_namespace_logic_hash: None,
-                    node_configs_hash: values
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_configs_hash.clone()),
-                    node_contract_hash: values
-                        .dbt_node_state
-                        .as_ref()
-                        .and_then(|s| s.node_contract_hash.clone()),
-                    node_unique_id: values
-                        .dbt_node_state
-                        .as_ref()
-                        .map(|s| s.node_unique_id.clone()),
-                    table_namespace: values.table_namespace.clone(),
-                    dialect: values.dialect.clone(),
-                    input_tables: Vec::new(),
-                    values_hash: if values.values_hash.is_empty() {
-                        None
-                    } else {
-                        Some(values.values_hash.clone())
-                    },
-                    request_id: new_uuid_v7(),
-                    execution_decision_id: Some(new_uuid_v7()),
-                    last_modified_epoch: outcome.last_modified_epoch,
-                    table_type: outcome.table_type.clone(),
-                    execution_runtime_ms: outcome.execution_runtime_ms,
-                    execution_results: outcome.execution_results.clone(),
-                    node_template_hash: None,
-                },
-            };
-            rows.push(row);
-
-            // Collect each node's comparison state for `state:*` selectors; the
-            // actual write happens in the SAME transaction as the executions
-            // insert so a rejected/failed batch leaves no logical state behind.
-            let node_state = match input {
-                qc::execution_record::Input::EnrichedSql(sql) => sql.dbt_node_state.as_ref(),
-                qc::execution_record::Input::Values(values) => values.dbt_node_state.as_ref(),
-            };
-            let node_target = match input {
-                qc::execution_record::Input::EnrichedSql(sql) => sql.target_table.as_deref(),
-                qc::execution_record::Input::Values(values) => Some(values.target_table.as_str()),
-            };
-            if let Some(upsert) = node_state_upsert(&org_id, node_state, node_target) {
-                node_state_upserts.push(upsert);
-            }
-        }
-
-        // Write the executions batch AND the selector/deferral node_states in a
-        // SINGLE transaction (review #2 finding 5, full atomicity): a successful
-        // RecordExecutions publishes execution and logical state consistently,
-        // and a node_states write failure rolls the WHOLE request back (no
-        // partial publish, no durable execution row without its logical state).
-        let stored = self
-            .0
-            .store
-            .insert_confirmed_batch_with_node_states(&rows, &node_state_upserts)
-            .await
-            .map_err(db_err)?;
+        let stored = crate::execution::record_batch(&self.0, &org_id, &req.records).await?;
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,
@@ -1323,32 +994,16 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
-        let pending = PendingExecution {
-            org_id: org_id.clone(),
-            project_id: None,
-            target_table: req.target_table.clone(),
-            execution_type: req.execution_type,
-            node_hash: None,
-            node_body_hash: None,
-            node_sql_hash: None,
-            node_namespace_logic_hash: inherited_ns_logic,
-            node_configs_hash: None,
-            node_contract_hash: None,
-            node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
-            table_namespace: req.table_namespace.clone(),
-            dialect: req.dialect.clone(),
-            input_tables: Vec::new(),
-            values_hash: None,
-            request_id: request_id.clone(),
-            execution_decision_id: Some(execution_decision_id.clone()),
-            clone_source_table: Some(req.clone_source_table.clone()),
-            node_template_hash: None,
-        };
-        self.0
-            .store
-            .insert_pending(&pending)
-            .await
-            .map_err(db_err)?;
+        crate::execution::register_copy(
+            &self.0.store,
+            &org_id,
+            &req,
+            inherited_ns_logic,
+            &request_id,
+            &execution_decision_id,
+        )
+        .await
+        .map_err(db_err)?;
 
         // Best-effort capture (non-blocking) of the clone decision.
         {
@@ -1505,13 +1160,4 @@ impl SelectorService for SelectorServiceImpl {
 
         Ok(Response::new(qc::SelectorResponse { node_unique_ids }))
     }
-}
-
-/// Map a store error to a gRPC status. The detailed sqlx error (which may name
-/// internal schema objects, columns, or connection fragments) is logged
-/// server-side; the client receives only a generic message to avoid leaking
-/// implementation details over the wire.
-fn db_err(e: sqlx::Error) -> Status {
-    tracing::error!(error = %e, "store error");
-    Status::internal("internal store error")
 }

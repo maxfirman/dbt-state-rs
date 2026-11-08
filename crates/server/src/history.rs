@@ -1,32 +1,27 @@
 //! Prepare trustworthy State history for same-target reuse across warehouses.
 //!
-//! Own identity preparation, lookup ordering, clone adoption and evidence checks.
+//! Own scoped lookup ordering, clone adoption and evidence checks using prepared
+//! execution evidence.
 //! The caller retains selector writes, the pure decision, copy selection and
 //! outcome recording. Keep these reads sequential and outside a transaction:
 //! changing their snapshot or error ordering would change submit behavior.
 
-use crate::decision;
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, Store};
+use crate::store::{ExecutionRow, PendingExecution, Store};
 
 const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
 
 pub(crate) struct SqlHistory {
     pub confirmed: Option<ExecutionRow>,
     pub target_has_prior_build: bool,
-    pub node_body_hash: Option<String>,
-    pub node_sql_hash: Option<String>,
-    pub node_template_hash: Option<String>,
-    pub ns_logic_hash: Option<String>,
-    pub input_tables: Vec<InputTable>,
+    pub evidence: ExecutionEvidence,
 }
 
 pub(crate) struct ValuesHistory {
     pub confirmed: Option<ExecutionRow>,
     pub target_has_prior_build: bool,
-    pub seed_hash: String,
-    pub values_hash: Option<String>,
-    pub input_tables: Vec<InputTable>,
+    pub evidence: ExecutionEvidence,
 }
 
 /// Prepare model or data-test history. Select current scoped physical state
@@ -38,37 +33,17 @@ pub(crate) async fn prepare_sql(
 ) -> sqlx::Result<SqlHistory> {
     let target_table = req.target_table.clone().unwrap_or_default();
     let execution_type = req.execution_type;
-    let node_body_hash = decision::node_body_hash_of(req);
-    // `node_sql_hash` ALWAYS carries the RENDERED logic identity. In
-    // `compare_unrendered_code` mode we ADDITIONALLY compute the unrendered
-    // TEMPLATE identity (`node_template_hash`): the hosted service rebuilds a
-    // cuc node ONLY when BOTH the rendered SQL and the template change, i.e.
-    // it reuses when EITHER is unchanged (documented + verified live — see
-    // crates/harness/tests/template_comparison.rs). Both hashes fold in the
-    // same dependency/context/extras components, so a genuine dependency or
-    // context change invalidates BOTH and rebuilds. When cuc is off,
-    // node_template_hash is None and only the rendered hash is matched.
-    let node_sql_hash = Some(crate::fingerprint::sql_logic_hash(
-        &sql_execution(req),
-        None,
-    ));
-    let node_template_hash = req.compare_unrendered_code.then(|| {
-        crate::fingerprint::sql_logic_hash(
-            &sql_execution(req),
-            Some(node_body_hash.as_deref().unwrap_or("")),
-        )
-    });
-    // Schema-abstracted cross-environment logic identity (clone adoption).
-    // Only meaningful for rendered (non-template) comparison of real SQL.
-    let ns_logic_hash = (!req.compare_unrendered_code && !req.sql.trim().is_empty())
-        .then(|| crate::fingerprint::copy_logic_hash(&sql_execution(req)))
-        .flatten();
-    let input_tables = decision::input_tables_of(req);
-    let unique_id = node_unique_id(req.dbt_node_state.as_ref(), &req.labels);
-    let project_id = req
-        .dbt_node_state
-        .as_ref()
-        .and_then(|s| s.project_id.clone());
+    let evidence = ExecutionEvidence::sql_submit(org_id, req);
+    let PendingExecution {
+        node_body_hash,
+        node_sql_hash,
+        node_template_hash,
+        node_namespace_logic_hash: ns_logic_hash,
+        input_tables,
+        node_unique_id: unique_id,
+        project_id,
+        ..
+    } = evidence.row();
     let table_namespace = namespace(req.table_namespace.as_deref());
 
     let candidate = if execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
@@ -186,11 +161,7 @@ pub(crate) async fn prepare_sql(
     Ok(SqlHistory {
         confirmed,
         target_has_prior_build,
-        node_body_hash,
-        node_sql_hash,
-        node_template_hash,
-        ns_logic_hash,
-        input_tables,
+        evidence,
     })
 }
 
@@ -202,24 +173,18 @@ pub(crate) async fn prepare_values(
     req: &qc::SubmitValuesRequest,
 ) -> sqlx::Result<ValuesHistory> {
     let target_table = req.target_table.clone();
-    let values_hash = if req.values_hash.is_empty() {
-        None
-    } else {
-        Some(req.values_hash.clone())
-    };
-
-    let seed_hash = crate::fingerprint::seed_logic_hash(
-        &req.dialect,
-        &req.default_catalog,
-        &req.semantic_extras,
-    );
+    let evidence = ExecutionEvidence::values_submit(org_id, req);
+    let seed_hash = evidence
+        .row()
+        .node_sql_hash
+        .as_deref()
+        .expect("seed identity");
     let confirmed = store.find_confirmed_values(
-        org_id, &target_table, &req.values_hash, &seed_hash, namespace(req.table_namespace.as_deref()), &req.dialect,
+        org_id, &target_table, &req.values_hash, seed_hash, namespace(req.table_namespace.as_deref()), &req.dialect,
     ).await?.filter(|prev| {
         !req.values_hash.is_empty() && req.last_modified_epoch.is_some()
             && matches!((req.last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded)
     });
-    let input_tables: Vec<InputTable> = Vec::new();
     let target_has_prior_build = store
         .target_has_confirmed_history(
             org_id,
@@ -231,9 +196,7 @@ pub(crate) async fn prepare_values(
     Ok(ValuesHistory {
         confirmed,
         target_has_prior_build,
-        seed_hash,
-        values_hash,
-        input_tables,
+        evidence,
     })
 }
 
@@ -300,25 +263,4 @@ fn current_target_matches(
         && own[0].last_modified_epoch.is_some()
         && (req.ignore_external_modifications
             || matches!((own[0].last_modified_epoch, prev.last_modified_epoch), (Some(current), Some(recorded)) if current <= recorded))
-}
-
-/// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint
-/// functions consume. Exposed so an upgrade regression can compute a frozen
-/// prior-version fingerprint for the exact request (review #2 9th follow-up P2).
-pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
-    qc::SqlExecution {
-        target_table: req.target_table.clone(),
-        dialect: req.dialect.clone(),
-        default_catalog: req.default_catalog.clone(),
-        default_schema: req.default_schema.clone(),
-        execution_type: req.execution_type,
-        sql: req.sql.clone(),
-        tables: req.tables.clone(),
-        query_dependencies: req.query_dependencies.clone(),
-        semantic_extras: req.semantic_extras.clone(),
-        labels: req.labels.clone(),
-        dbt_node_state: req.dbt_node_state.clone(),
-        table_namespace: req.table_namespace.clone(),
-        from_speculative_submit: false,
-    }
 }
