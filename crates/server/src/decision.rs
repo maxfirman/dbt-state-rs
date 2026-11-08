@@ -251,12 +251,18 @@ pub(crate) enum FreshnessEvidence {
 /// job (`evaluate_freshness`), so the explain path sees the same per-parent
 /// verdicts the policy was applied to.
 ///
-/// Some fields (`name_set_diff`, and per-`UpstreamVerdict` `name`/`current_epoch`)
-/// are consumed only by the explain generator (ADR 0005, ticket #29), not by the
-/// decision fold, so they read as dead until that path lands — hence the allow.
-#[allow(dead_code)]
+/// The per-`UpstreamVerdict` `name`/`current_epoch` and this struct's
+/// `upstreams`/`anchor_epoch`/`considered`/`drifted` are now consumed by the
+/// explain generator (ADR 0005, ticket #29/#30 anchor render path) and the
+/// decision fold, so the former struct-level dead-code allow is removed.
 #[derive(Debug, Clone)]
 pub(crate) struct UpstreamFreshness {
+    // TODO(#30 follow-up): `name_set_diff` is still only written (the set-change
+    // branch reads the local `name_set_diff.is_clean()` before moving it in); no
+    // reader consumes this field yet. The explain generator does NOT read it.
+    // Wire it into the DependencySetChanged explain subtree or drop the field;
+    // do not silence more broadly than this one field.
+    #[allow(dead_code)]
     pub name_set_diff: NameSetDiff,
     pub evidence: FreshnessEvidence,
     /// Per-genuine-upstream verdicts; populated only when `Evaluated`.

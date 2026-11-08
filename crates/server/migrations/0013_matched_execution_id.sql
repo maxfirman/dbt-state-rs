@@ -18,10 +18,3 @@
 -- "legacy row". A future reader MUST NOT tighten this to NOT NULL.
 ALTER TABLE node_decisions
     ADD COLUMN matched_execution_id BIGINT REFERENCES executions(id);
-
--- Explain re-derivation reads node_decisions by (org_id, execution_decision_id)
--- then joins the matched executions row by this id; index the join key within
--- the org scope.
-CREATE INDEX idx_node_decisions_matched_execution
-    ON node_decisions (org_id, matched_execution_id)
-    WHERE matched_execution_id IS NOT NULL;
