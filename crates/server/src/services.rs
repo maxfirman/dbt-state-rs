@@ -9,6 +9,7 @@ use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
+use crate::store::CopySourceQuery;
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
 
@@ -564,14 +565,21 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                 last_modified_epoch,
                 identity,
             }) => RegisterHistory::DuckDbIncrementalSource(
+                // The incremental contract has pinned the request's execution
+                // and table types; the source's current state must match them.
                 self.0
                     .store
-                    .find_duckdb_incremental_source(
+                    .find_current_copy_source(
                         &org_id,
-                        source,
-                        table_namespace,
-                        last_modified_epoch,
-                        identity,
+                        &CopySourceQuery {
+                            source,
+                            table_namespace,
+                            dialect: &req.dialect,
+                            execution_type: req.execution_type,
+                            last_modified_epoch,
+                            table_type: req.clone_source_table_type.as_deref().unwrap_or_default(),
+                            node_hash: identity,
+                        },
                     )
                     .await
                     .map_err(db_err)?,

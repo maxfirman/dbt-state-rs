@@ -6,6 +6,12 @@ use super::*;
 use crate::query_cache::ModelExecutionType;
 use sqlx::{Postgres, QueryBuilder};
 
+/// The physical warehouse family a dialect's history is scoped by; matches the
+/// generated `executions.warehouse_family` column.
+fn warehouse_family(dialect: &str) -> String {
+    crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect)
+}
+
 /// A single target or all targets within the same physical warehouse scope.
 /// Callers append eligibility conditions outside the limited/distinct selection.
 /// This builds one query, preserving each caller's existing read/error ordering.
@@ -25,7 +31,7 @@ fn current_physical_state<'a>(
         .push(" WHERE org_id = ")
         .push_bind(org_id)
         .push(" AND status = 'confirmed' AND warehouse_family = ")
-        .push_bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
+        .push_bind(warehouse_family(dialect))
         .push(" AND table_namespace IS NOT DISTINCT FROM ")
         .push_bind(namespace);
     if let Some(target) = target {
@@ -99,97 +105,69 @@ impl Store {
         .bind(node_unique_id)
         .bind(project_id)
         .bind(table_namespace)
-        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
+        .bind(warehouse_family(dialect))
         .bind(ModelExecutionType::DbtDataTest as i32)
         .fetch_optional(&self.pool)
         .await
     }
 
-    /// Find a confirmed "equivalent model under another name" to clone FROM.
+    /// Find confirmed "equivalent models under another name" to clone FROM, in
+    /// preference order (newest build first).
     ///
     /// VERIFIED LIVE: a SQL submit for a target that does not yet exist, when an
     /// equivalent model (same `table_namespace` + schema-abstracted logic) was
     /// already built under a DIFFERENT physical target, is answered with
     /// `ready_to_clone` cloning that equivalent into the submit target
     /// ("an equivalent model exists under another name so we cloned that one").
-    /// Returns the source's physical name, warehouse table type and build epoch
+    /// Returns each source's physical name, warehouse table type and build epoch
     /// so the service can emit the clone DDL + `clone_required_last_modified_epoch`.
-    pub async fn find_clone_equivalent(
+    /// Which candidates qualify beyond that is for the warehouse rules.
+    pub async fn find_copy_candidates(
         &self,
         org_id: &str,
-        table_namespace: &str,
-        node_namespace_logic_hash: &str,
-        execution_type: i32,
-        exclude_target: &str,
-        dialect: &str,
-    ) -> sqlx::Result<Option<CloneEquivalent>> {
+        q: &CopyCandidateQuery<'_>,
+    ) -> sqlx::Result<Vec<CopyCandidate>> {
         // PHYSICAL-STATE INVARIANT: a candidate source may only be cloned if its
         // CURRENT physical contents match the requested logic. We reduce to the
         // latest confirmed row PER target in this physical warehouse scope
         // (DISTINCT ON), then filter the current states by logic and execution
         // type. Another connection's same-named target is a different object.
-        type CloneEquivRow = (String, Option<String>, Option<i64>, Option<i64>);
-        let mut query = current_physical_state(org_id, Some(table_namespace), dialect, None);
+        let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
         query.push("SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms FROM current_state WHERE node_namespace_logic_hash = ")
-            .push_bind(node_namespace_logic_hash).push(" AND execution_type = ").push_bind(execution_type)
-            .push(" AND target_table <> ").push_bind(exclude_target)
+            .push_bind(q.node_namespace_logic_hash).push(" AND execution_type = ").push_bind(q.execution_type)
+            .push(" AND target_table <> ").push_bind(q.exclude_target)
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table");
-        if crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect) != "duckdb" {
-            query.push(" LIMIT 1");
+        if let Some(limit) = q.limit {
+            query.push(" LIMIT ").push_bind(limit);
         }
-        let rows = query
-            .build_query_as::<CloneEquivRow>()
+        query
+            .build_query_as::<CopyCandidate>()
             .fetch_all(&self.pool)
-            .await?;
-        let duckdb = dialect.eq_ignore_ascii_case("duckdb");
-        let target = crate::sql_identity::duckdb_relation(exclude_target);
-        for (source_table, table_type, last_modified_epoch, execution_runtime_ms) in rows {
-            let depth = if duckdb {
-                let Some(source) = crate::sql_identity::duckdb_relation(&source_table) else {
-                    continue;
-                };
-                if target.as_ref().is_none_or(|t| {
-                    t.catalog() != source.catalog() || t.schema() == source.schema()
-                }) {
-                    continue;
-                }
-                let Some(depth) = self
-                    .duckdb_copy_depth(org_id, table_namespace, &source_table)
-                    .await?
-                else {
-                    continue;
-                };
-                depth
-            } else {
-                0
-            };
-            return Ok(Some(CloneEquivalent {
-                source_table,
-                table_type,
-                last_modified_epoch,
-                execution_runtime_ms,
-                duckdb_copy_depth: depth,
-            }));
-        }
-        Ok(None)
+            .await
     }
 
-    /// Follow immutable provenance at each copy's submission time. Later
+    /// The copy-chain depth behind `target`: how many copy ancestors its
+    /// current state has (0: a build). `None` when history is missing or the
+    /// chain has more than `max_ancestors` ancestors.
+    ///
+    /// Follows immutable provenance at each copy's submission time. Later
     /// rebuilds of an ancestor cannot shorten an already completed copy chain.
-    /// Missing history and more than two ancestors remain ineligible.
-    async fn duckdb_copy_depth(
+    pub async fn copy_chain_depth(
         &self,
         org_id: &str,
         namespace: &str,
+        dialect: &str,
         target: &str,
+        max_ancestors: usize,
     ) -> sqlx::Result<Option<usize>> {
+        let family = warehouse_family(dialect);
         let mut name = target.to_owned();
         let mut cutoff: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut child_id: Option<i64> = None;
-        for depth in 0..=2 {
+        for depth in 0..=max_ancestors {
             let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family='duckdb' AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
-            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).fetch_optional(&self.pool).await?;
+                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family=$6 AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
+            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
             let Some((id, source, created_at)) = row else {
                 return Ok(None);
             };
@@ -205,23 +183,26 @@ impl Store {
         Ok(None)
     }
 
-    /// Compile-time DuckDB initialization needs current, confirmed ET5 source
-    /// provenance. Select physical history first; a later incompatible write
-    /// must hide an older eligible source.
-    pub async fn find_duckdb_incremental_source(
+    /// A client-requested copy's source must be current: select physical
+    /// history first, so a later incompatible write hides an older eligible
+    /// source. `None`: no eligible source. `Some(logic)`: eligible, with the
+    /// source's (optional) logic identity.
+    pub async fn find_current_copy_source(
         &self,
         org_id: &str,
-        source: &str,
-        namespace: &str,
-        epoch: i64,
-        identity: &str,
+        q: &CopySourceQuery<'_>,
     ) -> sqlx::Result<Option<Option<String>>> {
-        let mut query = current_physical_state(org_id, Some(namespace), "duckdb", Some(source));
-        query.push("SELECT node_namespace_logic_hash FROM current_state WHERE execution_type = ")
-            .push_bind(ModelExecutionType::DeleteInsert as i32)
+        let mut query =
+            current_physical_state(org_id, Some(q.table_namespace), q.dialect, Some(q.source));
+        query
+            .push("SELECT node_namespace_logic_hash FROM current_state WHERE execution_type = ")
+            .push_bind(q.execution_type)
             .push(" AND last_modified_epoch = ")
-            .push_bind(epoch).push(" AND table_type = 'DUCKDB CTAS TABLE' AND clone_source_table IS NULL AND node_hash = ")
-            .push_bind(identity);
+            .push_bind(q.last_modified_epoch)
+            .push(" AND table_type = ")
+            .push_bind(q.table_type)
+            .push(" AND clone_source_table IS NULL AND node_hash = ")
+            .push_bind(q.node_hash);
         let row = query
             .build_query_as::<(Option<String>,)>()
             .fetch_optional(&self.pool)
