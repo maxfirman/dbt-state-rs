@@ -24,35 +24,13 @@ mod support;
 
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, start_server};
+use support::demo::{self, transient_at, CLONE_PROBE, DEV_SCHEMA, NS, PROD_SCHEMA};
+use support::scenario::Scenario;
+use support::{legacy, rows, start_server};
 
-const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
-
-fn submit(target: &str, schema: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(schema.into()),
-        execution_type: 1,
-        sql: format!("select id from CDO_DEMO_DB.{schema}.lp_up_a"),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        tables: vec![],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle_shop.clone_probe".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "clone_probe".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
-    }
+/// The captured probe's SQL in `schema` (the base most tests below override).
+fn probe_sql(schema: &str) -> String {
+    format!("select id from CDO_DEMO_DB.{schema}.lp_up_a")
 }
 
 /// Pin the hosted response shape from the live capture (no server needed).
@@ -92,49 +70,27 @@ fn hosted_submit_fallback_shape_is_pinned() {
 #[tokio::test]
 async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
     let a_epoch = 1_791_747_221_679i64;
+    let probe = |target: &str, schema: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .sql(&probe_sql(schema))
+            .namespace(NS)
+    };
 
     // Build the equivalent under name A (prod) and confirm it (records logic +
     // table_type + build epoch).
-    let r0 = sql
-        .submit_enriched_sql(submit(a, "prod_state_demo"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("first build of A must execute");
-    };
+    let x = sc.expect_execute(probe(a, PROD_SCHEMA)).await;
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: x.request_id,
-            last_modified_epoch: Some(a_epoch),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(15275),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+        sc.confirm(&x.request_id, transient_at(a_epoch).runtime(15275))
+            .await
     );
 
     // Submit for name B (same namespace + logic, B absent) → ready_to_clone A→B.
-    let rb = sql
-        .submit_enriched_sql(submit(b, "dev_clone_demo"))
-        .await
-        .unwrap()
-        .into_inner();
-    let c = match rb.response {
-        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c,
-        other => panic!("expected ready_to_clone, got {other:?}"),
-    };
+    let c = sc.expect_clone(probe(b, DEV_SCHEMA)).await;
     assert_eq!(c.clone_source, a, "clone FROM the existing equivalent (A)");
     assert_eq!(c.clone_target, b, "clone INTO the submit target (B)");
     let ed = c.explained_decision.unwrap();
@@ -159,18 +115,7 @@ async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
     // set, inheriting A's logic identity). Its subsequent same-target reuse is
     // covered by clone_lifecycle.rs (which supplies realistic own-target
     // freshness evidence); here we assert the confirm succeeds.
-    assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: c.request_id,
-            last_modified_epoch: Some(a_epoch + 1),
-            table_type: Some("TRANSIENT TABLE".into()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
-    );
+    assert!(sc.confirm(&c.request_id, transient_at(a_epoch + 1)).await);
 }
 
 /// SAFETY: with NO equivalent recorded, a submit for an absent target executes
@@ -178,17 +123,13 @@ async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
 #[tokio::test]
 async fn no_equivalent_executes_normally() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch);
+    let sc = Scenario::connect(&server).await;
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
-    let rb = sql
-        .submit_enriched_sql(submit(b, "dev_clone_demo"))
-        .await
-        .unwrap()
-        .into_inner();
+    let probe = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
+        .sql(&probe_sql(DEV_SCHEMA))
+        .namespace(NS);
     assert_eq!(
-        support::response_variant(&rb),
+        sc.verdict(probe).await,
         "ready_to_execute",
         "no equivalent under another name => normal execute"
     );
@@ -303,52 +244,35 @@ fn hosted_allow_clones_false_suppression_shape_is_pinned() {
 #[tokio::test]
 async fn finding3_dependency_definition_keys_clone_eligibility() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // An equivalent built under name A in prod, whose dependency V is defined as
     // `select 1 as id`. The dependency resolves in the SUBMIT's own environment
     // schema (as real dbt traffic does — a dev submit resolves its ref in dev).
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M3SRC\"";
-    let dep = |schema_upper: &str, schema_lower: &str, q: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{schema_upper}\".\"V3\""),
-        query: q.into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_lower.into(),
+    let probe = |target: &str, schema: &str, q: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .sql(&format!("select id from CDO_DEMO_DB.{schema}.v3"))
+            .namespace(NS)
+            .dependency_in(
+                &format!("\"CDO_DEMO_DB\".\"{}\".\"V3\"", schema.to_uppercase()),
+                q,
+                demo::CATALOG,
+                schema,
+            )
     };
-    let mut src = submit(a, "prod_state_demo");
-    src.sql = "select id from CDO_DEMO_DB.prod_state_demo.v3".into();
-    src.query_dependencies = vec![dep("PROD_STATE_DEMO", "prod_state_demo", "select 1 as id")];
-    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("first build of the source must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        probe(a, PROD_SCHEMA, "select 1 as id"),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
 
     // ARM A: a differently-named target whose dependency DATA DIFFERS
     // (`select 2 as id`) must EXECUTE — the server must not clone the source's
     // {1} data into a {2} target. (Hosted: ready_to_execute; dev contents (2,).)
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT\"";
-    let mut diff_data = submit(b, "dev_clone_demo");
-    diff_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
-    diff_data.query_dependencies = vec![dep("DEV_CLONE_DEMO", "dev_clone_demo", "select 2 as id")];
     assert_eq!(
-        support::response_variant(
-            &sql.submit_enriched_sql(diff_data)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(probe(b, DEV_SCHEMA, "select 2 as id")).await,
         "ready_to_execute",
         "a different dependency DEFINITION must execute, never clone (no data conflation)"
     );
@@ -357,16 +281,8 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
     // clone-eligible — the cross-name fallback fires. (Hosted: ready_to_clone;
     // dev contents (1,).)
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M3TGT2\"";
-    let mut same_data = submit(c, "dev_clone_demo");
-    same_data.sql = "select id from CDO_DEMO_DB.dev_clone_demo.v3".into();
-    same_data.query_dependencies = vec![dep("DEV_CLONE_DEMO", "dev_clone_demo", "select 1 as id")];
     assert_eq!(
-        support::response_variant(
-            &sql.submit_enriched_sql(same_data)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(probe(c, DEV_SCHEMA, "select 1 as id")).await,
         "ready_to_clone",
         "an identical dependency DEFINITION is clone-eligible (safe cross-name reuse)"
     );
@@ -380,42 +296,27 @@ async fn finding3_dependency_definition_keys_clone_eligibility() {
 #[tokio::test]
 async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
+    let probe = |target: &str, schema: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .sql(&probe_sql(schema))
+            .namespace(NS)
+    };
 
     // Build + confirm the equivalent under name A.
-    let r0 = sql
-        .submit_enriched_sql(submit(a, "prod_state_demo"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("first build of A must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(15275),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        probe(a, PROD_SCHEMA),
+        transient_at(1_791_747_221_679).runtime(15275),
+    )
+    .await;
 
     // Submit for absent B with clone_chain_depth_limit=0 (allow_clones=false).
-    let mut req = submit(b, "dev_clone_demo");
-    req.clone_chain_depth_limit = Some(0);
-    let rb = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-
-    let x = match rb.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x,
-        other => panic!("expected ready_to_execute (clone suppressed), got {other:?}"),
-    };
+    let x = sc
+        .expect_execute(probe(b, DEV_SCHEMA).clone_chain_depth_limit(0))
+        .await;
     let ed = x.explained_decision.expect("explained_decision");
     assert_eq!(ed.decision, 1, "READY_TO_EXECUTE");
     assert_eq!(ed.skip_rejection_reason, Some(1), "TARGET_TABLE_MISMATCH");
@@ -499,69 +400,52 @@ fn hosted_swapped_bindings_execute_not_clone() {
 #[tokio::test]
 async fn server_does_not_clone_swapped_binding_equivalent() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    // Two dependencies with DIFFERENT definitions, bound to two references.
-    let dep = |name: &str, q: &str| qc::QueryDependency {
-        name: name.into(),
-        query: q.into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: "prod_state_demo".into(),
-    };
+    // Two dependencies with DIFFERENT definitions, bound to two references
+    // (every dependency resolves in the prod schema).
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SBCONS\"";
 
     // Baseline (prod): root projects V1 (first ref); V1=select 1, V2=select 2.
-    let mut base = submit(a, "prod_state_demo");
-    base.sql =
-        "select x.id from CDO_DEMO_DB.prod_state_demo.v1 x cross join CDO_DEMO_DB.prod_state_demo.v2 y"
-            .into();
-    base.query_dependencies = vec![
-        dep(
+    let base = demo::model(a, PROD_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select x.id from CDO_DEMO_DB.prod_state_demo.v1 x cross join CDO_DEMO_DB.prod_state_demo.v2 y")
+        .dependency_in(
             "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V1\"",
             "select 1 as id",
-        ),
-        dep(
+            demo::CATALOG,
+            PROD_SCHEMA,
+        )
+        .dependency_in(
             "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"V2\"",
             "select 2 as id",
-        ),
-    ];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+            demo::CATALOG,
+            PROD_SCHEMA,
+        );
+    sc.build_with(base, transient_at(1_791_747_221_679).runtime(100))
+        .await;
 
     // Swapped target (dev, absent): same root SQL text but V1 and V2 definitions
     // SWAPPED between the references. Multiset of definitions {1,2} unchanged;
     // the binding differs -> different output -> must EXECUTE, never clone.
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"SBCONS\"";
-    let mut swapped = submit(b, "dev_clone_demo");
-    swapped.sql =
-        "select x.id from CDO_DEMO_DB.dev_clone_demo.v1 x cross join CDO_DEMO_DB.dev_clone_demo.v2 y"
-            .into();
-    swapped.query_dependencies = vec![
-        dep(
+    let swapped = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select x.id from CDO_DEMO_DB.dev_clone_demo.v1 x cross join CDO_DEMO_DB.dev_clone_demo.v2 y")
+        .dependency_in(
             "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"V1\"",
             "select 2 as id",
-        ),
-        dep(
+            demo::CATALOG,
+            PROD_SCHEMA,
+        )
+        .dependency_in(
             "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"V2\"",
             "select 1 as id",
-        ),
-    ];
+            demo::CATALOG,
+            PROD_SCHEMA,
+        );
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        sc.verdict(swapped).await,
         "ready_to_execute",
         "a swapped dependency binding (same multiset, different output) must \
          execute, never clone — no data conflation"
@@ -618,43 +502,26 @@ fn hosted_dep_binding_swap_executes_shape_is_pinned() {
 #[tokio::test]
 async fn server_executes_swapped_dependency_binding_with_views() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // Two VIEW deps that SHARE a basename (INPUT) but live in two DISTINCT
     // schemas (X and Y) — the reachable collision shape (custom schema/alias),
     // referenced by a consumer whose root SQL ref order is held constant.
-    let dep = |schema_up: &str, schema_lo: &str, q: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{schema_up}\".\"INPUT\""),
-        query: q.into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_lo.into(),
+    let consumer = |target: &str, schema: &str, x: &str, y: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql("select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b")
+            .dependency_in("\"CDO_DEMO_DB\".\"X\".\"INPUT\"", x, demo::CATALOG, "x")
+            .dependency_in("\"CDO_DEMO_DB\".\"Y\".\"INPUT\"", y, demo::CATALOG, "y")
     };
-    let root = "select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b";
 
     // Prod consumer: X.INPUT = select 1, Y.INPUT = select 2.
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DVCONS\"";
-    let mut src = submit(a, "prod_state_demo");
-    src.sql = root.into();
-    src.query_dependencies = vec![
-        dep("X", "x", "select 1 as id"),
-        dep("Y", "y", "select 2 as id"),
-    ];
-    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("prod consumer must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_830_532_736),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, PROD_SCHEMA, "select 1 as id", "select 2 as id"),
+        transient_at(1_791_830_532_736).runtime(100),
+    )
+    .await;
 
     // Dev consumer: SAME root SQL, but the two same-basename view definitions are
     // SWAPPED (X.INPUT=select 2, Y.INPUT=select 1). The output differs (projects
@@ -662,14 +529,9 @@ async fn server_executes_swapped_dependency_binding_with_views() {
     // sorted (name, def) pairs were identical -> CLONE (unsafe). Post-fix X and Y
     // get distinct relative tokens -> the swap differs -> EXECUTE.
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"DVCONS\"";
-    let mut swapped = submit(b, "dev_clone_demo");
-    swapped.sql = root.into();
-    swapped.query_dependencies = vec![
-        dep("X", "x", "select 2 as id"),
-        dep("Y", "y", "select 1 as id"),
-    ];
+    let swapped = consumer(b, DEV_SCHEMA, "select 2 as id", "select 1 as id");
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        sc.verdict(swapped).await,
         "ready_to_execute",
         "a swapped same-basename dependency binding (nonempty deps, constant root \
          SQL, distinct schemas) must EXECUTE, never clone — no data conflation"
@@ -686,51 +548,29 @@ async fn server_executes_swapped_dependency_binding_with_views() {
 #[tokio::test]
 async fn server_executes_quoted_case_swapped_binding() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let dep = |schema_raw: &str, q: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".{schema_raw}.\"INPUT\""),
-        query: q.into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_raw.trim_matches('"').into(),
-    };
     // Quoted "X" and "x" are distinct schemas (case-sensitive).
-    let root = "select a.id from CDO_DEMO_DB.\"X\".INPUT a cross join CDO_DEMO_DB.\"x\".INPUT b";
+    let consumer = |target: &str, schema: &str, upper: &str, lower: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql("select a.id from CDO_DEMO_DB.\"X\".INPUT a cross join CDO_DEMO_DB.\"x\".INPUT b")
+            .dependency_in("\"CDO_DEMO_DB\".\"X\".\"INPUT\"", upper, demo::CATALOG, "X")
+            .dependency_in("\"CDO_DEMO_DB\".\"x\".\"INPUT\"", lower, demo::CATALOG, "x")
+    };
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"QCONS\"";
-    let mut src = submit(a, "prod_state_demo");
-    src.sql = root.into();
-    src.query_dependencies = vec![
-        dep("\"X\"", "select 1 as id"),
-        dep("\"x\"", "select 2 as id"),
-    ];
-    let r0 = sql.submit_enriched_sql(src).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("prod consumer must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_830_532_736),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, PROD_SCHEMA, "select 1 as id", "select 2 as id"),
+        transient_at(1_791_830_532_736).runtime(100),
+    )
+    .await;
 
     // Swapped definitions between the two quoted-case-distinct references.
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"QCONS\"";
-    let mut swapped = submit(b, "dev_clone_demo");
-    swapped.sql = root.into();
-    swapped.query_dependencies = vec![
-        dep("\"X\"", "select 2 as id"),
-        dep("\"x\"", "select 1 as id"),
-    ];
+    let swapped = consumer(b, DEV_SCHEMA, "select 2 as id", "select 1 as id");
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swapped).await.unwrap().into_inner()),
+        sc.verdict(swapped).await,
         "ready_to_execute",
         "quoted \"X\"/\"x\" are distinct schemas; a swapped binding must EXECUTE, \
          not clone (no lowercasing collapse)"
@@ -758,49 +598,44 @@ async fn server_executes_quoted_case_swapped_binding() {
 #[tokio::test]
 async fn dep_binding_swap_gated_against_present_baseline_with_control() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // CONSISTENT dependency representation across ALL arms: full view DDL.
-    let dep = |schema_up: &str, schema_lo: &str, body: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{schema_up}\".\"INPUT\""),
-        query: format!(
-            "create or replace view INPUT as (select {body} from CDO_DEMO_DB.{schema_lo}.raw)"
-        ),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_lo.into(),
+    let view = |schema_lo: &str, body: &str| {
+        format!("create or replace view INPUT as (select {body} from CDO_DEMO_DB.{schema_lo}.raw)")
     };
-    let root = "select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b";
+    let consumer = |target: &str, schema: &str, x: &str, y: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql("select a.id from CDO_DEMO_DB.X.INPUT a cross join CDO_DEMO_DB.Y.INPUT b")
+            .dependency_in(
+                "\"CDO_DEMO_DB\".\"X\".\"INPUT\"",
+                &view("x", x),
+                demo::CATALOG,
+                "x",
+            )
+            .dependency_in(
+                "\"CDO_DEMO_DB\".\"Y\".\"INPUT\"",
+                &view("y", y),
+                demo::CATALOG,
+                "y",
+            )
+    };
 
     // Baseline: build + confirm the prod consumer (X.INPUT=1, Y.INPUT=2).
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"BINDCONS\"";
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = root.into();
-    base.query_dependencies = vec![dep("X", "x", "1 as id"), dep("Y", "y", "2 as id")];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline consumer must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, PROD_SCHEMA, "1 as id", "2 as id"),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
 
     // CONTROL (no swap): identical bindings, different target → ready_to_clone.
     // This PROVES a compatible candidate exists in the store at treatment time.
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"BINDCONS_CTL\"";
-    let mut no_swap = submit(c, "dev_clone_demo");
-    no_swap.sql = root.into();
-    no_swap.query_dependencies = vec![dep("X", "x", "1 as id"), dep("Y", "y", "2 as id")];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(no_swap).await.unwrap().into_inner()),
+        sc.verdict(consumer(c, DEV_SCHEMA, "1 as id", "2 as id"))
+            .await,
         "ready_to_clone",
         "CONTROL: an identical-binding submit must find the present baseline and \
          clone it (proves a compatible candidate exists)"
@@ -810,11 +645,9 @@ async fn dep_binding_swap_gated_against_present_baseline_with_control() {
     // two definitions swapped between references → must EXECUTE (not clone the
     // present candidate), proving the binding is distinguished.
     let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"BINDCONS_SWAP\"";
-    let mut swap = submit(d, "dev_clone_demo");
-    swap.sql = root.into();
-    swap.query_dependencies = vec![dep("X", "x", "2 as id"), dep("Y", "y", "1 as id")];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        sc.verdict(consumer(d, DEV_SCHEMA, "2 as id", "1 as id"))
+            .await,
         "ready_to_execute",
         "TREATMENT: a swapped binding (same root SQL, same dependency \
          representation, present candidate) must EXECUTE — the swap is a real \
@@ -836,52 +669,39 @@ async fn dep_binding_swap_gated_against_present_baseline_with_control() {
 #[tokio::test]
 async fn server_gates_table_component_quoted_case_swap_with_control() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // Two dependencies differing ONLY by table-component quoting/case.
-    let dep = |name: &str, body: &str| qc::QueryDependency {
-        name: name.into(),
-        query: format!("select {body} as id"),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: "S".into(),
+    let consumer = |target: &str, schema: &str, upper: &str, lower: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql("select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.S.\"input\" b")
+            .dependency_in(
+                "CDO_DEMO_DB.S.INPUT",
+                &format!("select {upper} as id"),
+                demo::CATALOG,
+                "S",
+            )
+            .dependency_in(
+                "CDO_DEMO_DB.S.\"input\"",
+                &format!("select {lower} as id"),
+                demo::CATALOG,
+                "S",
+            )
     };
-    let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.S.\"input\" b";
 
     // Baseline: build + confirm the prod consumer (INPUT=1, "input"=2).
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"TBLCONS\"";
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = root.into();
-    base.query_dependencies = vec![
-        dep("CDO_DEMO_DB.S.INPUT", "1"),
-        dep("CDO_DEMO_DB.S.\"input\"", "2"),
-    ];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline consumer must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, PROD_SCHEMA, "1", "2"),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
 
     // CONTROL (no swap): identical bindings → ready_to_clone (candidate present).
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"TBLCONS_CTL\"";
-    let mut no_swap = submit(c, "dev_clone_demo");
-    no_swap.sql = root.into();
-    no_swap.query_dependencies = vec![
-        dep("CDO_DEMO_DB.S.INPUT", "1"),
-        dep("CDO_DEMO_DB.S.\"input\"", "2"),
-    ];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(no_swap).await.unwrap().into_inner()),
+        sc.verdict(consumer(c, DEV_SCHEMA, "1", "2")).await,
         "ready_to_clone",
         "CONTROL: identical table-component bindings must clone the present baseline"
     );
@@ -889,14 +709,8 @@ async fn server_gates_table_component_quoted_case_swap_with_control() {
     // TREATMENT (swap): same root + representation, the two definitions swapped
     // between the distinct relations → must EXECUTE (binding distinguished).
     let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"TBLCONS_SWAP\"";
-    let mut swap = submit(d, "dev_clone_demo");
-    swap.sql = root.into();
-    swap.query_dependencies = vec![
-        dep("CDO_DEMO_DB.S.INPUT", "2"),
-        dep("CDO_DEMO_DB.S.\"input\"", "1"),
-    ];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        sc.verdict(consumer(d, DEV_SCHEMA, "2", "1")).await,
         "ready_to_execute",
         "TREATMENT: unquoted INPUT and quoted \"input\" are distinct relations; a \
          swapped binding must EXECUTE, not clone the present candidate"
@@ -913,50 +727,30 @@ async fn server_gates_table_component_quoted_case_swap_with_control() {
 #[tokio::test]
 async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-
-    let dep_unquoted = qc::QueryDependency {
-        name: "CDO_DEMO_DB.S.INPUT".into(),
-        query: "select 1 as id".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: "S".into(),
-    };
-    let dep_upper_quoted = qc::QueryDependency {
-        name: "\"CDO_DEMO_DB\".\"S\".\"INPUT\"".into(),
-        query: "select 1 as id".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: "S".into(),
-    };
+    let sc = Scenario::connect(&server).await;
 
     // Baseline (prod): unquoted spellings everywhere.
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UCONS\"";
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = "select id from CDO_DEMO_DB.S.INPUT".into();
-    base.query_dependencies = vec![dep_unquoted];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline consumer must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let base = demo::model(a, PROD_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select id from CDO_DEMO_DB.S.INPUT")
+        .dependency_in("CDO_DEMO_DB.S.INPUT", "select 1 as id", demo::CATALOG, "S");
+    sc.build_with(base, transient_at(1_791_747_221_679).runtime(100))
+        .await;
 
     // Treatment (dev): quoted-UPPERCASE spellings — same identity → must CLONE.
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UCONS\"";
-    let mut upper = submit(b, "dev_clone_demo");
-    upper.sql = "select id from \"CDO_DEMO_DB\".\"S\".\"INPUT\"".into();
-    upper.query_dependencies = vec![dep_upper_quoted];
+    let upper = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select id from \"CDO_DEMO_DB\".\"S\".\"INPUT\"")
+        .dependency_in(
+            "\"CDO_DEMO_DB\".\"S\".\"INPUT\"",
+            "select 1 as id",
+            demo::CATALOG,
+            "S",
+        );
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(upper).await.unwrap().into_inner()),
+        sc.verdict(upper).await,
         "ready_to_clone",
         "quoted-UPPERCASE spelling is the SAME relation as unquoted; the baseline \
          CLONE must be retained (not lost to a spelling difference)"
@@ -972,40 +766,26 @@ async fn server_clones_unquoted_baseline_from_uppercase_quoted_submit() {
 #[tokio::test]
 async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VD_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VD_PROBE\"";
     let det_sql = "select id from CDO_DEMO_DB.prod_state_demo.vd_up";
 
     // Build + confirm the equivalent under A (deterministic SQL).
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = det_sql.into();
-    base.query_dependencies = vec![];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("A must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let base = demo::model(a, PROD_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql(det_sql);
+    sc.build_with(base, transient_at(1_791_747_221_679).runtime(100))
+        .await;
 
     // Submit B: SAME deterministic SQL but tolerate_nondeterminism=false.
-    let mut dev = submit(b, "dev_clone_demo");
-    dev.sql = "select id from CDO_DEMO_DB.dev_clone_demo.vd_up".into();
-    dev.query_dependencies = vec![];
-    dev.tolerate_nondeterminism = false;
+    let dev = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select id from CDO_DEMO_DB.dev_clone_demo.vd_up")
+        .tolerate_nondeterminism(false);
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        sc.verdict(dev).await,
         "ready_to_clone",
         "a DETERMINISTIC model must still clone the equivalent even with \
          tolerate_nondeterminism=false (the SQL has no volatile function)"
@@ -1019,10 +799,7 @@ async fn deterministic_model_clones_even_when_nondeterminism_not_tolerated() {
 #[tokio::test]
 async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VV_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VV_PROBE\"";
@@ -1031,31 +808,19 @@ async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
 
     // Build + confirm the equivalent under A (volatile SQL, tnd=true so it is
     // recorded as a clone-eligible equivalent).
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = vol_prod.into();
-    base.query_dependencies = vec![];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("A must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let base = demo::model(a, PROD_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql(vol_prod);
+    sc.build_with(base, transient_at(1_791_747_221_679).runtime(100))
+        .await;
 
     // Submit B: volatile SQL with tolerate_nondeterminism=false → EXECUTE.
-    let mut dev = submit(b, "dev_clone_demo");
-    dev.sql =
-        "select id, current_timestamp() as loaded_at from CDO_DEMO_DB.dev_clone_demo.vv_up".into();
-    dev.query_dependencies = vec![];
-    dev.tolerate_nondeterminism = false;
+    let dev = demo::model(b, DEV_SCHEMA, CLONE_PROBE)
+        .namespace(NS)
+        .sql("select id, current_timestamp() as loaded_at from CDO_DEMO_DB.dev_clone_demo.vv_up")
+        .tolerate_nondeterminism(false);
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        sc.verdict(dev).await,
         "ready_to_execute",
         "a GENUINELY volatile model (current_timestamp) must EXECUTE under \
          tolerate_nondeterminism=false — cloning would serve a stale evaluation"
@@ -1070,51 +835,42 @@ async fn genuine_volatile_model_executes_when_nondeterminism_not_tolerated() {
 #[tokio::test]
 async fn volatile_dependency_definition_suppresses_clone() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VDEP_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"VDEP_PROBE\"";
     // DETERMINISTIC root SQL; the volatility is entirely in the view dependency.
     let root_prod = "select loaded_at from CDO_DEMO_DB.prod_state_demo.vdep_v";
-    let dep = |schema: &str| {
-        qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{}\".\"VDEP_V\"", schema.to_uppercase()),
-        query: format!(
-            "create or replace view VDEP_V as (select current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.raw)"
-        ),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema.into(),
-    }
+    let consumer = |target: &str, schema: &str, root: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql(root)
+            .dependency_in(
+                &format!("\"CDO_DEMO_DB\".\"{}\".\"VDEP_V\"", schema.to_uppercase()),
+                &format!(
+                    "create or replace view VDEP_V as (select current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.raw)"
+                ),
+                demo::CATALOG,
+                schema,
+            )
     };
 
     // Build + confirm the equivalent under A (tnd=true so it is clone-eligible).
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = root_prod.into();
-    base.query_dependencies = vec![dep("prod_state_demo")];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("A must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, PROD_SCHEMA, root_prod),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
 
     // Submit B: deterministic root, VOLATILE view dependency, tnd=false → EXECUTE.
-    let mut dev = submit(b, "dev_clone_demo");
-    dev.sql = "select loaded_at from CDO_DEMO_DB.dev_clone_demo.vdep_v".into();
-    dev.query_dependencies = vec![dep("dev_clone_demo")];
-    dev.tolerate_nondeterminism = false;
+    let dev = consumer(
+        b,
+        DEV_SCHEMA,
+        "select loaded_at from CDO_DEMO_DB.dev_clone_demo.vdep_v",
+    )
+    .tolerate_nondeterminism(false);
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        sc.verdict(dev).await,
         "ready_to_execute",
         "a volatile VIEW DEPENDENCY (deterministic root) must suppress the clone"
     );
@@ -1141,62 +897,41 @@ async fn volatile_dependency_definition_suppresses_clone() {
 #[tokio::test]
 async fn server_gates_component_boundary_collision_swap_with_control() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
     let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
     let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
-    let dep = |name: &str, body: &str| qc::QueryDependency {
-        name: name.into(),
-        query: format!("select {body} as id"),
-        default_catalog: "DB".into(),
-        default_schema: "S".into(),
+    // default_schema="S" so S maps to relative token 0 and the placeholder-text
+    // collision is exercised.
+    let consumer = |target: &str, first: &str, second: &str| {
+        demo::model(target, "S", CLONE_PROBE)
+            .namespace(NS)
+            .sql(root)
+            .dependency_in(n1, &format!("select {first} as id"), "DB", "S")
+            .dependency_in(n2, &format!("select {second} as id"), "DB", "S")
     };
 
-    // Baseline (prod): n1=1, n2=2. Build + confirm. default_schema="S" so S maps
-    // to relative token 0 and the placeholder-text collision is exercised.
+    // Baseline (prod): n1=1, n2=2. Build + confirm.
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CBCONS\"";
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = root.into();
-    base.default_schema = Some("S".into());
-    base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        consumer(a, "1", "2"),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
 
     // CONTROL (no swap): identical bindings → ready_to_clone (candidate present).
     let c = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_CTL\"";
-    let mut ctl = submit(c, "dev_clone_demo");
-    ctl.sql = root.into();
-    ctl.default_schema = Some("S".into());
-    ctl.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(ctl).await.unwrap().into_inner()),
+        sc.verdict(consumer(c, "1", "2")).await,
         "ready_to_clone",
         "CONTROL: identical boundary-collision bindings must clone the baseline"
     );
 
     // TREATMENT (swap): same root + representation, definitions swapped → EXECUTE.
     let d = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CBCONS_SWAP\"";
-    let mut swap = submit(d, "dev_clone_demo");
-    swap.sql = root.into();
-    swap.default_schema = Some("S".into());
-    swap.query_dependencies = vec![dep(n1, "2"), dep(n2, "1")];
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(swap).await.unwrap().into_inner()),
+        sc.verdict(consumer(d, "2", "1")).await,
         "ready_to_execute",
         "TREATMENT: the two placeholder-like names are distinct relations; a \
          swapped binding must EXECUTE, not clone (no component-boundary collision)"
@@ -1211,39 +946,26 @@ async fn server_gates_component_boundary_collision_swap_with_control() {
 #[tokio::test]
 async fn bare_random_column_is_deterministic_and_clones() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RNDCONS\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"RNDCONS\"";
     // Root selects a COLUMN named `random` — not the function.
-    let root = |schema: &str| format!("select random from CDO_DEMO_DB.{schema}.rnd_up");
-
-    let mut base = submit(a, "prod_state_demo");
-    base.sql = root("prod_state_demo");
-    base.query_dependencies = vec![];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("baseline must execute");
+    let consumer = |target: &str, schema: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql(&format!("select random from CDO_DEMO_DB.{schema}.rnd_up"))
     };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
 
-    let mut dev = submit(b, "dev_clone_demo");
-    dev.sql = root("dev_clone_demo");
-    dev.query_dependencies = vec![];
-    dev.tolerate_nondeterminism = false;
+    sc.build_with(
+        consumer(a, PROD_SCHEMA),
+        transient_at(1_791_747_221_679).runtime(100),
+    )
+    .await;
+
+    let dev = consumer(b, DEV_SCHEMA).tolerate_nondeterminism(false);
     assert_eq!(
-        support::response_variant(&sql.submit_enriched_sql(dev).await.unwrap().into_inner()),
+        sc.verdict(dev).await,
         "ready_to_clone",
         "a column named `random` is deterministic and must CLONE even with \
          tolerate_nondeterminism=false (random() with parens would be volatile)"
@@ -1268,90 +990,54 @@ async fn bare_random_column_is_deterministic_and_clones() {
 #[tokio::test]
 async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let root = "select a.id from CDO_DEMO_DB.S.INPUT a cross join CDO_DEMO_DB.U.INPUT b";
-    let dep = |schema_: &str, body: &str| qc::QueryDependency {
-        name: format!("\"CDO_DEMO_DB\".\"{schema_}\".\"INPUT\""),
-        query: format!("select {body} as id"),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: schema_.into(),
+    let consumer = |target: &str, schema: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql(root)
+            .dependency_in(
+                "\"CDO_DEMO_DB\".\"S\".\"INPUT\"",
+                "select 1 as id",
+                demo::CATALOG,
+                "S",
+            )
+            .dependency_in(
+                "\"CDO_DEMO_DB\".\"U\".\"INPUT\"",
+                "select 2 as id",
+                demo::CATALOG,
+                "U",
+            )
     };
     let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"UPG\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"UPG\"";
 
     // Build + confirm the prod source.
-    let mut base = submit(prod, "prod_state_demo");
-    base.sql = root.into();
-    base.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
-    let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("prod source must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(100),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(consumer(prod, PROD_SCHEMA), transient_at(100).runtime(100))
+        .await;
 
     // Dev clone from prod; confirm it (this is the "pre-fix clone" row).
-    let mut devclone = submit(dev, "dev_clone_demo");
-    devclone.sql = root.into();
-    devclone.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
-    let rc = sql
-        .submit_enriched_sql(devclone)
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
-        panic!("dev target must clone");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: c.request_id,
-        last_modified_epoch: Some(200),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let c = sc.expect_clone(consumer(dev, DEV_SCHEMA)).await;
+    sc.confirm(&c.request_id, transient_at(200).runtime(100))
+        .await;
 
     // Simulate the UPGRADE: rewrite the confirmed dev clone row's stored
     // namespace hash to a STALE value (what the pre-fix normalizer produced,
     // which the current normalizer no longer computes). The SQL hash is left
     // intact — exactly the pre-fix persisted shape that previously SKIPPED.
-    let pool = server.state.store.pool().clone();
-    let updated = sqlx::query(
-        "UPDATE executions SET node_namespace_logic_hash = 'STALE_PREFIX_NS_HASH' \
-         WHERE target_table = $1 AND status = 'confirmed'",
+    let updated = legacy::rewrite_namespace_logic_hash(
+        &server,
+        legacy::Rows::ConfirmedTarget(dev),
+        "STALE_PREFIX_NS_HASH",
     )
-    .bind(dev)
-    .execute(&pool)
-    .await
-    .unwrap();
-    assert!(
-        updated.rows_affected() >= 1,
-        "the clone row must exist to mutate"
-    );
+    .await;
+    assert!(updated >= 1, "the clone row must exist to mutate");
 
     // Resubmit the IDENTICAL dev request. With a stale namespace hash on the
     // persisted row, same-target reuse must NOT SKIP it.
-    let mut resub = submit(dev, "dev_clone_demo");
-    resub.sql = root.into();
-    resub.query_dependencies = vec![dep("S", "1"), dep("U", "2")];
-    resub.tables = vec![qc::TableModifiedInfo {
-        name: dev.into(),
-        last_modified_epoch: Some(200),
-    }];
-    let variant =
-        support::response_variant(&sql.submit_enriched_sql(resub).await.unwrap().into_inner());
+    let resub = consumer(dev, DEV_SCHEMA).own_epoch(Some(200));
+    let variant = sc.verdict(resub).await;
     assert_ne!(
         variant, "skip_execution",
         "a persisted clone row whose namespace identity no longer matches the \
@@ -1388,30 +1074,24 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
     use dbt_state_server::{fingerprint, services::sql_execution};
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let pool = server.state.store.pool().clone();
+    let sc = Scenario::connect(&server).await;
 
     // An ordinary model request held constant across build/confirm/resubmit so
     // its CURRENT (v4) hash is well-defined; own-target epoch present so the
     // only thing that can block reuse is the logic-hash identity. The literal is
     // per-target so cases are logically distinct (no cross-name clone equivalence).
     let request = |target: &str, uniq: &str| {
-        let mut r = submit(target, "prod_state_demo");
-        r.sql = format!("select id, '{uniq}' as tag from CDO_DEMO_DB.prod_state_demo.up_{uniq}");
-        r.query_dependencies = vec![];
-        r.tables = vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(200),
-        }];
-        r
+        demo::model(target, PROD_SCHEMA, CLONE_PROBE)
+            .namespace(NS)
+            .sql(&format!(
+                "select id, '{uniq}' as tag from CDO_DEMO_DB.prod_state_demo.up_{uniq}"
+            ))
+            .own_epoch(Some(200))
     };
 
     // Frozen v3 rendered + template hashes for the request.
     let frozen_v3 = |target: &str, uniq: &str| {
-        let se = sql_execution(&request(target, uniq));
+        let se = sql_execution(&request(target, uniq).build());
         let body = se
             .dbt_node_state
             .as_ref()
@@ -1433,14 +1113,7 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
         let uniq = tag.to_ascii_lowercase();
 
         // Build the ordinary model (stores CURRENT v4 hashes).
-        let r0 = sql
-            .submit_enriched_sql(request(&target, &uniq))
-            .await
-            .unwrap()
-            .into_inner();
-        let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-            panic!("case {tag}: first build must execute");
-        };
+        let rid = sc.execute_id(request(&target, &uniq)).await;
 
         // Seed the FAITHFUL frozen v3 rendered+template hashes. For the
         // "confirmed-on-old" lifecycle, confirm BEFORE seeding (the pre-fix
@@ -1448,46 +1121,33 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
         // on-new", seed while PENDING and confirm afterwards. Either way the
         // persisted row ends CONFIRMED carrying the v3 hashes.
         let v3 = frozen_v3(&target, &uniq);
-        let rid = x.request_id.clone();
-        let do_seed = |pool: &sqlx::PgPool, target: &str, v3: &(String, String)| {
-            let (pool, target, v30, v31) =
-                (pool.clone(), target.to_string(), v3.0.clone(), v3.1.clone());
-            async move {
-                let n = sqlx::query(
-                    "UPDATE executions SET node_sql_hash = $2, node_template_hash = $3 \
-                     WHERE target_table = $1",
-                )
-                .bind(&target)
-                .bind(&v30)
-                .bind(&v31)
-                .execute(&pool)
-                .await
-                .unwrap();
-                assert!(n.rows_affected() >= 1, "row must exist to seed");
-            }
+        let seed_v3 = || async {
+            let n = legacy::rewrite_logic_hashes(
+                &server,
+                legacy::Rows::Target(&target),
+                Some(&v3.0),
+                Some(&v3.1),
+            )
+            .await;
+            assert!(n >= 1, "row must exist to seed");
         };
-        let confirm_req = qc::ConfirmExecutionRequest {
-            request_id: rid,
-            last_modified_epoch: Some(200),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(100),
-            ..Default::default()
-        };
+        let built = transient_at(200).runtime(100);
         if confirm_on_old {
-            exec.confirm_execution(confirm_req).await.unwrap();
-            do_seed(&pool, &target, &v3).await;
+            sc.confirm(&rid, built).await;
+            seed_v3().await;
         } else {
-            do_seed(&pool, &target, &v3).await;
-            exec.confirm_execution(confirm_req).await.unwrap();
+            seed_v3().await;
+            sc.confirm(&rid, built).await;
         }
 
         // Resubmit the IDENTICAL request under the given comparison mode → the
         // stored v3 hash cannot match the v4 submit → EXECUTE.
         let mut resub = request(&target, &uniq);
-        resub.compare_unrendered_code = template_mode;
-        let resp = sql.submit_enriched_sql(resub).await.unwrap().into_inner();
+        if template_mode {
+            resub = resub.compare_unrendered_code();
+        }
         assert_eq!(
-            support::response_variant(&resp),
+            sc.verdict(resub).await,
             "ready_to_execute",
             "case {tag}: a faithful v3 pre-fix outcome must be EXECUTED (not reused) \
              on the v4 server (confirm_on_old={confirm_on_old}, template={template_mode})"
@@ -1504,9 +1164,10 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
 #[tokio::test]
 async fn parameterized_v3_tag_differs_from_current_v4() {
     use dbt_state_server::{fingerprint, services::sql_execution};
-    let mut r = submit("\"DB\".\"S\".\"T\"", "s");
-    r.sql = "select 1 as id".into();
-    r.query_dependencies = vec![];
+    let r = demo::model("\"DB\".\"S\".\"T\"", "s", CLONE_PROBE)
+        .namespace(NS)
+        .sql("select 1 as id")
+        .build();
     let se = sql_execution(&r);
     let v3 = fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3");
     let v4 = fingerprint::sql_logic_hash(&se, None);
@@ -1533,60 +1194,30 @@ async fn parameterized_v3_tag_differs_from_current_v4() {
 #[tokio::test]
 async fn template_mode_legitimate_reuse_still_skips() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"TMPL\"";
     let mk = |rendered_literal: &str| {
-        let mut r = submit(target, "prod_state_demo");
-        r.sql =
-            format!("select '{rendered_literal}' as v from CDO_DEMO_DB.prod_state_demo.tmpl_up");
-        r.query_dependencies = vec![];
-        r.compare_unrendered_code = true;
-        r.tables = vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(1_000),
-        }];
-        // The template (node_body_hash) is constant across rendered variants.
-        r.dbt_node_state = Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.tmpl".into(),
-            node_body_hash: Some("CONSTANT_TEMPLATE_BODY".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        });
-        r
+        demo::model(target, PROD_SCHEMA, CLONE_PROBE)
+            .namespace(NS)
+            .sql(&format!(
+                "select '{rendered_literal}' as v from CDO_DEMO_DB.prod_state_demo.tmpl_up"
+            ))
+            .compare_unrendered_code()
+            .own_epoch(Some(1_000))
+            // The template (node_body_hash) is constant across rendered variants.
+            .unique_id("model.jaffle.tmpl")
+            .node_state(|state| state.node_body_hash = Some("CONSTANT_TEMPLATE_BODY".into()))
     };
 
     // Build + confirm run1 (rendered literal 'aaa') on the CURRENT server.
-    let r0 = sql
-        .submit_enriched_sql(mk("aaa"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("run1 must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_000),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(mk("aaa"), transient_at(1_000).runtime(100))
+        .await;
 
     // run2: a template-PRESERVING rendered-SQL change (literal 'bbb', same body
     // hash) in template mode → must SKIP (rendered-OR-template matching).
     assert_eq!(
-        support::response_variant(
-            &sql.submit_enriched_sql(mk("bbb"))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(mk("bbb")).await,
         "skip_execution",
         "a current-version row must still be reused in template mode for a \
          template-preserving rendered change (invalidation must not over-reject)"
@@ -1670,39 +1301,22 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
     let mut cases_run = 0usize;
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let pool = server.state.store.pool().clone();
+    let sc = Scenario::connect(&server).await;
 
     // Build the dev request exactly as recorded (per-case SQL, same deps/ns).
-    let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some("dev_clone_demo".into()),
-        execution_type: 1,
-        sql: case_sql.into(),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        compare_unrendered_code: template,
-        query_dependencies: fx.dev_request_deps.clone(),
-        tables: vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(200),
-        }],
-        table_namespace: Some(fx.namespace.clone()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle_shop.clone_probe".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "clone_probe".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
+    let dev_request = |target: &str, case_sql: &str, template: bool| {
+        let recorded = demo::model(target, DEV_SCHEMA, CLONE_PROBE)
+            .namespace(&fx.namespace)
+            .sql(case_sql)
+            .own_epoch(Some(200));
+        let recorded = fx.dev_request_deps.iter().fold(recorded, |r, d| {
+            r.dependency_in(&d.name, &d.query, &d.default_catalog, &d.default_schema)
+        });
+        if template {
+            recorded.compare_unrendered_code()
+        } else {
+            recorded
+        }
     };
 
     for template_mode in [false, true] {
@@ -1724,77 +1338,45 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
                     "p"
                 }
             );
-            let confirmed_at: Option<&str> = if row.status == "confirmed" {
-                Some("now")
-            } else {
-                None
-            };
-            sqlx::query("DELETE FROM executions WHERE target_table = $1")
-                .bind(&row.target_table)
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "INSERT INTO executions \
-                 (org_id, target_table, execution_type, dialect, status, request_id, \
-                  node_sql_hash, node_template_hash, node_namespace_logic_hash, \
-                  clone_source_table, table_namespace, last_modified_epoch, confirmed_at) \
-                 VALUES ('local',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, \
-                         CASE WHEN $12 IS NULL THEN NULL ELSE now() END)",
+            legacy::replace_with_frozen_execution(
+                &server,
+                &legacy::FrozenExecution {
+                    org_id: "local",
+                    target_table: &row.target_table,
+                    execution_type: row.execution_type,
+                    dialect: &row.dialect,
+                    status: &row.status,
+                    request_id: &rid,
+                    node_sql_hash: row.node_sql_hash.as_deref(),
+                    node_template_hash: row.node_template_hash.as_deref(),
+                    node_namespace_logic_hash: row.node_namespace_logic_hash.as_deref(),
+                    clone_source_table: row.clone_source_table.as_deref(),
+                    table_namespace: row.table_namespace.as_deref(),
+                    last_modified_epoch: row.last_modified_epoch,
+                },
             )
-            .bind(&row.target_table)
-            .bind(row.execution_type)
-            .bind(&row.dialect)
-            .bind(&row.status)
-            .bind(&rid)
-            .bind(&row.node_sql_hash)
-            .bind(&row.node_template_hash)
-            .bind(&row.node_namespace_logic_hash)
-            .bind(&row.clone_source_table)
-            .bind(&row.table_namespace)
-            .bind(row.last_modified_epoch)
-            .bind(confirmed_at)
-            .execute(&pool)
-            .await
-            .unwrap();
+            .await;
 
             // Pending lifecycle: confirm on the CURRENT server (assert success +
             // pending→confirmed transition), simulating "confirmed after upgrade".
             if row.status == "pending" {
-                let ok = exec
-                    .confirm_execution(qc::ConfirmExecutionRequest {
-                        request_id: rid.clone(),
-                        last_modified_epoch: Some(200),
-                        table_type: Some("TRANSIENT TABLE".into()),
-                        execution_runtime_ms: Some(100),
-                        ..Default::default()
-                    })
-                    .await
-                    .unwrap()
-                    .into_inner()
-                    .success;
+                let ok = sc.confirm(&rid, transient_at(200).runtime(100)).await;
                 assert!(
                     ok,
                     "pending clone must confirm successfully on the new server"
                 );
-                let status: String =
-                    sqlx::query_scalar("SELECT status FROM executions WHERE request_id = $1")
-                        .bind(&rid)
-                        .fetch_one(&pool)
-                        .await
-                        .unwrap();
+                let status = rows::execution(&server, &rid)
+                    .await
+                    .expect("the frozen row")
+                    .status;
                 assert_eq!(status, "confirmed", "pending→confirmed transition");
             }
 
             // Resubmit the recorded dev request → the stored v3 clone outcome
             // must NOT be reused on the v4 server, in either comparison mode.
-            let resp = sql
-                .submit_enriched_sql(dev_request(&row.target_table, case_sql, template_mode))
-                .await
-                .unwrap()
-                .into_inner();
             assert_eq!(
-                support::response_variant(&resp),
+                sc.verdict(dev_request(&row.target_table, case_sql, template_mode))
+                    .await,
                 "ready_to_execute",
                 "frozen 366be09 clone ({}, template={template_mode}) must be EXECUTED \
                  (not reused) on the v4 server",
@@ -1878,38 +1460,21 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
     }
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let pool = server.state.store.pool().clone();
+    let sc = Scenario::connect(&server).await;
 
-    let dev_request = |target: &str, case_sql: &str, template: bool| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(fx.default_schema.clone()),
-        execution_type: 1,
-        sql: case_sql.into(),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        compare_unrendered_code: template,
-        query_dependencies: fx.dev_request_swapped_deps.clone(),
-        tables: vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(200),
-        }],
-        table_namespace: Some(fx.namespace.clone()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle_shop.clone_probe".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "clone_probe".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
+    let dev_request = |target: &str, case_sql: &str, template: bool| {
+        let recorded = demo::model(target, &fx.default_schema, CLONE_PROBE)
+            .namespace(&fx.namespace)
+            .sql(case_sql)
+            .own_epoch(Some(200));
+        let recorded = fx.dev_request_swapped_deps.iter().fold(recorded, |r, d| {
+            r.dependency_in(&d.name, &d.query, &d.default_catalog, &d.default_schema)
+        });
+        if template {
+            recorded.compare_unrendered_code()
+        } else {
+            recorded
+        }
     };
 
     let mut cases_run = 0usize;
@@ -1929,63 +1494,38 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
                     "p"
                 }
             );
-            sqlx::query("DELETE FROM executions WHERE target_table = $1")
-                .bind(&row.target_table)
-                .execute(&pool)
-                .await
-                .unwrap();
-            sqlx::query(
-                "INSERT INTO executions \
-                 (org_id, target_table, execution_type, dialect, status, request_id, \
-                  node_sql_hash, node_template_hash, node_namespace_logic_hash, \
-                  clone_source_table, table_namespace, last_modified_epoch, confirmed_at) \
-                 VALUES ('local',$1,1,$2,$3,$4,$5,$6,$7,$8,$9,$10, \
-                         CASE WHEN $3 = 'confirmed' THEN now() ELSE NULL END)",
+            legacy::replace_with_frozen_execution(
+                &server,
+                &legacy::FrozenExecution {
+                    org_id: "local",
+                    target_table: &row.target_table,
+                    execution_type: 1,
+                    dialect: &row.dialect,
+                    status: &row.status,
+                    request_id: &rid,
+                    node_sql_hash: row.node_sql_hash.as_deref(),
+                    node_template_hash: row.node_template_hash.as_deref(),
+                    node_namespace_logic_hash: row.node_namespace_logic_hash.as_deref(),
+                    clone_source_table: row.clone_source_table.as_deref(),
+                    table_namespace: row.table_namespace.as_deref(),
+                    last_modified_epoch: row.last_modified_epoch,
+                },
             )
-            .bind(&row.target_table)
-            .bind(&row.dialect)
-            .bind(&row.status)
-            .bind(&rid)
-            .bind(&row.node_sql_hash)
-            .bind(&row.node_template_hash)
-            .bind(&row.node_namespace_logic_hash)
-            .bind(&row.clone_source_table)
-            .bind(&row.table_namespace)
-            .bind(row.last_modified_epoch)
-            .execute(&pool)
-            .await
-            .unwrap();
+            .await;
 
             if row.status == "pending" {
-                let ok = exec
-                    .confirm_execution(qc::ConfirmExecutionRequest {
-                        request_id: rid.clone(),
-                        last_modified_epoch: Some(200),
-                        table_type: Some("TRANSIENT TABLE".into()),
-                        execution_runtime_ms: Some(100),
-                        ..Default::default()
-                    })
-                    .await
-                    .unwrap()
-                    .into_inner()
-                    .success;
+                let ok = sc.confirm(&rid, transient_at(200).runtime(100)).await;
                 assert!(ok, "pending unsafe clone must confirm on the new server");
-                let status: String =
-                    sqlx::query_scalar("SELECT status FROM executions WHERE request_id = $1")
-                        .bind(&rid)
-                        .fetch_one(&pool)
-                        .await
-                        .unwrap();
+                let status = rows::execution(&server, &rid)
+                    .await
+                    .expect("the frozen row")
+                    .status;
                 assert_eq!(status, "confirmed", "pending→confirmed transition");
             }
 
-            let resp = sql
-                .submit_enriched_sql(dev_request(&row.target_table, case_sql, template_mode))
-                .await
-                .unwrap()
-                .into_inner();
             assert_eq!(
-                support::response_variant(&resp),
+                sc.verdict(dev_request(&row.target_table, case_sql, template_mode))
+                    .await,
                 "ready_to_execute",
                 "frozen 366be09 INCORRECT clone ({}, template={template_mode}) must be \
                  EXECUTED (its wrong result not reused) on the v4 server",
@@ -2000,6 +1540,7 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
     );
 }
 
+/// REUSABLE CAPTURE DRIVER — regenerates `golden/upgrade/prefix_clone_366be09.json`,
 /// so the frozen fixture is REGENERABLE. It is `#[ignore]`d (it WRITES a file and
 /// is not a conformance assertion). To regenerate the fixture, check out the
 /// capture revision in a detached worktree, copy this test in, and run it:
@@ -2011,6 +1552,11 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
 ///   zz_capture_prefix_clone_fixture -- --ignored --nocapture
 /// cp /tmp/prefix_clone_366be09.json golden/upgrade/   # from the main tree
 /// ```
+///
+/// The capture revision predates `support::scenario`: copy the pre-scenario
+/// form of this driver, which uses only the support module of that era
+/// (`git show 3218068:crates/harness/tests/clone_submit_fallback.rs`), or copy
+/// `tests/support/` along with it.
 ///
 /// It builds + confirms a prod source for two distinct targets, clones the dev
 /// target from each (CONFIRMED one, PENDING the other), and dumps the dev clone
@@ -2036,106 +1582,38 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
 #[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
 async fn zz_capture_prefix_clone_fixture() {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let pool = server.state.store.pool().clone();
+    let sc = Scenario::connect(&server).await;
 
     let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
     let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
     let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
-    let dep = |name: &str, body: &str| qc::QueryDependency {
-        name: name.into(),
-        query: format!("select {body} as id"),
-        default_catalog: "DB".into(),
-        default_schema: "S".into(),
+    let consumer = |target: &str, schema: &str, mark: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .namespace(NS)
+            .sql(&format!("{root} where {mark} = {mark}"))
+            .dependency_in(n1, "select 1 as id", "DB", "S")
+            .dependency_in(n2, "select 2 as id", "DB", "S")
     };
-    const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
 
     for (suffix, mark) in [("CONF", "11"), ("PEND", "22")] {
         let prod = format!("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PFX_{suffix}\"");
-        let mut base = submit(&prod, "prod_state_demo");
-        base.sql = format!("{root} where {mark} = {mark}");
-        base.table_namespace = Some(NS.into());
-        base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
-        let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-        let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-            panic!("prod source {suffix} must execute");
-        };
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: x.request_id,
-            last_modified_epoch: Some(100),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(100),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        sc.build_with(
+            consumer(&prod, PROD_SCHEMA, mark),
+            transient_at(100).runtime(100),
+        )
+        .await;
     }
 
     let dev_conf = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PFX_CONF\"";
     let dev_pend = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PFX_PEND\"";
-    let dev_request = |target: &str, mark: &str| {
-        let mut d = submit(target, "dev_clone_demo");
-        d.sql = format!("{root} where {mark} = {mark}");
-        d.table_namespace = Some(NS.into());
-        d.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
-        d.tables = vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(200),
-        }];
-        d
-    };
-    let rc = sql
-        .submit_enriched_sql(dev_request(dev_conf, "11"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
-        panic!("CONF: must clone the identical-binding dev target");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: c.request_id,
-        last_modified_epoch: Some(200),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-    let rp = sql
-        .submit_enriched_sql(dev_request(dev_pend, "22"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(_cp) = rp.response.unwrap() else {
-        panic!("PEND: must clone the identical-binding dev target");
-    };
+    let dev_request =
+        |target: &str, mark: &str| consumer(target, DEV_SCHEMA, mark).own_epoch(Some(200));
+    let c = sc.expect_clone(dev_request(dev_conf, "11")).await;
+    sc.confirm(&c.request_id, transient_at(200).runtime(100))
+        .await;
+    sc.expect_clone(dev_request(dev_pend, "22")).await;
 
-    #[derive(serde::Serialize, sqlx::FromRow)]
-    struct Row {
-        target_table: String,
-        execution_type: i32,
-        status: String,
-        node_sql_hash: Option<String>,
-        node_template_hash: Option<String>,
-        node_namespace_logic_hash: Option<String>,
-        clone_source_table: Option<String>,
-        table_namespace: Option<String>,
-        dialect: String,
-        last_modified_epoch: Option<i64>,
-    }
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT target_table, execution_type, status, node_sql_hash, node_template_hash, \
-                node_namespace_logic_hash, clone_source_table, table_namespace, dialect, \
-                last_modified_epoch \
-         FROM executions WHERE target_table = ANY($1) ORDER BY target_table",
-    )
-    .bind(vec![dev_conf.to_string(), dev_pend.to_string()])
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let rows = captured_clone_rows(&server, &[dev_conf, dev_pend]).await;
 
     let fixture = serde_json::json!({
         "captured_from_revision": "366be09",
@@ -2165,108 +1643,41 @@ async fn zz_capture_prefix_clone_fixture() {
 /// `__dbt_state_ns__0` placeholder collides the two dependency names — which is
 /// why the old server UNSAFELY clones the swapped binding (it does not collide
 /// with a non-zero `S` token, which is the mistake the 11th-follow-up corrected).
+/// As for `zz_capture_prefix_clone_fixture`, run the pre-scenario form of this
+/// driver (`git show 3218068:crates/harness/tests/clone_submit_fallback.rs`) on
+/// the capture revision.
 #[tokio::test]
 #[ignore = "capture driver: WRITES a fixture file; run explicitly on the capture revision"]
 async fn zz_capture_incorrect_clone_fixture() {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let pool = server.state.store.pool().clone();
-    const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
+    let sc = Scenario::connect(&server).await;
     let n1 = "\"DB.__dbt_state_ns__0\".\"S\".\"T\"";
     let n2 = "\"DB\".\"S\".\"__dbt_state_ns__0.T\"";
     let root = "select a.id from \"DB.__dbt_state_ns__0\".\"S\".\"T\" a cross join \"DB\".\"S\".\"__dbt_state_ns__0.T\" b";
-    let dep = |name: &str, body: &str| qc::QueryDependency {
-        name: name.into(),
-        query: format!("select {body} as id"),
-        default_catalog: "DB".into(),
-        default_schema: "S".into(),
+    let consumer = |target: &str, mark: &str, first: &str, second: &str| {
+        demo::model(target, "S", CLONE_PROBE)
+            .namespace(NS)
+            .sql(&format!("{root} where {mark} = {mark}"))
+            .dependency_in(n1, &format!("select {first} as id"), "DB", "S")
+            .dependency_in(n2, &format!("select {second} as id"), "DB", "S")
     };
     for (suffix, mark) in [("CONF", "11"), ("PEND", "22")] {
         let prod = format!("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ICC_{suffix}\"");
-        let mut base = submit(&prod, "prod_state_demo");
-        base.sql = format!("{root} where {mark} = {mark}");
-        base.default_schema = Some("S".into());
-        base.table_namespace = Some(NS.into());
-        base.query_dependencies = vec![dep(n1, "1"), dep(n2, "2")];
-        let r0 = sql.submit_enriched_sql(base).await.unwrap().into_inner();
-        let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-            panic!("prod {suffix} must execute");
-        };
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: x.request_id,
-            last_modified_epoch: Some(100),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(100),
-            ..Default::default()
-        })
-        .await
-        .unwrap();
+        sc.build_with(
+            consumer(&prod, mark, "1", "2"),
+            transient_at(100).runtime(100),
+        )
+        .await;
     }
     let dev_conf = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_CONF\"";
     let dev_pend = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ICC_PEND\"";
-    let dev = |t: &str, m: &str| {
-        let mut d = submit(t, "dev_clone_demo");
-        d.sql = format!("{root} where {m} = {m}");
-        d.default_schema = Some("S".into());
-        d.table_namespace = Some(NS.into());
-        d.query_dependencies = vec![dep(n1, "2"), dep(n2, "1")];
-        d.tables = vec![qc::TableModifiedInfo {
-            name: t.into(),
-            last_modified_epoch: Some(200),
-        }];
-        d
-    };
-    let rc = sql
-        .submit_enriched_sql(dev(dev_conf, "11"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(c) = rc.response.unwrap() else {
-        panic!("CONF: old server must UNSAFELY clone the swapped binding (default_schema=S)");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: c.request_id,
-        last_modified_epoch: Some(200),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-    let rp = sql
-        .submit_enriched_sql(dev(dev_pend, "22"))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToClone(_) = rp.response.unwrap() else {
-        panic!("PEND: old server must UNSAFELY clone the swapped binding");
-    };
-    #[derive(serde::Serialize, sqlx::FromRow)]
-    struct Row {
-        target_table: String,
-        execution_type: i32,
-        status: String,
-        node_sql_hash: Option<String>,
-        node_template_hash: Option<String>,
-        node_namespace_logic_hash: Option<String>,
-        clone_source_table: Option<String>,
-        table_namespace: Option<String>,
-        dialect: String,
-        last_modified_epoch: Option<i64>,
-    }
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT target_table, execution_type, status, node_sql_hash, node_template_hash, \
-                node_namespace_logic_hash, clone_source_table, table_namespace, dialect, \
-                last_modified_epoch \
-         FROM executions WHERE target_table = ANY($1) ORDER BY target_table",
-    )
-    .bind(vec![dev_conf.to_string(), dev_pend.to_string()])
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let dev = |t: &str, m: &str| consumer(t, m, "2", "1").own_epoch(Some(200));
+    // The old server must UNSAFELY clone the swapped binding (default_schema=S).
+    let c = sc.expect_clone(dev(dev_conf, "11")).await;
+    sc.confirm(&c.request_id, transient_at(200).runtime(100))
+        .await;
+    sc.expect_clone(dev(dev_pend, "22")).await;
+    let rows = captured_clone_rows(&server, &[dev_conf, dev_pend]).await;
     let fixture = serde_json::json!({
         "captured_from_revision": "366be09",
         "scenario": "ORIGINAL incorrect clone CREATION — swapped-binding dev request (required result 2) UNSAFELY cloned from prod source (result 1) via the pre-fix rejoin collision; default_schema=S so S->token0",
@@ -2286,4 +1697,29 @@ async fn zz_capture_incorrect_clone_fixture() {
     )
     .unwrap();
     eprintln!("CAPTURED_ICC /tmp/incorrect_clone_366be09.json");
+}
+
+/// The capture drivers' fixture `rows`: the persisted columns of each row for
+/// `targets`, ordered by target table.
+async fn captured_clone_rows(server: &support::TestServer, targets: &[&str]) -> serde_json::Value {
+    let mut stored = rows::executions(server).await;
+    stored.retain(|row| targets.contains(&row.target_table.as_str()));
+    stored.sort_by(|a, b| a.target_table.cmp(&b.target_table));
+    stored
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "target_table": row.target_table,
+                "execution_type": row.execution_type,
+                "status": row.status,
+                "node_sql_hash": row.node_sql_hash,
+                "node_template_hash": row.node_template_hash,
+                "node_namespace_logic_hash": row.node_namespace_logic_hash,
+                "clone_source_table": row.clone_source_table,
+                "table_namespace": row.table_namespace,
+                "dialect": row.dialect,
+                "last_modified_epoch": row.last_modified_epoch,
+            })
+        })
+        .collect()
 }
