@@ -32,10 +32,8 @@
 mod support;
 
 use dbt_state_harness::diff;
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
+use support::scenario::{model, outcome, Policy, Scenario};
+use support::start_server;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -120,102 +118,64 @@ fn hosted_policy_is_stale_truth_table() {
     );
 }
 
-fn tbl(name: &str, epoch: i64) -> qc::TableModifiedInfo {
-    qc::TableModifiedInfo {
-        name: name.into(),
-        last_modified_epoch: Some(epoch),
-    }
-}
-
 /// Controlled replay against our server: ALL policy, two upstreams, only one
 /// drifted → SKIP with is_stale=TRUE (reproduces the hosted contract). Then flip
 /// to ANY → the same drift EXECUTES with is_stale=FALSE.
 #[tokio::test]
 async fn server_reproduces_all_policy_tolerated_stale_skip() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"S\".\"LP_MODEL2\"";
     let up_a = "\"DB\".\"S\".\"LP_UP_A\"";
     let up_b = "\"DB\".\"S\".\"LP_UP_B\"";
     let build = 1_000_000i64;
 
-    let make = |policy: i32, a_epoch: i64, b_epoch: i64| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some("S".into()),
-        execution_type: 1,
-        sql: format!("select a.id from {up_a} a cross join {up_b} b"),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 300,
-        stale_upstream_policy: policy,
-        tables: vec![tbl(target, build), tbl(up_a, a_epoch), tbl(up_b, b_epoch)],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.p.lp_model2".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
+    // lp_model2 cross-joins both upstreams; its own build is at `build` and the
+    // lag tolerance is 300s. Each probe sets the policy and upstream epochs.
+    let lp_model2 = model(target)
+        .catalog("DB")
+        .schema("S")
+        .sql(&format!("select a.id from {up_a} a cross join {up_b} b"))
+        .tolerance_seconds(300)
+        .own_epoch(Some(build))
+        .unique_id("model.p.lp_model2")
+        .project("p");
+    let probe = |policy: Policy, a_epoch: i64, b_epoch: i64| {
+        lp_model2
+            .clone()
+            .policy(policy)
+            .upstream(up_a, a_epoch)
+            .upstream(up_b, b_epoch)
     };
 
     // Baseline build (both upstreams at/under the build epoch) + confirm.
-    let r0 = sql
-        .submit_enriched_sql(make(1, build, build))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(r) = r0.response.unwrap() else {
-        panic!("first build must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: r.request_id,
-        last_modified_epoch: Some(build),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    let first = sc.execute_id(probe(Policy::All, build, build)).await;
+    sc.confirm(&first, outcome().epoch(build)).await;
 
     // ALL policy, only upstream A drifted (A newer than build, B not) → SKIP,
     // is_stale=TRUE.
-    let all = sql
-        .submit_enriched_sql(make(1, build + 50_000, build))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(response_variant(&all), "skip_execution");
-    let qc::submit_sql_response::Response::SkipExecution(s) = all.response.unwrap() else {
-        unreachable!()
-    };
+    let all = sc
+        .expect_skip(probe(Policy::All, build + 50_000, build))
+        .await;
     assert!(
-        s.explained_decision.unwrap().is_stale,
+        all.explained_decision.unwrap().is_stale,
         "ALL-policy partial-drift skip must report is_stale=true"
     );
 
     // ANY policy, same drift → EXECUTE, is_stale=FALSE.
-    let any = sql
-        .submit_enriched_sql(make(0, build + 50_000, build))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(response_variant(&any), "ready_to_execute");
-    let qc::submit_sql_response::Response::ReadyToExecute(e) = any.response.unwrap() else {
-        unreachable!()
-    };
+    let any = sc
+        .expect_execute(probe(Policy::Any, build + 50_000, build))
+        .await;
     assert!(
-        !e.explained_decision.unwrap().is_stale,
+        !any.explained_decision.unwrap().is_stale,
         "an execute must report is_stale=false"
     );
 
     // ALL policy, BOTH upstreams drifted → EXECUTE, is_stale=FALSE.
-    let both = sql
-        .submit_enriched_sql(make(1, build + 50_000, build + 90_000))
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(response_variant(&both), "ready_to_execute");
+    assert_eq!(
+        sc.verdict(probe(Policy::All, build + 50_000, build + 90_000))
+            .await,
+        "ready_to_execute"
+    );
 }

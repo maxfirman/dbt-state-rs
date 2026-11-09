@@ -16,30 +16,20 @@
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
-use qc::sql_client::SqlClient;
-use support::{channel, request_with_org, start_server, start_server_require_org};
+use support::scenario::{model, Scenario};
+use support::{start_server, start_server_require_org};
 
-fn minimal_submit() -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some("\"DB\".\"S\".\"T\"".into()),
-        dialect: "snowflake".into(),
-        execution_type: 1,
-        sql: "select 1 as id".into(),
-        tolerate_nondeterminism: true,
-        ..Default::default()
-    }
-}
+/// Any decidable submission: these tests only exercise org-header scoping.
+const TARGET: &str = "\"DB\".\"S\".\"T\"";
 
 /// With the hardening enabled, a request WITHOUT an org header is rejected
 /// (UNAUTHENTICATED), not silently scoped to the default tenant.
 #[tokio::test]
 async fn require_org_header_rejects_missing_header() {
     let server = start_server_require_org().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let err = SqlClient::new(ch)
-        .submit_enriched_sql(minimal_submit()) // no x-organization-id metadata
+    let err = Scenario::connect(&server)
+        .await
+        .try_submit(model(TARGET)) // no x-organization-id metadata
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
@@ -50,13 +40,12 @@ async fn require_org_header_rejects_missing_header() {
 #[tokio::test]
 async fn require_org_header_accepts_present_header() {
     let server = start_server_require_org().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let resp = SqlClient::new(ch)
-        .submit_enriched_sql(request_with_org(minimal_submit(), "acme"))
+    let resp = Scenario::connect(&server)
         .await
-        .expect("present org header is accepted")
-        .into_inner();
+        .org("acme")
+        .try_submit(model(TARGET))
+        .await
+        .expect("present org header is accepted");
     assert!(resp.response.is_some(), "a scoped request gets a decision");
 }
 
@@ -65,13 +54,11 @@ async fn require_org_header_accepts_present_header() {
 #[tokio::test]
 async fn default_mode_allows_missing_header() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let resp = SqlClient::new(ch)
-        .submit_enriched_sql(minimal_submit())
+    let resp = Scenario::connect(&server)
         .await
-        .expect("default mode tolerates a missing org header")
-        .into_inner();
+        .try_submit(model(TARGET))
+        .await
+        .expect("default mode tolerates a missing org header");
     assert!(resp.response.is_some());
 }
 
@@ -80,10 +67,10 @@ async fn default_mode_allows_missing_header() {
 #[tokio::test]
 async fn require_org_header_rejects_empty_header() {
     let server = start_server_require_org().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let err = SqlClient::new(ch)
-        .submit_enriched_sql(request_with_org(minimal_submit(), ""))
+    let err = Scenario::connect(&server)
+        .await
+        .org("")
+        .try_submit(model(TARGET))
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);

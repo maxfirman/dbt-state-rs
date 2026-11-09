@@ -35,8 +35,7 @@ mod support;
 
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
+use support::scenario::Scenario;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -123,27 +122,21 @@ async fn server_reproduces_rebuild_on_upstream_newer_than_build() {
     );
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    // Establish a confirmed baseline from the decisive submit: execute it, then
-    // confirm with the captured outcome (own-build epoch). A later re-submit
-    // whose upstream is NOT newer than that build must then skip.
+    // Establish a confirmed baseline from the decisive submit: execute it (no
+    // prior history), then confirm with the captured outcome (own-build epoch).
+    // A later re-submit whose upstream is NOT newer than that build must skip.
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let resp1 = sql.submit_enriched_sql(r1).await.unwrap().into_inner();
-    let rid = match resp1.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("first submit with no prior history must execute, got {other:?}"),
-    };
+    let rid = sc.execute_id(r1).await;
+    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
     support::confirm_captured(&mut exec, &entries, submits[1], rid).await;
 
     // The post-confirm skip entry: upstream older than the new own-build → skip.
     let r2: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[2].request.clone()).unwrap();
-    let v2 = support::response_variant(&sql.submit_enriched_sql(r2).await.unwrap().into_inner());
+    let v2 = sc.verdict(r2).await;
     assert_eq!(
         v2, "skip_execution",
         "upstream older than own build must skip (reproduces hosted [9])"
