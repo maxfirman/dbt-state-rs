@@ -432,9 +432,7 @@ fn anchored_verdicts(node: &ExplainNode) -> Option<Vec<decision::UpstreamVerdict
 fn anchored_ctx(node: &ExplainNode) -> SubmitContext<'_> {
     SubmitContext {
         execution_type: node.execution_type,
-        node_body_hash: None,
         input_tables: &node.input_tables,
-        freshness_tolerance_seconds: 0,
         target_table: node.target_table.as_deref(),
         stale_upstream_policy: StaleUpstreamPolicy::Any,
         target_has_prior_build: true,

@@ -497,9 +497,7 @@ impl Sql for SqlService {
         let table_namespace = namespace(req.table_namespace.as_deref());
         let ctx = SubmitContext {
             execution_type,
-            node_body_hash: node_body_hash.as_deref(),
             input_tables,
-            freshness_tolerance_seconds: req.freshness_tolerance_seconds,
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
                 req.stale_upstream_policy,
@@ -757,9 +755,7 @@ impl Sql for SqlService {
         let input_tables = &row.input_tables;
         let ctx = SubmitContext {
             execution_type,
-            node_body_hash: None,
             input_tables,
-            freshness_tolerance_seconds: 0,
             target_table: Some(target_table.as_str()),
             stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
             target_has_prior_build,

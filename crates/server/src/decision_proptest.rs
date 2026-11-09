@@ -16,7 +16,6 @@ fn is_skip(v: &Verdict) -> bool {
 fn skip_would_be_safe(
     current: &[InputTable],
     prev: &ExecutionRow,
-    tol_s: i64,
     policy: StaleUpstreamPolicy,
     target: Option<&str>,
 ) -> bool {
@@ -36,8 +35,7 @@ fn skip_would_be_safe(
     }
     // Verified rule: an upstream is drift iff it is strictly newer than our own
     // last-build epoch. `freshness_tolerance_seconds` does not absorb the gap
-    // (verified live; see correctness-handoff.md).
-    let _ = tol_s;
+    // (verified live; see correctness-handoff.md) and never reaches `decide`.
     // No genuine upstreams to compare → a hash/identity match alone is safe to
     // skip, independent of whether an own-build epoch was recorded (mirrors the
     // engine's short-circuit; a source-less model or no-input node is fresh).
@@ -139,15 +137,12 @@ fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> Exe
 
 fn ctx<'a>(
     tables: &'a [InputTable],
-    tol: i64,
     policy: StaleUpstreamPolicy,
     target: Option<&'a str>,
 ) -> SubmitContext<'a> {
     SubmitContext {
         execution_type: 10,
-        node_body_hash: Some("h"),
         input_tables: tables,
-        freshness_tolerance_seconds: tol,
         target_table: target,
         stale_upstream_policy: policy,
         target_has_prior_build: false,
@@ -164,9 +159,9 @@ fn policy_strategy() -> impl Strategy<Value = StaleUpstreamPolicy> {
 proptest! {
     // 1. Determinism.
     #[test]
-    fn determinism(tables in tables_strategy(), tol in 0i64..3600, p in policy_strategy()) {
+    fn determinism(tables in tables_strategy(), p in policy_strategy()) {
         let prev = confirmed_row("h", tables.clone(), Some(1_000_000));
-        let c = ctx(&tables, tol, p, None);
+        let c = ctx(&tables, p, None);
         let a = decide(&c, Some(&prev));
         let b = decide(&c, Some(&prev));
         prop_assert_eq!(a, b);
@@ -174,8 +169,8 @@ proptest! {
 
     // 2. No-match ⇒ Execute, regardless of freshness/policy/inputs.
     #[test]
-    fn no_match_always_executes(tables in tables_strategy(), tol in 0i64..3600, p in policy_strategy()) {
-        let c = ctx(&tables, tol, p, None);
+    fn no_match_always_executes(tables in tables_strategy(), p in policy_strategy()) {
+        let c = ctx(&tables, p, None);
         let v = decide(&c, None);
         let executed = matches!(v, Verdict::Execute { .. });
         prop_assert!(executed, "no-match must execute");
@@ -188,7 +183,6 @@ proptest! {
         upstreams in tables_strategy(),
         self_epoch_a in 0i64..2_000_000,
         self_epoch_b in 0i64..2_000_000,
-        tol in 0i64..3600,
         p in policy_strategy(),
     ) {
         let target = "\"DB\".\"S\".\"T\"";
@@ -200,8 +194,8 @@ proptest! {
         let mut b_tables = upstreams.clone();
         b_tables.push(InputTable { name: target.into(), last_modified_epoch: Some(self_epoch_b) });
 
-        let va = decide(&ctx(&a_tables, tol, p, Some(target)), Some(&prev));
-        let vb = decide(&ctx(&b_tables, tol, p, Some(target)), Some(&prev));
+        let va = decide(&ctx(&a_tables, p, Some(target)), Some(&prev));
+        let vb = decide(&ctx(&b_tables, p, Some(target)), Some(&prev));
         prop_assert_eq!(is_skip(&va), is_skip(&vb), "self-table epoch must not change verdict");
     }
 
@@ -222,7 +216,7 @@ proptest! {
             .iter()
             .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base) })
             .collect();
-        let v_fresh = decide(&ctx(&current_fresh, 0, p, None), Some(&prev));
+        let v_fresh = decide(&ctx(&current_fresh, p, None), Some(&prev));
         prop_assert!(is_skip(&v_fresh), "no upstream drift must skip");
     }
 
@@ -232,12 +226,11 @@ proptest! {
     fn policy_any_stricter_than_all(
         recorded in tables_strategy(),
         current in tables_strategy(),
-        tol in 0i64..3600,
     ) {
         // Use matching names so the comparison is meaningful.
         let prev = confirmed_row("h", recorded, Some(500_000));
-        let any = decide(&ctx(&current, tol, StaleUpstreamPolicy::Any, None), Some(&prev));
-        let all = decide(&ctx(&current, tol, StaleUpstreamPolicy::All, None), Some(&prev));
+        let any = decide(&ctx(&current, StaleUpstreamPolicy::Any, None), Some(&prev));
+        let all = decide(&ctx(&current, StaleUpstreamPolicy::All, None), Some(&prev));
         if is_skip(&any) {
             prop_assert!(is_skip(&all), "if ANY skips, ALL must skip (ALL is more lenient)");
         }
@@ -252,15 +245,14 @@ proptest! {
     fn skip_is_always_safe(
         recorded in tables_strategy(),
         current in tables_strategy(),
-        tol in 0i64..3600,
         p in policy_strategy(),
         built in prop::option::of(0i64..2_000_000),
     ) {
         let prev = confirmed_row("h", recorded, built);
-        let v = decide(&ctx(&current, tol, p, None), Some(&prev));
+        let v = decide(&ctx(&current, p, None), Some(&prev));
         if is_skip(&v) {
             prop_assert!(
-                skip_would_be_safe(&current, &prev, tol, p, None),
+                skip_would_be_safe(&current, &prev, p, None),
                 "engine SKIPped but the oracle says the skip is UNSAFE \
                  (upstream drift beyond tolerance would leave stale state)"
             );
@@ -281,15 +273,14 @@ proptest! {
     fn skip_is_always_safe_over_ambiguous_history(
         recorded in recorded_tables_strategy(),
         current in tables_strategy(),
-        tol in 0i64..3600,
         p in policy_strategy(),
         built in prop::option::of(0i64..2_000_000),
     ) {
         let prev = confirmed_row("h", recorded, built);
-        let v = decide(&ctx(&current, tol, p, None), Some(&prev));
+        let v = decide(&ctx(&current, p, None), Some(&prev));
         if is_skip(&v) {
             prop_assert!(
-                skip_would_be_safe(&current, &prev, tol, p, None),
+                skip_would_be_safe(&current, &prev, p, None),
                 "engine SKIPped against ambiguous/incomplete recorded history \
                  but the oracle says the skip is UNSAFE (duplicate or epoch-less \
                  recorded counterpart cannot prove freshness)"
@@ -302,10 +293,9 @@ proptest! {
     #[test]
     fn skip_requires_confirmed_history(
         current in tables_strategy(),
-        tol in 0i64..3600,
         p in policy_strategy(),
     ) {
-        let v = decide(&ctx(&current, tol, p, None), None);
+        let v = decide(&ctx(&current, p, None), None);
         prop_assert!(!is_skip(&v), "no confirmed history must never skip");
     }
 
@@ -328,7 +318,7 @@ proptest! {
             InputTable { name: "u_known".into(), last_modified_epoch: Some(base) },
             InputTable { name: "u_brand_new".into(), last_modified_epoch: Some(newer) },
         ];
-        let v = decide(&ctx(&current, tol, StaleUpstreamPolicy::Any, None), Some(&prev));
+        let v = decide(&ctx(&current, StaleUpstreamPolicy::Any, None), Some(&prev));
         prop_assert!(!is_skip(&v), "a new, newer, untracked upstream must execute under ANY");
     }
 
@@ -341,11 +331,10 @@ proptest! {
     #[test]
     fn changed_body_hash_executes(
         current in tables_strategy(),
-        tol in 0i64..3600,
         p in policy_strategy(),
     ) {
         // A changed body hash means the store finds no matching confirmed row.
-        let v = decide(&ctx(&current, tol, p, None), None);
+        let v = decide(&ctx(&current, p, None), None);
         prop_assert!(matches!(v, Verdict::Execute { is_stale: false, .. }),
             "changed body hash (no match) must execute as a hash miss, not stale");
     }
@@ -359,7 +348,6 @@ proptest! {
         names in prop::collection::vec(0u8..3, 1..3),
         base in 200_000i64..800_000,
         bump in 1i64..1_000_000,
-        tol in 0i64..600,
         p in policy_strategy(),
     ) {
         let recorded: Vec<InputTable> = names.iter()
@@ -374,8 +362,8 @@ proptest! {
             .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base + bump) })
             .collect();
 
-        let v_low = decide(&ctx(&low, tol, p, None), Some(&prev));
-        let v_high = decide(&ctx(&high, tol, p, None), Some(&prev));
+        let v_low = decide(&ctx(&low, p, None), Some(&prev));
+        let v_high = decide(&ctx(&high, p, None), Some(&prev));
         // If the HIGHER (more drifted) inputs skip, the LOWER must also skip.
         if is_skip(&v_high) {
             prop_assert!(is_skip(&v_low),
