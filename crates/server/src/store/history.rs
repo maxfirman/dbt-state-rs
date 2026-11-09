@@ -5,9 +5,6 @@
 use super::*;
 use sqlx::{Postgres, QueryBuilder};
 
-const EXECUTION_COLUMNS: &str = "id, org_id, target_table, execution_type, node_body_hash, node_sql_hash, node_namespace_logic_hash, table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms, execution_results, input_tables, status, request_id, clone_source_table";
-const LATEST_COLUMNS: &str = "id, org_id, target_table, execution_type, node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms, execution_results, input_tables, status, request_id, clone_source_table";
-
 /// A single target or all targets within the same physical warehouse scope.
 /// Callers append eligibility conditions outside the limited/distinct selection.
 /// This builds one query, preserving each caller's existing read/error ordering.
@@ -61,15 +58,15 @@ impl Store {
         target_table: &str,
         table_namespace: Option<&str>,
         dialect: &str,
-    ) -> sqlx::Result<Option<LatestExecution>> {
+    ) -> sqlx::Result<Option<ExecutionRow>> {
         let mut query =
             current_physical_state(org_id, table_namespace, dialect, Some(target_table));
         query
             .push("SELECT ")
-            .push(LATEST_COLUMNS)
+            .push(ExecutionRow::COLUMNS)
             .push(" FROM current_state");
         query
-            .build_query_as::<LatestExecution>()
+            .build_query_as::<ExecutionRow>()
             .fetch_optional(&self.pool)
             .await
     }
@@ -84,17 +81,18 @@ impl Store {
         project_id: Option<&str>,
         table_namespace: Option<&str>,
         dialect: &str,
-    ) -> sqlx::Result<Option<LatestExecution>> {
-        sqlx::query_as::<_, LatestExecution>(&format!(
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        sqlx::query_as::<_, ExecutionRow>(&format!(
             r#"
-            SELECT {LATEST_COLUMNS} FROM executions
+            SELECT {} FROM executions
             WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
               AND project_id IS NOT DISTINCT FROM $3
               AND table_namespace IS NOT DISTINCT FROM $4
               AND warehouse_family = $5
               AND status = 'confirmed'
             ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
-            "#
+            "#,
+            ExecutionRow::COLUMNS
         ))
         .bind(org_id)
         .bind(node_unique_id)
@@ -103,39 +101,6 @@ impl Store {
         .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
         .await
-    }
-
-    /// The newest confirmed execution in a namespace carrying a given
-    /// schema-abstracted logic identity. This historical accessor does not prove
-    /// current physical contents; reuse paths use the current-state lookups below.
-    pub async fn find_confirmed_ns_logic(
-        &self,
-        org_id: &str,
-        table_namespace: &str,
-        node_namespace_logic_hash: &str,
-        dialect: &str,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
-        let row = sqlx::query_as::<_, RawRow>(
-            r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
-                   node_namespace_logic_hash,
-                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id, clone_source_table
-            FROM executions
-            WHERE org_id = $1 AND table_namespace = $2
-              AND warehouse_family = $4
-              AND node_namespace_logic_hash = $3 AND status = 'confirmed'
-            ORDER BY confirmed_at DESC NULLS LAST, id DESC
-            LIMIT 1
-            "#,
-        )
-        .bind(org_id)
-        .bind(table_namespace)
-        .bind(node_namespace_logic_hash)
-        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
-        .fetch_optional(&self.pool)
-        .await?;
-        row.map(TryInto::try_into).transpose()
     }
 
     /// Find a confirmed "equivalent model under another name" to clone FROM.
@@ -278,15 +243,16 @@ impl Store {
             current_physical_state(org_id, table_namespace, dialect, Some(source_table));
         query
             .push("SELECT ")
-            .push(EXECUTION_COLUMNS)
+            .push(ExecutionRow::COLUMNS)
             .push(" FROM current_state");
         let row = query
-            .build_query_as::<RawRow>()
+            .build_query_as::<ExecutionRow>()
             .fetch_optional(&self.pool)
             .await?;
+        // Corrupt recorded evidence on the source row fails the lookup.
         Ok(row
-            .map(TryInto::try_into)
+            .map(|r| r.into_checked(true))
             .transpose()?
-            .and_then(|r: ExecutionRow| r.node_namespace_logic_hash))
+            .and_then(|r| r.node_namespace_logic_hash))
     }
 }

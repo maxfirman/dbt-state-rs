@@ -73,14 +73,7 @@ impl ExecutionEvidence {
             .flatten();
         row.node_template_hash =
             template.map(|body| crate::fingerprint::sql_logic_hash(req, Some(body)));
-        row.input_tables = req
-            .tables
-            .iter()
-            .map(|t| InputTable {
-                name: t.name.clone(),
-                last_modified_epoch: t.last_modified_epoch,
-            })
-            .collect();
+        row.input_tables = req.tables.iter().map(InputTable::from).collect();
         evidence
     }
 

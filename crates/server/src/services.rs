@@ -2,7 +2,6 @@
 
 use tonic::{Request, Response, Status};
 
-use crate::decision;
 use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
@@ -335,7 +334,6 @@ fn capture_submit(
     meta: &CaptureMeta,
     req: &qc::SubmitEnrichedSqlRequest,
     response: &qc::SubmitSqlResponse,
-    input_tables: &[crate::store::InputTable],
     matched_execution_id: Option<i64>,
 ) {
     use crate::capture::{CaptureInput, DecisionKind};
@@ -368,7 +366,7 @@ fn capture_submit(
         default_schema: req.default_schema.clone(),
         clone_source: clone_source_of(response),
         clone_sqls: None,
-        input_tables: input_tables.to_vec(),
+        input_tables: req.tables.iter().map(Into::into).collect(),
         query_dependencies: req
             .query_dependencies
             .iter()
@@ -536,14 +534,7 @@ impl Sql for SqlService {
         let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
 
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(
-            &self.0,
-            &cap_meta,
-            &req,
-            &response,
-            &decision::input_tables_of(&req),
-            matched_execution_id,
-        );
+        capture_submit(&self.0, &cap_meta, &req, &response, matched_execution_id);
         Ok(Response::new(response))
     }
 
@@ -900,13 +891,13 @@ impl Explain for ExplainService {
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
-                // joined via `node_decisions.matched_execution_id`. Present for a
+                // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
                 // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
                 // re-derives the per-upstream FRESH/OUTDATED freshness subtree
                 // against it via the shared pure helper, so the explanation
                 // matches the decision exactly.
-                anchor: row.anchor(&org_id),
+                anchor: row.anchor(),
             };
             by_id.insert(edid, node);
         }

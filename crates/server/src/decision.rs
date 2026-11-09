@@ -450,21 +450,11 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
     }
 }
 
-/// Map a SubmitEnrichedSQLRequest into the fields we persist / match on.
+/// The client-reported node body hash, when the request carries node state.
 pub fn node_body_hash_of(req: &qc::SubmitEnrichedSqlRequest) -> Option<String> {
     req.dbt_node_state
         .as_ref()
         .and_then(|s| s.node_body_hash.clone())
-}
-
-pub fn input_tables_of(req: &qc::SubmitEnrichedSqlRequest) -> Vec<InputTable> {
-    req.tables
-        .iter()
-        .map(|t| InputTable {
-            name: t.name.clone(),
-            last_modified_epoch: t.last_modified_epoch,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -499,6 +489,7 @@ mod tests {
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            ..ExecutionRow::default()
         }
     }
 
