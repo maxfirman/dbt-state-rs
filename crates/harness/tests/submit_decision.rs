@@ -497,6 +497,125 @@ async fn every_outcome_carries_its_decision_reason() {
     assert_eq!(changed.record().matched_execution_id, None);
 }
 
+/// Reuse reads only the target's latest confirmed row in scope: an older
+/// build that still matches does not resurface once a different build of the
+/// target was confirmed after it, even when that later build's row was
+/// written first.
+#[tokio::test]
+async fn reuse_reads_only_the_latest_confirmed_build() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let original = environment_model("prod");
+    let changed = environment_model("prod").sql("select id, 2 as v from DB.prod.up");
+
+    // `changed` is submitted first and `original` second, so `original`'s
+    // row has the larger id; `original` is confirmed first, `changed` last.
+    let SubmitOutcome::Execute {
+        ids: changed_ids, ..
+    } = submit_sql(store, changed.clone()).await
+    else {
+        panic!("expected the first build");
+    };
+    let SubmitOutcome::Execute {
+        ids: original_ids, ..
+    } = submit_sql(store, original.clone()).await
+    else {
+        panic!("expected the first build");
+    };
+    confirm(store, &original_ids, BUILT).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    confirm(store, &changed_ids, BUILT).await;
+    let current = rows::execution_in(store, ORG, &changed_ids.request_id)
+        .await
+        .expect("confirmed row")
+        .id;
+
+    // Both builds report the target at BUILT; only the later one is current.
+    let outcome = submit_sql(store, original.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Execute {
+        matched_execution,
+        record,
+        ..
+    } = outcome
+    else {
+        panic!("an older matching build must not be reused, got {outcome:?}");
+    };
+    assert!(matched_execution.is_none());
+    assert_eq!(
+        record.reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
+    );
+
+    let outcome = submit_sql(store, changed.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Skip {
+        matched_execution, ..
+    } = outcome
+    else {
+        panic!("the current build is reused, got {outcome:?}");
+    };
+    assert_eq!(matched_execution.id, current);
+}
+
+/// A pending row is not State history: a later submit that was never
+/// confirmed does not hide the latest confirmed build.
+#[tokio::test]
+async fn pending_row_does_not_hide_the_latest_confirmed_build() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let original = environment_model("prod");
+    let built = build(store, original.clone(), BUILT).await;
+
+    let changed = environment_model("prod")
+        .sql("select id, 2 as v from DB.prod.up")
+        .own_epoch(Some(BUILT));
+    let outcome = submit_sql(store, changed).await;
+    let SubmitOutcome::Execute { ids, .. } = outcome else {
+        panic!("changed SQL rebuilds, got {outcome:?}");
+    };
+    assert!(rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .expect("pending row written")
+        .is_pending());
+
+    let outcome = submit_sql(store, original.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Skip {
+        matched_execution, ..
+    } = outcome
+    else {
+        panic!("the confirmed build is still current, got {outcome:?}");
+    };
+    assert_eq!(matched_execution.id, built);
+}
+
+/// The Result copy fallback reads each target's latest confirmed row too:
+/// once the equivalent's target was rebuilt with other logic, its older
+/// matching build is no copy source.
+#[tokio::test]
+async fn result_copy_reads_only_the_latest_confirmed_build_of_each_target() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    build(store, environment_model("prod"), BUILT).await;
+    let rebuilt = environment_model("prod")
+        .sql("select id, 2 as v from DB.prod.up")
+        .own_epoch(Some(BUILT));
+    build(store, rebuilt, BUILT + 1).await;
+
+    let outcome = submit_sql(store, environment_model("dev")).await;
+    let SubmitOutcome::Execute {
+        matched_execution,
+        record,
+        ..
+    } = outcome
+    else {
+        panic!("PROD's older build must not be copied, got {outcome:?}");
+    };
+    assert!(matched_execution.is_none());
+    assert_eq!(record.reason, DecisionReason::FirstBuild);
+}
+
 /// Dialect spelling does not change result copy: a client reporting `DuckDB`
 /// gets the same copy, past the volatility gate, as one reporting `duckdb`.
 #[tokio::test]
