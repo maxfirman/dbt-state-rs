@@ -60,7 +60,7 @@ pub(crate) fn submit_lookup<'a>(
 ) -> Option<EquivalentLookup<'a>> {
     let ns_logic_hash = evidence.node_namespace_logic_hash.as_deref();
     let warehouse = Warehouse::from_dialect(&req.dialect);
-    let volatile_blocks_copy = !(warehouse.copy_identity_skips_volatility_gate(&req.dialect)
+    let volatile_blocks_copy = !(warehouse.copy_identity_skips_volatility_gate()
         && ns_logic_hash.is_some())
         && !req.tolerate_nondeterminism
         && warehouse.has_volatile_sql(

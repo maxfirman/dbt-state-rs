@@ -83,12 +83,6 @@ pub(super) fn copy_source_evidence(last_modified_epoch: Option<i64>) -> Result<(
     }
 }
 
-/// TODO(#50): case-sensitive on purpose, see
-/// [`super::Warehouse::copy_identity_skips_volatility_gate`].
-pub(super) fn copy_identity_skips_volatility_gate(dialect: &str) -> bool {
-    dialect == "duckdb"
-}
-
 const INCREMENTAL_CONTRACT_KEY: &str = "duckdb_incremental_contract";
 const INCREMENTAL_CONTRACT: &str = "delete-insert-fixed-v1";
 const INCREMENTAL_IDENTITY_KEY: &str = "duckdb_incremental_identity";

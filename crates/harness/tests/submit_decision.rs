@@ -583,3 +583,76 @@ async fn every_outcome_carries_its_decision_reason() {
     );
     assert_eq!(changed.record().matched_execution_id, None);
 }
+
+/// A DuckDB table model in environment `schema`, reported under the wire
+/// spelling `dialect` and requesting volatile evaluation. DuckDB has no checked
+/// volatile-function detector, so only its schema-abstracted copy identity lets
+/// such a submit be copied.
+fn duckdb_model(dialect: &str, namespace: &str, schema: &str) -> qc::SubmitEnrichedSqlRequest {
+    qc::SubmitEnrichedSqlRequest {
+        target_table: Some(format!("\"db\".\"{schema}\".\"result\"")),
+        dialect: dialect.into(),
+        default_catalog: "db".into(),
+        default_schema: Some(schema.into()),
+        table_namespace: Some(namespace.into()),
+        sql: "select id, amount + 1 as amount from db.raw.input".into(),
+        execution_type: 1,
+        tolerate_nondeterminism: false,
+        semantic_extras: [("duckdb_copy_contract".into(), "rows-schema-v1".into())].into(),
+        tables: vec![qc::TableModifiedInfo {
+            name: "db.raw.input".into(),
+            last_modified_epoch: Some(10),
+        }],
+        ..Default::default()
+    }
+}
+
+/// Dialect spelling does not change result copy: a client reporting `DuckDB`
+/// gets the same copy, past the volatility gate, as one reporting `duckdb`.
+#[tokio::test]
+async fn duckdb_result_copy_ignores_dialect_case() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    for dialect in ["duckdb", "DuckDB", "DUCKDB"] {
+        let namespace = format!("ns-{dialect}");
+        let prod = duckdb_model(dialect, &namespace, "prod");
+        let outcome = submit_decision::submit_sql(store, ORG, &prod)
+            .await
+            .expect("submit");
+        let SubmitOutcome::Execute { ids, .. } = outcome else {
+            panic!("{dialect}: expected the first build, got {outcome:?}");
+        };
+        assert!(store
+            .confirm(
+                ORG,
+                &ids.request_id,
+                Some(20),
+                Some("DUCKDB CTAS TABLE"),
+                Some(42),
+                None,
+                false
+            )
+            .await
+            .expect("confirm"));
+
+        let outcome =
+            submit_decision::submit_sql(store, ORG, &duckdb_model(dialect, &namespace, "dev"))
+                .await
+                .expect("submit");
+        let SubmitOutcome::Copy {
+            source_table,
+            clone_sqls,
+            ..
+        } = outcome
+        else {
+            panic!("{dialect}: expected Copy, got {outcome:?}");
+        };
+        assert_eq!(source_table, "\"db\".\"prod\".\"result\"", "{dialect}");
+        assert_eq!(
+            clone_sqls,
+            ["CREATE OR REPLACE TABLE \"db\".\"dev\".\"result\" AS SELECT * FROM \"db\".\"prod\".\"result\""],
+            "{dialect}"
+        );
+    }
+}
