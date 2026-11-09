@@ -19,7 +19,7 @@
 //! match.
 
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, LatestExecution, PendingExecution};
+use crate::store::{ExecutionRow, InputTable, PendingExecution};
 
 // ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
 const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
@@ -52,7 +52,7 @@ impl Selection {
 pub(crate) fn for_model(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &PendingExecution,
-    current: Option<LatestExecution>,
+    current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     debug_assert_ne!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
     let Some(current) = current else {
@@ -60,7 +60,7 @@ pub(crate) fn for_model(
     };
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
-        Some(current.into_row(true)?)
+        Some(current.into_checked(true)?)
     } else if adoptable(req, evidence, &current) {
         // CROSS-ENVIRONMENT CLONE ADOPTION. The strict (exact rendered SQL)
         // match missed, but the current state is a CLONE of the same model in
@@ -69,7 +69,7 @@ pub(crate) fn for_model(
         // logic-sensitive (a genuine SQL change still executes). Verified live;
         // see experiments/clone_logic_sensitivity.sh. Adoption never serves
         // cached results (clone-origin rows carry none).
-        let mut row = current.into_row(false)?;
+        let mut row = current.into_checked(false)?;
         adopt_current_inputs(&mut row, &evidence.input_tables);
         Some(row)
     } else {
@@ -88,11 +88,11 @@ pub(crate) fn for_model(
 pub(crate) fn for_data_test(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &PendingExecution,
-    latest: Option<LatestExecution>,
+    latest: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     debug_assert_eq!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
     let identified = match latest {
-        Some(row) if identity_matches(evidence, &row) => Some(row.into_row(true)?),
+        Some(row) if identity_matches(evidence, &row) => Some(row.into_checked(true)?),
         _ => None,
     };
     Ok(Selection {
@@ -109,7 +109,7 @@ pub(crate) fn for_data_test(
 pub(crate) fn for_seed(
     req: &qc::SubmitValuesRequest,
     evidence: &PendingExecution,
-    current: Option<LatestExecution>,
+    current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
@@ -119,7 +119,7 @@ pub(crate) fn for_seed(
         && current.node_sql_hash.is_some()
         && current.node_sql_hash == evidence.node_sql_hash
     {
-        Some(current.into_row(true)?)
+        Some(current.into_checked(true)?)
     } else {
         None
     };
@@ -157,7 +157,7 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
 /// submit carries a template hash) the unrendered-template identity. A
 /// template-mode node rebuilds only when BOTH change (verified live; see
 /// `template_comparison.rs`, and review #2 finding 6 follow-up for data tests).
-fn identity_matches(evidence: &PendingExecution, row: &LatestExecution) -> bool {
+fn identity_matches(evidence: &PendingExecution, row: &ExecutionRow) -> bool {
     row.node_sql_hash == evidence.node_sql_hash
         || (evidence.node_template_hash.is_some()
             && row.node_template_hash == evidence.node_template_hash)
@@ -170,7 +170,7 @@ fn identity_matches(evidence: &PendingExecution, row: &LatestExecution) -> bool 
 fn strict_match(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &PendingExecution,
-    row: &LatestExecution,
+    row: &ExecutionRow,
 ) -> bool {
     let logic_compatible = match (
         &row.node_namespace_logic_hash,
@@ -193,7 +193,7 @@ fn strict_match(
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &PendingExecution,
-    row: &LatestExecution,
+    row: &ExecutionRow,
 ) -> bool {
     row.execution_type == req.execution_type
         && row.dialect == req.dialect
@@ -333,8 +333,8 @@ mod tests {
     }
 
     /// The latest row as recorded by a confirmed build of exactly `ev`.
-    fn recorded(ev: &PendingExecution) -> LatestExecution {
-        LatestExecution {
+    fn recorded(ev: &PendingExecution) -> ExecutionRow {
+        ExecutionRow {
             id: 7,
             org_id: "o".into(),
             target_table: ev.target_table.clone(),
@@ -349,28 +349,31 @@ mod tests {
             node_unique_id: ev.node_unique_id.clone(),
             last_modified_epoch: Some(BUILT),
             execution_runtime_ms: Some(42),
-            execution_results: Some(results(true).encode_to_vec()),
-            input_tables: serde_json::to_value(&ev.input_tables).unwrap(),
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            ..ExecutionRow::default()
         }
+        .with_encoded_evidence(
+            serde_json::to_value(&ev.input_tables).unwrap(),
+            Some(results(true).encode_to_vec()),
+        )
     }
 
     /// A clone-origin row as written by RegisterClone: inherited logic, no
     /// rendered identity, no recorded inputs, no results.
-    fn clone_origin(ev: &PendingExecution) -> LatestExecution {
-        LatestExecution {
+    fn clone_origin(ev: &PendingExecution) -> ExecutionRow {
+        ExecutionRow {
             node_sql_hash: None,
             node_body_hash: None,
-            input_tables: serde_json::json!([]),
+            input_tables: Vec::new(),
             execution_results: None,
             clone_source_table: Some("\"DB\".\"PROD\".\"M\"".into()),
             ..recorded(ev)
         }
     }
 
-    fn model(req: &qc::SubmitEnrichedSqlRequest, row: Option<LatestExecution>) -> Selection {
+    fn model(req: &qc::SubmitEnrichedSqlRequest, row: Option<ExecutionRow>) -> Selection {
         for_model(req, &evidence(req), row).expect("no decode error")
     }
 
@@ -469,7 +472,10 @@ mod tests {
         let req = model_req("select id from DB.DEV.UP");
         let ev = evidence(&req);
         let mut row = clone_origin(&ev);
-        row.input_tables = serde_json::json!([{ "name": UPSTREAM, "last_modified_epoch": 1 }]);
+        row.input_tables = vec![InputTable {
+            name: UPSTREAM.into(),
+            last_modified_epoch: Some(1),
+        }];
         let c = model(&req, Some(row)).candidate.expect("adopted");
         assert_eq!(c.input_tables.len(), 1);
         assert_eq!(c.input_tables[0].last_modified_epoch, Some(1));
@@ -605,13 +611,13 @@ mod tests {
         let req = model_req("select id from DB.DEV.UP");
         let ev = evidence(&req);
         let corrupt = vec![0xff, 0xff, 0xff];
+        let inputs = serde_json::to_value(&ev.input_tables).unwrap();
 
-        let mut strict = recorded(&ev);
-        strict.execution_results = Some(corrupt.clone());
+        let strict = recorded(&ev).with_encoded_evidence(inputs, Some(corrupt.clone()));
         assert!(for_model(&req, &ev, Some(strict)).is_err());
 
-        let mut adopted = clone_origin(&ev);
-        adopted.execution_results = Some(corrupt.clone());
+        let adopted =
+            clone_origin(&ev).with_encoded_evidence(serde_json::json!([]), Some(corrupt.clone()));
         assert!(for_model(&req, &ev, Some(adopted))
             .unwrap()
             .candidate
@@ -619,8 +625,7 @@ mod tests {
 
         let mut miss = recorded(&ev);
         miss.node_sql_hash = Some("other".into());
-        miss.execution_results = Some(corrupt);
-        miss.input_tables = serde_json::json!("not a list");
+        let miss = miss.with_encoded_evidence(serde_json::json!("not a list"), Some(corrupt));
         assert!(for_model(&req, &ev, Some(miss))
             .unwrap()
             .candidate
@@ -651,7 +656,7 @@ mod tests {
         assert!(!complete.target_has_prior_build);
 
         let mut partial = recorded(&ev);
-        partial.execution_results = Some(results(false).encode_to_vec());
+        partial.execution_results = Some(results(false));
         assert!(for_data_test(&req, &ev, Some(partial))
             .unwrap()
             .candidate
@@ -735,7 +740,7 @@ mod tests {
 
     // ---- properties ---------------------------------------------------------
 
-    fn arbitrary_row(ev: PendingExecution) -> impl Strategy<Value = LatestExecution> {
+    fn arbitrary_row(ev: PendingExecution) -> impl Strategy<Value = ExecutionRow> {
         (
             any::<bool>(),
             any::<bool>(),

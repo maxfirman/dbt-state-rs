@@ -132,6 +132,7 @@ fn confirmed_row(hash: &str, tables: Vec<InputTable>, built: Option<i64>) -> Exe
         status: "confirmed".into(),
         request_id: "r".into(),
         clone_source_table: None,
+        ..ExecutionRow::default()
     }
 }
 

@@ -499,6 +499,7 @@ mod tests {
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            ..ExecutionRow::default()
         }
     }
 

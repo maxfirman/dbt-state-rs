@@ -900,13 +900,13 @@ impl Explain for ExplainService {
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
-                // joined via `node_decisions.matched_execution_id`. Present for a
+                // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
                 // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
                 // re-derives the per-upstream FRESH/OUTDATED freshness subtree
                 // against it via the shared pure helper, so the explanation
                 // matches the decision exactly.
-                anchor: row.anchor(&org_id),
+                anchor: row.anchor(),
             };
             by_id.insert(edid, node);
         }
