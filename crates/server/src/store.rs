@@ -14,6 +14,15 @@ pub struct InputTable {
     pub last_modified_epoch: Option<i64>,
 }
 
+impl From<&qc::TableModifiedInfo> for InputTable {
+    fn from(t: &qc::TableModifiedInfo) -> Self {
+        Self {
+            name: t.name.clone(),
+            last_modified_epoch: t.last_modified_epoch,
+        }
+    }
+}
+
 /// A stored execution: the one read type for the `executions` table. State
 /// history reads, reuse candidate selection and the Explain anchor all read
 /// rows through [`ExecutionRow::COLUMNS`] and its `FromRow` mapping, so a new
@@ -312,18 +321,6 @@ impl Store {
         Ok(rec)
     }
 
-    /// Insert a batch of fully-confirmed executions atomically. Any failure
-    /// rolls back the whole batch. Returns the number of rows inserted.
-    pub async fn insert_confirmed_batch(
-        &self,
-        records: &[ConfirmedExecution],
-    ) -> sqlx::Result<u32> {
-        let mut tx = self.pool.begin().await?;
-        Self::insert_confirmed_rows(&mut tx, records).await?;
-        tx.commit().await?;
-        Ok(records.len() as u32)
-    }
-
     /// Insert a batch of fully-confirmed executions AND their selector/deferral
     /// `node_states` upserts in a SINGLE transaction. Either everything commits
     /// or nothing does: a failure writing either table rolls back BOTH.
@@ -351,8 +348,7 @@ impl Store {
         Ok(records.len() as u32)
     }
 
-    /// Insert confirmed execution rows into an open transaction (shared by the
-    /// executions-only and executions+node_states batch methods).
+    /// Insert confirmed execution rows into an open transaction.
     async fn insert_confirmed_rows(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         records: &[ConfirmedExecution],
