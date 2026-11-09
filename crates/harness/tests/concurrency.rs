@@ -17,63 +17,19 @@
 //!
 //! These are deterministic offline tests; the open question of stronger
 //! object-lineage provenance is documented in docs/correctness-handoff.md §A.
-
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
+use support::rows;
+use support::scenario::{built_at, model, outcome, Scenario};
+use support::start_server;
 
-const ETYPE_FULL: i32 = 1;
+const SRC: &str = "\"DB\".\"S\".\"SRC\"";
 
-/// A submit for `target` with a DISTINCT logic `expr` (a real projection, not a
-/// comment — the Snowflake normalizer strips comments), own-target epoch 1
-/// (present) and one upstream `src` at `src_epoch`.
-fn submit(target: &str, expr: &str, src_epoch: i64) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        tolerate_nondeterminism: true,
-        dialect: "snowflake".to_string(),
-        execution_type: ETYPE_FULL,
-        sql: format!("select {expr} as id from \"DB\".\"S\".\"SRC\""),
-        tables: vec![
-            qc::TableModifiedInfo {
-                name: target.into(),
-                last_modified_epoch: Some(1),
-            },
-            qc::TableModifiedInfo {
-                name: "\"DB\".\"S\".\"SRC\"".into(),
-                last_modified_epoch: Some(src_epoch),
-            },
-        ],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.p.t".into(),
-            node_body_hash: Some(expr.to_string()),
-            node_hash: expr.to_string(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn confirm_req(request_id: &str, epoch: i64) -> qc::ConfirmExecutionRequest {
-    qc::ConfirmExecutionRequest {
-        request_id: request_id.to_string(),
-        last_modified_epoch: Some(epoch),
-        table_type: Some("TABLE".into()),
-        execution_runtime_ms: Some(10),
-        ..Default::default()
-    }
-}
-
-fn ready_id(resp: &qc::SubmitSqlResponse) -> String {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id.clone(),
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
+// Every submit is a model for `target` with own-target epoch 1 (present) and
+// one upstream `SRC` at epoch 100. Its body ("11", "22", "33") is its logic:
+// distinct bodies render to distinct SQL projections (not comments, which the
+// Snowflake normalizer strips).
 
 /// REVERSED CONFIRMATION ORDER. Two different-logic submits for the SAME target
 /// are both issued (both pending), then confirmed in REVERSE order (the
@@ -83,63 +39,29 @@ fn ready_id(resp: &qc::SubmitSqlResponse) -> String {
 #[tokio::test]
 async fn confirmation_order_defines_current_state_not_submission_order() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"T\"";
+    let node = model("\"DB\".\"S\".\"T\"").upstream(SRC, 100);
+    let (logic_a, logic_b) = (node.clone().body("11"), node.body("22"));
 
     // Submit A (logic hA) and B (logic hB) — both become pending rows.
-    let ra = sql
-        .submit_enriched_sql(submit(target, "11", 100))
-        .await
-        .unwrap()
-        .into_inner();
-    let id_a = ready_id(&ra);
-    let rb = sql
-        .submit_enriched_sql(submit(target, "22", 100))
-        .await
-        .unwrap()
-        .into_inner();
-    let id_b = ready_id(&rb);
+    let id_a = sc.execute_id(logic_a.clone()).await;
+    let id_b = sc.execute_id(logic_b.clone()).await;
 
     // Confirm in REVERSE order: B first, then A. A has the newest confirmed_at.
-    assert!(
-        exec.confirm_execution(confirm_req(&id_b, 100))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
-    assert!(
-        exec.confirm_execution(confirm_req(&id_a, 100))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    assert!(sc.confirm(&id_b, built_at(100)).await);
+    assert!(sc.confirm(&id_a, built_at(100)).await);
 
     // Resubmit A's logic with a fresh (<=100) upstream → SKIP (A is current).
-    let probe_a = sql
-        .submit_enriched_sql(submit(target, "11", 100))
-        .await
-        .unwrap()
-        .into_inner();
     assert_eq!(
-        response_variant(&probe_a),
+        sc.verdict(logic_a).await,
         "skip_execution",
         "the LAST-confirmed build (A) is the current physical state"
     );
 
     // Resubmit B's logic → EXECUTE (B is no longer the current state).
-    let probe_b = sql
-        .submit_enriched_sql(submit(target, "22", 100))
-        .await
-        .unwrap()
-        .into_inner();
     assert_eq!(
-        response_variant(&probe_b),
+        sc.verdict(logic_b).await,
         "ready_to_execute",
         "the superseded build (B) must not skip"
     );
@@ -152,62 +74,28 @@ async fn confirmation_order_defines_current_state_not_submission_order() {
 #[tokio::test]
 async fn late_confirmation_deterministically_becomes_current() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"L\"";
+    let node = model("\"DB\".\"S\".\"L\"").upstream(SRC, 100);
+    let (logic_b, logic_c) = (node.clone().body("22"), node.body("33"));
+
     // Submit C first (pending, not yet confirmed).
-    let rc = sql
-        .submit_enriched_sql(submit(target, "33", 100))
-        .await
-        .unwrap()
-        .into_inner();
-    let id_c = ready_id(&rc);
+    let id_c = sc.execute_id(logic_c.clone()).await;
 
     // Build + confirm B meanwhile (B becomes current).
-    let rb = sql
-        .submit_enriched_sql(submit(target, "22", 100))
-        .await
-        .unwrap()
-        .into_inner();
-    let id_b = ready_id(&rb);
-    exec.confirm_execution(confirm_req(&id_b, 100))
-        .await
-        .unwrap();
+    sc.build(logic_b.clone(), 100).await;
     // B is current → B's logic skips.
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(submit(target, "22", 100))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution"
-    );
+    assert_eq!(sc.verdict(logic_b.clone()).await, "skip_execution");
 
     // Now the LATE confirm of C lands. C has the newest confirmed_at → current.
-    exec.confirm_execution(confirm_req(&id_c, 100))
-        .await
-        .unwrap();
+    sc.confirm(&id_c, built_at(100)).await;
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(submit(target, "33", 100))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(logic_c).await,
         "skip_execution",
         "a late confirm deterministically makes its row the current state"
     );
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(submit(target, "22", 100))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(logic_b).await,
         "ready_to_execute",
         "B is now superseded by the later-confirmed C"
     );
@@ -221,54 +109,26 @@ async fn late_confirmation_deterministically_becomes_current() {
 #[tokio::test]
 async fn submit_and_record_agree_on_model_fingerprint() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"P\"";
-    let sql_text = "select 1 as id from \"DB\".\"S\".\"SRC\"";
+    let node = model("\"DB\".\"S\".\"P\"")
+        .catalog("DB")
+        .schema("S")
+        .sql("select 1 as id from \"DB\".\"S\".\"SRC\"")
+        .without_node_state();
 
-    // Hydrate via RecordExecutions, copying the fields the submit will send.
-    exec.record_executions(qc::RecordExecutionsRequest {
-        records: vec![qc::ExecutionRecord {
-            outcome: Some(qc::ExecutionOutcome {
-                last_modified_epoch: Some(100),
-                table_type: Some("TABLE".into()),
-                execution_results: None,
-                execution_runtime_ms: Some(5),
-            }),
-            input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-                target_table: Some(target.into()),
-                dialect: "snowflake".into(),
-                default_catalog: "DB".into(),
-                default_schema: Some("S".into()),
-                execution_type: ETYPE_FULL,
-                sql: sql_text.into(),
-                ..Default::default()
-            })),
-        }],
-    })
-    .await
-    .unwrap();
+    // Hydrate via RecordExecutions, copying only the identity the submit will
+    // send (no tables recorded).
+    sc.record([node
+        .clone()
+        .no_tables()
+        .record(outcome().epoch(100).table().runtime(5))])
+        .await
+        .unwrap();
 
     // A submit with the SAME dialect/catalog/schema/sql must reuse it.
-    let req = qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some("S".into()),
-        execution_type: ETYPE_FULL,
-        sql: sql_text.into(),
-        tolerate_nondeterminism: true,
-        tables: vec![qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(1),
-        }],
-        ..Default::default()
-    };
     assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
+        sc.verdict(node).await,
         "skip_execution",
         "Submit and Record must agree on the model fingerprint (recorded model reused)"
     );
@@ -283,53 +143,32 @@ async fn submit_and_record_agree_on_model_fingerprint() {
 #[tokio::test]
 async fn conflicting_confirmed_rows_last_confirmed_is_current() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"S\".\"R\"";
+    let node = model(target).upstream(SRC, 100);
 
     // Build + confirm logic X, then logic Y, for the same target.
     for expr in ["11", "22"] {
-        let r = sql
-            .submit_enriched_sql(submit(target, expr, 100))
-            .await
-            .unwrap()
-            .into_inner();
-        let id = ready_id(&r);
-        exec.confirm_execution(confirm_req(&id, 100)).await.unwrap();
+        sc.build(node.clone().body(expr), 100).await;
     }
 
     // Both rows persist (no dedupe across conflicting confirmed builds).
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM executions WHERE target_table = $1 AND status='confirmed'",
-    )
-    .bind(target)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let count = rows::executions(&server)
+        .await
+        .iter()
+        .filter(|r| r.target_table == target && r.is_confirmed())
+        .count();
     assert_eq!(count, 2, "conflicting confirmed builds both persist");
 
     // The LAST-confirmed logic (Y="22") is current → its submit skips; X rebuilds.
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(submit(target, "22", 100))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(node.clone().body("22")).await,
         "skip_execution",
         "last-confirmed build is the current physical state"
     );
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(submit(target, "11", 100))
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(node.body("11")).await,
         "ready_to_execute",
         "the earlier-confirmed (superseded) logic must rebuild"
     );

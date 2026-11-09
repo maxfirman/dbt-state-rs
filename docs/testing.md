@@ -30,6 +30,28 @@ Module-level tests that need no gRPC server (`submit_decision.rs`) take server
 state from `TestDatabase::state` and call the server module directly; the
 database owner must outlive that state.
 
+### Scenario helpers
+
+Harness tests learn the protocol in one place, `tests/support/`:
+
+- `scenario.rs` builds requests that fill in the reuse identity (`model`,
+  `view`, `data_test`, `duckdb_model`, `seed`, `clone_request`), the outcome a
+  confirm or record reports (`outcome`, `built_at`, `test_results`), and a
+  `Scenario` client that submits, confirms and expects decisions
+  (`expect_execute`/`expect_skip`/`expect_clone`, `verdict`, `build`,
+  `record`). `body(..)` changes the rendered SQL as well as the body hash,
+  because reuse ignores `node_body_hash`.
+- State history is seeded through the protocol: `Scenario::build` (submit,
+  expect a build, confirm) or `Scenario::record` with `Submit::record`.
+- `rows.rs` reads `executions` and `node_states` back for assertions.
+- `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings, captured
+  node state) and `fault.rs` (fault-injection DDL) are the only code that
+  writes State with raw SQL.
+
+`scenario_guard.rs` fails when a migrated file builds its own requests,
+destructures decisions by hand, runs SQL, or when raw State writes appear
+outside `legacy.rs`/`fault.rs`; add a file to its `MIGRATED` list when it moves.
+
 Fixed real-dbt cases use `server.python_project(...)` to own their temporary files
 and shared process configuration. Successful projects are removed; a panic or
 unsuccessful Python process retains the project, with stdout/stderr logs for

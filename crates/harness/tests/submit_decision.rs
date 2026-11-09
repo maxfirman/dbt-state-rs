@@ -12,6 +12,7 @@ use dbt_state_proto::query_cache as qc;
 use dbt_state_server::decision::{DecisionReason, DecisionRecord, NoCandidate, Reuse};
 use dbt_state_server::store::Store;
 use dbt_state_server::submit_decision::{self, DecisionIds, SubmitOutcome};
+use support::rows;
 use support::TestDatabase;
 
 const ORG: &str = "org-submit-decision";
@@ -84,40 +85,6 @@ fn seed(values_hash: &str, own_epoch: Option<i64>) -> qc::SubmitValuesRequest {
     }
 }
 
-/// An `executions` row as written by the module, read back by request id.
-#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
-struct WrittenRow {
-    id: i64,
-    status: String,
-    target_table: String,
-    execution_decision_id: Option<String>,
-    clone_source_table: Option<String>,
-    has_sql_identity: bool,
-    has_logic_identity: bool,
-}
-
-async fn written_row(store: &Store, request_id: &str) -> Option<WrittenRow> {
-    sqlx::query_as(
-        "SELECT id, status, target_table, execution_decision_id, clone_source_table,
-                node_sql_hash IS NOT NULL AS has_sql_identity,
-                node_namespace_logic_hash IS NOT NULL AS has_logic_identity
-         FROM executions WHERE org_id = $1 AND request_id = $2",
-    )
-    .bind(ORG)
-    .bind(request_id)
-    .fetch_optional(store.pool())
-    .await
-    .expect("read execution row")
-}
-
-async fn execution_count(store: &Store) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM executions WHERE org_id = $1")
-        .bind(ORG)
-        .fetch_one(store.pool())
-        .await
-        .expect("count executions")
-}
-
 /// Confirm a build at `epoch` through the store's confirm path.
 async fn confirm(store: &Store, ids: &DecisionIds, epoch: i64) {
     assert!(store
@@ -143,7 +110,7 @@ async fn build(store: &Store, req: &qc::SubmitEnrichedSqlRequest, epoch: i64) ->
         panic!("expected Execute, got {outcome:?}");
     };
     confirm(store, &ids, epoch).await;
-    written_row(store, &ids.request_id)
+    rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("confirmed row")
         .id
@@ -182,7 +149,7 @@ async fn first_build_executes_and_writes_its_pending_row() {
     assert!(!is_stale);
     assert_ne!(ids.request_id, ids.execution_decision_id);
 
-    let row = written_row(store, &ids.request_id)
+    let row = rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("pending row written");
     assert_eq!(row.status, "pending");
@@ -192,7 +159,7 @@ async fn first_build_executes_and_writes_its_pending_row() {
         Some(ids.execution_decision_id.as_str())
     );
     assert_eq!(row.clone_source_table, None);
-    assert!(row.has_sql_identity && row.has_logic_identity);
+    assert!(row.node_sql_hash.is_some() && row.node_namespace_logic_hash.is_some());
 }
 
 #[tokio::test]
@@ -201,7 +168,7 @@ async fn reuse_skips_against_the_matched_execution_without_a_pending_row() {
     let state = db.state(false).await;
     let store = &state.store;
     let built = build(store, &model(PROD, "prod", None, 500), BUILT).await;
-    let rows = execution_count(store).await;
+    let written = rows::executions_in(store, ORG).await.len();
 
     let outcome = submit_decision::submit_sql(store, ORG, &model(PROD, "prod", Some(BUILT), 500))
         .await
@@ -230,7 +197,11 @@ async fn reuse_skips_against_the_matched_execution_without_a_pending_row() {
     );
     assert!(!is_stale);
     assert!(!execution_decision_id.is_empty());
-    assert_eq!(execution_count(store).await, rows, "a skip writes no row");
+    assert_eq!(
+        rows::executions_in(store, ORG).await.len(),
+        written,
+        "a skip writes no row"
+    );
 }
 
 #[tokio::test]
@@ -258,7 +229,7 @@ async fn freshness_driven_execute_keeps_the_matched_execution() {
         description,
         "model was executed because either its query didn't match or its upstream data is out of date"
     );
-    let row = written_row(store, &ids.request_id)
+    let row = rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("pending row written");
     assert_eq!(
@@ -302,7 +273,7 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
     assert_eq!(source_last_modified_epoch, Some(BUILT));
     assert_eq!(source_execution_runtime_ms, Some(42));
 
-    let row = written_row(store, &ids.request_id)
+    let row = rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("pending row written");
     assert_eq!(row.status, "pending");
@@ -312,7 +283,10 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
         row.execution_decision_id.as_deref(),
         Some(ids.execution_decision_id.as_str())
     );
-    assert!(row.has_logic_identity, "inherits the equivalent's logic");
+    assert!(
+        row.node_namespace_logic_hash.is_some(),
+        "inherits the equivalent's logic"
+    );
 }
 
 /// A reuse candidate takes precedence over an equivalent under another name:
@@ -333,7 +307,10 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
         panic!("expected the first DEV submit to copy");
     };
     confirm(store, &ids, BUILT).await;
-    let dev_copy = written_row(store, &ids.request_id).await.unwrap().id;
+    let dev_copy = rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .unwrap()
+        .id;
 
     let outcome = submit_decision::submit_sql(store, ORG, &model(DEV, "dev", Some(BUILT), 500))
         .await
@@ -358,7 +335,9 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
         panic!("a stale candidate rebuilds instead of copying, got {outcome:?}");
     };
     assert_eq!(matched_execution.map(|r| r.id), Some(dev_copy));
-    let row = written_row(store, &ids.request_id).await.unwrap();
+    let row = rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .unwrap();
     assert_eq!(row.clone_source_table, None, "an ordinary build row");
 }
 
@@ -378,7 +357,7 @@ async fn copy_forbidding_target_gets_the_chain_limit_execute() {
     let SubmitOutcome::ChainLimitExecute { ids, .. } = outcome else {
         panic!("expected ChainLimitExecute, got {outcome:?}");
     };
-    let row = written_row(store, &ids.request_id)
+    let row = rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("pending row written");
     assert_eq!(row.status, "pending");
@@ -420,7 +399,9 @@ async fn unavailable_copy_falls_back_to_the_ordinary_decision() {
         description,
         "model was executed because its table did not exist"
     );
-    let row = written_row(store, &ids.request_id).await.unwrap();
+    let row = rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .unwrap();
     assert_eq!(
         (row.target_table.as_str(), row.clone_source_table),
         (DEV, None)
@@ -479,7 +460,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
     };
     assert!(matched_execution.is_none());
     assert_eq!(description, "seed was loaded because it did not exist");
-    let row = written_row(store, &ids.request_id)
+    let row = rows::execution_in(store, ORG, &ids.request_id)
         .await
         .expect("pending row written");
     assert_eq!(row.status, "pending");
@@ -487,7 +468,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
         row.execution_decision_id.as_deref(),
         Some(ids.execution_decision_id.as_str())
     );
-    assert!(row.has_sql_identity && !row.has_logic_identity);
+    assert!(row.node_sql_hash.is_some() && row.node_namespace_logic_hash.is_none());
     confirm(store, &ids, BUILT).await;
     let built = row.id;
 
