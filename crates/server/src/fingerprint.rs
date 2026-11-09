@@ -1,8 +1,10 @@
 //! Versioned evidence shared by submit and batch recording. Length framing
 //! prevents concatenation ambiguity; unknown dialects retain exact SQL bytes.
+//! This module computes identities only: the Warehouse rules choose each
+//! version tag, which SQL transformation applies and whether a submission is
+//! copy-eligible.
 use crate::query_cache as qc;
-use crate::query_cache::ModelExecutionType;
-use crate::warehouse::{NamespaceIdentity, Warehouse};
+use crate::warehouse::{CopyIdentity, NamespaceIdentity, Warehouse};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -102,88 +104,52 @@ pub fn sql_logic_hash_with_version(
     hex::encode(h.finalize())
 }
 
-/// Eligibility is explicit: formatting validation alone never grants copying.
-/// Supported view graphs bind each structured reference to its checked definition
-/// and context. Only declared prod/dev view bindings substitute environments;
+/// The copy logic identity of a submission the Warehouse rules make
+/// copy-eligible ([`Warehouse::copy_identity`]), or `None`. A checked copy
+/// graph binds each structured view reference to its checked definition and
+/// context. Only declared prod/dev view bindings substitute environments;
 /// physical base inputs retain their exact names.
 pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
-    match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
-        crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),
-        crate::warehouse::Warehouse::DuckDb => {
-            if !(req.execution_type == ModelExecutionType::Full as i32
-                || (req.execution_type == ModelExecutionType::DeleteInsert as i32
-                    && crate::warehouse::Warehouse::DuckDb
-                        .declares_incremental_contract(&req.semantic_extras)))
-                || !matches!(req.default_schema.as_deref(), Some("prod" | "dev"))
-                || req
-                    .semantic_extras
-                    .get("duckdb_copy_contract")
-                    .map(String::as_str)
-                    != Some("rows-schema-v1")
-            {
-                return None;
-            }
-            let graph = crate::sql_identity::duckdb_copy_graph(req)?;
-            let inputs = &graph.inputs;
-            let mut metadata = std::collections::HashMap::new();
-            for table in &req.tables {
-                if table.last_modified_epoch.is_none()
-                    && req.target_table.as_deref() != Some(table.name.as_str())
-                {
-                    return None;
-                }
-                let name = crate::sql_identity::duckdb_relation(&table.name)?;
-                if metadata
-                    .insert(name.into_components(), table.last_modified_epoch)
-                    .is_some()
-                {
-                    return None;
-                }
-            }
-            if inputs
-                .iter()
-                .any(|name| metadata.get(name).is_none_or(|epoch| epoch.is_none()))
-            {
-                return None;
-            }
-            let parts = crate::sql_identity::duckdb_relation(req.target_table.as_deref()?)?;
-            if parts.catalog() != req.default_catalog
-                || Some(parts.schema()) != req.default_schema.as_deref()
-            {
-                return None;
-            }
-            let mut h = Sha256::new();
-            field(&mut h, b"dbt-state-duckdb-copy-v2");
-            field(&mut h, &req.execution_type.to_le_bytes());
-            extras(&mut h, &req.semantic_extras);
-            field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
-            for crate::sql_identity::DuckDbCopyQuery {
-                binding,
-                query,
-                slots,
-                catalog,
-                schema,
-            } in graph.queries
-            {
-                field(&mut h, &(binding.len() as u64).to_le_bytes());
-                for part in binding {
-                    field(&mut h, part.as_bytes());
-                }
-                field(&mut h, query.as_bytes());
-                field(&mut h, &(slots.len() as u64).to_le_bytes());
-                for slot in slots {
-                    field(&mut h, &(slot.len() as u64).to_le_bytes());
-                    for part in slot {
-                        field(&mut h, part.as_bytes());
-                    }
-                }
-                field(&mut h, catalog.as_bytes());
-                field(&mut h, schema.as_bytes());
-            }
-            Some(hex::encode(h.finalize()))
-        }
-        _ => None,
+    match Warehouse::from_dialect(&req.dialect).copy_identity(req)? {
+        CopyIdentity::NamespaceLogic => Some(namespace_logic_hash(req)),
+        CopyIdentity::CopyGraph { version, graph } => Some(copy_graph_hash(req, version, graph)),
     }
+}
+
+fn copy_graph_hash(
+    req: &qc::SqlExecution,
+    version: &[u8],
+    graph: crate::sql_identity::DuckDbCopyGraph,
+) -> String {
+    let mut h = Sha256::new();
+    field(&mut h, version);
+    field(&mut h, &req.execution_type.to_le_bytes());
+    extras(&mut h, &req.semantic_extras);
+    field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
+    for crate::sql_identity::DuckDbCopyQuery {
+        binding,
+        query,
+        slots,
+        catalog,
+        schema,
+    } in graph.queries
+    {
+        field(&mut h, &(binding.len() as u64).to_le_bytes());
+        for part in binding {
+            field(&mut h, part.as_bytes());
+        }
+        field(&mut h, query.as_bytes());
+        field(&mut h, &(slots.len() as u64).to_le_bytes());
+        for slot in slots {
+            field(&mut h, &(slot.len() as u64).to_le_bytes());
+            for part in slot {
+                field(&mut h, part.as_bytes());
+            }
+        }
+        field(&mut h, catalog.as_bytes());
+        field(&mut h, schema.as_bytes());
+    }
+    hex::encode(h.finalize())
 }
 
 /// Cross-environment logic identity, scoped by `table_namespace`.

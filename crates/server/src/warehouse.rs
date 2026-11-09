@@ -145,6 +145,21 @@ impl Warehouse {
     // their own rules get conservative defaults: no copy unless DDL exists,
     // no relation or provenance requirements beyond it.
 
+    /// Whether a SQL submission can take part in a result copy, as source or
+    /// target, and the identity that pairs it with an equivalent. `None`: it
+    /// is never copied. Eligibility is explicit: formatting validation alone
+    /// never grants copying.
+    pub(crate) fn copy_identity(
+        self,
+        req: &crate::query_cache::SqlExecution,
+    ) -> Option<CopyIdentity> {
+        match self {
+            Self::Snowflake => Some(CopyIdentity::NamespaceLogic),
+            Self::DuckDb => duckdb::copy_identity(req),
+            _ => None,
+        }
+    }
+
     /// The statements that copy `source` into `target`, or why no copy can be
     /// produced. `source_table_type` is the warehouse-reported kind of the
     /// source. Requested retention options and view sources are refused for
@@ -280,6 +295,18 @@ impl Warehouse {
     }
 }
 
+/// A submission's copy logic identity ([`Warehouse::copy_identity`]), which
+/// `fingerprint::copy_logic_hash` frames.
+pub(crate) enum CopyIdentity {
+    /// The namespace logic identity ([`Warehouse::namespace_identity`]).
+    NamespaceLogic,
+    /// A checked copy graph, framed under `version`.
+    CopyGraph {
+        version: &'static [u8],
+        graph: crate::sql_identity::DuckDbCopyGraph,
+    },
+}
+
 /// A client-requested copy's incremental contract
 /// ([`Warehouse::incremental_copy_contract`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,7 +322,7 @@ pub enum IncrementalCopyContract<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{IncrementalCopyContract, NamespaceIdentity, Warehouse};
+    use super::{CopyIdentity, IncrementalCopyContract, NamespaceIdentity, Warehouse};
 
     #[test]
     fn redshift_options_keep_one_physical_family() {
@@ -369,6 +396,144 @@ mod tests {
     }
 
     // ---- Result copy rules --------------------------------------------------
+
+    /// An eligible DuckDB model: a checked view chain over one physical base
+    /// input with recorded evidence, built into a declared environment.
+    fn duckdb_copy_submission() -> crate::query_cache::SqlExecution {
+        duckdb_copy_submission_in("dev")
+    }
+
+    fn duckdb_copy_submission_in(env: &str) -> crate::query_cache::SqlExecution {
+        use crate::query_cache as qc;
+        let target = format!("\"local\".\"{env}\".\"m\"");
+        qc::SqlExecution {
+            target_table: Some(target.clone()),
+            dialect: "duckdb".into(),
+            default_catalog: "local".into(),
+            default_schema: Some(env.into()),
+            execution_type: qc::ModelExecutionType::Full as i32,
+            sql: format!("select id from local.{env}.stg"),
+            tables: vec![
+                qc::TableModifiedInfo {
+                    name: "local.raw.input".into(),
+                    last_modified_epoch: Some(10),
+                },
+                // The target's own (unknown) evidence does not block a copy.
+                qc::TableModifiedInfo {
+                    name: target,
+                    last_modified_epoch: None,
+                },
+            ],
+            query_dependencies: vec![qc::QueryDependency {
+                name: format!("\"local\".\"{env}\".\"stg\""),
+                query: "select id from local.raw.input".into(),
+                default_catalog: "local".into(),
+                default_schema: env.into(),
+            }],
+            semantic_extras: [("duckdb_copy_contract".into(), "rows-schema-v1".into())].into(),
+            ..Default::default()
+        }
+    }
+
+    fn is_duckdb_copy_graph(identity: Option<CopyIdentity>) -> bool {
+        matches!(
+            identity,
+            Some(CopyIdentity::CopyGraph {
+                version: b"dbt-state-duckdb-copy-v2",
+                ..
+            })
+        )
+    }
+
+    #[test]
+    fn duckdb_copies_only_checked_table_models_with_complete_evidence() {
+        use crate::query_cache::{ModelExecutionType, TableModifiedInfo};
+        let duck = Warehouse::DuckDb;
+        assert!(is_duckdb_copy_graph(
+            duck.copy_identity(&duckdb_copy_submission())
+        ));
+        assert!(is_duckdb_copy_graph(
+            duck.copy_identity(&duckdb_copy_submission_in("prod"))
+        ));
+        // Only the declared environments are copied between.
+        assert!(duck
+            .copy_identity(&duckdb_copy_submission_in("ci"))
+            .is_none());
+        let mut incremental = duckdb_copy_submission();
+        incremental.execution_type = ModelExecutionType::DeleteInsert as i32;
+        incremental.semantic_extras.insert(
+            "duckdb_incremental_contract".into(),
+            "delete-insert-fixed-v1".into(),
+        );
+        assert!(is_duckdb_copy_graph(duck.copy_identity(&incremental)));
+
+        type Mutation = fn(&mut crate::query_cache::SqlExecution);
+        let ineligible: Vec<(&str, Mutation)> = vec![
+            ("view model", |r| {
+                r.execution_type = ModelExecutionType::View as i32
+            }),
+            ("merge model", |r| {
+                r.execution_type = ModelExecutionType::Merge as i32
+            }),
+            ("delete+insert without the pinned contract", |r| {
+                r.execution_type = ModelExecutionType::DeleteInsert as i32
+            }),
+            ("no default schema", |r| r.default_schema = None),
+            ("no copy contract", |r| {
+                r.semantic_extras.remove("duckdb_copy_contract");
+            }),
+            ("other copy contract", |r| {
+                r.semantic_extras
+                    .insert("duckdb_copy_contract".into(), "rows-v0".into());
+            }),
+            ("unsupported SQL", |r| {
+                r.sql = "select id from local.dev.stg order by id".into()
+            }),
+            ("unknown input epoch", |r| {
+                r.tables[0].last_modified_epoch = None
+            }),
+            ("no input evidence", |r| {
+                r.tables.remove(0);
+            }),
+            ("duplicate input evidence", |r| {
+                let input = r.tables[0].clone();
+                r.tables.push(input);
+            }),
+            ("unparseable evidence", |r| {
+                r.tables.push(TableModifiedInfo {
+                    name: "not a relation(".into(),
+                    last_modified_epoch: Some(1),
+                })
+            }),
+            ("no target", |r| r.target_table = None),
+            ("target outside the default schema", |r| {
+                r.target_table = Some(DUCK_PROD.into());
+                r.tables[1].name = DUCK_PROD.into();
+            }),
+            ("target outside the default catalog", |r| {
+                r.target_table = Some("\"other\".\"dev\".\"m\"".into());
+                r.tables[1].name = "\"other\".\"dev\".\"m\"".into();
+            }),
+        ];
+        for (why, mutate) in ineligible {
+            let mut req = duckdb_copy_submission();
+            mutate(&mut req);
+            assert!(duck.copy_identity(&req).is_none(), "{why}");
+        }
+    }
+
+    #[test]
+    fn snowflake_copies_by_namespace_logic_and_other_warehouses_never_copy() {
+        let mut req = duckdb_copy_submission();
+        req.dialect = "snowflake".into();
+        assert!(matches!(
+            Warehouse::Snowflake.copy_identity(&req),
+            Some(CopyIdentity::NamespaceLogic)
+        ));
+        for warehouse in OTHERS {
+            assert!(warehouse.copy_identity(&req).is_none(), "{warehouse:?}");
+        }
+    }
 
     const DUCK_PROD: &str = "\"local\".\"prod\".\"m\"";
     const DUCK_DEV: &str = "\"local\".\"dev\".\"m\"";
