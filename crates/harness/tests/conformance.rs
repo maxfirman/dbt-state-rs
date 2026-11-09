@@ -1182,15 +1182,13 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         .find(|t| Some(t.name.as_str()) == submit0.target_table.as_deref())
         .and_then(|t| t.last_modified_epoch)
         .unwrap();
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: exec1.request_id,
-        last_modified_epoch: Some(own_epoch),
-        table_type: Some("TABLE".into()),
-        execution_runtime_ms: Some(2200),
-        execution_results: None,
-        failed_to_clone: false,
-        labels: Default::default(),
-    })
+    exec.confirm_execution(
+        support::scenario::outcome()
+            .epoch(own_epoch)
+            .table()
+            .runtime(2200)
+            .confirm(&exec1.request_id),
+    )
     .await
     .unwrap();
 
@@ -1319,15 +1317,13 @@ async fn explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded
         .find(|t| Some(t.name.as_str()) == submit0.target_table.as_deref())
         .and_then(|t| t.last_modified_epoch)
         .unwrap();
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: exec1.request_id,
-        last_modified_epoch: Some(own_epoch),
-        table_type: Some("TABLE".into()),
-        execution_runtime_ms: Some(2200),
-        execution_results: None,
-        failed_to_clone: false,
-        labels: Default::default(),
-    })
+    exec.confirm_execution(
+        support::scenario::outcome()
+            .epoch(own_epoch)
+            .table()
+            .runtime(2200)
+            .confirm(&exec1.request_id),
+    )
     .await
     .unwrap();
 
@@ -1479,9 +1475,9 @@ async fn submit_enriched_sql_clone_fallback_is_characterized() {
     // CLONE routing from the SQL path is not.
     let source = ready["clone_source"].as_str().unwrap();
     let target = ready["clone_target"].as_str().unwrap();
-    let ours =
-        dbt_state_server::clone::clone_sqls("snowflake", source, target, Some("TRANSIENT TABLE"))
-            .unwrap();
+    let ours = dbt_state_server::warehouse::Warehouse::from_dialect("snowflake")
+        .result_copy_ddl(source, target, Some("TRANSIENT TABLE"), None)
+        .unwrap();
     assert_eq!(ours.len(), 1, "our generator emits one statement");
     assert_eq!(
         ours[0], ddl,

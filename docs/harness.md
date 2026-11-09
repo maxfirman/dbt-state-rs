@@ -127,8 +127,8 @@ ready_to_clone response: {request_id, clone_sqls:[
 CloneResponse populates BOTH ready_to_clone (field 3) AND ready_to_clone_v1 (deprecated
 oneof 1) with the same payload.
 => SERVER generates the clone DDL (dialect-specific). Current implementation:
-   the Warehouse rules (`crates/server/src/warehouse.rs`, reached through
-   `clone.rs`) support Snowflake TABLE/TRANSIENT TABLE,
+   the Warehouse rules (`Warehouse::result_copy_ddl` in
+   `crates/server/src/warehouse.rs`) support Snowflake TABLE/TRANSIENT TABLE,
    BigQuery TABLE CLONE, and Databricks SHALLOW CLONE for an explicitly known
    Delta source. View sources, Redshift and unknown dialects are rejected;
    non-Snowflake templates have not been validated against warehouses or hosted
