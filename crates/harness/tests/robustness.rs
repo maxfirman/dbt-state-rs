@@ -16,67 +16,23 @@
 use dbt_state_proto::query_cache as qc;
 use tokio::task::JoinSet;
 
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-
-// Shared isolated-schema server setup (see tests/support.rs).
+// Shared isolated-schema server setup and scenario helpers (see tests/support.rs).
 #[path = "support.rs"]
 mod support;
-use support::{channel, request_with_org, response_variant, start_server};
+use support::rows;
+use support::scenario::{
+    empty_submission, into_execute, into_skip, outcome, ready_id, variant, view, Scenario,
+};
+use support::start_server;
 
-// Decision/rejection constants mirrored from the server (shared.proto + decision.rs)
-// so we can assert the exact response field values stay unchanged.
-const DECISION_SKIP_EXECUTION: i64 = 0;
-const DECISION_READY_TO_EXECUTE: i64 = 1;
-const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
+// Decision/rejection values from the generated proto enums, so we can assert
+// the exact response field values stay unchanged.
+const DECISION_SKIP_EXECUTION: i32 = qc::SubmitSqlResultType::SkipExecution as i32;
+const DECISION_READY_TO_EXECUTE: i32 = qc::SubmitSqlResultType::ReadyToExecute as i32;
+const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = qc::RejectionReason::NoSuitableMatchFound as i32;
 
-/// Build a minimal-but-complete SubmitEnrichedSqlRequest for a model node with
-/// the given target table and body hash. Enough fields are populated to drive
-/// the SKIP/EXECUTE decision; everything else uses proto defaults.
-fn model_submit(target_table: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target_table.to_string()),
-        tolerate_nondeterminism: true,
-        tables: vec![qc::TableModifiedInfo {
-            name: target_table.into(),
-            last_modified_epoch: Some(1),
-        }],
-        dialect: "snowflake".to_string(),
-        execution_type: 10,
-        sql: "select 1".to_string(),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.jaffle.{target_table}"),
-            target_name: "prod".to_string(),
-            project_name: "jaffle".to_string(),
-            resource_type: "model".to_string(),
-            node_hash: body_hash.to_string(),
-            node_body_hash: Some(body_hash.to_string()),
-            profile_name: "default".to_string(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-/// Build a ConfirmExecutionRequest for the given request_id.
-fn confirm_req(request_id: &str, runtime_ms: i64) -> qc::ConfirmExecutionRequest {
-    qc::ConfirmExecutionRequest {
-        request_id: request_id.to_string(),
-        last_modified_epoch: Some(1_791_498_542_120),
-        failed_to_clone: false,
-        table_type: None,
-        execution_results: None,
-        execution_runtime_ms: Some(runtime_ms),
-        labels: Default::default(),
-    }
-}
-
-fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id.clone(),
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
+/// The object epoch these tests confirm.
+const CONFIRMED_EPOCH: i64 = 1_791_498_542_120;
 
 /// Item 1 — ORG ISOLATION: the identical node fingerprint must not leak skip
 /// state across organizations. Submit+confirm under org A, then the SAME node
@@ -85,51 +41,39 @@ fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
 #[tokio::test]
 async fn org_isolation_state_does_not_leak() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let (a, b) = (sc.org("A"), sc.org("B"));
 
-    let node = model_submit("\"DB\".\"S\".\"SHARED\"", "hash-shared");
+    let node = view("\"DB\".\"S\".\"SHARED\"").body("hash-shared");
 
     // --- Org A: first submit executes. ---
-    let resp_a1 = sql
-        .submit_enriched_sql(request_with_org(node.clone(), "A"))
-        .await
-        .expect("A submit 1")
-        .into_inner();
+    let resp_a1 = a.submit(node.clone()).await;
     assert_eq!(
-        response_variant(&resp_a1),
+        variant(&resp_a1),
         "ready_to_execute",
         "org A's first submit of a new node must execute"
     );
-    let req_id_a = ready_request_id(&resp_a1);
+    let req_id_a = ready_id(&resp_a1);
 
     // Confirm under org A so A now has skippable history.
     assert!(
-        exec.confirm_execution(request_with_org(confirm_req(&req_id_a, 1000), "A"))
-            .await
-            .expect("A confirm")
-            .into_inner()
-            .success,
+        a.confirm(&req_id_a, outcome().epoch(CONFIRMED_EPOCH).runtime(1000))
+            .await,
         "confirm under org A must succeed"
     );
 
     // --- Org B: the IDENTICAL node must still EXECUTE (state must not leak). ---
-    let resp_b1 = sql
-        .submit_enriched_sql(request_with_org(node.clone(), "B"))
-        .await
-        .expect("B submit 1")
-        .into_inner();
+    let resp_b1 = b.submit(node.clone()).await;
     assert_eq!(
-        response_variant(&resp_b1),
+        variant(&resp_b1),
         "ready_to_execute",
         "org B must NOT inherit org A's confirmed state (no cross-org leak)"
     );
     // Response field values must match the standard execute shape.
-    if let Some(qc::submit_sql_response::Response::ReadyToExecute(r)) = &resp_b1.response {
+    {
+        let r = into_execute(resp_b1);
         let ed = r.explained_decision.as_ref().expect("explained_decision");
-        assert_eq!(ed.decision as i64, DECISION_READY_TO_EXECUTE);
+        assert_eq!(ed.decision, DECISION_READY_TO_EXECUTE);
         assert_eq!(
             ed.skip_rejection_reason,
             Some(REJECTION_NO_SUITABLE_MATCH_FOUND)
@@ -145,20 +89,15 @@ async fn org_isolation_state_does_not_leak() {
     }
 
     // --- Org A again: now SKIP, A's history is intact and unaffected by B. ---
-    let resp_a2 = sql
-        .submit_enriched_sql(request_with_org(node.clone(), "A"))
-        .await
-        .expect("A submit 2")
-        .into_inner();
+    let resp_a2 = a.submit(node.clone()).await;
     assert_eq!(
-        response_variant(&resp_a2),
+        variant(&resp_a2),
         "skip_execution",
         "org A must skip its own previously-confirmed node"
     );
-    if let Some(qc::submit_sql_response::Response::SkipExecution(s)) = &resp_a2.response {
-        let ed = s.explained_decision.as_ref().expect("explained_decision");
-        assert_eq!(ed.decision as i64, DECISION_SKIP_EXECUTION);
-    }
+    let s = into_skip(resp_a2);
+    let ed = s.explained_decision.as_ref().expect("explained_decision");
+    assert_eq!(ed.decision, DECISION_SKIP_EXECUTION);
 }
 
 /// Item 2a — INVALID INPUT: a near-empty SubmitEnrichedSQL (only dialect set,
@@ -167,28 +106,19 @@ async fn org_isolation_state_does_not_leak() {
 #[tokio::test]
 async fn near_empty_submit_executes_without_panic() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let req = qc::SubmitEnrichedSqlRequest {
-        dialect: "snowflake".to_string(),
-        ..Default::default()
-    };
-
-    let resp = sql
-        .submit_enriched_sql(req)
+    let resp = sc
+        .try_submit(empty_submission("snowflake"))
         .await
-        .expect("near-empty submit must return Ok, not error")
-        .into_inner();
+        .expect("near-empty submit must return Ok, not error");
     assert_eq!(
-        response_variant(&resp),
+        variant(&resp),
         "ready_to_execute",
         "an empty-state submit has no confirmed match and must execute"
     );
-    if let Some(qc::submit_sql_response::Response::ReadyToExecute(r)) = &resp.response {
-        assert!(!r.request_id.is_empty(), "a pending request_id is issued");
-    }
+    let r = into_execute(resp);
+    assert!(!r.request_id.is_empty(), "a pending request_id is issued");
 }
 
 /// Item 2b — INVALID INPUT: ConfirmExecution for an unknown request_id must
@@ -196,15 +126,17 @@ async fn near_empty_submit_executes_without_panic() {
 #[tokio::test]
 async fn confirm_unknown_request_id_returns_false() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let resp = exec
-        .confirm_execution(confirm_req("does-not-exist", 123))
+    let resp = sc
+        .try_confirm(
+            outcome()
+                .epoch(CONFIRMED_EPOCH)
+                .runtime(123)
+                .confirm("does-not-exist"),
+        )
         .await
-        .expect("confirm of unknown id must return Ok")
-        .into_inner();
+        .expect("confirm of unknown id must return Ok");
     assert!(!resp.success, "unknown request_id must not confirm");
     assert_eq!(resp.request_id, "does-not-exist");
 }
@@ -215,45 +147,33 @@ async fn confirm_unknown_request_id_returns_false() {
 #[tokio::test]
 async fn confirm_is_idempotent_for_duplicate_request_id() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // Execute to create a pending row.
-    let resp = sql
-        .submit_enriched_sql(model_submit("\"DB\".\"S\".\"IDEMP\"", "hash-idemp"))
-        .await
-        .expect("submit")
-        .into_inner();
-    let req_id = ready_request_id(&resp);
+    let req_id = sc
+        .execute_id(view("\"DB\".\"S\".\"IDEMP\"").body("hash-idemp"))
+        .await;
 
     // First confirm succeeds.
-    let c1 = exec
-        .confirm_execution(confirm_req(&req_id, 500))
-        .await
-        .expect("confirm 1")
-        .into_inner();
-    assert!(c1.success, "first confirm must succeed");
+    assert!(
+        sc.confirm(&req_id, outcome().epoch(CONFIRMED_EPOCH).runtime(500))
+            .await,
+        "first confirm must succeed"
+    );
 
     // Second confirm for the SAME request_id must also succeed (idempotent).
-    let c2 = exec
-        .confirm_execution(confirm_req(&req_id, 999))
-        .await
-        .expect("confirm 2")
-        .into_inner();
     assert!(
-        c2.success,
+        sc.confirm(&req_id, outcome().epoch(CONFIRMED_EPOCH).runtime(999))
+            .await,
         "confirming an already-confirmed request_id must still return true"
     );
 
     // Exactly one row should still exist for this request_id (no duplication).
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE request_id = $1")
-        .bind(&req_id)
-        .fetch_one(&pool)
+    let count = rows::executions(&server)
         .await
-        .expect("count rows");
+        .iter()
+        .filter(|r| r.request_id == req_id)
+        .count();
     assert_eq!(count, 1, "the request_id row must remain unique");
 }
 
@@ -265,17 +185,16 @@ async fn concurrent_distinct_submits_all_execute() {
     const N: usize = 20;
 
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
+    let sc = Scenario::connect(&server).await;
 
     // Spawn N tasks, each sharing the same underlying channel (cheaply cloned),
     // issuing a submit for a DISTINCT node concurrently.
     let mut tasks = JoinSet::new();
     for i in 0..N {
-        let mut sql = SqlClient::new(ch.clone());
+        let sc = sc.clone();
         tasks.spawn(async move {
-            let req = model_submit(&format!("\"DB\".\"S\".\"T{i}\""), &format!("hash-{i}"));
-            sql.submit_enriched_sql(req).await
+            let req = view(&format!("\"DB\".\"S\".\"T{i}\"")).body(&format!("hash-{i}"));
+            sc.try_submit(req).await
         });
     }
 
@@ -283,10 +202,9 @@ async fn concurrent_distinct_submits_all_execute() {
     while let Some(joined) = tasks.join_next().await {
         let resp = joined
             .expect("task must not panic")
-            .expect("concurrent submit must succeed")
-            .into_inner();
+            .expect("concurrent submit must succeed");
         assert_eq!(
-            response_variant(&resp),
+            variant(&resp),
             "ready_to_execute",
             "every distinct new node must execute"
         );
@@ -295,15 +213,12 @@ async fn concurrent_distinct_submits_all_execute() {
     assert_eq!(executed, N, "all {N} submits must return ready_to_execute");
 
     // The DB must hold exactly N pending rows.
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status = 'pending'")
-        .fetch_one(&pool)
+    let count = rows::executions(&server)
         .await
-        .expect("count pending");
-    assert_eq!(
-        count, N as i64,
-        "exactly {N} pending rows must be persisted"
-    );
+        .iter()
+        .filter(|r| r.is_pending())
+        .count();
+    assert_eq!(count, N, "exactly {N} pending rows must be persisted");
 }
 
 /// Item 5 — METADATA PASSTHROUGH: a request with NO metadata must still work;
@@ -312,43 +227,32 @@ async fn concurrent_distinct_submits_all_execute() {
 #[tokio::test]
 async fn no_metadata_defaults_to_local_org() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    // No `.org(..)`: plain requests with no metadata set at all.
+    let sc = Scenario::connect(&server).await;
 
-    let node = model_submit("\"DB\".\"S\".\"NOMETA\"", "hash-nometa");
+    let node = view("\"DB\".\"S\".\"NOMETA\"").body("hash-nometa");
 
-    // Plain request, no metadata set at all.
-    let resp1 = sql
-        .submit_enriched_sql(node.clone())
+    let resp1 = sc
+        .try_submit(node.clone())
         .await
-        .expect("no-metadata submit must work")
-        .into_inner();
+        .expect("no-metadata submit must work");
     assert_eq!(
-        response_variant(&resp1),
+        variant(&resp1),
         "ready_to_execute",
         "first no-metadata submit executes"
     );
-    let req_id = ready_request_id(&resp1);
+    let req_id = ready_id(&resp1);
 
     // Confirm (also with no metadata).
     assert!(
-        exec.confirm_execution(confirm_req(&req_id, 42))
+        sc.confirm(&req_id, outcome().epoch(CONFIRMED_EPOCH).runtime(42))
             .await
-            .expect("no-metadata confirm")
-            .into_inner()
-            .success
     );
 
     // Identical no-metadata submit must now SKIP: the default org is stable.
-    let resp2 = sql
-        .submit_enriched_sql(node)
-        .await
-        .expect("no-metadata submit 2")
-        .into_inner();
+    let resp2 = sc.try_submit(node).await.expect("no-metadata submit 2");
     assert_eq!(
-        response_variant(&resp2),
+        variant(&resp2),
         "skip_execution",
         "a stable default org ('local') must allow the skip on re-submit"
     );

@@ -11,73 +11,13 @@
 //!
 //! Each test runs against a freshly-created isolated Postgres schema.
 
-use dbt_state_proto::query_cache as qc;
-
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-
 #[path = "support.rs"]
 mod support;
-use support::{channel, request_with_org, response_variant, start_server};
-
-const ETYPE_FULL: i32 = 1;
-const ETYPE_VIEW: i32 = 10;
-
-fn submit(
-    target: &str,
-    body_hash: &str,
-    execution_type: i32,
-    namespace: Option<&str>,
-    tables: &[(&str, i64)],
-) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        tolerate_nondeterminism: true,
-        dialect: "snowflake".to_string(),
-        execution_type,
-        sql: "select 1".to_string(),
-        table_namespace: namespace.map(|s| s.to_string()),
-        tables: std::iter::once(qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(1),
-        })
-        .chain(tables.iter().map(|(n, e)| qc::TableModifiedInfo {
-            name: n.to_string(),
-            last_modified_epoch: Some(*e),
-        }))
-        .collect(),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.jaffle.{target}"),
-            target_name: "prod".to_string(),
-            project_name: "jaffle".to_string(),
-            resource_type: "model".to_string(),
-            node_hash: body_hash.to_string(),
-            node_body_hash: Some(body_hash.to_string()),
-            profile_name: "default".to_string(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn confirm_req(request_id: &str, epoch: i64, runtime_ms: i64) -> qc::ConfirmExecutionRequest {
-    qc::ConfirmExecutionRequest {
-        request_id: request_id.to_string(),
-        last_modified_epoch: Some(epoch),
-        failed_to_clone: false,
-        table_type: Some("TABLE".to_string()),
-        execution_results: None,
-        execution_runtime_ms: Some(runtime_ms),
-        labels: Default::default(),
-    }
-}
-
-fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id.clone(),
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
+use support::scenario::{
+    built_at, data_test, inputless_record, model, outcome, ready_id, test_results, variant, view,
+    Scenario,
+};
+use support::{fault, rows, start_server};
 
 // ---------------------------------------------------------------------------
 // F3 — ConfirmExecution semantics
@@ -90,56 +30,31 @@ fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
 #[tokio::test]
 async fn reconfirm_does_not_mutate_recorded_outcome() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let req = submit(
-        "\"DB\".\"S\".\"RECONF\"",
-        "h-reconf",
-        ETYPE_FULL,
-        None,
-        &[("up", 100)],
-    );
-    let r = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let rid = ready_request_id(&r);
+    let req = model("\"DB\".\"S\".\"RECONF\"")
+        .body("h-reconf")
+        .upstream("up", 100);
+    let rid = sc.execute_id(req).await;
 
     // First confirm records epoch=1000, runtime=11.
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 1000, 11))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    assert!(sc.confirm(&rid, built_at(1000).runtime(11)).await);
 
     // Second confirm with DIFFERENT values must still succeed (idempotent)...
     assert!(
-        exec.confirm_execution(confirm_req(&rid, 9999, 99))
-            .await
-            .unwrap()
-            .into_inner()
-            .success,
+        sc.confirm(&rid, built_at(9999).runtime(99)).await,
         "re-confirming an already-confirmed id must return success=true"
     );
 
     // ...but the stored outcome must be the FIRST confirm's values.
-    let pool = server.state.store.pool().clone();
-    let (epoch, runtime): (Option<i64>, Option<i64>) = sqlx::query_as(
-        "SELECT last_modified_epoch, execution_runtime_ms FROM executions WHERE request_id=$1",
-    )
-    .bind(&rid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let row = rows::execution(&server, &rid).await.expect("row");
     assert_eq!(
-        epoch,
+        row.last_modified_epoch,
         Some(1000),
         "recorded epoch must be stable across re-confirm"
     );
     assert_eq!(
-        runtime,
+        row.execution_runtime_ms,
         Some(11),
         "recorded runtime must be stable across re-confirm"
     );
@@ -150,44 +65,23 @@ async fn reconfirm_does_not_mutate_recorded_outcome() {
 #[tokio::test]
 async fn confirm_is_org_scoped() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let (org_a, org_b) = (sc.org("orgA"), sc.org("orgB"));
 
-    let node = submit(
-        "\"DB\".\"S\".\"ORGSCOPE\"",
-        "h-org",
-        ETYPE_FULL,
-        None,
-        &[("up", 100)],
-    );
-    let r = sql
-        .submit_enriched_sql(request_with_org(node.clone(), "orgA"))
-        .await
-        .unwrap()
-        .into_inner();
-    let rid = ready_request_id(&r);
+    let node = model("\"DB\".\"S\".\"ORGSCOPE\"")
+        .body("h-org")
+        .upstream("up", 100);
+    let rid = org_a.execute_id(node.clone()).await;
 
     // Confirm under the WRONG org → must not succeed (row belongs to orgA).
-    let wrong = exec
-        .confirm_execution(request_with_org(confirm_req(&rid, 1000, 10), "orgB"))
-        .await
-        .unwrap()
-        .into_inner();
     assert!(
-        !wrong.success,
+        !org_b.confirm(&rid, built_at(1000)).await,
         "confirm under a different org must not succeed"
     );
 
     // The orgA fingerprint is still unconfirmed → re-submit under orgA executes.
-    let again = sql
-        .submit_enriched_sql(request_with_org(node, "orgA"))
-        .await
-        .unwrap()
-        .into_inner();
     assert_eq!(
-        response_variant(&again),
+        org_a.verdict(node).await,
         "ready_to_execute",
         "a cross-org confirm must not confirm the orgA row"
     );
@@ -206,43 +100,25 @@ async fn confirm_is_org_scoped() {
 #[tokio::test]
 async fn namespace_alone_cannot_prove_cross_target_reuse() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let ns = "ns-shared";
     // Build + confirm under the PROD physical target.
-    let prod = submit(
-        "\"DB\".\"PROD\".\"T\"",
-        "h-ns",
-        ETYPE_FULL,
-        Some(ns),
-        &[("\"DB\".\"PROD\".\"SRC\"", 100)],
-    );
-    let r = sql.submit_enriched_sql(prod).await.unwrap().into_inner();
-    let rid = ready_request_id(&r);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    let prod = model("\"DB\".\"PROD\".\"T\"")
+        .body("h-ns")
+        .namespace(ns)
+        .upstream("\"DB\".\"PROD\".\"SRC\"", 100);
+    sc.build(prod, 100).await;
 
     // Submit under a DIFFERENT physical target (DEV), same namespace+logic+type.
     // The equivalent exists under another name → the hosted service CLONES it in
     // (ready_to_clone), it never SKIPs (which would reuse data that isn't there).
-    let dev = submit(
-        "\"DB\".\"DEV\".\"T\"",
-        "h-ns",
-        ETYPE_FULL,
-        Some(ns),
-        &[("\"DB\".\"DEV\".\"SRC\"", 100)],
-    );
-    let r2 = sql.submit_enriched_sql(dev).await.unwrap().into_inner();
+    let dev = model("\"DB\".\"DEV\".\"T\"")
+        .body("h-ns")
+        .namespace(ns)
+        .upstream("\"DB\".\"DEV\".\"SRC\"", 100);
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(dev).await,
         "ready_to_clone",
         "cross-name equivalent is cloned in, never skipped",
     );
@@ -254,40 +130,22 @@ async fn namespace_alone_cannot_prove_cross_target_reuse() {
 #[tokio::test]
 async fn namespace_match_respects_execution_type() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let ns = "ns-etype";
-    let as_view = submit(
-        "\"DB\".\"PROD\".\"T\"",
-        "h-et",
-        ETYPE_VIEW,
-        Some(ns),
-        &[("up", 100)],
-    );
-    let r = sql.submit_enriched_sql(as_view).await.unwrap().into_inner();
-    let rid = ready_request_id(&r);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    let as_view = view("\"DB\".\"PROD\".\"T\"")
+        .body("h-et")
+        .namespace(ns)
+        .upstream("up", 100);
+    sc.build(as_view, 100).await;
 
     // Same namespace+hash, different execution_type (FULL) → must execute.
-    let as_full = submit(
-        "\"DB\".\"DEV\".\"T\"",
-        "h-et",
-        ETYPE_FULL,
-        Some(ns),
-        &[("up", 100)],
-    );
-    let r2 = sql.submit_enriched_sql(as_full).await.unwrap().into_inner();
+    let as_full = model("\"DB\".\"DEV\".\"T\"")
+        .body("h-et")
+        .namespace(ns)
+        .upstream("up", 100);
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(as_full).await,
         "ready_to_execute",
         "a differing execution_type must not match via the namespace path"
     );
@@ -302,61 +160,23 @@ async fn namespace_match_respects_execution_type() {
 #[tokio::test]
 async fn physical_target_selects_newest_confirmed() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let ns = "ns-tie";
+    let node = model("\"DB\".\"A\".\"T\"")
+        .body("h-tie")
+        .namespace("ns-tie");
+    let src = "\"DB\".\"A\".\"SRC\"";
     // OLD confirmed row: recorded upstream epoch 100.
-    let old = submit(
-        "\"DB\".\"A\".\"T\"",
-        "h-tie",
-        ETYPE_FULL,
-        Some(ns),
-        &[("\"DB\".\"A\".\"SRC\"", 100)],
-    );
-    let r_old = sql.submit_enriched_sql(old).await.unwrap().into_inner();
-    let rid_old = ready_request_id(&r_old);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid_old, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    sc.build(node.clone().upstream(src, 100), 100).await;
 
     // NEWER confirmed row: recorded upstream epoch 5000 (built against newer data).
-    let new = submit(
-        "\"DB\".\"A\".\"T\"",
-        "h-tie",
-        ETYPE_FULL,
-        Some(ns),
-        &[("\"DB\".\"A\".\"SRC\"", 5000)],
-    );
-    let r_new = sql.submit_enriched_sql(new).await.unwrap().into_inner();
-    let rid_new = ready_request_id(&r_new);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid_new, 5000, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    sc.build(node.clone().upstream(src, 5000), 5000).await;
 
     // Submit with upstream epoch 5000: against the NEWEST row this is fresh →
     // SKIP. (Against the OLD row, 5000 > 100 would be drift → execute. So a
     // SKIP here proves the newest row was selected.)
-    let probe = submit(
-        "\"DB\".\"A\".\"T\"",
-        "h-tie",
-        ETYPE_FULL,
-        Some(ns),
-        &[("\"DB\".\"A\".\"SRC\"", 5000)],
-    );
-    let r = sql.submit_enriched_sql(probe).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(node.upstream(src, 5000)).await,
         "skip_execution",
         "tie-break must select the newest confirmed row (fresh vs its epoch)"
     );
@@ -366,81 +186,32 @@ async fn physical_target_selects_newest_confirmed() {
 // F6 — RecordExecutions
 // ---------------------------------------------------------------------------
 
-fn enriched_record(target: &str, body_hash: &str, epoch: Option<i64>) -> qc::ExecutionRecord {
-    qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: epoch,
-            table_type: Some("TABLE".to_string()),
-            execution_results: None,
-            execution_runtime_ms: Some(10),
-        }),
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            target_table: Some(target.to_string()),
-            dialect: "snowflake".to_string(),
-            default_catalog: String::new(),
-            execution_type: ETYPE_FULL,
-            sql: "select 1".to_string(),
-            tables: vec![qc::TableModifiedInfo {
-                name: "up".into(),
-                last_modified_epoch: epoch,
-            }],
-            query_dependencies: vec![],
-            semantic_extras: Default::default(),
-            labels: Default::default(),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: format!("model.jaffle.{target}"),
-                node_hash: body_hash.to_string(),
-                node_body_hash: Some(body_hash.to_string()),
-                ..Default::default()
-            }),
-            default_schema: None,
-            from_speculative_submit: false,
-            table_namespace: None,
-        })),
-    }
-}
-
 /// A RecordExecutions batch with a record missing its `input` oneof must fail
 /// the whole request (invalid_argument) and persist NOTHING — the batch is
 /// atomic all-or-nothing. The valid records in the same batch must not leak in.
 #[tokio::test]
 async fn record_executions_batch_is_atomic_on_invalid_record() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let good = enriched_record("\"DB\".\"S\".\"GOOD\"", "h-good", Some(1_000));
+    let good = model("\"DB\".\"S\".\"GOOD\"")
+        .body("h-good")
+        .upstream("up", 1_000)
+        .record(built_at(1_000));
     // An ExecutionRecord with no `input` oneof — the server must reject the
     // whole batch before inserting anything.
-    let bad = qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: Some(2_000),
-            table_type: None,
-            execution_results: None,
-            execution_runtime_ms: None,
-        }),
-        input: None,
-    };
+    let bad = inputless_record(outcome().epoch(2_000));
 
-    let res = exec
-        .record_executions(qc::RecordExecutionsRequest {
-            records: vec![good, bad],
-        })
-        .await;
+    let res = sc.record([good, bad]).await;
     assert!(
         res.is_err(),
         "a batch with an invalid record must be rejected"
     );
 
     // Nothing from the batch may have persisted.
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
     assert_eq!(
-        count, 0,
+        rows::execution_count(&server).await,
+        0,
         "an invalid batch must persist zero rows (atomic rollback)"
     );
 }
@@ -454,71 +225,35 @@ async fn record_executions_batch_is_atomic_on_invalid_record() {
 #[tokio::test]
 async fn rejected_record_batch_does_not_leak_node_state() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await.org("acme");
 
     // A valid record whose node_state carries the scope keys (project_id +
     // target_name + target_table) that drive selector/deferral state.
-    let good = qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: Some(1_000),
-            table_type: Some("TABLE".to_string()),
-            execution_results: None,
-            execution_runtime_ms: Some(10),
-        }),
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            target_table: Some("\"DB\".\"S\".\"ROLLED_BACK\"".to_string()),
-            dialect: "snowflake".to_string(),
-            default_catalog: "DB".to_string(),
-            execution_type: ETYPE_FULL,
-            sql: "select 1".to_string(),
-            tables: vec![],
-            query_dependencies: vec![],
-            semantic_extras: Default::default(),
-            labels: Default::default(),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: "model.jaffle.rolled_back".to_string(),
-                project_id: Some("proj-1".to_string()),
-                target_name: "prod".to_string(),
-                node_hash: "h".to_string(),
-                node_body_hash: Some("h".to_string()),
-                ..Default::default()
-            }),
-            default_schema: Some("S".to_string()),
-            from_speculative_submit: false,
-            table_namespace: None,
-        })),
-    };
+    let good = model("\"DB\".\"S\".\"ROLLED_BACK\"")
+        .catalog("DB")
+        .schema("S")
+        .sql("select 1")
+        .no_tables()
+        .body("h")
+        .unique_id("model.jaffle.rolled_back")
+        .project("proj-1")
+        .target_name("prod")
+        .record(built_at(1_000));
     // An invalid record (no input oneof) — rejects the whole batch.
-    let bad = qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome::default()),
-        input: None,
-    };
+    let bad = inputless_record(outcome());
 
-    let res = exec
-        .record_executions(request_with_org(
-            qc::RecordExecutionsRequest {
-                records: vec![good, bad],
-            },
-            "acme",
-        ))
-        .await;
+    let res = sc.record([good, bad]).await;
     assert!(res.is_err(), "invalid batch must be rejected");
 
     // Neither the execution ledger NOR the logical node_states may have changed.
-    let pool = server.state.store.pool().clone();
-    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(execs, 0, "no executions persisted from a rejected batch");
-    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM node_states")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
     assert_eq!(
-        states, 0,
+        rows::execution_count(&server).await,
+        0,
+        "no executions persisted from a rejected batch"
+    );
+    assert_eq!(
+        rows::node_states(&server).await.len(),
+        0,
         "a rejected batch must not leak selector/deferral node_state"
     );
 }
@@ -539,81 +274,45 @@ async fn rejected_record_batch_does_not_leak_node_state() {
 #[tokio::test]
 async fn node_state_write_failure_rolls_back_whole_record_batch() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await.org("acme");
 
-    // Inject a deterministic fault: any INSERT into node_states will fail.
-    let pool = server.state.store.pool().clone();
-    sqlx::query("ALTER TABLE node_states ADD CONSTRAINT fault_injection CHECK (false)")
-        .execute(&pool)
-        .await
-        .expect("add fault constraint");
+    // Inject a deterministic fault: any node_states write will fail.
+    fault::reject_node_state_writes(&server).await;
 
     // A single valid record whose node_state carries project_id + target_name +
     // node_unique_id, so the server attempts a node_states upsert.
-    let rec = qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: Some(2_000),
-            table_type: Some("TABLE".to_string()),
-            execution_results: None,
-            execution_runtime_ms: Some(20),
-        }),
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            target_table: Some("\"DB\".\"S\".\"ATOMIC\"".to_string()),
-            dialect: "snowflake".to_string(),
-            default_catalog: "DB".to_string(),
-            execution_type: ETYPE_FULL,
-            sql: "select 1".to_string(),
-            tables: vec![],
-            query_dependencies: vec![],
-            semantic_extras: Default::default(),
-            labels: Default::default(),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: "model.jaffle.atomic".to_string(),
-                project_id: Some("proj-atomic".to_string()),
-                target_name: "prod".to_string(),
-                node_hash: "h".to_string(),
-                node_body_hash: Some("h".to_string()),
-                ..Default::default()
-            }),
-            default_schema: Some("S".to_string()),
-            from_speculative_submit: false,
-            table_namespace: None,
-        })),
-    };
+    let rec = model("\"DB\".\"S\".\"ATOMIC\"")
+        .catalog("DB")
+        .schema("S")
+        .sql("select 1")
+        .no_tables()
+        .body("h")
+        .unique_id("model.jaffle.atomic")
+        .project("proj-atomic")
+        .target_name("prod")
+        .record(outcome().epoch(2_000).table().runtime(20));
 
-    let res = exec
-        .record_executions(request_with_org(
-            qc::RecordExecutionsRequest { records: vec![rec] },
-            "acme",
-        ))
-        .await;
+    let res = sc.record([rec]).await;
     assert!(
         res.is_err(),
         "a node_states write failure must fail the whole RecordExecutions request"
     );
 
     // The execution row must NOT have been published either (full rollback).
-    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
     assert_eq!(
-        execs, 0,
+        rows::execution_count(&server).await,
+        0,
         "the execution ledger must roll back when the logical-state write fails \
          (no partial publish)"
     );
-    let states: i64 = sqlx::query_scalar("SELECT count(*) FROM node_states")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(states, 0, "no logical state persisted either");
+    assert_eq!(
+        rows::node_states(&server).await.len(),
+        0,
+        "no logical state persisted either"
+    );
 
     // Clean up the injected fault so the shared schema (if reused) is sane.
-    let _ = sqlx::query("ALTER TABLE node_states DROP CONSTRAINT fault_injection")
-        .execute(&pool)
-        .await;
+    fault::accept_node_state_writes(&server).await;
 }
 
 /// A SUCCESSFUL RecordExecutions publishes execution AND logical state together
@@ -622,64 +321,32 @@ async fn node_state_write_failure_rolls_back_whole_record_batch() {
 #[tokio::test]
 async fn successful_record_batch_publishes_execution_and_node_state_together() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await.org("acme");
 
-    let rec = qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: Some(3_000),
-            table_type: Some("TABLE".to_string()),
-            execution_results: None,
-            execution_runtime_ms: Some(30),
-        }),
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            target_table: Some("\"DB\".\"S\".\"PUB\"".to_string()),
-            dialect: "snowflake".to_string(),
-            default_catalog: "DB".to_string(),
-            execution_type: ETYPE_FULL,
-            sql: "select 1".to_string(),
-            tables: vec![],
-            query_dependencies: vec![],
-            semantic_extras: Default::default(),
-            labels: Default::default(),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: "model.jaffle.pub".to_string(),
-                project_id: Some("proj-pub".to_string()),
-                target_name: "prod".to_string(),
-                node_hash: "h".to_string(),
-                node_body_hash: Some("h".to_string()),
-                ..Default::default()
-            }),
-            default_schema: Some("S".to_string()),
-            from_speculative_submit: false,
-            table_namespace: None,
-        })),
-    };
+    let rec = model("\"DB\".\"S\".\"PUB\"")
+        .catalog("DB")
+        .schema("S")
+        .sql("select 1")
+        .no_tables()
+        .body("h")
+        .unique_id("model.jaffle.pub")
+        .project("proj-pub")
+        .target_name("prod")
+        .record(outcome().epoch(3_000).table().runtime(30));
 
-    let stored = exec
-        .record_executions(request_with_org(
-            qc::RecordExecutionsRequest { records: vec![rec] },
-            "acme",
-        ))
-        .await
-        .expect("record succeeds")
-        .into_inner()
-        .records_stored;
+    let stored = sc.record([rec]).await.expect("record succeeds");
     assert_eq!(stored, 1);
 
-    let pool = server.state.store.pool().clone();
-    let execs: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
+    assert_eq!(
+        rows::execution_count(&server).await,
+        1,
+        "the execution is published"
+    );
+    let states = rows::node_states(&server)
         .await
-        .unwrap();
-    assert_eq!(execs, 1, "the execution is published");
-    let states: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM node_states WHERE node_unique_id = 'model.jaffle.pub'",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+        .iter()
+        .filter(|s| s.node_unique_id == "model.jaffle.pub")
+        .count();
     assert_eq!(
         states, 1,
         "the logical state is published in the same request"
@@ -692,40 +359,30 @@ async fn successful_record_batch_publishes_execution_and_node_state_together() {
 #[tokio::test]
 async fn record_executions_duplicate_fingerprint_newest_wins() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"DUP\"";
+    let node = model("\"DB\".\"S\".\"DUP\"").body("h-dup");
     // First hydrate: recorded epoch 100.
-    exec.record_executions(qc::RecordExecutionsRequest {
-        records: vec![enriched_record(target, "h-dup", Some(100))],
-    })
-    .await
-    .unwrap();
+    sc.record([node.clone().upstream("up", 100).record(built_at(100))])
+        .await
+        .unwrap();
     // Second hydrate of the SAME fingerprint: recorded epoch 5000.
-    exec.record_executions(qc::RecordExecutionsRequest {
-        records: vec![enriched_record(target, "h-dup", Some(5000))],
-    })
-    .await
-    .unwrap();
+    sc.record([node.clone().upstream("up", 5000).record(built_at(5000))])
+        .await
+        .unwrap();
 
     // Both rows persisted (no dedupe).
-    let pool = server.state.store.pool().clone();
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM executions WHERE node_body_hash='h-dup'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let count = rows::executions(&server)
+        .await
+        .iter()
+        .filter(|r| r.node_body_hash.as_deref() == Some("h-dup"))
+        .count();
     assert_eq!(count, 2, "duplicate fingerprints both persist (no dedupe)");
 
     // A submit with an upstream at epoch 5000: fresh vs the NEWEST recorded row
     // (5000), stale vs the old row (100). SKIP proves newest-wins selection.
-    let probe = submit(target, "h-dup", ETYPE_FULL, None, &[("up", 5000)]);
-    let r = sql.submit_enriched_sql(probe).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(node.upstream("up", 5000)).await,
         "skip_execution",
         "lookup must resolve to the newest confirmed row"
     );
@@ -735,81 +392,49 @@ async fn record_executions_duplicate_fingerprint_newest_wins() {
 // Data-test node identity (execution_type = DBT_DATA_TEST = 8)
 // ---------------------------------------------------------------------------
 
-const ETYPE_DATA_TEST: i32 = 8;
-
-/// Build a data-test submit: empty target_table, a body hash shared across all
-/// tests of the same generic type, distinguished only by node_unique_id — just
-/// like the real dbt client sends. `table_namespace` is present (adapter-level)
-/// to prove the fix does not fall back to a namespace+body collision either.
-fn test_submit(unique_id: &str, shared_body: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: None,
-        dialect: "snowflake".to_string(),
-        execution_type: ETYPE_DATA_TEST,
-        tolerate_nondeterminism: true,
-        sql: "select * from x where c is null".to_string(),
-        table_namespace: Some("adapter-ns".to_string()),
-        tables: vec![],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: unique_id.to_string(),
-            resource_type: "test".to_string(),
-            node_hash: shared_body.to_string(),
-            node_body_hash: Some(shared_body.to_string()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
 /// Two DIFFERENT data tests that share a body hash and have an empty target
 /// (as all `not_null` tests do) must NOT collide: confirming one must not make
 /// the other skip. Guards the review's live-captured C1c finding at the
 /// store/handler level, independent of the golden fixture.
+///
+/// Each data-test submit has an empty target_table and a body hash shared
+/// across all tests of the same generic type, distinguished only by
+/// node_unique_id — just like the real dbt client sends. `table_namespace` is
+/// present (adapter-level) to prove the fix does not fall back to a
+/// namespace+body collision either.
 #[tokio::test]
 async fn data_tests_do_not_collide_on_shared_body_hash() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let shared = "934c4ef4sharednotnullbody";
-    let t1 = test_submit("test.proj.not_null_customers_customer_id.aaaa", shared);
-    let t2 = test_submit("test.proj.not_null_customers_customer_name.bbbb", shared);
+    let t1 = data_test("test.proj.not_null_customers_customer_id.aaaa")
+        .sql("select * from x where c is null")
+        .body("934c4ef4sharednotnullbody")
+        .namespace("adapter-ns");
+    let t2 = t1
+        .clone()
+        .unique_id("test.proj.not_null_customers_customer_name.bbbb");
 
     // Execute + confirm test #1.
-    let r1 = sql
-        .submit_enriched_sql(t1.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(
-        response_variant(&r1),
-        "ready_to_execute",
-        "first test executes"
-    );
-    let rid = ready_request_id(&r1);
+    let r1 = sc.submit(t1.clone()).await;
+    assert_eq!(variant(&r1), "ready_to_execute", "first test executes");
+    let rid = ready_id(&r1);
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest { execution_results: Some(serde_json::from_value(serde_json::json!({"fields": {"failures": {"kind": {"int_value": 0}}, "should_error": {"kind": {"bool_value": false}}, "should_warn": {"kind": {"bool_value": false}}}})).unwrap()), ..confirm_req(&rid, 100, 10) })
+        sc.confirm(&rid, built_at(100).results(test_results(0)))
             .await
-            .unwrap()
-            .into_inner()
-            .success
     );
 
     // Test #1 now skips (same unique_id).
-    let r1b = sql.submit_enriched_sql(t1).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r1b),
+        sc.verdict(t1).await,
         "skip_execution",
         "same test skips after confirm"
     );
 
     // Test #2 — different unique_id, SAME body hash, empty target — must EXECUTE,
     // not collide with the confirmed test #1.
-    let r2 = sql.submit_enriched_sql(t2).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(t2).await,
         "ready_to_execute",
         "a different data test sharing the body hash must not collide → execute"
     );
@@ -820,60 +445,25 @@ async fn data_tests_do_not_collide_on_shared_body_hash() {
 // Captured evidence distinguishes these inputs from the client body hash.
 // ---------------------------------------------------------------------------
 
-fn model_sql(target: &str, sql: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        tolerate_nondeterminism: true,
-        dialect: "snowflake".to_string(),
-        execution_type: ETYPE_FULL,
-        sql: sql.to_string(),
-        table_namespace: Some("ns".to_string()),
-        tables: vec![(target, 1i64), ("up", 100i64)]
-            .into_iter()
-            .map(|(n, e)| qc::TableModifiedInfo {
-                name: n.into(),
-                last_modified_epoch: Some(e),
-            })
-            .collect(),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.jaffle.{target}"),
-            node_hash: body_hash.into(),
-            node_body_hash: Some(body_hash.into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
 /// A whitespace-only SQL change (and even a changed node_body_hash) must SKIP:
 /// the hosted service normalizes whitespace and ignores node_body_hash for
 /// reuse. Confirms we match on the whitespace-normalized SQL, not the body hash.
 #[tokio::test]
 async fn whitespace_only_sql_change_skips() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"WS\"";
+    let node = model("\"DB\".\"S\".\"WS\"")
+        .namespace("ns")
+        .upstream("up", 100);
     // body_hash deliberately DIFFERENT between the two to prove it is not the gate.
-    let v1 = model_sql(target, "select 1 as a", "bodyhash-A");
-    let r = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
-    let rid = ready_request_id(&r);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    let v1 = node.clone().sql("select 1 as a").body("bodyhash-A");
+    sc.build(v1, 100).await;
 
     // Same SQL but reformatted (extra whitespace) + different body hash → SKIP.
-    let v2 = model_sql(target, "select   1   as   a", "bodyhash-B-different");
-    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    let v2 = node.sql("select   1   as   a").body("bodyhash-B-different");
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(v2).await,
         "skip_execution",
         "whitespace-only SQL change (even with a changed node_body_hash) must skip"
     );
@@ -883,27 +473,18 @@ async fn whitespace_only_sql_change_skips() {
 #[tokio::test]
 async fn real_sql_change_executes() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"RS\"";
-    let v1 = model_sql(target, "select 1 as a", "h");
-    let r = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
-    let rid = ready_request_id(&r);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    let node = model("\"DB\".\"S\".\"RS\"")
+        .namespace("ns")
+        .upstream("up", 100)
+        .body("h");
+    sc.build(node.clone().sql("select 1 as a"), 100).await;
 
-    let v2 = model_sql(target, "select 1 as a, 2 as b", "h"); // same body hash, real SQL change
-    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    // Same body hash, real SQL change.
+    let v2 = node.sql("select 1 as a, 2 as b");
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(v2).await,
         "ready_to_execute",
         "a real SQL change must execute"
     );
@@ -914,46 +495,27 @@ async fn real_sql_change_executes() {
 #[tokio::test]
 async fn semantic_extras_change_executes_sql_unchanged() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"SE\"";
-    let mut v1 = model_sql(target, "select 1 as a", "h");
-    v1.semantic_extras
-        .insert("on_schema_change".into(), "\"ignore\"".into());
-    let r = sql
-        .submit_enriched_sql(v1.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    let rid = ready_request_id(&r);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid, 100, 10))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    let v1 = model("\"DB\".\"S\".\"SE\"")
+        .namespace("ns")
+        .upstream("up", 100)
+        .body("h")
+        .sql("select 1 as a")
+        .extra("on_schema_change", "\"ignore\"");
+    sc.build(v1.clone(), 100).await;
 
     // Unchanged (same SQL + same semantic_extras) → skip.
-    let r_same = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r_same),
+        sc.verdict(v1.clone()).await,
         "skip_execution",
         "unchanged → skip"
     );
 
     // Add an allowlisted key (grants) with SQL unchanged → execute.
-    let mut v2 = model_sql(target, "select 1 as a", "h");
-    v2.semantic_extras
-        .insert("on_schema_change".into(), "\"ignore\"".into());
-    v2.semantic_extras
-        .insert("grants".into(), "{\"select\":[\"PUBLIC\"]}".into());
-    let r2 = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
+    let v2 = v1.extra("grants", "{\"select\":[\"PUBLIC\"]}");
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(v2).await,
         "ready_to_execute",
         "an allowlisted semantic_extras change (grants) must execute even with unchanged SQL"
     );
