@@ -198,10 +198,12 @@ impl Verdict {
 /// Everything a Submit decision tells the client and records for capture:
 /// the class, its one reason, the hosted description and rejection codes,
 /// `is_stale`, and the prior execution the decision was made against (the
-/// Explain freshness anchor). Only the constructors below build one, so the
+/// Explain freshness anchor). Only the constructors below build one (the
+/// private `sealed` field stops struct literals, in this crate too), so the
 /// reason always agrees with the wire values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
+// `#[non_exhaustive]` would not stop construction inside this crate.
+#[allow(clippy::manual_non_exhaustive)]
 pub struct DecisionRecord {
     pub class: DecisionKind,
     pub reason: DecisionReason,
@@ -212,6 +214,7 @@ pub struct DecisionRecord {
     /// `executions.id` of the reuse candidate `decide` evaluated: set on a
     /// Skip and on a freshness-driven Execute, `None` otherwise.
     pub matched_execution_id: Option<i64>,
+    sealed: (),
 }
 
 impl DecisionRecord {
@@ -231,6 +234,7 @@ impl DecisionRecord {
                 clone_rejection_reason: None,
                 is_stale,
                 matched_execution_id,
+                sealed: (),
             },
             Verdict::Execute {
                 description,
@@ -246,6 +250,7 @@ impl DecisionRecord {
                 clone_rejection_reason: Some(clone_rejection_reason),
                 is_stale,
                 matched_execution_id,
+                sealed: (),
             },
         }
     }
@@ -262,6 +267,7 @@ impl DecisionRecord {
             clone_rejection_reason: None,
             is_stale: false,
             matched_execution_id: None,
+            sealed: (),
         }
     }
 
@@ -278,6 +284,7 @@ impl DecisionRecord {
             clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
             is_stale: false,
             matched_execution_id: None,
+            sealed: (),
         }
     }
 }
