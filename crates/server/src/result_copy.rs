@@ -16,13 +16,9 @@
 
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::store::CloneEquivalent;
 use crate::warehouse::Warehouse;
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_INCREMENTAL: i32 = 5;
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// Hosted DuckDB copy chains stop at two ancestors.
 const MAX_DUCKDB_COPY_DEPTH: i64 = 2;
@@ -72,8 +68,8 @@ pub(crate) fn submit_lookup<'a>(
         );
     if has_reuse_candidate
         || volatile_blocks_copy
-        || req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST
-        || req.execution_type == EXECUTION_TYPE_VALUES
+        || req.execution_type == ModelExecutionType::DbtDataTest as i32
+        || req.execution_type == ModelExecutionType::Values as i32
     {
         return None;
     }
@@ -242,12 +238,12 @@ pub(crate) fn register_lookup(
     let warehouse = Warehouse::from_dialect(&req.dialect);
     if warehouse == Warehouse::DuckDb {
         return match (
-            req.execution_type,
+            ModelExecutionType::try_from(req.execution_type),
             crate::execution::namespace(req.table_namespace.as_deref()),
             req.clone_source_last_modified_epoch,
             req.labels.get("duckdb_incremental_identity"),
         ) {
-            (EXECUTION_TYPE_INCREMENTAL, Some(ns), Some(epoch), Some(identity))
+            (Ok(ModelExecutionType::DeleteInsert), Some(ns), Some(epoch), Some(identity))
                 if req
                     .labels
                     .get("duckdb_incremental_contract")
@@ -560,7 +556,7 @@ mod tests {
 
     fn duck_register() -> qc::CloneRequest {
         let mut req = qc::CloneRequest {
-            execution_type: EXECUTION_TYPE_INCREMENTAL,
+            execution_type: ModelExecutionType::DeleteInsert as i32,
             clone_source_table: DUCK_PROD.into(),
             target_table: DUCK_DEV.into(),
             clone_source_last_modified_epoch: Some(7),

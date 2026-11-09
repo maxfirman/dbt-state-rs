@@ -4,6 +4,7 @@ use tonic::{Request, Response, Status};
 
 use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
@@ -17,9 +18,6 @@ use qc::sql_server::Sql;
 // SubmitSQLResultType values (shared.proto).
 const DECISION_SKIP_EXECUTION: i32 = 0;
 const DECISION_READY_TO_EXECUTE: i32 = 1;
-
-// ModelExecutionType::VALUES (struct.proto).
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
 /// runtime (if any) just like the hosted service.
@@ -478,7 +476,7 @@ fn capture_submit_values(
         node_name: req.labels.get("dbt_node_name").cloned(),
         node_fqn: req.labels.get("dbt_node_fqn").cloned(),
         resource_type: ns.map(|s| s.resource_type.clone()),
-        execution_type: EXECUTION_TYPE_VALUES,
+        execution_type: ModelExecutionType::Values as i32,
         decision: kind,
         is_stale,
         decision_description: decision_description_of(response),

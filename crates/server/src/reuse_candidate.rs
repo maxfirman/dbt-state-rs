@@ -20,11 +20,8 @@
 
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// The outcome of reuse candidate selection for one submit.
 #[derive(Debug)]
@@ -55,7 +52,7 @@ pub(crate) fn for_model(
     evidence: &ExecutionEvidence,
     current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
-    debug_assert_ne!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
+    debug_assert_ne!(req.execution_type, ModelExecutionType::DbtDataTest as i32);
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
@@ -91,7 +88,7 @@ pub(crate) fn for_data_test(
     evidence: &ExecutionEvidence,
     latest: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
-    debug_assert_eq!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
+    debug_assert_eq!(req.execution_type, ModelExecutionType::DbtDataTest as i32);
     let identified = match latest {
         Some(row) if identity_matches(evidence, &row) => Some(row.into_checked(true)?),
         _ => None,
@@ -115,7 +112,7 @@ pub(crate) fn for_seed(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
-    let identified = if current.execution_type == EXECUTION_TYPE_VALUES
+    let identified = if current.execution_type == ModelExecutionType::Values as i32
         && current.values_hash.as_deref() == Some(req.values_hash.as_str())
         && current.node_sql_hash.is_some()
         && current.node_sql_hash == evidence.node_sql_hash
@@ -636,7 +633,7 @@ mod tests {
 
     fn data_test_req() -> qc::SubmitEnrichedSqlRequest {
         qc::SubmitEnrichedSqlRequest {
-            execution_type: EXECUTION_TYPE_DBT_DATA_TEST,
+            execution_type: ModelExecutionType::DbtDataTest as i32,
             target_table: None,
             tables: vec![table(UPSTREAM, 500)],
             dbt_node_state: Some(qc::DbtNodeState {

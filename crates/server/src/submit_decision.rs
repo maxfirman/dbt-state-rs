@@ -19,13 +19,10 @@
 use crate::decision::{self, SubmitContext, Verdict};
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{self, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{ExecutionRow, Store};
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
 /// pending row's ConfirmExecution, `execution_decision_id` keys Explain.
@@ -190,7 +187,7 @@ pub async fn submit_values(
 
     let row = &evidence;
     let ctx = SubmitContext {
-        execution_type: EXECUTION_TYPE_VALUES,
+        execution_type: ModelExecutionType::Values as i32,
         input_tables: &row.input_tables,
         target_table: Some(req.target_table.as_str()),
         stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
@@ -199,7 +196,7 @@ pub async fn submit_values(
     let verdict = decision::decide(&ctx, candidate.as_ref());
     tracing::info!(
         node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-        execution_type = EXECUTION_TYPE_VALUES,
+        execution_type = ModelExecutionType::Values as i32,
         had_match = candidate.is_some(),
         values_hash = %row.values_hash.clone().unwrap_or_default(),
         verdict = verdict_label(&verdict),
@@ -218,7 +215,7 @@ async fn select_sql(
 ) -> sqlx::Result<Selection> {
     let row = evidence;
     let table_namespace = execution::namespace(req.table_namespace.as_deref());
-    if req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
+    if req.execution_type == ModelExecutionType::DbtDataTest as i32 {
         let latest = match row.node_unique_id.as_deref() {
             Some(uid) => {
                 store
