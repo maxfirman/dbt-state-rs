@@ -11,7 +11,7 @@ mod support;
 use dbt_state_proto::query_cache as qc;
 use dbt_state_server::decision::{DecisionReason, DecisionRecord, NoCandidate, Reuse};
 use dbt_state_server::store::Store;
-use dbt_state_server::submit_decision::{self, DecisionIds, SubmitOutcome};
+use dbt_state_server::submit_decision::{self, DecisionIds, ResultCopy, SubmitOutcome};
 use support::rows;
 use support::TestDatabase;
 
@@ -255,10 +255,13 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
     );
     let SubmitOutcome::Copy {
         ids,
-        source_table,
-        clone_sqls,
-        source_last_modified_epoch,
-        source_execution_runtime_ms,
+        copy:
+            ResultCopy {
+                source_table,
+                clone_sqls,
+                source_last_modified_epoch,
+                source_execution_runtime_ms,
+            },
         ..
     } = outcome
     else {
@@ -622,8 +625,12 @@ async fn duckdb_result_copy_ignores_dialect_case() {
                 .await
                 .expect("submit");
         let SubmitOutcome::Copy {
-            source_table,
-            clone_sqls,
+            copy:
+                ResultCopy {
+                    source_table,
+                    clone_sqls,
+                    ..
+                },
             ..
         } = outcome
         else {

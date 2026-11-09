@@ -67,28 +67,23 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
                 execution_decision_id: Some(ids.execution_decision_id),
             })
         }
-        SubmitOutcome::Copy {
-            ids,
-            source_table,
-            clone_sqls,
-            source_last_modified_epoch,
-            source_execution_runtime_ms,
-            record,
-        } => Response::ReadyToClone(qc::ReadyToCloneResponse {
-            request_id: ids.request_id,
-            last_modified_query: String::new(),
-            clone_sqls,
-            clone_source: source_table,
-            clone_target: clone_target.to_string(),
-            explained_decision: Some(explained_decision(&record)),
-            transformed_nodes_by_query: Default::default(),
-            clone_required_last_modified_epoch: source_last_modified_epoch,
-            clone_execution_results: Some(qc::Struct {
-                fields: Default::default(),
-            }),
-            execution_runtime_ms: source_execution_runtime_ms,
-            execution_decision_id: Some(ids.execution_decision_id),
-        }),
+        SubmitOutcome::Copy { ids, copy, record } => {
+            Response::ReadyToClone(qc::ReadyToCloneResponse {
+                request_id: ids.request_id,
+                last_modified_query: String::new(),
+                clone_sqls: copy.clone_sqls,
+                clone_source: copy.source_table,
+                clone_target: clone_target.to_string(),
+                explained_decision: Some(explained_decision(&record)),
+                transformed_nodes_by_query: Default::default(),
+                clone_required_last_modified_epoch: copy.source_last_modified_epoch,
+                clone_execution_results: Some(qc::Struct {
+                    fields: Default::default(),
+                }),
+                execution_runtime_ms: copy.source_execution_runtime_ms,
+                execution_decision_id: Some(ids.execution_decision_id),
+            })
+        }
     };
     qc::SubmitSqlResponse {
         response: Some(response),
@@ -253,8 +248,8 @@ impl CapturedDecision {
             // renderer (`explain.rs::clone_tree`) can emit `could be cloned
             // from "<source>"` (F2).
             clone_source: match outcome {
-                SubmitOutcome::Copy { source_table, .. } => {
-                    Some(source_table.clone()).filter(|s| !s.is_empty())
+                SubmitOutcome::Copy { copy, .. } => {
+                    Some(copy.source_table.clone()).filter(|s| !s.is_empty())
                 }
                 _ => None,
             },

@@ -20,6 +20,7 @@ use crate::decision::{self, DecisionKind, DecisionRecord, SubmitContext};
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
+pub use crate::result_copy::ResultCopy;
 use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{CopyCandidateQuery, ExecutionRow, Store};
@@ -68,10 +69,7 @@ pub enum SubmitOutcome {
     /// (`ready_to_clone`). The pending row records the copy source.
     Copy {
         ids: DecisionIds,
-        source_table: String,
-        clone_sqls: Vec<String>,
-        source_last_modified_epoch: Option<i64>,
-        source_execution_runtime_ms: Option<i64>,
+        copy: ResultCopy,
         record: DecisionRecord,
     },
     /// An equivalent exists but the target forbids copies or the copy chain is
@@ -300,22 +298,14 @@ async fn result_copy_fallback(
                 record: DecisionRecord::copy_chain_limit(),
             }))
         }
-        SubmitCopyPlan::Copy {
-            source_table,
-            clone_sqls,
-            source_last_modified_epoch,
-            source_execution_runtime_ms,
-        } => {
+        SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
-            write_pending(store, &evidence.copied_from(&source_table), &ids).await?;
+            write_pending(store, &evidence.copied_from(&copy.source_table), &ids).await?;
             Ok(Some(SubmitOutcome::Copy {
                 ids,
-                source_table,
-                clone_sqls,
-                source_last_modified_epoch,
-                source_execution_runtime_ms,
+                copy,
                 record: DecisionRecord::result_copy(),
             }))
         }
