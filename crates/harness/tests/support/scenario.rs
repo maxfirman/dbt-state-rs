@@ -668,6 +668,15 @@ pub fn built_at(epoch: i64) -> Outcome {
     outcome().epoch(epoch).table().runtime(10)
 }
 
+/// The table type a DuckDB CTAS build confirms; result copy and incremental
+/// initialization only accept sources confirmed with it.
+pub const DUCKDB_CTAS_TABLE: &str = "DUCKDB CTAS TABLE";
+
+/// A DuckDB CTAS build outcome at `epoch` (no runtime).
+pub fn duckdb_ctas_at(epoch: i64) -> Outcome {
+    outcome().epoch(epoch).table_type(DUCKDB_CTAS_TABLE)
+}
+
 /// Complete cached data test results: `failures`, `should_error` (when there
 /// are failures) and `should_warn` (false).
 pub fn test_results(failures: i64) -> qc::Struct {

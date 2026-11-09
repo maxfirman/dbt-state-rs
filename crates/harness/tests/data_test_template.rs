@@ -18,110 +18,13 @@
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
-use tonic::transport::Channel;
+use support::scenario::{data_test, outcome, test_results, Scenario};
+use support::start_server;
 
 const TEST_UID: &str = "test.jaffle_shop.cuc_test.deadbeef02";
 const PROJECT: &str = "70437463667433";
 const NS: &str = "dt-cuc-ns";
-
-/// A `compare_unrendered_code=true` data-test (execution_type=8) submit with a
-/// given rendered SQL and body (template) hash, over one fixed upstream.
-fn cuc_test_submit(
-    sql: &str,
-    body_hash: &str,
-    upstream_epoch: i64,
-) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: None,
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some("PROD_STATE_DEMO".into()),
-        execution_type: 8,
-        sql: sql.into(),
-        tolerate_nondeterminism: true,
-        compare_unrendered_code: true,
-        tables: vec![qc::TableModifiedInfo {
-            name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DT_UP\"".into(),
-            last_modified_epoch: Some(upstream_epoch),
-        }],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: TEST_UID.into(),
-            project_id: Some(PROJECT.into()),
-            target_name: "prod_demo".into(),
-            node_body_hash: Some(body_hash.into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-async fn confirm_test(exec: &mut ExecutionClient<Channel>, request_id: String) {
-    use qc::value::Kind;
-    let results = qc::Struct {
-        fields: [
-            (
-                "failures".to_string(),
-                qc::Value {
-                    kind: Some(Kind::IntValue(0)),
-                },
-            ),
-            (
-                "should_error".to_string(),
-                qc::Value {
-                    kind: Some(Kind::BoolValue(false)),
-                },
-            ),
-            (
-                "should_warn".to_string(),
-                qc::Value {
-                    kind: Some(Kind::BoolValue(false)),
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id,
-        last_modified_epoch: None,
-        table_type: None,
-        execution_results: Some(results),
-        ..Default::default()
-    })
-    .await
-    .expect("confirm data test");
-}
-
-async fn submit(sql: &mut SqlClient<Channel>, req: qc::SubmitEnrichedSqlRequest) -> String {
-    response_variant(
-        &sql.submit_enriched_sql(req)
-            .await
-            .expect("submit")
-            .into_inner(),
-    )
-    .to_string()
-}
-
-async fn submit_execute_id(
-    sql: &mut SqlClient<Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-) -> String {
-    match sql
-        .submit_enriched_sql(req)
-        .await
-        .expect("submit")
-        .into_inner()
-        .response
-    {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
+const UPSTREAM: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DT_UP\"";
 
 /// Build + confirm a cuc data test, then re-submit with the SAME template but a
 /// changed interpolated rendered literal (upstream unchanged) -> must SKIP.
@@ -130,34 +33,43 @@ async fn submit_execute_id(
 #[tokio::test]
 async fn data_test_rendered_only_change_skips_under_cuc() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    // A `compare_unrendered_code=true` data-test (execution_type=8) submit with
+    // a given rendered SQL and body (template) hash, over one fixed upstream.
+    let cuc_test = data_test(TEST_UID)
+        .catalog("CDO_DEMO_DB")
+        .schema("PROD_STATE_DEMO")
+        .compare_unrendered_code()
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo");
+    let cuc_test_submit = |sql: &str, body_hash: &str, upstream_epoch: i64| {
+        cuc_test
+            .clone()
+            .sql(sql)
+            .body(body_hash)
+            .upstream(UPSTREAM, upstream_epoch)
+    };
 
     // Baseline: template "body-A", rendered literal '2020-01-01'.
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_test_submit(
             "select * from CDO_DEMO_DB.PROD_STATE_DEMO.DT_UP where ordered_at > '2020-01-01'",
             "body-A",
             100,
         ),
+        outcome().results(test_results(0)),
     )
     .await;
-    confirm_test(&mut exec, rid).await;
 
     // Rendered literal changes, TEMPLATE (body hash) identical, upstream same ->
     // SKIP (reuse the cached pass; template unchanged means logically same test).
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_test_submit(
-                "select * from CDO_DEMO_DB.PROD_STATE_DEMO.DT_UP where ordered_at > '2021-06-30'",
-                "body-A",
-                100,
-            ),
-        )
+        sc.verdict(cuc_test_submit(
+            "select * from CDO_DEMO_DB.PROD_STATE_DEMO.DT_UP where ordered_at > '2021-06-30'",
+            "body-A",
+            100,
+        ))
         .await,
         "skip_execution",
         "cuc data test: a rendered-only change with identical template must SKIP"
@@ -168,23 +80,34 @@ async fn data_test_rendered_only_change_skips_under_cuc() {
 #[tokio::test]
 async fn data_test_unchanged_skips_under_cuc() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let cuc_test = data_test(TEST_UID)
+        .catalog("CDO_DEMO_DB")
+        .schema("PROD_STATE_DEMO")
+        .compare_unrendered_code()
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo");
+    let cuc_test_submit = |sql: &str, body_hash: &str, upstream_epoch: i64| {
+        cuc_test
+            .clone()
+            .sql(sql)
+            .body(body_hash)
+            .upstream(UPSTREAM, upstream_epoch)
+    };
 
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_test_submit("select * from DT_UP where x < 0", "body-A", 100),
+        outcome().results(test_results(0)),
     )
     .await;
-    confirm_test(&mut exec, rid).await;
 
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_test_submit("select * from DT_UP where x < 0", "body-A", 100)
-        )
+        sc.verdict(cuc_test_submit(
+            "select * from DT_UP where x < 0",
+            "body-A",
+            100
+        ))
         .await,
         "skip_execution",
         "cuc data test: unchanged template+rendered+upstream must SKIP"
@@ -196,23 +119,34 @@ async fn data_test_unchanged_skips_under_cuc() {
 #[tokio::test]
 async fn data_test_both_changed_executes_under_cuc() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let cuc_test = data_test(TEST_UID)
+        .catalog("CDO_DEMO_DB")
+        .schema("PROD_STATE_DEMO")
+        .compare_unrendered_code()
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo");
+    let cuc_test_submit = |sql: &str, body_hash: &str, upstream_epoch: i64| {
+        cuc_test
+            .clone()
+            .sql(sql)
+            .body(body_hash)
+            .upstream(UPSTREAM, upstream_epoch)
+    };
 
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_test_submit("select * from DT_UP where x < 0", "body-A", 100),
+        outcome().results(test_results(0)),
     )
     .await;
-    confirm_test(&mut exec, rid).await;
 
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_test_submit("select * from DT_UP where x < 5", "body-B", 100)
-        )
+        sc.verdict(cuc_test_submit(
+            "select * from DT_UP where x < 5",
+            "body-B",
+            100
+        ))
         .await,
         "ready_to_execute",
         "cuc data test: a change to BOTH template and rendered SQL must EXECUTE"
@@ -225,23 +159,34 @@ async fn data_test_both_changed_executes_under_cuc() {
 #[tokio::test]
 async fn data_test_upstream_drift_executes_even_under_cuc() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let cuc_test = data_test(TEST_UID)
+        .catalog("CDO_DEMO_DB")
+        .schema("PROD_STATE_DEMO")
+        .compare_unrendered_code()
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo");
+    let cuc_test_submit = |sql: &str, body_hash: &str, upstream_epoch: i64| {
+        cuc_test
+            .clone()
+            .sql(sql)
+            .body(body_hash)
+            .upstream(UPSTREAM, upstream_epoch)
+    };
 
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_test_submit("select * from DT_UP where x < 0", "body-A", 100),
+        outcome().results(test_results(0)),
     )
     .await;
-    confirm_test(&mut exec, rid).await;
 
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_test_submit("select * from DT_UP where x < 0", "body-A", 200)
-        )
+        sc.verdict(cuc_test_submit(
+            "select * from DT_UP where x < 0",
+            "body-A",
+            200
+        ))
         .await,
         "ready_to_execute",
         "cuc data test: a newer upstream epoch must still EXECUTE (freshness)"
