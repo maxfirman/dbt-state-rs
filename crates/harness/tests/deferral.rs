@@ -24,61 +24,30 @@ mod support;
 
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, request_with_org, start_server};
+use support::scenario::{model, Scenario};
+use support::start_server;
 
 const ORG: &str = "acme";
 const PROJECT: &str = "70437463667433";
 const DEFER_TO: &str = "prod_demo";
 
-/// A SQL submit that records node_state for `uid` built as `fqn` in `env`.
-fn build_submit(uid: &str, fqn: &str, env: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(fqn.to_string()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(env.to_string()),
-        execution_type: 1,
-        sql: format!("select 1 as id -- {uid}"),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: uid.to_string(),
-            target_name: env.to_string(),
-            project_name: "jaffle_shop".into(),
-            resource_type: "model".into(),
-            node_hash: "h".into(),
-            node_body_hash: Some("b".into()),
-            profile_name: "snowflake".into(),
-            project_id: Some(PROJECT.to_string()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
+/// ResolveDeferredRelations for `uids` in (`org`, `project_id`, env `target`).
 async fn resolve(
-    exec: &mut ExecutionClient<tonic::transport::Channel>,
+    sc: &Scenario,
     org: &str,
     target: &str,
     project_id: Option<&str>,
     uids: &[&str],
 ) -> std::collections::HashMap<String, String> {
-    exec.resolve_deferred_relations(request_with_org(
-        qc::ResolveDeferredRelationsRequest {
+    sc.org(org)
+        .resolve_deferred(qc::ResolveDeferredRelationsRequest {
             profile_name: "snowflake".into(),
             target_name: target.into(),
             project_name: "jaffle_shop".into(),
             project_id: project_id.map(str::to_string),
             node_unique_ids: uids.iter().map(|s| s.to_string()).collect(),
-        },
-        org,
-    ))
-    .await
-    .expect("resolve_deferred_relations")
-    .into_inner()
-    .fqn_by_unique_id
+        })
+        .await
 }
 
 /// Core live-verified behavior: nodes built in the defer-to env resolve to their
@@ -86,10 +55,27 @@ async fn resolve(
 #[tokio::test]
 async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    // A SQL submit that records node_state for `uid` built as `fqn` in the
+    // defer-to env.
+    let build = |uid: &str, fqn: &str| {
+        model(fqn)
+            .catalog("CDO_DEMO_DB")
+            .schema(DEFER_TO)
+            .sql(&format!("select 1 as id -- {uid}"))
+            .tolerance_seconds(2700)
+            .no_tables()
+            .unique_id(uid)
+            .target_name(DEFER_TO)
+            .project(PROJECT)
+            .node_state(|state| {
+                state.project_name = "jaffle_shop".into();
+                state.resource_type = "model".into();
+                state.node_hash = "h".into();
+                state.node_body_hash = Some("b".into());
+                state.profile_name = "snowflake".into();
+            })
+    };
 
     let stg = "model.jaffle_shop.stg_customers";
     let stg_fqn = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"STG_CUSTOMERS\"";
@@ -98,14 +84,12 @@ async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
 
     // Build both upstreams in the defer-to env (records their FQNs).
     for (uid, fqn) in [(stg, stg_fqn), (orders, orders_fqn)] {
-        sql.submit_enriched_sql(request_with_org(build_submit(uid, fqn, DEFER_TO), ORG))
-            .await
-            .expect("submit");
+        sc.org(ORG).submit(build(uid, fqn)).await;
     }
 
     // Resolve both + one never-built node.
     let map = resolve(
-        &mut exec,
+        &sc,
         ORG,
         DEFER_TO,
         Some(PROJECT),
@@ -127,60 +111,67 @@ async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
 #[tokio::test]
 async fn resolution_is_scoped_by_org_project_and_env() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    // A SQL submit that records node_state for `uid` built as `fqn` in the
+    // defer-to env.
+    let build = |uid: &str, fqn: &str| {
+        model(fqn)
+            .catalog("CDO_DEMO_DB")
+            .schema(DEFER_TO)
+            .sql(&format!("select 1 as id -- {uid}"))
+            .tolerance_seconds(2700)
+            .no_tables()
+            .unique_id(uid)
+            .target_name(DEFER_TO)
+            .project(PROJECT)
+            .node_state(|state| {
+                state.project_name = "jaffle_shop".into();
+                state.resource_type = "model".into();
+                state.node_hash = "h".into();
+                state.node_body_hash = Some("b".into());
+                state.profile_name = "snowflake".into();
+            })
+    };
 
     let uid = "model.jaffle_shop.stg_customers";
     let fqn = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"STG_CUSTOMERS\"";
-    sql.submit_enriched_sql(request_with_org(build_submit(uid, fqn, DEFER_TO), ORG))
-        .await
-        .expect("submit");
+    sc.org(ORG).submit(build(uid, fqn)).await;
 
     // Same scope resolves.
     assert_eq!(
-        resolve(&mut exec, ORG, DEFER_TO, Some(PROJECT), &[uid])
+        resolve(&sc, ORG, DEFER_TO, Some(PROJECT), &[uid])
             .await
             .get(uid)
             .map(String::as_str),
         Some(fqn)
     );
     // Different env, project, or org => unresolved (empty).
-    assert!(resolve(&mut exec, ORG, "dev_clone", Some(PROJECT), &[uid])
+    assert!(resolve(&sc, ORG, "dev_clone", Some(PROJECT), &[uid])
         .await
         .is_empty());
-    assert!(
-        resolve(&mut exec, ORG, DEFER_TO, Some("other-proj"), &[uid])
-            .await
-            .is_empty()
-    );
-    assert!(
-        resolve(&mut exec, "other-org", DEFER_TO, Some(PROJECT), &[uid])
-            .await
-            .is_empty()
-    );
+    assert!(resolve(&sc, ORG, DEFER_TO, Some("other-proj"), &[uid])
+        .await
+        .is_empty());
+    assert!(resolve(&sc, "other-org", DEFER_TO, Some(PROJECT), &[uid])
+        .await
+        .is_empty());
 }
 
 /// Missing project_id / target / ids yield an empty map (never an error).
 #[tokio::test]
 async fn missing_scope_yields_empty_map_not_error() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
     let uid = "model.jaffle_shop.x";
 
-    assert!(resolve(&mut exec, ORG, DEFER_TO, None, &[uid])
+    assert!(resolve(&sc, ORG, DEFER_TO, None, &[uid]).await.is_empty());
+    assert!(resolve(&sc, ORG, DEFER_TO, Some(""), &[uid])
         .await
         .is_empty());
-    assert!(resolve(&mut exec, ORG, DEFER_TO, Some(""), &[uid])
+    assert!(resolve(&sc, ORG, "", Some(PROJECT), &[uid])
         .await
         .is_empty());
-    assert!(resolve(&mut exec, ORG, "", Some(PROJECT), &[uid])
-        .await
-        .is_empty());
-    assert!(resolve(&mut exec, ORG, DEFER_TO, Some(PROJECT), &[])
+    assert!(resolve(&sc, ORG, DEFER_TO, Some(PROJECT), &[])
         .await
         .is_empty());
 }

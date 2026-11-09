@@ -22,7 +22,8 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
+use support::demo::{self, transient_at, PROD_SCHEMA};
+use support::scenario::Scenario;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -71,25 +72,19 @@ async fn rendered_sql_change_forces_execute() {
     );
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql_c = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     // run1 execute + confirm.
     let r0: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let resp0 = sql_c.submit_enriched_sql(r0).await.unwrap().into_inner();
-    let rid = match resp0.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("run1 executes, got {other:?}"),
-    };
+    let rid = sc.execute_id(r0).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // run2: SAME body hash, DIFFERENT rendered SQL → MUST execute (not skip).
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let v1 = support::response_variant(&sql_c.submit_enriched_sql(r1).await.unwrap().into_inner());
+    let v1 = sc.verdict(r1).await;
     assert_eq!(
         v1, "ready_to_execute",
         "a changed rendered SQL (same node_body_hash) must execute — skipping would \
@@ -143,24 +138,18 @@ async fn compare_unrendered_code_skips_rendered_change() {
     );
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql_c = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     let r0: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let resp0 = sql_c.submit_enriched_sql(r0).await.unwrap().into_inner();
-    let rid = match resp0.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("r1 executes, got {other:?}"),
-    };
+    let rid = sc.execute_id(r0).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // r2: different rendered SQL but compare_unrendered_code=true → must SKIP.
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let v = support::response_variant(&sql_c.submit_enriched_sql(r1).await.unwrap().into_inner());
+    let v = sc.verdict(r1).await;
     assert_eq!(
         v, "skip_execution",
         "compare_unrendered_code=true must match on the template only (skip a rendered-only change)"
@@ -177,60 +166,25 @@ async fn compare_unrendered_code_skips_rendered_change() {
 #[tokio::test]
 async fn quoted_reserved_word_change_forces_execute_same_target() {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql_c = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"RW_PROBE\"";
-    let mk = |body: &str| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some("prod_state_demo".into()),
-        execution_type: 1,
-        sql: format!("select {body} from CDO_DEMO_DB.prod_state_demo.rw_up"),
-        tolerate_nondeterminism: true,
-        table_namespace: Some("rw-ns".into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.rw".into(),
-            node_body_hash: Some("b".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "rw".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
+    let mk = |body: &str| {
+        demo::model(target, PROD_SCHEMA, "model.jaffle.rw")
+            .sql(&format!(
+                "select {body} from CDO_DEMO_DB.prod_state_demo.rw_up"
+            ))
+            .tolerance_seconds(0)
+            .namespace("rw-ns")
+            .node_state(|state| state.node_body_hash = Some("b".into()))
     };
 
     // Build + confirm the COLUMN-REFERENCE form: select "NULL" from …
-    let r0 = sql_c
-        .submit_enriched_sql(mk("\"NULL\""))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("first build must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_791_747_221_679),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(mk("\"NULL\""), transient_at(1_791_747_221_679).runtime(100))
+        .await;
 
     // Submit the LITERAL form for the SAME target: select NULL from …
-    let v = support::response_variant(
-        &sql_c
-            .submit_enriched_sql(mk("NULL"))
-            .await
-            .unwrap()
-            .into_inner(),
-    );
+    let v = sc.verdict(mk("NULL")).await;
     assert_eq!(
         v, "ready_to_execute",
         "a quoted reserved-word column ref and the bare literal are different \
