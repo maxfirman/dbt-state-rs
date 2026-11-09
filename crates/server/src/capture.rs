@@ -11,25 +11,10 @@ use sqlx::PgPool;
 use crate::store::InputTable;
 
 /// The decision class, as stored in `node_decisions.decision`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecisionKind {
-    Build,
-    Skip,
-    Clone,
-}
-
-impl DecisionKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Build => "build",
-            Self::Skip => "skip",
-            Self::Clone => "clone",
-        }
-    }
-}
+pub use crate::decision::DecisionKind;
 
 /// Everything needed to record one decision. Built by the service from the
-/// request metadata + the computed verdict.
+/// request metadata + the decision record.
 #[derive(Debug, Clone)]
 pub struct CaptureInput {
     // identity / grouping

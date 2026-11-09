@@ -18,6 +18,7 @@
 //! later build, so nothing older is resurrected when the latest row does not
 //! match.
 
+use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
@@ -33,6 +34,9 @@ pub(crate) struct Selection {
     /// whatever its identity. Distinguishes a first build ("did not exist")
     /// from a rebuild in the EXECUTE description (review #2 5th follow-up P1 #4).
     pub target_has_prior_build: bool,
+    /// Why the latest row in scope is not a reuse candidate. `None` when there
+    /// is a candidate or no latest row at all (a first build).
+    pub why_no_candidate: Option<NoCandidate>,
 }
 
 impl Selection {
@@ -40,7 +44,27 @@ impl Selection {
     const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
+        why_no_candidate: None,
     };
+
+    /// The outcome for a latest row in scope: the reuse candidate when the
+    /// row's identity matched (`identified`) and `rejection` found nothing
+    /// against it, otherwise why it is not one.
+    fn of(
+        identified: Option<ExecutionRow>,
+        rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
+        target_has_prior_build: bool,
+    ) -> Selection {
+        let why_no_candidate = match &identified {
+            None => Some(NoCandidate::IdentityMismatch),
+            Some(row) => rejection(row),
+        };
+        Selection {
+            candidate: identified.filter(|_| why_no_candidate.is_none()),
+            target_has_prior_build,
+            why_no_candidate,
+        }
+    }
 }
 
 /// Models, views, snapshots and other target-producing SQL submits.
@@ -73,11 +97,19 @@ pub(crate) fn for_model(
     } else {
         None
     };
-    Ok(Selection {
-        candidate: identified
-            .filter(|prev| sql_qualifies(req, evidence) && current_target_matches(req, prev)),
-        target_has_prior_build: true,
-    })
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if !sql_qualifies(req, evidence) {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !current_target_matches(req, prev) {
+                Some(NoCandidate::OwnTargetChangedOrMissing)
+            } else {
+                None
+            }
+        },
+        true,
+    ))
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome
@@ -89,16 +121,27 @@ pub(crate) fn for_data_test(
     latest: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     debug_assert_eq!(req.execution_type, ModelExecutionType::DbtDataTest as i32);
-    let identified = match latest {
-        Some(row) if identity_matches(evidence, &row) => Some(row.into_checked(true)?),
-        _ => None,
+    let Some(latest) = latest else {
+        return Ok(Selection::FIRST_BUILD);
     };
-    Ok(Selection {
-        candidate: identified.filter(|prev| {
-            sql_qualifies(req, evidence) && reusable_test_results(prev.execution_results.as_ref())
-        }),
-        target_has_prior_build: false,
-    })
+    let identified = if identity_matches(evidence, &latest) {
+        Some(latest.into_checked(true)?)
+    } else {
+        None
+    };
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if !sql_qualifies(req, evidence) {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !reusable_test_results(prev.execution_results.as_ref()) {
+                Some(NoCandidate::IncompleteCachedTestResults)
+            } else {
+                None
+            }
+        },
+        false,
+    ))
 }
 
 /// Seeds compare values and seed configuration identity, then require the
@@ -121,13 +164,19 @@ pub(crate) fn for_seed(
     } else {
         None
     };
-    Ok(Selection {
-        candidate: identified.filter(|prev| {
-            !req.values_hash.is_empty()
-                && not_modified_since(req.last_modified_epoch, prev.last_modified_epoch)
-        }),
-        target_has_prior_build: true,
-    })
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if req.values_hash.is_empty() {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !not_modified_since(req.last_modified_epoch, prev.last_modified_epoch) {
+                Some(NoCandidate::OwnTargetChangedOrMissing)
+            } else {
+                None
+            }
+        },
+        true,
+    ))
 }
 
 /// A client-requested copy (RegisterClone) records NO upstream evidence: it
@@ -500,6 +549,7 @@ mod tests {
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
             target_has_prior_build: true,
+            why_no_candidate: None,
         };
         assert!(matches!(
             crate::decision::decide(&ctx, Some(&c)),
@@ -735,6 +785,108 @@ mod tests {
         assert!(for_seed(&req, &ev, Some(row)).unwrap().candidate.is_none());
     }
 
+    // ---- why the latest row is not a reuse candidate ------------------------
+
+    #[test]
+    fn model_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let base = model_req("select id from DB.DEV.UP");
+        let why = |req: &qc::SubmitEnrichedSqlRequest, row: Option<ExecutionRow>| {
+            model(req, row).why_no_candidate
+        };
+        assert_eq!(why(&base, None), None, "a first build rejects nothing");
+        assert_eq!(why(&base, Some(recorded(&evidence(&base)))), None);
+
+        let mut other = recorded(&evidence(&base));
+        other.node_sql_hash = Some("other".into());
+        assert_eq!(why(&base, Some(other)), Some(NoCandidate::IdentityMismatch));
+
+        let mut volatile = base.clone();
+        volatile.tolerate_nondeterminism = false;
+        let row = recorded(&evidence(&volatile));
+        assert_eq!(
+            why(&volatile, Some(row)),
+            Some(NoCandidate::FailedReuseQualification)
+        );
+
+        let mut dropped = base.clone();
+        dropped.tables.retain(|t| t.name != TARGET);
+        let row = recorded(&evidence(&dropped));
+        assert_eq!(
+            why(&dropped, Some(row)),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+
+        let mut edited = base.clone();
+        edited.tables[0].last_modified_epoch = Some(BUILT + 1);
+        let row = recorded(&evidence(&edited));
+        assert_eq!(
+            why(&edited, Some(row)),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+    }
+
+    #[test]
+    fn data_test_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let req = data_test_req();
+        let ev = evidence(&req);
+        let why =
+            |row: Option<ExecutionRow>| for_data_test(&req, &ev, row).unwrap().why_no_candidate;
+        assert_eq!(why(None), None);
+        assert_eq!(why(Some(recorded(&ev))), None);
+
+        let mut partial = recorded(&ev);
+        partial.execution_results = Some(results(false));
+        assert_eq!(
+            why(Some(partial)),
+            Some(NoCandidate::IncompleteCachedTestResults)
+        );
+        let mut changed = recorded(&ev);
+        changed.node_sql_hash = Some("other".into());
+        assert_eq!(why(Some(changed)), Some(NoCandidate::IdentityMismatch));
+
+        let mut volatile = data_test_req();
+        volatile.tolerate_nondeterminism = false;
+        let vev = evidence(&volatile);
+        assert_eq!(
+            for_data_test(&volatile, &vev, Some(recorded(&vev)))
+                .unwrap()
+                .why_no_candidate,
+            Some(NoCandidate::FailedReuseQualification)
+        );
+    }
+
+    #[test]
+    fn seed_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let req = seed_req(Some(BUILT));
+        let ev = seed_evidence(&req);
+        let why = |req: &qc::SubmitValuesRequest, row: Option<ExecutionRow>| {
+            for_seed(req, &ev, row).unwrap().why_no_candidate
+        };
+        assert_eq!(why(&req, None), None);
+        assert_eq!(why(&req, Some(recorded(&ev))), None);
+
+        let mut other_values = recorded(&ev);
+        other_values.values_hash = Some("changed".into());
+        assert_eq!(
+            why(&req, Some(other_values)),
+            Some(NoCandidate::IdentityMismatch)
+        );
+        assert_eq!(
+            why(&seed_req(Some(BUILT + 1)), Some(recorded(&ev))),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+
+        let mut empty = seed_req(Some(BUILT));
+        empty.values_hash = String::new();
+        let eev = seed_evidence(&empty);
+        let mut row = recorded(&eev);
+        row.values_hash = Some(String::new());
+        assert_eq!(
+            for_seed(&empty, &eev, Some(row)).unwrap().why_no_candidate,
+            Some(NoCandidate::FailedReuseQualification)
+        );
+    }
+
     // ---- properties ---------------------------------------------------------
 
     fn arbitrary_row(ev: ExecutionEvidence) -> impl Strategy<Value = ExecutionRow> {
@@ -771,6 +923,23 @@ mod tests {
             let req = model_req("select id from DB.DEV.UP");
             let expected = row.is_some();
             prop_assert_eq!(model(&req, row).target_has_prior_build, expected);
+        }
+
+        /// Exactly one of: a candidate, a reason the latest row was rejected,
+        /// or no latest row at all.
+        #[test]
+        fn rejection_reported_iff_the_latest_row_is_not_a_candidate(
+            row in prop::option::of(arbitrary_row(evidence(&model_req("select id from DB.DEV.UP")))),
+            tolerate in any::<bool>(),
+        ) {
+            let mut req = model_req("select id from DB.DEV.UP");
+            req.tolerate_nondeterminism = tolerate;
+            let had_row = row.is_some();
+            let s = model(&req, row);
+            prop_assert_eq!(
+                s.why_no_candidate.is_some(),
+                had_row && s.candidate.is_none()
+            );
         }
 
         #[test]

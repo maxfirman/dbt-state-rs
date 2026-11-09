@@ -640,8 +640,8 @@ Remaining lag questions (not blocking):
   on a tolerated-stale SKIP (ALL policy with some parents fresh: the reused
   result knowingly serves slightly stale data). The engine previously hardcoded
   `is_stale=false` on skips and set `is_stale=true` on drift executes — both
-  wrong. `decision.rs::evaluate_freshness` now returns `{should_rebuild,
-  drift_present}`; `Verdict::Skip` carries `is_stale = drift_present` and every
+  wrong. `decision.rs::evaluate_freshness` now returns whether (and why) to
+  rebuild plus `drift_present`; `Verdict::Skip` carries `is_stale = drift_present` and every
   execute reports false. Pinned by `decision.rs` (`*_is_stale_*` tests) and
   `lag_policy.rs`.
 

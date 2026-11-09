@@ -27,6 +27,75 @@ impl StaleUpstreamPolicy {
     }
 }
 
+/// Why reuse candidate selection found no reuse candidate although State
+/// history holds a latest row in scope (see `reuse_candidate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoCandidate {
+    /// The latest row does not have the workload's identity.
+    IdentityMismatch,
+    /// The workload or its evidence failed reuse qualification.
+    FailedReuseQualification,
+    /// The node's own target is missing, ambiguous, or changed since the
+    /// recorded build.
+    OwnTargetChangedOrMissing,
+    /// The latest data test outcome has no complete cached results to serve.
+    IncompleteCachedTestResults,
+}
+
+/// How fresh a reused result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reuse {
+    /// No upstream drift.
+    Fresh,
+    /// Upstream drift is present but the stale-upstream policy tolerates it
+    /// (hosted `is_stale = true`).
+    ToleratedStale,
+}
+
+/// Why a submission was decided the way it was. Every decision has exactly
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReason {
+    /// State history holds no latest row for the workload's output in scope.
+    FirstBuild,
+    /// A latest row exists but is not a reuse candidate.
+    NoReuseCandidate(NoCandidate),
+    /// The reuse candidate recorded a different genuine upstream set.
+    DependencySetChanged,
+    /// The reuse candidate has upstreams but no own-build epoch to compare
+    /// them against.
+    NoBuildAnchor,
+    /// An upstream changed after the reuse candidate's build (or its freshness
+    /// cannot be proven), beyond what the stale-upstream policy tolerates.
+    UpstreamOutdated,
+    /// The reuse candidate is served.
+    Reused(Reuse),
+    /// An equivalent result under another name is copied into the target.
+    ResultCopy,
+    /// An equivalent exists, but the target forbids copies or the copy chain
+    /// is at its limit, so the model builds.
+    CopyChainLimit,
+}
+
+/// The decision class: what the client is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionKind {
+    Build,
+    Skip,
+    Clone,
+}
+
+impl DecisionKind {
+    /// The value stored in `node_decisions.decision`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Skip => "skip",
+            Self::Clone => "clone",
+        }
+    }
+}
+
 /// Decision verdict with the fields needed to build a SubmitSQLResponse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -37,6 +106,7 @@ pub enum Verdict {
         /// VERIFIED LIVE: a skip serving slightly-stale data reports is_stale=true;
         /// a no-drift skip and every execute report false. See lag_freshness.rs.
         is_stale: bool,
+        reason: DecisionReason,
     },
     Execute {
         description: String,
@@ -44,7 +114,103 @@ pub enum Verdict {
         clone_rejection_reason: i32,
         /// Whether the execute was driven by upstream staleness (vs a hash miss).
         is_stale: bool,
+        reason: DecisionReason,
     },
+}
+
+impl Verdict {
+    pub fn reason(&self) -> DecisionReason {
+        match self {
+            Self::Skip { reason, .. } | Self::Execute { reason, .. } => *reason,
+        }
+    }
+}
+
+/// Everything a Submit decision tells the client and records for capture:
+/// the class, its one reason, the hosted description and rejection codes,
+/// `is_stale`, and the prior execution the decision was made against (the
+/// Explain freshness anchor). Only the constructors below build one, so the
+/// reason always agrees with the wire values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DecisionRecord {
+    pub class: DecisionKind,
+    pub reason: DecisionReason,
+    pub description: String,
+    pub skip_rejection_reason: Option<i32>,
+    pub clone_rejection_reason: Option<i32>,
+    pub is_stale: bool,
+    /// `executions.id` of the reuse candidate `decide` evaluated: set on a
+    /// Skip and on a freshness-driven Execute, `None` otherwise.
+    pub matched_execution_id: Option<i64>,
+}
+
+impl DecisionRecord {
+    /// The record of [`decide`] against `candidate`.
+    pub fn decided(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Self {
+        let matched_execution_id = candidate.map(|c| c.id);
+        match decide(ctx, candidate) {
+            Verdict::Skip {
+                description,
+                is_stale,
+                reason,
+            } => Self {
+                class: DecisionKind::Skip,
+                reason,
+                description,
+                skip_rejection_reason: None,
+                clone_rejection_reason: None,
+                is_stale,
+                matched_execution_id,
+            },
+            Verdict::Execute {
+                description,
+                skip_rejection_reason,
+                clone_rejection_reason,
+                is_stale,
+                reason,
+            } => Self {
+                class: DecisionKind::Build,
+                reason,
+                description,
+                skip_rejection_reason: Some(skip_rejection_reason),
+                clone_rejection_reason: Some(clone_rejection_reason),
+                is_stale,
+                matched_execution_id,
+            },
+        }
+    }
+
+    /// An equivalent model built under another name is copied in. VERIFIED
+    /// LIVE shape: READY_TO_CLONE with TARGET_TABLE_MISMATCH and no clone
+    /// rejection.
+    pub fn result_copy() -> Self {
+        Self {
+            class: DecisionKind::Clone,
+            reason: DecisionReason::ResultCopy,
+            description: RESULT_COPY_DESCRIPTION.to_string(),
+            skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
+            clone_rejection_reason: None,
+            is_stale: false,
+            matched_execution_id: None,
+        }
+    }
+
+    /// An equivalent exists but the target forbids copies or the copy chain is
+    /// at its limit. VERIFIED LIVE (experiments/clone_experiment.sh table
+    /// --no-clones): the hosted service executes with this description,
+    /// TARGET_TABLE_MISMATCH and CLONE_CHAIN_LIMIT_EXCEEDED.
+    pub fn copy_chain_limit() -> Self {
+        Self {
+            class: DecisionKind::Build,
+            reason: DecisionReason::CopyChainLimit,
+            description: COPY_CHAIN_LIMIT_DESCRIPTION.to_string(),
+            skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
+            clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
+            is_stale: false,
+            matched_execution_id: None,
+        }
+    }
 }
 
 pub const DESC_SKIP: &str =
@@ -52,8 +218,19 @@ pub const DESC_SKIP: &str =
 pub const DESC_EXECUTE: &str =
     "model was executed because either its query didn't match or its upstream data is out of date";
 
+const RESULT_COPY_DESCRIPTION: &str =
+    "an equivalent model exists under another name so we cloned that one";
+const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
+    "model was executed because the maximum number of nested clones has been reached";
+
 // RejectionReason enum values (from shared.proto).
+pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
 pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
+/// VERIFIED LIVE: when a target disallows clones (profile `allow_clones:
+/// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`, and
+/// the hosted service answers RegisterClone with `unable_to_clone` carrying
+/// this rejection reason and decision=READY_TO_EXECUTE.
+pub const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
 
 /// A human noun for the node kind, matching the hosted service's wording.
 fn node_noun(execution_type: i32) -> &'static str {
@@ -131,6 +308,9 @@ pub struct SubmitContext<'a> {
     /// the rebuild rationale when the target existed, even if no fingerprint
     /// matched. Review #2 5th follow-up P1 #4.
     pub target_has_prior_build: bool,
+    /// Why reuse candidate selection rejected the latest row in scope. `None`
+    /// when there was no latest row (a first build) or a candidate was found.
+    pub why_no_candidate: Option<NoCandidate>,
 }
 
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
@@ -141,33 +321,43 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
         // never existed (first build → "did not exist") or existed under a
         // different fingerprint (rebuild → "query didn't match / out of date").
         // `target_has_prior_build` carries the physical-existence signal.
-        None => execute(ctx.execution_type, false, ctx.target_has_prior_build),
+        None => execute(
+            ctx.execution_type,
+            ctx.target_has_prior_build,
+            ctx.why_no_candidate
+                .map_or(DecisionReason::FirstBuild, DecisionReason::NoReuseCandidate),
+        ),
         Some(prev) => {
             let f = evaluate_freshness(ctx, prev);
-            if f.should_rebuild {
-                execute(ctx.execution_type, true, true)
-            } else {
+            match f.rebuild {
+                Some(reason) => execute(ctx.execution_type, true, reason),
                 // Reuse. The hosted service still reports is_stale=true when
                 // upstream drift is present but tolerated (e.g. ALL policy with
                 // only some parents drifted) — the reused result is knowingly a
                 // little stale. A no-drift reuse reports is_stale=false.
-                Verdict::Skip {
+                None => Verdict::Skip {
                     description: skip_description(ctx.execution_type),
                     is_stale: f.drift_present,
-                }
+                    reason: DecisionReason::Reused(if f.drift_present {
+                        Reuse::ToleratedStale
+                    } else {
+                        Reuse::Fresh
+                    }),
+                },
             }
         }
     }
 }
 
-/// Result of the freshness evaluation: whether to rebuild (policy-applied) and
-/// whether any upstream drift is present at all (for hosted is_stale reporting).
+/// Result of the freshness evaluation: why to rebuild, if the policy-applied
+/// evidence requires it, and whether any upstream drift is present at all (for
+/// hosted is_stale reporting).
 struct Freshness {
-    should_rebuild: bool,
+    rebuild: Option<DecisionReason>,
     drift_present: bool,
 }
 
-fn execute(execution_type: i32, _stale_driven: bool, had_prior: bool) -> Verdict {
+fn execute(execution_type: i32, had_prior: bool, reason: DecisionReason) -> Verdict {
     Verdict::Execute {
         description: execute_description(execution_type, had_prior),
         skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
@@ -178,6 +368,7 @@ fn execute(execution_type: i32, _stale_driven: bool, had_prior: bool) -> Verdict
         // a tolerated-stale SKIP. The rebuild reason is carried by srr/crr, not
         // is_stale.
         is_stale: false,
+        reason,
     }
 }
 
@@ -417,13 +608,17 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
     match f.evidence {
         // Missing/ambiguous evidence or an unprovable anchor always rebuilds;
         // its is_stale is irrelevant (executes report false).
-        FreshnessEvidence::DependencySetChanged | FreshnessEvidence::NoBuildAnchor => Freshness {
-            should_rebuild: true,
+        FreshnessEvidence::DependencySetChanged => Freshness {
+            rebuild: Some(DecisionReason::DependencySetChanged),
+            drift_present: true,
+        },
+        FreshnessEvidence::NoBuildAnchor => Freshness {
+            rebuild: Some(DecisionReason::NoBuildAnchor),
             drift_present: true,
         },
         // Nothing to compare → a hash match alone is safe to skip.
         FreshnessEvidence::NoUpstreams => Freshness {
-            should_rebuild: false,
+            rebuild: None,
             drift_present: false,
         },
         FreshnessEvidence::Evaluated => {
@@ -448,7 +643,7 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
                 }
             };
             Freshness {
-                should_rebuild,
+                rebuild: should_rebuild.then_some(DecisionReason::UpstreamOutdated),
                 drift_present,
             }
         }
@@ -473,6 +668,7 @@ mod tests {
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
+            why_no_candidate: None,
         }
     }
 
@@ -970,6 +1166,7 @@ mod tests {
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
+            why_no_candidate: None,
         }
     }
 
@@ -1304,6 +1501,124 @@ mod tests {
             "a duplicate recorded counterpart makes the upstream unprovable"
         );
         assert!(u.drifted, "an unprovable upstream is OUTDATED");
+    }
+
+    // ---- Decision reason ----------------------------------------------------
+
+    /// `decide` names why it reused or rebuilt: the reuse candidate selection
+    /// miss when there is no candidate, otherwise the freshness evidence.
+    #[test]
+    fn decide_reports_one_reason_per_situation() {
+        let reason = |c: &SubmitContext, prev: Option<&ExecutionRow>| decide(c, prev).reason();
+        let up = vec![tbl("a", 100)];
+        let prev = confirmed("h", up.clone(), Some(100));
+
+        // No reuse candidate: no latest row at all, or a rejected one.
+        assert_eq!(reason(&ctx(&up), None), DecisionReason::FirstBuild);
+        for why in [
+            NoCandidate::IdentityMismatch,
+            NoCandidate::FailedReuseQualification,
+            NoCandidate::OwnTargetChangedOrMissing,
+            NoCandidate::IncompleteCachedTestResults,
+        ] {
+            let mut c = ctx(&up);
+            c.target_has_prior_build = true;
+            c.why_no_candidate = Some(why);
+            assert_eq!(reason(&c, None), DecisionReason::NoReuseCandidate(why));
+        }
+
+        // A reuse candidate: the freshness evidence decides.
+        assert_eq!(
+            reason(&ctx(&up), Some(&prev)),
+            DecisionReason::Reused(Reuse::Fresh)
+        );
+        assert_eq!(
+            reason(&ctx(&[]), Some(&confirmed("h", vec![], Some(100)))),
+            DecisionReason::Reused(Reuse::Fresh),
+            "no upstreams to compare"
+        );
+        let added = vec![tbl("a", 100), tbl("new_dep", 100)];
+        assert_eq!(
+            reason(&ctx(&added), Some(&prev)),
+            DecisionReason::DependencySetChanged
+        );
+        assert_eq!(
+            reason(&ctx(&up), Some(&confirmed("h", up.clone(), None))),
+            DecisionReason::NoBuildAnchor
+        );
+        let drifted = vec![tbl("a", 999)];
+        assert_eq!(
+            reason(&ctx(&drifted), Some(&prev)),
+            DecisionReason::UpstreamOutdated
+        );
+        let unknown = vec![InputTable {
+            name: "a".into(),
+            last_modified_epoch: None,
+        }];
+        assert_eq!(
+            reason(&ctx(&unknown), Some(&prev)),
+            DecisionReason::UpstreamOutdated,
+            "an unprovable upstream is outdated"
+        );
+
+        // ALL policy with one of two parents drifted: reused, knowingly stale.
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let partial = vec![tbl("a", 100), tbl("b", 999)];
+        let two = confirmed("h", recorded, Some(100));
+        let mut all = ctx(&partial);
+        all.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert_eq!(
+            reason(&all, Some(&two)),
+            DecisionReason::Reused(Reuse::ToleratedStale)
+        );
+    }
+
+    /// A decided record carries the verdict's wire values, its reason, and the
+    /// reuse candidate it was decided against.
+    #[test]
+    fn decided_record_carries_the_verdict_and_the_matched_execution() {
+        let up = vec![tbl("a", 100)];
+        let prev = confirmed("h", up.clone(), Some(100));
+
+        let skip = DecisionRecord::decided(&ctx(&up), Some(&prev));
+        assert_eq!(skip.class, DecisionKind::Skip);
+        assert_eq!(skip.reason, DecisionReason::Reused(Reuse::Fresh));
+        assert_eq!(
+            skip.description,
+            "model was a no-op because both its query and its upstream data are up to date"
+        );
+        assert_eq!(
+            (skip.skip_rejection_reason, skip.clone_rejection_reason),
+            (None, None)
+        );
+        assert!(!skip.is_stale);
+        assert_eq!(skip.matched_execution_id, Some(1));
+
+        let drifted = vec![tbl("a", 999)];
+        let rebuild = DecisionRecord::decided(&ctx(&drifted), Some(&prev));
+        assert_eq!(rebuild.class, DecisionKind::Build);
+        assert_eq!(rebuild.reason, DecisionReason::UpstreamOutdated);
+        assert_eq!(
+            (
+                rebuild.skip_rejection_reason,
+                rebuild.clone_rejection_reason
+            ),
+            (Some(6), Some(6))
+        );
+        assert_eq!(
+            rebuild.matched_execution_id,
+            Some(1),
+            "the freshness anchor"
+        );
+
+        let first = DecisionRecord::decided(&ctx(&up), None);
+        assert_eq!(first.class, DecisionKind::Build);
+        assert_eq!(first.reason, DecisionReason::FirstBuild);
+        assert_eq!(
+            first.description,
+            "model was executed because its table did not exist"
+        );
+        assert_eq!(first.matched_execution_id, None);
     }
 }
 
