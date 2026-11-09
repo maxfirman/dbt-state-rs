@@ -3,6 +3,9 @@
 //! isolated and repeatable.
 //!
 //! Owned resources live in `support/resources.rs` and `support/python.rs`.
+//! The scenario module (`support/scenario.rs`) builds requests and drives the
+//! protocol; `support/rows.rs` reads rows back; `support/legacy.rs` and
+//! `support/fault.rs` are the only raw-SQL State writers.
 //! Kept as a `tests/` module
 //! (rather than the harness library) so the `dbt-state-server`/`sqlx`/`tokio`
 //! deps stay dev-only.
@@ -13,10 +16,22 @@ use std::net::SocketAddr;
 use dbt_state_proto::query_cache as qc;
 use tonic::transport::Channel;
 
+/// Raw-SQL fault injection (the only DDL tests run against State tables).
+#[path = "support/fault.rs"]
+pub mod fault;
+/// Raw-SQL legacy, frozen, corrupt and captured State (the only raw writers).
+#[path = "support/legacy.rs"]
+pub mod legacy;
 #[path = "support/python.rs"]
 mod python;
 #[path = "support/resources.rs"]
 mod resources;
+/// Read-only row assertions for executions and node states.
+#[path = "support/rows.rs"]
+pub mod rows;
+/// Request builders and the submit/confirm/expect protocol client.
+#[path = "support/scenario.rs"]
+pub mod scenario;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{start_server, start_server_require_org, TestDatabase, TestServer};
