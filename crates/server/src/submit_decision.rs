@@ -139,7 +139,7 @@ pub async fn submit_sql(
         return Ok(outcome);
     }
 
-    let row = evidence.row();
+    let row = &evidence;
     let ctx = SubmitContext {
         execution_type: req.execution_type,
         input_tables: &row.input_tables,
@@ -186,9 +186,9 @@ pub async fn submit_values(
     let Selection {
         candidate,
         target_has_prior_build,
-    } = reuse_candidate::for_seed(req, evidence.row(), current)?;
+    } = reuse_candidate::for_seed(req, &evidence, current)?;
 
-    let row = evidence.row();
+    let row = &evidence;
     let ctx = SubmitContext {
         execution_type: EXECUTION_TYPE_VALUES,
         input_tables: &row.input_tables,
@@ -216,7 +216,7 @@ async fn select_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
 ) -> sqlx::Result<Selection> {
-    let row = evidence.row();
+    let row = evidence;
     let table_namespace = execution::namespace(req.table_namespace.as_deref());
     if req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
         let latest = match row.node_unique_id.as_deref() {
@@ -258,7 +258,7 @@ async fn result_copy_fallback(
     evidence: &ExecutionEvidence,
     has_reuse_candidate: bool,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    let Some(lookup) = result_copy::submit_lookup(req, evidence.row(), has_reuse_candidate) else {
+    let Some(lookup) = result_copy::submit_lookup(req, evidence, has_reuse_candidate) else {
         return Ok(None);
     };
     let Some(equivalent) = store
@@ -279,7 +279,7 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
-            write_pending(store, evidence, &ids, None).await?;
+            write_pending(store, evidence, &ids).await?;
             Ok(Some(SubmitOutcome::ChainLimitExecute { ids }))
         }
         SubmitCopyPlan::Copy {
@@ -291,7 +291,7 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
-            write_pending(store, evidence, &ids, Some(&source_table)).await?;
+            write_pending(store, &evidence.copied_from(&source_table), &ids).await?;
             Ok(Some(SubmitOutcome::Copy {
                 ids,
                 source_table,
@@ -340,7 +340,7 @@ async fn settle(
             let ids = DecisionIds::mint();
             // The forthcoming ConfirmExecution finalizes this identity into
             // reusable State history.
-            write_pending(store, evidence, &ids, None).await?;
+            write_pending(store, evidence, &ids).await?;
             Ok(SubmitOutcome::Execute {
                 ids,
                 matched_execution: candidate,
@@ -357,15 +357,9 @@ async fn write_pending(
     store: &Store,
     evidence: &ExecutionEvidence,
     ids: &DecisionIds,
-    copy_source: Option<&str>,
 ) -> sqlx::Result<()> {
-    evidence
-        .write_pending(
-            store,
-            &ids.request_id,
-            &ids.execution_decision_id,
-            copy_source,
-        )
+    store
+        .insert_execution(&evidence.pending(&ids.request_id, &ids.execution_decision_id))
         .await
 }
 

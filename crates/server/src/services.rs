@@ -733,16 +733,16 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
-        crate::execution::register_copy(
-            &self.0.store,
+        let evidence = crate::execution::ExecutionEvidence::copy_registration(
             &org_id,
             &req,
             plan.inherited_ns_logic,
-            &request_id,
-            &execution_decision_id,
-        )
-        .await
-        .map_err(db_err)?;
+        );
+        self.0
+            .store
+            .insert_execution(&evidence.pending(&request_id, &execution_decision_id))
+            .await
+            .map_err(db_err)?;
 
         // Best-effort capture (non-blocking) of the clone decision.
         {

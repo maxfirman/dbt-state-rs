@@ -18,8 +18,9 @@
 //! later build, so nothing older is resurrected when the latest row does not
 //! match.
 
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, PendingExecution};
+use crate::store::{ExecutionRow, InputTable};
 
 // ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
 const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
@@ -51,7 +52,7 @@ impl Selection {
 /// submit's identity as built by `ExecutionEvidence::sql_submit`.
 pub(crate) fn for_model(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
+    evidence: &ExecutionEvidence,
     current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     debug_assert_ne!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
@@ -87,7 +88,7 @@ pub(crate) fn for_model(
 /// existence does not affect a data test's response, so it is not reported.
 pub(crate) fn for_data_test(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
+    evidence: &ExecutionEvidence,
     latest: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     debug_assert_eq!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
@@ -108,7 +109,7 @@ pub(crate) fn for_data_test(
 /// inputs stay empty for the pure decision.
 pub(crate) fn for_seed(
     req: &qc::SubmitValuesRequest,
-    evidence: &PendingExecution,
+    evidence: &ExecutionEvidence,
     current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     let Some(current) = current else {
@@ -157,7 +158,7 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
 /// submit carries a template hash) the unrendered-template identity. A
 /// template-mode node rebuilds only when BOTH change (verified live; see
 /// `template_comparison.rs`, and review #2 finding 6 follow-up for data tests).
-fn identity_matches(evidence: &PendingExecution, row: &ExecutionRow) -> bool {
+fn identity_matches(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
     row.node_sql_hash == evidence.node_sql_hash
         || (evidence.node_template_hash.is_some()
             && row.node_template_hash == evidence.node_template_hash)
@@ -169,7 +170,7 @@ fn identity_matches(evidence: &PendingExecution, row: &ExecutionRow) -> bool {
 /// for rows written under an older namespace identity.
 fn strict_match(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
+    evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
     let logic_compatible = match (
@@ -192,7 +193,7 @@ fn strict_match(
 /// (see correctness-handoff.md §A).
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
+    evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
     row.execution_type == req.execution_type
@@ -206,7 +207,7 @@ fn adoptable(
 /// function evidence is not implemented, so requested volatile evaluation
 /// builds instead of claiming reuse. Empty SQL or template is likewise
 /// insufficient evidence.
-fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &PendingExecution) -> bool {
+fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
     req.tolerate_nondeterminism
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
@@ -271,7 +272,6 @@ fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::ExecutionEvidence;
     use proptest::prelude::*;
     use prost::Message;
     use qc::value::Kind;
@@ -301,8 +301,8 @@ mod tests {
         }
     }
 
-    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
-        ExecutionEvidence::sql_submit("o", req).row().clone()
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> ExecutionEvidence {
+        ExecutionEvidence::sql_submit("o", req)
     }
 
     fn results(complete: bool) -> qc::Struct {
@@ -333,7 +333,7 @@ mod tests {
     }
 
     /// The latest row as recorded by a confirmed build of exactly `ev`.
-    fn recorded(ev: &PendingExecution) -> ExecutionRow {
+    fn recorded(ev: &ExecutionEvidence) -> ExecutionRow {
         ExecutionRow {
             id: 7,
             org_id: "o".into(),
@@ -362,7 +362,7 @@ mod tests {
 
     /// A clone-origin row as written by RegisterClone: inherited logic, no
     /// rendered identity, no recorded inputs, no results.
-    fn clone_origin(ev: &PendingExecution) -> ExecutionRow {
+    fn clone_origin(ev: &ExecutionEvidence) -> ExecutionRow {
         ExecutionRow {
             node_sql_hash: None,
             node_body_hash: None,
@@ -695,8 +695,8 @@ mod tests {
         }
     }
 
-    fn seed_evidence(req: &qc::SubmitValuesRequest) -> PendingExecution {
-        ExecutionEvidence::values_submit("o", req).row().clone()
+    fn seed_evidence(req: &qc::SubmitValuesRequest) -> ExecutionEvidence {
+        ExecutionEvidence::values_submit("o", req)
     }
 
     #[test]
@@ -740,7 +740,7 @@ mod tests {
 
     // ---- properties ---------------------------------------------------------
 
-    fn arbitrary_row(ev: PendingExecution) -> impl Strategy<Value = ExecutionRow> {
+    fn arbitrary_row(ev: ExecutionEvidence) -> impl Strategy<Value = ExecutionRow> {
         (
             any::<bool>(),
             any::<bool>(),

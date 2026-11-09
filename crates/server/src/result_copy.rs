@@ -14,8 +14,9 @@
 //! The gRPC adapter performs the lookup, writes the pending row and maps a
 //! plan to the wire response. Everything that decides the outcome is here.
 
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{CloneEquivalent, PendingExecution};
+use crate::store::CloneEquivalent;
 use crate::warehouse::Warehouse;
 
 // ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
@@ -57,7 +58,7 @@ pub(crate) struct EquivalentLookup<'a> {
 /// not full volatile-evaluation conformance (golden/replay_gaps.json).
 pub(crate) fn submit_lookup<'a>(
     req: &'a qc::SubmitEnrichedSqlRequest,
-    evidence: &'a PendingExecution,
+    evidence: &'a ExecutionEvidence,
     has_reuse_candidate: bool,
 ) -> Option<EquivalentLookup<'a>> {
     let ns_logic_hash = evidence.node_namespace_logic_hash.as_deref();
@@ -315,7 +316,6 @@ fn register_ddl(req: &qc::CloneRequest) -> Result<Vec<String>, RegisterRefusal> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::ExecutionEvidence;
 
     const DEV: &str = "\"DB\".\"DEV\".\"M\"";
     const PROD: &str = "\"DB\".\"PROD\".\"M\"";
@@ -334,8 +334,8 @@ mod tests {
         }
     }
 
-    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
-        let mut ev = ExecutionEvidence::sql_submit("o", req).row().clone();
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> ExecutionEvidence {
+        let mut ev = ExecutionEvidence::sql_submit("o", req);
         // Fix the logic identity so DuckDB cases do not depend on its parser.
         ev.node_namespace_logic_hash = Some("logic".into());
         ev
