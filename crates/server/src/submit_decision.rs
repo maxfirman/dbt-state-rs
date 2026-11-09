@@ -126,6 +126,7 @@ pub async fn submit_sql(
     let Selection {
         candidate,
         target_has_prior_build,
+        why_no_candidate,
     } = select_sql(store, org_id, req, &evidence).await?;
 
     // Precedence: a Result copy is considered only when there is no reuse
@@ -143,6 +144,7 @@ pub async fn submit_sql(
         target_table: req.target_table.as_deref(),
         stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
         target_has_prior_build,
+        why_no_candidate,
     };
     let verdict = decision::decide(&ctx, candidate.as_ref());
     tracing::info!(
@@ -183,6 +185,7 @@ pub async fn submit_values(
     let Selection {
         candidate,
         target_has_prior_build,
+        why_no_candidate,
     } = reuse_candidate::for_seed(req, &evidence, current)?;
 
     let row = &evidence;
@@ -192,6 +195,7 @@ pub async fn submit_values(
         target_table: Some(req.target_table.as_str()),
         stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
         target_has_prior_build,
+        why_no_candidate,
     };
     let verdict = decision::decide(&ctx, candidate.as_ref());
     tracing::info!(
@@ -320,6 +324,7 @@ async fn settle(
         Verdict::Skip {
             description,
             is_stale,
+            ..
         } => Ok(SubmitOutcome::Skip {
             execution_decision_id: new_id(),
             matched_execution: candidate.expect(
@@ -333,6 +338,7 @@ async fn settle(
             skip_rejection_reason,
             clone_rejection_reason,
             is_stale,
+            ..
         } => {
             let ids = DecisionIds::mint();
             // The forthcoming ConfirmExecution finalizes this identity into

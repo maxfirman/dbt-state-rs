@@ -5,7 +5,11 @@
 
 use proptest::prelude::*;
 
-use crate::decision::{decide, physical_relation_key, StaleUpstreamPolicy, SubmitContext, Verdict};
+use crate::decision::{
+    decide, physical_relation_key, DecisionKind, DecisionReason, DecisionRecord, NoCandidate,
+    Reuse, StaleUpstreamPolicy, SubmitContext, Verdict,
+};
+use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
 
 fn is_skip(v: &Verdict) -> bool {
@@ -147,6 +151,7 @@ fn ctx<'a>(
         target_table: target,
         stale_upstream_policy: policy,
         target_has_prior_build: false,
+        why_no_candidate: None,
     }
 }
 
@@ -371,6 +376,169 @@ proptest! {
                 "monotonicity: skip at higher epochs implies skip at lower epochs");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Decision reason: every decision has exactly one reason (the record holds a
+// single `DecisionReason`), and it agrees with the class, description and
+// rejection codes. The expected wire values are the hosted wording, written
+// out per reason and node kind.
+
+/// The hosted wire values a reason implies for a node kind:
+/// (class, description, skip rejection, clone rejection).
+fn hosted_wire(
+    execution_type: i32,
+    reason: DecisionReason,
+) -> (DecisionKind, &'static str, Option<i32>, Option<i32>) {
+    let kind = ModelExecutionType::try_from(execution_type).ok();
+    let skip = match kind {
+        Some(ModelExecutionType::Values) => "seed was a no-op because its data has not changed",
+        Some(ModelExecutionType::DbtDataTest) => {
+            "data test was a no-op because both its query and its upstream data are up to date"
+        }
+        Some(ModelExecutionType::Snapshot) => {
+            "snapshot was a no-op because both its query and its upstream data are up to date"
+        }
+        _ => "model was a no-op because both its query and its upstream data are up to date",
+    };
+    let first = match kind {
+        Some(ModelExecutionType::Values) => "seed was loaded because it did not exist",
+        Some(ModelExecutionType::DbtDataTest) => {
+            "data test was executed because it has no prior execution or its query changed"
+        }
+        Some(ModelExecutionType::Snapshot) => {
+            "snapshot was executed because its table did not exist"
+        }
+        _ => "model was executed because its table did not exist",
+    };
+    let rebuild = match kind {
+        Some(ModelExecutionType::Values) => "seed was loaded because its data changed",
+        Some(ModelExecutionType::DbtDataTest) => {
+            "data test was executed because it has no prior execution or its query changed"
+        }
+        Some(ModelExecutionType::Snapshot) => {
+            "snapshot was executed because either its query didn't match or its upstream data is out of date"
+        }
+        _ => "model was executed because either its query didn't match or its upstream data is out of date",
+    };
+    match reason {
+        DecisionReason::Reused(_) => (DecisionKind::Skip, skip, None, None),
+        DecisionReason::FirstBuild => (DecisionKind::Build, first, Some(6), Some(6)),
+        DecisionReason::NoReuseCandidate(_)
+        | DecisionReason::DependencySetChanged
+        | DecisionReason::NoBuildAnchor
+        | DecisionReason::UpstreamOutdated => (DecisionKind::Build, rebuild, Some(6), Some(6)),
+        DecisionReason::ResultCopy => (
+            DecisionKind::Clone,
+            "an equivalent model exists under another name so we cloned that one",
+            Some(1),
+            None,
+        ),
+        DecisionReason::CopyChainLimit => (
+            DecisionKind::Build,
+            "model was executed because the maximum number of nested clones has been reached",
+            Some(1),
+            Some(10),
+        ),
+    }
+}
+
+fn assert_record_agrees(execution_type: i32, record: &DecisionRecord) -> Result<(), TestCaseError> {
+    let (class, description, srr, crr) = hosted_wire(execution_type, record.reason);
+    prop_assert_eq!(record.class, class, "class of {:?}", record.reason);
+    prop_assert_eq!(record.description.as_str(), description);
+    prop_assert_eq!(
+        (record.skip_rejection_reason, record.clone_rejection_reason),
+        (srr, crr),
+        "rejection codes of {:?}",
+        record.reason
+    );
+    prop_assert_eq!(
+        record.is_stale,
+        record.reason == DecisionReason::Reused(Reuse::ToleratedStale),
+        "is_stale of {:?}",
+        record.reason
+    );
+    Ok(())
+}
+
+fn execution_type_strategy() -> impl Strategy<Value = i32> {
+    prop_oneof![
+        Just(ModelExecutionType::Full as i32),
+        Just(ModelExecutionType::DeleteInsert as i32),
+        Just(ModelExecutionType::Snapshot as i32),
+        Just(ModelExecutionType::DbtDataTest as i32),
+        Just(ModelExecutionType::Values as i32),
+        Just(ModelExecutionType::View as i32),
+    ]
+}
+
+fn no_candidate_strategy() -> impl Strategy<Value = NoCandidate> {
+    prop_oneof![
+        Just(NoCandidate::IdentityMismatch),
+        Just(NoCandidate::FailedReuseQualification),
+        Just(NoCandidate::OwnTargetChangedOrMissing),
+        Just(NoCandidate::IncompleteCachedTestResults),
+    ]
+}
+
+proptest! {
+    /// Whatever the history, inputs, policy and node kind, the record's one
+    /// reason agrees with its class, hosted description, rejection codes and
+    /// is_stale; a reason that names a reuse candidate appears only with one.
+    #[test]
+    fn record_reason_agrees_with_class_description_and_codes(
+        execution_type in execution_type_strategy(),
+        current in tables_strategy(),
+        candidate in prop::option::of((recorded_tables_strategy(), prop::option::of(0i64..2_000_000))),
+        why_no_candidate in prop::option::of(no_candidate_strategy()),
+        p in policy_strategy(),
+    ) {
+        let prev = candidate.map(|(recorded, built)| {
+            let mut row = confirmed_row("h", recorded, built);
+            row.execution_type = execution_type;
+            row
+        });
+        let why_no_candidate = if prev.is_some() { None } else { why_no_candidate };
+        let c = SubmitContext {
+            execution_type,
+            input_tables: &current,
+            target_table: None,
+            stale_upstream_policy: p,
+            // As reuse candidate selection reports it: a rejected latest row
+            // is a prior build, except for data tests, which report none.
+            target_has_prior_build: why_no_candidate.is_some()
+                && execution_type != ModelExecutionType::DbtDataTest as i32,
+            why_no_candidate,
+        };
+        let record = DecisionRecord::decided(&c, prev.as_ref());
+        assert_record_agrees(execution_type, &record)?;
+        prop_assert_eq!(record.matched_execution_id, prev.as_ref().map(|r| r.id));
+        let names_candidate = !matches!(
+            record.reason,
+            DecisionReason::FirstBuild | DecisionReason::NoReuseCandidate(_)
+        );
+        prop_assert_eq!(names_candidate, prev.is_some(), "reason {:?}", record.reason);
+    }
+}
+
+#[test]
+fn copy_records_agree_with_their_reason() {
+    for record in [
+        DecisionRecord::result_copy(),
+        DecisionRecord::copy_chain_limit(),
+    ] {
+        assert_record_agrees(ModelExecutionType::Full as i32, &record).unwrap();
+        assert_eq!(record.matched_execution_id, None, "a copy matches nothing");
+    }
+    assert_eq!(
+        DecisionRecord::result_copy().reason,
+        DecisionReason::ResultCopy
+    );
+    assert_eq!(
+        DecisionRecord::copy_chain_limit().reason,
+        DecisionReason::CopyChainLimit
+    );
 }
 
 // ---------------------------------------------------------------------------
