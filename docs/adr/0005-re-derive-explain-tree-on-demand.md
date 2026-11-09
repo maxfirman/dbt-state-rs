@@ -3,8 +3,9 @@
 ## Status
 
 Decided (wayfinder ticket #21, map #19 — faithful warehouse-general
-`dbt state explain` support). Decision only; implementation lands in the
-follow-on Explain build effort. Not yet implemented.
+`dbt state explain` support). Amended by
+[ADR 0006](0006-persist-the-decision-reason.md): the decision reason is also
+persisted, and selects the tree shape.
 
 ## Decision
 
@@ -100,6 +101,13 @@ absent, and joining `executions` for the freshness anchor when present.
 ## Consequences
 
 ### Own-target existence is inferred, not probed (known limitation)
+
+> **Amended by [ADR 0006](0006-persist-the-decision-reason.md).** Explain no
+> longer reads the `decision_description` wording. It selects the shape from the
+> persisted decision reason, and a dropped-own-target rebuild now carries its
+> own reason (`no_reuse_candidate.own_target_changed_or_missing`). Its rendering
+> is unchanged (still SHAPE 7) until the hosted shape is captured (#40). The
+> text below records the original limitation.
 
 The `table analysis` existence line (`TARGET_TABLE_EXISTS` for a table that
 exists, "table does not exist" for a first build) is NOT re-derived from a live

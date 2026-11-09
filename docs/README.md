@@ -20,6 +20,8 @@ State ("query cache") gRPC decision service.
 | [ADR 0002](adr/0002-duckdb-local-workflow.md) | Python client integration decisions, local environment scope, copy capabilities and validated coverage. |
 | [ADR 0003](adr/0003-duckdb-observed-change-evidence.md) | DuckDB observed-change freshness, durable evidence and reset after backup restoration. |
 | [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md) | Shared SQL identity and copy lifecycle with explicit warehouse semantics. |
+| [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) | `dbt state explain` trees are re-derived on demand; the decision records its matched execution. |
+| [ADR 0006](adr/0006-persist-the-decision-reason.md) | The decision reason is persisted with each node decision and selects the Explain tree shape. |
 
 Reading order for a newcomer: **overview → protocol → architecture → testing**.
 For hands-on work: **development → harness**.

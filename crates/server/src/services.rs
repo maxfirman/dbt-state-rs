@@ -2,7 +2,9 @@
 
 use tonic::{Request, Response, Status};
 
-use crate::decision::{DecisionKind, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED};
+use crate::decision::{
+    DecisionKind, DecisionReason, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+};
 use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
@@ -232,6 +234,7 @@ fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
 /// its decision record, never re-decoded from the wire response.
 struct CapturedDecision {
     decision: DecisionKind,
+    decision_reason: DecisionReason,
     is_stale: bool,
     decision_description: Option<String>,
     request_id: Option<String>,
@@ -250,6 +253,7 @@ impl CapturedDecision {
         let record = outcome.record();
         Self {
             decision: record.class,
+            decision_reason: record.reason,
             is_stale: record.is_stale,
             decision_description: Some(record.description.clone()).filter(|s| !s.is_empty()),
             request_id: outcome.ids().map(|ids| ids.request_id.clone()),
@@ -300,6 +304,7 @@ fn capture_submit(
         resource_type: ns.map(|s| s.resource_type.clone()),
         execution_type: req.execution_type,
         decision: decided.decision,
+        decision_reason: decided.decision_reason,
         is_stale: decided.is_stale,
         decision_description: decided.decision_description,
         request_id: decided.request_id,
@@ -348,6 +353,7 @@ fn capture_submit_values(
         resource_type: ns.map(|s| s.resource_type.clone()),
         execution_type: ModelExecutionType::Values as i32,
         decision: decided.decision,
+        decision_reason: decided.decision_reason,
         is_stale: decided.is_stale,
         decision_description: decided.decision_description,
         request_id: decided.request_id,
@@ -624,6 +630,9 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     resource_type: None,
                     execution_type: req.execution_type,
                     decision: DecisionKind::Clone,
+                    // A client-requested copy populates the target from an
+                    // existing result: a Result copy.
+                    decision_reason: DecisionReason::ResultCopy,
                     is_stale: false,
                     decision_description: None,
                     request_id: Some(request_id.clone()),
@@ -745,6 +754,7 @@ impl Explain for ExplainService {
                 decision,
                 execution_type: row.execution_type,
                 decision_description: row.decision_description.clone(),
+                reason: row.decision_reason(),
                 is_stale: row.is_stale,
                 target_table: row.target_table.clone(),
                 clone_source: row.clone_source.clone(),
