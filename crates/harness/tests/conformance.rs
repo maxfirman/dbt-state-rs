@@ -238,6 +238,37 @@ fn retain_named_fields(value: &mut serde_json::Value, fields: &[String]) {
     }
 }
 
+/// Assert a FIELD-SCOPED known gap: the two `without_ids`-normalized responses
+/// must match EXACTLY outside `fields`, and the exempted `fields` THEMSELVES must
+/// genuinely differ (else the exemption is stale — something else differs, or the
+/// gap is resolved). Shared by the execute / skip submit arms and (structurally)
+/// the explain arm. `fields` may be top-level or one-level dotted paths
+/// (`explained_decision.decision_description`).
+fn assert_field_scoped_gap(
+    ours: &serde_json::Value,
+    real: &serde_json::Value,
+    fields: &[String],
+    context: &str,
+) {
+    let mut only_o = ours.clone();
+    let mut only_r = real.clone();
+    retain_named_fields(&mut only_o, fields);
+    retain_named_fields(&mut only_r, fields);
+    assert_ne!(
+        only_o, only_r,
+        "{context}: the ignore_fields {fields:?} do NOT differ; stale exemption \
+         (something else differs, or the gap is resolved)"
+    );
+    let mut rest_o = ours.clone();
+    let mut rest_r = real.clone();
+    strip_named_fields(&mut rest_o, fields);
+    strip_named_fields(&mut rest_r, fields);
+    assert_eq!(
+        rest_o, rest_r,
+        "{context}: a field-scoped gap must match hosted exactly outside {fields:?}"
+    );
+}
+
 #[test]
 fn comparison_preserves_result_fields_named_like_ids() {
     let response = serde_json::json!({"response": {"skip_execution": {
@@ -424,6 +455,16 @@ async fn conformance_replay_all_corpora() {
         // RegisterClone RPC the generic SKIP/EXECUTE/CLONE replay does not drive
         // against the server; pinned by clone_chain_provenance.rs.
         "clone_chain_source_age.jsonl",
+        // #34: `explain_tolerance.jsonl` is retained ONLY as the programmatic
+        // seeded-oracle source for explain_skip_tree_matches_hosted_oracle_* /
+        // explain_outdated_execute_tree_matches_hosted_oracle_* (which index its
+        // submit[0] + hosted explain[1]/[3]). Its own submits carry no
+        // ConfirmExecution, so in the generic empty-store replay it is a
+        // first-build artifact — exactly the MISSING-HISTORY gap #34 removes. The
+        // HISTORY-BEARING `explain_tolerance_history.jsonl` now asserts the SKIP
+        // and OUTDATED-upstream EXECUTE trees DIRECTLY in the main gate, so this
+        // fixture is excluded from the generic replay rather than gap-exempted.
+        "explain_tolerance.jsonl",
     ];
     let mut paths: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
@@ -587,21 +628,38 @@ async fn conformance_replay_all_corpora() {
                         }
                         "skip_execution" if confirmed.contains(&key) => {
                             let local_variant = support::response_variant(&response);
-                            let ours = without_ids(serde_json::to_value(response).unwrap());
+                            let response_json = serde_json::to_value(response).unwrap();
+                            let ours = without_ids(response_json);
                             let real = without_ids(e.response.clone());
                             if let Some(gap) = known.iter().find(|g| {
                                 g.fixture == path.file_name().unwrap().to_string_lossy()
                                     && g.entry == i
                             }) {
                                 assert!(!gap.reason.trim().is_empty());
-                                assert_ne!(
-                                    ours, real,
-                                    "{context}: gap is resolved; remove its exemption"
-                                );
                                 assert_eq!(
                                     local_variant, gap.local_variant,
                                     "{context}: characterized local fallback changed"
                                 );
+                                if gap.ignore_fields.is_empty() {
+                                    // Whole-payload SKIP gap (coarse): the local
+                                    // fallback differs somewhere in the payload.
+                                    assert_ne!(
+                                        ours, real,
+                                        "{context}: gap is resolved; remove its exemption"
+                                    );
+                                } else {
+                                    // FIELD-SCOPED SKIP gap (#34): the SKIP payload
+                                    // matches hosted EXACTLY except for the named
+                                    // field(s) (the version-dependent lag-tolerance
+                                    // `decision_description`), so the hosted SKIP is
+                                    // asserted directly bar that one documented field.
+                                    assert_field_scoped_gap(
+                                        &ours,
+                                        &real,
+                                        &gap.ignore_fields,
+                                        &context,
+                                    );
+                                }
                                 seen_gaps.insert((gap.fixture.clone(), i));
                                 gaps += 1;
                             } else if ours != real {
@@ -778,13 +836,6 @@ async fn conformance_replay_all_corpora() {
         ("golden_20261009T100637.316Z.jsonl", 4),
         ("incremental_merge_reuse.jsonl", 0),
         ("lag_freshness_own_build.jsonl", 5),
-        // Explain fixtures: the FIRST submit of a node that hosted SKIPPED (it
-        // had prior-session history) EXECUTEs from the empty local store, so its
-        // ready_to_execute payload matches hosted EXCEPT for the first-build-vs-
-        // rebuild rationale — the same replay-state artifact documented above.
-        // These are the submits that SEED node_decisions for the explain arm.
-        ("explain_tolerance.jsonl", 2),
-        ("explain_snowflake_happy.jsonl", 48),
     ]
     .into_iter()
     .map(|(f, e)| (f.to_string(), e))
@@ -1031,15 +1082,42 @@ async fn replay_explain_messages(
                     !gap.reason.trim().is_empty(),
                     "{context}: gap needs a reason"
                 );
-                // Stale-exemption guard: the decision/description/tree must
-                // genuinely differ — otherwise the exemption is stale and must be
-                // removed (e.g. if history becomes seedable in-arm).
-                let something_differs = !decision_matches || !desc_matches || !tree_matches;
-                assert!(
-                    something_differs,
-                    "{context}: explain gap is resolved (local matches hosted exactly); \
-                     remove the exemption"
-                );
+                // A `decision_description`-scoped explain gap (#34): the SKIP/
+                // CLONE tree and decision class ARE asserted to match hosted
+                // exactly — only the hosted `decision_description` wording
+                // differs (the version-dependent lag-tolerance phrasing our
+                // engine deliberately does not emit; see docs/explain-catalog.md
+                // and the #22 version-skew). This keeps the main gate asserting
+                // the hosted tree DIRECTLY while scoping the one tolerated field,
+                // rather than waving the whole entry through.
+                let desc_scoped = gap
+                    .ignore_fields
+                    .iter()
+                    .all(|f| f.rsplit('.').next() == Some("decision_description"))
+                    && !gap.ignore_fields.is_empty();
+                if desc_scoped {
+                    assert!(
+                        decision_matches && tree_matches,
+                        "{context}: a decision_description-scoped gap must still match the \
+                         decision class AND the full tree (got decision_matches={decision_matches} \
+                         tree_matches={tree_matches}); \n  hosted={hosted_tree}\n  local={local_tree}"
+                    );
+                    assert!(
+                        !desc_matches,
+                        "{context}: decision_description gap is stale — the descriptions now \
+                         match; remove the ignore_fields exemption"
+                    );
+                } else {
+                    // Stale-exemption guard: the decision/description/tree must
+                    // genuinely differ — otherwise the exemption is stale and
+                    // must be removed (e.g. if history becomes seedable in-arm).
+                    let something_differs = !decision_matches || !desc_matches || !tree_matches;
+                    assert!(
+                        something_differs,
+                        "{context}: explain gap is resolved (local matches hosted exactly); \
+                         remove the exemption"
+                    );
+                }
                 seen_gaps.insert((gap.fixture.clone(), entry_idx));
                 asserted += 1;
             }
