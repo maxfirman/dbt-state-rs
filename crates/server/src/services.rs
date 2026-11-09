@@ -2,6 +2,7 @@
 
 use tonic::{Request, Response, Status};
 
+use crate::decision::{DecisionKind, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED};
 use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
@@ -18,185 +19,86 @@ use qc::sql_server::Sql;
 // SubmitSQLResultType values (shared.proto).
 const DECISION_SKIP_EXECUTION: i32 = 0;
 const DECISION_READY_TO_EXECUTE: i32 = 1;
-
-/// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
-/// runtime (if any) just like the hosted service.
-fn skip_response(
-    description: String,
-    is_stale: bool,
-    execution_runtime_ms: Option<i64>,
-    execution_results: Option<qc::Struct>,
-    execution_decision_id: String,
-) -> qc::SubmitSqlResponse {
-    let explained = qc::ExplainedDecision {
-        decision: DECISION_SKIP_EXECUTION,
-        skip_rejection_reason: None,
-        clone_rejection_reason: None,
-        is_stale,
-        decision_description: description,
-    };
-    qc::SubmitSqlResponse {
-        response: Some(qc::submit_sql_response::Response::SkipExecution(
-            qc::SkipExecutionResponse {
-                explained_decision: Some(explained),
-                transformed_nodes_by_query: Default::default(),
-                execution_results: execution_results.or_else(|| Some(qc::Struct::default())),
-                execution_runtime_ms,
-                execution_decision_id: Some(execution_decision_id),
-            },
-        )),
-    }
-}
-
-/// Build a READY_TO_EXECUTE SubmitSQLResponse.
-#[allow(deprecated)]
-fn execute_response(
-    description: String,
-    skip_rejection_reason: i32,
-    clone_rejection_reason: i32,
-    is_stale: bool,
-    request_id: String,
-    execution_decision_id: String,
-) -> qc::SubmitSqlResponse {
-    let explained = qc::ExplainedDecision {
-        decision: DECISION_READY_TO_EXECUTE,
-        skip_rejection_reason: Some(skip_rejection_reason),
-        clone_rejection_reason: Some(clone_rejection_reason),
-        is_stale,
-        decision_description: description,
-    };
-    qc::SubmitSqlResponse {
-        response: Some(qc::submit_sql_response::Response::ReadyToExecute(
-            qc::ReadyToExecuteResponse {
-                request_id,
-                last_modified_query: String::new(),
-                explained_decision: Some(explained),
-                transformed_nodes_by_query: Default::default(),
-                query_hash_metadata_info: None,
-                execution_decision_id: Some(execution_decision_id),
-            },
-        )),
-    }
-}
-
-// SubmitSQLResultType::READY_TO_CLONE and RejectionReason::FORCED_NOT_ELIGIBLE.
 const DECISION_READY_TO_CLONE: i32 = 3;
+// RejectionReason::FORCED_NOT_ELIGIBLE.
 const REJECTION_FORCED_NOT_ELIGIBLE: i32 = 5;
-// RejectionReason::CLONE_CHAIN_LIMIT_EXCEEDED. VERIFIED LIVE: when a target
-// disallows clones (profile `allow_clones: false`), the Fusion client encodes it
-// as `clone_chain_depth_limit = 0` and the hosted service answers RegisterClone
-// with `unable_to_clone` carrying this rejection reason + decision=READY_TO_EXECUTE.
-const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
 
-// RejectionReason::TARGET_TABLE_MISMATCH + description for the SQL-submit
-// cross-name clone fallback (an equivalent exists under another name).
-const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
-const CLONE_FALLBACK_DESCRIPTION: &str =
-    "an equivalent model exists under another name so we cloned that one";
-// VERIFIED LIVE (experiments/clone_experiment.sh table --no-clones): when an
-// equivalent exists under another name but the submit target forbids clones
-// (`clone_chain_depth_limit=0`), the hosted service executes with this exact
-// description plus skip_rejection_reason=1 and clone_rejection_reason=10.
-const CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION: &str =
-    "model was executed because the maximum number of nested clones has been reached";
-
-/// Build a SubmitSQLResponse `ready_to_clone` for the cross-name fallback: an
-/// equivalent model exists under another physical name, so clone it into the
-/// submit target. VERIFIED LIVE shape: decision=3 (READY_TO_CLONE),
-/// skip_rejection_reason=1 (TARGET_TABLE_MISMATCH), clone_rejection_reason=null,
-/// the equivalent's build epoch as clone_required_last_modified_epoch, its
-/// runtime echoed.
-#[allow(deprecated)]
-fn submit_ready_to_clone_response(
-    request_id: String,
-    clone_sqls: Vec<String>,
-    clone_source: String,
-    clone_target: String,
-    clone_required_last_modified_epoch: Option<i64>,
-    execution_runtime_ms: Option<i64>,
-    execution_decision_id: String,
-) -> qc::SubmitSqlResponse {
-    qc::SubmitSqlResponse {
-        response: Some(qc::submit_sql_response::Response::ReadyToClone(
-            qc::ReadyToCloneResponse {
-                request_id,
-                last_modified_query: String::new(),
-                clone_sqls,
-                clone_source,
-                clone_target,
-                explained_decision: Some(qc::ExplainedDecision {
-                    decision: DECISION_READY_TO_CLONE,
-                    skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
-                    clone_rejection_reason: None,
-                    is_stale: false,
-                    decision_description: CLONE_FALLBACK_DESCRIPTION.to_string(),
-                }),
-                transformed_nodes_by_query: Default::default(),
-                clone_required_last_modified_epoch,
-                clone_execution_results: Some(qc::Struct {
-                    fields: Default::default(),
-                }),
-                execution_runtime_ms,
-                execution_decision_id: Some(execution_decision_id),
-            },
-        )),
+/// The wire `ExplainedDecision` of a Submit decision record.
+fn explained_decision(record: &DecisionRecord) -> qc::ExplainedDecision {
+    qc::ExplainedDecision {
+        decision: match record.class {
+            DecisionKind::Skip => DECISION_SKIP_EXECUTION,
+            DecisionKind::Build => DECISION_READY_TO_EXECUTE,
+            DecisionKind::Clone => DECISION_READY_TO_CLONE,
+        },
+        skip_rejection_reason: record.skip_rejection_reason,
+        clone_rejection_reason: record.clone_rejection_reason,
+        is_stale: record.is_stale,
+        decision_description: record.description.clone(),
     }
 }
 
 /// Map a Submit decision outcome to the wire. `clone_target` is the submit
 /// target a Copy populates.
+///
+/// - Skip echoes the matched execution's runtime and cached results, like the
+///   hosted service.
+/// - Copy (the cross-name fallback, VERIFIED LIVE shape) carries the
+///   equivalent's build epoch as `clone_required_last_modified_epoch` and
+///   echoes its runtime.
+#[allow(deprecated)]
 fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlResponse {
-    match outcome {
+    use qc::submit_sql_response::Response;
+    let response = match outcome {
         SubmitOutcome::Skip {
             execution_decision_id,
             matched_execution,
-            description,
-            is_stale,
-        } => skip_response(
-            description,
-            is_stale,
-            matched_execution.execution_runtime_ms,
-            matched_execution.execution_results,
-            execution_decision_id,
-        ),
-        SubmitOutcome::Execute {
-            ids,
-            description,
-            skip_rejection_reason,
-            clone_rejection_reason,
-            is_stale,
-            ..
-        } => execute_response(
-            description,
-            skip_rejection_reason,
-            clone_rejection_reason,
-            is_stale,
-            ids.request_id,
-            ids.execution_decision_id,
-        ),
+            record,
+        } => Response::SkipExecution(qc::SkipExecutionResponse {
+            explained_decision: Some(explained_decision(&record)),
+            transformed_nodes_by_query: Default::default(),
+            execution_results: matched_execution
+                .execution_results
+                .or_else(|| Some(qc::Struct::default())),
+            execution_runtime_ms: matched_execution.execution_runtime_ms,
+            execution_decision_id: Some(execution_decision_id),
+        }),
+        SubmitOutcome::Execute { ids, record, .. }
+        | SubmitOutcome::ChainLimitExecute { ids, record } => {
+            Response::ReadyToExecute(qc::ReadyToExecuteResponse {
+                request_id: ids.request_id,
+                last_modified_query: String::new(),
+                explained_decision: Some(explained_decision(&record)),
+                transformed_nodes_by_query: Default::default(),
+                query_hash_metadata_info: None,
+                execution_decision_id: Some(ids.execution_decision_id),
+            })
+        }
         SubmitOutcome::Copy {
             ids,
             source_table,
             clone_sqls,
             source_last_modified_epoch,
             source_execution_runtime_ms,
-        } => submit_ready_to_clone_response(
-            ids.request_id,
+            record,
+        } => Response::ReadyToClone(qc::ReadyToCloneResponse {
+            request_id: ids.request_id,
+            last_modified_query: String::new(),
             clone_sqls,
-            source_table,
-            clone_target.to_string(),
-            source_last_modified_epoch,
-            source_execution_runtime_ms,
-            ids.execution_decision_id,
-        ),
-        SubmitOutcome::ChainLimitExecute { ids } => execute_response(
-            CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION.to_string(),
-            REJECTION_TARGET_TABLE_MISMATCH,
-            REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
-            false,
-            ids.request_id,
-            ids.execution_decision_id,
-        ),
+            clone_source: source_table,
+            clone_target: clone_target.to_string(),
+            explained_decision: Some(explained_decision(&record)),
+            transformed_nodes_by_query: Default::default(),
+            clone_required_last_modified_epoch: source_last_modified_epoch,
+            clone_execution_results: Some(qc::Struct {
+                fields: Default::default(),
+            }),
+            execution_runtime_ms: source_execution_runtime_ms,
+            execution_decision_id: Some(ids.execution_decision_id),
+        }),
+    };
+    qc::SubmitSqlResponse {
+        response: Some(response),
     }
 }
 
@@ -326,18 +228,63 @@ fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
     });
 }
 
+/// What capture records about the decision itself: read from the outcome and
+/// its decision record, never re-decoded from the wire response.
+struct CapturedDecision {
+    decision: DecisionKind,
+    is_stale: bool,
+    decision_description: Option<String>,
+    request_id: Option<String>,
+    execution_decision_id: Option<String>,
+    clone_source: Option<String>,
+    execution_runtime_ms: Option<i64>,
+    /// On a Skip, or a freshness-driven rebuild Execute whose fingerprint still
+    /// matched, the matched prior `executions` row is the Explain freshness
+    /// anchor (ADR 0005 / ticket #30). `None` for a first-build /
+    /// fingerprint-miss Execute and for a Copy.
+    matched_execution_id: Option<i64>,
+}
+
+impl CapturedDecision {
+    fn of(outcome: &SubmitOutcome) -> Self {
+        let record = outcome.record();
+        Self {
+            decision: record.class,
+            is_stale: record.is_stale,
+            decision_description: Some(record.description.clone()).filter(|s| !s.is_empty()),
+            request_id: outcome.ids().map(|ids| ids.request_id.clone()),
+            execution_decision_id: Some(outcome.execution_decision_id().to_string()),
+            // The physical relation a Copy is made FROM, so the Explain CLONE
+            // renderer (`explain.rs::clone_tree`) can emit `could be cloned
+            // from "<source>"` (F2).
+            clone_source: match outcome {
+                SubmitOutcome::Copy { source_table, .. } => {
+                    Some(source_table.clone()).filter(|s| !s.is_empty())
+                }
+                _ => None,
+            },
+            // Only a Skip reports the runtime it echoes.
+            execution_runtime_ms: match outcome {
+                SubmitOutcome::Skip {
+                    matched_execution, ..
+                } => matched_execution.execution_runtime_ms,
+                _ => None,
+            },
+            matched_execution_id: record.matched_execution_id,
+        }
+    }
+}
+
 /// Build + spawn capture for a SubmitEnrichedSQL decision.
 fn capture_submit(
     state: &AppState,
     meta: &CaptureMeta,
     req: &qc::SubmitEnrichedSqlRequest,
-    response: &qc::SubmitSqlResponse,
-    matched_execution_id: Option<i64>,
+    outcome: &SubmitOutcome,
 ) {
-    use crate::capture::{CaptureInput, DecisionKind};
     let ns = req.dbt_node_state.as_ref();
-    let (kind, is_stale, request_id, exec_decision_id) = classify_response(response);
-    let input = CaptureInput {
+    let decided = CapturedDecision::of(outcome);
+    let input = crate::capture::CaptureInput {
         org_id: meta.org_id.clone(),
         external_invocation_id: meta.invocation_id.clone(),
         session_id: meta.session_id.clone(),
@@ -352,17 +299,17 @@ fn capture_submit(
         node_fqn: req.labels.get("dbt_node_fqn").cloned(),
         resource_type: ns.map(|s| s.resource_type.clone()),
         execution_type: req.execution_type,
-        decision: kind,
-        is_stale,
-        decision_description: decision_description_of(response),
-        request_id,
-        execution_decision_id: exec_decision_id,
+        decision: decided.decision,
+        is_stale: decided.is_stale,
+        decision_description: decided.decision_description,
+        request_id: decided.request_id,
+        execution_decision_id: decided.execution_decision_id,
         node_body_hash: ns.and_then(|s| s.node_body_hash.clone()),
         values_hash: None,
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
-        clone_source: clone_source_of(response),
+        clone_source: decided.clone_source,
         clone_sqls: None,
         input_tables: req.tables.iter().map(Into::into).collect(),
         query_dependencies: req
@@ -370,85 +317,10 @@ fn capture_submit(
             .iter()
             .map(|d| d.name.clone())
             .collect(),
-        execution_runtime_ms: runtime_of(response),
-        matched_execution_id,
+        execution_runtime_ms: decided.execution_runtime_ms,
+        matched_execution_id: decided.matched_execution_id,
     };
-    let _ = DecisionKind::Build; // keep import used across cfgs
     spawn_capture(state, input);
-}
-
-/// Classify a SubmitSQLResponse into (kind, is_stale, request_id, exec_decision_id).
-fn classify_response(
-    resp: &qc::SubmitSqlResponse,
-) -> (
-    crate::capture::DecisionKind,
-    bool,
-    Option<String>,
-    Option<String>,
-) {
-    use crate::capture::DecisionKind;
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => (
-            DecisionKind::Skip,
-            s.explained_decision
-                .as_ref()
-                .map(|e| e.is_stale)
-                .unwrap_or(false),
-            None,
-            s.execution_decision_id.clone(),
-        ),
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => (
-            DecisionKind::Build,
-            r.explained_decision
-                .as_ref()
-                .map(|e| e.is_stale)
-                .unwrap_or(false),
-            Some(r.request_id.clone()),
-            r.execution_decision_id.clone(),
-        ),
-        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => (
-            DecisionKind::Clone,
-            false,
-            Some(c.request_id.clone()),
-            c.execution_decision_id.clone(),
-        ),
-        None => (DecisionKind::Build, false, None, None),
-    }
-}
-
-fn decision_description_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
-    let ed = match &resp.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => s.explained_decision.as_ref(),
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.explained_decision.as_ref(),
-        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c.explained_decision.as_ref(),
-        None => None,
-    };
-    ed.map(|e| e.decision_description.clone())
-        .filter(|s| !s.is_empty())
-}
-
-fn runtime_of(resp: &qc::SubmitSqlResponse) -> Option<i64> {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => s.execution_runtime_ms,
-        _ => None,
-    }
-}
-
-/// The CLONE source relation carried by a `ReadyToClone` response, if any.
-///
-/// A cross-name CLONE decision returned via `SubmitEnrichedSQL` carries the
-/// physical relation it would be cloned FROM in `ReadyToClone.clone_source`
-/// (a `String`). `capture_submit` must persist it so the explain CLONE renderer
-/// (`explain.rs::clone_tree`) can emit `could be cloned from "<source>"` instead
-/// of an empty string. Non-clone variants have no source; an empty string maps
-/// to `None` (nothing to render). (F2: previously hard-coded `None` here.)
-fn clone_source_of(resp: &qc::SubmitSqlResponse) -> Option<String> {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => {
-            Some(c.clone_source.clone()).filter(|s| !s.is_empty())
-        }
-        _ => None,
-    }
 }
 
 /// Build + spawn capture for a SubmitValues (seed) decision.
@@ -456,13 +328,11 @@ fn capture_submit_values(
     state: &AppState,
     meta: &CaptureMeta,
     req: &qc::SubmitValuesRequest,
-    response: &qc::SubmitSqlResponse,
-    matched_execution_id: Option<i64>,
+    outcome: &SubmitOutcome,
 ) {
-    use crate::capture::CaptureInput;
     let ns = req.dbt_node_state.as_ref();
-    let (kind, is_stale, request_id, exec_decision_id) = classify_response(response);
-    let input = CaptureInput {
+    let decided = CapturedDecision::of(outcome);
+    let input = crate::capture::CaptureInput {
         org_id: meta.org_id.clone(),
         external_invocation_id: meta.invocation_id.clone(),
         session_id: meta.session_id.clone(),
@@ -477,11 +347,11 @@ fn capture_submit_values(
         node_fqn: req.labels.get("dbt_node_fqn").cloned(),
         resource_type: ns.map(|s| s.resource_type.clone()),
         execution_type: ModelExecutionType::Values as i32,
-        decision: kind,
-        is_stale,
-        decision_description: decision_description_of(response),
-        request_id,
-        execution_decision_id: exec_decision_id,
+        decision: decided.decision,
+        is_stale: decided.is_stale,
+        decision_description: decided.decision_description,
+        request_id: decided.request_id,
+        execution_decision_id: decided.execution_decision_id,
         node_body_hash: ns.and_then(|s| s.node_body_hash.clone()),
         values_hash: if req.values_hash.is_empty() {
             None
@@ -495,8 +365,8 @@ fn capture_submit_values(
         clone_sqls: None,
         input_tables: Vec::new(),
         query_dependencies: Vec::new(),
-        execution_runtime_ms: runtime_of(response),
-        matched_execution_id,
+        execution_runtime_ms: decided.execution_runtime_ms,
+        matched_execution_id: decided.matched_execution_id,
     };
     spawn_capture(state, input);
 }
@@ -524,15 +394,9 @@ impl Sql for SqlService {
         let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
-        // On a SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint
-        // still matched, the matched prior `executions` row is the explain
-        // freshness anchor (ADR 0005 / ticket #30). `None` for a first-build /
-        // fingerprint-miss EXECUTE and for a CLONE.
-        let matched_execution_id = outcome.matched_execution().map(|r| r.id);
-        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
-
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &response, matched_execution_id);
+        capture_submit(&self.0, &cap_meta, &req, &outcome);
+        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
         Ok(Response::new(response))
     }
 
@@ -547,11 +411,8 @@ impl Sql for SqlService {
         let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
-        let matched_execution_id = outcome.matched_execution().map(|r| r.id);
-        let response = submit_response(outcome, &req.target_table);
-
-        capture_submit_values(&self.0, &cap_meta, &req, &response, matched_execution_id);
-        Ok(Response::new(response))
+        capture_submit_values(&self.0, &cap_meta, &req, &outcome);
+        Ok(Response::new(submit_response(outcome, &req.target_table)))
     }
 
     async fn submit_enriched_sql_speculative(

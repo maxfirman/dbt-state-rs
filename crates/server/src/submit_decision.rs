@@ -16,7 +16,7 @@
 //! The gRPC adapter keeps org and metadata extraction, maps the outcome to the
 //! wire (both clone oneofs) and captures it.
 
-use crate::decision::{self, SubmitContext, Verdict};
+use crate::decision::{self, DecisionKind, DecisionRecord, SubmitContext};
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
@@ -41,8 +41,10 @@ impl DecisionIds {
     }
 }
 
-/// How a submission was decided. Every outcome but Skip wrote a pending row
-/// keyed on `ids.request_id`.
+/// How a submission was decided. Every outcome carries its
+/// [`DecisionRecord`] (class, decision reason, hosted description and
+/// rejection codes, `is_stale`, matched execution id). Every outcome but Skip
+/// wrote a pending row keyed on `ids.request_id`.
 #[derive(Debug, Clone)]
 pub enum SubmitOutcome {
     /// Reuse the matched execution (`skip_execution`). No pending row.
@@ -51,8 +53,7 @@ pub enum SubmitOutcome {
         /// The reuse candidate served; its runtime and cached results are
         /// echoed, and it is the Explain freshness anchor.
         matched_execution: ExecutionRow,
-        description: String,
-        is_stale: bool,
+        record: DecisionRecord,
     },
     /// Build (`ready_to_execute`), with an ordinary pending row.
     Execute {
@@ -60,10 +61,7 @@ pub enum SubmitOutcome {
         /// The reuse candidate when freshness forced the rebuild (the Explain
         /// freshness anchor); `None` when no reuse candidate qualified.
         matched_execution: Option<ExecutionRow>,
-        description: String,
-        skip_rejection_reason: i32,
-        clone_rejection_reason: i32,
-        is_stale: bool,
+        record: DecisionRecord,
     },
     /// Copy an equivalent built under another name into the submit target
     /// (`ready_to_clone`). The pending row records the copy source.
@@ -73,11 +71,15 @@ pub enum SubmitOutcome {
         clone_sqls: Vec<String>,
         source_last_modified_epoch: Option<i64>,
         source_execution_runtime_ms: Option<i64>,
+        record: DecisionRecord,
     },
     /// An equivalent exists but the target forbids copies or the copy chain is
     /// at its limit: build with the chain-limit shape and an ordinary pending
     /// row (see [`SubmitCopyPlan::ChainLimitExecute`]).
-    ChainLimitExecute { ids: DecisionIds },
+    ChainLimitExecute {
+        ids: DecisionIds,
+        record: DecisionRecord,
+    },
 }
 
 impl SubmitOutcome {
@@ -89,7 +91,26 @@ impl SubmitOutcome {
             } => execution_decision_id,
             Self::Execute { ids, .. }
             | Self::Copy { ids, .. }
-            | Self::ChainLimitExecute { ids } => &ids.execution_decision_id,
+            | Self::ChainLimitExecute { ids, .. } => &ids.execution_decision_id,
+        }
+    }
+
+    /// The ids minted for an outcome the client confirms; `None` for a Skip.
+    pub fn ids(&self) -> Option<&DecisionIds> {
+        match self {
+            Self::Skip { .. } => None,
+            Self::Execute { ids, .. }
+            | Self::Copy { ids, .. }
+            | Self::ChainLimitExecute { ids, .. } => Some(ids),
+        }
+    }
+
+    pub fn record(&self) -> &DecisionRecord {
+        match self {
+            Self::Skip { record, .. }
+            | Self::Execute { record, .. }
+            | Self::Copy { record, .. }
+            | Self::ChainLimitExecute { record, .. } => record,
         }
     }
 
@@ -146,16 +167,17 @@ pub async fn submit_sql(
         target_has_prior_build,
         why_no_candidate,
     };
-    let verdict = decision::decide(&ctx, candidate.as_ref());
+    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
     tracing::info!(
         node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
         execution_type = req.execution_type,
         had_match = candidate.is_some(),
         body_hash = %row.node_body_hash.clone().unwrap_or_default(),
-        verdict = verdict_label(&verdict),
+        verdict = verdict_label(&record),
+        reason = ?record.reason,
         "decision"
     );
-    settle(store, &evidence, verdict, candidate).await
+    settle(store, &evidence, record, candidate).await
 }
 
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Result copy
@@ -197,16 +219,17 @@ pub async fn submit_values(
         target_has_prior_build,
         why_no_candidate,
     };
-    let verdict = decision::decide(&ctx, candidate.as_ref());
+    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
     tracing::info!(
         node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
         execution_type = ModelExecutionType::Values as i32,
         had_match = candidate.is_some(),
         values_hash = %row.values_hash.clone().unwrap_or_default(),
-        verdict = verdict_label(&verdict),
+        verdict = verdict_label(&record),
+        reason = ?record.reason,
         "decision(values)"
     );
-    settle(store, &evidence, verdict, candidate).await
+    settle(store, &evidence, record, candidate).await
 }
 
 /// State history selection for a SQL submission. Models read the target's
@@ -281,7 +304,10 @@ async fn result_copy_fallback(
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
             write_pending(store, evidence, &ids).await?;
-            Ok(Some(SubmitOutcome::ChainLimitExecute { ids }))
+            Ok(Some(SubmitOutcome::ChainLimitExecute {
+                ids,
+                record: DecisionRecord::copy_chain_limit(),
+            }))
         }
         SubmitCopyPlan::Copy {
             source_table,
@@ -299,6 +325,7 @@ async fn result_copy_fallback(
                 clone_sqls,
                 source_last_modified_epoch,
                 source_execution_runtime_ms,
+                record: DecisionRecord::result_copy(),
             }))
         }
         SubmitCopyPlan::Unavailable { reason } => {
@@ -317,29 +344,19 @@ async fn result_copy_fallback(
 async fn settle(
     store: &Store,
     evidence: &ExecutionEvidence,
-    verdict: Verdict,
+    record: DecisionRecord,
     candidate: Option<ExecutionRow>,
 ) -> sqlx::Result<SubmitOutcome> {
-    match verdict {
-        Verdict::Skip {
-            description,
-            is_stale,
-            ..
-        } => Ok(SubmitOutcome::Skip {
+    match record.class {
+        DecisionKind::Skip => Ok(SubmitOutcome::Skip {
             execution_decision_id: new_id(),
             matched_execution: candidate.expect(
                 "decide skips only with a reuse candidate (decision_proptest::no_match_always_executes)",
             ),
-            description,
-            is_stale,
+            record,
         }),
-        Verdict::Execute {
-            description,
-            skip_rejection_reason,
-            clone_rejection_reason,
-            is_stale,
-            ..
-        } => {
+        // `DecisionRecord::decided` is a Skip or a Build, never a Clone.
+        DecisionKind::Build | DecisionKind::Clone => {
             let ids = DecisionIds::mint();
             // The forthcoming ConfirmExecution finalizes this identity into
             // reusable State history.
@@ -347,10 +364,7 @@ async fn settle(
             Ok(SubmitOutcome::Execute {
                 ids,
                 matched_execution: candidate,
-                description,
-                skip_rejection_reason,
-                clone_rejection_reason,
-                is_stale,
+                record,
             })
         }
     }
@@ -393,10 +407,10 @@ async fn record_node_state(
     }
 }
 
-fn verdict_label(verdict: &Verdict) -> &'static str {
-    match verdict {
-        Verdict::Skip { .. } => "SKIP",
-        Verdict::Execute { .. } => "EXECUTE",
+fn verdict_label(record: &DecisionRecord) -> &'static str {
+    match record.class {
+        DecisionKind::Skip => "SKIP",
+        DecisionKind::Build | DecisionKind::Clone => "EXECUTE",
     }
 }
 

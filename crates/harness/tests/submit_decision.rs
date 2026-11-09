@@ -9,6 +9,7 @@
 mod support;
 
 use dbt_state_proto::query_cache as qc;
+use dbt_state_server::decision::{DecisionReason, DecisionRecord, NoCandidate, Reuse};
 use dbt_state_server::store::Store;
 use dbt_state_server::submit_decision::{self, DecisionIds, SubmitOutcome};
 use support::TestDatabase;
@@ -160,10 +161,14 @@ async fn first_build_executes_and_writes_its_pending_row() {
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
-        description,
-        skip_rejection_reason,
-        clone_rejection_reason,
-        is_stale,
+        record:
+            DecisionRecord {
+                description,
+                skip_rejection_reason: Some(skip_rejection_reason),
+                clone_rejection_reason: Some(clone_rejection_reason),
+                is_stale,
+                ..
+            },
     } = outcome
     else {
         panic!("expected Execute, got {outcome:?}");
@@ -204,8 +209,12 @@ async fn reuse_skips_against_the_matched_execution_without_a_pending_row() {
     let SubmitOutcome::Skip {
         execution_decision_id,
         matched_execution,
-        description,
-        is_stale,
+        record:
+            DecisionRecord {
+                description,
+                is_stale,
+                ..
+            },
     } = outcome
     else {
         panic!("expected Skip, got {outcome:?}");
@@ -238,7 +247,7 @@ async fn freshness_driven_execute_keeps_the_matched_execution() {
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
-        description,
+        record: DecisionRecord { description, .. },
         ..
     } = outcome
     else {
@@ -279,6 +288,7 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
         clone_sqls,
         source_last_modified_epoch,
         source_execution_runtime_ms,
+        ..
     } = outcome
     else {
         panic!("expected Copy, got {outcome:?}");
@@ -365,7 +375,7 @@ async fn copy_forbidding_target_gets_the_chain_limit_execute() {
         .await
         .expect("submit");
     assert!(outcome.matched_execution().is_none());
-    let SubmitOutcome::ChainLimitExecute { ids } = outcome else {
+    let SubmitOutcome::ChainLimitExecute { ids, .. } = outcome else {
         panic!("expected ChainLimitExecute, got {outcome:?}");
     };
     let row = written_row(store, &ids.request_id)
@@ -399,7 +409,7 @@ async fn unavailable_copy_falls_back_to_the_ordinary_decision() {
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
-        description,
+        record: DecisionRecord { description, .. },
         ..
     } = outcome
     else {
@@ -461,7 +471,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
-        description,
+        record: DecisionRecord { description, .. },
         ..
     } = outcome
     else {
@@ -486,7 +496,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
         .expect("submit");
     let SubmitOutcome::Skip {
         matched_execution,
-        description,
+        record: DecisionRecord { description, .. },
         ..
     } = outcome
     else {
@@ -503,7 +513,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
         .expect("submit");
     let SubmitOutcome::Execute {
         matched_execution,
-        description,
+        record: DecisionRecord { description, .. },
         ..
     } = outcome
     else {
@@ -511,4 +521,65 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
     };
     assert!(matched_execution.is_none(), "changed values match nothing");
     assert_eq!(description, "seed was loaded because its data changed");
+}
+
+/// Every outcome carries a decision record naming its one decision reason,
+/// anchored on the same matched execution the outcome carries.
+#[tokio::test]
+async fn every_outcome_carries_its_decision_reason() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let sql = |req: qc::SubmitEnrichedSqlRequest| async move {
+        let outcome = submit_decision::submit_sql(store, ORG, &req)
+            .await
+            .expect("submit");
+        assert_eq!(
+            outcome.record().matched_execution_id,
+            outcome.matched_execution().map(|r| r.id),
+            "{outcome:?}"
+        );
+        outcome
+    };
+
+    let first = sql(model(PROD, "prod", None, 500)).await;
+    assert_eq!(first.record().reason, DecisionReason::FirstBuild);
+    let SubmitOutcome::Execute { ids, .. } = first else {
+        panic!("expected Execute, got {first:?}");
+    };
+    confirm(store, &ids, BUILT).await;
+
+    let fresh = sql(model(PROD, "prod", Some(BUILT), 500)).await;
+    assert_eq!(fresh.record().reason, DecisionReason::Reused(Reuse::Fresh));
+    let outdated = sql(model(PROD, "prod", Some(BUILT), 2_000)).await;
+    assert_eq!(outdated.record().reason, DecisionReason::UpstreamOutdated);
+    let edited = sql(model(PROD, "prod", Some(BUILT + 1), 500)).await;
+    assert_eq!(
+        edited.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
+    );
+
+    let mut forbids_copies = model(DEV, "dev", None, 500);
+    forbids_copies.clone_chain_depth_limit = Some(0);
+    let limit = sql(forbids_copies).await;
+    assert_eq!(limit.record().reason, DecisionReason::CopyChainLimit);
+    let copy = sql(model(DEV, "dev", None, 500)).await;
+    assert_eq!(copy.record().reason, DecisionReason::ResultCopy);
+
+    let seed_first = submit_decision::submit_values(store, ORG, &seed("v1", None))
+        .await
+        .expect("submit");
+    assert_eq!(seed_first.record().reason, DecisionReason::FirstBuild);
+    let SubmitOutcome::Execute { ids, .. } = seed_first else {
+        panic!("expected Execute, got {seed_first:?}");
+    };
+    confirm(store, &ids, BUILT).await;
+    let changed = submit_decision::submit_values(store, ORG, &seed("v2", Some(BUILT)))
+        .await
+        .expect("submit");
+    assert_eq!(
+        changed.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
+    );
+    assert_eq!(changed.record().matched_execution_id, None);
 }

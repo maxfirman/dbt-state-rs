@@ -36,7 +36,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres writes via sqlx: pending→confirmed lifecycle and atomic batch publication. |
 | `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. |
-| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, id minting and the pending-row write) and returns one `SubmitOutcome`. |
+| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, id minting and the pending-row write) and returns one `SubmitOutcome` carrying its `DecisionRecord`. |
 | `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone): eligibility, chain limits, DuckDB evidence and DDL. |
 | `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
@@ -56,7 +56,10 @@ so tests exercise the exact same wiring as production.
 ### Decision engine and persistence
 
 `decide(ctx, confirmed) -> Verdict` stays pure, and so does the reuse candidate
-selection that feeds it. `submit_decision.rs` owns a whole submit: it records
+selection that feeds it. Every verdict names exactly one decision reason.
+Reuse candidate selection reports why the latest row was not a reuse
+candidate, and `decide` reports the freshness outcome when there is one.
+`submit_decision.rs` owns a whole submit: it records
 the node's selector state (best effort), makes one scoped store read and lets
 `reuse_candidate.rs` decide, on that row alone, whether it matches the
 submit's identity and passes reuse qualification (physical target evidence or
@@ -66,8 +69,11 @@ no reuse candidate, and when one applies it overrides the verdict;
 module calls `decide()`. It mints the request and execution decision ids,
 writes the pending row and returns a `SubmitOutcome` (Skip, Execute, Copy or
 the chain-limit Execute) carrying the matched execution, the Explain freshness
-anchor. SQL and seed submits share that tail. The handlers map the outcome to
-the wire and capture it. Execution evidence owns identity construction and
+anchor, and a `DecisionRecord`: class, decision reason (including result copy
+and copy chain limit), hosted description, both rejection codes, `is_stale`
+and the matched execution id. SQL and seed submits share that tail. The
+handlers build the wire response and the capture input from the record and
+the request; nothing re-reads the response. Execution evidence owns identity construction and
 pending-row contents; Record uses the same identity constructors and publishes
 its complete batch with selector/deferral state atomically. The engine
 compares exact physical input names and optional epochs;

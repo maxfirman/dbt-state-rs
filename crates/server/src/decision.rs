@@ -132,6 +132,7 @@ impl Verdict {
 /// Explain freshness anchor). Only the constructors below build one, so the
 /// reason always agrees with the wire values.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DecisionRecord {
     pub class: DecisionKind,
     pub reason: DecisionReason,
@@ -142,7 +143,6 @@ pub struct DecisionRecord {
     /// `executions.id` of the reuse candidate `decide` evaluated: set on a
     /// Skip and on a freshness-driven Execute, `None` otherwise.
     pub matched_execution_id: Option<i64>,
-    sealed: (),
 }
 
 impl DecisionRecord {
@@ -162,7 +162,6 @@ impl DecisionRecord {
                 clone_rejection_reason: None,
                 is_stale,
                 matched_execution_id,
-                sealed: (),
             },
             Verdict::Execute {
                 description,
@@ -178,7 +177,6 @@ impl DecisionRecord {
                 clone_rejection_reason: Some(clone_rejection_reason),
                 is_stale,
                 matched_execution_id,
-                sealed: (),
             },
         }
     }
@@ -195,7 +193,6 @@ impl DecisionRecord {
             clone_rejection_reason: None,
             is_stale: false,
             matched_execution_id: None,
-            sealed: (),
         }
     }
 
@@ -212,7 +209,6 @@ impl DecisionRecord {
             clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
             is_stale: false,
             matched_execution_id: None,
-            sealed: (),
         }
     }
 }
@@ -231,7 +227,9 @@ const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
 pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
 pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
 /// VERIFIED LIVE: when a target disallows clones (profile `allow_clones:
-/// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`.
+/// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`, and
+/// the hosted service answers RegisterClone with `unable_to_clone` carrying
+/// this rejection reason and decision=READY_TO_EXECUTE.
 pub const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
 
 /// A human noun for the node kind, matching the hosted service's wording.
