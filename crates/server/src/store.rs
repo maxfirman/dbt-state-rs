@@ -185,15 +185,38 @@ pub struct NodeStateUpsert {
 #[derive(Debug)]
 pub struct Store {
     pool: PgPool,
+    /// Count of best-effort `node_states` writes that FAILED (DB error). The
+    /// selector comparison store is written best-effort on every Submit so a
+    /// store outage never fails the SKIP/EXECUTE/CLONE decision path — but a
+    /// silent failure would let the execution ledger advance while `state:*`
+    /// selectors read a stale baseline. This counter makes that observable
+    /// (surface it as a metric/alert in deployment) and is asserted by the
+    /// `selector_state_write_failures_are_observable` offline test. It is NOT a
+    /// correctness signal for a single request; it is an operational health gauge.
+    selector_write_failures: std::sync::atomic::AtomicU64,
 }
 
 impl Store {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            selector_write_failures: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Current count of failed best-effort selector-state writes.
+    pub fn selector_write_failures(&self) -> u64 {
+        self.selector_write_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn count_selector_write_failure(&self) {
+        self.selector_write_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Insert a pending execution row for a ready_to_execute verdict.

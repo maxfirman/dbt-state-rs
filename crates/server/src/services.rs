@@ -2,12 +2,11 @@
 
 use tonic::{Request, Response, Status};
 
-use crate::decision::{self, SubmitContext, Verdict};
-use crate::execution::{record_node_state, store_status as db_err};
+use crate::decision;
+use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
-use crate::result_copy::{
-    RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection, SubmitCopyPlan,
-};
+use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
+use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
 
 use qc::client_validation_server::ClientValidation;
@@ -144,6 +143,63 @@ fn submit_ready_to_clone_response(
                 execution_decision_id: Some(execution_decision_id),
             },
         )),
+    }
+}
+
+/// Map a Submit decision outcome to the wire. `clone_target` is the submit
+/// target a Copy populates.
+fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlResponse {
+    match outcome {
+        SubmitOutcome::Skip {
+            execution_decision_id,
+            matched_execution,
+            description,
+            is_stale,
+        } => skip_response(
+            description,
+            is_stale,
+            matched_execution.execution_runtime_ms,
+            matched_execution.execution_results,
+            execution_decision_id,
+        ),
+        SubmitOutcome::Execute {
+            ids,
+            description,
+            skip_rejection_reason,
+            clone_rejection_reason,
+            is_stale,
+            ..
+        } => execute_response(
+            description,
+            skip_rejection_reason,
+            clone_rejection_reason,
+            is_stale,
+            ids.request_id,
+            ids.execution_decision_id,
+        ),
+        SubmitOutcome::Copy {
+            ids,
+            source_table,
+            clone_sqls,
+            source_last_modified_epoch,
+            source_execution_runtime_ms,
+        } => submit_ready_to_clone_response(
+            ids.request_id,
+            clone_sqls,
+            source_table,
+            clone_target.to_string(),
+            source_last_modified_epoch,
+            source_execution_runtime_ms,
+            ids.execution_decision_id,
+        ),
+        SubmitOutcome::ChainLimitExecute { ids } => execute_response(
+            CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION.to_string(),
+            REJECTION_TARGET_TABLE_MISMATCH,
+            REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+            false,
+            ids.request_id,
+            ids.execution_decision_id,
+        ),
     }
 }
 
@@ -469,181 +525,25 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
-        // Record the node's comparison state for `state:*` selectors (latest
-        // wins), regardless of the SKIP/EXECUTE verdict below.
-        record_node_state(
-            &self.0,
-            &org_id,
-            req.dbt_node_state.as_ref(),
-            req.target_table.as_deref(),
-        )
-        .await;
-
-        let target_table = req.target_table.clone().unwrap_or_default();
-        let execution_type = req.execution_type;
-        let crate::history::SqlHistory {
-            candidate,
-            target_has_prior_build,
-            evidence,
-        } = crate::history::prepare_sql(&self.0.store, &org_id, &req)
+        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
-        let row = evidence.row();
-        let node_body_hash = &row.node_body_hash;
-        let input_tables = &row.input_tables;
-        let ctx = SubmitContext {
-            execution_type,
-            input_tables,
-            target_table: req.target_table.as_deref(),
-            stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
-                req.stale_upstream_policy,
-            ),
-            target_has_prior_build,
-        };
-        let verdict = decision::decide(&ctx, candidate.as_ref());
+        // On a SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint
+        // still matched, the matched prior `executions` row is the explain
+        // freshness anchor (ADR 0005 / ticket #30). `None` for a first-build /
+        // fingerprint-miss EXECUTE and for a CLONE.
+        let matched_execution_id = outcome.matched_execution().map(|r| r.id);
+        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
 
-        // RESULT COPY FALLBACK (see `result_copy`): with no reuse candidate, an
-        // equivalent model already built under another name is copied in.
-        if let Some(lookup) = crate::result_copy::submit_lookup(&req, row, candidate.is_some()) {
-            let equivalent = self
-                .0
-                .store
-                .find_clone_equivalent(
-                    &org_id,
-                    lookup.table_namespace,
-                    lookup.node_namespace_logic_hash,
-                    lookup.execution_type,
-                    lookup.exclude_target,
-                    &req.dialect,
-                )
-                .await
-                .map_err(db_err)?;
-            if let Some(equivalent) = equivalent {
-                match crate::result_copy::plan_submit(&req, equivalent) {
-                    SubmitCopyPlan::ChainLimitExecute => {
-                        let request_id = new_uuid_v7();
-                        let execution_decision_id = new_uuid_v7();
-                        // Persist an ordinary (non-copy) pending row so the
-                        // forthcoming ConfirmExecution records the normal build.
-                        evidence
-                            .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
-                            .await
-                            .map_err(db_err)?;
-                        let response = execute_response(
-                            CLONE_CHAIN_LIMIT_EXECUTE_DESCRIPTION.to_string(),
-                            REJECTION_TARGET_TABLE_MISMATCH,
-                            REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
-                            false,
-                            request_id,
-                            execution_decision_id,
-                        );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
-                        return Ok(Response::new(response));
-                    }
-                    SubmitCopyPlan::Copy {
-                        source_table,
-                        clone_sqls,
-                        source_last_modified_epoch,
-                        source_execution_runtime_ms,
-                    } => {
-                        let request_id = new_uuid_v7();
-                        let execution_decision_id = new_uuid_v7();
-                        // Persist a pending row keyed on the submit target so the
-                        // forthcoming ConfirmExecution finalizes it, inheriting the
-                        // equivalent's logic identity (so later submits reuse it).
-                        evidence
-                            .write_pending(
-                                &self.0.store,
-                                &request_id,
-                                &execution_decision_id,
-                                Some(&source_table),
-                            )
-                            .await
-                            .map_err(db_err)?;
-                        let response = submit_ready_to_clone_response(
-                            request_id,
-                            clone_sqls,
-                            source_table,
-                            target_table.clone(),
-                            source_last_modified_epoch,
-                            source_execution_runtime_ms,
-                            execution_decision_id,
-                        );
-                        capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
-                        return Ok(Response::new(response));
-                    }
-                    SubmitCopyPlan::Unavailable { reason } => {
-                        tracing::warn!(
-                            target = %target_table,
-                            reason,
-                            "equivalent found but no result copy is available; using the ordinary decision"
-                        );
-                    }
-                }
-            }
-        }
-
-        tracing::info!(
-            node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-            execution_type,
-            had_match = candidate.is_some(),
-            body_hash = %node_body_hash.clone().unwrap_or_default(),
-            verdict = match &verdict { Verdict::Skip{..} => "SKIP", Verdict::Execute{..} => "EXECUTE" },
-            "decision"
-        );
-
-        let execution_decision_id = new_uuid_v7();
-        let response = match verdict {
-            Verdict::Skip {
-                description,
-                is_stale,
-            } => skip_response(
-                description,
-                is_stale,
-                candidate.as_ref().and_then(|r| r.execution_runtime_ms),
-                candidate.as_ref().and_then(|r| r.execution_results.clone()),
-                execution_decision_id,
-            ),
-            Verdict::Execute {
-                description,
-                skip_rejection_reason,
-                clone_rejection_reason,
-                is_stale,
-            } => {
-                let request_id = new_uuid_v7();
-                // Persist a pending row so the forthcoming ConfirmExecution can
-                // finalize this fingerprint into skippable history.
-                evidence
-                    .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
-                    .await
-                    .map_err(db_err)?;
-                execute_response(
-                    description,
-                    skip_rejection_reason,
-                    clone_rejection_reason,
-                    is_stale,
-                    request_id,
-                    execution_decision_id,
-                )
-            }
-        };
-
-        // Best-effort capture for the UI domain model (non-blocking). On a
-        // SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint still
-        // matched, `candidate` is the matched prior `executions` row — record
-        // its id as the explain freshness anchor (ADR 0005 / ticket #30). It is
-        // `None` for a genuine first-build / fingerprint-miss EXECUTE (candidate
-        // is None) and never reached here for CLONE (those return early above).
-        let matched_execution_id = candidate.as_ref().map(|r| r.id);
+        // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(
             &self.0,
             &cap_meta,
             &req,
             &response,
-            input_tables,
+            &decision::input_tables_of(&req),
             matched_execution_id,
         );
-
         Ok(Response::new(response))
     }
 
@@ -655,87 +555,13 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
-        // Record the seed's comparison state for `state:*` selectors.
-        record_node_state(
-            &self.0,
-            &org_id,
-            req.dbt_node_state.as_ref(),
-            Some(req.target_table.as_str()),
-        )
-        .await;
-
-        let target_table = req.target_table.clone();
-        // execution_type is implicitly VALUES(9) for seeds.
-        let execution_type = EXECUTION_TYPE_VALUES;
-        let crate::history::ValuesHistory {
-            candidate,
-            target_has_prior_build,
-            evidence,
-        } = crate::history::prepare_values(&self.0.store, &org_id, &req)
+        let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req)
             .await
             .map_err(db_err)?;
-        let row = evidence.row();
-        let values_hash = &row.values_hash;
-        let input_tables = &row.input_tables;
-        let ctx = SubmitContext {
-            execution_type,
-            input_tables,
-            target_table: Some(target_table.as_str()),
-            stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
-            target_has_prior_build,
-        };
-        let verdict = decision::decide(&ctx, candidate.as_ref());
+        let matched_execution_id = outcome.matched_execution().map(|r| r.id);
+        let response = submit_response(outcome, &req.target_table);
 
-        tracing::info!(
-            node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-            execution_type,
-            had_match = candidate.is_some(),
-            values_hash = %values_hash.clone().unwrap_or_default(),
-            verdict = match &verdict { Verdict::Skip{..} => "SKIP", Verdict::Execute{..} => "EXECUTE" },
-            "decision(values)"
-        );
-
-        let execution_decision_id = new_uuid_v7();
-        let response = match verdict {
-            Verdict::Skip {
-                description,
-                is_stale,
-            } => skip_response(
-                description,
-                is_stale,
-                candidate.as_ref().and_then(|r| r.execution_runtime_ms),
-                candidate.as_ref().and_then(|r| r.execution_results.clone()),
-                execution_decision_id,
-            ),
-            Verdict::Execute {
-                description,
-                skip_rejection_reason,
-                clone_rejection_reason,
-                is_stale,
-            } => {
-                let request_id = new_uuid_v7();
-                evidence
-                    .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
-                    .await
-                    .map_err(db_err)?;
-                execute_response(
-                    description,
-                    skip_rejection_reason,
-                    clone_rejection_reason,
-                    is_stale,
-                    request_id,
-                    execution_decision_id,
-                )
-            }
-        };
-
-        capture_submit_values(
-            &self.0,
-            &cap_meta,
-            &req,
-            &response,
-            candidate.as_ref().map(|r| r.id),
-        );
+        capture_submit_values(&self.0, &cap_meta, &req, &response, matched_execution_id);
         Ok(Response::new(response))
     }
 
