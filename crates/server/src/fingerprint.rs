@@ -117,11 +117,8 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
         crate::warehouse::Warehouse::DuckDb => {
             if !(req.execution_type == ModelExecutionType::Full as i32
                 || (req.execution_type == ModelExecutionType::DeleteInsert as i32
-                    && req
-                        .semantic_extras
-                        .get("duckdb_incremental_contract")
-                        .map(String::as_str)
-                        == Some("delete-insert-fixed-v1")))
+                    && crate::warehouse::Warehouse::DuckDb
+                        .declares_incremental_contract(&req.semantic_extras)))
                 || !matches!(req.default_schema.as_deref(), Some("prod" | "dev"))
                 || req
                     .semantic_extras

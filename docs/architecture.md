@@ -35,17 +35,17 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 |---|---|
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres writes via sqlx: pending→confirmed lifecycle and atomic batch publication. |
-| `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. |
-| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, id minting and the pending-row write) and returns one `SubmitOutcome` carrying its `DecisionRecord`. |
+| `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. Warehouse rule outcomes (candidate limit, provenance-walk depth) arrive as plain parameters; the store contains no dialect names. |
+| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, including the clone-equivalent lookup driven by the Warehouse rules, id minting and the pending-row write) and returns one `SubmitOutcome` carrying its `DecisionRecord`. |
 | `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
-| `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone): eligibility, chain limits, DuckDB evidence and DDL. |
+| `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone). It asks the Warehouse rules for chain limits, relation checks, source evidence, the incremental contract and DDL. |
 | `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
 | `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
-| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity, clone eligibility and physical warehouse family. |
+| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity and physical warehouse family. The Warehouse rules answer each warehouse-specific Result copy question (DDL, relation checks, copy-chain limit, candidate limit, provenance walk, incremental contract), dispatching to `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
 | `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
-| `clone.rs` | Dialect-aware clone-DDL generation. |
+| `clone.rs` | Dialect-string entry point to the Warehouse rules' clone DDL. |
 | `services.rs` | gRPC service impls. Submit handlers extract org/metadata, call `submit_decision`, map the outcome to the wire and capture. |
 | `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |
 | `main.rs` | Binary: connect, migrate, serve. |

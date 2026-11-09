@@ -20,9 +20,10 @@ use crate::decision::{self, DecisionKind, DecisionRecord, SubmitContext};
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::result_copy::{self, SubmitCopyPlan};
+use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
-use crate::store::{ExecutionRow, Store};
+use crate::store::{CopyCandidateQuery, ExecutionRow, Store};
+use crate::warehouse::Warehouse;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
 /// pending row's ConfirmExecution, `execution_decision_id` keys Explain.
@@ -285,17 +286,7 @@ async fn result_copy_fallback(
     let Some(lookup) = result_copy::submit_lookup(req, evidence, has_reuse_candidate) else {
         return Ok(None);
     };
-    let Some(equivalent) = store
-        .find_clone_equivalent(
-            org_id,
-            lookup.table_namespace,
-            lookup.node_namespace_logic_hash,
-            lookup.execution_type,
-            lookup.exclude_target,
-            &req.dialect,
-        )
-        .await?
-    else {
+    let Some(equivalent) = find_equivalent(store, org_id, req, &lookup).await? else {
         return Ok(None);
     };
     match result_copy::plan_submit(req, equivalent) {
@@ -337,6 +328,58 @@ async fn result_copy_fallback(
             Ok(None)
         }
     }
+}
+
+/// The clone-equivalent lookup: the first current equivalent, in the store's
+/// preference order, that the warehouse rules accept as a copy source for the
+/// submit target. Where the rules track copy depth, each candidate's copy
+/// provenance is walked and a candidate with too long or missing a chain is
+/// skipped.
+async fn find_equivalent(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    lookup: &EquivalentLookup<'_>,
+) -> sqlx::Result<Option<CloneEquivalent>> {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    let candidates = store
+        .find_copy_candidates(
+            org_id,
+            &CopyCandidateQuery {
+                table_namespace: lookup.table_namespace,
+                node_namespace_logic_hash: lookup.node_namespace_logic_hash,
+                execution_type: lookup.execution_type,
+                exclude_target: lookup.exclude_target,
+                dialect: &req.dialect,
+                limit: warehouse.copy_candidate_limit(),
+            },
+        )
+        .await?;
+    for candidate in candidates {
+        if !warehouse.copy_relations_compatible(&candidate.target_table, lookup.exclude_target) {
+            continue;
+        }
+        let copy_depth = match warehouse.copy_provenance_depth() {
+            None => 0,
+            Some(max_ancestors) => {
+                let depth = store
+                    .copy_chain_depth(
+                        org_id,
+                        lookup.table_namespace,
+                        &req.dialect,
+                        &candidate.target_table,
+                        max_ancestors,
+                    )
+                    .await?;
+                let Some(depth) = depth else {
+                    continue;
+                };
+                depth
+            }
+        };
+        return Ok(Some(CloneEquivalent::new(candidate, copy_depth)));
+    }
+    Ok(None)
 }
 
 /// The shared tail of both entry points: mint ids, write the pending row for

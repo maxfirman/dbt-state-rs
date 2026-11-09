@@ -154,15 +154,40 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
     }
 }
 
-/// A confirmed "equivalent under another name" to clone from (SQL-submit
-/// cross-name fallback). Source physical name + warehouse type + build epoch.
-#[derive(Debug, Clone)]
-pub struct CloneEquivalent {
-    pub source_table: String,
+/// A current confirmed state with the requested logic under another physical
+/// name: a candidate source for a result copy.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CopyCandidate {
+    pub target_table: String,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
-    pub duckdb_copy_depth: usize,
+}
+
+/// What [`Store::find_copy_candidates`] selects. `limit` is the warehouse
+/// rules' candidate limit (`None`: every candidate).
+#[derive(Debug, Clone, Copy)]
+pub struct CopyCandidateQuery<'a> {
+    pub table_namespace: &'a str,
+    pub node_namespace_logic_hash: &'a str,
+    pub execution_type: i32,
+    pub exclude_target: &'a str,
+    pub dialect: &'a str,
+    pub limit: Option<i64>,
+}
+
+/// The current state a client-requested copy's source must have
+/// ([`Store::find_current_copy_source`]): a confirmed build (not itself a
+/// copy) of this execution type, table type and node hash at this epoch.
+#[derive(Debug, Clone, Copy)]
+pub struct CopySourceQuery<'a> {
+    pub source: &'a str,
+    pub table_namespace: &'a str,
+    pub dialect: &'a str,
+    pub execution_type: i32,
+    pub last_modified_epoch: i64,
+    pub table_type: &'a str,
+    pub node_hash: &'a str,
 }
 
 /// A node's recorded comparison state for `state:*` selectors, keyed by the
