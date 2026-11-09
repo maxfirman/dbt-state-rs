@@ -113,7 +113,7 @@ remaining policies and compatibility gaps.
    EITHER matches — a rebuild occurs only when BOTH the rendered SQL and the
    template change (documented contract, verified live; review #2 finding 6).
    This dual identity applies to BOTH models and DATA TESTS
-   (`find_confirmed`/`find_confirmed_test`); the data-test lookup honoring the
+   (`reuse_candidate::identity_matches`, used by both); the data-test lookup honoring the
    template hash was the review #2 finding-6 FOLLOW-UP fix, also live-verified.
 3. Require a known current target epoch no newer than its recorded confirmation,
    unless external modifications are explicitly ignored. Missing or ambiguous

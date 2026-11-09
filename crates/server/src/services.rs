@@ -484,7 +484,7 @@ impl Sql for SqlService {
         let target_table = req.target_table.clone().unwrap_or_default();
         let execution_type = req.execution_type;
         let crate::history::SqlHistory {
-            confirmed,
+            candidate,
             target_has_prior_build,
             evidence,
         } = crate::history::prepare_sql(&self.0.store, &org_id, &req)
@@ -504,7 +504,7 @@ impl Sql for SqlService {
             ),
             target_has_prior_build,
         };
-        let verdict = decision::decide(&ctx, confirmed.as_ref());
+        let verdict = decision::decide(&ctx, candidate.as_ref());
 
         // SQL-SUBMIT CROSS-NAME CLONE FALLBACK. When we would EXECUTE (no reuse
         // match) but an EQUIVALENT model (same namespace + schema-abstracted
@@ -565,7 +565,7 @@ impl Sql for SqlService {
                 &req.sql,
                 req.query_dependencies.iter().map(|d| d.query.as_str()),
             );
-        if confirmed.is_none()
+        if candidate.is_none()
             && !volatile_blocks_clone
             && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
             && execution_type != EXECUTION_TYPE_VALUES
@@ -662,7 +662,7 @@ impl Sql for SqlService {
         tracing::info!(
             node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
             execution_type,
-            had_match = confirmed.is_some(),
+            had_match = candidate.is_some(),
             body_hash = %node_body_hash.clone().unwrap_or_default(),
             verdict = match &verdict { Verdict::Skip{..} => "SKIP", Verdict::Execute{..} => "EXECUTE" },
             "decision"
@@ -676,8 +676,8 @@ impl Sql for SqlService {
             } => skip_response(
                 description,
                 is_stale,
-                confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
-                confirmed.as_ref().and_then(|r| r.execution_results.clone()),
+                candidate.as_ref().and_then(|r| r.execution_runtime_ms),
+                candidate.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
             ),
             Verdict::Execute {
@@ -706,11 +706,11 @@ impl Sql for SqlService {
 
         // Best-effort capture for the UI domain model (non-blocking). On a
         // SKIP, or a freshness-driven rebuild EXECUTE whose fingerprint still
-        // matched, `confirmed` is the matched prior `executions` row — record
+        // matched, `candidate` is the matched prior `executions` row — record
         // its id as the explain freshness anchor (ADR 0005 / ticket #30). It is
-        // `None` for a genuine first-build / fingerprint-miss EXECUTE (confirmed
+        // `None` for a genuine first-build / fingerprint-miss EXECUTE (candidate
         // is None) and never reached here for CLONE (those return early above).
-        let matched_execution_id = confirmed.as_ref().map(|r| r.id);
+        let matched_execution_id = candidate.as_ref().map(|r| r.id);
         capture_submit(
             &self.0,
             &cap_meta,
@@ -744,7 +744,7 @@ impl Sql for SqlService {
         // execution_type is implicitly VALUES(9) for seeds.
         let execution_type = EXECUTION_TYPE_VALUES;
         let crate::history::ValuesHistory {
-            confirmed,
+            candidate,
             target_has_prior_build,
             evidence,
         } = crate::history::prepare_values(&self.0.store, &org_id, &req)
@@ -760,12 +760,12 @@ impl Sql for SqlService {
             stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
             target_has_prior_build,
         };
-        let verdict = decision::decide(&ctx, confirmed.as_ref());
+        let verdict = decision::decide(&ctx, candidate.as_ref());
 
         tracing::info!(
             node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
             execution_type,
-            had_match = confirmed.is_some(),
+            had_match = candidate.is_some(),
             values_hash = %values_hash.clone().unwrap_or_default(),
             verdict = match &verdict { Verdict::Skip{..} => "SKIP", Verdict::Execute{..} => "EXECUTE" },
             "decision(values)"
@@ -779,8 +779,8 @@ impl Sql for SqlService {
             } => skip_response(
                 description,
                 is_stale,
-                confirmed.as_ref().and_then(|r| r.execution_runtime_ms),
-                confirmed.as_ref().and_then(|r| r.execution_results.clone()),
+                candidate.as_ref().and_then(|r| r.execution_runtime_ms),
+                candidate.as_ref().and_then(|r| r.execution_results.clone()),
                 execution_decision_id,
             ),
             Verdict::Execute {
@@ -810,7 +810,7 @@ impl Sql for SqlService {
             &cap_meta,
             &req,
             &response,
-            confirmed.as_ref().map(|r| r.id),
+            candidate.as_ref().map(|r| r.id),
         );
         Ok(Response::new(response))
     }

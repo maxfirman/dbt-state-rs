@@ -128,10 +128,11 @@ pub struct SubmitContext<'a> {
     pub target_has_prior_build: bool,
 }
 
-/// Decide SKIP vs EXECUTE given the latest matching confirmed record (if any).
-pub fn decide(ctx: &SubmitContext, confirmed: Option<&ExecutionRow>) -> Verdict {
-    match confirmed {
-        // No confirmed record with a MATCHING fingerprint. The target either
+/// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
+/// `reuse_candidate`).
+pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict {
+    match candidate {
+        // No reuse candidate. The target either
         // never existed (first build → "did not exist") or existed under a
         // different fingerprint (rebuild → "query didn't match / out of date").
         // `target_has_prior_build` carries the physical-existence signal.
@@ -517,6 +518,20 @@ mod tests {
 
     /// Node-type/reason-specific decision_description strings, pinned to the
     /// exact wording captured live from api.state.dbt.com.
+    /// A data test has no physical target, so the server does not look up
+    /// target existence for it (`reuse_candidate::for_data_test` reports
+    /// `false`). Pin that its EXECUTE response would be the same either way.
+    #[test]
+    fn data_test_execute_ignores_target_existence() {
+        let up = vec![tbl("a", 100)];
+        let with = |prior: bool| {
+            let mut c = data_test_ctx(&up);
+            c.target_has_prior_build = prior;
+            decide(&c, None)
+        };
+        assert_eq!(with(false), with(true));
+    }
+
     #[test]
     fn decision_descriptions_match_hosted_wording() {
         let up = vec![tbl("a", 100)];

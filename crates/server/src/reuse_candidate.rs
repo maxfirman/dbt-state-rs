@@ -1,0 +1,793 @@
+//! Reuse candidate selection: which recorded result, if any, a submit may reuse.
+//!
+//! The caller fetches the latest execution in scope
+//! ([`Store::current_target_state`](crate::store::Store::current_target_state)
+//! or [`Store::latest_data_test`](crate::store::Store::latest_data_test)) and
+//! passes it in. This module then decides, without I/O:
+//!
+//! 1. whether that row matches the workload's identity (strict same-target
+//!    match, or adoption of a clone-origin row with the same
+//!    schema-abstracted logic);
+//! 2. whether the workload and its evidence pass reuse qualification.
+//!
+//! Freshness is NOT assessed here: a reuse candidate goes to
+//! [`decision::decide`](crate::decision::decide), which may still rebuild.
+//!
+//! Only the latest row is ever considered (physical-state invariant, review
+//! issue #1 P0#2): an older execution cannot describe a target overwritten by a
+//! later build, so nothing older is resurrected when the latest row does not
+//! match.
+
+use crate::query_cache as qc;
+use crate::store::{ExecutionRow, InputTable, LatestExecution, PendingExecution};
+
+// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
+const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
+const EXECUTION_TYPE_VALUES: i32 = 9;
+
+/// The outcome of reuse candidate selection for one submit.
+#[derive(Debug)]
+pub(crate) struct Selection {
+    /// The reuse candidate, if the latest row has the workload's identity and
+    /// qualified.
+    pub candidate: Option<ExecutionRow>,
+    /// Whether the target has any confirmed build in its physical scope,
+    /// whatever its identity. Distinguishes a first build ("did not exist")
+    /// from a rebuild in the EXECUTE description (review #2 5th follow-up P1 #4).
+    pub target_has_prior_build: bool,
+}
+
+impl Selection {
+    /// No confirmed build of the target exists in scope.
+    const FIRST_BUILD: Selection = Selection {
+        candidate: None,
+        target_has_prior_build: false,
+    };
+}
+
+/// Models, views, snapshots and other target-producing SQL submits.
+///
+/// `current` is the target's current physical state. `evidence` is the
+/// submit's identity as built by `ExecutionEvidence::sql_submit`.
+pub(crate) fn for_model(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &PendingExecution,
+    current: Option<LatestExecution>,
+) -> sqlx::Result<Selection> {
+    debug_assert_ne!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
+    let Some(current) = current else {
+        return Ok(Selection::FIRST_BUILD);
+    };
+    let identified = if strict_match(req, evidence, &current) {
+        // Result-serving path: corrupt cached results surface as an error.
+        Some(current.into_row(true)?)
+    } else if adoptable(req, evidence, &current) {
+        // CROSS-ENVIRONMENT CLONE ADOPTION. The strict (exact rendered SQL)
+        // match missed, but the current state is a CLONE of the same model in
+        // this namespace: its schema-abstracted logic identity equals this
+        // submit's. This reproduces the hosted post-clone SKIP, which is
+        // logic-sensitive (a genuine SQL change still executes). Verified live;
+        // see experiments/clone_logic_sensitivity.sh. Adoption never serves
+        // cached results (clone-origin rows carry none).
+        let mut row = current.into_row(false)?;
+        adopt_current_inputs(&mut row, &evidence.input_tables);
+        Some(row)
+    } else {
+        None
+    };
+    Ok(Selection {
+        candidate: identified
+            .filter(|prev| sql_qualifies(req, evidence) && current_target_matches(req, prev)),
+        target_has_prior_build: true,
+    })
+}
+
+/// Data tests: no physical target. `latest` is the latest confirmed outcome
+/// for the test's node UID in its project and physical scope. The target's
+/// existence does not affect a data test's response, so it is not reported.
+pub(crate) fn for_data_test(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &PendingExecution,
+    latest: Option<LatestExecution>,
+) -> sqlx::Result<Selection> {
+    debug_assert_eq!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
+    let identified = match latest {
+        Some(row) if identity_matches(evidence, &row) => Some(row.into_row(true)?),
+        _ => None,
+    };
+    Ok(Selection {
+        candidate: identified.filter(|prev| {
+            sql_qualifies(req, evidence) && reusable_test_results(prev.execution_results.as_ref())
+        }),
+        target_has_prior_build: false,
+    })
+}
+
+/// Seeds compare values and seed configuration identity, then require the
+/// current target evidence to be no newer than the recorded build. Their
+/// inputs stay empty for the pure decision.
+pub(crate) fn for_seed(
+    req: &qc::SubmitValuesRequest,
+    evidence: &PendingExecution,
+    current: Option<LatestExecution>,
+) -> sqlx::Result<Selection> {
+    let Some(current) = current else {
+        return Ok(Selection::FIRST_BUILD);
+    };
+    let identified = if current.execution_type == EXECUTION_TYPE_VALUES
+        && current.values_hash.as_deref() == Some(req.values_hash.as_str())
+        && current.node_sql_hash.is_some()
+        && current.node_sql_hash == evidence.node_sql_hash
+    {
+        Some(current.into_row(true)?)
+    } else {
+        None
+    };
+    Ok(Selection {
+        candidate: identified.filter(|prev| {
+            !req.values_hash.is_empty()
+                && not_modified_since(req.last_modified_epoch, prev.last_modified_epoch)
+        }),
+        target_has_prior_build: true,
+    })
+}
+
+/// A client-requested copy (RegisterClone) records NO upstream evidence: it
+/// is clone-origin, carries no rendered identity and no inputs. When such a
+/// row is the freshness anchor, the submit's CURRENT inputs stand in as the
+/// recorded set, so each upstream is compared against the copy's own build
+/// epoch instead of reading "nothing recorded" as a dependency-set change.
+///
+/// Every other row keeps exactly what it recorded. In particular a copy made
+/// by the SQL-submit fallback recorded that submit's inputs; an EMPTY list
+/// there means "no upstreams", and a later submit with upstreams must rebuild.
+///
+/// The single rule for both the decision (here) and its explanation
+/// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
+pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
+    if anchor.clone_source_table.is_some()
+        && anchor.node_sql_hash.is_none()
+        && anchor.input_tables.is_empty()
+    {
+        anchor.input_tables = current.to_vec();
+    }
+}
+
+/// Rendered identity, or (only in `compare_unrendered_code` mode, when the
+/// submit carries a template hash) the unrendered-template identity. A
+/// template-mode node rebuilds only when BOTH change (verified live; see
+/// `template_comparison.rs`, and review #2 finding 6 follow-up for data tests).
+fn identity_matches(evidence: &PendingExecution, row: &LatestExecution) -> bool {
+    row.node_sql_hash == evidence.node_sql_hash
+        || (evidence.node_template_hash.is_some()
+            && row.node_template_hash == evidence.node_template_hash)
+}
+
+/// Same target, same execution type and exact dialect options, same identity.
+/// A row whose recorded schema-abstracted logic differs from the submit's is
+/// rejected even when the SQL hash matches: that is the upgrade invalidation
+/// for rows written under an older namespace identity.
+fn strict_match(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &PendingExecution,
+    row: &LatestExecution,
+) -> bool {
+    let logic_compatible = match (
+        &row.node_namespace_logic_hash,
+        &evidence.node_namespace_logic_hash,
+    ) {
+        (Some(recorded), Some(current)) => recorded == current,
+        _ => true,
+    };
+    row.execution_type == req.execution_type
+        && identity_matches(evidence, row)
+        && logic_compatible
+        && row.dialect == req.dialect
+}
+
+/// Only CLONE-ORIGIN rows are adopted across environments. Ordinary rows are
+/// not: that would let a genuine resolution-context change (e.g.
+/// `default_schema`) skip, which the hosted service rebuilds. Broader
+/// cross-environment reuse without a clone is a separate provenance feature
+/// (see correctness-handoff.md §A).
+fn adoptable(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &PendingExecution,
+    row: &LatestExecution,
+) -> bool {
+    row.execution_type == req.execution_type
+        && row.dialect == req.dialect
+        && row.clone_source_table.is_some()
+        && evidence.node_namespace_logic_hash.is_some()
+        && row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
+}
+
+/// Reuse qualification shared by models and data tests. Runtime volatile
+/// function evidence is not implemented, so requested volatile evaluation
+/// builds instead of claiming reuse. Empty SQL or template is likewise
+/// insufficient evidence.
+fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &PendingExecution) -> bool {
+    req.tolerate_nondeterminism
+        && complete_dependencies(req)
+        && !req.sql.trim().is_empty()
+        && (!req.compare_unrendered_code
+            || evidence
+                .node_body_hash
+                .as_ref()
+                .is_some_and(|s| !s.is_empty()))
+}
+
+fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    let mut names = std::collections::HashSet::new();
+    req.query_dependencies
+        .iter()
+        .all(|d| !d.name.trim().is_empty() && !d.query.trim().is_empty() && names.insert(&d.name))
+}
+
+/// Own-target existence and external edits, checked separately from upstream
+/// freshness. Missing or ambiguous target evidence cannot establish that the
+/// object exists.
+fn current_target_matches(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> bool {
+    let Some(target) = req.target_table.as_deref().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    if prev.target_table != target {
+        return false;
+    }
+    let own: Vec<_> = req.tables.iter().filter(|t| t.name == target).collect();
+    own.len() == 1
+        && own[0].last_modified_epoch.is_some()
+        && (req.ignore_external_modifications
+            || not_modified_since(own[0].last_modified_epoch, prev.last_modified_epoch))
+}
+
+/// The target's current epoch is known and no newer than the recorded build:
+/// no external write since. Unknown epochs never prove that.
+fn not_modified_since(current: Option<i64>, recorded: Option<i64>) -> bool {
+    matches!((current, recorded), (Some(current), Some(recorded)) if current <= recorded)
+}
+
+/// Cached data-test results are complete only with numeric failures and both
+/// severity flags.
+fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
+    use qc::value::Kind;
+    let Some(results) = results else {
+        return false;
+    };
+    let failures = matches!(
+        results.fields.get("failures").and_then(|v| v.kind.as_ref()),
+        Some(Kind::IntValue(_))
+    ) || matches!(results.fields.get("failures").and_then(|v| v.kind.as_ref()),
+        Some(Kind::DoubleValue(n)) if n.is_finite());
+    failures
+        && ["should_error", "should_warn"].iter().all(|key| {
+            matches!(
+                results.fields.get(*key).and_then(|v| v.kind.as_ref()),
+                Some(Kind::BoolValue(_))
+            )
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution::ExecutionEvidence;
+    use proptest::prelude::*;
+    use prost::Message;
+    use qc::value::Kind;
+
+    const TARGET: &str = "\"DB\".\"DEV\".\"M\"";
+    const UPSTREAM: &str = "\"DB\".\"DEV\".\"UP\"";
+    const BUILT: i64 = 1_000;
+
+    fn table(name: &str, epoch: i64) -> qc::TableModifiedInfo {
+        qc::TableModifiedInfo {
+            name: name.into(),
+            last_modified_epoch: Some(epoch),
+        }
+    }
+
+    /// A Snowflake model submit whose own target exists at the recorded epoch.
+    fn model_req(sql: &str) -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            execution_type: 1,
+            dialect: "snowflake".into(),
+            sql: sql.into(),
+            target_table: Some(TARGET.into()),
+            table_namespace: Some("ns".into()),
+            tolerate_nondeterminism: true,
+            tables: vec![table(TARGET, BUILT), table(UPSTREAM, 500)],
+            ..Default::default()
+        }
+    }
+
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
+        ExecutionEvidence::sql_submit("o", req).row().clone()
+    }
+
+    fn results(complete: bool) -> qc::Struct {
+        let mut fields = std::collections::BTreeMap::new();
+        fields.insert(
+            "failures".to_string(),
+            qc::Value {
+                kind: Some(Kind::IntValue(0)),
+            },
+        );
+        fields.insert(
+            "should_error".to_string(),
+            qc::Value {
+                kind: Some(Kind::BoolValue(false)),
+            },
+        );
+        if complete {
+            fields.insert(
+                "should_warn".to_string(),
+                qc::Value {
+                    kind: Some(Kind::BoolValue(false)),
+                },
+            );
+        }
+        qc::Struct {
+            fields: fields.into_iter().collect(),
+        }
+    }
+
+    /// The latest row as recorded by a confirmed build of exactly `ev`.
+    fn recorded(ev: &PendingExecution) -> LatestExecution {
+        LatestExecution {
+            id: 7,
+            org_id: "o".into(),
+            target_table: ev.target_table.clone(),
+            execution_type: ev.execution_type,
+            node_body_hash: ev.node_body_hash.clone(),
+            node_sql_hash: ev.node_sql_hash.clone(),
+            node_namespace_logic_hash: ev.node_namespace_logic_hash.clone(),
+            node_template_hash: ev.node_template_hash.clone(),
+            values_hash: ev.values_hash.clone(),
+            dialect: ev.dialect.clone(),
+            table_namespace: ev.table_namespace.clone(),
+            node_unique_id: ev.node_unique_id.clone(),
+            last_modified_epoch: Some(BUILT),
+            execution_runtime_ms: Some(42),
+            execution_results: Some(results(true).encode_to_vec()),
+            input_tables: serde_json::to_value(&ev.input_tables).unwrap(),
+            status: "confirmed".into(),
+            request_id: "r".into(),
+            clone_source_table: None,
+        }
+    }
+
+    /// A clone-origin row as written by RegisterClone: inherited logic, no
+    /// rendered identity, no recorded inputs, no results.
+    fn clone_origin(ev: &PendingExecution) -> LatestExecution {
+        LatestExecution {
+            node_sql_hash: None,
+            node_body_hash: None,
+            input_tables: serde_json::json!([]),
+            execution_results: None,
+            clone_source_table: Some("\"DB\".\"PROD\".\"M\"".into()),
+            ..recorded(ev)
+        }
+    }
+
+    fn model(req: &qc::SubmitEnrichedSqlRequest, row: Option<LatestExecution>) -> Selection {
+        for_model(req, &evidence(req), row).expect("no decode error")
+    }
+
+    // ---- models: identity -------------------------------------------------
+
+    #[test]
+    fn first_build_has_no_candidate_and_no_prior_build() {
+        let req = model_req("select id from DB.DEV.UP");
+        let s = model(&req, None);
+        assert!(s.candidate.is_none());
+        assert!(!s.target_has_prior_build);
+    }
+
+    #[test]
+    fn strict_match_serves_the_recorded_row_with_results() {
+        let req = model_req("select id from DB.DEV.UP");
+        let row = recorded(&evidence(&req));
+        let s = model(&req, Some(row));
+        let c = s.candidate.expect("strict match qualifies");
+        assert_eq!(c.id, 7);
+        assert_eq!(c.execution_results, Some(results(true)));
+        assert!(s.target_has_prior_build);
+    }
+
+    #[test]
+    fn latest_row_that_does_not_match_still_reports_a_prior_build() {
+        let req = model_req("select id from DB.DEV.UP");
+        let mut row = recorded(&evidence(&req));
+        row.node_sql_hash = Some("other".into());
+        let s = model(&req, Some(row));
+        assert!(s.candidate.is_none());
+        assert!(s.target_has_prior_build, "a rebuild, not a first build");
+    }
+
+    #[test]
+    fn strict_match_requires_same_execution_type_and_exact_dialect() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut other_type = recorded(&ev);
+        other_type.execution_type = 3;
+        assert!(model(&req, Some(other_type)).candidate.is_none());
+        let mut other_options = recorded(&ev);
+        other_options.dialect = "snowflake, mode=x".into();
+        assert!(model(&req, Some(other_options)).candidate.is_none());
+    }
+
+    #[test]
+    fn template_mode_matches_on_template_when_rendered_sql_differs() {
+        let mut req = model_req("select id from DB.DEV.UP");
+        req.compare_unrendered_code = true;
+        req.dbt_node_state = Some(qc::DbtNodeState {
+            node_body_hash: Some("body".into()),
+            ..Default::default()
+        });
+        let ev = evidence(&req);
+        assert!(ev.node_template_hash.is_some());
+        let mut row = recorded(&ev);
+        row.node_sql_hash = Some("rendered-differently".into());
+        assert!(model(&req, Some(row.clone())).candidate.is_some());
+
+        // Outside template mode the same row is a miss.
+        req.compare_unrendered_code = false;
+        assert!(model(&req, Some(row)).candidate.is_none());
+    }
+
+    #[test]
+    fn stale_namespace_logic_invalidates_a_strict_match() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        assert!(ev.node_namespace_logic_hash.is_some());
+        let mut stale = recorded(&ev);
+        stale.node_namespace_logic_hash = Some("older-identity".into());
+        assert!(model(&req, Some(stale)).candidate.is_none());
+
+        // NULL on the recorded side falls back to the strict hash alone.
+        let mut unknown = recorded(&ev);
+        unknown.node_namespace_logic_hash = None;
+        assert!(model(&req, Some(unknown)).candidate.is_some());
+    }
+
+    // ---- models: clone-origin adoption -------------------------------------
+
+    #[test]
+    fn clone_origin_row_with_same_logic_is_adopted_with_current_inputs() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let c = model(&req, Some(clone_origin(&ev)))
+            .candidate
+            .expect("adopted");
+        assert_eq!(c.input_tables, ev.input_tables);
+        assert!(c.execution_results.is_none());
+    }
+
+    #[test]
+    fn adoption_keeps_recorded_inputs_when_present() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut row = clone_origin(&ev);
+        row.input_tables = serde_json::json!([{ "name": UPSTREAM, "last_modified_epoch": 1 }]);
+        let c = model(&req, Some(row)).candidate.expect("adopted");
+        assert_eq!(c.input_tables.len(), 1);
+        assert_eq!(c.input_tables[0].last_modified_epoch, Some(1));
+    }
+
+    /// Q20 regression: a copy made by the SQL-submit fallback recorded that
+    /// submit's inputs. An EMPTY list means "no upstreams", so a later submit
+    /// that has upstreams must see a dependency-set change and rebuild, rather
+    /// than having its current inputs substituted (which could SKIP).
+    #[test]
+    fn sql_submit_copy_with_no_recorded_upstreams_rebuilds_when_upstreams_appear() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut row = clone_origin(&ev);
+        row.node_sql_hash = Some("rendered-in-another-schema".into());
+        let c = model(&req, Some(row)).candidate.expect("adopted");
+        assert!(
+            c.input_tables.is_empty(),
+            "recorded inputs kept as recorded"
+        );
+
+        let ctx = crate::decision::SubmitContext {
+            execution_type: req.execution_type,
+            input_tables: &ev.input_tables,
+            target_table: req.target_table.as_deref(),
+            stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
+            target_has_prior_build: true,
+        };
+        assert!(matches!(
+            crate::decision::decide(&ctx, Some(&c)),
+            crate::decision::Verdict::Execute { .. }
+        ));
+    }
+
+    #[test]
+    fn ordinary_rows_are_never_adopted_across_environments() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut row = clone_origin(&ev);
+        row.clone_source_table = None;
+        assert!(model(&req, Some(row)).candidate.is_none());
+    }
+
+    #[test]
+    fn adoption_requires_matching_logic_identity() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut different = clone_origin(&ev);
+        different.node_namespace_logic_hash = Some("different".into());
+        assert!(model(&req, Some(different)).candidate.is_none());
+        let mut unknown = clone_origin(&ev);
+        unknown.node_namespace_logic_hash = None;
+        assert!(model(&req, Some(unknown)).candidate.is_none());
+    }
+
+    // ---- models: reuse qualification ---------------------------------------
+
+    #[test]
+    fn qualification_rejects_insufficient_workload_evidence() {
+        let base = model_req("select id from DB.DEV.UP");
+        type Mutation = fn(&mut qc::SubmitEnrichedSqlRequest);
+        let cases: Vec<(&str, Mutation)> = vec![
+            ("volatile evaluation requested", |r| {
+                r.tolerate_nondeterminism = false
+            }),
+            ("own target missing", |r| {
+                r.tables.retain(|t| t.name != TARGET)
+            }),
+            ("own target duplicated", |r| {
+                r.tables.push(table(TARGET, BUILT))
+            }),
+            ("own target epoch unknown", |r| {
+                r.tables[0].last_modified_epoch = None
+            }),
+            ("externally edited", |r| {
+                r.tables[0].last_modified_epoch = Some(BUILT + 1)
+            }),
+            ("duplicate dependency", |r| {
+                let dep = qc::QueryDependency {
+                    name: "d".into(),
+                    query: "select 1".into(),
+                    ..Default::default()
+                };
+                r.query_dependencies = vec![dep.clone(), dep];
+            }),
+            ("empty dependency definition", |r| {
+                r.query_dependencies = vec![qc::QueryDependency {
+                    name: "d".into(),
+                    ..Default::default()
+                }]
+            }),
+        ];
+        for (why, mutate) in cases {
+            let mut req = base.clone();
+            mutate(&mut req);
+            // The recorded row matches this exact request, so only
+            // qualification can reject it.
+            let row = recorded(&evidence(&req));
+            assert!(model(&req, Some(row)).candidate.is_none(), "{why}");
+        }
+    }
+
+    #[test]
+    fn qualification_rejects_empty_sql_and_empty_template_body() {
+        let empty = model_req("  ");
+        assert!(model(&empty, Some(recorded(&evidence(&empty))))
+            .candidate
+            .is_none());
+
+        let mut template = model_req("select id from DB.DEV.UP");
+        template.compare_unrendered_code = true;
+        template.dbt_node_state = Some(qc::DbtNodeState {
+            node_body_hash: Some(String::new()),
+            ..Default::default()
+        });
+        let row = recorded(&evidence(&template));
+        assert!(model(&template, Some(row)).candidate.is_none());
+    }
+
+    #[test]
+    fn ignore_external_modifications_accepts_a_newer_own_target() {
+        let mut req = model_req("select id from DB.DEV.UP");
+        req.tables[0].last_modified_epoch = Some(BUILT + 1);
+        req.ignore_external_modifications = true;
+        let row = recorded(&evidence(&req));
+        assert!(model(&req, Some(row)).candidate.is_some());
+    }
+
+    // ---- models: undecoded evidence ----------------------------------------
+
+    #[test]
+    fn corrupt_results_fail_only_a_result_serving_match() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let corrupt = vec![0xff, 0xff, 0xff];
+
+        let mut strict = recorded(&ev);
+        strict.execution_results = Some(corrupt.clone());
+        assert!(for_model(&req, &ev, Some(strict)).is_err());
+
+        let mut adopted = clone_origin(&ev);
+        adopted.execution_results = Some(corrupt.clone());
+        assert!(for_model(&req, &ev, Some(adopted))
+            .unwrap()
+            .candidate
+            .is_some());
+
+        let mut miss = recorded(&ev);
+        miss.node_sql_hash = Some("other".into());
+        miss.execution_results = Some(corrupt);
+        miss.input_tables = serde_json::json!("not a list");
+        assert!(for_model(&req, &ev, Some(miss))
+            .unwrap()
+            .candidate
+            .is_none());
+    }
+
+    // ---- data tests ---------------------------------------------------------
+
+    fn data_test_req() -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            execution_type: EXECUTION_TYPE_DBT_DATA_TEST,
+            target_table: None,
+            tables: vec![table(UPSTREAM, 500)],
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "test.p.t".into(),
+                ..Default::default()
+            }),
+            ..model_req("select * from DB.DEV.UP where id is null")
+        }
+    }
+
+    #[test]
+    fn data_test_reuses_complete_results_only() {
+        let req = data_test_req();
+        let ev = evidence(&req);
+        let complete = for_data_test(&req, &ev, Some(recorded(&ev))).unwrap();
+        assert!(complete.candidate.is_some());
+        assert!(!complete.target_has_prior_build);
+
+        let mut partial = recorded(&ev);
+        partial.execution_results = Some(results(false).encode_to_vec());
+        assert!(for_data_test(&req, &ev, Some(partial))
+            .unwrap()
+            .candidate
+            .is_none());
+
+        let mut changed = recorded(&ev);
+        changed.node_sql_hash = Some("other".into());
+        assert!(for_data_test(&req, &ev, Some(changed))
+            .unwrap()
+            .candidate
+            .is_none());
+    }
+
+    #[test]
+    fn data_test_has_no_own_target_to_check() {
+        // Unlike a model, a data test qualifies without own-target evidence.
+        let req = data_test_req();
+        let ev = evidence(&req);
+        assert!(req.tables.iter().all(|t| t.name != TARGET));
+        assert!(for_data_test(&req, &ev, Some(recorded(&ev)))
+            .unwrap()
+            .candidate
+            .is_some());
+    }
+
+    // ---- seeds --------------------------------------------------------------
+
+    fn seed_req(epoch: Option<i64>) -> qc::SubmitValuesRequest {
+        qc::SubmitValuesRequest {
+            target_table: TARGET.into(),
+            dialect: "snowflake".into(),
+            values_hash: "values".into(),
+            table_namespace: Some("ns".into()),
+            last_modified_epoch: epoch,
+            ..Default::default()
+        }
+    }
+
+    fn seed_evidence(req: &qc::SubmitValuesRequest) -> PendingExecution {
+        ExecutionEvidence::values_submit("o", req).row().clone()
+    }
+
+    #[test]
+    fn seed_reuse_requires_identity_and_unchanged_target() {
+        let req = seed_req(Some(BUILT));
+        let ev = seed_evidence(&req);
+        let s = for_seed(&req, &ev, Some(recorded(&ev))).unwrap();
+        assert!(s.candidate.is_some());
+        assert!(s.target_has_prior_build);
+
+        let newer = seed_req(Some(BUILT + 1));
+        assert!(for_seed(&newer, &ev, Some(recorded(&ev)))
+            .unwrap()
+            .candidate
+            .is_none());
+        let unknown = seed_req(None);
+        assert!(for_seed(&unknown, &ev, Some(recorded(&ev)))
+            .unwrap()
+            .candidate
+            .is_none());
+
+        let mut other_values = recorded(&ev);
+        other_values.values_hash = Some("changed".into());
+        let s = for_seed(&req, &ev, Some(other_values)).unwrap();
+        assert!(s.candidate.is_none());
+        assert!(s.target_has_prior_build);
+
+        let none = for_seed(&req, &ev, None).unwrap();
+        assert!(none.candidate.is_none() && !none.target_has_prior_build);
+    }
+
+    #[test]
+    fn seed_with_empty_values_hash_never_reuses() {
+        let mut req = seed_req(Some(BUILT));
+        req.values_hash = String::new();
+        let ev = seed_evidence(&req);
+        let mut row = recorded(&ev);
+        row.values_hash = Some(String::new());
+        assert!(for_seed(&req, &ev, Some(row)).unwrap().candidate.is_none());
+    }
+
+    // ---- properties ---------------------------------------------------------
+
+    fn arbitrary_row(ev: PendingExecution) -> impl Strategy<Value = LatestExecution> {
+        (
+            any::<bool>(),
+            any::<bool>(),
+            any::<bool>(),
+            prop::option::of(0i64..2 * BUILT),
+            prop_oneof![Just(1), Just(3)],
+        )
+            .prop_map(move |(same_sql, same_logic, clone, epoch, et)| {
+                let mut row = if clone {
+                    clone_origin(&ev)
+                } else {
+                    recorded(&ev)
+                };
+                if !same_sql {
+                    row.node_sql_hash = Some("other".into());
+                }
+                if !same_logic {
+                    row.node_namespace_logic_hash = Some("other".into());
+                }
+                row.last_modified_epoch = epoch;
+                row.execution_type = et;
+                row
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn prior_build_reported_iff_a_current_row_exists(
+            row in prop::option::of(arbitrary_row(evidence(&model_req("select id from DB.DEV.UP")))),
+        ) {
+            let req = model_req("select id from DB.DEV.UP");
+            let expected = row.is_some();
+            prop_assert_eq!(model(&req, row).target_has_prior_build, expected);
+        }
+
+        #[test]
+        fn candidate_is_always_the_current_target_row(
+            row in arbitrary_row(evidence(&model_req("select id from DB.DEV.UP"))),
+            tolerate in any::<bool>(),
+        ) {
+            let mut req = model_req("select id from DB.DEV.UP");
+            req.tolerate_nondeterminism = tolerate;
+            let (id, clone) = (row.id, row.clone_source_table.is_some());
+            if let Some(c) = model(&req, Some(row)).candidate {
+                prop_assert!(tolerate, "volatile evaluation never reuses");
+                prop_assert_eq!(c.id, id);
+                prop_assert_eq!(c.target_table.as_str(), TARGET);
+                prop_assert_eq!(c.execution_type, req.execution_type);
+                if clone {
+                    prop_assert!(c.execution_results.is_none(), "adoption never serves results");
+                }
+            }
+        }
+    }
+}
