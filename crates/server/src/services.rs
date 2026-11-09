@@ -4,6 +4,7 @@ use tonic::{Request, Response, Status};
 
 use crate::decision::{
     DecisionKind, DecisionReason, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+    REJECTION_FORCED_NOT_ELIGIBLE,
 };
 use crate::execution::store_status as db_err;
 use crate::query_cache as qc;
@@ -19,21 +20,10 @@ use qc::explain_server::Explain;
 use qc::selector_service_server::SelectorService;
 use qc::sql_server::Sql;
 
-// SubmitSQLResultType values (shared.proto).
-const DECISION_SKIP_EXECUTION: i32 = 0;
-const DECISION_READY_TO_EXECUTE: i32 = 1;
-const DECISION_READY_TO_CLONE: i32 = 3;
-// RejectionReason::FORCED_NOT_ELIGIBLE.
-const REJECTION_FORCED_NOT_ELIGIBLE: i32 = 5;
-
 /// The wire `ExplainedDecision` of a Submit decision record.
 fn explained_decision(record: &DecisionRecord) -> qc::ExplainedDecision {
     qc::ExplainedDecision {
-        decision: match record.class {
-            DecisionKind::Skip => DECISION_SKIP_EXECUTION,
-            DecisionKind::Build => DECISION_READY_TO_EXECUTE,
-            DecisionKind::Clone => DECISION_READY_TO_CLONE,
-        },
+        decision: record.class.wire_decision(),
         skip_rejection_reason: record.skip_rejection_reason,
         clone_rejection_reason: record.clone_rejection_reason,
         is_stale: record.is_stale,
@@ -121,7 +111,7 @@ fn unable_to_clone_response(
             clone_source,
             clone_target,
             explained_decision: Some(qc::ExplainedDecision {
-                decision: DECISION_READY_TO_EXECUTE,
+                decision: DecisionKind::Build.wire_decision(),
                 skip_rejection_reason: None,
                 clone_rejection_reason: Some(clone_rejection_reason),
                 is_stale: false,
@@ -150,7 +140,7 @@ fn ready_to_clone_response(
         clone_source,
         clone_target,
         explained_decision: Some(qc::ExplainedDecision {
-            decision: DECISION_READY_TO_CLONE,
+            decision: DecisionKind::Clone.wire_decision(),
             skip_rejection_reason: Some(REJECTION_FORCED_NOT_ELIGIBLE),
             clone_rejection_reason: None,
             is_stale: false,
@@ -752,8 +742,7 @@ impl Explain for ExplainService {
             let Some(edid) = row.execution_decision_id.clone() else {
                 continue;
             };
-            let Some(decision) = crate::explain::DecisionClass::from_decision_str(&row.decision)
-            else {
+            let Some(decision) = DecisionKind::from_stored(&row.decision) else {
                 // Unknown decision class — skip rather than invent a tree.
                 continue;
             };
