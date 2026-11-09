@@ -106,11 +106,14 @@ fn execute_description(execution_type: i32, had_prior: bool) -> String {
 }
 
 /// Inputs distilled from a SubmitEnrichedSQLRequest for the decision.
+///
+/// `freshness_tolerance_seconds` is deliberately absent: a non-zero tolerance
+/// does not absorb upstream drift (verified live; a 300s tolerance did not
+/// absorb a 120s upstream-newer-than-build gap). It is preserved on the wire
+/// only, so the engine never sees it.
 pub struct SubmitContext<'a> {
     pub execution_type: i32,
-    pub node_body_hash: Option<&'a str>,
     pub input_tables: &'a [InputTable],
-    pub freshness_tolerance_seconds: i64,
     /// The node's own target table (fully-qualified). Its presence in
     /// `input_tables` is for own-existence/freshness tracking and must NOT be
     /// treated as upstream drift.
@@ -125,10 +128,11 @@ pub struct SubmitContext<'a> {
     pub target_has_prior_build: bool,
 }
 
-/// Decide SKIP vs EXECUTE given the latest matching confirmed record (if any).
-pub fn decide(ctx: &SubmitContext, confirmed: Option<&ExecutionRow>) -> Verdict {
-    match confirmed {
-        // No confirmed record with a MATCHING fingerprint. The target either
+/// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
+/// `reuse_candidate`).
+pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict {
+    match candidate {
+        // No reuse candidate. The target either
         // never existed (first build → "did not exist") or existed under a
         // different fingerprint (rebuild → "query didn't match / out of date").
         // `target_has_prior_build` carries the physical-existence signal.
@@ -252,12 +256,7 @@ pub(crate) struct UpstreamFreshness {
 }
 
 pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> UpstreamFreshness {
-    // The tolerance is deliberately NOT applied here: a non-zero
-    // `freshness_tolerance_seconds` does not absorb upstream drift (verified
-    // live; a 300s tolerance did not absorb a 120s upstream-newer-than-build
-    // gap). The field is preserved on the wire only.
-    let _ = ctx.freshness_tolerance_seconds.saturating_mul(1000);
-
+    // No tolerance applies here; see `SubmitContext`.
     let genuine = |name: &str| ctx.target_table != Some(name);
 
     // Name-set diff over GENUINE upstreams (the node's own target excluded).
@@ -472,12 +471,10 @@ pub fn input_tables_of(req: &qc::SubmitEnrichedSqlRequest) -> Vec<InputTable> {
 mod tests {
     use super::*;
 
-    fn ctx<'a>(hash: &'a str, tables: &'a [InputTable]) -> SubmitContext<'a> {
+    fn ctx<'a>(tables: &'a [InputTable]) -> SubmitContext<'a> {
         SubmitContext {
             execution_type: 10,
-            node_body_hash: Some(hash),
             input_tables: tables,
-            freshness_tolerance_seconds: 0,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
@@ -521,12 +518,26 @@ mod tests {
 
     /// Node-type/reason-specific decision_description strings, pinned to the
     /// exact wording captured live from api.state.dbt.com.
+    /// A data test has no physical target, so the server does not look up
+    /// target existence for it (`reuse_candidate::for_data_test` reports
+    /// `false`). Pin that its EXECUTE response would be the same either way.
+    #[test]
+    fn data_test_execute_ignores_target_existence() {
+        let up = vec![tbl("a", 100)];
+        let with = |prior: bool| {
+            let mut c = data_test_ctx(&up);
+            c.target_has_prior_build = prior;
+            decide(&c, None)
+        };
+        assert_eq!(with(false), with(true));
+    }
+
     #[test]
     fn decision_descriptions_match_hosted_wording() {
         let up = vec![tbl("a", 100)];
         // First build (no prior) → "did not exist" per node kind.
         let first = |et: i32| {
-            let mut c = ctx("h", &up);
+            let mut c = ctx(&up);
             c.execution_type = et;
             desc_of(&decide(&c, None))
         };
@@ -552,7 +563,7 @@ mod tests {
         let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
         let drift = vec![tbl("a", 9_000_000)];
         let stale = |et: i32| {
-            let mut c = ctx("h", &drift);
+            let mut c = ctx(&drift);
             c.execution_type = et;
             desc_of(&decide(&c, Some(&prev)))
         };
@@ -569,7 +580,7 @@ mod tests {
         // Skip (confirmed + fresh) → node-kind no-op wording.
         let fresh = vec![tbl("a", 100)];
         let skip = |et: i32| {
-            let mut c = ctx("h", &fresh);
+            let mut c = ctx(&fresh);
             c.execution_type = et;
             desc_of(&decide(&c, Some(&prev)))
         };
@@ -607,7 +618,7 @@ mod tests {
         let recorded = vec![tbl("\"DB\".\"PROD\".\"CUSTOMERS\"", 1_000_000)];
         let current = vec![tbl("\"DB\".\"DEV\".\"CUSTOMERS\"", 500_000)]; // dev, older
         let prev = confirmed("h", recorded, Some(1_000_000));
-        let v = decide(&ctx("h", &current), Some(&prev));
+        let v = decide(&ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { .. }),
             "different physical inputs must not share evidence implicitly"
@@ -616,7 +627,7 @@ mod tests {
 
     #[test]
     fn no_history_executes_not_stale() {
-        let v = decide(&ctx("h", &[]), None);
+        let v = decide(&ctx(&[]), None);
         match v {
             Verdict::Execute { is_stale, .. } => assert!(!is_stale),
             _ => panic!("expected execute"),
@@ -627,7 +638,7 @@ mod tests {
     fn match_with_fresh_inputs_skips() {
         let tables = vec![tbl("a", 100)];
         let prev = confirmed("h", tables.clone(), Some(100));
-        let v = decide(&ctx("h", &tables), Some(&prev));
+        let v = decide(&ctx(&tables), Some(&prev));
         assert!(matches!(v, Verdict::Skip { .. }));
     }
 
@@ -636,7 +647,7 @@ mod tests {
         let recorded = vec![tbl("a", 100)];
         let current = vec![tbl("a", 500)];
         let prev = confirmed("h", recorded, Some(100));
-        let v = decide(&ctx("h", &current), Some(&prev));
+        let v = decide(&ctx(&current), Some(&prev));
         match v {
             // Upstream drift under ANY rebuilds; the hosted service reports
             // is_stale=FALSE on the execute (verified live, lag fixture entry 5).
@@ -654,7 +665,7 @@ mod tests {
         let current = vec![tbl(target, 999)];
         let mut prev = confirmed("h", recorded, Some(100));
         prev.target_table = target.to_string();
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.target_table = Some(target);
         let v = decide(&c, Some(&prev));
         assert!(
@@ -667,15 +678,15 @@ mod tests {
     /// `freshness_tolerance_seconds` does NOT absorb upstream drift. The service
     /// rebuilds as soon as an upstream is newer than the own-build epoch, even
     /// with a large tolerance (a 300s tolerance did not absorb a 120s gap).
-    /// So any upstream newer than our build is stale regardless of tolerance.
+    /// The engine never receives the tolerance (see `SubmitContext`); the wire
+    /// behavior is pinned with a non-zero tolerance by `lag_policy.rs`.
     #[test]
     fn freshness_tolerance_does_not_absorb_drift() {
-        // own build epoch = 1_000_000; upstream only 1000ms newer; tolerance 2s.
+        // own build epoch = 1_000_000; upstream only 1000ms newer.
         let recorded = vec![tbl("a", 1_000_000)];
         let current = vec![tbl("a", 1_001_000)];
         let prev = confirmed("h", recorded, Some(1_000_000));
-        let mut c = ctx("h", &current);
-        c.freshness_tolerance_seconds = 2;
+        let c = ctx(&current);
         assert!(
             matches!(
                 decide(&c, Some(&prev)),
@@ -693,7 +704,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 100), tbl("b", 999)]; // b drifted
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::Any;
         assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }));
     }
@@ -703,7 +714,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 100), tbl("b", 999)]; // only b drifted
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         // ALL policy: stale only if every upstream drifted; a is fresh → skip
         assert!(matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }));
@@ -714,7 +725,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 900), tbl("b", 999)]; // both drifted
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }));
     }
@@ -739,7 +750,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 100), tbl("b", 999)]; // only b drifted
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         match decide(&c, Some(&prev)) {
             Verdict::Skip { is_stale, .. } => {
@@ -758,7 +769,7 @@ mod tests {
         let tables = vec![tbl("a", 100), tbl("b", 100)];
         let prev = confirmed("h", tables.clone(), Some(100));
         for policy in [StaleUpstreamPolicy::Any, StaleUpstreamPolicy::All] {
-            let mut c = ctx("h", &tables);
+            let mut c = ctx(&tables);
             c.stale_upstream_policy = policy;
             match decide(&c, Some(&prev)) {
                 Verdict::Skip { is_stale, .. } => {
@@ -776,7 +787,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 100), tbl("b", 999)];
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::Any;
         assert!(matches!(
             decide(&c, Some(&prev)),
@@ -798,7 +809,7 @@ mod tests {
         let recorded: Vec<InputTable> = vec![]; // recorded run saw no inputs
         let current = vec![tbl("brand_new", 500)];
         let prev = confirmed("h", recorded, None); // no build epoch baseline
-        let v = decide(&ctx("h", &current), Some(&prev));
+        let v = decide(&ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { .. }),
             "an upstream with no recorded baseline must execute, not skip"
@@ -815,8 +826,7 @@ mod tests {
 
         // Upstream exactly equal to own build: NOT drift → skip (even with tol).
         let at = vec![tbl("a", 1_000_000)];
-        let mut c = ctx("h", &at);
-        c.freshness_tolerance_seconds = 300;
+        let c = ctx(&at);
         assert!(
             matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
             "upstream equal to own build must skip"
@@ -824,8 +834,7 @@ mod tests {
 
         // One ms newer than own build: drift → execute, tolerance notwithstanding.
         let beyond = vec![tbl("a", 1_000_001)];
-        let mut c2 = ctx("h", &beyond);
-        c2.freshness_tolerance_seconds = 300;
+        let c2 = ctx(&beyond);
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
@@ -844,7 +853,7 @@ mod tests {
         let recorded = vec![tbl("\"DB\".\"PROD\".\"CUSTOMERS\"", 1_000_000)];
         let current = vec![tbl("\"DB\".\"DEV\".\"CUSTOMERS\"", 5_000_000)]; // newer, diff schema
         let prev = confirmed("h", recorded, Some(1_000_000));
-        let v = decide(&ctx("h", &current), Some(&prev));
+        let v = decide(&ctx(&current), Some(&prev));
         assert!(
             matches!(
                 v,
@@ -864,10 +873,7 @@ mod tests {
         let current: Vec<InputTable> = vec![]; // all upstreams removed this run
         let prev = confirmed("h", recorded, Some(100));
         assert!(
-            matches!(
-                decide(&ctx("h", &current), Some(&prev)),
-                Verdict::Execute { .. }
-            ),
+            matches!(decide(&ctx(&current), Some(&prev)), Verdict::Execute { .. }),
             "missing dependency evidence requires execution"
         );
     }
@@ -880,7 +886,7 @@ mod tests {
         let recorded = vec![tbl("a", 100)];
         let current = vec![tbl("a", 100), tbl("new_dep", 10_000_000)];
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::Any;
         assert!(
             matches!(
@@ -900,10 +906,8 @@ mod tests {
     /// rejection NO_SUITABLE_MATCH_FOUND).
     #[test]
     fn changed_contract_is_a_hash_miss_execute() {
-        let v = decide(
-            &ctx("new-hash-after-contract-change", &[tbl("a", 100)]),
-            None,
-        );
+        // A changed contract changes the identity, so no reuse candidate exists.
+        let v = decide(&ctx(&[tbl("a", 100)]), None);
         match v {
             Verdict::Execute {
                 is_stale,
@@ -925,8 +929,7 @@ mod tests {
     fn zero_tolerance_any_drift_executes() {
         let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
         let current = vec![tbl("a", 101)]; // 1ms newer
-        let mut c = ctx("h", &current);
-        c.freshness_tolerance_seconds = 0;
+        let c = ctx(&current);
         assert!(matches!(
             decide(&c, Some(&prev)),
             Verdict::Execute {
@@ -944,7 +947,7 @@ mod tests {
         let prev = confirmed("h", vec![tbl("a", 1_000_000)], Some(1_000_000));
         let current = vec![tbl("a", 10)]; // older than recorded
         assert!(matches!(
-            decide(&ctx("h", &current), Some(&prev)),
+            decide(&ctx(&current), Some(&prev)),
             Verdict::Skip { .. }
         ));
     }
@@ -964,12 +967,10 @@ mod tests {
     // epoch), compared per input with strict `>`.
     // Golden fixture: golden/fixtures/data_test_upstream_freshness.jsonl.
 
-    fn data_test_ctx<'a>(hash: &'a str, tables: &'a [InputTable]) -> SubmitContext<'a> {
+    fn data_test_ctx<'a>(tables: &'a [InputTable]) -> SubmitContext<'a> {
         SubmitContext {
             execution_type: ET_DBT_DATA_TEST,
-            node_body_hash: Some(hash),
             input_tables: tables,
-            freshness_tolerance_seconds: 0,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
@@ -984,7 +985,7 @@ mod tests {
         let mut prev = confirmed("h", recorded, None); // tests have no build epoch
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.INPUT", 200)]; // upstream advanced
-        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { .. }),
             "a data test must re-run when its upstream data changed, even with no own epoch"
@@ -999,7 +1000,7 @@ mod tests {
         let mut prev = confirmed("h", recorded, None);
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.INPUT", 200)]; // unchanged
-        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Skip { .. }),
             "an unchanged data test (same upstream epoch) must skip"
@@ -1015,7 +1016,7 @@ mod tests {
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.INPUT", 50)];
         assert!(matches!(
-            decide(&data_test_ctx("h", &current), Some(&prev)),
+            decide(&data_test_ctx(&current), Some(&prev)),
             Verdict::Skip { .. }
         ));
     }
@@ -1032,7 +1033,7 @@ mod tests {
             last_modified_epoch: None,
         }];
         assert!(matches!(
-            decide(&data_test_ctx("h", &current), Some(&prev)),
+            decide(&data_test_ctx(&current), Some(&prev)),
             Verdict::Execute { .. }
         ));
     }
@@ -1046,7 +1047,7 @@ mod tests {
         prev.execution_type = ET_DBT_DATA_TEST;
         let current: Vec<InputTable> = vec![];
         assert!(matches!(
-            decide(&data_test_ctx("h", &current), Some(&prev)),
+            decide(&data_test_ctx(&current), Some(&prev)),
             Verdict::Skip { .. }
         ));
     }
@@ -1060,7 +1061,7 @@ mod tests {
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 999)]; // B drifted
         assert!(matches!(
-            decide(&data_test_ctx("h", &current), Some(&prev)),
+            decide(&data_test_ctx(&current), Some(&prev)),
             Verdict::Execute { .. }
         ));
     }
@@ -1081,8 +1082,7 @@ mod tests {
 
         // Upstream equal to own build (to the ms) → fresh, even with tolerance.
         let at = vec![tbl("a", base)];
-        let mut c = ctx("h", &at);
-        c.freshness_tolerance_seconds = 300;
+        let c = ctx(&at);
         assert!(
             matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }),
             "upstream equal to own build (ms) is fresh"
@@ -1090,8 +1090,7 @@ mod tests {
 
         // One millisecond newer than own build → stale, tolerance notwithstanding.
         let beyond = vec![tbl("a", base + 1)];
-        let mut c2 = ctx("h", &beyond);
-        c2.freshness_tolerance_seconds = 300;
+        let c2 = ctx(&beyond);
         assert!(
             matches!(
                 decide(&c2, Some(&prev)),
@@ -1122,7 +1121,7 @@ mod tests {
         let recorded = vec![tbl("a", 100), tbl("b", 100)];
         let current = vec![tbl("a", 100), tbl("b", 999)]; // b drifted
         let prev = confirmed("h", recorded, Some(100));
-        let f = upstream_freshness(&ctx("h", &current), &prev);
+        let f = upstream_freshness(&ctx(&current), &prev);
 
         // A clean, unchanged name set does not short-circuit to
         // DependencySetChanged; it reaches the per-upstream evaluation.
@@ -1149,7 +1148,7 @@ mod tests {
     fn upstream_freshness_reports_name_set_change() {
         let is_set_change = |rec: Vec<InputTable>, cur: &[InputTable]| {
             let prev = confirmed("h", rec, Some(100));
-            let f = upstream_freshness(&ctx("h", cur), &prev);
+            let f = upstream_freshness(&ctx(cur), &prev);
             matches!(f.evidence, FreshnessEvidence::DependencySetChanged)
         };
 
@@ -1175,7 +1174,7 @@ mod tests {
     #[test]
     fn upstream_freshness_reports_no_upstreams() {
         let prev = confirmed("h", vec![], Some(100));
-        let f = upstream_freshness(&ctx("h", &[]), &prev);
+        let f = upstream_freshness(&ctx(&[]), &prev);
         assert!(matches!(f.evidence, FreshnessEvidence::NoUpstreams));
         assert_eq!(f.considered, 0);
         assert_eq!(f.drifted, 0);
@@ -1188,7 +1187,7 @@ mod tests {
         let recorded = vec![tbl("a", 100)];
         let current = vec![tbl("a", 100)];
         let prev = confirmed("h", recorded, None); // no own-build epoch
-        let f = upstream_freshness(&ctx("h", &current), &prev);
+        let f = upstream_freshness(&ctx(&current), &prev);
         assert!(matches!(f.evidence, FreshnessEvidence::NoBuildAnchor));
     }
 
@@ -1201,7 +1200,7 @@ mod tests {
         let mut prev = confirmed("h", recorded, None);
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.INPUT", 200)]; // newer than recorded 100
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.execution_type = ET_DBT_DATA_TEST;
         let f = upstream_freshness(&c, &prev);
 
@@ -1235,7 +1234,7 @@ mod tests {
             },
         ];
         let prev = confirmed("h", recorded, Some(100));
-        let mut c = ctx("h", &current);
+        let mut c = ctx(&current);
         c.stale_upstream_policy = StaleUpstreamPolicy::All;
         assert!(
             matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }),
@@ -1267,7 +1266,7 @@ mod tests {
         let recorded = vec![tbl("a", 200), tbl("a", 50)]; // same name twice
         let current = vec![tbl("a", 100)]; // clean single current upstream
         let prev = confirmed("h", recorded, Some(100));
-        let v = decide(&ctx("h", &current), Some(&prev));
+        let v = decide(&ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { .. }),
             "a duplicate recorded upstream is an ambiguous baseline → rebuild"
@@ -1284,7 +1283,7 @@ mod tests {
         let mut prev = confirmed("h", recorded, None); // data tests have no build epoch
         prev.execution_type = ET_DBT_DATA_TEST;
         let current = vec![tbl("DB.S.A", 100)];
-        let v = decide(&data_test_ctx("h", &current), Some(&prev));
+        let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
             matches!(v, Verdict::Execute { .. }),
             "a data test with a duplicate recorded upstream has no provable baseline → rebuild"
@@ -1299,7 +1298,7 @@ mod tests {
         let recorded = vec![tbl("a", 200), tbl("a", 50)];
         let current = vec![tbl("a", 100)];
         let prev = confirmed("h", recorded, Some(100));
-        let f = upstream_freshness(&ctx("h", &current), &prev);
+        let f = upstream_freshness(&ctx(&current), &prev);
 
         assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
         assert_eq!(f.considered, 1);

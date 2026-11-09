@@ -35,8 +35,10 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 |---|---|
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres writes via sqlx: pending→confirmed lifecycle and atomic batch publication. |
-| `store/history.rs` | Scoped State history reads; shared current-physical-state selection before eligibility filters, with distinct test and historical-provenance lookups. |
-| `history.rs` | Shared SQL/model, data-test and seed history preparation: scoped lookup ordering, clone adoption and reuse-evidence checks. |
+| `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. |
+| `history.rs` | Fetches the latest execution in the submit's scope and hands it to `reuse_candidate`. |
+| `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
+| `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone): eligibility, chain limits, DuckDB evidence and DDL. |
 | `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
@@ -53,13 +55,16 @@ so tests exercise the exact same wiring as production.
 
 ### Decision engine and persistence
 
-`decide(ctx, confirmed) -> Verdict` stays pure. `history.rs` prepares the candidate
-using shared execution evidence and scoped store lookups, then validates
-physical target evidence or complete cached test results. SQL submit and seed
+`decide(ctx, confirmed) -> Verdict` stays pure, and so does the reuse candidate
+selection that feeds it. `history.rs` makes one scoped store read and
+`reuse_candidate.rs` decides, on that row alone, whether it matches the
+submit's identity and passes reuse qualification (physical target evidence or
+complete cached test results). SQL submit and seed
 submit consume prepared history and execution evidence. The evidence owns identity
 construction and pending-row recording; Record uses the same identity constructors
 and publishes its complete batch with selector/deferral state atomically. Submit retains selector updates, the call to `decide()`,
-cross-target copy selection, pending writes and wire responses. The engine
+the copy lookup, pending writes and wire responses; `result_copy.rs` decides
+whether and how a result is copied. The engine
 compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
 from upstream drift. Freshness drift is an upstream newer than the node's own
@@ -69,16 +74,15 @@ and [correctness-handoff.md §C](correctness-handoff.md).
 
 Physical history lookups share one query constructor in `store/history.rs`. It
 selects the latest confirmed row for one target, or per target for copy candidates,
-inside organization/warehouse-family/namespace scope before applying eligibility.
-Data-test UID lookups and historical copy-provenance walks retain their separate
-selection rules. Physical-only lookups omit cached result decoding; result-serving
-lookups continue to report corrupt results.
+inside organization/warehouse-family/namespace scope. Data-test UID lookups and
+historical copy-provenance walks retain their separate selection rules.
 
-History preparation keeps the existing sequential, independent Postgres reads:
-strict lookup, latest-target lookup on a model miss, then prior-build existence.
-Tests use their scoped UID lookup; seeds use their values/configuration lookup.
-The latest-target lookup runs even without a copy identity and omits irrelevant
-cached result bytes, while result-serving lookups still report corrupt results.
+Model and seed submits make one read: the target's current physical state. The
+strict identity match, clone-origin adoption and prior-build existence are all
+decided on that row by `reuse_candidate.rs`, so an older row can never be
+resurrected after a later build. Cached results and recorded inputs are decoded
+only once the row is selected: result-serving matches still report corrupt
+results as an internal error, while adoption and non-matching rows ignore them.
 Preparation returns database errors for submit to translate to the existing wire
 error. `services::sql_execution` remains a public re-export for upgrade tests.
 

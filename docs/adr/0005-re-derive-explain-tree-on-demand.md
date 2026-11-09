@@ -69,11 +69,12 @@ matched no prior row:
   `CloneEquivalent`, which carries no `executions.id`, so the column is NULL.
   This is the CLONE *decision* ONLY. Clone **adoption** reuse — a SKIP or a
   freshness-driven EXECUTE that reuses a clone-origin `executions` row through
-  `decide` — is NOT NULL: `confirmed` is `Some(that row)` and
-  `services.rs` records `matched_execution_id = confirmed.id` (PR #31 round-3
+  `decide` — is NOT NULL: the reuse candidate is `Some(that row)` and
+  `services.rs` records `matched_execution_id = candidate.id` (PR #31 round-3
   F5). The explain path therefore joins the clone-origin anchor and must apply
-  the clone-adoption input normalization (`store::ExplainDecisionRow::anchor`)
-  that mirrors `history::prepare_sql`;
+  the clone-adoption input normalization (`store::ExplainDecisionRow::anchor`),
+  which shares one rule with the decision
+  (`reuse_candidate::adopt_current_inputs`, 2026-11-09);
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
 

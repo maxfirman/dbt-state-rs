@@ -51,6 +51,12 @@ Assessment of whether a workload and its available evidence meet the
 requirements for considering a recorded result for reuse.
 _Avoid_: Reuse decision (qualification alone does not select a result)
 
+**Reuse candidate**:
+The latest recorded result for a workload's output, when it matches the
+workload's identity and passes reuse qualification. Freshness is assessed
+afterwards, so a reuse candidate is not yet a decision to reuse it.
+_Avoid_: Match, confirmed row
+
 **Reference execution**:
 An independent execution of a test workload used to establish its expected
 result, with any permitted stale results specified separately.

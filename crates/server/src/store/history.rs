@@ -6,7 +6,7 @@ use super::*;
 use sqlx::{Postgres, QueryBuilder};
 
 const EXECUTION_COLUMNS: &str = "id, org_id, target_table, execution_type, node_body_hash, node_sql_hash, node_namespace_logic_hash, table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms, execution_results, input_tables, status, request_id, clone_source_table";
-const PHYSICAL_COLUMNS: &str = "id, org_id, target_table, execution_type, node_body_hash, node_sql_hash, node_namespace_logic_hash, table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms, NULL::bytea AS execution_results, input_tables, status, request_id, clone_source_table";
+const LATEST_COLUMNS: &str = "id, org_id, target_table, execution_type, node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms, execution_results, input_tables, status, request_id, clone_source_table";
 
 /// A single target or all targets within the same physical warehouse scope.
 /// Callers append eligibility conditions outside the limited/distinct selection.
@@ -46,219 +46,63 @@ fn current_physical_state<'a>(
 }
 
 impl Store {
-    /// Select current physical state within the warehouse connection before
-    /// checking logic, execution type and dialect options.
-    /// An older matching execution cannot describe a target overwritten later.
+    /// The CURRENT physical state of a target: its latest confirmed execution
+    /// within the org, warehouse family and connection namespace, whatever its
+    /// provenance, execution type or dialect options. `None` means the target
+    /// has no confirmed build in this scope.
     ///
-    /// `node_template_hash` is the submit's unrendered-template identity, set
-    /// only in `compare_unrendered_code` mode. When present, a row matches if
-    /// EITHER its recorded rendered hash equals `node_sql_hash` OR its recorded
-    /// template hash equals `node_template_hash` — the documented contract that
-    /// a `compare_unrendered_code` node rebuilds ONLY when BOTH the rendered SQL
-    /// and the unrendered template change (verified live; see
-    /// `template_comparison.rs`). When `node_template_hash` is NULL (ordinary
-    /// rendered comparison) only `node_sql_hash` is compared, as before.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn find_confirmed(
+    /// PHYSICAL-STATE INVARIANT: an older execution cannot describe a target
+    /// overwritten later, so identity, provenance and eligibility are checked on
+    /// THIS row only (see `reuse_candidate`), never by filtering before the
+    /// latest-row selection (review issue #1 P0#2).
+    pub async fn current_target_state(
         &self,
         org_id: &str,
         target_table: &str,
-        execution_type: i32,
-        node_sql_hash: Option<&str>,
         table_namespace: Option<&str>,
         dialect: &str,
-        node_template_hash: Option<&str>,
-        node_namespace_logic_hash: Option<&str>,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
+    ) -> sqlx::Result<Option<LatestExecution>> {
         let mut query =
             current_physical_state(org_id, table_namespace, dialect, Some(target_table));
         query
             .push("SELECT ")
-            .push(EXECUTION_COLUMNS)
-            .push(" FROM current_state WHERE execution_type = ")
-            .push_bind(execution_type)
-            .push(" AND (node_sql_hash IS NOT DISTINCT FROM ")
-            .push_bind(node_sql_hash)
-            .push(" OR (")
-            .push_bind(node_template_hash)
-            .push("::text IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM ")
-            .push_bind(node_template_hash)
-            .push("))")
-            // Retain upgrade invalidation in addition to the strict dependency binding.
-            .push(" AND (node_namespace_logic_hash IS NULL OR ")
-            .push_bind(node_namespace_logic_hash)
-            .push("::text IS NULL OR node_namespace_logic_hash IS NOT DISTINCT FROM ")
-            .push_bind(node_namespace_logic_hash)
-            .push(") AND dialect = ")
-            .push_bind(dialect);
-        let row = query
-            .build_query_as::<RawRow>()
+            .push(LATEST_COLUMNS)
+            .push(" FROM current_state");
+        query
+            .build_query_as::<LatestExecution>()
             .fetch_optional(&self.pool)
-            .await?;
-        row.map(TryInto::try_into).transpose()
+            .await
     }
 
-    /// Tests have no physical target. Scope identity by project and warehouse,
-    /// then compare the latest outcome's logic rather than resurrecting history.
-    ///
-    /// `node_template_hash` is the submit's unrendered-template identity, set
-    /// only in `compare_unrendered_code` mode. When present, a row matches if
-    /// EITHER its recorded rendered hash equals `node_sql_hash` OR its recorded
-    /// template hash equals `node_template_hash` — the same dual-identity
-    /// contract applied to models in `find_confirmed` (a cuc node rebuilds ONLY
-    /// when BOTH the rendered SQL and the template change). Review #2 finding 6
-    /// FOLLOW-UP: the data-test lookup previously compared only `node_sql_hash`,
-    /// so a cuc data test with an unchanged template but a changed interpolated
-    /// rendered literal wrongly EXECUTED where the hosted service reuses it.
-    #[allow(clippy::too_many_arguments)] // Explicit independent identity/scope dimensions.
-    pub async fn find_confirmed_test(
+    /// Data tests have no physical target. Their latest confirmed outcome is
+    /// scoped by node UID, project, namespace and warehouse family; identity is
+    /// compared on that row rather than resurrecting older history.
+    pub async fn latest_data_test(
         &self,
         org_id: &str,
         node_unique_id: &str,
         project_id: Option<&str>,
         table_namespace: Option<&str>,
-        node_sql_hash: Option<&str>,
-        node_template_hash: Option<&str>,
         dialect: &str,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
-        let row = sqlx::query_as::<_, RawRow>(
+    ) -> sqlx::Result<Option<LatestExecution>> {
+        sqlx::query_as::<_, LatestExecution>(&format!(
             r#"
-            SELECT id, org_id, target_table, execution_type, node_body_hash, node_sql_hash,
-                   node_namespace_logic_hash,
-                   table_namespace, node_unique_id, last_modified_epoch, execution_runtime_ms,
-                   execution_results, input_tables, status, request_id, clone_source_table
-            FROM (
-                SELECT * FROM executions
-                WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
-                  AND project_id IS NOT DISTINCT FROM $3
-                  AND table_namespace IS NOT DISTINCT FROM $4
-                  AND warehouse_family = $7
-                  AND status = 'confirmed'
-                ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
-            ) current_execution
-            WHERE (
-                node_sql_hash IS NOT DISTINCT FROM $5
-                OR ($6 IS NOT NULL AND node_template_hash IS NOT DISTINCT FROM $6)
-            )
-            "#,
-        )
+            SELECT {LATEST_COLUMNS} FROM executions
+            WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
+              AND project_id IS NOT DISTINCT FROM $3
+              AND table_namespace IS NOT DISTINCT FROM $4
+              AND warehouse_family = $5
+              AND status = 'confirmed'
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            "#
+        ))
         .bind(org_id)
         .bind(node_unique_id)
         .bind(project_id)
         .bind(table_namespace)
-        .bind(node_sql_hash)
-        .bind(node_template_hash)
         .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
         .fetch_optional(&self.pool)
-        .await?;
-        row.map(TryInto::try_into).transpose()
-    }
-
-    /// Seed configuration participates in the logic hash alongside data bytes.
-    pub async fn find_confirmed_values(
-        &self,
-        org_id: &str,
-        target_table: &str,
-        values_hash: &str,
-        node_sql_hash: &str,
-        table_namespace: Option<&str>,
-        dialect: &str,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
-        let mut query =
-            current_physical_state(org_id, table_namespace, dialect, Some(target_table));
-        query
-            .push("SELECT ")
-            .push(EXECUTION_COLUMNS)
-            .push(" FROM current_state WHERE execution_type = 9 AND values_hash = ")
-            .push_bind(values_hash)
-            .push(" AND node_sql_hash = ")
-            .push_bind(node_sql_hash);
-        let row = query
-            .build_query_as::<RawRow>()
-            .fetch_optional(&self.pool)
-            .await?;
-        row.map(TryInto::try_into).transpose()
-    }
-
-    /// The newest confirmed execution describing a physical target — the
-    /// CURRENT physical state — for the cross-environment clone-adoption path.
-    ///
-    /// PHYSICAL-STATE INVARIANT: a historical execution must never be treated as
-    /// evidence of the current contents of a physical object. The clone-origin
-    /// marker (`clone_source_table IS NOT NULL`) is therefore NOT part of the
-    /// selection: if a cloned target was later rebuilt normally, that ordinary
-    /// rebuild is the current state and this returns it. The CALLER then adopts
-    /// the row only if it is itself clone-origin AND its inherited
-    /// schema-abstracted logic matches the submit (see
-    /// `history::prepare_sql`). Selecting the latest row first and
-    /// filtering afterwards guarantees a stale clone-origin row cannot be
-    /// resurrected once the object has been overwritten by a non-clone build.
-    ///
-    /// `execution_results` is intentionally NOT selected (returned as NULL):
-    /// this lookup feeds only clone adoption, which never serves a row's cached
-    /// results (clone-origin rows carry none, and the caller overwrites
-    /// `input_tables`). Decoding a corrupt-but-irrelevant results blob here
-    /// would spuriously fail an otherwise cold-miss submit; the result-serving
-    /// queries (`find_confirmed`, `find_confirmed_test`, `find_confirmed_values`)
-    /// still surface corruption as an INTERNAL error.
-    pub async fn find_latest_confirmed_target(
-        &self,
-        org_id: &str,
-        target_table: &str,
-        execution_type: i32,
-        table_namespace: Option<&str>,
-        dialect: &str,
-    ) -> sqlx::Result<Option<ExecutionRow>> {
-        // PHYSICAL-STATE INVARIANT (review issue #1 follow-up): select the
-        // target's CURRENT state within the physical warehouse scope (latest
-        // confirmed row, any provenance/type/dialect option) FIRST, then check
-        // execution_type and exact dialect. A build of another type or dialect
-        // option in the SAME warehouse cannot expose stale clone history.
-        let mut query =
-            current_physical_state(org_id, table_namespace, dialect, Some(target_table));
-        // Physical evidence does not serve cached results; irrelevant corrupt bytes
-        // must not fail clone adoption. Result-serving queries still decode them.
-        query
-            .push("SELECT ")
-            .push(PHYSICAL_COLUMNS)
-            .push(" FROM current_state WHERE execution_type = ")
-            .push_bind(execution_type)
-            .push(" AND dialect = ")
-            .push_bind(dialect);
-        let row = query
-            .build_query_as::<RawRow>()
-            .fetch_optional(&self.pool)
-            .await?;
-        row.map(TryInto::try_into).transpose()
-    }
-
-    /// True if ANY confirmed execution exists for this target in its physical
-    /// warehouse scope (regardless of execution_type or fingerprint). This
-    /// is the PHYSICAL-EXISTENCE signal used to distinguish a genuine first
-    /// build from a rebuild whose logic fingerprint no longer matches — hosted
-    /// reports the rebuild rationale ("query didn't match or upstream out of
-    /// date") when the target existed. Review #2 5th follow-up P1 #4.
-    pub async fn target_has_confirmed_history(
-        &self,
-        org_id: &str,
-        target_table: &str,
-        table_namespace: Option<&str>,
-        dialect: &str,
-    ) -> sqlx::Result<bool> {
-        let exists: Option<i32> = sqlx::query_scalar(
-            r#"SELECT 1 FROM executions
-               WHERE org_id = $1 AND target_table = $2 AND status = 'confirmed'
-                 AND warehouse_family = $3
-                 AND table_namespace IS NOT DISTINCT FROM $4
-               LIMIT 1"#,
-        )
-        .bind(org_id)
-        .bind(target_table)
-        .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
-        .bind(table_namespace)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(exists.is_some())
+        .await
     }
 
     /// The newest confirmed execution in a namespace carrying a given

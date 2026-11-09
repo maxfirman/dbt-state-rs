@@ -37,6 +37,59 @@ pub struct ExecutionRow {
     pub clone_source_table: Option<String>,
 }
 
+/// The latest confirmed execution in a physical scope, as fetched for reuse
+/// candidate selection. Cached results and recorded inputs stay undecoded until
+/// the row is selected, so corrupt bytes on a row that will not be served
+/// cannot fail a submit. Convert with [`LatestExecution::into_row`].
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct LatestExecution {
+    pub(crate) id: i64,
+    pub(crate) org_id: String,
+    pub(crate) target_table: String,
+    pub(crate) execution_type: i32,
+    pub(crate) node_body_hash: Option<String>,
+    pub(crate) node_sql_hash: Option<String>,
+    pub(crate) node_namespace_logic_hash: Option<String>,
+    pub(crate) node_template_hash: Option<String>,
+    pub(crate) values_hash: Option<String>,
+    pub(crate) dialect: String,
+    pub(crate) table_namespace: Option<String>,
+    pub(crate) node_unique_id: Option<String>,
+    pub(crate) last_modified_epoch: Option<i64>,
+    pub(crate) execution_runtime_ms: Option<i64>,
+    pub(crate) execution_results: Option<Vec<u8>>,
+    pub(crate) input_tables: serde_json::Value,
+    pub(crate) status: String,
+    pub(crate) request_id: String,
+    pub(crate) clone_source_table: Option<String>,
+}
+
+impl LatestExecution {
+    /// Decode into an [`ExecutionRow`]. With `with_results = false` the cached
+    /// results are dropped undecoded (paths that never serve them).
+    pub(crate) fn into_row(self, with_results: bool) -> sqlx::Result<ExecutionRow> {
+        RawRow {
+            id: self.id,
+            org_id: self.org_id,
+            target_table: self.target_table,
+            execution_type: self.execution_type,
+            node_body_hash: self.node_body_hash,
+            node_sql_hash: self.node_sql_hash,
+            node_namespace_logic_hash: self.node_namespace_logic_hash,
+            table_namespace: self.table_namespace,
+            node_unique_id: self.node_unique_id,
+            last_modified_epoch: self.last_modified_epoch,
+            execution_runtime_ms: self.execution_runtime_ms,
+            execution_results: self.execution_results.filter(|_| with_results),
+            input_tables: self.input_tables,
+            status: self.status,
+            request_id: self.request_id,
+            clone_source_table: self.clone_source_table,
+        }
+        .try_into()
+    }
+}
+
 /// Parameters captured when a ready_to_execute verdict is issued (pending row).
 #[derive(Debug, Clone)]
 pub struct PendingExecution {
@@ -520,7 +573,8 @@ impl Store {
                    a.input_tables        AS anchor_input_tables,
                    a.target_table        AS anchor_target_table,
                    a.execution_type      AS anchor_execution_type,
-                   a.clone_source_table  AS anchor_clone_source_table
+                   a.clone_source_table  AS anchor_clone_source_table,
+                   a.node_sql_hash       AS anchor_node_sql_hash
             FROM node_decisions d
             LEFT JOIN executions a
                    ON a.id = d.matched_execution_id
@@ -558,11 +612,11 @@ pub struct ExplainDecisionRow {
     pub anchor_input_tables: Option<serde_json::Value>,
     pub anchor_target_table: Option<String>,
     pub anchor_execution_type: Option<i32>,
-    /// The anchor's `clone_source_table` (NULL for ordinary rows). A non-NULL
-    /// value marks the anchor as a CLONE-ORIGIN row, whose recorded upstream
-    /// set is empty — the signal the clone-adoption normalization in `anchor()`
-    /// keys on (see `history.rs::prepare_sql` / ADR 0005).
+    /// The anchor's `clone_source_table` and rendered identity. Together they
+    /// identify a client-requested copy, which records no upstream evidence
+    /// (see `reuse_candidate::adopt_current_inputs` / ADR 0005).
     pub anchor_clone_source_table: Option<String>,
+    pub anchor_node_sql_hash: Option<String>,
 }
 
 impl ExplainDecisionRow {
@@ -580,37 +634,18 @@ impl ExplainDecisionRow {
     /// NULL), in which case the generator renders the anchor-independent tree.
     pub fn anchor(&self, org_id: &str) -> Option<ExecutionRow> {
         let id = self.matched_execution_id?;
-        let mut input_tables = self
+        let input_tables = self
             .anchor_input_tables
             .as_ref()
             .and_then(|v| serde_json::from_value::<Vec<InputTable>>(v.clone()).ok())
             .unwrap_or_default();
-        // CLONE-ADOPTION INPUT NORMALIZATION (ADR 0005). Mirror EXACTLY the
-        // in-memory substitution the decision applied in
-        // `history.rs::prepare_sql`: when the matched anchor is a CLONE-ORIGIN
-        // row (`clone_source_table` set) whose recorded upstream set is EMPTY (a
-        // clone records no upstreams), adopt the DECISION-TIME inputs — the
-        // persisted `node_decisions.input_tables` (`self.input_tables()`) — as
-        // the anchor's recorded set. Without this, the explain path feeds
-        // `decision::upstream_freshness` an empty recorded set vs the non-empty
-        // current set → `DependencySetChanged` (no per-upstream verdicts), so an
-        // upstream-drift EXECUTE mis-renders as the SHAPE-7 query-changed tree
-        // and a SKIP's freshness subtree is unanchored. The decision compared
-        // each upstream against the clone's own build epoch
-        // (`anchor_last_modified_epoch`); re-deriving against the same
-        // normalized inputs keeps explanation and decision in lockstep. These
-        // two normalizations MUST stay identical — change both together.
-        let clone_source_table = self.anchor_clone_source_table.clone();
-        if clone_source_table.is_some() && input_tables.is_empty() {
-            input_tables = self.input_tables();
-        }
-        Some(ExecutionRow {
+        let mut anchor = ExecutionRow {
             id,
             org_id: org_id.to_string(),
             target_table: self.anchor_target_table.clone().unwrap_or_default(),
             execution_type: self.anchor_execution_type.unwrap_or(self.execution_type),
             node_body_hash: None,
-            node_sql_hash: None,
+            node_sql_hash: self.anchor_node_sql_hash.clone(),
             node_namespace_logic_hash: None,
             table_namespace: None,
             node_unique_id: None,
@@ -620,8 +655,13 @@ impl ExplainDecisionRow {
             input_tables,
             status: "confirmed".to_string(),
             request_id: String::new(),
-            clone_source_table,
-        })
+            clone_source_table: self.anchor_clone_source_table.clone(),
+        };
+        // Re-derive against the same recorded inputs the decision used: the
+        // persisted decision-time inputs stand in exactly when the decision
+        // substituted the submit's inputs (one shared rule).
+        crate::reuse_candidate::adopt_current_inputs(&mut anchor, &self.input_tables());
+        Some(anchor)
     }
 }
 
@@ -673,5 +713,43 @@ impl TryFrom<RawRow> for ExecutionRow {
             request_id: r.request_id,
             clone_source_table: r.clone_source_table,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decision_row(anchor_node_sql_hash: Option<&str>) -> ExplainDecisionRow {
+        ExplainDecisionRow {
+            execution_decision_id: Some("d".into()),
+            decision: "skip".into(),
+            execution_type: 1,
+            decision_description: None,
+            is_stale: false,
+            target_table: Some("T".into()),
+            clone_source: None,
+            input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
+            matched_execution_id: Some(1),
+            anchor_last_modified_epoch: Some(10),
+            anchor_input_tables: Some(serde_json::json!([])),
+            anchor_target_table: Some("T".into()),
+            anchor_execution_type: Some(1),
+            anchor_clone_source_table: Some("PROD.T".into()),
+            anchor_node_sql_hash: anchor_node_sql_hash.map(str::to_owned),
+        }
+    }
+
+    /// Explain re-derives against the same recorded inputs the decision used
+    /// (`reuse_candidate::adopt_current_inputs`): substituted for a
+    /// client-requested copy, kept as recorded for a SQL-submit copy.
+    #[test]
+    fn explain_anchor_applies_the_decision_input_rule() {
+        let register_clone = decision_row(None).anchor("o").unwrap();
+        assert_eq!(register_clone.input_tables.len(), 1);
+        assert_eq!(register_clone.input_tables[0].name, "UP");
+
+        let sql_copy = decision_row(Some("h")).anchor("o").unwrap();
+        assert!(sql_copy.input_tables.is_empty());
     }
 }

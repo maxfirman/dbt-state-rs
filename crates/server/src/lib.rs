@@ -8,6 +8,8 @@ mod execution;
 pub mod explain;
 pub mod fingerprint;
 mod history;
+mod result_copy;
+mod reuse_candidate;
 pub mod selector;
 pub mod services;
 pub mod sql_identity;
