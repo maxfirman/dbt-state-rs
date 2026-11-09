@@ -35,10 +35,8 @@ mod support;
 
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
-use qc::clone_client::CloneClient;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, start_server};
+use support::scenario::{into_execute, variant, Scenario};
+use support::{captured_org, start_server};
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -175,21 +173,13 @@ async fn registerclone_source_age_chain_exact_replay() {
     assert_eq!(entries.len(), 5, "the full 5-message chain");
 
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch.clone());
+    let sc = Scenario::connect(&server).await;
 
     // Replay entry 0: prod source submit → must EXECUTE (first build). Correlate
     // its request_id to the hosted one for the following confirm.
     let e0 = &entries[0];
     let req0: qc::SubmitEnrichedSqlRequest = serde_json::from_value(e0.request.clone()).unwrap();
-    let r0 = sql
-        .submit_enriched_sql(support::captured_request(req0, e0))
-        .await
-        .unwrap()
-        .into_inner();
+    let r0 = sc.org(captured_org(e0)).submit(req0).await;
     // Full-response comparison (entry 0): both must EXECUTE with the same
     // explained_decision (first build, "table did not exist").
     let ours0 = strip_ids(serde_json::to_value(&r0).unwrap());
@@ -198,19 +188,17 @@ async fn registerclone_source_age_chain_exact_replay() {
         ours0, real0,
         "entry 0: full source-submit execute response must match hosted"
     );
-    let qc::submit_sql_response::Response::ReadyToExecute(local0) = r0.response.unwrap() else {
-        panic!("entry 0: source must execute");
-    };
+    let local0 = into_execute(r0);
 
     // Replay entry 1: confirm the source build using the local request_id.
     let mut c1: qc::ConfirmExecutionRequest =
         serde_json::from_value(entries[1].request.clone()).unwrap();
     c1.request_id = local0.request_id;
     assert!(
-        exec.confirm_execution(support::captured_request(c1, &entries[1]))
+        sc.org(captured_org(&entries[1]))
+            .try_confirm(c1)
             .await
             .unwrap()
-            .into_inner()
             .success,
         "entry 1: source confirm succeeds"
     );
@@ -219,11 +207,11 @@ async fn registerclone_source_age_chain_exact_replay() {
     // (BOTH the top-level `ready_to_clone` mirror AND the `response.ready_to_clone_v1`
     // oneof) against hosted by value, not just presence/success.
     let rc: qc::CloneRequest = serde_json::from_value(entries[2].request.clone()).unwrap();
-    let clone_resp = clone
-        .register_clone(support::captured_request(rc, &entries[2]))
+    let clone_resp = sc
+        .org(captured_org(&entries[2]))
+        .register_clone(rc)
         .await
-        .unwrap()
-        .into_inner();
+        .unwrap();
     let ours2 = strip_ids(serde_json::to_value(&clone_resp).unwrap());
     let real2 = strip_ids(entries[2].response.clone());
     assert_eq!(
@@ -240,10 +228,10 @@ async fn registerclone_source_age_chain_exact_replay() {
         serde_json::from_value(entries[3].request.clone()).unwrap();
     c3.request_id = ready.request_id;
     assert!(
-        exec.confirm_execution(support::captured_request(c3, &entries[3]))
+        sc.org(captured_org(&entries[3]))
+            .try_confirm(c3)
             .await
             .unwrap()
-            .into_inner()
             .success,
         "entry 3: clone confirm succeeds"
     );
@@ -251,12 +239,8 @@ async fn registerclone_source_age_chain_exact_replay() {
     // Replay entry 4: the dev resubmit. Hosted SKIPs; the local server diverges.
     let e4 = &entries[4];
     let req4: qc::SubmitEnrichedSqlRequest = serde_json::from_value(e4.request.clone()).unwrap();
-    let r4 = sql
-        .submit_enriched_sql(support::captured_request(req4, e4))
-        .await
-        .unwrap()
-        .into_inner();
-    let local4 = support::response_variant(&r4);
+    let r4 = sc.org(captured_org(e4)).submit(req4).await;
+    let local4 = variant(&r4);
     let hosted4 = diff::decision_variant(&e4.response).unwrap();
 
     assert_eq!(

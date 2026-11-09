@@ -6,7 +6,8 @@ mod support;
 
 use dbt_state_harness::diff::{self, GoldenEntry};
 use dbt_state_proto::query_cache as qc;
-use qc::clone_client::CloneClient;
+use support::scenario::Scenario;
+use support::{captured_org, rows};
 
 const CLONE_GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -40,15 +41,12 @@ async fn register_clone_matches_real_shape() {
         .unwrap();
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut client = CloneClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let resp = client
+    let resp = sc
         .register_clone(req.clone())
         .await
-        .expect("register_clone")
-        .into_inner();
+        .expect("register_clone");
 
     let ready = resp.ready_to_clone.expect("ready_to_clone field populated");
     assert!(!ready.request_id.is_empty(), "request_id present");
@@ -92,7 +90,6 @@ async fn register_clone_matches_real_shape() {
 /// error. The nonempty resolution is pinned by `deferral.rs`.
 #[tokio::test]
 async fn deferred_relations_empty_when_nothing_built() {
-    use qc::execution_client::ExecutionClient;
     let entries = diff::load_golden(CLONE_GOLDEN).expect("load clone golden");
     let entry = entries
         .iter()
@@ -107,17 +104,11 @@ async fn deferred_relations_empty_when_nothing_built() {
     assert!(real_map.is_empty(), "this capture has an empty resolution");
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut client = ExecutionClient::new(ch);
-    let resp = client
-        .resolve_deferred_relations(req)
-        .await
-        .expect("resolve_deferred_relations succeeds")
-        .into_inner();
+    let sc = Scenario::connect(&server).await;
+    let fqn_by_unique_id = sc.resolve_deferred(req).await;
 
     assert!(
-        resp.fqn_by_unique_id.is_empty(),
+        fqn_by_unique_id.is_empty(),
         "no recorded node state => empty resolution, matching the hosted capture"
     );
 }
@@ -158,14 +149,12 @@ async fn register_clone_rejected_when_allow_clones_false() {
     );
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut client = CloneClient::new(ch);
-    let resp = client
-        .register_clone(support::captured_request(req.clone(), entry))
+    let sc = Scenario::connect(&server).await;
+    let resp = sc
+        .org(captured_org(entry))
+        .register_clone(req.clone())
         .await
-        .expect("register_clone")
-        .into_inner();
+        .expect("register_clone");
 
     // Our server must reproduce the unable_to_clone shape exactly.
     assert!(
@@ -193,10 +182,9 @@ async fn register_clone_rejected_when_allow_clones_false() {
     }
 
     // No pending clone history must be written on a rejection.
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0, "a rejected clone must not persist a pending row");
+    assert_eq!(
+        rows::execution_count(&server).await,
+        0,
+        "a rejected clone must not persist a pending row"
+    );
 }

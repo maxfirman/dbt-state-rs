@@ -36,10 +36,9 @@
 mod support;
 
 use dbt_state_harness::diff;
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, start_server};
+use support::demo::{self, transient_at, DEV_SCHEMA, PROD_SCHEMA};
+use support::scenario::Scenario;
+use support::start_server;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -111,10 +110,7 @@ fn hosted_clones_stale_source_with_captured_provenance() {
 #[tokio::test]
 async fn server_clones_stale_cross_name_equivalent_like_hosted() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     const NS: &str = "stale-src-ns";
     let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"STALE_SRC\"";
@@ -122,66 +118,34 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
     let up_old = 1_000i64;
     let up_new = 2_000i64; // dev upstream newer than the source build
 
-    let submit = |target: &str, schema: &str, up_epoch: i64| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(schema.into()),
-        execution_type: 1,
-        sql: format!("select id, amount from CDO_DEMO_DB.{schema}.stale_up"),
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        tables: vec![qc::TableModifiedInfo {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"STALE_UP\"", schema.to_uppercase()),
-            last_modified_epoch: Some(up_epoch),
-        }],
-        query_dependencies: vec![qc::QueryDependency {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"STALE_UP\"", schema.to_uppercase()),
-            query: "select 1 as id, 100 as amount".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            default_schema: schema.into(),
-        }],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.stale_src".into(),
-            project_id: Some("p".into()),
-            node_body_hash: Some("body".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "stale_src".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
+    let submit = |target: &str, schema: &str, up_epoch: i64| {
+        let upstream = format!("\"CDO_DEMO_DB\".\"{}\".\"STALE_UP\"", schema.to_uppercase());
+        demo::model(target, schema, "model.jaffle.stale_src")
+            .sql(&format!(
+                "select id, amount from CDO_DEMO_DB.{schema}.stale_up"
+            ))
+            .upstream(&upstream, up_epoch)
+            .dependency_in(
+                &upstream,
+                "select 1 as id, 100 as amount",
+                demo::CATALOG,
+                schema,
+            )
+            .namespace(NS)
     };
 
     // Build + confirm the source in prod against the OLD upstream.
-    let r0 = sql
-        .submit_enriched_sql(submit(source, "prod_state_demo", up_old))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("source must execute");
-    };
     let source_build_epoch = 1_500i64; // > up_old, as a real build would be
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(source_build_epoch),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        submit(source, PROD_SCHEMA, up_old),
+        transient_at(source_build_epoch).runtime(100),
+    )
+    .await;
 
     // Dev submit of an absent target whose CURRENT upstream (up_new) is NEWER
     // than the source's build epoch — the source is stale. The server must
     // STILL clone (matching hosted), not execute.
-    let rb = sql
-        .submit_enriched_sql(submit(dev, "dev_clone_demo", up_new))
-        .await
-        .unwrap()
-        .into_inner();
+    let rb = sc.submit(submit(dev, DEV_SCHEMA, up_new)).await;
     let variant = support::response_variant(&rb);
     assert_eq!(
         variant, "ready_to_clone",
@@ -258,77 +222,43 @@ async fn clone_eligibility_variant(
     volatile_sql: bool,
 ) -> String {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     const NS: &str = "elig-ns";
     let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ELIG\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ELIG\"";
 
-    let submit = |target: &str, schema: &str, up_epoch: i64| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(schema.into()),
-        execution_type: 1,
-        sql: if volatile_sql {
+    let submit = |target: &str, schema: &str, up_epoch: i64| {
+        let upstream = format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase());
+        let sql = if volatile_sql {
             format!("select id, amount, current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.elig_up")
         } else {
             format!("select id, amount from CDO_DEMO_DB.{schema}.elig_up")
-        },
-        tolerate_nondeterminism: tnd,
-        freshness_tolerance_seconds,
-        tables: vec![qc::TableModifiedInfo {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase()),
-            last_modified_epoch: Some(up_epoch),
-        }],
-        query_dependencies: vec![qc::QueryDependency {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase()),
-            query: "select 1 as id, 100 as amount".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            default_schema: schema.into(),
-        }],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.elig".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [("dbt_node_name".to_string(), "elig".to_string())]
-            .into_iter()
-            .collect(),
-        ..Default::default()
+        };
+        demo::model(target, schema, "model.jaffle.elig")
+            .sql(&sql)
+            .tolerate_nondeterminism(tnd)
+            .tolerance_seconds(freshness_tolerance_seconds)
+            .upstream(&upstream, up_epoch)
+            .dependency_in(
+                &upstream,
+                "select 1 as id, 100 as amount",
+                demo::CATALOG,
+                schema,
+            )
+            .namespace(NS)
     };
 
     // Build + confirm the source over the OLD upstream epoch (1000).
-    let r0 = sql
-        .submit_enriched_sql(submit(source, "prod_state_demo", 1_000))
-        .await
-        .unwrap()
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.unwrap() else {
-        panic!("source must execute");
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: x.request_id,
-        last_modified_epoch: Some(1_500),
-        table_type: Some("TRANSIENT TABLE".into()),
-        execution_runtime_ms: Some(100),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        submit(source, PROD_SCHEMA, 1_000),
+        transient_at(1_500).runtime(100),
+    )
+    .await;
 
     // Dev submit of an absent target with a NEWER upstream (2000) → the source
     // (built @1500) is stale relative to it. Return the decision.
-    let rb = sql
-        .submit_enriched_sql(submit(dev, "dev_clone_demo", 2_000))
-        .await
-        .unwrap()
-        .into_inner();
+    let rb = sc.submit(submit(dev, DEV_SCHEMA, 2_000)).await;
     support::response_variant(&rb).to_string()
 }
 
