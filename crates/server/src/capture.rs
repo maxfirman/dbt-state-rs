@@ -8,28 +8,14 @@
 
 use sqlx::PgPool;
 
+use crate::decision::DecisionReason;
 use crate::store::InputTable;
 
 /// The decision class, as stored in `node_decisions.decision`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecisionKind {
-    Build,
-    Skip,
-    Clone,
-}
-
-impl DecisionKind {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Build => "build",
-            Self::Skip => "skip",
-            Self::Clone => "clone",
-        }
-    }
-}
+pub use crate::decision::DecisionKind;
 
 /// Everything needed to record one decision. Built by the service from the
-/// request metadata + the computed verdict.
+/// request metadata + the decision record.
 #[derive(Debug, Clone)]
 pub struct CaptureInput {
     // identity / grouping
@@ -50,6 +36,9 @@ pub struct CaptureInput {
     pub execution_type: i32,
     // decision
     pub decision: DecisionKind,
+    /// Why the decision was made (ADR 0006). Explain selects its tree shape
+    /// from it.
+    pub decision_reason: DecisionReason,
     pub is_stale: bool,
     pub decision_description: Option<String>,
     pub request_id: Option<String>,
@@ -199,10 +188,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             decision_description, request_id, execution_decision_id,
             node_body_hash, values_hash, table_namespace, target_table,
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
-            execution_runtime_ms, query_dependencies, matched_execution_id
+            execution_runtime_ms, query_dependencies, matched_execution_id,
+            decision_reason
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27)
         "#,
     )
     .bind(&i.org_id)
@@ -231,6 +221,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(i.execution_runtime_ms)
     .bind(serde_json::to_value(&i.query_dependencies).unwrap_or_default())
     .bind(i.matched_execution_id)
+    .bind(i.decision_reason.as_str())
     .execute(pool)
     .await?;
 

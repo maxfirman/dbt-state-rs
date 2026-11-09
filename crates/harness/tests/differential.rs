@@ -8,23 +8,23 @@
 use dbt_state_harness::diff::{self, GoldenEntry};
 use dbt_state_proto::query_cache as qc;
 
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-
 // Shared isolated-schema server setup (see tests/support.rs). Included via
 // #[path] so differential.rs and robustness.rs share one copy of the helpers
 // while keeping the server/sqlx/tokio deps dev-only.
 #[path = "support.rs"]
 mod support;
-use support::{channel, response_variant, start_server};
+use support::demo::{self, transient_at, DEV_SCHEMA, NS, PROD_SCHEMA};
+use support::rows;
+use support::scenario::{into_clone, into_skip, outcome, ready_id, seed, variant, view, Scenario};
+use support::{channel, start_server};
 
 const GOLDEN: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../golden/fixtures/golden_20261008T222744.061Z.jsonl"
 );
 
-/// Build a SubmitEnrichedSqlRequest from a golden request JSON value.
-fn submit_req_from_golden(e: &GoldenEntry) -> qc::SubmitEnrichedSqlRequest {
+/// Decode a golden request JSON value (a captured SubmitEnrichedSqlRequest).
+fn golden_request<T: serde::de::DeserializeOwned>(e: &GoldenEntry) -> T {
     serde_json::from_value(e.request.clone()).expect("decode SubmitEnrichedSqlRequest")
 }
 
@@ -45,56 +45,35 @@ fn find_first_execute(entries: &[GoldenEntry]) -> &GoldenEntry {
 async fn execute_then_confirm_then_skip() {
     let entries = diff::load_golden(GOLDEN).expect("load golden");
     let exec_entry = find_first_execute(&entries);
-    let req = submit_req_from_golden(exec_entry);
+    let req: qc::SubmitEnrichedSqlRequest = golden_request(exec_entry);
 
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // 1) First submit of a never-seen fingerprint -> EXECUTE.
-    let resp1 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .expect("submit 1")
-        .into_inner();
-    let variant1 = response_variant(&resp1);
+    let resp1 = sc.submit(req.clone()).await;
+    let variant1 = variant(&resp1);
     assert_eq!(variant1, "ready_to_execute", "first submit must execute");
 
-    let request_id = match resp1.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        _ => panic!("expected ready_to_execute"),
-    };
+    let request_id = ready_id(&resp1);
     assert!(!request_id.is_empty());
 
     // 2) Confirm the execution.
-    let confirm = qc::ConfirmExecutionRequest {
-        request_id: request_id.clone(),
-        last_modified_epoch: Some(1_791_498_542_120),
-        failed_to_clone: false,
-        table_type: None,
-        execution_results: None,
-        execution_runtime_ms: Some(3205),
-        labels: req.labels.clone(),
-    };
-    let cresp = exec
-        .confirm_execution(confirm)
-        .await
-        .expect("confirm")
-        .into_inner();
+    // The captured outcome, echoing the submit's labels.
+    let built = req.labels.iter().fold(
+        outcome().epoch(1_791_498_542_120).runtime(3205),
+        |o, (k, v)| o.label(k, v),
+    );
+    let confirm = built.confirm(&request_id);
+    let cresp = sc.try_confirm(confirm).await.expect("confirm");
     assert!(cresp.success, "confirm must succeed for a known request_id");
     assert_eq!(cresp.request_id, request_id);
 
     // 3) Identical submit again -> SKIP (no-op), because the fingerprint is now
     //    confirmed and upstream data is unchanged.
-    let resp2 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .expect("submit 2")
-        .into_inner();
+    let resp2 = sc.submit(req.clone()).await;
     assert_eq!(
-        response_variant(&resp2),
+        variant(&resp2),
         "skip_execution",
         "second identical submit must skip"
     );
@@ -125,57 +104,27 @@ async fn validate_client_version_supported() {
 async fn skip_echoes_confirmed_runtime_ms() {
     let entries = diff::load_golden(GOLDEN).expect("load golden");
     let exec_entry = find_first_execute(&entries);
-    let req = submit_req_from_golden(exec_entry);
+    let req: qc::SubmitEnrichedSqlRequest = golden_request(exec_entry);
 
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // Execute, then confirm with a known runtime.
-    let resp1 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .expect("submit 1")
-        .into_inner();
-    let request_id = match resp1.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        _ => panic!("expected ready_to_execute"),
-    };
-    let confirm = qc::ConfirmExecutionRequest {
-        request_id: request_id.clone(),
-        last_modified_epoch: Some(1_791_498_542_120),
-        failed_to_clone: false,
-        table_type: None,
-        execution_results: None,
-        execution_runtime_ms: Some(3205),
-        labels: req.labels.clone(),
-    };
-    assert!(
-        exec.confirm_execution(confirm)
-            .await
-            .expect("confirm")
-            .into_inner()
-            .success
+    let request_id = sc.execute_id(req.clone()).await;
+    // The captured outcome, echoing the submit's labels.
+    let built = req.labels.iter().fold(
+        outcome().epoch(1_791_498_542_120).runtime(3205),
+        |o, (k, v)| o.label(k, v),
     );
+    assert!(sc.confirm(&request_id, built).await);
 
     // Identical submit -> SKIP with echoed runtime.
-    let resp2 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .expect("submit 2")
-        .into_inner();
-    match resp2.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => {
-            assert_eq!(
-                s.execution_runtime_ms,
-                Some(3205),
-                "skip must echo the confirmed runtime"
-            );
-        }
-        other => panic!("expected skip_execution, got {other:?}"),
-    }
+    let skip = sc.expect_skip(req.clone()).await;
+    assert_eq!(
+        skip.execution_runtime_ms,
+        Some(3205),
+        "skip must echo the confirmed runtime"
+    );
 }
 
 /// Item 2: RecordExecutions inserts confirmed rows directly. Record 2
@@ -183,68 +132,39 @@ async fn skip_echoes_confirmed_runtime_ms() {
 #[tokio::test]
 async fn record_executions_stores_batch() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let mk = |table: &str, hash: &str| qc::ExecutionRecord {
-        outcome: Some(qc::ExecutionOutcome {
-            last_modified_epoch: Some(1_791_498_000_000),
-            table_type: Some("TABLE".to_string()),
-            execution_results: None,
-            execution_runtime_ms: Some(1500),
-        }),
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            target_table: Some(table.to_string()),
-            dialect: "snowflake".to_string(),
-            default_catalog: String::new(),
-            execution_type: 10,
-            sql: "select 1".to_string(),
-            tables: Vec::new(),
-            query_dependencies: Vec::new(),
-            semantic_extras: Default::default(),
-            labels: Default::default(),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: format!("model.jaffle.{table}"),
-                target_name: "prod".to_string(),
-                project_name: "jaffle".to_string(),
-                resource_type: "model".to_string(),
-                node_hash: hash.to_string(),
-                node_body_hash: Some(hash.to_string()),
-                node_configs_hash: None,
-                node_persisted_descriptions_hash: None,
-                node_macros_hash: None,
-                node_contract_hash: None,
-                profile_name: "default".to_string(),
-                project_id: None,
-                node_database_representation: None,
-            }),
-            default_schema: None,
-            from_speculative_submit: false,
-            table_namespace: None,
-        })),
+    let mk = |table: &str, hash: &str| {
+        view(table)
+            .sql("select 1")
+            .no_tables()
+            .unique_id(&format!("model.jaffle.{table}"))
+            .target_name("prod")
+            .body(hash)
+            .node_state(|state| {
+                state.project_name = "jaffle".into();
+                state.resource_type = "model".into();
+                state.profile_name = "default".into();
+            })
+            .record(outcome().epoch(1_791_498_000_000).table().runtime(1500))
     };
 
-    let resp = exec
-        .record_executions(qc::RecordExecutionsRequest {
-            records: vec![
-                mk("\"DB\".\"S\".\"A\"", "ha"),
-                mk("\"DB\".\"S\".\"B\"", "hb"),
-            ],
-        })
+    let stored = sc
+        .record([
+            mk("\"DB\".\"S\".\"A\"", "ha"),
+            mk("\"DB\".\"S\".\"B\"", "hb"),
+        ])
         .await
-        .expect("record")
-        .into_inner();
-    assert_eq!(resp.records_stored, 2, "both records must be stored");
+        .expect("record");
+    assert_eq!(stored, 2, "both records must be stored");
 
     // Assert the rows actually exist and are confirmed.
-    let pool = server.state.store.pool().clone();
-    let count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM executions WHERE status = 'confirmed'")
-            .fetch_one(&pool)
-            .await
-            .expect("count");
-    assert_eq!(count, 2, "two confirmed rows must exist");
+    let confirmed = rows::executions(&server)
+        .await
+        .iter()
+        .filter(|row| row.is_confirmed())
+        .count();
+    assert_eq!(confirmed, 2, "two confirmed rows must exist");
 }
 
 /// Item 3: SubmitValues (seeds) execute -> confirm -> skip loop, matched on
@@ -253,84 +173,30 @@ async fn record_executions_stores_batch() {
 #[tokio::test]
 async fn submit_values_execute_confirm_skip() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let req = qc::SubmitValuesRequest {
-        target_table: "\"DB\".\"S\".\"SEED\"".to_string(),
-        dialect: "snowflake".to_string(),
-        default_catalog: String::new(),
-        values_hash: "md5deadbeef".to_string(),
-        semantic_extras: Default::default(),
-        last_modified_epoch: Some(1_791_498_000_000),
-        labels: Default::default(),
-        clone_time_travel_limit: None,
-        clone_table_properties: None,
-        clone_chain_depth_limit: None,
-        dbt_node_state: None,
-        table_namespace: None,
-        allow_clones: None,
-        is_defer_to_profile: false,
-        defer_enabled: false,
-    };
+    let req = seed("\"DB\".\"S\".\"SEED\"")
+        .values("md5deadbeef")
+        .own_epoch(Some(1_791_498_000_000));
 
     // 1) never-seen seed -> EXECUTE.
-    let resp1 = sql
-        .submit_values(req.clone())
-        .await
-        .expect("submit values 1")
-        .into_inner();
-    let request_id = match resp1.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    };
+    let resp1 = sc.submit_values(req.clone()).await;
+    let request_id = ready_id(&resp1);
     assert!(!request_id.is_empty());
 
     // 2) confirm.
-    let confirm = qc::ConfirmExecutionRequest {
-        request_id: request_id.clone(),
-        last_modified_epoch: Some(1_791_498_000_000),
-        failed_to_clone: false,
-        table_type: None,
-        execution_results: None,
-        execution_runtime_ms: Some(777),
-        labels: Default::default(),
-    };
     assert!(
-        exec.confirm_execution(confirm)
+        sc.confirm(&request_id, outcome().epoch(1_791_498_000_000).runtime(777))
             .await
-            .expect("confirm")
-            .into_inner()
-            .success
     );
 
     // 3) identical seed submit -> SKIP, echoing the recorded runtime.
-    let resp2 = sql
-        .submit_values(req.clone())
-        .await
-        .expect("submit values 2")
-        .into_inner();
-    match resp2.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => {
-            assert_eq!(s.execution_runtime_ms, Some(777));
-        }
-        other => panic!("expected skip_execution, got {other:?}"),
-    }
+    let skip = into_skip(sc.submit_values(req.clone()).await);
+    assert_eq!(skip.execution_runtime_ms, Some(777));
 
     // A different values_hash must still EXECUTE (no match).
-    let mut req2 = req.clone();
-    req2.values_hash = "md5feedface".to_string();
-    let resp3 = sql
-        .submit_values(req2)
-        .await
-        .expect("submit values 3")
-        .into_inner();
-    assert!(matches!(
-        resp3.response,
-        Some(qc::submit_sql_response::Response::ReadyToExecute(_))
-    ));
+    let req2 = req.values("md5feedface");
+    assert_eq!(sc.values_verdict(req2).await, "ready_to_execute");
 }
 
 /// Item 4: the Explain service now re-derives the structured tree on demand.
@@ -339,26 +205,16 @@ async fn submit_values_execute_confirm_skip() {
 #[tokio::test]
 async fn explain_rederives_tree_and_selector_is_implemented() {
     use qc::explain_client::ExplainClient;
-    use qc::selector_service_client::SelectorServiceClient;
 
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
+    let sc = Scenario::connect(&server).await;
+    let ch = sc.channel();
 
     // Submit a never-seen node so it EXECUTEs (first build). The server mints an
     // execution_decision_id and records the decision (best-effort capture).
     let entries = diff::load_golden(GOLDEN).expect("load golden");
-    let req = submit_req_from_golden(find_first_execute(&entries));
-    let mut sql = SqlClient::new(ch.clone());
-    let resp = sql
-        .submit_enriched_sql(req)
-        .await
-        .expect("submit")
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(exec) = resp.response.expect("response")
-    else {
-        panic!("expected ready_to_execute");
-    };
+    let req: qc::SubmitEnrichedSqlRequest = golden_request(find_first_execute(&entries));
+    let exec = sc.expect_execute(req).await;
     let edid = exec.execution_decision_id.expect("minted edid");
 
     // An UNTRACKED id yields no message (tracked ids are omitted when absent).
@@ -413,21 +269,16 @@ async fn explain_rederives_tree_and_selector_is_implemented() {
 
     // SelectorService.GetStateSelection is implemented (state:* selectors). With
     // an empty node set it returns an empty selection — not UNIMPLEMENTED.
-    let mut selector = SelectorServiceClient::new(ch);
-    let sel = selector
-        .get_state_selection(qc::SelectorRequest {
+    let sel = sc
+        .try_select(qc::SelectorRequest {
             target: "prod".to_string(),
             selector_criteria: 1,
             project_id: "p".to_string(),
             nodes: Vec::new(),
         })
         .await
-        .expect("get_state_selection")
-        .into_inner();
-    assert!(
-        sel.node_unique_ids.is_empty(),
-        "empty submission must select nothing"
-    );
+        .expect("get_state_selection");
+    assert!(sel.is_empty(), "empty submission must select nothing");
 }
 
 /// F2 REGRESSION — the CLONE explain tree must render the ACTUAL clone source,
@@ -442,84 +293,35 @@ async fn explain_rederives_tree_and_selector_is_implemented() {
 async fn explain_clone_tree_renders_actual_clone_source() {
     use qc::explain_client::ExplainClient;
 
-    const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
     // A cross-name CLONE submit: same `table_namespace` + schema-abstracted
     // logic as an already-built equivalent under a DIFFERENT physical name.
-    fn submit(target: &str, schema: &str) -> qc::SubmitEnrichedSqlRequest {
-        qc::SubmitEnrichedSqlRequest {
-            target_table: Some(target.into()),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            default_schema: Some(schema.into()),
-            execution_type: 1,
-            sql: format!("select id from CDO_DEMO_DB.{schema}.lp_up_a"),
-            tolerate_nondeterminism: true,
-            freshness_tolerance_seconds: 2700,
-            tables: vec![],
-            table_namespace: Some(NS.into()),
-            dbt_node_state: Some(qc::DbtNodeState {
-                node_unique_id: "model.jaffle_shop.f2_clone_probe".into(),
-                node_body_hash: Some("body".into()),
-                project_id: Some("p".into()),
-                ..Default::default()
-            }),
-            labels: [("dbt_node_name".to_string(), "f2_clone_probe".to_string())]
-                .into_iter()
-                .collect(),
-            ..Default::default()
-        }
-    }
+    let submit = |target: &str, schema: &str| {
+        demo::model(target, schema, "model.jaffle_shop.f2_clone_probe")
+            .sql(&format!("select id from CDO_DEMO_DB.{schema}.lp_up_a"))
+            .namespace(NS)
+    };
 
     let server = start_server().await;
-    let ch = channel(server.addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch.clone());
+    let sc = Scenario::connect(&server).await;
 
     let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"F2_CLONE_PROBE\"";
     let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"F2_CLONE_PROBE\"";
     let a_epoch = 1_791_747_221_679i64;
 
     // Build + confirm the equivalent under name A.
-    let r0 = sql
-        .submit_enriched_sql(submit(a, "prod_state_demo"))
-        .await
-        .expect("submit A")
-        .into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(x) = r0.response.expect("A response")
-    else {
-        panic!("first build of A must execute");
-    };
-    assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: x.request_id,
-            last_modified_epoch: Some(a_epoch),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(15275),
-            ..Default::default()
-        })
-        .await
-        .expect("confirm A")
-        .into_inner()
-        .success
-    );
+    sc.build_with(submit(a, PROD_SCHEMA), transient_at(a_epoch).runtime(15275))
+        .await;
 
     // Submit for absent B (same namespace + logic) → ReadyToClone A→B. This is
     // the production SubmitEnrichedSQL CLONE path whose capture must persist the
     // source.
-    let rb = sql
-        .submit_enriched_sql(submit(b, "dev_clone_demo"))
-        .await
-        .expect("submit B")
-        .into_inner();
+    let rb = sc.submit(submit(b, DEV_SCHEMA)).await;
     assert_eq!(
-        response_variant(&rb),
+        variant(&rb),
         "ready_to_clone",
         "cross-name equivalent must clone"
     );
-    let c = match rb.response {
-        Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c,
-        other => panic!("expected ready_to_clone, got {other:?}"),
-    };
+    let c = into_clone(rb);
     assert_eq!(c.clone_source, a, "the response's clone source is A");
     let edid = c
         .execution_decision_id
@@ -528,7 +330,7 @@ async fn explain_clone_tree_renders_actual_clone_source() {
 
     // Re-derive the explain tree for the CLONE decision. Capture is a
     // best-effort async write, so poll briefly until it lands.
-    let mut explain = ExplainClient::new(ch);
+    let mut explain = ExplainClient::new(sc.channel());
     let mut got = None;
     for _ in 0..50 {
         let r = explain

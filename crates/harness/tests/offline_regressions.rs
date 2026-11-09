@@ -1,421 +1,185 @@
 //! Correctness contracts established without warehouse or hosted-service access.
 //! These test the public gRPC boundary and durable Postgres state.
 use dbt_state_proto::query_cache as qc;
-use qc::{execution_client::ExecutionClient, sql_client::SqlClient};
-use tonic::transport::Channel;
 
 #[path = "support.rs"]
 mod support;
-use support::{channel, response_variant, start_server};
+use support::legacy::{self, Rows};
+use support::scenario::{
+    clone_request, data_test, model, outcome, seed, test_results, ExecutionType, Policy, Scenario,
+};
+use support::{rows, start_server};
 
-fn model(target: &str, sql: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some("S".into()),
-        execution_type: 1,
-        sql: sql.into(),
-        tolerate_nondeterminism: true,
-        tables: vec![table(target, Some(100))],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.p.{target}"),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn table(name: &str, epoch: Option<i64>) -> qc::TableModifiedInfo {
-    qc::TableModifiedInfo {
-        name: name.into(),
-        last_modified_epoch: epoch,
-    }
-}
-
+/// Complete cached test results carrying a nested, non-ASCII value, so a
+/// round trip must be lossless.
 fn results(failures: i64) -> qc::Struct {
-    serde_json::from_value(serde_json::json!({"fields": {
-        "failures": {"kind": {"int_value": failures}},
-        "should_error": {"kind": {"bool_value": failures > 0}},
-        "should_warn": {"kind": {"bool_value": false}},
-        "nested": {"kind": {"list_value": {"values": [{"kind": {"string_value": "é"}}]}}}
-    }}))
-    .unwrap()
-}
-
-async fn clients() -> (
-    support::TestServer,
-    SqlClient<Channel>,
-    ExecutionClient<Channel>,
-) {
-    let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    (server, SqlClient::new(ch.clone()), ExecutionClient::new(ch))
-}
-
-async fn confirm(
-    exec: &mut ExecutionClient<Channel>,
-    response: qc::SubmitSqlResponse,
-    epoch: Option<i64>,
-    execution_results: Option<qc::Struct>,
-) {
-    let Some(qc::submit_sql_response::Response::ReadyToExecute(r)) = response.response else {
-        panic!("expected build before confirmation");
-    };
-    assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: r.request_id,
-            last_modified_epoch: epoch,
-            execution_results,
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+    let mut results = test_results(failures);
+    results.fields.insert(
+        "nested".into(),
+        serde_json::from_value(serde_json::json!(
+            {"kind": {"list_value": {"values": [{"kind": {"string_value": "é"}}]}}}
+        ))
+        .unwrap(),
     );
+    results
 }
+
+// Models here are bound in DB.S under project `p`, with their own target present
+// at epoch 100; data tests are `model.p.test-id` in the same scope.
 
 #[tokio::test]
 async fn overwritten_history_and_execution_types_cannot_be_resurrected() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let a = model("DB.S.T", "select 1");
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(a.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    let b = model("DB.S.T", "select 2");
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(b).await.unwrap().into_inner(),
-        Some(200),
-        None,
-    )
-    .await;
-    let mut reverted = a.clone();
-    reverted.tables = vec![table("DB.S.T", Some(200))];
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(reverted)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "ready_to_execute"
-    );
-    let mut view = a.clone();
-    view.execution_type = 10;
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(view).await.unwrap().into_inner(),
-        Some(300),
-        None,
-    )
-    .await;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(a).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let node = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p");
+    let a = node.clone().sql("select 1");
+    sc.build_with(a.clone(), outcome().epoch(100)).await;
+    let b = node.sql("select 2");
+    sc.build_with(b, outcome().epoch(200)).await;
+    let reverted = a.clone().own_epoch(Some(200));
+    assert_eq!(sc.verdict(reverted).await, "ready_to_execute");
+    let view = a.clone().execution_type(ExecutionType::View);
+    sc.build_with(view, outcome().epoch(300)).await;
+    assert_eq!(sc.verdict(a).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn missing_changed_and_cross_target_objects_do_not_skip() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("DB.S.T", "select 1");
-    req.table_namespace = Some("ns".into());
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution"
-    );
-    for tables in [
-        vec![],
-        vec![table("DB.S.T", None)],
-        vec![table("DB.S.T", Some(200))],
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select 1")
+        .namespace("ns");
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    assert_eq!(sc.verdict(req.clone()).await, "skip_execution");
+    for changed in [
+        req.clone().no_tables(),
+        req.clone().table("DB.S.T", None),
+        req.clone().own_epoch(Some(200)),
     ] {
-        let mut changed = req.clone();
-        changed.tables = tables;
-        assert_eq!(
-            response_variant(&sql.submit_enriched_sql(changed).await.unwrap().into_inner()),
-            "ready_to_execute"
-        );
+        assert_eq!(sc.verdict(changed).await, "ready_to_execute");
     }
-    let mut ignored = req.clone();
-    ignored.tables[0].last_modified_epoch = Some(200);
-    ignored.ignore_external_modifications = true;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(ignored).await.unwrap().into_inner()),
-        "skip_execution"
-    );
-    let mut other = req.clone();
-    other.target_table = Some("DB.DEV.T".into());
-    other.tables = vec![];
-    other.allow_clones = Some(false);
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(other).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    req.table_namespace = Some("different-ns".into());
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let ignored = req
+        .clone()
+        .own_epoch(Some(200))
+        .ignore_external_modifications();
+    assert_eq!(sc.verdict(ignored).await, "skip_execution");
+    let other = req
+        .clone()
+        .target("DB.DEV.T")
+        .no_tables()
+        .allow_clones(false);
+    assert_eq!(sc.verdict(other).await, "ready_to_execute");
+    let req = req.namespace("different-ns");
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn data_test_identity_logic_and_results_round_trip() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("test-id", "select 7 as failures");
-    req.target_table = None;
-    req.tables.clear();
-    req.execution_type = 8;
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = data_test("model.p.test-id")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 7 as failures");
     let cached = results(7);
-    let response = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    confirm(&mut exec, response, None, Some(cached.clone())).await;
-    let response = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    let Some(qc::submit_sql_response::Response::SkipExecution(r)) = response.response else {
-        panic!("expected cached test")
-    };
+    sc.build_with(req.clone(), outcome().results(cached.clone()))
+        .await;
+    let r = sc.expect_skip(req.clone()).await;
     assert_eq!(r.execution_results, Some(cached));
-    let mut changed = req.clone();
-    changed.sql = "select 0 as failures".into();
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(changed).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    let mut changed = req.clone();
-    changed
-        .semantic_extras
-        .insert("severity".into(), "\"warn\"".into());
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(changed).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    let mut other_project = req.clone();
-    other_project.dbt_node_state.as_mut().unwrap().project_id = Some("other".into());
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(other_project)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "ready_to_execute"
-    );
-    req.dbt_node_state = None;
-    req.labels
-        .insert("dbt_node_unique_id".into(), "test.python.first".into());
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        None,
-        Some(results(0)),
-    )
-    .await;
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution"
-    );
-    req.labels
-        .insert("dbt_node_unique_id".into(), "test.python.other".into());
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "ready_to_execute"
-    );
-    req.labels.clear();
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let changed = req.clone().sql("select 0 as failures");
+    assert_eq!(sc.verdict(changed).await, "ready_to_execute");
+    let changed = req.clone().extra("severity", "\"warn\"");
+    assert_eq!(sc.verdict(changed).await, "ready_to_execute");
+    let other_project = req.clone().project("other");
+    assert_eq!(sc.verdict(other_project).await, "ready_to_execute");
+    // Older clients publish the unique id only in labels.
+    let unlabelled = req.without_node_state();
+    let first = unlabelled
+        .clone()
+        .label("dbt_node_unique_id", "test.python.first");
+    sc.build_with(first.clone(), outcome().results(results(0)))
+        .await;
+    assert_eq!(sc.verdict(first.clone()).await, "skip_execution");
+    let other = first.label("dbt_node_unique_id", "test.python.other");
+    assert_eq!(sc.verdict(other).await, "ready_to_execute");
+    assert_eq!(sc.verdict(unlabelled).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn unknown_freshness_and_distinct_schema_inputs_are_not_hidden() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("DB.S.T", "select * from DB.A.U join DB.B.U using(id)");
-    req.tables
-        .extend([table("DB.A.U", Some(1000)), table("DB.B.U", Some(100))]);
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    req.tables[2].last_modified_epoch = Some(500);
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "ready_to_execute"
-    );
-    req.tables[2].last_modified_epoch = None;
-    req.stale_upstream_policy = 1;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select * from DB.A.U join DB.B.U using(id)")
+        .upstream("DB.A.U", 1000)
+        .upstream("DB.B.U", 100);
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    let req = req.upstream("DB.B.U", 500);
+    assert_eq!(sc.verdict(req.clone()).await, "ready_to_execute");
+    let req = req.table("DB.B.U", None).policy(Policy::All);
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn dependency_context_and_volatile_policy_prevent_unsupported_reuse() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("DB.S.T", "select * from V");
-    req.query_dependencies = vec![qc::QueryDependency {
-        name: "DB.S.V".into(),
-        query: "select 1".into(),
-        ..Default::default()
-    }];
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution"
-    );
-    let mut changed = req.clone();
-    changed.query_dependencies[0].query = "select 2".into();
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(changed).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    let mut changed = req.clone();
-    changed.default_schema = Some("OTHER".into());
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(changed).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    req.tolerate_nondeterminism = false;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let node = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select * from V");
+    let req = node.clone().dependency("DB.S.V", "select 1");
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    assert_eq!(sc.verdict(req.clone()).await, "skip_execution");
+    let changed = node.dependency("DB.S.V", "select 2");
+    assert_eq!(sc.verdict(changed).await, "ready_to_execute");
+    let changed = req.clone().schema("OTHER");
+    assert_eq!(sc.verdict(changed).await, "ready_to_execute");
+    let req = req.tolerate_nondeterminism(false);
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn seeds_match_configuration_current_object_and_latest_build() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = qc::SubmitValuesRequest {
-        target_table: "DB.S.SEED".into(),
-        dialect: "snowflake".into(),
-        values_hash: "bytes-A".into(),
-        last_modified_epoch: Some(100),
-        ..Default::default()
-    };
-    confirm(
-        &mut exec,
-        sql.submit_values(req.clone()).await.unwrap().into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    assert_eq!(
-        response_variant(&sql.submit_values(req.clone()).await.unwrap().into_inner()),
-        "skip_execution"
-    );
-    let mut changed = req.clone();
-    changed
-        .semantic_extras
-        .insert("column_types".into(), "{\"id\":\"varchar\"}".into());
-    assert_eq!(
-        response_variant(&sql.submit_values(changed).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    let mut missing = req.clone();
-    missing.last_modified_epoch = None;
-    assert_eq!(
-        response_variant(&sql.submit_values(missing).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    req.values_hash = "bytes-B".into();
-    confirm(
-        &mut exec,
-        sql.submit_values(req.clone()).await.unwrap().into_inner(),
-        Some(200),
-        None,
-    )
-    .await;
-    req.values_hash = "bytes-A".into();
-    req.last_modified_epoch = Some(200);
-    assert_eq!(
-        response_variant(&sql.submit_values(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = seed("DB.S.SEED").values("bytes-A").own_epoch(Some(100));
+    sc.build_values(req.clone(), outcome().epoch(100)).await;
+    assert_eq!(sc.values_verdict(req.clone()).await, "skip_execution");
+    let changed = req.clone().extra("column_types", "{\"id\":\"varchar\"}");
+    assert_eq!(sc.values_verdict(changed).await, "ready_to_execute");
+    let missing = req.clone().own_epoch(None);
+    assert_eq!(sc.values_verdict(missing).await, "ready_to_execute");
+    let rebuilt = req.clone().values("bytes-B");
+    sc.build_values(rebuilt, outcome().epoch(200)).await;
+    let reverted = req.own_epoch(Some(200));
+    assert_eq!(sc.values_verdict(reverted).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn unsupported_history_queries_are_errors_not_empty_successes() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
+    let sc = Scenario::connect(&server).await;
     // SelectorService.GetStateSelection is implemented, but it must still reject
     // a malformed request (here: a default request with an empty project_id)
     // with INVALID_ARGUMENT rather than silently returning an empty success.
-    let result = qc::selector_service_client::SelectorServiceClient::new(ch.clone())
-        .get_state_selection(qc::SelectorRequest::default())
-        .await;
+    let result = sc.try_select(qc::SelectorRequest::default()).await;
     assert_eq!(
         result.unwrap_err().code(),
         tonic::Code::InvalidArgument,
@@ -425,103 +189,54 @@ async fn unsupported_history_queries_are_errors_not_empty_successes() {
     // request (no project_id / target / ids) resolves nothing — it returns an
     // empty map gracefully rather than erroring, matching the hosted behavior
     // for an unresolvable scope.
-    let resp = ExecutionClient::new(ch)
-        .resolve_deferred_relations(qc::ResolveDeferredRelationsRequest::default())
-        .await
-        .expect("resolve_deferred_relations succeeds on an empty scope")
-        .into_inner();
+    let resolved = sc
+        .resolve_deferred(qc::ResolveDeferredRelationsRequest::default())
+        .await;
     assert!(
-        resp.fqn_by_unique_id.is_empty(),
+        resolved.is_empty(),
         "an unresolvable scope yields an empty map, not an error"
     );
 }
 
 #[tokio::test]
 async fn batch_recording_preserves_results_and_shares_submit_fingerprints() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("test-id", "select 7 as failures");
-    req.execution_type = 8;
-    req.target_table = None;
-    req.tables.clear();
-    let outcome = results(i64::MAX);
-    let record = qc::ExecutionRecord {
-        input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-            dialect: req.dialect.clone(),
-            default_catalog: req.default_catalog.clone(),
-            default_schema: req.default_schema.clone(),
-            sql: req.sql.clone(),
-            execution_type: req.execution_type,
-            dbt_node_state: req.dbt_node_state.clone(),
-            ..Default::default()
-        })),
-        outcome: Some(qc::ExecutionOutcome {
-            execution_results: Some(outcome.clone()),
-            ..Default::default()
-        }),
-    };
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = data_test("model.p.test-id")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 7 as failures");
+    let cached = results(i64::MAX);
     assert_eq!(
-        exec.record_executions(qc::RecordExecutionsRequest {
-            records: vec![record]
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .records_stored,
+        sc.record([req.record(outcome().results(cached.clone()))])
+            .await
+            .unwrap(),
         1
     );
-    let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let Some(qc::submit_sql_response::Response::SkipExecution(r)) = response.response else {
-        panic!("recorded test must reuse")
-    };
-    assert_eq!(r.execution_results, Some(outcome));
+    let r = sc.expect_skip(req).await;
+    assert_eq!(r.execution_results, Some(cached));
 
-    let mut seed = qc::SubmitValuesRequest {
-        target_table: "DB.S.SEED".into(),
-        dialect: "snowflake".into(),
-        values_hash: "data".into(),
-        last_modified_epoch: Some(100),
-        ..Default::default()
-    };
-    seed.semantic_extras
-        .insert("column_types".into(), "{\"id\":\"integer\"}".into());
-    exec.record_executions(qc::RecordExecutionsRequest {
-        records: vec![qc::ExecutionRecord {
-            input: Some(qc::execution_record::Input::Values(qc::ValuesExecution {
-                target_table: seed.target_table.clone(),
-                dialect: seed.dialect.clone(),
-                values_hash: seed.values_hash.clone(),
-                semantic_extras: seed.semantic_extras.clone(),
-                ..Default::default()
-            })),
-            outcome: Some(qc::ExecutionOutcome {
-                last_modified_epoch: Some(100),
-                ..Default::default()
-            }),
-        }],
-    })
-    .await
-    .unwrap();
-    assert_eq!(
-        response_variant(&sql.submit_values(seed).await.unwrap().into_inner()),
-        "skip_execution"
-    );
+    let seed = seed("DB.S.SEED")
+        .values("data")
+        .own_epoch(Some(100))
+        .extra("column_types", "{\"id\":\"integer\"}");
+    sc.record([seed.record(outcome().epoch(100))])
+        .await
+        .unwrap();
+    assert_eq!(sc.values_verdict(seed).await, "skip_execution");
 }
 
 #[tokio::test]
 async fn non_finite_protobuf_results_and_duplicate_confirmation_are_lossless() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("test-id", "select 0 as failures");
-    req.execution_type = 8;
-    req.target_table = None;
-    req.tables.clear();
-    let response = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    let Some(qc::submit_sql_response::Response::ReadyToExecute(r)) = response.response else {
-        panic!("build test")
-    };
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = data_test("model.p.test-id")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 0 as failures");
+    let request_id = sc.execute_id(req.clone()).await;
     let mut cached = results(0);
     cached.fields.insert(
         "non_finite".into(),
@@ -530,52 +245,24 @@ async fn non_finite_protobuf_results_and_duplicate_confirmation_are_lossless() {
         },
     );
     for value in [cached.clone(), results(9)] {
-        assert!(
-            exec.confirm_execution(qc::ConfirmExecutionRequest {
-                request_id: r.request_id.clone(),
-                execution_results: Some(value),
-                ..Default::default()
-            })
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-        );
+        assert!(sc.confirm(&request_id, outcome().results(value)).await);
     }
-    let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let Some(qc::submit_sql_response::Response::SkipExecution(r)) = response.response else {
-        panic!("reuse test")
-    };
+    let r = sc.expect_skip(req).await;
     assert_eq!(r.execution_results, Some(cached));
 }
 
 #[tokio::test]
 async fn missing_or_incomplete_test_results_require_execution() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("test", "select 0 as failures");
-    req.execution_type = 8;
-    req.target_table = None;
-    req.tables.clear();
-    for payload in [None, Some(qc::Struct::default())] {
-        confirm(
-            &mut exec,
-            sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner(),
-            None,
-            payload,
-        )
-        .await;
-        assert_eq!(
-            response_variant(
-                &sql.submit_enriched_sql(req.clone())
-                    .await
-                    .unwrap()
-                    .into_inner()
-            ),
-            "ready_to_execute"
-        );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = data_test("model.p.test")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 0 as failures");
+    for payload in [outcome(), outcome().results(qc::Struct::default())] {
+        sc.build_with(req.clone(), payload).await;
+        assert_eq!(sc.verdict(req.clone()).await, "ready_to_execute");
     }
     let mut warning = results(3);
     warning.fields.insert(
@@ -590,183 +277,99 @@ async fn missing_or_incomplete_test_results_require_execution() {
             kind: Some(qc::value::Kind::BoolValue(true)),
         },
     );
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        None,
-        Some(warning.clone()),
-    )
-    .await;
-    let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let Some(qc::submit_sql_response::Response::SkipExecution(r)) = response.response else {
-        panic!("cached warning")
-    };
+    sc.build_with(req.clone(), outcome().results(warning.clone()))
+        .await;
+    let r = sc.expect_skip(req).await;
     assert_eq!(r.execution_results, Some(warning));
 }
 
 #[tokio::test]
 async fn incomplete_or_ambiguous_dependency_evidence_requires_execution() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("DB.S.T", "select * from U");
-    req.tables.push(table("DB.S.U", Some(100)));
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    let mut missing = req.clone();
-    missing.tables.pop();
-    missing.stale_upstream_policy = 1;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(missing).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
-    req.tables.push(table("DB.S.U", Some(100)));
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let node = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select * from U");
+    let req = node.clone().upstream("DB.S.U", 100);
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    let missing = node.policy(Policy::All);
+    assert_eq!(sc.verdict(missing).await, "ready_to_execute");
+    // The same upstream reported twice is ambiguous evidence.
+    let duplicated = req.with(|r| {
+        let again = r.tables.last().cloned().expect("upstream");
+        r.tables.push(again);
+    });
+    assert_eq!(sc.verdict(duplicated).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn corrupted_history_errors_and_old_fingerprints_cold_miss() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-    let req = model("DB.S.T", "select 1");
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    let pool = server.state.store.pool().clone();
-    sqlx::query("UPDATE executions SET input_tables = '{}'::jsonb")
-        .execute(&pool)
-        .await
-        .unwrap();
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select 1");
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    legacy::corrupt_input_tables(&server).await;
     assert_eq!(
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap_err()
-            .code(),
+        sc.try_submit(req.clone()).await.unwrap_err().code(),
         tonic::Code::Internal
     );
-    sqlx::query(
-        "UPDATE executions SET input_tables = '[]'::jsonb, execution_results = decode('ff','hex')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    legacy::corrupt_execution_results(&server).await;
     assert_eq!(
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap_err()
-            .code(),
+        sc.try_submit(req.clone()).await.unwrap_err().code(),
         tonic::Code::Internal
     );
-    sqlx::query("UPDATE executions SET node_sql_hash = 'legacy-hash'")
-        .execute(&pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    legacy::rewrite_sql_hash(&server, Rows::All, "legacy-hash").await;
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn clone_errors_do_not_leave_pending_executions() {
     let server = start_server().await;
-    let addr = server.addr;
-    let mut clone = qc::clone_client::CloneClient::new(channel(addr).await);
+    let sc = Scenario::connect(&server).await;
     for (dialect, kind) in [("snowflake", "VIEW"), ("unknown", "TABLE")] {
-        let err = clone
-            .register_clone(qc::CloneRequest {
-                dialect: dialect.into(),
-                clone_source_table: "DB.S.SOURCE".into(),
-                target_table: "DB.S.T".into(),
-                clone_source_table_type: Some(kind.into()),
-                ..Default::default()
-            })
+        let err = sc
+            .register_clone(
+                clone_request("DB.S.SOURCE", "DB.S.T")
+                    .dialect(dialect)
+                    .execution_type(ExecutionType::Unspecified)
+                    .source_table_type(kind),
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code(), tonic::Code::Unimplemented);
     }
-    let pool = server.state.store.pool().clone();
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM executions")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(rows::execution_count(&server).await, 0);
 }
 
 #[tokio::test]
 async fn ordering_is_irrelevant_but_incomplete_view_definitions_cannot_reuse() {
-    let (_server, mut sql, mut exec) = clients().await;
-    let mut req = model("DB.S.T", "select * from V union all select * from W");
-    req.query_dependencies = vec![
-        qc::QueryDependency {
-            name: "DB.S.V".into(),
-            query: "select 1".into(),
-            ..Default::default()
-        },
-        qc::QueryDependency {
-            name: "DB.S.W".into(),
-            query: "select 2".into(),
-            ..Default::default()
-        },
-    ];
-    req.tables
-        .extend([table("DB.S.A", Some(100)), table("DB.S.B", Some(100))]);
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    req.query_dependencies.reverse();
-    req.tables.reverse();
-    assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(req.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
-        "skip_execution"
-    );
-    req.query_dependencies[0].query.clear();
-    confirm(
-        &mut exec,
-        sql.submit_enriched_sql(req.clone())
-            .await
-            .unwrap()
-            .into_inner(),
-        Some(100),
-        None,
-    )
-    .await;
-    assert_eq!(
-        response_variant(&sql.submit_enriched_sql(req).await.unwrap().into_inner()),
-        "ready_to_execute"
-    );
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .sql("select * from V union all select * from W")
+        .dependency("DB.S.V", "select 1")
+        .dependency("DB.S.W", "select 2")
+        .upstream("DB.S.A", 100)
+        .upstream("DB.S.B", 100);
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    let req = req.with(|r| {
+        r.query_dependencies.reverse();
+        r.tables.reverse();
+    });
+    assert_eq!(sc.verdict(req.clone()).await, "skip_execution");
+    let req = req.with(|r| r.query_dependencies[0].query.clear());
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }

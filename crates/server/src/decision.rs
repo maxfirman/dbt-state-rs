@@ -6,6 +6,7 @@
 //! absorption behavior were verified live — see correctness-handoff.md.
 
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
 
 /// stale_upstream_policy values (shared.proto StaleUpstreamPolicy).
@@ -26,6 +27,144 @@ impl StaleUpstreamPolicy {
     }
 }
 
+/// Why reuse candidate selection found no reuse candidate although State
+/// history holds a latest row in scope (see `reuse_candidate`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoCandidate {
+    /// The latest row does not have the workload's identity.
+    IdentityMismatch,
+    /// The workload or its evidence failed reuse qualification.
+    FailedReuseQualification,
+    /// The node's own target is missing, ambiguous, or changed since the
+    /// recorded build.
+    OwnTargetChangedOrMissing,
+    /// The latest data test outcome has no complete cached results to serve.
+    IncompleteCachedTestResults,
+}
+
+/// How fresh a reused result is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reuse {
+    /// No upstream drift.
+    Fresh,
+    /// Upstream drift is present but the stale-upstream policy tolerates it
+    /// (hosted `is_stale = true`).
+    ToleratedStale,
+}
+
+/// Why a submission was decided the way it was. Every decision has exactly
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionReason {
+    /// State history holds no latest row for the workload's output in scope.
+    FirstBuild,
+    /// A latest row exists but is not a reuse candidate.
+    NoReuseCandidate(NoCandidate),
+    /// The reuse candidate recorded a different genuine upstream set.
+    DependencySetChanged,
+    /// The reuse candidate has upstreams but no own-build epoch to compare
+    /// them against.
+    NoBuildAnchor,
+    /// An upstream changed after the reuse candidate's build (or its freshness
+    /// cannot be proven), beyond what the stale-upstream policy tolerates.
+    UpstreamOutdated,
+    /// The reuse candidate is served.
+    Reused(Reuse),
+    /// An equivalent result under another name is copied into the target.
+    ResultCopy,
+    /// An equivalent exists, but the target forbids copies or the copy chain
+    /// is at its limit, so the model builds.
+    CopyChainLimit,
+}
+
+impl DecisionReason {
+    /// Every decision reason, in declaration order.
+    const ALL: [DecisionReason; 12] = [
+        Self::FirstBuild,
+        Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+        Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+        Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
+        Self::DependencySetChanged,
+        Self::NoBuildAnchor,
+        Self::UpstreamOutdated,
+        Self::Reused(Reuse::Fresh),
+        Self::Reused(Reuse::ToleratedStale),
+        Self::ResultCopy,
+        Self::CopyChainLimit,
+    ];
+
+    /// The stable lowercase string stored in `node_decisions.decision_reason`
+    /// (ADR 0006). Persisted state: never reword an existing value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstBuild => "first_build",
+            Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
+                "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::FailedReuseQualification) => {
+                "no_reuse_candidate.failed_reuse_qualification"
+            }
+            Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) => {
+                "no_reuse_candidate.own_target_changed_or_missing"
+            }
+            Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults) => {
+                "no_reuse_candidate.incomplete_cached_test_results"
+            }
+            Self::DependencySetChanged => "dependency_set_changed",
+            Self::NoBuildAnchor => "no_build_anchor",
+            Self::UpstreamOutdated => "upstream_outdated",
+            Self::Reused(Reuse::Fresh) => "reused.fresh",
+            Self::Reused(Reuse::ToleratedStale) => "reused.tolerated_stale",
+            Self::ResultCopy => "result_copy",
+            Self::CopyChainLimit => "copy_chain_limit",
+        }
+    }
+
+    /// The reason a stored [`as_str`](Self::as_str) value names; `None` for
+    /// anything else.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == stored)
+    }
+}
+
+/// The decision class: what the client is told to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionKind {
+    Build,
+    Skip,
+    Clone,
+}
+
+impl DecisionKind {
+    /// The value stored in `node_decisions.decision`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Build => "build",
+            Self::Skip => "skip",
+            Self::Clone => "clone",
+        }
+    }
+
+    /// The class a stored [`as_str`](Self::as_str) value names; `None` for
+    /// anything else.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        [Self::Build, Self::Skip, Self::Clone]
+            .into_iter()
+            .find(|kind| kind.as_str() == stored)
+    }
+
+    /// The wire `decision` int (`SubmitSQLResultType`, shared.proto).
+    pub fn wire_decision(self) -> i32 {
+        let result_type = match self {
+            Self::Skip => qc::SubmitSqlResultType::SkipExecution,
+            Self::Build => qc::SubmitSqlResultType::ReadyToExecute,
+            Self::Clone => qc::SubmitSqlResultType::ReadyToClone,
+        };
+        result_type as i32
+    }
+}
+
 /// Decision verdict with the fields needed to build a SubmitSQLResponse.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
@@ -36,6 +175,7 @@ pub enum Verdict {
         /// VERIFIED LIVE: a skip serving slightly-stale data reports is_stale=true;
         /// a no-drift skip and every execute report false. See lag_freshness.rs.
         is_stale: bool,
+        reason: DecisionReason,
     },
     Execute {
         description: String,
@@ -43,7 +183,110 @@ pub enum Verdict {
         clone_rejection_reason: i32,
         /// Whether the execute was driven by upstream staleness (vs a hash miss).
         is_stale: bool,
+        reason: DecisionReason,
     },
+}
+
+impl Verdict {
+    pub fn reason(&self) -> DecisionReason {
+        match self {
+            Self::Skip { reason, .. } | Self::Execute { reason, .. } => *reason,
+        }
+    }
+}
+
+/// Everything a Submit decision tells the client and records for capture:
+/// the class, its one reason, the hosted description and rejection codes,
+/// `is_stale`, and the prior execution the decision was made against (the
+/// Explain freshness anchor). Only the constructors below build one (the
+/// private `sealed` field stops struct literals, in this crate too), so the
+/// reason always agrees with the wire values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+// `#[non_exhaustive]` would not stop construction inside this crate.
+#[allow(clippy::manual_non_exhaustive)]
+pub struct DecisionRecord {
+    pub class: DecisionKind,
+    pub reason: DecisionReason,
+    pub description: String,
+    pub skip_rejection_reason: Option<i32>,
+    pub clone_rejection_reason: Option<i32>,
+    pub is_stale: bool,
+    /// `executions.id` of the reuse candidate `decide` evaluated: set on a
+    /// Skip and on a freshness-driven Execute, `None` otherwise.
+    pub matched_execution_id: Option<i64>,
+    sealed: (),
+}
+
+impl DecisionRecord {
+    /// The record of [`decide`] against `candidate`.
+    pub fn decided(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Self {
+        let matched_execution_id = candidate.map(|c| c.id);
+        match decide(ctx, candidate) {
+            Verdict::Skip {
+                description,
+                is_stale,
+                reason,
+            } => Self {
+                class: DecisionKind::Skip,
+                reason,
+                description,
+                skip_rejection_reason: None,
+                clone_rejection_reason: None,
+                is_stale,
+                matched_execution_id,
+                sealed: (),
+            },
+            Verdict::Execute {
+                description,
+                skip_rejection_reason,
+                clone_rejection_reason,
+                is_stale,
+                reason,
+            } => Self {
+                class: DecisionKind::Build,
+                reason,
+                description,
+                skip_rejection_reason: Some(skip_rejection_reason),
+                clone_rejection_reason: Some(clone_rejection_reason),
+                is_stale,
+                matched_execution_id,
+                sealed: (),
+            },
+        }
+    }
+
+    /// An equivalent model built under another name is copied in. VERIFIED
+    /// LIVE shape: READY_TO_CLONE with TARGET_TABLE_MISMATCH and no clone
+    /// rejection.
+    pub fn result_copy() -> Self {
+        Self {
+            class: DecisionKind::Clone,
+            reason: DecisionReason::ResultCopy,
+            description: RESULT_COPY_DESCRIPTION.to_string(),
+            skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
+            clone_rejection_reason: None,
+            is_stale: false,
+            matched_execution_id: None,
+            sealed: (),
+        }
+    }
+
+    /// An equivalent exists but the target forbids copies or the copy chain is
+    /// at its limit. VERIFIED LIVE (experiments/clone_experiment.sh table
+    /// --no-clones): the hosted service executes with this description,
+    /// TARGET_TABLE_MISMATCH and CLONE_CHAIN_LIMIT_EXCEEDED.
+    pub fn copy_chain_limit() -> Self {
+        Self {
+            class: DecisionKind::Build,
+            reason: DecisionReason::CopyChainLimit,
+            description: COPY_CHAIN_LIMIT_DESCRIPTION.to_string(),
+            skip_rejection_reason: Some(REJECTION_TARGET_TABLE_MISMATCH),
+            clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
+            is_stale: false,
+            matched_execution_id: None,
+            sealed: (),
+        }
+    }
 }
 
 pub const DESC_SKIP: &str =
@@ -51,33 +294,45 @@ pub const DESC_SKIP: &str =
 pub const DESC_EXECUTE: &str =
     "model was executed because either its query didn't match or its upstream data is out of date";
 
-// RejectionReason enum values (from shared.proto).
-pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
+const RESULT_COPY_DESCRIPTION: &str =
+    "an equivalent model exists under another name so we cloned that one";
+const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
+    "model was executed because the maximum number of nested clones has been reached";
 
-// ModelExecutionType values relevant to node-kind-specific wording.
-const ET_SNAPSHOT: i32 = 7;
-const ET_DBT_DATA_TEST: i32 = 8;
-const ET_VALUES: i32 = 9;
+// The wire rejection codes (`RejectionReason`, shared.proto) the service sends.
+pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = qc::RejectionReason::TargetTableMismatch as i32;
+/// A client-requested copy the service cannot prove eligible (RegisterClone
+/// `unable_to_clone`), and the skip rejection on every `ready_to_clone`.
+pub const REJECTION_FORCED_NOT_ELIGIBLE: i32 = qc::RejectionReason::ForcedNotEligible as i32;
+pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = qc::RejectionReason::NoSuitableMatchFound as i32;
+/// VERIFIED LIVE: when a target disallows clones (profile `allow_clones:
+/// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`, and
+/// the hosted service answers RegisterClone with `unable_to_clone` carrying
+/// this rejection reason and decision=READY_TO_EXECUTE.
+pub const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 =
+    qc::RejectionReason::CloneChainLimitExceeded as i32;
 
 /// A human noun for the node kind, matching the hosted service's wording.
 fn node_noun(execution_type: i32) -> &'static str {
-    match execution_type {
-        ET_SNAPSHOT => "snapshot",
-        ET_DBT_DATA_TEST => "data test",
-        ET_VALUES => "seed",
+    match ModelExecutionType::try_from(execution_type) {
+        Ok(ModelExecutionType::Snapshot) => "snapshot",
+        Ok(ModelExecutionType::DbtDataTest) => "data test",
+        Ok(ModelExecutionType::Values) => "seed",
         _ => "model",
     }
 }
 
 /// SKIP description, node-kind specific (verified live against api.state.dbt.com).
 fn skip_description(execution_type: i32) -> String {
-    match execution_type {
-        ET_VALUES => "seed was a no-op because its data has not changed".to_string(),
-        ET_DBT_DATA_TEST => {
+    match ModelExecutionType::try_from(execution_type) {
+        Ok(ModelExecutionType::Values) => {
+            "seed was a no-op because its data has not changed".to_string()
+        }
+        Ok(ModelExecutionType::DbtDataTest) => {
             "data test was a no-op because both its query and its upstream data are up to date"
                 .to_string()
         }
-        ET_SNAPSHOT => {
+        Ok(ModelExecutionType::Snapshot) => {
             "snapshot was a no-op because both its query and its upstream data are up to date"
                 .to_string()
         }
@@ -90,17 +345,24 @@ fn skip_description(execution_type: i32) -> String {
 /// first build ("did not exist" / "no prior execution") from a rebuild of an
 /// existing node ("query didn't match or upstream out of date").
 fn execute_description(execution_type: i32, had_prior: bool) -> String {
-    match (execution_type, had_prior) {
-        (ET_VALUES, false) => "seed was loaded because it did not exist".to_string(),
-        (ET_VALUES, true) => "seed was loaded because its data changed".to_string(),
-        (ET_DBT_DATA_TEST, _) => {
+    match (ModelExecutionType::try_from(execution_type), had_prior) {
+        (Ok(ModelExecutionType::Values), false) => {
+            "seed was loaded because it did not exist".to_string()
+        }
+        (Ok(ModelExecutionType::Values), true) => {
+            "seed was loaded because its data changed".to_string()
+        }
+        (Ok(ModelExecutionType::DbtDataTest), _) => {
             "data test was executed because it has no prior execution or its query changed"
                 .to_string()
         }
-        (et, false) => format!("{} was executed because its table did not exist", node_noun(et)),
-        (et, true) => format!(
+        (_, false) => format!(
+            "{} was executed because its table did not exist",
+            node_noun(execution_type)
+        ),
+        (_, true) => format!(
             "{} was executed because either its query didn't match or its upstream data is out of date",
-            node_noun(et)
+            node_noun(execution_type)
         ),
     }
 }
@@ -126,6 +388,9 @@ pub struct SubmitContext<'a> {
     /// the rebuild rationale when the target existed, even if no fingerprint
     /// matched. Review #2 5th follow-up P1 #4.
     pub target_has_prior_build: bool,
+    /// Why reuse candidate selection rejected the latest row in scope. `None`
+    /// when there was no latest row (a first build) or a candidate was found.
+    pub why_no_candidate: Option<NoCandidate>,
 }
 
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
@@ -136,33 +401,43 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
         // never existed (first build → "did not exist") or existed under a
         // different fingerprint (rebuild → "query didn't match / out of date").
         // `target_has_prior_build` carries the physical-existence signal.
-        None => execute(ctx.execution_type, false, ctx.target_has_prior_build),
+        None => execute(
+            ctx.execution_type,
+            ctx.target_has_prior_build,
+            ctx.why_no_candidate
+                .map_or(DecisionReason::FirstBuild, DecisionReason::NoReuseCandidate),
+        ),
         Some(prev) => {
             let f = evaluate_freshness(ctx, prev);
-            if f.should_rebuild {
-                execute(ctx.execution_type, true, true)
-            } else {
+            match f.rebuild {
+                Some(reason) => execute(ctx.execution_type, true, reason),
                 // Reuse. The hosted service still reports is_stale=true when
                 // upstream drift is present but tolerated (e.g. ALL policy with
                 // only some parents drifted) — the reused result is knowingly a
                 // little stale. A no-drift reuse reports is_stale=false.
-                Verdict::Skip {
+                None => Verdict::Skip {
                     description: skip_description(ctx.execution_type),
                     is_stale: f.drift_present,
-                }
+                    reason: DecisionReason::Reused(if f.drift_present {
+                        Reuse::ToleratedStale
+                    } else {
+                        Reuse::Fresh
+                    }),
+                },
             }
         }
     }
 }
 
-/// Result of the freshness evaluation: whether to rebuild (policy-applied) and
-/// whether any upstream drift is present at all (for hosted is_stale reporting).
+/// Result of the freshness evaluation: why to rebuild, if the policy-applied
+/// evidence requires it, and whether any upstream drift is present at all (for
+/// hosted is_stale reporting).
 struct Freshness {
-    should_rebuild: bool,
+    rebuild: Option<DecisionReason>,
     drift_present: bool,
 }
 
-fn execute(execution_type: i32, _stale_driven: bool, had_prior: bool) -> Verdict {
+fn execute(execution_type: i32, had_prior: bool, reason: DecisionReason) -> Verdict {
     Verdict::Execute {
         description: execute_description(execution_type, had_prior),
         skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
@@ -173,6 +448,7 @@ fn execute(execution_type: i32, _stale_driven: bool, had_prior: bool) -> Verdict
         // a tolerated-stale SKIP. The rebuild reason is carried by srr/crr, not
         // is_stale.
         is_stale: false,
+        reason,
     }
 }
 
@@ -255,12 +531,37 @@ pub(crate) struct UpstreamFreshness {
     pub drifted: usize,
 }
 
-pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> UpstreamFreshness {
+/// What per-upstream freshness is assessed for, all of it recorded with the
+/// decision: the node kind, its own target and its decision-time inputs. The
+/// Submit decision takes it from its [`SubmitContext`]; Explain takes it from
+/// the persisted node decision, so re-derivation needs no decision policy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FreshnessInputs<'a> {
+    pub execution_type: i32,
+    pub input_tables: &'a [InputTable],
+    pub target_table: Option<&'a str>,
+}
+
+impl<'a> From<&SubmitContext<'a>> for FreshnessInputs<'a> {
+    fn from(ctx: &SubmitContext<'a>) -> Self {
+        Self {
+            execution_type: ctx.execution_type,
+            input_tables: ctx.input_tables,
+            target_table: ctx.target_table,
+        }
+    }
+}
+
+pub(crate) fn upstream_freshness<'a>(
+    node: impl Into<FreshnessInputs<'a>>,
+    prev: &ExecutionRow,
+) -> UpstreamFreshness {
+    let node: FreshnessInputs<'a> = node.into();
     // No tolerance applies here; see `SubmitContext`.
-    let genuine = |name: &str| ctx.target_table != Some(name);
+    let genuine = |name: &str| node.target_table != Some(name);
 
     // Name-set diff over GENUINE upstreams (the node's own target excluded).
-    let current_names: std::collections::BTreeSet<&str> = ctx
+    let current_names: std::collections::BTreeSet<&str> = node
         .input_tables
         .iter()
         .filter(|t| genuine(&t.name))
@@ -272,7 +573,11 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
         .filter(|t| genuine(&t.name))
         .map(|t| t.name.as_str())
         .collect();
-    let genuine_count = ctx.input_tables.iter().filter(|t| genuine(&t.name)).count();
+    let genuine_count = node
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .count();
     // Missing, additional or ambiguous dependency evidence: the recorded run no
     // longer describes this submit's dependency set → safety rebuild. We only
     // need to KNOW the set changed, not WHICH names changed: #32 captured that
@@ -297,7 +602,7 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     // The genuine upstreams to evaluate (own target excluded). A node with none
     // (a source-less model, or a data test with no input freshness) is never
     // stale on this axis — a hash/identity match alone is safe to skip.
-    let genuine_upstreams: Vec<&InputTable> = ctx
+    let genuine_upstreams: Vec<&InputTable> = node
         .input_tables
         .iter()
         .filter(|t| genuine(&t.name))
@@ -317,7 +622,7 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     // A missing own-build epoch means either a data test (which has no physical
     // object and anchors per-upstream on the RECORDED baseline — issue #2
     // finding 1) or an object-producing node we cannot prove fresh.
-    let data_test = ctx.execution_type == ET_DBT_DATA_TEST;
+    let data_test = node.execution_type == ModelExecutionType::DbtDataTest as i32;
     let own_build_epoch = match prev.last_modified_epoch {
         Some(epoch) => Some(epoch),
         None if data_test => None, // per-upstream recorded-baseline anchor below
@@ -412,13 +717,17 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
     match f.evidence {
         // Missing/ambiguous evidence or an unprovable anchor always rebuilds;
         // its is_stale is irrelevant (executes report false).
-        FreshnessEvidence::DependencySetChanged | FreshnessEvidence::NoBuildAnchor => Freshness {
-            should_rebuild: true,
+        FreshnessEvidence::DependencySetChanged => Freshness {
+            rebuild: Some(DecisionReason::DependencySetChanged),
+            drift_present: true,
+        },
+        FreshnessEvidence::NoBuildAnchor => Freshness {
+            rebuild: Some(DecisionReason::NoBuildAnchor),
             drift_present: true,
         },
         // Nothing to compare → a hash match alone is safe to skip.
         FreshnessEvidence::NoUpstreams => Freshness {
-            should_rebuild: false,
+            rebuild: None,
             drift_present: false,
         },
         FreshnessEvidence::Evaluated => {
@@ -443,28 +752,18 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
                 }
             };
             Freshness {
-                should_rebuild,
+                rebuild: should_rebuild.then_some(DecisionReason::UpstreamOutdated),
                 drift_present,
             }
         }
     }
 }
 
-/// Map a SubmitEnrichedSQLRequest into the fields we persist / match on.
+/// The client-reported node body hash, when the request carries node state.
 pub fn node_body_hash_of(req: &qc::SubmitEnrichedSqlRequest) -> Option<String> {
     req.dbt_node_state
         .as_ref()
         .and_then(|s| s.node_body_hash.clone())
-}
-
-pub fn input_tables_of(req: &qc::SubmitEnrichedSqlRequest) -> Vec<InputTable> {
-    req.tables
-        .iter()
-        .map(|t| InputTable {
-            name: t.name.clone(),
-            last_modified_epoch: t.last_modified_epoch,
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -478,6 +777,7 @@ mod tests {
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
+            why_no_candidate: None,
         }
     }
 
@@ -499,6 +799,7 @@ mod tests {
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            ..ExecutionRow::default()
         }
     }
 
@@ -969,11 +1270,12 @@ mod tests {
 
     fn data_test_ctx<'a>(tables: &'a [InputTable]) -> SubmitContext<'a> {
         SubmitContext {
-            execution_type: ET_DBT_DATA_TEST,
+            execution_type: ModelExecutionType::DbtDataTest as i32,
             input_tables: tables,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
+            why_no_candidate: None,
         }
     }
 
@@ -983,7 +1285,7 @@ mod tests {
     fn data_test_executes_when_upstream_newer_than_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 100)];
         let mut prev = confirmed("h", recorded, None); // tests have no build epoch
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // upstream advanced
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
@@ -998,7 +1300,7 @@ mod tests {
     fn data_test_skips_when_upstream_equal_to_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // unchanged
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
@@ -1013,7 +1315,7 @@ mod tests {
     fn data_test_skips_when_upstream_older_than_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 50)];
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1027,7 +1329,7 @@ mod tests {
     fn data_test_executes_when_upstream_epoch_unknown() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![InputTable {
             name: "DB.S.INPUT".into(),
             last_modified_epoch: None,
@@ -1044,7 +1346,7 @@ mod tests {
     #[test]
     fn data_test_without_upstreams_still_skips_on_match() {
         let mut prev = confirmed("h", vec![], None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current: Vec<InputTable> = vec![];
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1058,7 +1360,7 @@ mod tests {
     fn data_test_executes_if_any_upstream_drifts() {
         let recorded = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 100)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 999)]; // B drifted
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1198,10 +1500,10 @@ mod tests {
     fn upstream_freshness_data_test_anchors_on_recorded_upstream() {
         let recorded = vec![tbl("DB.S.INPUT", 100)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // newer than recorded 100
         let mut c = ctx(&current);
-        c.execution_type = ET_DBT_DATA_TEST;
+        c.execution_type = ModelExecutionType::DbtDataTest as i32;
         let f = upstream_freshness(&c, &prev);
 
         assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
@@ -1281,7 +1583,7 @@ mod tests {
     fn duplicate_recorded_upstream_executes_data_test() {
         let recorded = vec![tbl("DB.S.A", 200), tbl("DB.S.A", 50)]; // same name twice
         let mut prev = confirmed("h", recorded, None); // data tests have no build epoch
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.A", 100)];
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
@@ -1308,6 +1610,199 @@ mod tests {
             "a duplicate recorded counterpart makes the upstream unprovable"
         );
         assert!(u.drifted, "an unprovable upstream is OUTDATED");
+    }
+
+    // ---- Decision reason ----------------------------------------------------
+
+    /// `decide` names why it reused or rebuilt: the reuse candidate selection
+    /// miss when there is no candidate, otherwise the freshness evidence.
+    #[test]
+    fn decide_reports_one_reason_per_situation() {
+        let reason = |c: &SubmitContext, prev: Option<&ExecutionRow>| decide(c, prev).reason();
+        let up = vec![tbl("a", 100)];
+        let prev = confirmed("h", up.clone(), Some(100));
+
+        // No reuse candidate: no latest row at all, or a rejected one.
+        assert_eq!(reason(&ctx(&up), None), DecisionReason::FirstBuild);
+        for why in [
+            NoCandidate::IdentityMismatch,
+            NoCandidate::FailedReuseQualification,
+            NoCandidate::OwnTargetChangedOrMissing,
+            NoCandidate::IncompleteCachedTestResults,
+        ] {
+            let mut c = ctx(&up);
+            c.target_has_prior_build = true;
+            c.why_no_candidate = Some(why);
+            assert_eq!(reason(&c, None), DecisionReason::NoReuseCandidate(why));
+        }
+
+        // A reuse candidate: the freshness evidence decides.
+        assert_eq!(
+            reason(&ctx(&up), Some(&prev)),
+            DecisionReason::Reused(Reuse::Fresh)
+        );
+        assert_eq!(
+            reason(&ctx(&[]), Some(&confirmed("h", vec![], Some(100)))),
+            DecisionReason::Reused(Reuse::Fresh),
+            "no upstreams to compare"
+        );
+        let added = vec![tbl("a", 100), tbl("new_dep", 100)];
+        assert_eq!(
+            reason(&ctx(&added), Some(&prev)),
+            DecisionReason::DependencySetChanged
+        );
+        assert_eq!(
+            reason(&ctx(&up), Some(&confirmed("h", up.clone(), None))),
+            DecisionReason::NoBuildAnchor
+        );
+        let drifted = vec![tbl("a", 999)];
+        assert_eq!(
+            reason(&ctx(&drifted), Some(&prev)),
+            DecisionReason::UpstreamOutdated
+        );
+        let unknown = vec![InputTable {
+            name: "a".into(),
+            last_modified_epoch: None,
+        }];
+        assert_eq!(
+            reason(&ctx(&unknown), Some(&prev)),
+            DecisionReason::UpstreamOutdated,
+            "an unprovable upstream is outdated"
+        );
+
+        // ALL policy with one of two parents drifted: reused, knowingly stale.
+        let recorded = vec![tbl("a", 100), tbl("b", 100)];
+        let partial = vec![tbl("a", 100), tbl("b", 999)];
+        let two = confirmed("h", recorded, Some(100));
+        let mut all = ctx(&partial);
+        all.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert_eq!(
+            reason(&all, Some(&two)),
+            DecisionReason::Reused(Reuse::ToleratedStale)
+        );
+    }
+
+    /// A decided record carries the verdict's wire values, its reason, and the
+    /// reuse candidate it was decided against.
+    #[test]
+    fn decided_record_carries_the_verdict_and_the_matched_execution() {
+        let up = vec![tbl("a", 100)];
+        let prev = confirmed("h", up.clone(), Some(100));
+
+        let skip = DecisionRecord::decided(&ctx(&up), Some(&prev));
+        assert_eq!(skip.class, DecisionKind::Skip);
+        assert_eq!(skip.reason, DecisionReason::Reused(Reuse::Fresh));
+        assert_eq!(
+            skip.description,
+            "model was a no-op because both its query and its upstream data are up to date"
+        );
+        assert_eq!(
+            (skip.skip_rejection_reason, skip.clone_rejection_reason),
+            (None, None)
+        );
+        assert!(!skip.is_stale);
+        assert_eq!(skip.matched_execution_id, Some(1));
+
+        let drifted = vec![tbl("a", 999)];
+        let rebuild = DecisionRecord::decided(&ctx(&drifted), Some(&prev));
+        assert_eq!(rebuild.class, DecisionKind::Build);
+        assert_eq!(rebuild.reason, DecisionReason::UpstreamOutdated);
+        assert_eq!(
+            (
+                rebuild.skip_rejection_reason,
+                rebuild.clone_rejection_reason
+            ),
+            (Some(6), Some(6))
+        );
+        assert_eq!(
+            rebuild.matched_execution_id,
+            Some(1),
+            "the freshness anchor"
+        );
+
+        let first = DecisionRecord::decided(&ctx(&up), None);
+        assert_eq!(first.class, DecisionKind::Build);
+        assert_eq!(first.reason, DecisionReason::FirstBuild);
+        assert_eq!(
+            first.description,
+            "model was executed because its table did not exist"
+        );
+        assert_eq!(first.matched_execution_id, None);
+    }
+
+    /// Every decision reason has one stable lowercase string, the value
+    /// persisted on the node decision, and reads back as itself.
+    #[test]
+    fn decision_reasons_persist_as_stable_strings() {
+        let pinned = [
+            (DecisionReason::FirstBuild, "first_build"),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+                "no_reuse_candidate.identity_mismatch",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+                "no_reuse_candidate.failed_reuse_qualification",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+                "no_reuse_candidate.own_target_changed_or_missing",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
+                "no_reuse_candidate.incomplete_cached_test_results",
+            ),
+            (
+                DecisionReason::DependencySetChanged,
+                "dependency_set_changed",
+            ),
+            (DecisionReason::NoBuildAnchor, "no_build_anchor"),
+            (DecisionReason::UpstreamOutdated, "upstream_outdated"),
+            (DecisionReason::Reused(Reuse::Fresh), "reused.fresh"),
+            (
+                DecisionReason::Reused(Reuse::ToleratedStale),
+                "reused.tolerated_stale",
+            ),
+            (DecisionReason::ResultCopy, "result_copy"),
+            (DecisionReason::CopyChainLimit, "copy_chain_limit"),
+        ];
+        for (reason, stored) in pinned {
+            assert_eq!(reason.as_str(), stored);
+            assert_eq!(DecisionReason::from_stored(stored), Some(reason));
+        }
+        assert_eq!(DecisionReason::from_stored("no_reuse_candidate"), None);
+        assert_eq!(DecisionReason::from_stored("FIRST_BUILD"), None);
+    }
+
+    /// One definition of the decision class: its stored string, read back by
+    /// Explain, and its wire `decision` int (SubmitSQLResultType).
+    #[test]
+    fn decision_kinds_are_stored_and_sent_as_pinned() {
+        let pinned = [
+            (DecisionKind::Skip, "skip", 0),
+            (DecisionKind::Build, "build", 1),
+            (DecisionKind::Clone, "clone", 3),
+        ];
+        for (kind, stored, wire) in pinned {
+            assert_eq!(kind.as_str(), stored);
+            assert_eq!(DecisionKind::from_stored(stored), Some(kind));
+            assert_eq!(kind.wire_decision(), wire);
+        }
+        assert_eq!(DecisionKind::from_stored("execute"), None);
+        assert_eq!(DecisionKind::from_stored("SKIP"), None);
+    }
+
+    #[test]
+    fn rejection_codes_are_the_wire_values() {
+        assert_eq!(
+            [
+                REJECTION_TARGET_TABLE_MISMATCH,
+                REJECTION_FORCED_NOT_ELIGIBLE,
+                REJECTION_NO_SUITABLE_MATCH_FOUND,
+                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+            ],
+            [1, 5, 6, 10]
+        );
     }
 }
 

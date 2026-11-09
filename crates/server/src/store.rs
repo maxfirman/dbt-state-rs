@@ -1,5 +1,6 @@
 //! Postgres-backed state store.
 
+use crate::execution::ExecutionWrite;
 use crate::query_cache as qc;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,26 @@ pub struct InputTable {
     pub last_modified_epoch: Option<i64>,
 }
 
-/// A row in the executions table.
-#[derive(Debug, Clone)]
+impl From<&qc::TableModifiedInfo> for InputTable {
+    fn from(t: &qc::TableModifiedInfo) -> Self {
+        Self {
+            name: t.name.clone(),
+            last_modified_epoch: t.last_modified_epoch,
+        }
+    }
+}
+
+/// A stored execution: the one read type for the `executions` table. State
+/// history reads, reuse candidate selection and the Explain anchor all read
+/// rows through [`ExecutionRow::COLUMNS`] and its `FromRow` mapping, so a new
+/// column is added in one place.
+///
+/// Recorded inputs and cached results are decoded when the row is read, but a
+/// decode failure stays on the row instead of failing the read: corrupt
+/// evidence on a row that is never served cannot fail a request. A caller that
+/// relies on that evidence takes the row through [`ExecutionRow::into_checked`].
+/// Fields that failed to decode read as empty.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecutionRow {
     pub id: i64,
     pub org_id: String,
@@ -24,6 +43,10 @@ pub struct ExecutionRow {
     pub node_body_hash: Option<String>,
     pub node_sql_hash: Option<String>,
     pub node_namespace_logic_hash: Option<String>,
+    /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
+    pub node_template_hash: Option<String>,
+    pub values_hash: Option<String>,
+    pub dialect: String,
     pub table_namespace: Option<String>,
     pub node_unique_id: Option<String>,
     pub last_modified_epoch: Option<i64>,
@@ -32,132 +55,139 @@ pub struct ExecutionRow {
     pub input_tables: Vec<InputTable>,
     pub status: String,
     pub request_id: String,
-    /// Set only for clone-origin rows (from RegisterClone): the physical source
-    /// this target was cloned from. Enables clone adoption on a later submit.
+    /// Set only for clone-origin rows: the physical source this target was
+    /// copied from. Enables clone adoption on a later submit.
     pub clone_source_table: Option<String>,
+    /// Why recorded inputs or cached results could not be decoded, if they
+    /// could not. Raised by [`ExecutionRow::into_checked`].
+    pub(crate) undecodable: Undecodable,
 }
 
-/// The latest confirmed execution in a physical scope, as fetched for reuse
-/// candidate selection. Cached results and recorded inputs stay undecoded until
-/// the row is selected, so corrupt bytes on a row that will not be served
-/// cannot fail a submit. Convert with [`LatestExecution::into_row`].
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct LatestExecution {
-    pub(crate) id: i64,
-    pub(crate) org_id: String,
-    pub(crate) target_table: String,
-    pub(crate) execution_type: i32,
-    pub(crate) node_body_hash: Option<String>,
-    pub(crate) node_sql_hash: Option<String>,
-    pub(crate) node_namespace_logic_hash: Option<String>,
-    pub(crate) node_template_hash: Option<String>,
-    pub(crate) values_hash: Option<String>,
-    pub(crate) dialect: String,
-    pub(crate) table_namespace: Option<String>,
-    pub(crate) node_unique_id: Option<String>,
-    pub(crate) last_modified_epoch: Option<i64>,
-    pub(crate) execution_runtime_ms: Option<i64>,
-    pub(crate) execution_results: Option<Vec<u8>>,
-    pub(crate) input_tables: serde_json::Value,
-    pub(crate) status: String,
-    pub(crate) request_id: String,
-    pub(crate) clone_source_table: Option<String>,
+/// Decode failures of an [`ExecutionRow`]'s stored encodings.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Undecodable {
+    input_tables: Option<String>,
+    execution_results: Option<String>,
 }
 
-impl LatestExecution {
-    /// Decode into an [`ExecutionRow`]. With `with_results = false` the cached
-    /// results are dropped undecoded (paths that never serve them).
-    pub(crate) fn into_row(self, with_results: bool) -> sqlx::Result<ExecutionRow> {
-        RawRow {
-            id: self.id,
-            org_id: self.org_id,
-            target_table: self.target_table,
-            execution_type: self.execution_type,
-            node_body_hash: self.node_body_hash,
-            node_sql_hash: self.node_sql_hash,
-            node_namespace_logic_hash: self.node_namespace_logic_hash,
-            table_namespace: self.table_namespace,
-            node_unique_id: self.node_unique_id,
-            last_modified_epoch: self.last_modified_epoch,
-            execution_runtime_ms: self.execution_runtime_ms,
-            execution_results: self.execution_results.filter(|_| with_results),
-            input_tables: self.input_tables,
-            status: self.status,
-            request_id: self.request_id,
-            clone_source_table: self.clone_source_table,
+impl ExecutionRow {
+    /// The columns the `FromRow` mapping reads.
+    pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
+        node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
+        values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
+        execution_runtime_ms, execution_results, input_tables, status, request_id, \
+        clone_source_table";
+
+    /// Decode the stored encodings of the recorded inputs (JSONB) and cached
+    /// results (protobuf bytes) onto the row, keeping any failure for
+    /// [`ExecutionRow::into_checked`].
+    pub(crate) fn with_encoded_evidence(
+        mut self,
+        input_tables: serde_json::Value,
+        execution_results: Option<Vec<u8>>,
+    ) -> Self {
+        match serde_json::from_value::<Vec<InputTable>>(input_tables) {
+            Ok(tables) => self.input_tables = tables,
+            Err(e) => {
+                self.input_tables = Vec::new();
+                self.undecodable.input_tables = Some(e.to_string());
+            }
         }
-        .try_into()
+        match execution_results
+            .map(|bytes| qc::Struct::decode(bytes.as_slice()))
+            .transpose()
+        {
+            Ok(results) => self.execution_results = results,
+            Err(e) => {
+                self.execution_results = None;
+                self.undecodable.execution_results = Some(e.to_string());
+            }
+        }
+        self
+    }
+
+    /// The row with its recorded inputs, and with `with_results` its cached
+    /// results, proven decodable: a decode failure surfaces here as an error.
+    /// With `with_results = false` the cached results are dropped unchecked
+    /// (paths that never serve them).
+    pub(crate) fn into_checked(mut self, with_results: bool) -> sqlx::Result<Self> {
+        let decode_error = |e: String| sqlx::Error::Decode(e.into());
+        if let Some(e) = self.undecodable.input_tables.take() {
+            return Err(decode_error(e));
+        }
+        match self.undecodable.execution_results.take() {
+            Some(e) if with_results => return Err(decode_error(e)),
+            _ if !with_results => self.execution_results = None,
+            _ => {}
+        }
+        Ok(self)
     }
 }
 
-/// Parameters captured when a ready_to_execute verdict is issued (pending row).
-#[derive(Debug, Clone)]
-pub struct PendingExecution {
-    pub org_id: String,
-    pub project_id: Option<String>,
-    pub target_table: String,
-    pub execution_type: i32,
-    pub node_hash: Option<String>,
-    pub node_body_hash: Option<String>,
-    pub node_sql_hash: Option<String>,
-    pub node_namespace_logic_hash: Option<String>,
-    pub node_configs_hash: Option<String>,
-    pub node_contract_hash: Option<String>,
-    pub node_unique_id: Option<String>,
-    pub table_namespace: Option<String>,
-    pub dialect: String,
-    pub input_tables: Vec<InputTable>,
-    pub values_hash: Option<String>,
-    pub request_id: String,
-    pub execution_decision_id: Option<String>,
-    /// Set only for clone-origin rows (from RegisterClone): the physical source
-    /// this target was cloned from. NULL for ordinary SQL/seed executions.
-    pub clone_source_table: Option<String>,
-    /// The unrendered-template logic hash, set only in `compare_unrendered_code`
-    /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
-    /// OR `node_template_hash` (template) equals the submit's.
-    pub node_template_hash: Option<String>,
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> sqlx::Result<Self> {
+        use sqlx::Row;
+        let read = ExecutionRow {
+            id: row.try_get("id")?,
+            org_id: row.try_get("org_id")?,
+            target_table: row.try_get("target_table")?,
+            execution_type: row.try_get("execution_type")?,
+            node_body_hash: row.try_get("node_body_hash")?,
+            node_sql_hash: row.try_get("node_sql_hash")?,
+            node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
+            node_template_hash: row.try_get("node_template_hash")?,
+            values_hash: row.try_get("values_hash")?,
+            dialect: row.try_get("dialect")?,
+            table_namespace: row.try_get("table_namespace")?,
+            node_unique_id: row.try_get("node_unique_id")?,
+            last_modified_epoch: row.try_get("last_modified_epoch")?,
+            execution_runtime_ms: row.try_get("execution_runtime_ms")?,
+            status: row.try_get("status")?,
+            request_id: row.try_get("request_id")?,
+            clone_source_table: row.try_get("clone_source_table")?,
+            ..ExecutionRow::default()
+        };
+        Ok(read.with_encoded_evidence(
+            row.try_get("input_tables")?,
+            row.try_get("execution_results")?,
+        ))
+    }
 }
 
-/// A fully-formed confirmed execution to insert directly (RecordExecutions
-/// bypass path). Carries the recorded outcome inline — no Submit/Confirm.
-#[derive(Debug, Clone)]
-pub struct ConfirmedExecution {
-    pub org_id: String,
-    pub project_id: Option<String>,
+/// A current confirmed state with the requested logic under another physical
+/// name: a candidate source for a result copy.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CopyCandidate {
     pub target_table: String,
-    pub execution_type: i32,
-    pub node_hash: Option<String>,
-    pub node_body_hash: Option<String>,
-    pub node_sql_hash: Option<String>,
-    pub node_namespace_logic_hash: Option<String>,
-    pub node_configs_hash: Option<String>,
-    pub node_contract_hash: Option<String>,
-    pub node_unique_id: Option<String>,
-    pub table_namespace: Option<String>,
-    pub dialect: String,
-    pub input_tables: Vec<InputTable>,
-    pub values_hash: Option<String>,
-    pub request_id: String,
-    pub execution_decision_id: Option<String>,
-    // recorded outcome
-    pub last_modified_epoch: Option<i64>,
-    pub table_type: Option<String>,
-    pub execution_runtime_ms: Option<i64>,
-    pub execution_results: Option<qc::Struct>,
-    /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
-    pub node_template_hash: Option<String>,
-}
-
-/// A confirmed "equivalent under another name" to clone from (SQL-submit
-/// cross-name fallback). Source physical name + warehouse type + build epoch.
-#[derive(Debug, Clone)]
-pub struct CloneEquivalent {
-    pub source_table: String,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
-    pub duckdb_copy_depth: usize,
+}
+
+/// What [`Store::find_copy_candidates`] selects. `limit` is the warehouse
+/// rules' candidate limit (`None`: every candidate).
+#[derive(Debug, Clone, Copy)]
+pub struct CopyCandidateQuery<'a> {
+    pub table_namespace: &'a str,
+    pub node_namespace_logic_hash: &'a str,
+    pub execution_type: i32,
+    pub exclude_target: &'a str,
+    pub dialect: &'a str,
+    pub limit: Option<i64>,
+}
+
+/// The current state a client-requested copy's source must have
+/// ([`Store::find_current_copy_source`]): a confirmed build (not itself a
+/// copy) of this execution type, table type and node hash at this epoch.
+#[derive(Debug, Clone, Copy)]
+pub struct CopySourceQuery<'a> {
+    pub source: &'a str,
+    pub table_namespace: &'a str,
+    pub dialect: &'a str,
+    pub execution_type: i32,
+    pub last_modified_epoch: i64,
+    pub table_type: &'a str,
+    pub node_hash: &'a str,
 }
 
 /// A node's recorded comparison state for `state:*` selectors, keyed by the
@@ -185,66 +215,43 @@ pub struct NodeStateUpsert {
 #[derive(Debug)]
 pub struct Store {
     pool: PgPool,
+    /// Count of best-effort `node_states` writes that FAILED (DB error). The
+    /// selector comparison store is written best-effort on every Submit so a
+    /// store outage never fails the SKIP/EXECUTE/CLONE decision path — but a
+    /// silent failure would let the execution ledger advance while `state:*`
+    /// selectors read a stale baseline. This counter makes that observable
+    /// (surface it as a metric/alert in deployment) and is asserted by the
+    /// `selector_state_write_failures_are_observable` offline test. It is NOT a
+    /// correctness signal for a single request; it is an operational health gauge.
+    selector_write_failures: std::sync::atomic::AtomicU64,
 }
 
 impl Store {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            selector_write_failures: std::sync::atomic::AtomicU64::new(0),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
 
-    /// Insert a pending execution row for a ready_to_execute verdict.
-    pub async fn insert_pending(&self, p: &PendingExecution) -> sqlx::Result<i64> {
-        let input_tables = serde_json::to_value(&p.input_tables).unwrap_or_default();
-        let rec = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO executions (
-                org_id, target_table, execution_type, node_hash, node_body_hash,
-                node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
-                dialect, input_tables, values_hash, status, request_id, execution_decision_id,
-                node_sql_hash, project_id, node_namespace_logic_hash, clone_source_table,
-                node_template_hash
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18,$19)
-            RETURNING id
-            "#,
-        )
-        .bind(&p.org_id)
-        .bind(&p.target_table)
-        .bind(p.execution_type)
-        .bind(&p.node_hash)
-        .bind(&p.node_body_hash)
-        .bind(&p.node_configs_hash)
-        .bind(&p.node_contract_hash)
-        .bind(&p.node_unique_id)
-        .bind(&p.table_namespace)
-        .bind(&p.dialect)
-        .bind(input_tables)
-        .bind(&p.values_hash)
-        .bind(&p.request_id)
-        .bind(&p.execution_decision_id)
-        .bind(&p.node_sql_hash)
-        .bind(&p.project_id)
-        .bind(&p.node_namespace_logic_hash)
-        .bind(&p.clone_source_table)
-        .bind(&p.node_template_hash)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(rec)
+    /// Current count of failed best-effort selector-state writes.
+    pub fn selector_write_failures(&self) -> u64 {
+        self.selector_write_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Insert a batch of fully-confirmed executions atomically. Any failure
-    /// rolls back the whole batch. Returns the number of rows inserted.
-    pub async fn insert_confirmed_batch(
-        &self,
-        records: &[ConfirmedExecution],
-    ) -> sqlx::Result<u32> {
-        let mut tx = self.pool.begin().await?;
-        Self::insert_confirmed_rows(&mut tx, records).await?;
-        tx.commit().await?;
-        Ok(records.len() as u32)
+    pub(crate) fn count_selector_write_failure(&self) {
+        self.selector_write_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Insert one execution row (Submit and RegisterClone pending rows).
+    pub(crate) async fn insert_execution(&self, row: &ExecutionWrite) -> sqlx::Result<()> {
+        Self::insert_row(&self.pool, row).await
     }
 
     /// Insert a batch of fully-confirmed executions AND their selector/deferral
@@ -260,13 +267,15 @@ impl Store {
     /// logical state consistently — a `node_states` fault now rolls the whole
     /// request back and surfaces as an error, rather than a silent partial
     /// publish. Returns the number of execution rows inserted.
-    pub async fn insert_confirmed_batch_with_node_states(
+    pub(crate) async fn insert_confirmed_batch_with_node_states(
         &self,
-        records: &[ConfirmedExecution],
+        records: &[ExecutionWrite],
         node_states: &[NodeStateUpsert],
     ) -> sqlx::Result<u32> {
         let mut tx = self.pool.begin().await?;
-        Self::insert_confirmed_rows(&mut tx, records).await?;
+        for row in records {
+            Self::insert_row(&mut *tx, row).await?;
+        }
         for n in node_states {
             Self::upsert_node_state_tx(&mut tx, n).await?;
         }
@@ -274,51 +283,59 @@ impl Store {
         Ok(records.len() as u32)
     }
 
-    /// Insert confirmed execution rows into an open transaction (shared by the
-    /// executions-only and executions+node_states batch methods).
-    async fn insert_confirmed_rows(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        records: &[ConfirmedExecution],
+    /// Insert one execution row: pending rows carry no outcome, confirmed rows
+    /// carry theirs and are stamped `confirmed_at`.
+    async fn insert_row<'e>(
+        executor: impl sqlx::PgExecutor<'e>,
+        row: &ExecutionWrite,
     ) -> sqlx::Result<()> {
-        for c in records {
-            let input_tables = serde_json::to_value(&c.input_tables).unwrap_or_default();
-            sqlx::query(
-                r#"
-                INSERT INTO executions (
-                    org_id, target_table, execution_type, node_hash, node_body_hash,
-                    node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
-                    dialect, input_tables, values_hash, status, request_id,
-                    execution_decision_id, last_modified_epoch, table_type,
-                    execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results,
-                    node_namespace_logic_hash, node_template_hash
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20,$21,$22)
-                "#,
-            )
-            .bind(&c.org_id)
-            .bind(&c.target_table)
-            .bind(c.execution_type)
-            .bind(&c.node_hash)
-            .bind(&c.node_body_hash)
-            .bind(&c.node_configs_hash)
-            .bind(&c.node_contract_hash)
-            .bind(&c.node_unique_id)
-            .bind(&c.table_namespace)
-            .bind(&c.dialect)
-            .bind(input_tables)
-            .bind(&c.values_hash)
-            .bind(&c.request_id)
-            .bind(&c.execution_decision_id)
-            .bind(c.last_modified_epoch)
-            .bind(&c.table_type)
-            .bind(c.execution_runtime_ms)
-            .bind(&c.node_sql_hash)
-            .bind(&c.project_id)
-            .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
-            .bind(&c.node_namespace_logic_hash)
-            .bind(&c.node_template_hash)
-            .execute(&mut **tx)
-            .await?;
-        }
+        let e = &row.evidence;
+        let outcome = row.status.outcome();
+        let input_tables = serde_json::to_value(&e.input_tables).unwrap_or_default();
+        sqlx::query(
+            r#"
+            INSERT INTO executions (
+                org_id, target_table, execution_type, node_hash, node_body_hash,
+                node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
+                dialect, input_tables, values_hash, status, request_id,
+                execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
+                clone_source_table, node_template_hash, last_modified_epoch, table_type,
+                execution_runtime_ms, execution_results, confirmed_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END)
+            "#,
+        )
+        .bind(&e.org_id)
+        .bind(&e.target_table)
+        .bind(e.execution_type)
+        .bind(&e.node_hash)
+        .bind(&e.node_body_hash)
+        .bind(&e.node_configs_hash)
+        .bind(&e.node_contract_hash)
+        .bind(&e.node_unique_id)
+        .bind(&e.table_namespace)
+        .bind(&e.dialect)
+        .bind(input_tables)
+        .bind(&e.values_hash)
+        .bind(row.status.as_str())
+        .bind(&row.request_id)
+        .bind(&row.execution_decision_id)
+        .bind(&e.node_sql_hash)
+        .bind(&e.project_id)
+        .bind(&e.node_namespace_logic_hash)
+        .bind(&e.clone_source_table)
+        .bind(&e.node_template_hash)
+        .bind(outcome.and_then(|o| o.last_modified_epoch))
+        .bind(outcome.and_then(|o| o.table_type.as_deref()))
+        .bind(outcome.and_then(|o| o.execution_runtime_ms))
+        .bind(
+            outcome
+                .and_then(|o| o.execution_results.as_ref())
+                .map(Message::encode_to_vec),
+        )
+        .bind(outcome.is_some())
+        .execute(executor)
+        .await?;
         Ok(())
     }
 
@@ -557,43 +574,52 @@ impl Store {
             return Ok(Vec::new());
         }
         // DISTINCT ON keeps one row per id (the latest by id) in case a best-
-        // effort capture wrote more than once for the same decision id. The
-        // LEFT JOIN pulls the matched `executions` anchor (ADR 0005 / ticket
-        // #30) when the decision recorded one — the freshness-subtree anchor the
-        // explain generator re-derives against. Both the decision and the anchor
-        // are org-scoped (AGENTS.md).
-        let rows: Vec<ExplainDecisionRow> = sqlx::query_as(
+        // effort capture wrote more than once for the same decision id.
+        let mut rows: Vec<ExplainDecisionRow> = sqlx::query_as(
             r#"
-            SELECT DISTINCT ON (d.execution_decision_id)
-                   d.execution_decision_id, d.decision, d.execution_type,
-                   d.decision_description, d.is_stale, d.target_table, d.clone_source,
-                   d.input_tables,
-                   d.matched_execution_id,
-                   a.last_modified_epoch AS anchor_last_modified_epoch,
-                   a.input_tables        AS anchor_input_tables,
-                   a.target_table        AS anchor_target_table,
-                   a.execution_type      AS anchor_execution_type,
-                   a.clone_source_table  AS anchor_clone_source_table,
-                   a.node_sql_hash       AS anchor_node_sql_hash
-            FROM node_decisions d
-            LEFT JOIN executions a
-                   ON a.id = d.matched_execution_id
-                  AND a.org_id = d.org_id
-            WHERE d.org_id = $1
-              AND d.execution_decision_id = ANY($2)
-            ORDER BY d.execution_decision_id, d.id DESC
+            SELECT DISTINCT ON (execution_decision_id)
+                   execution_decision_id, decision, execution_type,
+                   decision_description, is_stale, target_table, clone_source,
+                   input_tables, matched_execution_id, decision_reason
+            FROM node_decisions
+            WHERE org_id = $1
+              AND execution_decision_id = ANY($2)
+            ORDER BY execution_decision_id, id DESC
             "#,
         )
         .bind(org_id)
         .bind(execution_decision_ids)
         .fetch_all(&self.pool)
         .await?;
+
+        // The matched `executions` anchors (ADR 0005 / ticket #30): the
+        // freshness-subtree anchor the explain generator re-derives against,
+        // read as complete rows. Org-scoped like the decisions (AGENTS.md).
+        let matched: Vec<i64> = rows.iter().filter_map(|r| r.matched_execution_id).collect();
+        if matched.is_empty() {
+            return Ok(rows);
+        }
+        let anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM executions WHERE org_id = $1 AND id = ANY($2)",
+            ExecutionRow::COLUMNS
+        ))
+        .bind(org_id)
+        .bind(&matched)
+        .fetch_all(&self.pool)
+        .await?;
+        let anchors: std::collections::HashMap<i64, ExecutionRow> =
+            anchors.into_iter().map(|a| (a.id, a)).collect();
+        for row in &mut rows {
+            row.matched_execution = row
+                .matched_execution_id
+                .and_then(|id| anchors.get(&id).cloned());
+        }
         Ok(rows)
     }
 }
 
-/// A `node_decisions` row projected for explain re-derivation (ADR 0005), joined
-/// with its matched `executions` anchor (ticket #30) when one was recorded.
+/// A `node_decisions` row projected for explain re-derivation (ADR 0005), with
+/// its matched `executions` anchor (ticket #30) when one was recorded.
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
     pub execution_decision_id: Option<String>,
@@ -607,112 +633,41 @@ pub struct ExplainDecisionRow {
     /// The matched prior `executions` row id (NULL when the decision matched no
     /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
     pub matched_execution_id: Option<i64>,
-    /// Anchor columns from the joined `executions` row (NULL when unmatched).
-    pub anchor_last_modified_epoch: Option<i64>,
-    pub anchor_input_tables: Option<serde_json::Value>,
-    pub anchor_target_table: Option<String>,
-    pub anchor_execution_type: Option<i32>,
-    /// The anchor's `clone_source_table` and rendered identity. Together they
-    /// identify a client-requested copy, which records no upstream evidence
-    /// (see `reuse_candidate::adopt_current_inputs` / ADR 0005).
-    pub anchor_clone_source_table: Option<String>,
-    pub anchor_node_sql_hash: Option<String>,
+    /// The decision reason's stored string (ADR 0006); NULL only for a row
+    /// written before it was persisted.
+    pub decision_reason: Option<String>,
+    /// The complete `executions` row `matched_execution_id` names, loaded by
+    /// [`Store::fetch_explain_decisions`].
+    #[sqlx(skip)]
+    pub matched_execution: Option<ExecutionRow>,
 }
 
 impl ExplainDecisionRow {
+    /// The persisted decision reason. `None` for a NULL or unknown stored
+    /// value, either of which renders no Explain tree.
+    pub fn decision_reason(&self) -> Option<crate::decision::DecisionReason> {
+        self.decision_reason
+            .as_deref()
+            .and_then(crate::decision::DecisionReason::from_stored)
+    }
+
     /// Decode the JSONB `input_tables` column into the typed shape.
     pub fn input_tables(&self) -> Vec<InputTable> {
         serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()
     }
 
-    /// Reconstruct the matched `executions` anchor row (ADR 0005 / ticket #30)
-    /// for the explain freshness subtree, when the decision recorded one. Only
-    /// the fields the pure freshness helper reads are populated (the per-upstream
-    /// FRESH/OUTDATED verdict needs the anchor's own-build epoch + recorded
-    /// upstream input set); the rest carry inert defaults. `None` when no prior
-    /// build was matched (the EXECUTE first-build / CLONE cases ADR 0005 leaves
-    /// NULL), in which case the generator renders the anchor-independent tree.
-    pub fn anchor(&self, org_id: &str) -> Option<ExecutionRow> {
-        let id = self.matched_execution_id?;
-        let input_tables = self
-            .anchor_input_tables
-            .as_ref()
-            .and_then(|v| serde_json::from_value::<Vec<InputTable>>(v.clone()).ok())
-            .unwrap_or_default();
-        let mut anchor = ExecutionRow {
-            id,
-            org_id: org_id.to_string(),
-            target_table: self.anchor_target_table.clone().unwrap_or_default(),
-            execution_type: self.anchor_execution_type.unwrap_or(self.execution_type),
-            node_body_hash: None,
-            node_sql_hash: self.anchor_node_sql_hash.clone(),
-            node_namespace_logic_hash: None,
-            table_namespace: None,
-            node_unique_id: None,
-            last_modified_epoch: self.anchor_last_modified_epoch,
-            execution_runtime_ms: None,
-            execution_results: None,
-            input_tables,
-            status: "confirmed".to_string(),
-            request_id: String::new(),
-            clone_source_table: self.anchor_clone_source_table.clone(),
-        };
+    /// The matched `executions` anchor row (ADR 0005 / ticket #30) for the
+    /// explain freshness subtree, when the decision recorded one. `None` when
+    /// no prior build was matched (the EXECUTE first-build / CLONE cases ADR
+    /// 0005 leaves NULL), in which case the generator renders the
+    /// anchor-independent tree.
+    pub fn anchor(&self) -> Option<ExecutionRow> {
+        let mut anchor = self.matched_execution.clone()?;
         // Re-derive against the same recorded inputs the decision used: the
         // persisted decision-time inputs stand in exactly when the decision
         // substituted the submit's inputs (one shared rule).
         crate::reuse_candidate::adopt_current_inputs(&mut anchor, &self.input_tables());
         Some(anchor)
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct RawRow {
-    id: i64,
-    org_id: String,
-    target_table: String,
-    execution_type: i32,
-    node_body_hash: Option<String>,
-    node_sql_hash: Option<String>,
-    node_namespace_logic_hash: Option<String>,
-    table_namespace: Option<String>,
-    node_unique_id: Option<String>,
-    last_modified_epoch: Option<i64>,
-    execution_runtime_ms: Option<i64>,
-    execution_results: Option<Vec<u8>>,
-    input_tables: serde_json::Value,
-    status: String,
-    request_id: String,
-    clone_source_table: Option<String>,
-}
-
-impl TryFrom<RawRow> for ExecutionRow {
-    type Error = sqlx::Error;
-    fn try_from(r: RawRow) -> Result<Self, Self::Error> {
-        let input_tables = serde_json::from_value::<Vec<InputTable>>(r.input_tables)
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        let execution_results = r
-            .execution_results
-            .map(|bytes| qc::Struct::decode(bytes.as_slice()))
-            .transpose()
-            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        Ok(ExecutionRow {
-            id: r.id,
-            org_id: r.org_id,
-            target_table: r.target_table,
-            execution_type: r.execution_type,
-            node_body_hash: r.node_body_hash,
-            node_sql_hash: r.node_sql_hash,
-            node_namespace_logic_hash: r.node_namespace_logic_hash,
-            table_namespace: r.table_namespace,
-            node_unique_id: r.node_unique_id,
-            last_modified_epoch: r.last_modified_epoch,
-            execution_runtime_ms: r.execution_runtime_ms,
-            execution_results,
-            input_tables,
-            status: r.status,
-            request_id: r.request_id,
-            clone_source_table: r.clone_source_table,
-        })
     }
 }
 
@@ -731,12 +686,19 @@ mod tests {
             clone_source: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
             matched_execution_id: Some(1),
-            anchor_last_modified_epoch: Some(10),
-            anchor_input_tables: Some(serde_json::json!([])),
-            anchor_target_table: Some("T".into()),
-            anchor_execution_type: Some(1),
-            anchor_clone_source_table: Some("PROD.T".into()),
-            anchor_node_sql_hash: anchor_node_sql_hash.map(str::to_owned),
+            decision_reason: Some("reused.fresh".into()),
+            matched_execution: Some(ExecutionRow {
+                id: 1,
+                org_id: "o".into(),
+                target_table: "T".into(),
+                execution_type: 1,
+                node_sql_hash: anchor_node_sql_hash.map(str::to_owned),
+                last_modified_epoch: Some(10),
+                input_tables: Vec::new(),
+                status: "confirmed".into(),
+                clone_source_table: Some("PROD.T".into()),
+                ..ExecutionRow::default()
+            }),
         }
     }
 
@@ -745,11 +707,11 @@ mod tests {
     /// client-requested copy, kept as recorded for a SQL-submit copy.
     #[test]
     fn explain_anchor_applies_the_decision_input_rule() {
-        let register_clone = decision_row(None).anchor("o").unwrap();
+        let register_clone = decision_row(None).anchor().unwrap();
         assert_eq!(register_clone.input_tables.len(), 1);
         assert_eq!(register_clone.input_tables[0].name, "UP");
 
-        let sql_copy = decision_row(Some("h")).anchor("o").unwrap();
+        let sql_copy = decision_row(Some("h")).anchor().unwrap();
         assert!(sql_copy.input_tables.is_empty());
     }
 }

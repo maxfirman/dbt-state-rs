@@ -158,7 +158,7 @@ None was characterized against the hosted service.
 | Change | Reason | Where |
 |---|---|---|
 | **Clone-adoption input substitution is limited to RegisterClone copies** (clone-origin, no rendered identity, no recorded inputs). An adopted SQL-submit-fallback copy that recorded an EMPTY input list now rebuilds (`DependencySetChanged`) when the later submit has genuine upstreams; before, the current inputs were substituted and it could SKIP. | Such a copy recorded its submit's inputs, so an empty list means "no upstreams", not "nothing recorded". The decision and `ExplainDecisionRow::anchor` previously applied different guards; both now call one rule, so the explanation cannot disagree with the decision. Conservative: only rebuilds more. **Open question:** the hosted outcome for this case is UNOBSERVED; a capture needs a fallback copy of a source-less model followed by a submit with an upstream. | `reuse_candidate::adopt_current_inputs`; `reuse_candidate.rs::sql_submit_copy_with_no_recorded_upstreams_rebuilds_when_upstreams_appear`; `store.rs::explain_anchor_applies_the_decision_input_rule` |
-| Corrupt `input_tables` JSON on a current row that is not selected as a reuse candidate is ignored; it could previously return INTERNAL. Corrupt cached results on a strict match still return INTERNAL. | One fetch replaces three reads; evidence is decoded only for the selected row. | `store::LatestExecution::into_row` |
+| Corrupt `input_tables` JSON on a current row that is not selected as a reuse candidate is ignored; it could previously return INTERNAL. Corrupt cached results on a strict match still return INTERNAL. | One fetch replaces three reads; decode failures are raised only for the selected row. | `store::ExecutionRow::into_checked` |
 | Data-test submits no longer query target existence. | It never affects a data test's response. | `decision.rs::data_test_execute_ignores_target_existence` |
 | A submit-path equivalent with no copy DDL now logs a warning before the ordinary decision. | Previously a silent fallthrough. | `result_copy::SubmitCopyPlan::Unavailable` |
 
@@ -640,8 +640,8 @@ Remaining lag questions (not blocking):
   on a tolerated-stale SKIP (ALL policy with some parents fresh: the reused
   result knowingly serves slightly stale data). The engine previously hardcoded
   `is_stale=false` on skips and set `is_stale=true` on drift executes — both
-  wrong. `decision.rs::evaluate_freshness` now returns `{should_rebuild,
-  drift_present}`; `Verdict::Skip` carries `is_stale = drift_present` and every
+  wrong. `decision.rs::evaluate_freshness` now returns whether (and why) to
+  rebuild plus `drift_present`; `Verdict::Skip` carries `is_stale = drift_present` and every
   execute reports false. Pinned by `decision.rs` (`*_is_stale_*` tests) and
   `lag_policy.rs`.
 
@@ -733,7 +733,7 @@ captured.
   Concurrent/racing-record ordering is NOT establishable from a capture and is
   intentionally not implemented as a guard (would be speculative); the
   last-arriving write wins by design. **Best-effort write is now OBSERVABLE:**
-  `record_node_state` increments `AppState::selector_write_failures` on a store
+  `submit_decision`'s node-state write increments `Store::selector_write_failures` (read via `AppState::selector_write_failures()`) on a store
   error (still never failing the decision path), so a silent baseline-staleness
   divergence is a surfaceable metric. Pinned by
   `selector_offline.rs::selector_state_write_failures_are_observable`.

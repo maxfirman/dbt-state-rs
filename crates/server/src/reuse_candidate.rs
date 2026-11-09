@@ -18,12 +18,11 @@
 //! later build, so nothing older is resurrected when the latest row does not
 //! match.
 
+use crate::decision::NoCandidate;
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, LatestExecution, PendingExecution};
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
+use crate::query_cache::ModelExecutionType;
+use crate::store::{ExecutionRow, InputTable};
 
 /// The outcome of reuse candidate selection for one submit.
 #[derive(Debug)]
@@ -35,6 +34,9 @@ pub(crate) struct Selection {
     /// whatever its identity. Distinguishes a first build ("did not exist")
     /// from a rebuild in the EXECUTE description (review #2 5th follow-up P1 #4).
     pub target_has_prior_build: bool,
+    /// Why the latest row in scope is not a reuse candidate. `None` when there
+    /// is a candidate or no latest row at all (a first build).
+    pub why_no_candidate: Option<NoCandidate>,
 }
 
 impl Selection {
@@ -42,7 +44,27 @@ impl Selection {
     const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
+        why_no_candidate: None,
     };
+
+    /// The outcome for a latest row in scope: the reuse candidate when the
+    /// row's identity matched (`identified`) and `rejection` found nothing
+    /// against it, otherwise why it is not one.
+    fn of(
+        identified: Option<ExecutionRow>,
+        rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
+        target_has_prior_build: bool,
+    ) -> Selection {
+        let why_no_candidate = match &identified {
+            None => Some(NoCandidate::IdentityMismatch),
+            Some(row) => rejection(row),
+        };
+        Selection {
+            candidate: identified.filter(|_| why_no_candidate.is_none()),
+            target_has_prior_build,
+            why_no_candidate,
+        }
+    }
 }
 
 /// Models, views, snapshots and other target-producing SQL submits.
@@ -51,16 +73,16 @@ impl Selection {
 /// submit's identity as built by `ExecutionEvidence::sql_submit`.
 pub(crate) fn for_model(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
-    current: Option<LatestExecution>,
+    evidence: &ExecutionEvidence,
+    current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
-    debug_assert_ne!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
+    debug_assert_ne!(req.execution_type, ModelExecutionType::DbtDataTest as i32);
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
-        Some(current.into_row(true)?)
+        Some(current.into_checked(true)?)
     } else if adoptable(req, evidence, &current) {
         // CROSS-ENVIRONMENT CLONE ADOPTION. The strict (exact rendered SQL)
         // match missed, but the current state is a CLONE of the same model in
@@ -69,17 +91,25 @@ pub(crate) fn for_model(
         // logic-sensitive (a genuine SQL change still executes). Verified live;
         // see experiments/clone_logic_sensitivity.sh. Adoption never serves
         // cached results (clone-origin rows carry none).
-        let mut row = current.into_row(false)?;
+        let mut row = current.into_checked(false)?;
         adopt_current_inputs(&mut row, &evidence.input_tables);
         Some(row)
     } else {
         None
     };
-    Ok(Selection {
-        candidate: identified
-            .filter(|prev| sql_qualifies(req, evidence) && current_target_matches(req, prev)),
-        target_has_prior_build: true,
-    })
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if !sql_qualifies(req, evidence) {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !current_target_matches(req, prev) {
+                Some(NoCandidate::OwnTargetChangedOrMissing)
+            } else {
+                None
+            }
+        },
+        true,
+    ))
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome
@@ -87,20 +117,31 @@ pub(crate) fn for_model(
 /// existence does not affect a data test's response, so it is not reported.
 pub(crate) fn for_data_test(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
-    latest: Option<LatestExecution>,
+    evidence: &ExecutionEvidence,
+    latest: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
-    debug_assert_eq!(req.execution_type, EXECUTION_TYPE_DBT_DATA_TEST);
-    let identified = match latest {
-        Some(row) if identity_matches(evidence, &row) => Some(row.into_row(true)?),
-        _ => None,
+    debug_assert_eq!(req.execution_type, ModelExecutionType::DbtDataTest as i32);
+    let Some(latest) = latest else {
+        return Ok(Selection::FIRST_BUILD);
     };
-    Ok(Selection {
-        candidate: identified.filter(|prev| {
-            sql_qualifies(req, evidence) && reusable_test_results(prev.execution_results.as_ref())
-        }),
-        target_has_prior_build: false,
-    })
+    let identified = if identity_matches(evidence, &latest) {
+        Some(latest.into_checked(true)?)
+    } else {
+        None
+    };
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if !sql_qualifies(req, evidence) {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !reusable_test_results(prev.execution_results.as_ref()) {
+                Some(NoCandidate::IncompleteCachedTestResults)
+            } else {
+                None
+            }
+        },
+        false,
+    ))
 }
 
 /// Seeds compare values and seed configuration identity, then require the
@@ -108,28 +149,34 @@ pub(crate) fn for_data_test(
 /// inputs stay empty for the pure decision.
 pub(crate) fn for_seed(
     req: &qc::SubmitValuesRequest,
-    evidence: &PendingExecution,
-    current: Option<LatestExecution>,
+    evidence: &ExecutionEvidence,
+    current: Option<ExecutionRow>,
 ) -> sqlx::Result<Selection> {
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
-    let identified = if current.execution_type == EXECUTION_TYPE_VALUES
+    let identified = if current.execution_type == ModelExecutionType::Values as i32
         && current.values_hash.as_deref() == Some(req.values_hash.as_str())
         && current.node_sql_hash.is_some()
         && current.node_sql_hash == evidence.node_sql_hash
     {
-        Some(current.into_row(true)?)
+        Some(current.into_checked(true)?)
     } else {
         None
     };
-    Ok(Selection {
-        candidate: identified.filter(|prev| {
-            !req.values_hash.is_empty()
-                && not_modified_since(req.last_modified_epoch, prev.last_modified_epoch)
-        }),
-        target_has_prior_build: true,
-    })
+    Ok(Selection::of(
+        identified,
+        |prev| {
+            if req.values_hash.is_empty() {
+                Some(NoCandidate::FailedReuseQualification)
+            } else if !not_modified_since(req.last_modified_epoch, prev.last_modified_epoch) {
+                Some(NoCandidate::OwnTargetChangedOrMissing)
+            } else {
+                None
+            }
+        },
+        true,
+    ))
 }
 
 /// A client-requested copy (RegisterClone) records NO upstream evidence: it
@@ -157,7 +204,7 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
 /// submit carries a template hash) the unrendered-template identity. A
 /// template-mode node rebuilds only when BOTH change (verified live; see
 /// `template_comparison.rs`, and review #2 finding 6 follow-up for data tests).
-fn identity_matches(evidence: &PendingExecution, row: &LatestExecution) -> bool {
+fn identity_matches(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
     row.node_sql_hash == evidence.node_sql_hash
         || (evidence.node_template_hash.is_some()
             && row.node_template_hash == evidence.node_template_hash)
@@ -169,8 +216,8 @@ fn identity_matches(evidence: &PendingExecution, row: &LatestExecution) -> bool 
 /// for rows written under an older namespace identity.
 fn strict_match(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
-    row: &LatestExecution,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
 ) -> bool {
     let logic_compatible = match (
         &row.node_namespace_logic_hash,
@@ -182,6 +229,7 @@ fn strict_match(
     row.execution_type == req.execution_type
         && identity_matches(evidence, row)
         && logic_compatible
+        // Exact on purpose: strict same-target identity, not dialect recognition.
         && row.dialect == req.dialect
 }
 
@@ -192,8 +240,8 @@ fn strict_match(
 /// (see correctness-handoff.md §A).
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &PendingExecution,
-    row: &LatestExecution,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
 ) -> bool {
     row.execution_type == req.execution_type
         && row.dialect == req.dialect
@@ -206,7 +254,7 @@ fn adoptable(
 /// function evidence is not implemented, so requested volatile evaluation
 /// builds instead of claiming reuse. Empty SQL or template is likewise
 /// insufficient evidence.
-fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &PendingExecution) -> bool {
+fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
     req.tolerate_nondeterminism
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
@@ -271,7 +319,6 @@ fn reusable_test_results(results: Option<&qc::Struct>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::ExecutionEvidence;
     use proptest::prelude::*;
     use prost::Message;
     use qc::value::Kind;
@@ -301,8 +348,8 @@ mod tests {
         }
     }
 
-    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
-        ExecutionEvidence::sql_submit("o", req).row().clone()
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> ExecutionEvidence {
+        ExecutionEvidence::sql_submit("o", req)
     }
 
     fn results(complete: bool) -> qc::Struct {
@@ -333,8 +380,8 @@ mod tests {
     }
 
     /// The latest row as recorded by a confirmed build of exactly `ev`.
-    fn recorded(ev: &PendingExecution) -> LatestExecution {
-        LatestExecution {
+    fn recorded(ev: &ExecutionEvidence) -> ExecutionRow {
+        ExecutionRow {
             id: 7,
             org_id: "o".into(),
             target_table: ev.target_table.clone(),
@@ -349,28 +396,31 @@ mod tests {
             node_unique_id: ev.node_unique_id.clone(),
             last_modified_epoch: Some(BUILT),
             execution_runtime_ms: Some(42),
-            execution_results: Some(results(true).encode_to_vec()),
-            input_tables: serde_json::to_value(&ev.input_tables).unwrap(),
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            ..ExecutionRow::default()
         }
+        .with_encoded_evidence(
+            serde_json::to_value(&ev.input_tables).unwrap(),
+            Some(results(true).encode_to_vec()),
+        )
     }
 
     /// A clone-origin row as written by RegisterClone: inherited logic, no
     /// rendered identity, no recorded inputs, no results.
-    fn clone_origin(ev: &PendingExecution) -> LatestExecution {
-        LatestExecution {
+    fn clone_origin(ev: &ExecutionEvidence) -> ExecutionRow {
+        ExecutionRow {
             node_sql_hash: None,
             node_body_hash: None,
-            input_tables: serde_json::json!([]),
+            input_tables: Vec::new(),
             execution_results: None,
             clone_source_table: Some("\"DB\".\"PROD\".\"M\"".into()),
             ..recorded(ev)
         }
     }
 
-    fn model(req: &qc::SubmitEnrichedSqlRequest, row: Option<LatestExecution>) -> Selection {
+    fn model(req: &qc::SubmitEnrichedSqlRequest, row: Option<ExecutionRow>) -> Selection {
         for_model(req, &evidence(req), row).expect("no decode error")
     }
 
@@ -469,7 +519,10 @@ mod tests {
         let req = model_req("select id from DB.DEV.UP");
         let ev = evidence(&req);
         let mut row = clone_origin(&ev);
-        row.input_tables = serde_json::json!([{ "name": UPSTREAM, "last_modified_epoch": 1 }]);
+        row.input_tables = vec![InputTable {
+            name: UPSTREAM.into(),
+            last_modified_epoch: Some(1),
+        }];
         let c = model(&req, Some(row)).candidate.expect("adopted");
         assert_eq!(c.input_tables.len(), 1);
         assert_eq!(c.input_tables[0].last_modified_epoch, Some(1));
@@ -497,6 +550,7 @@ mod tests {
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
             target_has_prior_build: true,
+            why_no_candidate: None,
         };
         assert!(matches!(
             crate::decision::decide(&ctx, Some(&c)),
@@ -605,13 +659,13 @@ mod tests {
         let req = model_req("select id from DB.DEV.UP");
         let ev = evidence(&req);
         let corrupt = vec![0xff, 0xff, 0xff];
+        let inputs = serde_json::to_value(&ev.input_tables).unwrap();
 
-        let mut strict = recorded(&ev);
-        strict.execution_results = Some(corrupt.clone());
+        let strict = recorded(&ev).with_encoded_evidence(inputs, Some(corrupt.clone()));
         assert!(for_model(&req, &ev, Some(strict)).is_err());
 
-        let mut adopted = clone_origin(&ev);
-        adopted.execution_results = Some(corrupt.clone());
+        let adopted =
+            clone_origin(&ev).with_encoded_evidence(serde_json::json!([]), Some(corrupt.clone()));
         assert!(for_model(&req, &ev, Some(adopted))
             .unwrap()
             .candidate
@@ -619,8 +673,7 @@ mod tests {
 
         let mut miss = recorded(&ev);
         miss.node_sql_hash = Some("other".into());
-        miss.execution_results = Some(corrupt);
-        miss.input_tables = serde_json::json!("not a list");
+        let miss = miss.with_encoded_evidence(serde_json::json!("not a list"), Some(corrupt));
         assert!(for_model(&req, &ev, Some(miss))
             .unwrap()
             .candidate
@@ -631,7 +684,7 @@ mod tests {
 
     fn data_test_req() -> qc::SubmitEnrichedSqlRequest {
         qc::SubmitEnrichedSqlRequest {
-            execution_type: EXECUTION_TYPE_DBT_DATA_TEST,
+            execution_type: ModelExecutionType::DbtDataTest as i32,
             target_table: None,
             tables: vec![table(UPSTREAM, 500)],
             dbt_node_state: Some(qc::DbtNodeState {
@@ -651,7 +704,7 @@ mod tests {
         assert!(!complete.target_has_prior_build);
 
         let mut partial = recorded(&ev);
-        partial.execution_results = Some(results(false).encode_to_vec());
+        partial.execution_results = Some(results(false));
         assert!(for_data_test(&req, &ev, Some(partial))
             .unwrap()
             .candidate
@@ -690,8 +743,8 @@ mod tests {
         }
     }
 
-    fn seed_evidence(req: &qc::SubmitValuesRequest) -> PendingExecution {
-        ExecutionEvidence::values_submit("o", req).row().clone()
+    fn seed_evidence(req: &qc::SubmitValuesRequest) -> ExecutionEvidence {
+        ExecutionEvidence::values_submit("o", req)
     }
 
     #[test]
@@ -733,9 +786,111 @@ mod tests {
         assert!(for_seed(&req, &ev, Some(row)).unwrap().candidate.is_none());
     }
 
+    // ---- why the latest row is not a reuse candidate ------------------------
+
+    #[test]
+    fn model_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let base = model_req("select id from DB.DEV.UP");
+        let why = |req: &qc::SubmitEnrichedSqlRequest, row: Option<ExecutionRow>| {
+            model(req, row).why_no_candidate
+        };
+        assert_eq!(why(&base, None), None, "a first build rejects nothing");
+        assert_eq!(why(&base, Some(recorded(&evidence(&base)))), None);
+
+        let mut other = recorded(&evidence(&base));
+        other.node_sql_hash = Some("other".into());
+        assert_eq!(why(&base, Some(other)), Some(NoCandidate::IdentityMismatch));
+
+        let mut volatile = base.clone();
+        volatile.tolerate_nondeterminism = false;
+        let row = recorded(&evidence(&volatile));
+        assert_eq!(
+            why(&volatile, Some(row)),
+            Some(NoCandidate::FailedReuseQualification)
+        );
+
+        let mut dropped = base.clone();
+        dropped.tables.retain(|t| t.name != TARGET);
+        let row = recorded(&evidence(&dropped));
+        assert_eq!(
+            why(&dropped, Some(row)),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+
+        let mut edited = base.clone();
+        edited.tables[0].last_modified_epoch = Some(BUILT + 1);
+        let row = recorded(&evidence(&edited));
+        assert_eq!(
+            why(&edited, Some(row)),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+    }
+
+    #[test]
+    fn data_test_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let req = data_test_req();
+        let ev = evidence(&req);
+        let why =
+            |row: Option<ExecutionRow>| for_data_test(&req, &ev, row).unwrap().why_no_candidate;
+        assert_eq!(why(None), None);
+        assert_eq!(why(Some(recorded(&ev))), None);
+
+        let mut partial = recorded(&ev);
+        partial.execution_results = Some(results(false));
+        assert_eq!(
+            why(Some(partial)),
+            Some(NoCandidate::IncompleteCachedTestResults)
+        );
+        let mut changed = recorded(&ev);
+        changed.node_sql_hash = Some("other".into());
+        assert_eq!(why(Some(changed)), Some(NoCandidate::IdentityMismatch));
+
+        let mut volatile = data_test_req();
+        volatile.tolerate_nondeterminism = false;
+        let vev = evidence(&volatile);
+        assert_eq!(
+            for_data_test(&volatile, &vev, Some(recorded(&vev)))
+                .unwrap()
+                .why_no_candidate,
+            Some(NoCandidate::FailedReuseQualification)
+        );
+    }
+
+    #[test]
+    fn seed_selection_reports_why_the_latest_row_is_not_a_candidate() {
+        let req = seed_req(Some(BUILT));
+        let ev = seed_evidence(&req);
+        let why = |req: &qc::SubmitValuesRequest, row: Option<ExecutionRow>| {
+            for_seed(req, &ev, row).unwrap().why_no_candidate
+        };
+        assert_eq!(why(&req, None), None);
+        assert_eq!(why(&req, Some(recorded(&ev))), None);
+
+        let mut other_values = recorded(&ev);
+        other_values.values_hash = Some("changed".into());
+        assert_eq!(
+            why(&req, Some(other_values)),
+            Some(NoCandidate::IdentityMismatch)
+        );
+        assert_eq!(
+            why(&seed_req(Some(BUILT + 1)), Some(recorded(&ev))),
+            Some(NoCandidate::OwnTargetChangedOrMissing)
+        );
+
+        let mut empty = seed_req(Some(BUILT));
+        empty.values_hash = String::new();
+        let eev = seed_evidence(&empty);
+        let mut row = recorded(&eev);
+        row.values_hash = Some(String::new());
+        assert_eq!(
+            for_seed(&empty, &eev, Some(row)).unwrap().why_no_candidate,
+            Some(NoCandidate::FailedReuseQualification)
+        );
+    }
+
     // ---- properties ---------------------------------------------------------
 
-    fn arbitrary_row(ev: PendingExecution) -> impl Strategy<Value = LatestExecution> {
+    fn arbitrary_row(ev: ExecutionEvidence) -> impl Strategy<Value = ExecutionRow> {
         (
             any::<bool>(),
             any::<bool>(),
@@ -769,6 +924,23 @@ mod tests {
             let req = model_req("select id from DB.DEV.UP");
             let expected = row.is_some();
             prop_assert_eq!(model(&req, row).target_has_prior_build, expected);
+        }
+
+        /// Exactly one of: a candidate, a reason the latest row was rejected,
+        /// or no latest row at all.
+        #[test]
+        fn rejection_reported_iff_the_latest_row_is_not_a_candidate(
+            row in prop::option::of(arbitrary_row(evidence(&model_req("select id from DB.DEV.UP")))),
+            tolerate in any::<bool>(),
+        ) {
+            let mut req = model_req("select id from DB.DEV.UP");
+            req.tolerate_nondeterminism = tolerate;
+            let had_row = row.is_some();
+            let s = model(&req, row);
+            prop_assert_eq!(
+                s.why_no_candidate.is_some(),
+                had_row && s.candidate.is_none()
+            );
         }
 
         #[test]

@@ -1,13 +1,11 @@
 //! Open-source dbt State ("query cache") gRPC server with a Postgres backend.
 
 pub mod capture;
-pub mod clone;
 pub mod config;
 pub mod decision;
 mod execution;
 pub mod explain;
 pub mod fingerprint;
-mod history;
 mod result_copy;
 mod reuse_candidate;
 pub mod selector;
@@ -15,6 +13,7 @@ pub mod services;
 pub mod sql_identity;
 pub mod sql_norm;
 pub mod store;
+pub mod submit_decision;
 pub mod warehouse;
 
 pub use dbt_state_proto::grpc_health;
@@ -31,15 +30,6 @@ use crate::store::Store;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
-    /// Count of best-effort `node_states` writes that FAILED (DB error). The
-    /// selector comparison store is written best-effort on every Submit/Record
-    /// so a store outage never fails the SKIP/EXECUTE/CLONE decision path — but
-    /// a silent failure would let the execution ledger advance while `state:*`
-    /// selectors read a stale baseline. This counter makes that observable
-    /// (surface it as a metric/alert in deployment) and is asserted by the
-    /// `selector_state_write_failures_are_observable` offline test. It is NOT a
-    /// correctness signal for a single request; it is an operational health gauge.
-    pub selector_write_failures: Arc<std::sync::atomic::AtomicU64>,
     /// When true, reject requests lacking a non-empty `x-organization-id` header
     /// instead of bucketing them into the default tenant. See `config::Config`.
     pub require_org_header: bool,
@@ -54,7 +44,6 @@ impl AppState {
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self {
             store: Arc::new(Store::new(pool)),
-            selector_write_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             require_org_header: false,
         })
     }
@@ -70,16 +59,14 @@ impl AppState {
     pub fn from_pool(pool: PgPool) -> Self {
         Self {
             store: Arc::new(Store::new(pool)),
-            selector_write_failures: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             require_org_header: false,
         }
     }
 
     /// Current count of failed best-effort selector-state writes (for metrics
-    /// and the observability test).
+    /// and the observability test). See `Store::selector_write_failures`.
     pub fn selector_write_failures(&self) -> u64 {
-        self.selector_write_failures
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.store.selector_write_failures()
     }
 }
 

@@ -56,6 +56,13 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         resource_type: Some("model".into()),
         execution_type: 1,
         decision,
+        decision_reason: match decision {
+            DecisionKind::Build => dbt_state_server::decision::DecisionReason::FirstBuild,
+            DecisionKind::Skip => dbt_state_server::decision::DecisionReason::Reused(
+                dbt_state_server::decision::Reuse::Fresh,
+            ),
+            DecisionKind::Clone => dbt_state_server::decision::DecisionReason::ResultCopy,
+        },
         is_stale: false,
         decision_description: Some("because".into()),
         request_id: Some("req-1".into()),
@@ -172,5 +179,44 @@ async fn capture_records_matched_execution_id_on_skip_only() {
     assert_eq!(
         build_matched, None,
         "a build/first-build leaves matched_execution_id NULL"
+    );
+}
+
+/// ADR 0006: every captured node decision records its decision reason as the
+/// reason's stable lowercase string.
+#[tokio::test]
+async fn capture_records_the_decision_reason() {
+    use dbt_state_server::decision::{DecisionReason, NoCandidate, Reuse};
+    let (pool, _schema) = schema_pool().await;
+
+    let mut first = sample(DecisionKind::Build, "inv-1", "first");
+    first.decision_reason = DecisionReason::FirstBuild;
+    capture_decision(&pool, first).await;
+    let mut dropped = sample(DecisionKind::Build, "inv-1", "dropped");
+    dropped.decision_reason =
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing);
+    capture_decision(&pool, dropped).await;
+    let mut reused = sample(DecisionKind::Skip, "inv-1", "reused");
+    reused.decision_reason = DecisionReason::Reused(Reuse::ToleratedStale);
+    capture_decision(&pool, reused).await;
+
+    let stored: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT node_name, decision_reason FROM node_decisions ORDER BY node_name")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        stored,
+        [
+            (
+                "dropped".to_string(),
+                Some("no_reuse_candidate.own_target_changed_or_missing".to_string())
+            ),
+            ("first".to_string(), Some("first_build".to_string())),
+            (
+                "reused".to_string(),
+                Some("reused.tolerated_stale".to_string())
+            ),
+        ]
     );
 }

@@ -31,117 +31,22 @@
 use dbt_state_proto::query_cache as qc;
 use tokio::task::JoinSet;
 
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-
 #[path = "support.rs"]
 mod support;
-use support::{channel, response_variant, start_server};
+use support::rows;
+use support::scenario::{built_at, model, ready_id, variant, view, Policy, Scenario};
+use support::start_server;
 
-const ETYPE_FULL: i32 = 1;
-const ETYPE_VIEW: i32 = 10;
-const DECISION_SKIP: i64 = 0;
-const DECISION_EXECUTE: i64 = 1;
+const DECISION_SKIP: i32 = qc::SubmitSqlResultType::SkipExecution as i32;
+const DECISION_EXECUTE: i32 = qc::SubmitSqlResultType::ReadyToExecute as i32;
 
-/// A minimal model submit with a target, body hash, execution type and
-/// upstream tables.
-///
-/// NOTE: the hosted service's logic identity is the (whitespace-normalized)
-/// rendered SQL + allowlisted `semantic_extras`, NOT `node_body_hash` (which it
-/// ignores for reuse). So we derive the `sql` field from `body_hash`: a distinct
-/// logical identity produces distinct SQL, exactly as real dbt compiles distinct
-/// logic to distinct SQL. This keeps "changed logic → rebuild" tests faithful.
-fn submit(
-    target: &str,
-    body_hash: &str,
-    execution_type: i32,
-    tables: &[(&str, i64)],
-) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        tolerate_nondeterminism: true,
-        dialect: "snowflake".to_string(),
-        execution_type,
-        sql: format!("select 1 as c_{body_hash}"),
-        tables: std::iter::once(qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(1),
-        })
-        .chain(tables.iter().map(|(n, e)| qc::TableModifiedInfo {
-            name: n.to_string(),
-            last_modified_epoch: Some(*e),
-        }))
-        .collect(),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.jaffle.{target}"),
-            target_name: "prod".to_string(),
-            project_name: "jaffle".to_string(),
-            resource_type: "model".to_string(),
-            node_hash: body_hash.to_string(),
-            node_body_hash: Some(body_hash.to_string()),
-            profile_name: "default".to_string(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn with_policy(
-    mut req: qc::SubmitEnrichedSqlRequest,
-    policy: i32,
-    tol_s: i64,
-) -> qc::SubmitEnrichedSqlRequest {
-    req.stale_upstream_policy = policy;
-    req.freshness_tolerance_seconds = tol_s;
-    req
-}
-
-fn confirm_req(request_id: &str, epoch: i64, runtime_ms: i64) -> qc::ConfirmExecutionRequest {
-    qc::ConfirmExecutionRequest {
-        request_id: request_id.to_string(),
-        last_modified_epoch: Some(epoch),
-        failed_to_clone: false,
-        table_type: Some("TABLE".to_string()),
-        execution_results: None,
-        execution_runtime_ms: Some(runtime_ms),
-        labels: Default::default(),
-    }
-}
-
-fn ready_request_id(resp: &qc::SubmitSqlResponse) -> String {
-    match &resp.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id.clone(),
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
-
-/// Execute → confirm helper. Returns the request_id used.
-async fn execute_and_confirm(
-    sql: &mut SqlClient<tonic::transport::Channel>,
-    exec: &mut ExecutionClient<tonic::transport::Channel>,
-    req: &qc::SubmitEnrichedSqlRequest,
-    epoch: i64,
-    runtime_ms: i64,
-) -> String {
-    let resp = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .expect("submit")
-        .into_inner();
-    assert_eq!(
-        response_variant(&resp),
-        "ready_to_execute",
-        "first submit must execute"
-    );
-    let rid = ready_request_id(&resp);
-    let c = exec
-        .confirm_execution(confirm_req(&rid, epoch, runtime_ms))
-        .await
-        .expect("confirm")
-        .into_inner();
-    assert!(c.success, "confirm must succeed");
-    rid
-}
+// Every submit is a model (or view) with its own target present at epoch 1 and
+// the given upstreams. NOTE: the hosted service's logic identity is the
+// (whitespace-normalized) rendered SQL + allowlisted `semantic_extras`, NOT
+// `node_body_hash` (which it ignores for reuse). The scenario builders render
+// the SQL from the body hash: a distinct logical identity produces distinct
+// SQL, exactly as real dbt compiles distinct logic to distinct SQL. This keeps
+// "changed logic → rebuild" tests faithful.
 
 // 1. FAILED RUN: executed but NEVER confirmed → the next identical submit must
 //    STILL EXECUTE. A failed build left no confirmed state; skipping would
@@ -149,48 +54,29 @@ async fn execute_and_confirm(
 #[tokio::test]
 async fn unconfirmed_execution_never_skips() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
+    let sc = Scenario::connect(&server).await;
 
-    let req = submit(
-        "\"DB\".\"S\".\"FAILED\"",
-        "h-failed",
-        ETYPE_FULL,
-        &[("up", 100)],
-    );
+    let req = model("\"DB\".\"S\".\"FAILED\"")
+        .body("h-failed")
+        .upstream("up", 100);
 
     // First submit executes (pending row written), but we DO NOT confirm —
     // simulating a build that errored before ConfirmExecution.
-    let r1 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(response_variant(&r1), "ready_to_execute");
-    let _ = ready_request_id(&r1);
+    sc.execute_id(req.clone()).await;
 
     // Second identical submit must STILL execute (no confirmed history).
-    let r2 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(req.clone()).await,
         "ready_to_execute",
         "an unconfirmed (failed) run must never produce a skip"
     );
 
     // There must be zero confirmed rows for this fingerprint.
-    let pool = server.state.store.pool().clone();
-    let confirmed: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM executions WHERE status='confirmed' AND node_body_hash=$1",
-    )
-    .bind("h-failed")
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let confirmed = rows::executions(&server)
+        .await
+        .iter()
+        .filter(|r| r.is_confirmed() && r.node_body_hash.as_deref() == Some("h-failed"))
+        .count();
     assert_eq!(
         confirmed, 0,
         "a failed/unconfirmed run leaves no confirmed state"
@@ -202,35 +88,21 @@ async fn unconfirmed_execution_never_skips() {
 #[tokio::test]
 async fn confirming_wrong_request_id_leaves_original_pending() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let req = submit(
-        "\"DB\".\"S\".\"WRONGID\"",
-        "h-wrong",
-        ETYPE_FULL,
-        &[("up", 100)],
-    );
-    let r1 = sql
-        .submit_enriched_sql(req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    let _rid = ready_request_id(&r1);
+    let req = model("\"DB\".\"S\".\"WRONGID\"")
+        .body("h-wrong")
+        .upstream("up", 100);
+    let _rid = sc.execute_id(req.clone()).await;
 
     // Confirm a DIFFERENT, unknown id → success=false.
-    let c = exec
-        .confirm_execution(confirm_req("totally-unrelated-id", 100, 10))
-        .await
-        .unwrap()
-        .into_inner();
-    assert!(!c.success, "confirming an unknown id must not succeed");
+    assert!(
+        !sc.confirm("totally-unrelated-id", built_at(100)).await,
+        "confirming an unknown id must not succeed"
+    );
 
     // The original fingerprint is still unconfirmed → executes again.
-    let r2 = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    assert_eq!(response_variant(&r2), "ready_to_execute");
+    assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
 // 3. CHANGED CONTRACT / CHANGED SQL: confirm a build, then the SAME node with a
@@ -239,43 +111,27 @@ async fn confirming_wrong_request_id_leaves_original_pending() {
 #[tokio::test]
 async fn changed_contract_forces_rebuild() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"CONTRACT\"";
-    let v1 = submit(target, "hash-v1", ETYPE_FULL, &[("up", 100)]);
-    execute_and_confirm(&mut sql, &mut exec, &v1, 100, 10).await;
+    let node = model("\"DB\".\"S\".\"CONTRACT\"").upstream("up", 100);
+    let v1 = node.clone().body("hash-v1");
+    sc.build(v1.clone(), 100).await;
 
     // Same node, edited SQL → new body hash → must execute (hash miss).
-    let v2 = submit(target, "hash-v2", ETYPE_FULL, &[("up", 100)]);
-    let r2 = sql
-        .submit_enriched_sql(v2.clone())
-        .await
-        .unwrap()
-        .into_inner();
+    let v2 = node.body("hash-v2");
+    let r2 = sc.submit(v2.clone()).await;
     assert_eq!(
-        response_variant(&r2),
+        variant(&r2),
         "ready_to_execute",
         "a changed body hash must rebuild"
     );
     // Confirm v2.
-    let rid2 = ready_request_id(&r2);
-    assert!(
-        exec.confirm_execution(confirm_req(&rid2, 200, 20))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    assert!(sc.confirm(&ready_id(&r2), built_at(200).runtime(20)).await);
 
     // The original history no longer describes the overwritten target.
-    let r1_again = sql.submit_enriched_sql(v1).await.unwrap().into_inner();
-    assert_eq!(response_variant(&r1_again), "ready_to_execute");
+    assert_eq!(sc.verdict(v1).await, "ready_to_execute");
     // And v2 now skips too.
-    let r2_again = sql.submit_enriched_sql(v2).await.unwrap().into_inner();
-    assert_eq!(response_variant(&r2_again), "skip_execution");
+    assert_eq!(sc.verdict(v2).await, "skip_execution");
 }
 
 // 4. MODIFIED UPSTREAM: confirm a build, then a NEWER upstream forces a stale
@@ -283,73 +139,51 @@ async fn changed_contract_forces_rebuild() {
 #[tokio::test]
 async fn modified_upstream_forces_stale_rebuild_then_recovers() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"UP\"";
-    let base = submit(target, "h-up", ETYPE_FULL, &[("src", 1_000_000)]);
-    execute_and_confirm(&mut sql, &mut exec, &base, 1_000_000, 10).await;
+    let base = model("\"DB\".\"S\".\"UP\"")
+        .body("h-up")
+        .upstream("src", 1_000_000);
+    sc.build(base.clone(), 1_000_000).await;
 
     // Upstream moved far newer → stale → execute.
-    let moved = submit(target, "h-up", ETYPE_FULL, &[("src", 9_000_000)]);
-    let r = sql.submit_enriched_sql(moved).await.unwrap().into_inner();
-    match &r.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => {
-            let ed = x.explained_decision.as_ref().unwrap();
-            assert_eq!(ed.decision as i64, DECISION_EXECUTE);
-            // VERIFIED LIVE (lag fixture entry 5; multi-upstream ANY captures):
-            // the hosted service reports is_stale=FALSE on an upstream-drift
-            // rebuild. is_stale is only ever true on a tolerated-stale SKIP.
-            assert!(!ed.is_stale, "an execute always reports is_stale=false");
-        }
-        other => panic!("expected stale execute, got {other:?}"),
-    }
+    let x = sc
+        .expect_execute(base.clone().upstream("src", 9_000_000))
+        .await;
+    let ed = x.explained_decision.as_ref().unwrap();
+    assert_eq!(ed.decision, DECISION_EXECUTE);
+    // VERIFIED LIVE (lag fixture entry 5; multi-upstream ANY captures):
+    // the hosted service reports is_stale=FALSE on an upstream-drift
+    // rebuild. is_stale is only ever true on a tolerated-stale SKIP.
+    assert!(!ed.is_stale, "an execute always reports is_stale=false");
 
     // Upstream reverts to the recorded epoch → fresh → skip (confirmed row
     // still present; we never confirmed the stale rebuild).
-    let reverted = submit(target, "h-up", ETYPE_FULL, &[("src", 1_000_000)]);
-    let r2 = sql
-        .submit_enriched_sql(reverted)
-        .await
-        .unwrap()
-        .into_inner();
-    assert_eq!(response_variant(&r2), "skip_execution");
+    assert_eq!(sc.verdict(base).await, "skip_execution");
 }
 
 // 5. ADDED then DELETED upstream.
 #[tokio::test]
 async fn added_then_deleted_upstream() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"S\".\"ADDDROP\"";
-    let base = submit(target, "h-ad", ETYPE_FULL, &[("a", 100)]);
-    execute_and_confirm(&mut sql, &mut exec, &base, 100, 10).await;
+    let node = model(target).body("h-ad");
+    let base = node.clone().upstream("a", 100);
+    sc.build(base.clone(), 100).await;
 
     // Add a brand-new upstream, newer than the build → execute.
-    let added = submit(
-        target,
-        "h-ad",
-        ETYPE_FULL,
-        &[("a", 100), ("b_new", 9_000_000)],
-    );
-    let r = sql.submit_enriched_sql(added).await.unwrap().into_inner();
+    let added = base.upstream("b_new", 9_000_000);
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(added).await,
         "ready_to_execute",
         "a new, newer, untracked upstream must execute"
     );
 
     // Missing all recorded upstreams cannot establish freshness.
-    let dropped = submit(target, "h-ad", ETYPE_FULL, &[]);
-    let r2 = sql.submit_enriched_sql(dropped).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r2),
+        sc.verdict(node).await,
         "ready_to_execute",
         "missing dependency evidence requires execution"
     );
@@ -359,30 +193,16 @@ async fn added_then_deleted_upstream() {
 #[tokio::test]
 async fn cross_schema_upstream_requires_provenance() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let target = "\"DB\".\"S\".\"XSCHEMA\"";
-    let prod = submit(
-        target,
-        "h-xs",
-        ETYPE_FULL,
-        &[("\"DB\".\"PROD\".\"SRC\"", 1_000_000)],
-    );
-    execute_and_confirm(&mut sql, &mut exec, &prod, 1_000_000, 10).await;
+    let node = model("\"DB\".\"S\".\"XSCHEMA\"").body("h-xs");
+    let prod = node.clone().upstream("\"DB\".\"PROD\".\"SRC\"", 1_000_000);
+    sc.build(prod, 1_000_000).await;
 
     // Different physical input under a different schema requires execution.
-    let dev = submit(
-        target,
-        "h-xs",
-        ETYPE_FULL,
-        &[("\"DB\".\"DEV\".\"SRC\"", 1_000_000)],
-    );
-    let r = sql.submit_enriched_sql(dev).await.unwrap().into_inner();
+    let dev = node.upstream("\"DB\".\"DEV\".\"SRC\"", 1_000_000);
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(dev).await,
         "ready_to_execute",
         "distinct schemas cannot establish equivalent input data"
     );
@@ -394,27 +214,22 @@ async fn cross_schema_upstream_requires_provenance() {
 #[tokio::test]
 async fn execution_type_isolation() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"S\".\"ETYPE\"";
-    let as_view = submit(target, "h-et", ETYPE_VIEW, &[("up", 100)]);
-    execute_and_confirm(&mut sql, &mut exec, &as_view, 100, 10).await;
+    let as_view = view(target).body("h-et").upstream("up", 100);
+    sc.build(as_view.clone(), 100).await;
 
     // Same target + hash but execution_type FULL → not a match → execute.
-    let as_full = submit(target, "h-et", ETYPE_FULL, &[("up", 100)]);
-    let r = sql.submit_enriched_sql(as_full).await.unwrap().into_inner();
+    let as_full = model(target).body("h-et").upstream("up", 100);
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(as_full).await,
         "ready_to_execute",
         "a differing execution_type must not match a recorded row of another type"
     );
 
     // The original VIEW still skips.
-    let r_view = sql.submit_enriched_sql(as_view).await.unwrap().into_inner();
-    assert_eq!(response_variant(&r_view), "skip_execution");
+    assert_eq!(sc.verdict(as_view).await, "skip_execution");
 }
 
 // 8. FULL REFRESH: re-running an unchanged, confirmed node skips — mirrors the
@@ -424,113 +239,65 @@ async fn execution_type_isolation() {
 #[tokio::test]
 async fn unchanged_confirmed_node_skips_on_rerun() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
-    let req = submit("\"DB\".\"S\".\"FR\"", "h-fr", ETYPE_FULL, &[("up", 100)]);
-    execute_and_confirm(&mut sql, &mut exec, &req, 100, 42).await;
+    let req = model("\"DB\".\"S\".\"FR\"")
+        .body("h-fr")
+        .upstream("up", 100);
+    sc.build_with(req.clone(), built_at(100).runtime(42)).await;
 
     // Re-run the identical node → skip, echoing the recorded runtime.
-    let r = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    match r.response {
-        Some(qc::submit_sql_response::Response::SkipExecution(s)) => {
-            let ed = s.explained_decision.as_ref().unwrap();
-            assert_eq!(ed.decision as i64, DECISION_SKIP);
-            assert!(!ed.is_stale);
-            assert_eq!(
-                s.execution_runtime_ms,
-                Some(42),
-                "skip echoes recorded runtime"
-            );
-        }
-        other => panic!("expected skip, got {other:?}"),
-    }
+    let s = sc.expect_skip(req).await;
+    let ed = s.explained_decision.as_ref().unwrap();
+    assert_eq!(ed.decision, DECISION_SKIP);
+    assert!(!ed.is_stale);
+    assert_eq!(
+        s.execution_runtime_ms,
+        Some(42),
+        "skip echoes recorded runtime"
+    );
 }
 
 // 9. STALE-POLICY ANY vs ALL end-to-end over two upstreams, one drifted.
 #[tokio::test]
 async fn stale_policy_any_vs_all_end_to_end() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     // Policy ANY node.
-    let any_target = "\"DB\".\"S\".\"POLANY\"";
-    let any_base = with_policy(
-        submit(any_target, "h-any", ETYPE_FULL, &[("a", 100), ("b", 100)]),
-        0, // ANY
-        0,
-    );
-    execute_and_confirm(&mut sql, &mut exec, &any_base, 100, 10).await;
+    let any_base = model("\"DB\".\"S\".\"POLANY\"")
+        .body("h-any")
+        .upstream("a", 100)
+        .upstream("b", 100)
+        .policy(Policy::Any)
+        .tolerance_seconds(0);
+    sc.build(any_base.clone(), 100).await;
     // Only b drifts → ANY → execute.
-    let any_drift = with_policy(
-        submit(
-            any_target,
-            "h-any",
-            ETYPE_FULL,
-            &[("a", 100), ("b", 9_000_000)],
-        ),
-        0,
-        0,
-    );
-    let ra = sql
-        .submit_enriched_sql(any_drift)
-        .await
-        .unwrap()
-        .into_inner();
     assert_eq!(
-        response_variant(&ra),
+        sc.verdict(any_base.upstream("b", 9_000_000)).await,
         "ready_to_execute",
         "ANY: one drift executes"
     );
 
     // Policy ALL node.
-    let all_target = "\"DB\".\"S\".\"POLALL\"";
-    let all_base = with_policy(
-        submit(all_target, "h-all", ETYPE_FULL, &[("a", 100), ("b", 100)]),
-        1, // ALL
-        0,
-    );
-    execute_and_confirm(&mut sql, &mut exec, &all_base, 100, 10).await;
+    let all_base = model("\"DB\".\"S\".\"POLALL\"")
+        .body("h-all")
+        .upstream("a", 100)
+        .upstream("b", 100)
+        .policy(Policy::All)
+        .tolerance_seconds(0);
+    sc.build(all_base.clone(), 100).await;
     // Only b drifts → ALL → skip (a still fresh).
-    let all_one = with_policy(
-        submit(
-            all_target,
-            "h-all",
-            ETYPE_FULL,
-            &[("a", 100), ("b", 9_000_000)],
-        ),
-        1,
-        0,
-    );
-    let rb = sql.submit_enriched_sql(all_one).await.unwrap().into_inner();
+    let all_one = all_base.clone().upstream("b", 9_000_000);
     assert_eq!(
-        response_variant(&rb),
+        sc.verdict(all_one).await,
         "skip_execution",
         "ALL: one fresh upstream skips"
     );
     // Both drift → ALL → execute.
-    let all_both = with_policy(
-        submit(
-            all_target,
-            "h-all",
-            ETYPE_FULL,
-            &[("a", 8_000_000), ("b", 9_000_000)],
-        ),
-        1,
-        0,
-    );
-    let rc = sql
-        .submit_enriched_sql(all_both)
-        .await
-        .unwrap()
-        .into_inner();
+    let all_both = all_base.upstream("a", 8_000_000).upstream("b", 9_000_000);
     assert_eq!(
-        response_variant(&rc),
+        sc.verdict(all_both).await,
         "ready_to_execute",
         "ALL: every upstream drift executes"
     );
@@ -544,69 +311,49 @@ async fn stale_policy_any_vs_all_end_to_end() {
 async fn concurrent_identical_submits_then_single_confirm_skips() {
     const N: usize = 12;
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
+    let sc = Scenario::connect(&server).await;
 
-    let req = submit(
-        "\"DB\".\"S\".\"CONC\"",
-        "h-conc",
-        ETYPE_FULL,
-        &[("up", 100)],
-    );
+    let req = model("\"DB\".\"S\".\"CONC\"")
+        .body("h-conc")
+        .upstream("up", 100);
 
     // Fire N identical submits concurrently.
     let mut tasks = JoinSet::new();
     for _ in 0..N {
-        let mut sql = SqlClient::new(ch.clone());
-        let req = req.clone();
-        tasks.spawn(async move { sql.submit_enriched_sql(req).await });
+        let (sc, req) = (sc.clone(), req.clone());
+        tasks.spawn(async move { sc.try_submit(req).await });
     }
     let mut request_ids = Vec::new();
     while let Some(j) = tasks.join_next().await {
-        let resp = j.unwrap().expect("submit ok").into_inner();
+        let resp = j.unwrap().expect("submit ok");
         assert_eq!(
-            response_variant(&resp),
+            variant(&resp),
             "ready_to_execute",
             "all identical submits execute"
         );
-        request_ids.push(ready_request_id(&resp));
+        request_ids.push(ready_id(&resp));
     }
     assert_eq!(request_ids.len(), N);
 
     // Exactly N pending rows were written (no dedupe), all distinct ids.
-    let pool = server.state.store.pool().clone();
-    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM executions WHERE status='pending'")
-        .fetch_one(&pool)
+    let pending = rows::executions(&server)
         .await
-        .unwrap();
-    assert_eq!(pending, N as i64, "N distinct pending rows persisted");
+        .iter()
+        .filter(|r| r.is_pending())
+        .count();
+    assert_eq!(pending, N, "N distinct pending rows persisted");
 
     // Confirm ONE request_id → that fingerprint now skips.
-    let mut exec = ExecutionClient::new(ch.clone());
-    assert!(
-        exec.confirm_execution(confirm_req(&request_ids[0], 100, 55))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    assert!(sc.confirm(&request_ids[0], built_at(100).runtime(55)).await);
 
-    let mut sql = SqlClient::new(ch);
-    let r = sql.submit_enriched_sql(req).await.unwrap().into_inner();
     assert_eq!(
-        response_variant(&r),
+        sc.verdict(req).await,
         "skip_execution",
         "once any identical pending row is confirmed, the fingerprint skips"
     );
 
     // Confirming a SECOND of the duplicate ids is still idempotent/successful.
-    assert!(
-        exec.confirm_execution(confirm_req(&request_ids[1], 100, 55))
-            .await
-            .unwrap()
-            .into_inner()
-            .success
-    );
+    assert!(sc.confirm(&request_ids[1], built_at(100).runtime(55)).await);
 }
 
 // 11. SKIP-SAFETY END-TO-END: across a representative matrix of transitions,
@@ -615,71 +362,46 @@ async fn concurrent_identical_submits_then_single_confirm_skips() {
 #[tokio::test]
 async fn skip_safety_end_to_end_matrix() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"S\".\"SAFE\"";
 
     // Before any confirm: must execute (no history → skip would be unsafe).
-    let fresh = submit(target, "h-safe", ETYPE_FULL, &[("up", 100)]);
+    let fresh = model(target).body("h-safe").upstream("up", 100);
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(fresh.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(fresh.clone()).await,
         "ready_to_execute",
         "no confirmed history → never skip"
     );
 
     // Confirm the build.
-    execute_and_confirm(&mut sql, &mut exec, &fresh, 100, 10).await;
+    sc.build(fresh.clone(), 100).await;
 
     // Identical, fresh upstream → safe to skip.
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(fresh.clone())
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(fresh.clone()).await,
         "skip_execution",
         "confirmed + fresh → skip"
     );
 
     // Drifted upstream → unsafe → must execute.
-    let drifted = submit(target, "h-safe", ETYPE_FULL, &[("up", 9_999_999)]);
     assert_eq!(
-        response_variant(&sql.submit_enriched_sql(drifted).await.unwrap().into_inner()),
+        sc.verdict(fresh.clone().upstream("up", 9_999_999)).await,
         "ready_to_execute",
         "confirmed but drifted → must execute (skip would be unsafe)"
     );
 
     // Different hash → unsafe (never built this logic) → must execute.
-    let other_hash = submit(target, "h-safe-CHANGED", ETYPE_FULL, &[("up", 100)]);
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(other_hash)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(fresh.clone().body("h-safe-CHANGED")).await,
         "ready_to_execute",
         "changed fingerprint → must execute"
     );
 
     // Different execution type → unsafe (distinct node) → must execute.
-    let other_type = submit(target, "h-safe", ETYPE_VIEW, &[("up", 100)]);
+    let other_type = view(target).body("h-safe").upstream("up", 100);
     assert_eq!(
-        response_variant(
-            &sql.submit_enriched_sql(other_type)
-                .await
-                .unwrap()
-                .into_inner()
-        ),
+        sc.verdict(other_type).await,
         "ready_to_execute",
         "different execution type → must execute"
     );

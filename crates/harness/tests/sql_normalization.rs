@@ -12,73 +12,20 @@
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-
-fn model(target: &str, sql: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        tolerate_nondeterminism: true,
-        dialect: "snowflake".to_string(),
-        execution_type: 1,
-        sql: sql.to_string(),
-        table_namespace: Some("ns".to_string()),
-        tables: vec![
-            qc::TableModifiedInfo {
-                name: target.into(),
-                last_modified_epoch: Some(1),
-            },
-            qc::TableModifiedInfo {
-                name: "\"DB\".\"S\".\"UP\"".into(),
-                last_modified_epoch: Some(100),
-            },
-        ],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: format!("model.jaffle.{target}"),
-            node_hash: "h".into(),
-            node_body_hash: Some("h".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
+use support::scenario::{model, Scenario};
 
 /// Replay (baseline execute+confirm, then variant submit) and return our verdict.
+/// Both share one model `target` with its own target present and one upstream.
 async fn verdict_for(baseline_sql: &str, variant_sql: &str, target: &str) -> &'static str {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let node = model(target)
+        .namespace("ns")
+        .upstream("\"DB\".\"S\".\"UP\"", 100)
+        .body("h");
 
-    let r = sql
-        .submit_enriched_sql(model(target, baseline_sql))
-        .await
-        .unwrap()
-        .into_inner();
-    let rid = match r.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("baseline must execute, got {other:?}"),
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(100),
-        failed_to_clone: false,
-        table_type: Some("TABLE".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
-
-    support::response_variant(
-        &sql.submit_enriched_sql(model(target, variant_sql))
-            .await
-            .unwrap()
-            .into_inner(),
-    )
+    sc.build(node.clone().sql(baseline_sql), 100).await;
+    sc.verdict(node.sql(variant_sql)).await
 }
 
 #[tokio::test]

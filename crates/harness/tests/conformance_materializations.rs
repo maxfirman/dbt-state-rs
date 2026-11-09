@@ -7,7 +7,7 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
+use support::scenario::{outcome, view, Scenario};
 
 const CUSTOM_MAT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -49,23 +49,18 @@ async fn custom_materialization_is_reused_like_any_node() {
 
     // Replay against our server.
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     let r0: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let resp0 = sql.submit_enriched_sql(r0).await.unwrap().into_inner();
-    let rid = match resp0.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("custom-mat first build must execute, got {other:?}"),
-    };
+    // The custom-materialization first build must execute.
+    let rid = sc.execute_id(r0).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let v = support::response_variant(&sql.submit_enriched_sql(r1).await.unwrap().into_inner());
+    let v = sc.verdict(r1).await;
     assert_eq!(
         v, "skip_execution",
         "an unchanged custom-materialization model must be reused (matches the hosted service; \
@@ -76,65 +71,29 @@ async fn custom_materialization_is_reused_like_any_node() {
 /// An externally modified view requires execution even with no upstreams.
 #[tokio::test]
 async fn externally_modified_view_rebuilds() {
-    use qc::execution_client::ExecutionClient;
-
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let target = "\"DB\".\"PROD\".\"STG_V\"";
-    let view = |own_epoch: i64| qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.to_string()),
-        dialect: "snowflake".to_string(),
-        execution_type: 10, // VIEW
-        tolerate_nondeterminism: true,
-        sql: "select 1".to_string(),
-        table_namespace: Some("ns".to_string()),
-        // Views carry ONLY their own target in tables[] (never upstreams).
-        tables: vec![qc::TableModifiedInfo {
-            name: target.to_string(),
-            last_modified_epoch: Some(own_epoch),
-        }],
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.stg_v".to_string(),
-            node_hash: "vh".to_string(),
-            node_body_hash: Some("vh".to_string()),
-            ..Default::default()
-        }),
-        ..Default::default()
+    // Views carry ONLY their own target in tables[] (never upstreams).
+    let stg_v = |own_epoch: i64| {
+        view(target)
+            .sql("select 1")
+            .namespace("ns")
+            .own_epoch(Some(own_epoch))
+            .unique_id("model.jaffle.stg_v")
+            .body("vh")
     };
 
     // Build + confirm the view.
-    let r = sql
-        .submit_enriched_sql(view(100))
-        .await
-        .unwrap()
-        .into_inner();
-    let rid = match r.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("first view build executes, got {other:?}"),
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: rid,
-        last_modified_epoch: Some(100),
-        failed_to_clone: false,
-        table_type: Some("VIEW".into()),
-        execution_results: None,
-        execution_runtime_ms: Some(10),
-        labels: Default::default(),
-    })
-    .await
-    .unwrap();
+    sc.build_with(
+        stg_v(100),
+        outcome().epoch(100).table_type("VIEW").runtime(10),
+    )
+    .await;
 
     // Own-target changes invalidate the object independently of upstream policy.
-    let v = support::response_variant(
-        &sql.submit_enriched_sql(view(9_999_999_999))
-            .await
-            .unwrap()
-            .into_inner(),
-    );
+    let v = sc.verdict(stg_v(9_999_999_999)).await;
     assert_eq!(
         v, "ready_to_execute",
         "an externally modified view cannot reuse recorded logic"
@@ -168,22 +127,17 @@ async fn snapshot_is_reused_when_unchanged() {
     );
 
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     let r0: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let resp0 = sql.submit_enriched_sql(r0).await.unwrap().into_inner();
-    let rid = match resp0.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("snapshot first build executes, got {other:?}"),
-    };
+    // The snapshot first build executes.
+    let rid = sc.execute_id(r0).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let v = support::response_variant(&sql.submit_enriched_sql(r1).await.unwrap().into_inner());
+    let v = sc.verdict(r1).await;
     assert_eq!(v, "skip_execution", "unchanged snapshot must be reused");
 }

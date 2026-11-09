@@ -42,7 +42,9 @@ impl TestDatabase {
         dsn.into()
     }
 
-    async fn state(&self, require_org_header: bool) -> AppState {
+    /// Server state over this schema, migrated. Tests that call server modules
+    /// directly (without gRPC) use it; the owner must outlive the state.
+    pub async fn state(&self, require_org_header: bool) -> AppState {
         let pool = PgPoolOptions::new()
             .max_connections(2)
             .after_connect({

@@ -11,20 +11,18 @@
 //!   [`register_lookup`] rejects ineligible requests or says what to look up;
 //!   [`plan_register`] turns the lookup result into a plan.
 //!
-//! The gRPC adapter performs the lookup, writes the pending row and maps a
-//! plan to the wire response. Everything that decides the outcome is here.
+//! The Submit decision module (submit fallback) and the gRPC adapter
+//! (client-requested copy) perform the lookup and write the pending row.
+//! Everything that decides the outcome is here; warehouse-specific questions
+//! (DDL, relation checks, copy-chain limits, source evidence, the incremental
+//! contract) are answered by the [`Warehouse`] rules, never by testing the
+//! dialect string here.
 
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{CloneEquivalent, PendingExecution};
-use crate::warehouse::Warehouse;
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_INCREMENTAL: i32 = 5;
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
-
-/// Hosted DuckDB copy chains stop at two ancestors.
-const MAX_DUCKDB_COPY_DEPTH: i64 = 2;
+use crate::query_cache::ModelExecutionType;
+use crate::store::CopyCandidate;
+use crate::warehouse::{IncrementalCopyContract, Warehouse};
 
 // ── Submit fallback ─────────────────────────────────────────────────────────
 
@@ -57,43 +55,73 @@ pub(crate) struct EquivalentLookup<'a> {
 /// not full volatile-evaluation conformance (golden/replay_gaps.json).
 pub(crate) fn submit_lookup<'a>(
     req: &'a qc::SubmitEnrichedSqlRequest,
-    evidence: &'a PendingExecution,
+    evidence: &'a ExecutionEvidence,
     has_reuse_candidate: bool,
 ) -> Option<EquivalentLookup<'a>> {
     let ns_logic_hash = evidence.node_namespace_logic_hash.as_deref();
-    // TODO(#6): this case-sensitive dialect test disagrees with the
-    // case-insensitive ones in `plan_submit`; preserved exactly for now.
-    let volatile_blocks_copy = !(req.dialect == "duckdb" && ns_logic_hash.is_some())
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    let volatile_blocks_copy = !(warehouse.copy_identity_skips_volatility_gate()
+        && ns_logic_hash.is_some())
         && !req.tolerate_nondeterminism
-        && Warehouse::from_dialect(&req.dialect).has_volatile_sql(
+        && warehouse.has_volatile_sql(
             &req.sql,
             req.query_dependencies.iter().map(|d| d.query.as_str()),
         );
     if has_reuse_candidate
         || volatile_blocks_copy
-        || req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST
-        || req.execution_type == EXECUTION_TYPE_VALUES
+        || req.execution_type == ModelExecutionType::DbtDataTest as i32
+        || req.execution_type == ModelExecutionType::Values as i32
     {
         return None;
     }
     Some(EquivalentLookup {
-        table_namespace: crate::history::namespace(req.table_namespace.as_deref())?,
+        table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
         node_namespace_logic_hash: ns_logic_hash?,
         execution_type: req.execution_type,
         exclude_target: req.target_table.as_deref().unwrap_or_default(),
     })
 }
 
+/// A current equivalent found for the submit fallback, ready to plan.
+#[derive(Debug, Clone)]
+pub(crate) struct CloneEquivalent {
+    pub source_table: String,
+    pub table_type: Option<String>,
+    pub last_modified_epoch: Option<i64>,
+    pub execution_runtime_ms: Option<i64>,
+    /// Copy ancestors behind the source (0: the source is a build). Only
+    /// walked where [`Warehouse::copy_provenance_depth`] requires it.
+    pub copy_depth: usize,
+}
+
+impl CloneEquivalent {
+    pub(crate) fn new(candidate: CopyCandidate, copy_depth: usize) -> Self {
+        Self {
+            source_table: candidate.target_table,
+            table_type: candidate.table_type,
+            last_modified_epoch: candidate.last_modified_epoch,
+            execution_runtime_ms: candidate.execution_runtime_ms,
+            copy_depth,
+        }
+    }
+}
+
+/// A Result copy of an equivalent into the submit target: the source, the
+/// statements that copy it, and the source build evidence the `ready_to_clone`
+/// response echoes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultCopy {
+    pub source_table: String,
+    pub clone_sqls: Vec<String>,
+    pub source_last_modified_epoch: Option<i64>,
+    pub source_execution_runtime_ms: Option<i64>,
+}
+
 /// The submit fallback's outcome once an equivalent exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SubmitCopyPlan {
     /// Copy the equivalent into the submit target (`ready_to_clone`).
-    Copy {
-        source_table: String,
-        clone_sqls: Vec<String>,
-        source_last_modified_epoch: Option<i64>,
-        source_execution_runtime_ms: Option<i64>,
-    },
+    Copy(ResultCopy),
     /// An equivalent would be copied, but the target forbids copies or the
     /// copy chain is already at its limit. Hosted executes with
     /// TARGET_TABLE_MISMATCH / CLONE_CHAIN_LIMIT_EXCEEDED and a fixed
@@ -116,39 +144,33 @@ pub(crate) fn plan_submit(
     req: &qc::SubmitEnrichedSqlRequest,
     equivalent: CloneEquivalent,
 ) -> SubmitCopyPlan {
-    // TODO(#6): case-insensitive dialect test, unlike `submit_lookup`.
-    let duckdb = req.dialect.eq_ignore_ascii_case("duckdb");
+    let warehouse = Warehouse::from_dialect(&req.dialect);
     let forbidden = req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
-    let chain_limit_reached = duckdb
-        && equivalent.duckdb_copy_depth
-            >= req
-                .clone_chain_depth_limit
-                .unwrap_or(MAX_DUCKDB_COPY_DEPTH)
-                .min(MAX_DUCKDB_COPY_DEPTH) as usize;
+    let chain_limit_reached = warehouse
+        .copy_chain_depth_limit(req.clone_chain_depth_limit)
+        .is_some_and(|limit| equivalent.copy_depth >= limit);
     if forbidden || chain_limit_reached {
         return SubmitCopyPlan::ChainLimitExecute;
     }
-    let ddl = crate::clone::clone_sqls_with_properties(
-        &req.dialect,
-        &equivalent.source_table,
-        req.target_table.as_deref().unwrap_or_default(),
-        equivalent.table_type.as_deref(),
-        req.clone_table_properties.as_ref(),
-    )
-    .and_then(|sqls| {
-        if duckdb && equivalent.last_modified_epoch.is_none() {
-            Err("DuckDB source requires recorded physical evidence")
-        } else {
-            Ok(sqls)
-        }
-    });
+    let ddl = warehouse
+        .result_copy_ddl(
+            &equivalent.source_table,
+            req.target_table.as_deref().unwrap_or_default(),
+            equivalent.table_type.as_deref(),
+            req.clone_table_properties.as_ref(),
+        )
+        .and_then(|sqls| {
+            warehouse
+                .copy_source_evidence(equivalent.last_modified_epoch)
+                .map(|()| sqls)
+        });
     match ddl {
-        Ok(clone_sqls) => SubmitCopyPlan::Copy {
+        Ok(clone_sqls) => SubmitCopyPlan::Copy(ResultCopy {
             source_table: equivalent.source_table,
             clone_sqls,
             source_last_modified_epoch: equivalent.last_modified_epoch,
             source_execution_runtime_ms: equivalent.execution_runtime_ms,
-        },
+        }),
         Err(reason) => SubmitCopyPlan::Unavailable { reason },
     }
 }
@@ -237,41 +259,36 @@ pub(crate) fn register_lookup(
             RegisterRejection::ChainLimitExceeded,
         ));
     }
-    // TODO(#6): third dialect test style (see `submit_lookup`); preserved.
     let warehouse = Warehouse::from_dialect(&req.dialect);
-    if warehouse == Warehouse::DuckDb {
-        return match (
-            req.execution_type,
-            crate::history::namespace(req.table_namespace.as_deref()),
-            req.clone_source_last_modified_epoch,
-            req.labels.get("duckdb_incremental_identity"),
-        ) {
-            (EXECUTION_TYPE_INCREMENTAL, Some(ns), Some(epoch), Some(identity))
-                if req
-                    .labels
-                    .get("duckdb_incremental_contract")
-                    .map(String::as_str)
-                    == Some("delete-insert-fixed-v1")
-                    && identity.starts_with("duckdb-incremental-init-v2:")
-                    && req.clone_source_table_type.as_deref() == Some("DUCKDB CTAS TABLE") =>
-            {
-                Ok(RegisterLookup::DuckDbIncrementalSource {
+    match warehouse.incremental_copy_contract(req) {
+        IncrementalCopyContract::NotRequired => {}
+        IncrementalCopyContract::Missing => {
+            return Err(RegisterRefusal::Reject(
+                RegisterRejection::ForcedNotEligible,
+            ))
+        }
+        IncrementalCopyContract::Declared { identity } => {
+            return match (
+                crate::execution::non_blank_namespace(req.table_namespace.as_deref()),
+                req.clone_source_last_modified_epoch,
+            ) {
+                (Some(ns), Some(epoch)) => Ok(RegisterLookup::DuckDbIncrementalSource {
                     source: &req.clone_source_table,
                     table_namespace: ns,
                     last_modified_epoch: epoch,
                     identity,
-                })
-            }
-            _ => Err(RegisterRefusal::Reject(
-                RegisterRejection::ForcedNotEligible,
-            )),
-        };
+                }),
+                _ => Err(RegisterRefusal::Reject(
+                    RegisterRejection::ForcedNotEligible,
+                )),
+            };
+        }
     }
     register_ddl(req)?;
     if warehouse.supports_namespace_reuse() {
         return Ok(RegisterLookup::SourceLogic {
             source: &req.clone_source_table,
-            table_namespace: crate::history::namespace(req.table_namespace.as_deref()),
+            table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref()),
         });
     }
     Ok(RegisterLookup::Nothing)
@@ -302,20 +319,19 @@ pub(crate) fn plan_register(
 }
 
 fn register_ddl(req: &qc::CloneRequest) -> Result<Vec<String>, RegisterRefusal> {
-    crate::clone::clone_sqls_with_properties(
-        &req.dialect,
-        &req.clone_source_table,
-        &req.target_table,
-        req.clone_source_table_type.as_deref(),
-        req.table_properties.as_ref(),
-    )
-    .map_err(RegisterRefusal::Unsupported)
+    Warehouse::from_dialect(&req.dialect)
+        .result_copy_ddl(
+            &req.clone_source_table,
+            &req.target_table,
+            req.clone_source_table_type.as_deref(),
+            req.table_properties.as_ref(),
+        )
+        .map_err(RegisterRefusal::Unsupported)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::ExecutionEvidence;
 
     const DEV: &str = "\"DB\".\"DEV\".\"M\"";
     const PROD: &str = "\"DB\".\"PROD\".\"M\"";
@@ -334,8 +350,8 @@ mod tests {
         }
     }
 
-    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
-        let mut ev = ExecutionEvidence::sql_submit("o", req).row().clone();
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> ExecutionEvidence {
+        let mut ev = ExecutionEvidence::sql_submit("o", req);
         // Fix the logic identity so DuckDB cases do not depend on its parser.
         ev.node_namespace_logic_hash = Some("logic".into());
         ev
@@ -347,7 +363,7 @@ mod tests {
             table_type: Some("TABLE".into()),
             last_modified_epoch: epoch,
             execution_runtime_ms: Some(9),
-            duckdb_copy_depth: depth,
+            copy_depth: depth,
         }
     }
 
@@ -469,12 +485,12 @@ mod tests {
     #[test]
     fn snowflake_equivalent_is_copied_into_the_submit_target() {
         let req = submit("snowflake", "select id from DB.DEV.UP");
-        let SubmitCopyPlan::Copy {
+        let SubmitCopyPlan::Copy(ResultCopy {
             source_table,
             clone_sqls,
             source_last_modified_epoch,
             source_execution_runtime_ms,
-        } = plan_submit(&req, equivalent(PROD, 0, Some(5)))
+        }) = plan_submit(&req, equivalent(PROD, 0, Some(5)))
         else {
             panic!("expected a copy");
         };
@@ -517,7 +533,7 @@ mod tests {
         for (limit, depth, copies) in cases {
             let plan = plan_submit(&duck_submit(limit), duck_equivalent(depth, Some(5)));
             assert_eq!(
-                matches!(plan, SubmitCopyPlan::Copy { .. }),
+                matches!(plan, SubmitCopyPlan::Copy(_)),
                 copies,
                 "limit {limit:?}, depth {depth}: {plan:?}"
             );
@@ -560,7 +576,7 @@ mod tests {
 
     fn duck_register() -> qc::CloneRequest {
         let mut req = qc::CloneRequest {
-            execution_type: EXECUTION_TYPE_INCREMENTAL,
+            execution_type: ModelExecutionType::DeleteInsert as i32,
             clone_source_table: DUCK_PROD.into(),
             target_table: DUCK_DEV.into(),
             clone_source_last_modified_epoch: Some(7),
