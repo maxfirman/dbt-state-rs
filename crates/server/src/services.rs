@@ -6,7 +6,7 @@ use crate::decision::{
     DecisionKind, DecisionReason, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
     REJECTION_FORCED_NOT_ELIGIBLE,
 };
-use crate::execution::store_status as db_err;
+use crate::execution::RecordError;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
@@ -149,6 +149,15 @@ fn ready_to_clone_response(
         execution_runtime_ms: None,
         execution_decision_id: Some(execution_decision_id),
     }
+}
+
+/// Map a store error to a gRPC status. The detailed sqlx error (which may name
+/// internal schema objects, columns, or connection fragments) is logged
+/// server-side; the client receives only a generic message to avoid leaking
+/// implementation details over the wire.
+fn store_status(e: sqlx::Error) -> Status {
+    tracing::error!(error = %e, "store error");
+    Status::internal("internal store error")
 }
 
 /// Extract the org id from the `x-organization-id` metadata header. Defaults to
@@ -359,7 +368,7 @@ impl Sql for SqlService {
 
         let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req)
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &outcome);
         let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
@@ -376,7 +385,7 @@ impl Sql for SqlService {
 
         let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req)
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
         capture_submit_values(&self.0, &cap_meta, &req, &outcome);
         Ok(Response::new(submit_response(outcome, &req.target_table)))
     }
@@ -419,7 +428,7 @@ impl Execution for ExecutionService {
                 req.failed_to_clone,
             )
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
 
         Ok(Response::new(qc::ConfirmExecutionResponse {
             success: found,
@@ -434,7 +443,14 @@ impl Execution for ExecutionService {
         let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
 
-        let stored = crate::execution::record_batch(&self.0, &org_id, &req.records).await?;
+        let stored = crate::execution::record_batch(&self.0.store, &org_id, &req.records)
+            .await
+            .map_err(|e| match e {
+                RecordError::MissingInput => {
+                    Status::invalid_argument("ExecutionRecord missing input")
+                }
+                RecordError::Store(e) => store_status(e),
+            })?;
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,
@@ -473,7 +489,7 @@ impl Execution for ExecutionService {
             .store
             .resolve_deferred_fqns(&org_id, project_id, &req.target_name, &req.node_unique_ids)
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
 
         Ok(Response::new(qc::ResolveDeferredRelationsResponse {
             fqn_by_unique_id,
@@ -541,7 +557,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                         },
                     )
                     .await
-                    .map_err(db_err)?,
+                    .map_err(store_status)?,
             ),
             Ok(RegisterLookup::SourceLogic {
                 source,
@@ -551,7 +567,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     .store
                     .find_source_ns_logic_hash(&org_id, source, table_namespace, &req.dialect)
                     .await
-                    .map_err(db_err)?,
+                    .map_err(store_status)?,
             ),
             Ok(RegisterLookup::Nothing) => RegisterHistory::Nothing,
         };
@@ -574,7 +590,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             .store
             .insert_execution(&evidence.pending(&request_id, &execution_decision_id))
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
 
         // Best-effort capture (non-blocking) of the clone decision.
         {
@@ -703,7 +719,7 @@ impl Explain for ExplainService {
             .store
             .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
 
         let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
             std::collections::HashMap::new();
@@ -803,7 +819,7 @@ impl SelectorService for SelectorServiceImpl {
             .store
             .fetch_node_states(&org_id, &req.project_id, &req.target, &uids)
             .await
-            .map_err(db_err)?;
+            .map_err(store_status)?;
 
         let node_unique_ids = crate::selector::select_matching(criteria, &req.nodes, |uid| {
             recorded.get(uid).cloned()

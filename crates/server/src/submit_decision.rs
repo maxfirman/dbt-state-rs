@@ -25,6 +25,7 @@ use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{CopyCandidateQuery, ExecutionRow, Store};
 use crate::warehouse::Warehouse;
+use std::collections::HashMap;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
 /// pending row's ConfirmExecution, `execution_decision_id` keys Explain.
@@ -143,40 +144,26 @@ pub async fn submit_sql(
     .await;
 
     let evidence = ExecutionEvidence::sql_submit(org_id, req);
-    let Selection {
-        candidate,
-        target_has_prior_build,
-        why_no_candidate,
-    } = select_sql(store, org_id, req, &evidence).await?;
+    let selection = select_sql(store, org_id, req, &evidence).await?;
 
     // Precedence: a Result copy is considered only when there is no reuse
     // candidate, and when it applies it overrides the ordinary verdict.
+    let has_reuse_candidate = selection.candidate.is_some();
     if let Some(outcome) =
-        result_copy_fallback(store, org_id, req, &evidence, candidate.is_some()).await?
+        result_copy_fallback(store, org_id, req, &evidence, has_reuse_candidate).await?
     {
         return Ok(outcome);
     }
 
-    let row = &evidence;
-    let ctx = SubmitContext {
-        execution_type: req.execution_type,
-        input_tables: &row.input_tables,
-        target_table: req.target_table.as_deref(),
-        stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
-        target_has_prior_build,
-        why_no_candidate,
-    };
-    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
-    tracing::info!(
-        node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-        execution_type = req.execution_type,
-        had_match = candidate.is_some(),
-        body_hash = %row.node_body_hash.clone().unwrap_or_default(),
-        verdict = verdict_label(&record),
-        reason = ?record.reason,
-        "decision"
-    );
-    settle(store, &evidence, record, candidate).await
+    decide_and_settle(
+        store,
+        &evidence,
+        selection,
+        req.target_table.as_deref(),
+        decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
+        &req.labels,
+    )
+    .await
 }
 
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Result copy
@@ -199,36 +186,21 @@ pub async fn submit_values(
         .current_target_state(
             org_id,
             &req.target_table,
-            execution::namespace(req.table_namespace.as_deref()),
+            execution::non_blank_namespace(req.table_namespace.as_deref()),
             &req.dialect,
         )
         .await?;
-    let Selection {
-        candidate,
-        target_has_prior_build,
-        why_no_candidate,
-    } = reuse_candidate::for_seed(req, &evidence, current)?;
+    let selection = reuse_candidate::for_seed(req, &evidence, current)?;
 
-    let row = &evidence;
-    let ctx = SubmitContext {
-        execution_type: ModelExecutionType::Values as i32,
-        input_tables: &row.input_tables,
-        target_table: Some(req.target_table.as_str()),
-        stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
-        target_has_prior_build,
-        why_no_candidate,
-    };
-    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
-    tracing::info!(
-        node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-        execution_type = ModelExecutionType::Values as i32,
-        had_match = candidate.is_some(),
-        values_hash = %row.values_hash.clone().unwrap_or_default(),
-        verdict = verdict_label(&record),
-        reason = ?record.reason,
-        "decision(values)"
-    );
-    settle(store, &evidence, record, candidate).await
+    decide_and_settle(
+        store,
+        &evidence,
+        selection,
+        Some(req.target_table.as_str()),
+        decision::StaleUpstreamPolicy::Any,
+        &req.labels,
+    )
+    .await
 }
 
 /// State history selection for a SQL submission. Models read the target's
@@ -239,16 +211,15 @@ async fn select_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
 ) -> sqlx::Result<Selection> {
-    let row = evidence;
-    let table_namespace = execution::namespace(req.table_namespace.as_deref());
+    let table_namespace = execution::non_blank_namespace(req.table_namespace.as_deref());
     if req.execution_type == ModelExecutionType::DbtDataTest as i32 {
-        let latest = match row.node_unique_id.as_deref() {
+        let latest = match evidence.node_unique_id.as_deref() {
             Some(uid) => {
                 store
                     .latest_data_test(
                         org_id,
                         uid,
-                        row.project_id.as_deref(),
+                        evidence.project_id.as_deref(),
                         table_namespace,
                         &req.dialect,
                     )
@@ -256,7 +227,7 @@ async fn select_sql(
             }
             None => None,
         };
-        reuse_candidate::for_data_test(req, row, latest)
+        reuse_candidate::for_data_test(req, evidence, latest)
     } else {
         let current = store
             .current_target_state(
@@ -266,7 +237,7 @@ async fn select_sql(
                 &req.dialect,
             )
             .await?;
-        reuse_candidate::for_model(req, row, current)
+        reuse_candidate::for_model(req, evidence, current)
     }
 }
 
@@ -370,6 +341,44 @@ async fn find_equivalent(
         return Ok(Some(CloneEquivalent::new(candidate, copy_depth)));
     }
     Ok(None)
+}
+
+/// The step both entry points share once State history is selected (and, for
+/// SQL, no Result copy applied): build the decision context from the
+/// evidence, decide, log the decision and settle it.
+async fn decide_and_settle(
+    store: &Store,
+    evidence: &ExecutionEvidence,
+    selection: Selection,
+    target_table: Option<&str>,
+    stale_upstream_policy: decision::StaleUpstreamPolicy,
+    labels: &HashMap<String, String>,
+) -> sqlx::Result<SubmitOutcome> {
+    let Selection {
+        candidate,
+        target_has_prior_build,
+        why_no_candidate,
+    } = selection;
+    let ctx = SubmitContext {
+        execution_type: evidence.execution_type,
+        input_tables: &evidence.input_tables,
+        target_table,
+        stale_upstream_policy,
+        target_has_prior_build,
+        why_no_candidate,
+    };
+    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
+    tracing::info!(
+        node = %labels.get("dbt_node_name").map(String::as_str).unwrap_or_default(),
+        execution_type = evidence.execution_type,
+        had_match = candidate.is_some(),
+        body_hash = %evidence.node_body_hash.as_deref().unwrap_or_default(),
+        values_hash = %evidence.values_hash.as_deref().unwrap_or_default(),
+        verdict = verdict_label(&record),
+        reason = ?record.reason,
+        "decision"
+    );
+    settle(store, evidence, record, candidate).await
 }
 
 /// The shared tail of both entry points: mint ids, write the pending row for

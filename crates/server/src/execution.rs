@@ -9,13 +9,11 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::InputTable;
-use crate::AppState;
-use tonic::Status;
+use crate::store::{InputTable, Store};
 
 /// A blank `table_namespace` is read as absent when scoping State history
 /// lookups.
-pub(crate) fn namespace(value: Option<&str>) -> Option<&str> {
+pub(crate) fn non_blank_namespace(value: Option<&str>) -> Option<&str> {
     value.filter(|s| !s.is_empty())
 }
 
@@ -298,11 +296,22 @@ pub(crate) fn node_state_upsert(
     })
 }
 
+/// Why a RecordExecutions batch was not published. Nothing is written either
+/// way.
+#[derive(Debug)]
+pub(crate) enum RecordError {
+    /// A record has no `input` (the batch is invalid).
+    MissingInput,
+    Store(sqlx::Error),
+}
+
+/// Publish a RecordExecutions batch: every record's confirmed row and its
+/// selector/deferral node state, in one transaction. Returns the rows stored.
 pub(crate) async fn record_batch(
-    state: &AppState,
+    store: &Store,
     org_id: &str,
     records: &[qc::ExecutionRecord],
-) -> Result<u32, Status> {
+) -> Result<u32, RecordError> {
     let mut rows: Vec<ExecutionWrite> = Vec::with_capacity(records.len());
     // Collect selector/deferral state upserts to apply in the SAME
     // transaction as the executions insert. Review #2 finding 5: writing
@@ -316,10 +325,7 @@ pub(crate) async fn record_batch(
     let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
     for record in records {
         let outcome = record.outcome.clone().unwrap_or_default();
-        let input = record
-            .input
-            .as_ref()
-            .ok_or_else(|| Status::invalid_argument("ExecutionRecord missing input"))?;
+        let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
 
         let evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
@@ -353,11 +359,10 @@ pub(crate) async fn record_batch(
     // RecordExecutions publishes execution and logical state consistently,
     // and a node_states write failure rolls the WHOLE request back (no
     // partial publish, no durable execution row without its logical state).
-    let stored = state
-        .store
+    let stored = store
         .insert_confirmed_batch_with_node_states(&rows, &node_state_upserts)
         .await
-        .map_err(store_status)?;
+        .map_err(RecordError::Store)?;
 
     Ok(stored)
 }
@@ -381,15 +386,6 @@ pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
         table_namespace: req.table_namespace.clone(),
         from_speculative_submit: false,
     }
-}
-
-/// Map a store error to a gRPC status. The detailed sqlx error (which may name
-/// internal schema objects, columns, or connection fragments) is logged
-/// server-side; the client receives only a generic message to avoid leaking
-/// implementation details over the wire.
-pub(crate) fn store_status(e: sqlx::Error) -> Status {
-    tracing::error!(error = %e, "store error");
-    Status::internal("internal store error")
 }
 
 #[cfg(test)]
