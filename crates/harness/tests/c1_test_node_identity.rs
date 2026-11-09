@@ -28,7 +28,7 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
+use support::scenario::Scenario;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -90,34 +90,22 @@ async fn c1_data_test_node_matched_by_unique_id() {
     // submit the customer_name test. The hosted service executes it; our server
     // MUST do the same (not skip by colliding on the shared body hash).
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     let id_req: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let r = sql
-        .submit_enriched_sql(id_req.clone())
-        .await
-        .unwrap()
-        .into_inner();
-    let rid = match r.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("id test should execute first, got {other:?}"),
-    };
+    // The id test should execute first.
+    let rid = sc.execute_id(id_req).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // The confirmed id test now skips on rerun (same unique_id).
-    let v_id_again = support::response_variant(
-        &sql.submit_enriched_sql(
+    let v_id_again = sc
+        .verdict(
             serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(submits[1].request.clone())
                 .unwrap(),
         )
-        .await
-        .unwrap()
-        .into_inner(),
-    );
+        .await;
     assert_eq!(
         v_id_again, "skip_execution",
         "same test (same unique_id) skips after confirm"
@@ -127,12 +115,7 @@ async fn c1_data_test_node_matched_by_unique_id() {
     // hosted service — NOT skip by colliding on the shared body hash.
     let name_req: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[2].request.clone()).unwrap();
-    let v_name = support::response_variant(
-        &sql.submit_enriched_sql(name_req)
-            .await
-            .unwrap()
-            .into_inner(),
-    );
+    let v_name = sc.verdict(name_req).await;
     assert_eq!(
         v_name, "ready_to_execute",
         "a NEW data-test node (distinct node_unique_id, shared body hash) must EXECUTE, \

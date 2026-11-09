@@ -25,106 +25,45 @@
 mod support;
 
 use dbt_state_harness::diff;
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
-use tonic::transport::Channel;
+use support::scenario::{model, outcome, Scenario};
+use support::start_server;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../golden/fixtures/template_compare_unrendered.jsonl"
 );
 
-/// A `compare_unrendered_code=true` submit with a given rendered SQL + body
-/// (template) hash over one upstream.
-fn cuc_submit(sql: &str, body_hash: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some("\"DB\".\"S\".\"TPL\"".into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some("S".into()),
-        execution_type: 1,
-        sql: sql.into(),
-        tolerate_nondeterminism: true,
-        compare_unrendered_code: true,
-        tables: vec![qc::TableModifiedInfo {
-            name: "\"DB\".\"S\".\"TPL\"".into(),
-            last_modified_epoch: Some(100),
-        }],
-        table_namespace: Some("tpl-ns".into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle.tpl".into(),
-            project_id: Some("p".into()),
-            target_name: "prod".into(),
-            node_body_hash: Some(body_hash.into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-async fn submit(sql: &mut SqlClient<Channel>, req: qc::SubmitEnrichedSqlRequest) -> String {
-    response_variant(
-        &sql.submit_enriched_sql(req)
-            .await
-            .expect("submit")
-            .into_inner(),
-    )
-    .to_string()
-}
-
-async fn submit_execute_id(
-    sql: &mut SqlClient<Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-) -> String {
-    match sql
-        .submit_enriched_sql(req)
-        .await
-        .expect("submit")
-        .into_inner()
-        .response
-    {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
-
-async fn confirm(exec: &mut ExecutionClient<Channel>, request_id: String) {
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id,
-        last_modified_epoch: Some(100),
-        table_type: Some("TABLE".into()),
-        ..Default::default()
-    })
-    .await
-    .expect("confirm");
-}
+const TARGET: &str = "\"DB\".\"S\".\"TPL\"";
 
 /// Template CHANGED, rendered SAME -> SKIP (the finding-6 fix).
 #[tokio::test]
 async fn template_changed_rendered_same_skips() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    // A `compare_unrendered_code=true` submit with a given rendered SQL + body
+    // (template) hash over one upstream.
+    let cuc = model(TARGET)
+        .catalog("DB")
+        .schema("S")
+        .compare_unrendered_code()
+        .own_epoch(Some(100))
+        .namespace("tpl-ns")
+        .unique_id("model.jaffle.tpl")
+        .project("p")
+        .target_name("prod");
+    let cuc_submit = |sql: &str, body_hash: &str| cuc.clone().sql(sql).body(body_hash);
 
     // Build + confirm with template A, rendered R.
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_submit("select 1 as id, 42 as amount", "body-A"),
+        outcome().epoch(100).table(),
     )
     .await;
-    confirm(&mut exec, rid).await;
 
     // Only the template (body hash) changes; rendered SQL identical -> SKIP.
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_submit("select 1 as id, 42 as amount", "body-B")
-        )
-        .await,
+        sc.verdict(cuc_submit("select 1 as id, 42 as amount", "body-B"))
+            .await,
         "skip_execution",
         "cuc: a template-only change with identical rendered SQL must skip"
     );
@@ -134,25 +73,28 @@ async fn template_changed_rendered_same_skips() {
 #[tokio::test]
 async fn rendered_changed_template_same_skips() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let cuc = model(TARGET)
+        .catalog("DB")
+        .schema("S")
+        .compare_unrendered_code()
+        .own_epoch(Some(100))
+        .namespace("tpl-ns")
+        .unique_id("model.jaffle.tpl")
+        .project("p")
+        .target_name("prod");
+    let cuc_submit = |sql: &str, body_hash: &str| cuc.clone().sql(sql).body(body_hash);
 
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_submit("select 'aaa' as run_id, 1 as x", "body-A"),
+        outcome().epoch(100).table(),
     )
     .await;
-    confirm(&mut exec, rid).await;
 
     // Rendered SQL changes, template (body hash) identical -> SKIP.
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_submit("select 'bbb' as run_id, 1 as x", "body-A")
-        )
-        .await,
+        sc.verdict(cuc_submit("select 'bbb' as run_id, 1 as x", "body-A"))
+            .await,
         "skip_execution",
         "cuc: a rendered-only change with identical template must skip"
     );
@@ -162,24 +104,27 @@ async fn rendered_changed_template_same_skips() {
 #[tokio::test]
 async fn template_and_rendered_both_changed_executes() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let cuc = model(TARGET)
+        .catalog("DB")
+        .schema("S")
+        .compare_unrendered_code()
+        .own_epoch(Some(100))
+        .namespace("tpl-ns")
+        .unique_id("model.jaffle.tpl")
+        .project("p")
+        .target_name("prod");
+    let cuc_submit = |sql: &str, body_hash: &str| cuc.clone().sql(sql).body(body_hash);
 
-    let rid = submit_execute_id(
-        &mut sql,
+    sc.build_with(
         cuc_submit("select 1 as id, 42 as amount", "body-A"),
+        outcome().epoch(100).table(),
     )
     .await;
-    confirm(&mut exec, rid).await;
 
     assert_eq!(
-        submit(
-            &mut sql,
-            cuc_submit("select 1 as id, 99 as amount", "body-B")
-        )
-        .await,
+        sc.verdict(cuc_submit("select 1 as id, 99 as amount", "body-B"))
+            .await,
         "ready_to_execute",
         "cuc: a change to BOTH template and rendered SQL must execute"
     );
@@ -190,27 +135,30 @@ async fn template_and_rendered_both_changed_executes() {
 #[tokio::test]
 async fn dependency_change_executes_under_cuc() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
-
-    let dep = |q: &str| qc::QueryDependency {
-        name: "\"DB\".\"S\".\"V\"".into(),
-        query: q.into(),
-        default_catalog: "DB".into(),
-        default_schema: "S".into(),
+    let sc = Scenario::connect(&server).await;
+    let cuc = model(TARGET)
+        .catalog("DB")
+        .schema("S")
+        .compare_unrendered_code()
+        .own_epoch(Some(100))
+        .namespace("tpl-ns")
+        .unique_id("model.jaffle.tpl")
+        .project("p")
+        .target_name("prod")
+        .sql("select * from DB.S.V")
+        .body("body-A");
+    let with_dep = |q: &str| {
+        cuc.clone()
+            .dependency_in("\"DB\".\"S\".\"V\"", q, "DB", "S")
     };
-    let mut base = cuc_submit("select * from DB.S.V", "body-A");
-    base.query_dependencies = vec![dep("select 1 as id")];
-    let rid = submit_execute_id(&mut sql, base.clone()).await;
-    confirm(&mut exec, rid).await;
+
+    let base = with_dep("select 1 as id");
+    sc.build_with(base, outcome().epoch(100).table()).await;
 
     // Same template + rendered, but the dependency DEFINITION changed -> execute.
-    let mut changed = base.clone();
-    changed.query_dependencies = vec![dep("select 2 as id")];
+    let changed = with_dep("select 2 as id");
     assert_eq!(
-        submit(&mut sql, changed).await,
+        sc.verdict(changed).await,
         "ready_to_execute",
         "cuc: a changed dependency definition must still execute"
     );

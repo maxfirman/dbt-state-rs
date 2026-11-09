@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 /// Test files that use the scenario module. Tickets #52 and #53 extend this.
 const MIGRATED: &[&str] = &[
     "auth.rs",
+    "c1_config_semantics.rs",
+    "c1_probe.rs",
+    "c1_test_node_identity.rs",
     "c2_rendered_sql.rs",
     "clone.rs",
     "clone_chain_provenance.rs",
@@ -24,8 +27,15 @@ const MIGRATED: &[&str] = &[
     "concurrency.rs",
     "conformance_materializations.rs",
     "correctness.rs",
+    "data_test_freshness.rs",
+    "data_test_template.rs",
     "deferral.rs",
     "differential.rs",
+    "duckdb_copy.rs",
+    "duckdb_data_tests.rs",
+    "duckdb_identity.rs",
+    "duckdb_incremental.rs",
+    "duckdb_outcomes.rs",
     "hardening.rs",
     "lag_freshness.rs",
     "lag_policy.rs",
@@ -34,6 +44,7 @@ const MIGRATED: &[&str] = &[
     "selector_conformance.rs",
     "selector_offline.rs",
     "sql_normalization.rs",
+    "template_comparison.rs",
     "warehouse_portability.rs",
 ];
 
@@ -74,6 +85,10 @@ const DECISION_PATTERNS: &[&str] = &[
     "Response::SkipExecution(",
     "Response::ReadyToClone(",
 ];
+
+/// Per-file org helpers set the `x-organization-id` header by hand; the
+/// shared `Scenario::org` (and `support::request_with_org`) own it.
+const ORG_HELPERS: &[&str] = &["metadata_mut()", "-> Request<", "-> tonic::Request<"];
 
 /// Raw State writes and fault-injection DDL (matched case-insensitively).
 const RAW_WRITES: &[&str] = &[
@@ -129,6 +144,7 @@ fn migrated_files_build_requests_through_the_scenario_module() {
         found.extend(offences(&path, REQUEST_LITERALS, false));
         found.extend(offences(&path, BUILDER_RETURNS, false));
         found.extend(offences(&path, DECISION_PATTERNS, false));
+        found.extend(offences(&path, ORG_HELPERS, false));
         found.extend(offences(&path, &["sqlx::"], false));
     }
     assert!(
