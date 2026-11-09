@@ -6,6 +6,7 @@
 //! absorption behavior were verified live — see correctness-handoff.md.
 
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
 
 /// stale_upstream_policy values (shared.proto StaleUpstreamPolicy).
@@ -54,30 +55,27 @@ pub const DESC_EXECUTE: &str =
 // RejectionReason enum values (from shared.proto).
 pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
 
-// ModelExecutionType values relevant to node-kind-specific wording.
-const ET_SNAPSHOT: i32 = 7;
-const ET_DBT_DATA_TEST: i32 = 8;
-const ET_VALUES: i32 = 9;
-
 /// A human noun for the node kind, matching the hosted service's wording.
 fn node_noun(execution_type: i32) -> &'static str {
-    match execution_type {
-        ET_SNAPSHOT => "snapshot",
-        ET_DBT_DATA_TEST => "data test",
-        ET_VALUES => "seed",
+    match ModelExecutionType::try_from(execution_type) {
+        Ok(ModelExecutionType::Snapshot) => "snapshot",
+        Ok(ModelExecutionType::DbtDataTest) => "data test",
+        Ok(ModelExecutionType::Values) => "seed",
         _ => "model",
     }
 }
 
 /// SKIP description, node-kind specific (verified live against api.state.dbt.com).
 fn skip_description(execution_type: i32) -> String {
-    match execution_type {
-        ET_VALUES => "seed was a no-op because its data has not changed".to_string(),
-        ET_DBT_DATA_TEST => {
+    match ModelExecutionType::try_from(execution_type) {
+        Ok(ModelExecutionType::Values) => {
+            "seed was a no-op because its data has not changed".to_string()
+        }
+        Ok(ModelExecutionType::DbtDataTest) => {
             "data test was a no-op because both its query and its upstream data are up to date"
                 .to_string()
         }
-        ET_SNAPSHOT => {
+        Ok(ModelExecutionType::Snapshot) => {
             "snapshot was a no-op because both its query and its upstream data are up to date"
                 .to_string()
         }
@@ -90,17 +88,24 @@ fn skip_description(execution_type: i32) -> String {
 /// first build ("did not exist" / "no prior execution") from a rebuild of an
 /// existing node ("query didn't match or upstream out of date").
 fn execute_description(execution_type: i32, had_prior: bool) -> String {
-    match (execution_type, had_prior) {
-        (ET_VALUES, false) => "seed was loaded because it did not exist".to_string(),
-        (ET_VALUES, true) => "seed was loaded because its data changed".to_string(),
-        (ET_DBT_DATA_TEST, _) => {
+    match (ModelExecutionType::try_from(execution_type), had_prior) {
+        (Ok(ModelExecutionType::Values), false) => {
+            "seed was loaded because it did not exist".to_string()
+        }
+        (Ok(ModelExecutionType::Values), true) => {
+            "seed was loaded because its data changed".to_string()
+        }
+        (Ok(ModelExecutionType::DbtDataTest), _) => {
             "data test was executed because it has no prior execution or its query changed"
                 .to_string()
         }
-        (et, false) => format!("{} was executed because its table did not exist", node_noun(et)),
-        (et, true) => format!(
+        (_, false) => format!(
+            "{} was executed because its table did not exist",
+            node_noun(execution_type)
+        ),
+        (_, true) => format!(
             "{} was executed because either its query didn't match or its upstream data is out of date",
-            node_noun(et)
+            node_noun(execution_type)
         ),
     }
 }
@@ -317,7 +322,7 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     // A missing own-build epoch means either a data test (which has no physical
     // object and anchors per-upstream on the RECORDED baseline — issue #2
     // finding 1) or an object-producing node we cannot prove fresh.
-    let data_test = ctx.execution_type == ET_DBT_DATA_TEST;
+    let data_test = ctx.execution_type == ModelExecutionType::DbtDataTest as i32;
     let own_build_epoch = match prev.last_modified_epoch {
         Some(epoch) => Some(epoch),
         None if data_test => None, // per-upstream recorded-baseline anchor below
@@ -960,7 +965,7 @@ mod tests {
 
     fn data_test_ctx<'a>(tables: &'a [InputTable]) -> SubmitContext<'a> {
         SubmitContext {
-            execution_type: ET_DBT_DATA_TEST,
+            execution_type: ModelExecutionType::DbtDataTest as i32,
             input_tables: tables,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
@@ -974,7 +979,7 @@ mod tests {
     fn data_test_executes_when_upstream_newer_than_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 100)];
         let mut prev = confirmed("h", recorded, None); // tests have no build epoch
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // upstream advanced
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
@@ -989,7 +994,7 @@ mod tests {
     fn data_test_skips_when_upstream_equal_to_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // unchanged
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(
@@ -1004,7 +1009,7 @@ mod tests {
     fn data_test_skips_when_upstream_older_than_recorded() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 50)];
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1018,7 +1023,7 @@ mod tests {
     fn data_test_executes_when_upstream_epoch_unknown() {
         let recorded = vec![tbl("DB.S.INPUT", 200)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![InputTable {
             name: "DB.S.INPUT".into(),
             last_modified_epoch: None,
@@ -1035,7 +1040,7 @@ mod tests {
     #[test]
     fn data_test_without_upstreams_still_skips_on_match() {
         let mut prev = confirmed("h", vec![], None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current: Vec<InputTable> = vec![];
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1049,7 +1054,7 @@ mod tests {
     fn data_test_executes_if_any_upstream_drifts() {
         let recorded = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 100)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.A", 100), tbl("DB.S.B", 999)]; // B drifted
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1189,10 +1194,10 @@ mod tests {
     fn upstream_freshness_data_test_anchors_on_recorded_upstream() {
         let recorded = vec![tbl("DB.S.INPUT", 100)];
         let mut prev = confirmed("h", recorded, None);
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.INPUT", 200)]; // newer than recorded 100
         let mut c = ctx(&current);
-        c.execution_type = ET_DBT_DATA_TEST;
+        c.execution_type = ModelExecutionType::DbtDataTest as i32;
         let f = upstream_freshness(&c, &prev);
 
         assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
@@ -1272,7 +1277,7 @@ mod tests {
     fn duplicate_recorded_upstream_executes_data_test() {
         let recorded = vec![tbl("DB.S.A", 200), tbl("DB.S.A", 50)]; // same name twice
         let mut prev = confirmed("h", recorded, None); // data tests have no build epoch
-        prev.execution_type = ET_DBT_DATA_TEST;
+        prev.execution_type = ModelExecutionType::DbtDataTest as i32;
         let current = vec![tbl("DB.S.A", 100)];
         let v = decide(&data_test_ctx(&current), Some(&prev));
         assert!(

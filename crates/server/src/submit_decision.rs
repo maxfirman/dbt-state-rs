@@ -19,13 +19,10 @@
 use crate::decision::{self, SubmitContext, Verdict};
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{self, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{ExecutionRow, Store};
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
 /// pending row's ConfirmExecution, `execution_decision_id` keys Explain.
@@ -139,7 +136,7 @@ pub async fn submit_sql(
         return Ok(outcome);
     }
 
-    let row = evidence.row();
+    let row = &evidence;
     let ctx = SubmitContext {
         execution_type: req.execution_type,
         input_tables: &row.input_tables,
@@ -186,11 +183,11 @@ pub async fn submit_values(
     let Selection {
         candidate,
         target_has_prior_build,
-    } = reuse_candidate::for_seed(req, evidence.row(), current)?;
+    } = reuse_candidate::for_seed(req, &evidence, current)?;
 
-    let row = evidence.row();
+    let row = &evidence;
     let ctx = SubmitContext {
-        execution_type: EXECUTION_TYPE_VALUES,
+        execution_type: ModelExecutionType::Values as i32,
         input_tables: &row.input_tables,
         target_table: Some(req.target_table.as_str()),
         stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
@@ -199,7 +196,7 @@ pub async fn submit_values(
     let verdict = decision::decide(&ctx, candidate.as_ref());
     tracing::info!(
         node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-        execution_type = EXECUTION_TYPE_VALUES,
+        execution_type = ModelExecutionType::Values as i32,
         had_match = candidate.is_some(),
         values_hash = %row.values_hash.clone().unwrap_or_default(),
         verdict = verdict_label(&verdict),
@@ -216,9 +213,9 @@ async fn select_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
 ) -> sqlx::Result<Selection> {
-    let row = evidence.row();
+    let row = evidence;
     let table_namespace = execution::namespace(req.table_namespace.as_deref());
-    if req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST {
+    if req.execution_type == ModelExecutionType::DbtDataTest as i32 {
         let latest = match row.node_unique_id.as_deref() {
             Some(uid) => {
                 store
@@ -258,7 +255,7 @@ async fn result_copy_fallback(
     evidence: &ExecutionEvidence,
     has_reuse_candidate: bool,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    let Some(lookup) = result_copy::submit_lookup(req, evidence.row(), has_reuse_candidate) else {
+    let Some(lookup) = result_copy::submit_lookup(req, evidence, has_reuse_candidate) else {
         return Ok(None);
     };
     let Some(equivalent) = store
@@ -279,7 +276,7 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
-            write_pending(store, evidence, &ids, None).await?;
+            write_pending(store, evidence, &ids).await?;
             Ok(Some(SubmitOutcome::ChainLimitExecute { ids }))
         }
         SubmitCopyPlan::Copy {
@@ -291,7 +288,7 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
-            write_pending(store, evidence, &ids, Some(&source_table)).await?;
+            write_pending(store, &evidence.copied_from(&source_table), &ids).await?;
             Ok(Some(SubmitOutcome::Copy {
                 ids,
                 source_table,
@@ -340,7 +337,7 @@ async fn settle(
             let ids = DecisionIds::mint();
             // The forthcoming ConfirmExecution finalizes this identity into
             // reusable State history.
-            write_pending(store, evidence, &ids, None).await?;
+            write_pending(store, evidence, &ids).await?;
             Ok(SubmitOutcome::Execute {
                 ids,
                 matched_execution: candidate,
@@ -357,15 +354,9 @@ async fn write_pending(
     store: &Store,
     evidence: &ExecutionEvidence,
     ids: &DecisionIds,
-    copy_source: Option<&str>,
 ) -> sqlx::Result<()> {
-    evidence
-        .write_pending(
-            store,
-            &ids.request_id,
-            &ids.execution_decision_id,
-            copy_source,
-        )
+    store
+        .insert_execution(&evidence.pending(&ids.request_id, &ids.execution_decision_id))
         .await
 }
 

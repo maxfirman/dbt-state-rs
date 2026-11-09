@@ -1,5 +1,6 @@
 //! Postgres-backed state store.
 
+use crate::execution::ExecutionWrite;
 use crate::query_cache as qc;
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -153,65 +154,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
     }
 }
 
-/// Parameters captured when a ready_to_execute verdict is issued (pending row).
-#[derive(Debug, Clone)]
-pub struct PendingExecution {
-    pub org_id: String,
-    pub project_id: Option<String>,
-    pub target_table: String,
-    pub execution_type: i32,
-    pub node_hash: Option<String>,
-    pub node_body_hash: Option<String>,
-    pub node_sql_hash: Option<String>,
-    pub node_namespace_logic_hash: Option<String>,
-    pub node_configs_hash: Option<String>,
-    pub node_contract_hash: Option<String>,
-    pub node_unique_id: Option<String>,
-    pub table_namespace: Option<String>,
-    pub dialect: String,
-    pub input_tables: Vec<InputTable>,
-    pub values_hash: Option<String>,
-    pub request_id: String,
-    pub execution_decision_id: Option<String>,
-    /// Set only for clone-origin rows (from RegisterClone): the physical source
-    /// this target was cloned from. NULL for ordinary SQL/seed executions.
-    pub clone_source_table: Option<String>,
-    /// The unrendered-template logic hash, set only in `compare_unrendered_code`
-    /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
-    /// OR `node_template_hash` (template) equals the submit's.
-    pub node_template_hash: Option<String>,
-}
-
-/// A fully-formed confirmed execution to insert directly (RecordExecutions
-/// bypass path). Carries the recorded outcome inline — no Submit/Confirm.
-#[derive(Debug, Clone)]
-pub struct ConfirmedExecution {
-    pub org_id: String,
-    pub project_id: Option<String>,
-    pub target_table: String,
-    pub execution_type: i32,
-    pub node_hash: Option<String>,
-    pub node_body_hash: Option<String>,
-    pub node_sql_hash: Option<String>,
-    pub node_namespace_logic_hash: Option<String>,
-    pub node_configs_hash: Option<String>,
-    pub node_contract_hash: Option<String>,
-    pub node_unique_id: Option<String>,
-    pub table_namespace: Option<String>,
-    pub dialect: String,
-    pub input_tables: Vec<InputTable>,
-    pub values_hash: Option<String>,
-    pub request_id: String,
-    pub execution_decision_id: Option<String>,
-    // recorded outcome
-    pub last_modified_epoch: Option<i64>,
-    pub table_type: Option<String>,
-    pub execution_runtime_ms: Option<i64>,
-    pub execution_results: Option<qc::Struct>,
-    /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
-    pub node_template_hash: Option<String>,
-}
-
 /// A confirmed "equivalent under another name" to clone from (SQL-submit
 /// cross-name fallback). Source physical name + warehouse type + build epoch.
 #[derive(Debug, Clone)]
@@ -282,43 +224,9 @@ impl Store {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Insert a pending execution row for a ready_to_execute verdict.
-    pub async fn insert_pending(&self, p: &PendingExecution) -> sqlx::Result<i64> {
-        let input_tables = serde_json::to_value(&p.input_tables).unwrap_or_default();
-        let rec = sqlx::query_scalar::<_, i64>(
-            r#"
-            INSERT INTO executions (
-                org_id, target_table, execution_type, node_hash, node_body_hash,
-                node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
-                dialect, input_tables, values_hash, status, request_id, execution_decision_id,
-                node_sql_hash, project_id, node_namespace_logic_hash, clone_source_table,
-                node_template_hash
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending',$13,$14,$15,$16,$17,$18,$19)
-            RETURNING id
-            "#,
-        )
-        .bind(&p.org_id)
-        .bind(&p.target_table)
-        .bind(p.execution_type)
-        .bind(&p.node_hash)
-        .bind(&p.node_body_hash)
-        .bind(&p.node_configs_hash)
-        .bind(&p.node_contract_hash)
-        .bind(&p.node_unique_id)
-        .bind(&p.table_namespace)
-        .bind(&p.dialect)
-        .bind(input_tables)
-        .bind(&p.values_hash)
-        .bind(&p.request_id)
-        .bind(&p.execution_decision_id)
-        .bind(&p.node_sql_hash)
-        .bind(&p.project_id)
-        .bind(&p.node_namespace_logic_hash)
-        .bind(&p.clone_source_table)
-        .bind(&p.node_template_hash)
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(rec)
+    /// Insert one execution row (Submit and RegisterClone pending rows).
+    pub(crate) async fn insert_execution(&self, row: &ExecutionWrite) -> sqlx::Result<()> {
+        Self::insert_row(&self.pool, row).await
     }
 
     /// Insert a batch of fully-confirmed executions AND their selector/deferral
@@ -334,13 +242,15 @@ impl Store {
     /// logical state consistently — a `node_states` fault now rolls the whole
     /// request back and surfaces as an error, rather than a silent partial
     /// publish. Returns the number of execution rows inserted.
-    pub async fn insert_confirmed_batch_with_node_states(
+    pub(crate) async fn insert_confirmed_batch_with_node_states(
         &self,
-        records: &[ConfirmedExecution],
+        records: &[ExecutionWrite],
         node_states: &[NodeStateUpsert],
     ) -> sqlx::Result<u32> {
         let mut tx = self.pool.begin().await?;
-        Self::insert_confirmed_rows(&mut tx, records).await?;
+        for row in records {
+            Self::insert_row(&mut *tx, row).await?;
+        }
         for n in node_states {
             Self::upsert_node_state_tx(&mut tx, n).await?;
         }
@@ -348,50 +258,59 @@ impl Store {
         Ok(records.len() as u32)
     }
 
-    /// Insert confirmed execution rows into an open transaction.
-    async fn insert_confirmed_rows(
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        records: &[ConfirmedExecution],
+    /// Insert one execution row: pending rows carry no outcome, confirmed rows
+    /// carry theirs and are stamped `confirmed_at`.
+    async fn insert_row<'e>(
+        executor: impl sqlx::PgExecutor<'e>,
+        row: &ExecutionWrite,
     ) -> sqlx::Result<()> {
-        for c in records {
-            let input_tables = serde_json::to_value(&c.input_tables).unwrap_or_default();
-            sqlx::query(
-                r#"
-                INSERT INTO executions (
-                    org_id, target_table, execution_type, node_hash, node_body_hash,
-                    node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
-                    dialect, input_tables, values_hash, status, request_id,
-                    execution_decision_id, last_modified_epoch, table_type,
-                    execution_runtime_ms, confirmed_at, node_sql_hash, project_id, execution_results,
-                    node_namespace_logic_hash, node_template_hash
-                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'confirmed',$13,$14,$15,$16,$17,now(),$18,$19,$20,$21,$22)
-                "#,
-            )
-            .bind(&c.org_id)
-            .bind(&c.target_table)
-            .bind(c.execution_type)
-            .bind(&c.node_hash)
-            .bind(&c.node_body_hash)
-            .bind(&c.node_configs_hash)
-            .bind(&c.node_contract_hash)
-            .bind(&c.node_unique_id)
-            .bind(&c.table_namespace)
-            .bind(&c.dialect)
-            .bind(input_tables)
-            .bind(&c.values_hash)
-            .bind(&c.request_id)
-            .bind(&c.execution_decision_id)
-            .bind(c.last_modified_epoch)
-            .bind(&c.table_type)
-            .bind(c.execution_runtime_ms)
-            .bind(&c.node_sql_hash)
-            .bind(&c.project_id)
-            .bind(c.execution_results.as_ref().map(Message::encode_to_vec))
-            .bind(&c.node_namespace_logic_hash)
-            .bind(&c.node_template_hash)
-            .execute(&mut **tx)
-            .await?;
-        }
+        let e = &row.evidence;
+        let outcome = row.status.outcome();
+        let input_tables = serde_json::to_value(&e.input_tables).unwrap_or_default();
+        sqlx::query(
+            r#"
+            INSERT INTO executions (
+                org_id, target_table, execution_type, node_hash, node_body_hash,
+                node_configs_hash, node_contract_hash, node_unique_id, table_namespace,
+                dialect, input_tables, values_hash, status, request_id,
+                execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
+                clone_source_table, node_template_hash, last_modified_epoch, table_type,
+                execution_runtime_ms, execution_results, confirmed_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END)
+            "#,
+        )
+        .bind(&e.org_id)
+        .bind(&e.target_table)
+        .bind(e.execution_type)
+        .bind(&e.node_hash)
+        .bind(&e.node_body_hash)
+        .bind(&e.node_configs_hash)
+        .bind(&e.node_contract_hash)
+        .bind(&e.node_unique_id)
+        .bind(&e.table_namespace)
+        .bind(&e.dialect)
+        .bind(input_tables)
+        .bind(&e.values_hash)
+        .bind(row.status.as_str())
+        .bind(&row.request_id)
+        .bind(&row.execution_decision_id)
+        .bind(&e.node_sql_hash)
+        .bind(&e.project_id)
+        .bind(&e.node_namespace_logic_hash)
+        .bind(&e.clone_source_table)
+        .bind(&e.node_template_hash)
+        .bind(outcome.and_then(|o| o.last_modified_epoch))
+        .bind(outcome.and_then(|o| o.table_type.as_deref()))
+        .bind(outcome.and_then(|o| o.execution_runtime_ms))
+        .bind(
+            outcome
+                .and_then(|o| o.execution_results.as_ref())
+                .map(Message::encode_to_vec),
+        )
+        .bind(outcome.is_some())
+        .execute(executor)
+        .await?;
         Ok(())
     }
 

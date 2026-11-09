@@ -3,6 +3,7 @@
 //! state at the child's submission time. Keep these distinctions explicit.
 
 use super::*;
+use crate::query_cache::ModelExecutionType;
 use sqlx::{Postgres, QueryBuilder};
 
 /// A single target or all targets within the same physical warehouse scope.
@@ -85,7 +86,7 @@ impl Store {
         sqlx::query_as::<_, ExecutionRow>(&format!(
             r#"
             SELECT {} FROM executions
-            WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = 8
+            WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = $6
               AND project_id IS NOT DISTINCT FROM $3
               AND table_namespace IS NOT DISTINCT FROM $4
               AND warehouse_family = $5
@@ -99,6 +100,7 @@ impl Store {
         .bind(project_id)
         .bind(table_namespace)
         .bind(crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect))
+        .bind(ModelExecutionType::DbtDataTest as i32)
         .fetch_optional(&self.pool)
         .await
     }
@@ -215,7 +217,9 @@ impl Store {
         identity: &str,
     ) -> sqlx::Result<Option<Option<String>>> {
         let mut query = current_physical_state(org_id, Some(namespace), "duckdb", Some(source));
-        query.push("SELECT node_namespace_logic_hash FROM current_state WHERE execution_type = 5 AND last_modified_epoch = ")
+        query.push("SELECT node_namespace_logic_hash FROM current_state WHERE execution_type = ")
+            .push_bind(ModelExecutionType::DeleteInsert as i32)
+            .push(" AND last_modified_epoch = ")
             .push_bind(epoch).push(" AND table_type = 'DUCKDB CTAS TABLE' AND clone_source_table IS NULL AND node_hash = ")
             .push_bind(identity);
         let row = query

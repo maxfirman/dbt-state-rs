@@ -14,14 +14,11 @@
 //! The gRPC adapter performs the lookup, writes the pending row and maps a
 //! plan to the wire response. Everything that decides the outcome is here.
 
+use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{CloneEquivalent, PendingExecution};
+use crate::query_cache::ModelExecutionType;
+use crate::store::CloneEquivalent;
 use crate::warehouse::Warehouse;
-
-// ModelExecutionType values (proto/query_cache_protobuf/query_cache/shared.proto).
-const EXECUTION_TYPE_INCREMENTAL: i32 = 5;
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
-const EXECUTION_TYPE_VALUES: i32 = 9;
 
 /// Hosted DuckDB copy chains stop at two ancestors.
 const MAX_DUCKDB_COPY_DEPTH: i64 = 2;
@@ -57,7 +54,7 @@ pub(crate) struct EquivalentLookup<'a> {
 /// not full volatile-evaluation conformance (golden/replay_gaps.json).
 pub(crate) fn submit_lookup<'a>(
     req: &'a qc::SubmitEnrichedSqlRequest,
-    evidence: &'a PendingExecution,
+    evidence: &'a ExecutionEvidence,
     has_reuse_candidate: bool,
 ) -> Option<EquivalentLookup<'a>> {
     let ns_logic_hash = evidence.node_namespace_logic_hash.as_deref();
@@ -71,8 +68,8 @@ pub(crate) fn submit_lookup<'a>(
         );
     if has_reuse_candidate
         || volatile_blocks_copy
-        || req.execution_type == EXECUTION_TYPE_DBT_DATA_TEST
-        || req.execution_type == EXECUTION_TYPE_VALUES
+        || req.execution_type == ModelExecutionType::DbtDataTest as i32
+        || req.execution_type == ModelExecutionType::Values as i32
     {
         return None;
     }
@@ -241,12 +238,12 @@ pub(crate) fn register_lookup(
     let warehouse = Warehouse::from_dialect(&req.dialect);
     if warehouse == Warehouse::DuckDb {
         return match (
-            req.execution_type,
+            ModelExecutionType::try_from(req.execution_type),
             crate::execution::namespace(req.table_namespace.as_deref()),
             req.clone_source_last_modified_epoch,
             req.labels.get("duckdb_incremental_identity"),
         ) {
-            (EXECUTION_TYPE_INCREMENTAL, Some(ns), Some(epoch), Some(identity))
+            (Ok(ModelExecutionType::DeleteInsert), Some(ns), Some(epoch), Some(identity))
                 if req
                     .labels
                     .get("duckdb_incremental_contract")
@@ -315,7 +312,6 @@ fn register_ddl(req: &qc::CloneRequest) -> Result<Vec<String>, RegisterRefusal> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::execution::ExecutionEvidence;
 
     const DEV: &str = "\"DB\".\"DEV\".\"M\"";
     const PROD: &str = "\"DB\".\"PROD\".\"M\"";
@@ -334,8 +330,8 @@ mod tests {
         }
     }
 
-    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> PendingExecution {
-        let mut ev = ExecutionEvidence::sql_submit("o", req).row().clone();
+    fn evidence(req: &qc::SubmitEnrichedSqlRequest) -> ExecutionEvidence {
+        let mut ev = ExecutionEvidence::sql_submit("o", req);
         // Fix the logic identity so DuckDB cases do not depend on its parser.
         ev.node_namespace_logic_hash = Some("logic".into());
         ev
@@ -560,7 +556,7 @@ mod tests {
 
     fn duck_register() -> qc::CloneRequest {
         let mut req = qc::CloneRequest {
-            execution_type: EXECUTION_TYPE_INCREMENTAL,
+            execution_type: ModelExecutionType::DeleteInsert as i32,
             clone_source_table: DUCK_PROD.into(),
             target_table: DUCK_DEV.into(),
             clone_source_last_modified_epoch: Some(7),

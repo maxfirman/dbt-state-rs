@@ -19,6 +19,7 @@
 
 use crate::decision::{self, StaleUpstreamPolicy, SubmitContext};
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
 
 // ── proto enum ints (explain_service.proto) ───────────────────────────────
@@ -39,14 +40,6 @@ const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 const DECISION_SKIP: i32 = 0;
 const DECISION_EXECUTE: i32 = 1;
 const DECISION_CLONE: i32 = 3;
-
-// ModelExecutionType values that change wording/structure (shared.proto).
-const ET_FULL: i32 = 1;
-const ET_DBT_DATA_TEST: i32 = 8;
-// VIEW is distinguished from FULL only in the zero-upstream SKIP freshness body
-// (catalog SHAPE 0 vs 1); referenced by the generator's unit tests.
-#[allow(dead_code)]
-const ET_VIEW: i32 = 10;
 
 /// The persisted decision class, re-read from `node_decisions.decision`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +94,7 @@ pub struct ExplainNode {
 
 impl ExplainNode {
     fn noun(&self) -> &'static str {
-        if self.execution_type == ET_DBT_DATA_TEST {
+        if self.execution_type == ModelExecutionType::DbtDataTest as i32 {
             "test"
         } else {
             "model"
@@ -109,7 +102,7 @@ impl ExplainNode {
     }
 
     fn is_data_test(&self) -> bool {
-        self.execution_type == ET_DBT_DATA_TEST
+        self.execution_type == ModelExecutionType::DbtDataTest as i32
     }
 
     /// Genuine upstream inputs: every input table except the node's own target.
@@ -198,9 +191,9 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///
 /// Characterized matrix (verified against the explain fixtures — which carry
 /// ONLY execution_type 1/10/8 — and docs/explain-catalog.md):
-///   - model/table (ET_FULL=1) and view (ET_VIEW=10): Skip | Build | Clone.
-///   - data test (ET_DBT_DATA_TEST=8): Skip only (Build/Clone unobserved — F4).
-///   - everything else (seed ET_VALUES=9, snapshot ET_SNAPSHOT=7, incremental,
+///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone.
+///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved — F4).
+///   - everything else (seed VALUES=9, snapshot SNAPSHOT=7, incremental,
 ///     any other execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
@@ -212,12 +205,12 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// its data changed" and would fall through to the SHAPE-7 "the model query has
 /// changed" tree). PR #31 round-4 F7.
 fn is_characterized(execution_type: i32, decision: DecisionClass) -> bool {
-    match execution_type {
-        ET_FULL | ET_VIEW => matches!(
+    match ModelExecutionType::try_from(execution_type) {
+        Ok(ModelExecutionType::Full | ModelExecutionType::View) => matches!(
             decision,
             DecisionClass::Skip | DecisionClass::Build | DecisionClass::Clone
         ),
-        ET_DBT_DATA_TEST => matches!(decision, DecisionClass::Skip),
+        Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionClass::Skip),
         _ => false,
     }
 }
@@ -288,7 +281,7 @@ fn query_analysis_unchanged(node: &ExplainNode) -> qc::ExplainLine {
 /// it (SHAPE 0); a VIEW, a data test, or any node with ≥1 genuine upstream
 /// carries it (SHAPEs 1/2/4…).
 fn has_upstream_query_line(node: &ExplainNode) -> bool {
-    !node.genuine_upstreams().is_empty() || node.execution_type != ET_FULL
+    !node.genuine_upstreams().is_empty() || node.execution_type != ModelExecutionType::Full as i32
 }
 
 /// `data freshness analysis` body for a SKIP, by upstream situation.
@@ -298,7 +291,7 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
         // No genuine upstreams. A FULL model renders `no upstream dependencies`;
         // a VIEW (which selects from an untracked source) renders `upstream data
         // is up to date` (catalog SHAPE 0 vs 1).
-        let body = if node.execution_type == ET_FULL {
+        let body = if node.execution_type == ModelExecutionType::Full as i32 {
             leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)
         } else {
             leaf("upstream data is up to date", Some(MARKER_SUCCESS), None)
@@ -454,7 +447,7 @@ fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     // Data-test EXECUTE is UNOBSERVED / unimplemented (explain-catalog.md
     // "Data test EXECUTE (only SKIP captured)", ~line 222; spec #27 Out-of-Scope).
     // As of PR #31 round-4 F7 this is now fenced upstream by `is_characterized`
-    // in `explain_lines` (ET_DBT_DATA_TEST allows only Skip), so this branch is
+    // in `explain_lines` (DBT_DATA_TEST allows only Skip), so this branch is
     // unreachable for a data test. Kept as commented defense-in-depth so the two
     // places cannot silently disagree; `is_first_build`'s `!is_data_test()`
     // hardening remains the belt-and-braces guard against the data-test execute
@@ -806,7 +799,7 @@ mod tests {
         // et=1 FULL, zero genuine upstreams → `no upstream dependencies`.
         let mut n = node(
             DecisionClass::Skip,
-            ET_FULL,
+            ModelExecutionType::Full as i32,
             "model was a no-op because both its query and its upstream data are up to date",
         );
         n.input_tables = vec![tbl("\"DB\".\"S\".\"T\"")]; // only the target
@@ -837,7 +830,7 @@ mod tests {
         // et=10 VIEW, zero genuine upstreams → upstream-query line + up-to-date.
         let mut n = node(
             DecisionClass::Skip,
-            ET_VIEW,
+            ModelExecutionType::View as i32,
             "model was a no-op because both its query and its upstream data are up to date",
         );
         n.input_tables = vec![tbl("\"DB\".\"S\".\"T\"")];
@@ -873,7 +866,7 @@ mod tests {
     fn model_execute_node_query_changed_is_shape7() {
         let n = node(
             DecisionClass::Build,
-            ET_VIEW,
+            ModelExecutionType::View as i32,
             "model was executed because either its query didn't match or its upstream data is out of date",
         );
         let got = render(&n);
@@ -908,7 +901,7 @@ mod tests {
     fn model_first_build_is_table_analysis_only() {
         let n = node(
             DecisionClass::Build,
-            ET_FULL,
+            ModelExecutionType::Full as i32,
             "model was executed because its table did not exist",
         );
         let got = render(&n);
@@ -941,7 +934,7 @@ mod tests {
         // invent a structurally-impossible tree.
         let mut n = node(
             DecisionClass::Build,
-            ET_DBT_DATA_TEST,
+            ModelExecutionType::DbtDataTest as i32,
             "data test was executed because it has no prior execution or its query changed",
         );
         n.target_table = None; // tests produce no physical object
@@ -957,7 +950,7 @@ mod tests {
         // et=8 data test SKIP: no `table analysis`; query + per-upstream freshness.
         let mut n = node(
             DecisionClass::Skip,
-            ET_DBT_DATA_TEST,
+            ModelExecutionType::DbtDataTest as i32,
             "data test was a no-op because both its query and its upstream data are up to date",
         );
         n.target_table = None; // tests produce no object
@@ -996,7 +989,7 @@ mod tests {
     fn clone_tree_has_vs_clone_sections() {
         let mut n = node(
             DecisionClass::Clone,
-            ET_FULL,
+            ModelExecutionType::Full as i32,
             "an equivalent model exists under another name so we cloned that one",
         );
         n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
@@ -1038,20 +1031,17 @@ mod tests {
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
     // explain_lines dispatches on DecisionClass alone; without an
-    // execution-type fence, seed (ET_VALUES=9), snapshot (ET_SNAPSHOT=7) and
+    // execution-type fence, seed (VALUES=9), snapshot (SNAPSHOT=7) and
     // incremental decisions render model-shaped trees that the hosted service
     // was never observed to produce (docs/explain-catalog.md "Unobserved — do
     // not implement until captured"; spec #27 Out-of-Scope). They must emit
     // nothing.
-    const ET_SNAPSHOT: i32 = 7;
-    const ET_VALUES: i32 = 9;
-
     #[test]
     fn seed_skip_emits_nothing() {
-        // ET_VALUES=9 seed SKIP: unobserved → no invented model-SKIP tree.
+        // VALUES=9 seed SKIP: unobserved → no invented model-SKIP tree.
         let mut n = node(
             DecisionClass::Skip,
-            ET_VALUES,
+            ModelExecutionType::Values as i32,
             "seed was a no-op because its data has not changed",
         );
         n.input_tables = vec![tbl("\"DB\".\"S\".\"T\"")];
@@ -1070,7 +1060,7 @@ mod tests {
         // "the model query has changed".
         let n = node(
             DecisionClass::Build,
-            ET_VALUES,
+            ModelExecutionType::Values as i32,
             "seed was loaded because its data changed",
         );
         assert!(
@@ -1082,8 +1072,12 @@ mod tests {
 
     #[test]
     fn snapshot_execute_emits_nothing() {
-        // ET_SNAPSHOT=7 snapshot: unobserved → no invented tree.
-        let n = node(DecisionClass::Build, ET_SNAPSHOT, "snapshot was executed");
+        // SNAPSHOT=7 snapshot: unobserved → no invented tree.
+        let n = node(
+            DecisionClass::Build,
+            ModelExecutionType::Snapshot as i32,
+            "snapshot was executed",
+        );
         assert!(
             explain_lines(&n).is_empty(),
             "snapshot is unobserved → must emit no invented lines, got {:?}",
@@ -1182,7 +1176,7 @@ mod tests {
     fn decision_description_prefers_persisted_situation_string() {
         let n = node(
             DecisionClass::Skip,
-            ET_FULL,
+            ModelExecutionType::Full as i32,
             "model was a no-op because its query is up to date and its data is within lag tolerance",
         );
         assert_eq!(

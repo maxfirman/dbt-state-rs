@@ -1,6 +1,7 @@
 //! Versioned evidence shared by submit and batch recording. Length framing
 //! prevents concatenation ambiguity; unknown dialects retain exact SQL bytes.
 use crate::query_cache as qc;
+use crate::query_cache::ModelExecutionType;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -114,8 +115,8 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
     match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
         crate::warehouse::Warehouse::Snowflake => Some(namespace_logic_hash(req)),
         crate::warehouse::Warehouse::DuckDb => {
-            if !(req.execution_type == 1
-                || (req.execution_type == 5
+            if !(req.execution_type == ModelExecutionType::Full as i32
+                || (req.execution_type == ModelExecutionType::DeleteInsert as i32
                     && req
                         .semantic_extras
                         .get("duckdb_incremental_contract")
