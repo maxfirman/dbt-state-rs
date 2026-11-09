@@ -733,7 +733,7 @@ captured.
   Concurrent/racing-record ordering is NOT establishable from a capture and is
   intentionally not implemented as a guard (would be speculative); the
   last-arriving write wins by design. **Best-effort write is now OBSERVABLE:**
-  `record_node_state` increments `AppState::selector_write_failures` on a store
+  `submit_decision`'s node-state write increments `Store::selector_write_failures` (read via `AppState::selector_write_failures()`) on a store
   error (still never failing the decision path), so a silent baseline-staleness
   divergence is a surfaceable metric. Pinned by
   `selector_offline.rs::selector_state_write_failures_are_observable`.
