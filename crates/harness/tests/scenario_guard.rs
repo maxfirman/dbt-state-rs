@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 /// Test files that use the scenario module. Tickets #52 and #53 extend this.
 const MIGRATED: &[&str] = &[
     "auth.rs",
+    "clone_history_provenance.rs",
+    "clone_lifecycle.rs",
     "clone_submit_fallback.rs",
     "concurrency.rs",
     "correctness.rs",

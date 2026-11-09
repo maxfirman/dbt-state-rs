@@ -27,98 +27,17 @@
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
-use qc::clone_client::CloneClient;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
+use support::demo::{
+    self, clone_probe, clone_probe_sql, transient_at, CLONE_PROBE, DEV_SCHEMA, PROD_SCHEMA,
+    RAW_ORDERS as RAW,
+};
+use support::scenario::{variant, ExecutionType, Scenario};
+use support::start_server;
 
-const NS: &str = "fc38a5ba0eceb701c6ab7c6b882e28b0";
-const RAW: &str = "\"CDO_DEMO_DB\".\"RAW\".\"RAW_ORDERS\"";
-
-fn tbl(name: &str, epoch: i64) -> qc::TableModifiedInfo {
-    qc::TableModifiedInfo {
-        name: name.into(),
-        last_modified_epoch: Some(epoch),
-    }
-}
-
-/// A table-materialization submit (execution_type=1) for `target`, built from
-/// the same logical model in `schema`. `extra_col` injects a genuine projection
-/// change (different schema-abstracted logic) when non-empty. Mirrors the shape
-/// used by `clone_lifecycle.rs`/`clone_submit_fallback.rs`.
-fn submit(
-    target: &str,
-    schema: &str,
-    own_epoch: i64,
-    raw_epoch: i64,
-    extra_col: &str,
-) -> qc::SubmitEnrichedSqlRequest {
-    let sql = format!(
-        "select order_id, customer_id, ordered_at{extra_col} from CDO_DEMO_DB.{schema}.stg_orders where ordered_at > '1900-01-01'"
-    );
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some(schema.into()),
-        execution_type: 1,
-        sql,
-        tolerate_nondeterminism: true,
-        freshness_tolerance_seconds: 2700,
-        tables: vec![tbl(target, own_epoch), tbl(RAW, raw_epoch)],
-        query_dependencies: vec![qc::QueryDependency {
-            name: format!("\"CDO_DEMO_DB\".\"{}\".\"STG_ORDERS\"", schema.to_uppercase()),
-            query: format!(
-                "create or replace view STG_ORDERS as (select * from CDO_DEMO_DB.{schema}.raw_orders)"
-            ),
-            default_catalog: "CDO_DEMO_DB".into(),
-            default_schema: schema.into(),
-        }],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.jaffle_shop.clone_probe".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("p".into()),
-            ..Default::default()
-        }),
-        labels: [
-            ("dbt_node_name".to_string(), "clone_probe".to_string()),
-            (
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle_shop.clone_probe".to_string(),
-            ),
-        ]
-        .into_iter()
-        .collect(),
-        ..Default::default()
-    }
-}
-
-async fn execute_and_confirm(
-    sql: &mut SqlClient<tonic::transport::Channel>,
-    exec: &mut ExecutionClient<tonic::transport::Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-    confirm_epoch: i64,
-) {
-    let resp = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let qc::submit_sql_response::Response::ReadyToExecute(r) = resp.response.unwrap() else {
-        panic!("expected ready_to_execute to build");
-    };
-    assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: r.request_id,
-            last_modified_epoch: Some(confirm_epoch),
-            table_type: Some("TRANSIENT TABLE".into()),
-            execution_runtime_ms: Some(1000),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
-    );
-}
+/// Every build below confirms a `TRANSIENT TABLE` built in 1 s.
+const BUILD_MS: i64 = 1000;
+/// A genuine projection change of the probe's logic.
+const ADDED_COLUMN: &str = ", upper(customer_id) as c";
 
 /// P0#1 — A→B→A cross-name clone selection.
 ///
@@ -129,48 +48,38 @@ async fn execute_and_confirm(
 #[tokio::test]
 async fn cross_name_clone_source_must_reflect_current_logic() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ORDERS\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ORDERS\"";
     let raw_epoch = 1_791_320_590_839i64;
 
     // 1) Build PROD with logic A, confirm.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(prod, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
-        1_791_743_740_000,
+    sc.build_with(
+        clone_probe(prod, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_740_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_740_000).runtime(BUILD_MS),
     )
     .await;
 
     // 2) Rebuild PROD with logic B (added column) — physical PROD now holds B.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(
-            prod,
-            "prod_state_demo",
-            1_791_743_750_000,
-            raw_epoch,
-            ", upper(customer_id) as c",
-        ),
-        1_791_743_750_000,
+    sc.build_with(
+        clone_probe(prod, PROD_SCHEMA)
+            .sql(&clone_probe_sql(PROD_SCHEMA, ADDED_COLUMN))
+            .own_epoch(Some(1_791_743_750_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_750_000).runtime(BUILD_MS),
     )
     .await;
 
     // 3) New target DEV (absent) submits logic A. PROD's current logic is B, so
     //    no equivalent for A exists under another name: MUST EXECUTE.
-    let dev_a = sql
-        .submit_enriched_sql(submit(dev, "dev_clone_demo", 1, raw_epoch, ""))
-        .await
-        .unwrap()
-        .into_inner();
+    let dev_a = clone_probe(dev, DEV_SCHEMA)
+        .own_epoch(Some(1))
+        .upstream(RAW, raw_epoch);
     assert_eq!(
-        response_variant(&dev_a),
+        sc.verdict(dev_a).await,
         "ready_to_execute",
         "clone source's CURRENT logic is B, not A: a stale A record must not make \
          PROD a clone source for logic A"
@@ -194,11 +103,7 @@ async fn cross_name_clone_source_must_reflect_current_logic() {
 #[tokio::test]
 async fn clone_adoption_must_not_resurrect_rebuilt_target() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
@@ -208,64 +113,38 @@ async fn clone_adoption_must_not_resurrect_rebuilt_target() {
 
     // 1) Build the SOURCE in prod with logic A (records source logic for the
     //    clone-origin row to inherit), confirm.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(prod, "prod_state_demo", prod_epoch, raw_epoch, ""),
-        prod_epoch,
+    sc.build_with(
+        clone_probe(prod, PROD_SCHEMA)
+            .own_epoch(Some(prod_epoch))
+            .upstream(RAW, raw_epoch),
+        transient_at(prod_epoch).runtime(BUILD_MS),
     )
     .await;
 
     // 2) RegisterClone(source=prod, target=dev) + confirm → clone-origin row A
     //    (clone_source_table set, inherits logic A).
-    let clone_resp = clone
-        .register_clone(qc::CloneRequest {
-            target_table: dev.into(),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 1,
-            clone_source_table: prod.into(),
-            clone_source_last_modified_epoch: Some(prod_epoch),
-            clone_source_table_type: Some("TRANSIENT TABLE".into()),
-            table_namespace: Some(NS.into()),
-            labels: [(
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle_shop.clone_probe".to_string(),
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        })
+    let clone_resp = sc
+        .register_clone(
+            demo::copy(prod, dev)
+                .source_epoch(prod_epoch)
+                .label("dbt_node_unique_id", CLONE_PROBE),
+        )
         .await
-        .unwrap()
-        .into_inner();
+        .unwrap();
     let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: ready.request_id,
-            last_modified_epoch: Some(clone_epoch),
-            table_type: Some("TRANSIENT TABLE".into()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+        sc.confirm(&ready.request_id, transient_at(clone_epoch))
+            .await
     );
 
     // 3) Rebuild DEV normally with logic B (added column). Physical DEV now
     //    holds B; this ordinary row is the latest confirmed state for DEV.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(
-            dev,
-            "dev_clone_demo",
-            1_791_743_790_000,
-            raw_epoch,
-            ", upper(customer_id) as c",
-        ),
-        1_791_743_790_000,
+    sc.build_with(
+        clone_probe(dev, DEV_SCHEMA)
+            .sql(&clone_probe_sql(DEV_SCHEMA, ADDED_COLUMN))
+            .own_epoch(Some(1_791_743_790_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_790_000).runtime(BUILD_MS),
     )
     .await;
 
@@ -273,25 +152,21 @@ async fn clone_adoption_must_not_resurrect_rebuilt_target() {
     //    B row (not clone-origin), so the stale clone-origin A row must NOT be
     //    adopted → NO SKIP. Because an equivalent for logic A still exists under
     //    another name (PROD), the hosted-faithful outcome is `ready_to_clone`.
-    let dev_a = sql
-        .submit_enriched_sql(submit(
-            dev,
-            "dev_clone_demo",
-            1_791_743_790_000,
-            raw_epoch,
-            "",
-        ))
-        .await
-        .unwrap()
-        .into_inner();
+    let dev_a = sc
+        .submit(
+            clone_probe(dev, DEV_SCHEMA)
+                .own_epoch(Some(1_791_743_790_000))
+                .upstream(RAW, raw_epoch),
+        )
+        .await;
     assert_ne!(
-        response_variant(&dev_a),
+        variant(&dev_a),
         "skip_execution",
         "a stale clone-origin row (logic A) must NEVER be resurrected to SKIP a \
          target that physically holds logic B"
     );
     assert_eq!(
-        response_variant(&dev_a),
+        variant(&dev_a),
         "ready_to_clone",
         "LIVE-VERIFIED: an equivalent for logic A exists under another name (PROD), \
          so the hosted service re-clones it into DEV even though DEV exists holding B"
@@ -329,11 +204,7 @@ async fn clone_adoption_must_not_resurrect_rebuilt_target() {
 #[tokio::test]
 async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PTF_PROBE\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PTF_PROBE\"";
@@ -342,78 +213,52 @@ async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
     let clone_epoch = 1_791_743_784_000i64;
 
     // 1) Build the SOURCE in prod as a TABLE (et=1), logic A, confirm.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(prod, "prod_state_demo", prod_epoch, raw_epoch, ""),
-        prod_epoch,
+    sc.build_with(
+        clone_probe(prod, PROD_SCHEMA)
+            .own_epoch(Some(prod_epoch))
+            .upstream(RAW, raw_epoch),
+        transient_at(prod_epoch).runtime(BUILD_MS),
     )
     .await;
 
     // 2) Clone prod→dev (clone-origin row, et=1, inherits logic A), confirm.
-    let clone_resp = clone
-        .register_clone(qc::CloneRequest {
-            target_table: dev.into(),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 1,
-            clone_source_table: prod.into(),
-            clone_source_last_modified_epoch: Some(prod_epoch),
-            clone_source_table_type: Some("TRANSIENT TABLE".into()),
-            table_namespace: Some(NS.into()),
-            labels: [(
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle_shop.clone_probe".to_string(),
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        })
+    let clone_resp = sc
+        .register_clone(
+            demo::copy(prod, dev)
+                .source_epoch(prod_epoch)
+                .label("dbt_node_unique_id", CLONE_PROBE),
+        )
         .await
-        .unwrap()
-        .into_inner();
+        .unwrap();
     let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: ready.request_id,
-            last_modified_epoch: Some(clone_epoch),
-            table_type: Some("TRANSIENT TABLE".into()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+        sc.confirm(&ready.request_id, transient_at(clone_epoch))
+            .await
     );
 
     // 3) Rebuild DEV as an INCREMENTAL merge (et=3), same logic A. DEV's CURRENT
     //    physical state is now an ordinary et=3 build (not clone-origin).
-    let mut dev_incr = submit(dev, "dev_clone_demo", 1_791_743_790_000, raw_epoch, "");
-    dev_incr.execution_type = 3;
-    execute_and_confirm(&mut sql, &mut exec, dev_incr, 1_791_743_790_000).await;
+    let dev_a = clone_probe(dev, DEV_SCHEMA)
+        .own_epoch(Some(1_791_743_790_000))
+        .upstream(RAW, raw_epoch);
+    sc.build_with(
+        dev_a.clone().execution_type(ExecutionType::Merge),
+        transient_at(1_791_743_790_000).runtime(BUILD_MS),
+    )
+    .await;
 
     // 4) Re-submit DEV as a TABLE (et=1), logic A again. DEV's latest confirmed
     //    row is the et=3 ordinary build, so the stale et=1 clone-origin row must
     //    NOT be adopted → NO SKIP. Hosted re-clones the equivalent (PROD).
-    let dev_a = sql
-        .submit_enriched_sql(submit(
-            dev,
-            "dev_clone_demo",
-            1_791_743_790_000,
-            raw_epoch,
-            "",
-        ))
-        .await
-        .unwrap()
-        .into_inner();
+    let dev_a = sc.submit(dev_a).await;
     assert_ne!(
-        response_variant(&dev_a),
+        variant(&dev_a),
         "skip_execution",
         "the stale et=1 clone-origin row must NOT be resurrected to SKIP a target \
          whose current physical state is an et=3 incremental build"
     );
     assert_eq!(
-        response_variant(&dev_a),
+        variant(&dev_a),
         "ready_to_clone",
         "LIVE-VERIFIED: DEV's current state is et=3, so hosted re-clones the \
          equivalent (PROD) rather than reusing the historical et=1 clone-origin row"
@@ -440,85 +285,57 @@ async fn clone_adoption_must_not_resurrect_row_of_different_execution_type() {
 #[tokio::test]
 async fn clone_source_logic_inherit_must_use_current_source_state() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"PROBE_SRC\"";
     let tgt = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"PROBE_TGT\"";
     let raw_epoch = 1_791_320_590_839i64;
 
     // 1) Build SOURCE with rendered logic A → stores node_namespace_logic_hash.
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
-        1_791_743_740_000,
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_740_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_740_000).runtime(BUILD_MS),
     )
     .await;
 
     // 2) Rebuild SOURCE via an UNRENDERED-comparison submit (newer row, NULL
     //    namespace logic hash). This is the source's CURRENT state.
-    let mut src_unrendered = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
-    src_unrendered.compare_unrendered_code = true;
-    execute_and_confirm(&mut sql, &mut exec, src_unrendered, 1_791_743_760_000).await;
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_760_000))
+            .upstream(RAW, raw_epoch)
+            .compare_unrendered_code(),
+        transient_at(1_791_743_760_000).runtime(BUILD_MS),
+    )
+    .await;
 
     // 3) Clone source→target. The source's CURRENT row has no logic hash, so the
     //    clone-origin row must inherit NONE.
-    let clone_resp = clone
-        .register_clone(qc::CloneRequest {
-            target_table: tgt.into(),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 1,
-            clone_source_table: src.into(),
-            clone_source_last_modified_epoch: Some(1_791_743_760_000),
-            clone_source_table_type: Some("TRANSIENT TABLE".into()),
-            table_namespace: Some(NS.into()),
-            labels: [(
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle_shop.clone_probe".to_string(),
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        })
+    let clone_resp = sc
+        .register_clone(
+            demo::copy(src, tgt)
+                .source_epoch(1_791_743_760_000)
+                .label("dbt_node_unique_id", CLONE_PROBE),
+        )
         .await
-        .unwrap()
-        .into_inner();
+        .unwrap();
     let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: ready.request_id,
-            last_modified_epoch: Some(1_791_743_784_000),
-            table_type: Some("TRANSIENT TABLE".into()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+        sc.confirm(&ready.request_id, transient_at(1_791_743_784_000))
+            .await
     );
 
     // 4) Resubmit the clone target with the OLD rendered logic A. Because the
     //    clone-origin row inherited NO logic identity (source's current state
     //    had none), there is no proven logic equivalence → MUST EXECUTE, never
     //    SKIP against a stale inherited hash.
-    let tgt_a = sql
-        .submit_enriched_sql(submit(
-            tgt,
-            "dev_clone_demo",
-            1_791_743_784_000,
-            raw_epoch,
-            "",
-        ))
-        .await
-        .unwrap()
-        .into_inner();
+    let tgt_a = clone_probe(tgt, DEV_SCHEMA)
+        .own_epoch(Some(1_791_743_784_000))
+        .upstream(RAW, raw_epoch);
     assert_ne!(
-        response_variant(&tgt_a),
+        sc.verdict(tgt_a).await,
         "skip_execution",
         "a clone whose source's CURRENT state carries no logic hash must not SKIP \
          by inheriting an obsolete hash from an older source row"
@@ -532,10 +349,7 @@ async fn clone_source_logic_inherit_must_use_current_source_state() {
 #[tokio::test]
 async fn clone_equivalent_is_scoped_to_source_warehouse() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     const NS2: &str = "aa11bb22cc33dd44ee55ff6600112233";
     let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"XNS_SRC\"";
@@ -543,27 +357,30 @@ async fn clone_equivalent_is_scoped_to_source_warehouse() {
     let raw_epoch = 1_791_320_590_839i64;
 
     // 1) Build SOURCE with logic A in namespace NS (older state).
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
-        1_791_743_740_000,
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_740_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_740_000).runtime(BUILD_MS),
     )
     .await;
 
     // 2) Build the same textual name in a DIFFERENT warehouse namespace NS2.
-    let mut src_ns2 = submit(src, "prod_state_demo", 1_791_743_760_000, raw_epoch, "");
-    src_ns2.table_namespace = Some(NS2.into());
-    execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_760_000))
+            .upstream(RAW, raw_epoch)
+            .namespace(NS2),
+        transient_at(1_791_743_760_000).runtime(BUILD_MS),
+    )
+    .await;
 
     // 3) The original source remains current in NS, so DEV can clone from it.
-    let dev_a = sql
-        .submit_enriched_sql(submit(dev, "dev_clone_demo", 1, raw_epoch, ""))
-        .await
-        .unwrap()
-        .into_inner();
+    let dev_a = clone_probe(dev, DEV_SCHEMA)
+        .own_epoch(Some(1))
+        .upstream(RAW, raw_epoch);
     assert_eq!(
-        response_variant(&dev_a),
+        sc.verdict(dev_a).await,
         "ready_to_clone",
         "a same-named object in another warehouse cannot hide the NS clone source"
     );
@@ -574,11 +391,7 @@ async fn clone_equivalent_is_scoped_to_source_warehouse() {
 #[tokio::test]
 async fn clone_source_logic_inherits_from_requested_warehouse() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut clone = CloneClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
 
     const NS2: &str = "99887766554433221100ffeeddccbbaa";
     let src = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"NSX_SRC\"";
@@ -587,69 +400,46 @@ async fn clone_source_logic_inherits_from_requested_warehouse() {
 
     // 1) Build SOURCE with logic A in namespace NS (older state → records a
     //    namespace logic hash for A under NS).
-    execute_and_confirm(
-        &mut sql,
-        &mut exec,
-        submit(src, "prod_state_demo", 1_791_743_740_000, raw_epoch, ""),
-        1_791_743_740_000,
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .own_epoch(Some(1_791_743_740_000))
+            .upstream(RAW, raw_epoch),
+        transient_at(1_791_743_740_000).runtime(BUILD_MS),
     )
     .await;
 
     // 2) Build different logic under the same textual name in NS2.
-    let mut src_ns2 = submit(
-        src,
-        "prod_state_demo",
-        1_791_743_760_000,
-        raw_epoch,
-        ", 42 as mark",
-    );
-    src_ns2.table_namespace = Some(NS2.into());
-    execute_and_confirm(&mut sql, &mut exec, src_ns2, 1_791_743_760_000).await;
+    sc.build_with(
+        clone_probe(src, PROD_SCHEMA)
+            .sql(&clone_probe_sql(PROD_SCHEMA, ", 42 as mark"))
+            .own_epoch(Some(1_791_743_760_000))
+            .upstream(RAW, raw_epoch)
+            .namespace(NS2),
+        transient_at(1_791_743_760_000).runtime(BUILD_MS),
+    )
+    .await;
 
     // 3) Clone the NS source. The newer NS2 row describes a different object.
-    let clone_resp = clone
-        .register_clone(qc::CloneRequest {
-            target_table: tgt.into(),
-            dialect: "snowflake".into(),
-            default_catalog: "CDO_DEMO_DB".into(),
-            execution_type: 1,
-            clone_source_table: src.into(),
-            clone_source_last_modified_epoch: Some(1_791_743_740_000),
-            clone_source_table_type: Some("TRANSIENT TABLE".into()),
-            table_namespace: Some(NS.into()),
-            labels: [(
-                "dbt_node_unique_id".to_string(),
-                "model.jaffle_shop.clone_probe".to_string(),
-            )]
-            .into_iter()
-            .collect(),
-            ..Default::default()
-        })
+    let clone_resp = sc
+        .register_clone(
+            demo::copy(src, tgt)
+                .source_epoch(1_791_743_740_000)
+                .label("dbt_node_unique_id", CLONE_PROBE),
+        )
         .await
-        .unwrap()
-        .into_inner();
+        .unwrap();
     let ready = clone_resp.ready_to_clone.expect("ready_to_clone");
     assert!(
-        exec.confirm_execution(qc::ConfirmExecutionRequest {
-            request_id: ready.request_id,
-            last_modified_epoch: Some(1_791_743_784_000),
-            table_type: Some("TRANSIENT TABLE".into()),
-            ..Default::default()
-        })
-        .await
-        .unwrap()
-        .into_inner()
-        .success
+        sc.confirm(&ready.request_id, transient_at(1_791_743_784_000))
+            .await
     );
 
     // 4) The cloned target holds logic A from NS and can reuse it.
-    let tgt_a = sql
-        .submit_enriched_sql(submit(tgt, "dev_clone_demo", 1, raw_epoch, ""))
-        .await
-        .unwrap()
-        .into_inner();
+    let tgt_a = clone_probe(tgt, DEV_SCHEMA)
+        .own_epoch(Some(1))
+        .upstream(RAW, raw_epoch);
     assert_eq!(
-        response_variant(&tgt_a),
+        sc.verdict(tgt_a).await,
         "skip_execution",
         "a same-named NS2 object cannot erase the original source's logic"
     );
