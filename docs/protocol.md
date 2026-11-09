@@ -34,7 +34,7 @@ files are Apache-2.0, published by dbt Labs, and vendored in this repo under
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | writes state / deferral | Confirm/Record implemented; deferral implemented (live-verified) |
 | `Clone` | `RegisterClone` | clone decision + DDL | table DDL + lifecycle + `allow_clones=false` rejection (live-verified); non-Snowflake templates unverified |
 | `ClientValidation` | `ValidateClientVersion` | version gate | implemented (true) |
-| `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | human text | empty defaults |
+| `Explain` | `GetExplainMessages` (served), `GetUpstreamDependencyChanges` (stub) | human text | `GetExplainMessages` re-derived on demand; `GetUpstreamDependencyChanges` is an empty, non-asserted stub — the dbt Fusion CLI never calls it (verified by binary inspection of v2.0.6 AND v2.0.11; see below) |
 | `SelectorService` | `GetStateSelection` | state:* selectors | implemented (live-verified) |
 | `ClientTelemetry` | `SubmitTelemetryBatch`, … | metering (dbt Labs only) | not served |
 | `Health` (grpc.health.v1) | `Check`, `Watch` | health | SERVING |
@@ -308,6 +308,39 @@ number of nested clones has been reached"}` (live-verified,
 
 `struct.proto` defines a `Struct`/`Value`/`ListValue` like `google.protobuf.Struct`
 but with `int64` support, used for `execution_results` / telemetry config.
+
+## Explain: `Explain.GetUpstreamDependencyChanges` is CLIENT-UNREACHABLE
+
+The `Explain` service declares two RPCs, but `dbt state explain` only ever calls
+`GetExplainMessages` (the two-phase re-Submit → `GetExplainMessages` flow).
+`GetUpstreamDependencyChanges` NEVER fired across any live capture (#20 happy
+path, #23 clone/deferral, #24 tolerance, #34 history-bearing), and it is not a
+missing command/flag: the dbt Fusion CLI does not contain the call at all.
+
+Evidence — binary inspection of the Fusion client (the traffic generator the
+whole harness depends on), on BOTH versions available to us:
+
+- `dbt 2.0.6` and `dbt 2.0.11`: a raw byte scan of the executable finds **zero**
+  occurrences of `GetUpstreamDependencyChanges` (and zero of the substring
+  `UpstreamDependency`, case-insensitive, including word-split variants). The
+  complete set of embedded `query_cache` gRPC method paths the client calls is:
+  `SQL/{SubmitEnrichedSQL,SubmitEnrichedSQLSpeculative,SubmitValues}`,
+  `Clone/RegisterClone`, `Explain/GetExplainMessages` (the ONLY `Explain`
+  method), `Execution/{ConfirmExecution,RecordExecutions,ResolveDeferredRelations}`,
+  `ClientTelemetry/SubmitTelemetryBatch`, `SelectorService/GetStateSelection`,
+  `ClientValidation/ValidateClientVersion`.
+
+Per the hosted docs, the upstream-dependency-changes narrative is surfaced by the
+**dbt platform "Explain tab"** (hosted UI/backend), not the CLI — so it is
+invoked by a surface that does NOT pass through our recording proxy (which sits
+only in front of the Fusion CLI). It is therefore UNCAPTURABLE with this harness
+by construction, not merely undiscovered.
+
+Our server keeps `GetUpstreamDependencyChanges` as an empty, non-asserted stub
+(`services.rs`), which is correct: no client we can drive calls it, so there is
+no hosted narrative to conform to. If a future surface (platform API, or a CLI
+version that adds the call) is ever observed, re-characterize then — do not
+invent the `UpstreamDependencyChanges` line tree before capture.
 
 ## Coverage
 

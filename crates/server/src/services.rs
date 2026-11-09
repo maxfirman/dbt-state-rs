@@ -1218,8 +1218,15 @@ impl Explain for ExplainService {
         &self,
         _request: Request<qc::GetUpstreamDependencyChangesRequest>,
     ) -> Result<Response<qc::GetUpstreamDependencyChangesResponse>, Status> {
-        // Intentionally an empty, non-asserted stub (ticket #29 AC): the hosted
-        // service's UpstreamDependencyChanges narrative is not yet characterized.
+        // Intentionally an empty, non-asserted stub. The dbt Fusion CLI never
+        // calls this RPC — verified by binary inspection of v2.0.6 AND v2.0.11
+        // (zero occurrences of the method name; the only Explain method the
+        // client embeds is GetExplainMessages). The upstream-dependency-changes
+        // view is a dbt-platform ("Explain tab") surface that does not pass
+        // through the recording proxy, so the hosted narrative is UNCAPTURABLE
+        // with this harness. Do not invent the line tree before a real capture.
+        // See docs/protocol.md § "Explain.GetUpstreamDependencyChanges is
+        // CLIENT-UNREACHABLE" and docs/explain-catalog.md § "Unobserved".
         Ok(Response::new(qc::GetUpstreamDependencyChangesResponse {
             dependency_changes: Vec::new(),
         }))

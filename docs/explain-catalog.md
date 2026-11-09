@@ -261,6 +261,15 @@ future-capture fog item on map #19):
   this enum may be vestigial. `EB_UNSPECIFIED` (0).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
+- **`Explain.GetUpstreamDependencyChanges`** — CLIENT-UNREACHABLE, not merely
+  undiscovered. The dbt Fusion CLI never calls this RPC: a raw byte scan of the
+  client binary (v2.0.6 AND v2.0.11) finds zero occurrences of the method name,
+  and the only `Explain/` method it embeds is `GetExplainMessages`. The
+  upstream-dependency-changes view is a dbt-platform ("Explain tab") surface that
+  does not pass through the recording proxy, so it cannot be captured with this
+  harness. Server keeps it an empty, non-asserted stub; do NOT invent the
+  `UpstreamDependencyChanges` line tree before a real capture exists. See
+  [protocol.md](protocol.md#explain-explaingetupstreamdependencychanges-is-client-unreachable).
 - **Dependency-set change** (`decision::FreshnessEvidence::DependencySetChanged`):
   UNREACHABLE on the characterized hosted version, like `WITHIN_TOLERANCE` above.
   #32 drove three live Snowflake scenarios through the recording proxy to make a
