@@ -1,158 +1,96 @@
 //! DuckDB identity through the production router, including Record/Submit parity.
 mod support;
-use dbt_state_proto::query_cache as qc;
-use qc::{execution_client::ExecutionClient, sql_client::SqlClient};
-use support::{channel, response_variant, start_server};
+use support::legacy::{self, Rows};
+use support::scenario::{model, outcome, Scenario};
+use support::start_server;
 
-fn request(sql: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some("db.dev.target".into()),
-        dialect: "duckdb".into(),
-        table_namespace: Some("one-file-generation".into()),
-        default_catalog: "db".into(),
-        default_schema: Some("dev".into()),
-        execution_type: 1,
-        tolerate_nondeterminism: true,
-        sql: sql.into(),
-        tables: vec![qc::TableModifiedInfo {
-            name: "db.dev.target".into(),
-            last_modified_epoch: Some(100),
-        }],
-        ..Default::default()
-    }
-}
-async fn build(
-    sql: &mut SqlClient<tonic::transport::Channel>,
-    exec: &mut ExecutionClient<tonic::transport::Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-) {
-    let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    let Some(qc::submit_sql_response::Response::ReadyToExecute(ready)) = response.response else {
-        panic!("expected BUILD")
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id: ready.request_id,
-        last_modified_epoch: Some(100),
-        table_type: Some("TABLE".into()),
-        ..Default::default()
-    })
-    .await
-    .unwrap();
-}
-async fn assert_variant(
-    sql: &mut SqlClient<tonic::transport::Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-    expected: &str,
-) {
-    let response = sql.submit_enriched_sql(req).await.unwrap().into_inner();
-    assert_eq!(response_variant(&response), expected);
-}
+const TARGET: &str = "db.dev.target";
 
 #[tokio::test]
 async fn duckdb_formatting_preserves_identifiers_context_configuration_and_bindings() {
     let server = start_server().await;
-    let addr = server.addr;
-    let channel = channel(addr).await;
-    let mut sql = SqlClient::new(channel.clone());
-    let mut exec = ExecutionClient::new(channel);
-    let mut base = request("select id, amount + 1 as \"Output.Name\" from db.dev.input");
-    base.query_dependencies = vec![
-        qc::QueryDependency {
-            name: "db.dev.\"a.b\"".into(),
-            query: "select 1 as id".into(),
-            default_catalog: "db".into(),
-            default_schema: "dev".into(),
-        },
-        qc::QueryDependency {
-            name: "db.\"dev.a\".b".into(),
-            query: "select 2 as id".into(),
-            default_catalog: "db".into(),
-            default_schema: "dev.a".into(),
-        },
+    let sc = Scenario::connect(&server).await;
+    let base = model(TARGET)
+        .without_node_state()
+        .dialect("duckdb")
+        .namespace("one-file-generation")
+        .catalog("db")
+        .schema("dev")
+        .own_epoch(Some(100))
+        .sql("select id, amount + 1 as \"Output.Name\" from db.dev.input")
+        .dependency_in("db.dev.\"a.b\"", "select 1 as id", "db", "dev")
+        .dependency_in("db.\"dev.a\".b", "select 2 as id", "db", "dev.a");
+    sc.build_with(base.clone(), outcome().epoch(100).table())
+        .await;
+    let formatted = base
+        .clone()
+        .sql("SELECT /* safe */ id,\namount + 1 AS \"Output.Name\" FROM db.dev.input")
+        .with(|req| req.query_dependencies[0].query = "SELECT /* dep */ 1 AS id".into());
+    assert_eq!(sc.verdict(formatted).await, "skip_execution");
+    let changed = [
+        base.clone()
+            .with(|req| req.sql = req.sql.replace("+ 1", "+ 2")),
+        base.clone()
+            .with(|req| req.sql = req.sql.replace("Output.Name", "output.name")),
+        base.clone().schema("prod"),
+        base.clone().catalog("another"),
+        base.clone().extra("contract", "changed"),
+        base.clone()
+            .with(|req| req.query_dependencies[0].default_schema = "other".into()),
+        base.clone().with(|req| {
+            let q = req.query_dependencies[0].query.clone();
+            req.query_dependencies[0].query = req.query_dependencies[1].query.clone();
+            req.query_dependencies[1].query = q;
+        }),
+        base.clone()
+            .with(|req| req.query_dependencies[0].name = "db.dev.a.b".into()),
+        base.clone().target("db.prod.target"),
     ];
-    build(&mut sql, &mut exec, base.clone()).await;
-    let mut formatted = base.clone();
-    formatted.sql = "SELECT /* safe */ id,\namount + 1 AS \"Output.Name\" FROM db.dev.input".into();
-    formatted.query_dependencies[0].query = "SELECT /* dep */ 1 AS id".into();
-    assert_variant(&mut sql, formatted, "skip_execution").await;
-    let mut changed = vec![];
-    let mut r = base.clone();
-    r.sql = r.sql.replace("+ 1", "+ 2");
-    changed.push(r);
-    let mut r = base.clone();
-    r.sql = r.sql.replace("Output.Name", "output.name");
-    changed.push(r);
-    let mut r = base.clone();
-    r.default_schema = Some("prod".into());
-    changed.push(r);
-    let mut r = base.clone();
-    r.default_catalog = "another".into();
-    changed.push(r);
-    let mut r = base.clone();
-    r.semantic_extras
-        .insert("contract".into(), "changed".into());
-    changed.push(r);
-    let mut r = base.clone();
-    r.query_dependencies[0].default_schema = "other".into();
-    changed.push(r);
-    let mut r = base.clone();
-    let q = r.query_dependencies[0].query.clone();
-    r.query_dependencies[0].query = r.query_dependencies[1].query.clone();
-    r.query_dependencies[1].query = q;
-    changed.push(r);
-    let mut r = base.clone();
-    r.query_dependencies[0].name = "db.dev.a.b".into();
-    changed.push(r);
-    let mut r = base.clone();
-    r.target_table = Some("db.prod.target".into());
-    r.tables[0].name = "db.prod.target".into();
-    changed.push(r);
     for r in changed {
-        assert_variant(&mut sql, r, "ready_to_execute").await;
+        assert_eq!(sc.verdict(r).await, "ready_to_execute");
     }
 }
 
 #[tokio::test]
 async fn duckdb_dotted_reference_bindings_do_not_collapse_or_swap() {
     let server = start_server().await;
-    let addr = server.addr;
-    let channel = channel(addr).await;
-    let mut sql = SqlClient::new(channel.clone());
-    let mut exec = ExecutionClient::new(channel);
-    let mut base = request("select a.id as id from db.dev.\"a.b\" a cross join db.\"dev.a\".b b");
-    base.query_dependencies = vec![
-        qc::QueryDependency {
-            name: "db.dev.\"a.b\"".into(),
-            query: "select 1 as id".into(),
-            default_catalog: "db".into(),
-            default_schema: "dev".into(),
-        },
-        qc::QueryDependency {
-            name: "db.\"dev.a\".b".into(),
-            query: "select 2 as id".into(),
-            default_catalog: "db".into(),
-            default_schema: "dev.a".into(),
-        },
-    ];
-    build(&mut sql, &mut exec, base.clone()).await;
-    assert_variant(&mut sql, base.clone(), "skip_execution").await;
-    let mut swapped = base.clone();
-    swapped.query_dependencies[0].query = "select 2 as id".into();
-    swapped.query_dependencies[1].query = "select 1 as id".into();
-    assert_variant(&mut sql, swapped, "ready_to_execute").await;
-    let mut split = base;
-    split.sql = split.sql.replace("db.dev.\"a.b\"", "db.\"dev.a\".b");
-    split.query_dependencies.remove(0);
-    assert_variant(&mut sql, split, "ready_to_execute").await;
+    let sc = Scenario::connect(&server).await;
+    let base = model(TARGET)
+        .without_node_state()
+        .dialect("duckdb")
+        .namespace("one-file-generation")
+        .catalog("db")
+        .schema("dev")
+        .own_epoch(Some(100))
+        .sql("select a.id as id from db.dev.\"a.b\" a cross join db.\"dev.a\".b b")
+        .dependency_in("db.dev.\"a.b\"", "select 1 as id", "db", "dev")
+        .dependency_in("db.\"dev.a\".b", "select 2 as id", "db", "dev.a");
+    sc.build_with(base.clone(), outcome().epoch(100).table())
+        .await;
+    assert_eq!(sc.verdict(base.clone()).await, "skip_execution");
+    let swapped = base.clone().with(|req| {
+        req.query_dependencies[0].query = "select 2 as id".into();
+        req.query_dependencies[1].query = "select 1 as id".into();
+    });
+    assert_eq!(sc.verdict(swapped).await, "ready_to_execute");
+    let split = base.with(|req| {
+        req.sql = req.sql.replace("db.dev.\"a.b\"", "db.\"dev.a\".b");
+        req.query_dependencies.remove(0);
+    });
+    assert_eq!(sc.verdict(split).await, "ready_to_execute");
 }
 
 #[tokio::test]
 async fn unsupported_duckdb_syntax_and_implicit_column_names_keep_exact_identity() {
     let server = start_server().await;
-    let addr = server.addr;
-    let channel = channel(addr).await;
-    let mut sql = SqlClient::new(channel.clone());
-    let mut exec = ExecutionClient::new(channel);
+    let sc = Scenario::connect(&server).await;
+    let request = model(TARGET)
+        .without_node_state()
+        .dialect("duckdb")
+        .namespace("one-file-generation")
+        .catalog("db")
+        .schema("dev")
+        .own_epoch(Some(100));
     for text in [
         "select 1 + 2",
         "select sum(amount) as total from input",
@@ -161,68 +99,62 @@ async fn unsupported_duckdb_syntax_and_implicit_column_names_keep_exact_identity
         "select [1, 2] as array",
         "select 1 as id; select 2 as id",
     ] {
-        let base = request(text);
-        build(&mut sql, &mut exec, base.clone()).await;
-        assert_variant(&mut sql, base.clone(), "skip_execution").await;
-        let mut formatted = base;
-        formatted.sql.push_str(" /* unknown semantics */");
-        assert_variant(&mut sql, formatted, "ready_to_execute").await;
+        let base = request.clone().sql(text);
+        sc.build_with(base.clone(), outcome().epoch(100).table())
+            .await;
+        assert_eq!(sc.verdict(base.clone()).await, "skip_execution");
+        let formatted = base.with(|req| req.sql.push_str(" /* unknown semantics */"));
+        assert_eq!(sc.verdict(formatted).await, "ready_to_execute");
     }
 }
 
 #[tokio::test]
 async fn recorded_duckdb_formatting_uses_the_same_identity_as_submission() {
     let server = start_server().await;
-    let addr = server.addr;
-    let channel = channel(addr).await;
-    let mut sql = SqlClient::new(channel.clone());
-    let mut exec = ExecutionClient::new(channel);
-    let base = request("select id, amount + 1 as amount from db.dev.input");
-    exec.record_executions(qc::RecordExecutionsRequest {
-        records: vec![qc::ExecutionRecord {
-            input: Some(qc::execution_record::Input::EnrichedSql(qc::SqlExecution {
-                target_table: base.target_table.clone(),
-                dialect: base.dialect.clone(),
-                table_namespace: base.table_namespace.clone(),
-                default_catalog: base.default_catalog.clone(),
-                default_schema: base.default_schema.clone(),
-                execution_type: base.execution_type,
-                sql: base.sql.clone(),
-                ..Default::default()
-            })),
-            outcome: Some(qc::ExecutionOutcome {
-                last_modified_epoch: Some(100),
-                table_type: Some("TABLE".into()),
-                ..Default::default()
-            }),
-        }],
-    })
-    .await
-    .unwrap();
-    let mut formatted = base;
-    formatted.sql = "SELECT id, /* trivia */ amount + 1 AS amount FROM db.dev.input".into();
-    assert_variant(&mut sql, formatted, "skip_execution").await;
+    let sc = Scenario::connect(&server).await;
+    let base = model(TARGET)
+        .without_node_state()
+        .dialect("duckdb")
+        .namespace("one-file-generation")
+        .catalog("db")
+        .schema("dev")
+        .own_epoch(Some(100))
+        .sql("select id, amount + 1 as amount from db.dev.input");
+    // The record carries the submission's identity inputs but no tables.
+    sc.record([base
+        .clone()
+        .no_tables()
+        .record(outcome().epoch(100).table())])
+        .await
+        .unwrap();
+    let formatted = base.sql("SELECT id, /* trivia */ amount + 1 AS amount FROM db.dev.input");
+    assert_eq!(sc.verdict(formatted).await, "skip_execution");
 }
 
 #[tokio::test]
 async fn old_exact_duckdb_history_cold_misses_after_identity_upgrade() {
     let server = support::start_server().await;
-    let addr = server.addr;
-    let state = server.state.clone();
-    let channel = channel(addr).await;
-    let mut sql = SqlClient::new(channel.clone());
-    let mut exec = ExecutionClient::new(channel);
+    let sc = Scenario::connect(&server).await;
     // Already-canonical SQL isolates version invalidation from formatting.
-    let base = request("SELECT id, amount + 1 AS amount FROM db.dev.input");
-    build(&mut sql, &mut exec, base.clone()).await;
-    assert_variant(&mut sql, base.clone(), "skip_execution").await;
+    let base = model(TARGET)
+        .without_node_state()
+        .dialect("duckdb")
+        .namespace("one-file-generation")
+        .catalog("db")
+        .schema("dev")
+        .own_epoch(Some(100))
+        .sql("SELECT id, amount + 1 AS amount FROM db.dev.input");
+    sc.build_with(base.clone(), outcome().epoch(100).table())
+        .await;
+    assert_eq!(sc.verdict(base.clone()).await, "skip_execution");
     // Frozen b51cca4 exact-byte digest: length-framed v4, duckdb/db/dev,
     // rendered, the SQL above, empty extras and dependencies. This literal
     // does not call today's hashing code with a pretend historical version.
-    sqlx::query("UPDATE executions SET node_sql_hash = $1 WHERE status = 'confirmed'")
-        .bind("5c1424fbf75b4ea08a9b41339bc91c32d063026bdc7919ae85a7470df86b7b4a")
-        .execute(state.store.pool())
-        .await
-        .unwrap();
-    assert_variant(&mut sql, base, "ready_to_execute").await;
+    legacy::rewrite_sql_hash(
+        &server,
+        Rows::Confirmed,
+        "5c1424fbf75b4ea08a9b41339bc91c32d063026bdc7919ae85a7470df86b7b4a",
+    )
+    .await;
+    assert_eq!(sc.verdict(base).await, "ready_to_execute");
 }
