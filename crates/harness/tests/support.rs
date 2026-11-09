@@ -16,6 +16,9 @@ use std::net::SocketAddr;
 use dbt_state_proto::query_cache as qc;
 use tonic::transport::Channel;
 
+/// Request shapes from the live clone captures in the demo database.
+#[path = "support/demo.rs"]
+pub mod demo;
 /// Raw-SQL fault injection (the only DDL tests run against State tables).
 #[path = "support/fault.rs"]
 pub mod fault;
