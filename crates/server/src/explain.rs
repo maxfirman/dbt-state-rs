@@ -4,7 +4,9 @@
 //! decision time. It re-derives it on demand from the persisted `node_decisions`
 //! row keyed by `execution_decision_id`, plus (for the per-upstream freshness
 //! subtree) the shared pure `decision::upstream_freshness` helper so the
-//! decision and its explanation can never drift.
+//! decision and its explanation can never drift. The tree SHAPE is selected
+//! from the persisted decision class, decision reason and anchor (ADR 0006,
+//! [`shape`]); description wording never selects a shape.
 //!
 //! This module is PURE: it takes an already-read `ExplainNode` snapshot and
 //! returns the tree + the `decision_description`. All I/O (the store read) lives
