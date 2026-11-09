@@ -23,8 +23,9 @@ schemas, remote/attached inputs and unsupported syntax use ordinary execution.
 The narrower [RegisterClone incremental contract](duckdb-incremental.md)
 validates template identity before pre-compilation CTAS.
 
-`fingerprint::copy_logic_hash` returns optional eligibility through the shared
-Submit/Record pipeline. It is separate from the warehouse-wide Snowflake
+The Warehouse rules decide eligibility (`Warehouse::copy_identity`, in
+`warehouse/duckdb.rs`), and `fingerprint::copy_logic_hash` frames the eligible
+identity through the shared Submit/Record pipeline. It is separate from the warehouse-wide Snowflake
 namespace capability. DuckDB's new `dbt-state-duckdb-copy-v2` namespace identity
 cannot reinterpret old history. Existing strict DuckDB identities and all
 Snowflake fingerprint bytes remain unchanged. The policy permits two automatic copy hops. Depth is derived from confirmed

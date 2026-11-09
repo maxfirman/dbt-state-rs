@@ -43,8 +43,8 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
 | `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
-| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity and physical warehouse family. The Warehouse rules answer each warehouse-specific Result copy question (DDL, relation checks, copy-chain limit, candidate limit, provenance walk, incremental contract), dispatching to `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
-| `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
+| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity and physical warehouse family. The Warehouse rules answer each warehouse-specific question (fingerprint version tags and namespace identity; Result copy eligibility, DDL, relation checks, copy-chain limit, candidate limit, provenance walk, incremental contract), dispatching to `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
+| `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. It computes identities only; the Warehouse rules choose version tags and decide copy eligibility. |
 | `clone.rs` | Dialect-string entry point to the Warehouse rules' clone DDL. |
 | `services.rs` | gRPC service impls. Submit handlers extract org/metadata, call `submit_decision`, map the outcome to the wire and capture. |
 | `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |

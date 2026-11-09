@@ -191,10 +191,6 @@ impl DuckDbRelation {
         &self.components[2]
     }
 
-    pub fn is_copy_environment(&self) -> bool {
-        matches!(self.schema(), "prod" | "dev")
-    }
-
     pub fn is_state_schema(&self) -> bool {
         self.schema() == "_dbt_state"
     }
