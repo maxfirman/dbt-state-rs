@@ -17,7 +17,7 @@
 //! dialect-specific WORDING must be confined to [`line_vocabulary`] (mirroring
 //! the `warehouse.rs` "Snowflake characterized, others conservative" seam).
 
-use crate::decision::{self, StaleUpstreamPolicy, SubmitContext};
+use crate::decision::{self, DecisionReason, NoCandidate, Reuse};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
@@ -80,6 +80,11 @@ pub struct ExplainNode {
     /// authoritative situation selector (the hosted service recorded exactly
     /// which coexisting SKIP reason applied); the tree is derived independently.
     pub decision_description: Option<String>,
+    /// Persisted decision reason (ADR 0006): what the decision knew about why
+    /// it reused, rebuilt or copied. Selects the tree shape together with the
+    /// class and the anchor. `None` for a row written before the reason was
+    /// persisted (or an unknown stored value): such a row renders no tree.
+    pub reason: Option<DecisionReason>,
     pub is_stale: bool,
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
@@ -215,18 +220,80 @@ fn is_characterized(execution_type: i32, decision: DecisionClass) -> bool {
     }
 }
 
-/// Build the structured tree. Dispatches on decision class + node kind.
+/// The catalogued tree shapes (docs/explain-catalog.md) Explain can render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    /// SKIP (catalog SHAPEs 0/1/2/4, by node kind and upstreams).
+    Skip,
+    /// First build: `table analysis` only.
+    FirstBuild,
+    /// Node-query-changed rebuild (catalog SHAPE 7).
+    QueryChanged,
+    /// Upstream-drift rebuild (catalog SHAPE 9), rendered against the anchor.
+    UpstreamOutdated,
+    /// CLONE (`vs clone` sections).
+    Clone,
+}
+
+/// Select the tree shape from the persisted decision reason, the class and
+/// the anchor (ADR 0006). No description wording is consulted. `None` when
+/// there is nothing to select from: a NULL reason (a row written before the
+/// reason was persisted) or a reason that contradicts the class (no write
+/// produces one).
+fn shape(node: &ExplainNode) -> Option<Shape> {
+    use DecisionReason as R;
+    let reason = node.reason?;
+    Some(match (node.decision, reason) {
+        (DecisionClass::Skip, R::Reused(Reuse::Fresh | Reuse::ToleratedStale)) => Shape::Skip,
+        (DecisionClass::Build, R::FirstBuild) => Shape::FirstBuild,
+        // The OUTDATED subtree is anchor-relative: it renders only when the
+        // matched build is present and re-derives at least one OUTDATED
+        // upstream. Without that the rebuild falls back to SHAPE 7.
+        (DecisionClass::Build, R::UpstreamOutdated) if has_outdated_upstream(node) => {
+            Shape::UpstreamOutdated
+        }
+        (
+            DecisionClass::Build,
+            R::UpstreamOutdated
+            | R::NoReuseCandidate(
+                NoCandidate::IdentityMismatch
+                | NoCandidate::FailedReuseQualification
+                | NoCandidate::IncompleteCachedTestResults,
+            )
+            | R::DependencySetChanged
+            | R::CopyChainLimit,
+        ) => Shape::QueryChanged,
+        // AWAITING HOSTED CAPTURE (#40). A dropped-own-target rebuild and a
+        // rebuild with no build anchor keep today's SHAPE-7 rendering
+        // ("table exists already" + "the model query has changed"), which is
+        // known to be wrong for a dropped target (PR #31 round-3 F6). Their
+        // hosted shapes are unobserved; the distinct persisted reason means a
+        // capture only has to change this arm. See docs/explain-catalog.md
+        // "Known limitation — dropped-own-target rebuild" and ADR 0006.
+        (
+            DecisionClass::Build,
+            R::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) | R::NoBuildAnchor,
+        ) => Shape::QueryChanged,
+        (DecisionClass::Clone, R::ResultCopy) => Shape::Clone,
+        _ => return None,
+    })
+}
+
+/// Build the structured tree: fenced by node kind, then shaped by the
+/// persisted decision reason.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     // F7 fence (PR #31 round 4): never render an invented tree for an
-    // uncharacterized node kind. This subsumes the old data-test-EXECUTE guard
-    // that lived inside `execute_tree`.
+    // uncharacterized node kind (this also fences data-test EXECUTE/CLONE).
     if !is_characterized(node.execution_type, node.decision) {
         return Vec::new();
     }
-    match node.decision {
-        DecisionClass::Skip => skip_tree(node),
-        DecisionClass::Build => execute_tree(node),
-        DecisionClass::Clone => clone_tree(node),
+    match shape(node) {
+        None => Vec::new(),
+        Some(Shape::Skip) => skip_tree(node),
+        Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
+        Some(Shape::QueryChanged) => query_changed_tree(node),
+        Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
+        Some(Shape::Clone) => clone_tree(node),
     }
 }
 
@@ -410,27 +477,17 @@ fn rel_time_line(up: &InputTable) -> String {
 /// Re-derive the per-upstream FRESH/OUTDATED verdicts from the shared pure
 /// helper, but ONLY when the matched `executions` anchor is present (ADR 0005).
 /// Returns None when the anchor is absent (first-build/clone) — the caller then
-/// renders the structural listing with the FRESH default badge.
+/// renders the structural listing with the FRESH default badge. Uses only
+/// persisted evidence: the node decision's kind, target and decision-time
+/// inputs, against the anchor.
 fn anchored_verdicts(node: &ExplainNode) -> Option<Vec<decision::UpstreamVerdict>> {
     let prev = node.anchor.as_ref()?;
-    let ctx = anchored_ctx(node);
-    let f = decision::upstream_freshness(&ctx, prev);
-    Some(f.upstreams)
-}
-
-/// Build the `SubmitContext` the freshness helper needs to re-derive verdicts
-/// against the anchor. Mirrors the decision-time context for the fields the
-/// helper reads (input set, target, execution type); policy is ANY (the helper
-/// returns policy-neutral per-upstream verdicts regardless).
-fn anchored_ctx(node: &ExplainNode) -> SubmitContext<'_> {
-    SubmitContext {
+    let inputs = decision::FreshnessInputs {
         execution_type: node.execution_type,
         input_tables: &node.input_tables,
         target_table: node.target_table.as_deref(),
-        stale_upstream_policy: StaleUpstreamPolicy::Any,
-        target_has_prior_build: true,
-        why_no_candidate: None,
-    }
+    };
+    Some(decision::upstream_freshness(inputs, prev).upstreams)
 }
 
 /// Whether the anchored decision has ANY drifted (OUTDATED) upstream — the
@@ -444,48 +501,10 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
-fn execute_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    // Data-test EXECUTE is UNOBSERVED / unimplemented (explain-catalog.md
-    // "Data test EXECUTE (only SKIP captured)", ~line 222; spec #27 Out-of-Scope).
-    // As of PR #31 round-4 F7 this is now fenced upstream by `is_characterized`
-    // in `explain_lines` (DBT_DATA_TEST allows only Skip), so this branch is
-    // unreachable for a data test. Kept as commented defense-in-depth so the two
-    // places cannot silently disagree; `is_first_build`'s `!is_data_test()`
-    // hardening remains the belt-and-braces guard against the data-test execute
-    // description ("no prior execution") tripping the first-build heuristic.
-    debug_assert!(
-        !node.is_data_test(),
-        "data-test EXECUTE must be fenced by explain_lines::is_characterized before reaching execute_tree"
-    );
-    // First build (no matched anchor and no genuine upstreams recorded against a
-    // prior build): table-analysis-only shape. We distinguish it from the
-    // node-query-changed rebuild by the persisted description wording.
-    if is_first_build(node) {
-        return vec![first_build_table_analysis(node)];
-    }
-    // Upstream-drift EXECUTE (catalog SHAPE 9): the node query is UNCHANGED but
-    // at least one upstream is OUTDATED against the matched build. This is
-    // entirely anchor-driven (ADR 0005 / ticket #30) — re-derivable only when
-    // the matched `executions` row is present and a per-upstream verdict drifted.
-    if has_outdated_upstream(node) {
-        return execute_outdated_tree(node);
-    }
-    // Node-query-changed rebuild (SHAPE 7): table exists, query CHANGED, upstream
-    // queries unchanged, upstream data up to date.
-    //
-    // KNOWN LIMITATION (PR #31 round-3 F6 — DOCUMENTED, not guarded): a
-    // dropped-own-target rebuild with UNCHANGED SQL also lands here and
-    // mis-labels as "table exists already" + "the model query has changed".
-    // Explain has no own-target existence signal and runs no physical probe, and
-    // the dropped-target rebuild persists the SAME generic rebuild description as
-    // a genuine node-query-change (see `decision.rs`
-    // `decision_descriptions_match_hosted_wording`), so it is indistinguishable
-    // from the hosted-characterized SHAPE-7 node-query-changed EXECUTE. Any guard
-    // suppressing it would regress the captured SHAPE-7 fixture; the correct
-    // hosted shape for a dropped-then-rebuilt target is unobserved. Closing it
-    // needs a capture + a persisted own-target existence signal (follow-up). See
-    // docs/explain-catalog.md "Known limitation — dropped-own-target rebuild"
-    // and ADR 0005 "Own-target existence is inferred, not probed".
+/// The node-query-changed rebuild tree (catalog SHAPE 7): table exists, query
+/// CHANGED, upstream queries unchanged, upstream data up to date. See [`shape`]
+/// for the reasons that render it, including the two awaiting capture (#40).
+fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let mut out = vec![table_analysis_exists(node)];
     out.push(query_analysis_changed(node));
     out.push(section(
@@ -564,26 +583,6 @@ fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         ],
     ));
     out
-}
-
-/// A first build renders the table-analysis-only shape. Detected by the
-/// persisted first-build description ("did not exist" / "no prior execution").
-/// Hardened against the data-test execute wording: a data test has no physical
-/// object, so a "first build table analysis" is meaningless for it, and its
-/// pinned description ("...has no prior execution or its query changed") would
-/// otherwise trip the substring heuristic. Guarding on `!is_data_test()` keeps
-/// this robust even if the `execute_tree` data-test guard is later refactored.
-fn is_first_build(node: &ExplainNode) -> bool {
-    !node.is_data_test()
-        && node
-            .decision_description
-            .as_deref()
-            .map(|d| {
-                d.contains("did not exist")
-                    || d.contains("no prior execution")
-                    || d.contains("has no prior")
-            })
-            .unwrap_or(false)
 }
 
 /// First build — `table analysis` only: the table does not exist and there is
@@ -743,6 +742,14 @@ mod tests {
             decision,
             execution_type: et,
             decision_description: Some(desc.into()),
+            reason: Some(match decision {
+                DecisionClass::Skip => DecisionReason::Reused(Reuse::Fresh),
+                // A rebuild whose identity no longer matches (SHAPE 7).
+                DecisionClass::Build => {
+                    DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
+                }
+                DecisionClass::Clone => DecisionReason::ResultCopy,
+            }),
             is_stale: false,
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             clone_source: None,
@@ -900,11 +907,12 @@ mod tests {
 
     #[test]
     fn model_first_build_is_table_analysis_only() {
-        let n = node(
+        let mut n = node(
             DecisionClass::Build,
             ModelExecutionType::Full as i32,
             "model was executed because its table did not exist",
         );
+        n.reason = Some(DecisionReason::FirstBuild);
         let got = render(&n);
         let expected = vec![
             (0, "table analysis («FQN»)".to_string(), None, None),
@@ -1170,6 +1178,182 @@ mod tests {
                     render(&n)
                 );
             }
+        }
+    }
+
+    /// The first-build shape is selected by the persisted reason alone: the
+    /// description wording does not choose a tree (rewording one cannot change
+    /// Explain output).
+    #[test]
+    fn first_build_shape_is_selected_by_reason_not_description() {
+        let first_build_tree = {
+            let mut n = node(
+                DecisionClass::Build,
+                ModelExecutionType::Full as i32,
+                "model was executed because its table did not exist",
+            );
+            n.reason = Some(DecisionReason::FirstBuild);
+            render(&n)
+        };
+        let shape7_tree = render(&node(
+            DecisionClass::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        ));
+        assert_ne!(first_build_tree, shape7_tree);
+
+        // A first build with any wording renders the first-build tree.
+        let mut reworded = node(
+            DecisionClass::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        );
+        reworded.reason = Some(DecisionReason::FirstBuild);
+        assert_eq!(render(&reworded), first_build_tree);
+
+        // A rebuild whose description happens to say "did not exist" or "no
+        // prior execution" is still a rebuild.
+        for desc in [
+            "model was executed because its table did not exist",
+            "model has no prior execution",
+        ] {
+            let n = node(DecisionClass::Build, ModelExecutionType::Full as i32, desc);
+            assert_eq!(render(&n), shape7_tree, "{desc}");
+        }
+    }
+
+    /// Every reason a characterized rebuild can carry selects today's tree.
+    /// The dropped-own-target and no-build-anchor reasons keep SHAPE 7 while
+    /// their hosted shapes await capture (#40). A reason that contradicts the
+    /// class renders nothing.
+    #[test]
+    fn each_decision_reason_selects_todays_shape() {
+        let shape7 = render(&node(
+            DecisionClass::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        ));
+        assert_eq!(shape7[2].1, "query analysis");
+        assert_eq!(shape7[3].1, "the model query has changed");
+        for reason in [
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+            DecisionReason::DependencySetChanged,
+            DecisionReason::NoBuildAnchor,
+            DecisionReason::CopyChainLimit,
+            // Without an anchor the OUTDATED subtree cannot render.
+            DecisionReason::UpstreamOutdated,
+        ] {
+            let mut n = node(
+                DecisionClass::Build,
+                ModelExecutionType::Full as i32,
+                decision::DESC_EXECUTE,
+            );
+            n.reason = Some(reason);
+            assert_eq!(render(&n), shape7, "{reason:?}");
+        }
+
+        for (d, reason) in [
+            (DecisionClass::Skip, DecisionReason::FirstBuild),
+            (DecisionClass::Skip, DecisionReason::ResultCopy),
+            (DecisionClass::Build, DecisionReason::Reused(Reuse::Fresh)),
+            (DecisionClass::Build, DecisionReason::ResultCopy),
+            (DecisionClass::Clone, DecisionReason::Reused(Reuse::Fresh)),
+            (DecisionClass::Clone, DecisionReason::CopyChainLimit),
+        ] {
+            let mut n = node(d, ModelExecutionType::Full as i32, decision::DESC_EXECUTE);
+            n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+            n.reason = Some(reason);
+            assert!(explain_lines(&n).is_empty(), "{d:?} with {reason:?}");
+        }
+
+        // A tolerated-stale reuse renders the same SKIP tree as a fresh one.
+        let skip = |reuse| {
+            let mut n = node(
+                DecisionClass::Skip,
+                ModelExecutionType::Full as i32,
+                decision::DESC_SKIP,
+            );
+            n.reason = Some(DecisionReason::Reused(reuse));
+            render(&n)
+        };
+        assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
+    }
+
+    /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the
+    /// OUTDATED upstream is re-derived from the persisted inputs against the
+    /// matched build.
+    #[test]
+    fn upstream_outdated_with_anchor_is_shape9() {
+        let mut n = node(
+            DecisionClass::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        );
+        n.reason = Some(DecisionReason::UpstreamOutdated);
+        n.input_tables = vec![InputTable {
+            name: "\"DB\".\"S\".\"UP\"".into(),
+            last_modified_epoch: Some(5_000),
+        }];
+        n.anchor = Some(ExecutionRow {
+            id: 7,
+            target_table: "\"DB\".\"S\".\"T\"".into(),
+            execution_type: ModelExecutionType::Full as i32,
+            last_modified_epoch: Some(1_000),
+            input_tables: vec![tbl("\"DB\".\"S\".\"UP\"")],
+            status: "confirmed".into(),
+            ..ExecutionRow::default()
+        });
+        let lines = explain_lines(&n);
+        let query: Vec<&str> = lines[1].children.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            query,
+            [
+                "the model query has not changed",
+                "upstream dependencies",
+                "an upstream model query has changed"
+            ]
+        );
+        let up = &lines[2].children[0].children[0];
+        assert_eq!(up.badge, Some(BADGE_OUTDATED));
+        assert_eq!(
+            up.children[0].text,
+            "updated 4 seconds after \"DB\".\"S\".\"T\" last executed"
+        );
+        assert_eq!(lines[2].children[1].text, "upstream data is outdated");
+    }
+
+    /// A row written before the decision reason was persisted (NULL reason)
+    /// renders an empty tree, the same as an uncharacterized node kind: Explain
+    /// has nothing to select a shape from.
+    #[test]
+    fn null_decision_reason_renders_an_empty_tree() {
+        for (d, desc) in [
+            (DecisionClass::Skip, decision::DESC_SKIP),
+            (
+                DecisionClass::Build,
+                "model was executed because its table did not exist",
+            ),
+            (DecisionClass::Build, decision::DESC_EXECUTE),
+            (
+                DecisionClass::Clone,
+                "an equivalent model exists under another name so we cloned that one",
+            ),
+        ] {
+            let mut n = node(d, ModelExecutionType::Full as i32, desc);
+            n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+            n.reason = None;
+            assert!(
+                explain_lines(&n).is_empty(),
+                "a NULL reason must render nothing for {d:?} ({desc}), got {:?}",
+                render(&n)
+            );
+            assert_eq!(
+                explain_entry(&n).decision_description,
+                desc,
+                "the description is still served"
+            );
         }
     }
 

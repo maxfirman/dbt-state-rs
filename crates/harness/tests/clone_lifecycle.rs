@@ -589,6 +589,69 @@ async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
     );
 }
 
+/// A client-requested copy (RegisterClone) records the Result copy decision
+/// reason, so Explain keeps rendering its CLONE tree (ADR 0006): a NULL reason
+/// would render nothing.
+#[tokio::test]
+async fn register_clone_decision_explains_as_a_clone() {
+    use qc::explain_client::ExplainClient;
+
+    let server = start_server().await;
+    let ch = channel(server.addr).await;
+    let mut clone = CloneClient::new(ch.clone());
+    let prod_epoch = 1_791_743_740_667i64;
+
+    let ready = clone
+        .register_clone(qc::CloneRequest {
+            target_table: DEV.into(),
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            execution_type: 1,
+            clone_source_table: PROD.into(),
+            clone_source_last_modified_epoch: Some(prod_epoch),
+            clone_source_table_type: Some("TRANSIENT TABLE".into()),
+            table_namespace: Some(NS.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .ready_to_clone
+        .expect("ready_to_clone");
+    let edid = ready.execution_decision_id.expect("edid");
+
+    let mut explain = ExplainClient::new(ch);
+    let mut msg = None;
+    for _ in 0..100 {
+        let resp = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![edid.clone()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        if let Some(m) = resp.messages.into_iter().next() {
+            msg = Some(m);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let msg = msg.expect("the RegisterClone decision is explained");
+    let texts: Vec<&str> = msg.explain_lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            format!("table analysis ({DEV})").as_str(),
+            "query analysis (vs clone)",
+            "data freshness analysis (vs clone)",
+        ]
+    );
+    assert_eq!(
+        msg.explain_lines[0].children[1].text,
+        format!("the model table could be cloned from {PROD}")
+    );
+}
+
 /// COMPANION FENCE (PR #31 round-4 F7): the SAME clone-adoption upstream-drift
 /// EXECUTE lifecycle as `clone_adoption_upstream_drift_execute_explain_is_shape9_outdated`,
 /// but driven at `execution_type: 3` (incremental MERGE) — an UNOBSERVED node

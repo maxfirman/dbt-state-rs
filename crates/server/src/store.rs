@@ -555,7 +555,7 @@ impl Store {
             SELECT DISTINCT ON (execution_decision_id)
                    execution_decision_id, decision, execution_type,
                    decision_description, is_stale, target_table, clone_source,
-                   input_tables, matched_execution_id
+                   input_tables, matched_execution_id, decision_reason
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -608,6 +608,9 @@ pub struct ExplainDecisionRow {
     /// The matched prior `executions` row id (NULL when the decision matched no
     /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
     pub matched_execution_id: Option<i64>,
+    /// The decision reason's stored string (ADR 0006); NULL only for a row
+    /// written before it was persisted.
+    pub decision_reason: Option<String>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -615,6 +618,14 @@ pub struct ExplainDecisionRow {
 }
 
 impl ExplainDecisionRow {
+    /// The persisted decision reason. `None` for a NULL or unknown stored
+    /// value, either of which renders no Explain tree.
+    pub fn decision_reason(&self) -> Option<crate::decision::DecisionReason> {
+        self.decision_reason
+            .as_deref()
+            .and_then(crate::decision::DecisionReason::from_stored)
+    }
+
     /// Decode the JSONB `input_tables` column into the typed shape.
     pub fn input_tables(&self) -> Vec<InputTable> {
         serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()
@@ -650,6 +661,7 @@ mod tests {
             clone_source: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
             matched_execution_id: Some(1),
+            decision_reason: Some("reused.fresh".into()),
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),

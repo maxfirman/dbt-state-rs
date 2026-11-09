@@ -77,6 +77,57 @@ pub enum DecisionReason {
     CopyChainLimit,
 }
 
+impl DecisionReason {
+    /// Every decision reason, in declaration order.
+    const ALL: [DecisionReason; 12] = [
+        Self::FirstBuild,
+        Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+        Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+        Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
+        Self::DependencySetChanged,
+        Self::NoBuildAnchor,
+        Self::UpstreamOutdated,
+        Self::Reused(Reuse::Fresh),
+        Self::Reused(Reuse::ToleratedStale),
+        Self::ResultCopy,
+        Self::CopyChainLimit,
+    ];
+
+    /// The stable lowercase string stored in `node_decisions.decision_reason`
+    /// (ADR 0006). Persisted state: never reword an existing value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FirstBuild => "first_build",
+            Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
+                "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::FailedReuseQualification) => {
+                "no_reuse_candidate.failed_reuse_qualification"
+            }
+            Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) => {
+                "no_reuse_candidate.own_target_changed_or_missing"
+            }
+            Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults) => {
+                "no_reuse_candidate.incomplete_cached_test_results"
+            }
+            Self::DependencySetChanged => "dependency_set_changed",
+            Self::NoBuildAnchor => "no_build_anchor",
+            Self::UpstreamOutdated => "upstream_outdated",
+            Self::Reused(Reuse::Fresh) => "reused.fresh",
+            Self::Reused(Reuse::ToleratedStale) => "reused.tolerated_stale",
+            Self::ResultCopy => "result_copy",
+            Self::CopyChainLimit => "copy_chain_limit",
+        }
+    }
+
+    /// The reason a stored [`as_str`](Self::as_str) value names; `None` for
+    /// anything else.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == stored)
+    }
+}
+
 /// The decision class: what the client is told to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecisionKind {
@@ -451,12 +502,37 @@ pub(crate) struct UpstreamFreshness {
     pub drifted: usize,
 }
 
-pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> UpstreamFreshness {
+/// What per-upstream freshness is assessed for, all of it recorded with the
+/// decision: the node kind, its own target and its decision-time inputs. The
+/// Submit decision takes it from its [`SubmitContext`]; Explain takes it from
+/// the persisted node decision, so re-derivation needs no decision policy.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FreshnessInputs<'a> {
+    pub execution_type: i32,
+    pub input_tables: &'a [InputTable],
+    pub target_table: Option<&'a str>,
+}
+
+impl<'a> From<&SubmitContext<'a>> for FreshnessInputs<'a> {
+    fn from(ctx: &SubmitContext<'a>) -> Self {
+        Self {
+            execution_type: ctx.execution_type,
+            input_tables: ctx.input_tables,
+            target_table: ctx.target_table,
+        }
+    }
+}
+
+pub(crate) fn upstream_freshness<'a>(
+    node: impl Into<FreshnessInputs<'a>>,
+    prev: &ExecutionRow,
+) -> UpstreamFreshness {
+    let node: FreshnessInputs<'a> = node.into();
     // No tolerance applies here; see `SubmitContext`.
-    let genuine = |name: &str| ctx.target_table != Some(name);
+    let genuine = |name: &str| node.target_table != Some(name);
 
     // Name-set diff over GENUINE upstreams (the node's own target excluded).
-    let current_names: std::collections::BTreeSet<&str> = ctx
+    let current_names: std::collections::BTreeSet<&str> = node
         .input_tables
         .iter()
         .filter(|t| genuine(&t.name))
@@ -468,7 +544,11 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
         .filter(|t| genuine(&t.name))
         .map(|t| t.name.as_str())
         .collect();
-    let genuine_count = ctx.input_tables.iter().filter(|t| genuine(&t.name)).count();
+    let genuine_count = node
+        .input_tables
+        .iter()
+        .filter(|t| genuine(&t.name))
+        .count();
     // Missing, additional or ambiguous dependency evidence: the recorded run no
     // longer describes this submit's dependency set → safety rebuild. We only
     // need to KNOW the set changed, not WHICH names changed: #32 captured that
@@ -493,7 +573,7 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     // The genuine upstreams to evaluate (own target excluded). A node with none
     // (a source-less model, or a data test with no input freshness) is never
     // stale on this axis — a hash/identity match alone is safe to skip.
-    let genuine_upstreams: Vec<&InputTable> = ctx
+    let genuine_upstreams: Vec<&InputTable> = node
         .input_tables
         .iter()
         .filter(|t| genuine(&t.name))
@@ -513,7 +593,7 @@ pub(crate) fn upstream_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Up
     // A missing own-build epoch means either a data test (which has no physical
     // object and anchors per-upstream on the RECORDED baseline — issue #2
     // finding 1) or an object-producing node we cannot prove fresh.
-    let data_test = ctx.execution_type == ModelExecutionType::DbtDataTest as i32;
+    let data_test = node.execution_type == ModelExecutionType::DbtDataTest as i32;
     let own_build_epoch = match prev.last_modified_epoch {
         Some(epoch) => Some(epoch),
         None if data_test => None, // per-upstream recorded-baseline anchor below
@@ -1619,6 +1699,50 @@ mod tests {
             "model was executed because its table did not exist"
         );
         assert_eq!(first.matched_execution_id, None);
+    }
+
+    /// Every decision reason has one stable lowercase string, the value
+    /// persisted on the node decision, and reads back as itself.
+    #[test]
+    fn decision_reasons_persist_as_stable_strings() {
+        let pinned = [
+            (DecisionReason::FirstBuild, "first_build"),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+                "no_reuse_candidate.identity_mismatch",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+                "no_reuse_candidate.failed_reuse_qualification",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+                "no_reuse_candidate.own_target_changed_or_missing",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
+                "no_reuse_candidate.incomplete_cached_test_results",
+            ),
+            (
+                DecisionReason::DependencySetChanged,
+                "dependency_set_changed",
+            ),
+            (DecisionReason::NoBuildAnchor, "no_build_anchor"),
+            (DecisionReason::UpstreamOutdated, "upstream_outdated"),
+            (DecisionReason::Reused(Reuse::Fresh), "reused.fresh"),
+            (
+                DecisionReason::Reused(Reuse::ToleratedStale),
+                "reused.tolerated_stale",
+            ),
+            (DecisionReason::ResultCopy, "result_copy"),
+            (DecisionReason::CopyChainLimit, "copy_chain_limit"),
+        ];
+        for (reason, stored) in pinned {
+            assert_eq!(reason.as_str(), stored);
+            assert_eq!(DecisionReason::from_stored(stored), Some(reason));
+        }
+        assert_eq!(DecisionReason::from_stored("no_reuse_candidate"), None);
+        assert_eq!(DecisionReason::from_stored("FIRST_BUILD"), None);
     }
 }
 

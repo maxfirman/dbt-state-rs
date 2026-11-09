@@ -8,6 +8,7 @@ mod support;
 
 use dbt_state_proto::query_cache as qc;
 use dbt_state_server::capture::{self, CaptureInput, DecisionKind};
+use dbt_state_server::decision::{DecisionReason, Reuse};
 use dbt_state_server::submit_decision::{self, SubmitOutcome};
 use support::TestDatabase;
 
@@ -68,6 +69,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         resource_type: None,
         execution_type: 1,
         decision: DecisionKind::Skip,
+        decision_reason: DecisionReason::Reused(Reuse::Fresh),
         is_stale: false,
         decision_description: None,
         request_id: None,
