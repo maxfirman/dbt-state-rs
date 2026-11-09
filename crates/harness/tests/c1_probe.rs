@@ -7,7 +7,7 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
+use support::scenario::Scenario;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -75,24 +75,19 @@ async fn c1_config_vs_logic_change_is_characterized() {
 
     // Now MEASURE our server: replay [0]+confirm, then [2] (config-only change).
     let server = support::start_server().await;
-    let addr = server.addr;
-    let ch = support::channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    let mut exec = ExecutionClient::new(sc.channel());
 
     let r0: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[0].request.clone()).unwrap();
-    let resp0 = sql.submit_enriched_sql(r0).await.unwrap().into_inner();
-    let rid = match resp0.response {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(x)) => x.request_id,
-        other => panic!("[0] should execute for us too, got {other:?}"),
-    };
+    // [0] should execute for us too.
+    let rid = sc.execute_id(r0).await;
     support::confirm_captured(&mut exec, &entries, submits[0], rid).await;
 
     // [1] hosted skips; changed dependency representation conservatively builds.
     let r1: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[1].request.clone()).unwrap();
-    let v1 = support::response_variant(&sql.submit_enriched_sql(r1).await.unwrap().into_inner());
+    let v1 = sc.verdict(r1).await;
     assert_eq!(
         v1, "ready_to_execute",
         "dependency representation changes conservatively rebuild"
@@ -101,12 +96,12 @@ async fn c1_config_vs_logic_change_is_characterized() {
     // [2] retains the same dependency representation gap.
     let r2: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[2].request.clone()).unwrap();
-    let v2 = support::response_variant(&sql.submit_enriched_sql(r2).await.unwrap().into_inner());
+    let v2 = sc.verdict(r2).await;
 
     // [3] genuine logic change: both execute (agreement).
     let r3: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(submits[3].request.clone()).unwrap();
-    let v3 = support::response_variant(&sql.submit_enriched_sql(r3).await.unwrap().into_inner());
+    let v3 = sc.verdict(r3).await;
 
     eprintln!(
         "C1 CHARACTERIZATION: [2] config-only real=skip_execution ours={v2}; \

@@ -31,11 +31,8 @@
 mod support;
 
 use dbt_state_harness::diff;
-use dbt_state_proto::query_cache as qc;
-use qc::execution_client::ExecutionClient;
-use qc::sql_client::SqlClient;
-use support::{channel, response_variant, start_server};
-use tonic::transport::Channel;
+use support::scenario::{data_test, outcome, test_results, Scenario};
+use support::start_server;
 
 const FIXTURE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -46,115 +43,34 @@ const TEST_UID: &str = "test.jaffle_shop.dt_test.deadbeef01";
 const PROJECT: &str = "70437463667433";
 const NS: &str = "dt-ns";
 
-/// A data-test (execution_type=8) submit over one upstream `DB.S.DT_UP@epoch`.
-fn test_submit(upstream_epoch: i64) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        // Data tests carry no physical target.
-        target_table: None,
-        dialect: "snowflake".into(),
-        default_catalog: "CDO_DEMO_DB".into(),
-        default_schema: Some("PROD_STATE_DEMO".into()),
-        execution_type: 8,
-        sql: "select * from CDO_DEMO_DB.PROD_STATE_DEMO.DT_UP where amount < 0".into(),
-        tolerate_nondeterminism: true,
-        tables: vec![qc::TableModifiedInfo {
-            name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DT_UP\"".into(),
-            last_modified_epoch: Some(upstream_epoch),
-        }],
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: TEST_UID.into(),
-            project_id: Some(PROJECT.into()),
-            target_name: "prod_demo".into(),
-            node_body_hash: Some("test-body".into()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-/// Confirm a data test the way the client does: NO object epoch, only results.
-async fn confirm_test(exec: &mut ExecutionClient<Channel>, request_id: String) {
-    use qc::value::Kind;
-    let results = qc::Struct {
-        fields: [
-            (
-                "failures".to_string(),
-                qc::Value {
-                    kind: Some(Kind::IntValue(0)),
-                },
-            ),
-            (
-                "should_error".to_string(),
-                qc::Value {
-                    kind: Some(Kind::BoolValue(false)),
-                },
-            ),
-            (
-                "should_warn".to_string(),
-                qc::Value {
-                    kind: Some(Kind::BoolValue(false)),
-                },
-            ),
-        ]
-        .into_iter()
-        .collect(),
-    };
-    exec.confirm_execution(qc::ConfirmExecutionRequest {
-        request_id,
-        last_modified_epoch: None,
-        table_type: None,
-        execution_results: Some(results),
-        ..Default::default()
-    })
-    .await
-    .expect("confirm data test");
-}
-
-async fn submit(sql: &mut SqlClient<Channel>, req: qc::SubmitEnrichedSqlRequest) -> String {
-    response_variant(
-        &sql.submit_enriched_sql(req)
-            .await
-            .expect("submit")
-            .into_inner(),
-    )
-    .to_string()
-}
-
-async fn submit_execute_id(
-    sql: &mut SqlClient<Channel>,
-    req: qc::SubmitEnrichedSqlRequest,
-) -> String {
-    match sql
-        .submit_enriched_sql(req)
-        .await
-        .expect("submit")
-        .into_inner()
-        .response
-    {
-        Some(qc::submit_sql_response::Response::ReadyToExecute(r)) => r.request_id,
-        other => panic!("expected ready_to_execute, got {other:?}"),
-    }
-}
+const UPSTREAM: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"DT_UP\"";
 
 /// End-to-end: a confirmed-passing data test must EXECUTE after its upstream
 /// data changed, and SKIP when the upstream is unchanged.
 #[tokio::test]
 async fn data_test_reruns_when_upstream_data_changed() {
     let server = start_server().await;
-    let addr = server.addr;
-    let ch = channel(addr).await;
-    let mut sql = SqlClient::new(ch.clone());
-    let mut exec = ExecutionClient::new(ch);
+    let sc = Scenario::connect(&server).await;
+    // A data-test (execution_type=8) submit over one upstream `DB.S.DT_UP@epoch`.
+    // Data tests carry no physical target.
+    let test = data_test(TEST_UID)
+        .catalog("CDO_DEMO_DB")
+        .schema("PROD_STATE_DEMO")
+        .sql("select * from CDO_DEMO_DB.PROD_STATE_DEMO.DT_UP where amount < 0")
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo")
+        .body("test-body");
+    let test_submit = |upstream_epoch: i64| test.clone().upstream(UPSTREAM, upstream_epoch);
 
     // Baseline: first build of the test over DT_UP@100, then confirm it with no
-    // object epoch (just like the client).
-    let rid = submit_execute_id(&mut sql, test_submit(100)).await;
-    confirm_test(&mut exec, rid).await;
+    // object epoch, only results (just like the client).
+    sc.build_with(test_submit(100), outcome().results(test_results(0)))
+        .await;
 
     // CONTROL: same upstream epoch -> the hosted service SKIPs (reuses the pass).
     assert_eq!(
-        submit(&mut sql, test_submit(100)).await,
+        sc.verdict(test_submit(100)).await,
         "skip_execution",
         "an unchanged data test (same upstream epoch) must skip"
     );
@@ -162,14 +78,14 @@ async fn data_test_reruns_when_upstream_data_changed() {
     // TREATMENT: the upstream data changed (newer epoch) -> must EXECUTE, NOT
     // reuse the stale cached pass. This is the finding-1 fix.
     assert_eq!(
-        submit(&mut sql, test_submit(200)).await,
+        sc.verdict(test_submit(200)).await,
         "ready_to_execute",
         "a data test must re-run when its tested (upstream) data changed"
     );
 
     // An older-or-equal upstream (clock skew / restore) is still fresh -> skip.
     assert_eq!(
-        submit(&mut sql, test_submit(50)).await,
+        sc.verdict(test_submit(50)).await,
         "skip_execution",
         "an older upstream epoch is not drift"
     );
