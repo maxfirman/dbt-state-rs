@@ -38,6 +38,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. |
 | `history.rs` | Fetches the latest execution in the submit's scope and hands it to `reuse_candidate`. |
 | `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
+| `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone): eligibility, chain limits, DuckDB evidence and DDL. |
 | `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
 | `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
 | `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
@@ -62,7 +63,8 @@ complete cached test results). SQL submit and seed
 submit consume prepared history and execution evidence. The evidence owns identity
 construction and pending-row recording; Record uses the same identity constructors
 and publishes its complete batch with selector/deferral state atomically. Submit retains selector updates, the call to `decide()`,
-cross-target copy selection, pending writes and wire responses. The engine
+the copy lookup, pending writes and wire responses; `result_copy.rs` decides
+whether and how a result is copied. The engine
 compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
 from upstream drift. Freshness drift is an upstream newer than the node's own

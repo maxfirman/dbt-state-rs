@@ -148,10 +148,10 @@ captured hosted responses, but complete hosted equivalence is still not claimed.
 
 `decision::decide` remains pure. Store queries remain organization scoped.
 
-### Reuse candidate module (offline, 2026-11-09)
+### Reuse candidate and Result copy modules (offline, 2026-11-09)
 
-Refactor of `history.rs` and `store/history.rs` into the pure
-`reuse_candidate.rs` module. Every fixture and existing
+Refactor of `history.rs`, `store/history.rs` and `services.rs` into the pure
+`reuse_candidate.rs` and `result_copy.rs` modules. Every fixture and existing
 assertion is unchanged; the rows below are the intentional behaviour changes.
 None was characterized against the hosted service.
 
@@ -160,6 +160,7 @@ None was characterized against the hosted service.
 | **Clone-adoption input substitution is limited to RegisterClone copies** (clone-origin, no rendered identity, no recorded inputs). An adopted SQL-submit-fallback copy that recorded an EMPTY input list now rebuilds (`DependencySetChanged`) when the later submit has genuine upstreams; before, the current inputs were substituted and it could SKIP. | Such a copy recorded its submit's inputs, so an empty list means "no upstreams", not "nothing recorded". The decision and `ExplainDecisionRow::anchor` previously applied different guards; both now call one rule, so the explanation cannot disagree with the decision. Conservative: only rebuilds more. **Open question:** the hosted outcome for this case is UNOBSERVED; a capture needs a fallback copy of a source-less model followed by a submit with an upstream. | `reuse_candidate::adopt_current_inputs`; `reuse_candidate.rs::sql_submit_copy_with_no_recorded_upstreams_rebuilds_when_upstreams_appear`; `store.rs::explain_anchor_applies_the_decision_input_rule` |
 | Corrupt `input_tables` JSON on a current row that is not selected as a reuse candidate is ignored; it could previously return INTERNAL. Corrupt cached results on a strict match still return INTERNAL. | One fetch replaces three reads; evidence is decoded only for the selected row. | `store::LatestExecution::into_row` |
 | Data-test submits no longer query target existence. | It never affects a data test's response. | `decision.rs::data_test_execute_ignores_target_existence` |
+| A submit-path equivalent with no copy DDL now logs a warning before the ordinary decision. | Previously a silent fallthrough. | `result_copy::SubmitCopyPlan::Unavailable` |
 
 ## Compatibility and upgrade effects
 

@@ -4,8 +4,10 @@ use tonic::{Request, Response, Status};
 
 use crate::decision::{self, SubmitContext, Verdict};
 use crate::execution::{record_node_state, store_status as db_err};
-use crate::history::namespace;
 use crate::query_cache as qc;
+use crate::result_copy::{
+    RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection, SubmitCopyPlan,
+};
 use crate::AppState;
 
 use qc::client_validation_server::ClientValidation;
@@ -20,10 +22,6 @@ const DECISION_READY_TO_EXECUTE: i32 = 1;
 
 // ModelExecutionType::VALUES (struct.proto).
 const EXECUTION_TYPE_VALUES: i32 = 9;
-
-// ModelExecutionType::DBT_DATA_TEST (shared.proto). Test nodes are keyed by
-// node_unique_id, not target_table/node_body_hash (which collide across tests).
-const EXECUTION_TYPE_DBT_DATA_TEST: i32 = 8;
 
 /// Build a SKIP (no-op) SubmitSQLResponse, echoing the previously recorded
 /// runtime (if any) just like the hosted service.
@@ -492,9 +490,7 @@ impl Sql for SqlService {
             .map_err(db_err)?;
         let row = evidence.row();
         let node_body_hash = &row.node_body_hash;
-        let ns_logic_hash = &row.node_namespace_logic_hash;
         let input_tables = &row.input_tables;
-        let table_namespace = namespace(req.table_namespace.as_deref());
         let ctx = SubmitContext {
             execution_type,
             input_tables,
@@ -506,96 +502,28 @@ impl Sql for SqlService {
         };
         let verdict = decision::decide(&ctx, candidate.as_ref());
 
-        // SQL-SUBMIT CROSS-NAME CLONE FALLBACK. When we would EXECUTE (no reuse
-        // match) but an EQUIVALENT model (same namespace + schema-abstracted
-        // logic) was already built under a DIFFERENT physical name, the hosted
-        // service answers `ready_to_clone` to clone that equivalent into this
-        // target ("an equivalent model exists under another name so we cloned
-        // that one"). VERIFIED LIVE (experiments/clone_experiment.sh table
-        // materialization; golden/fixtures/clone_submit_equivalent_fallback.jsonl).
-        // Gated to real-SQL submits with a known namespace logic identity, no
-        // confirmed reuse candidate, and not seeds/data tests.
-        //
-        // allow_clones=false: the client encodes a clone-forbidding target as
-        // `clone_chain_depth_limit = 0` on the SUBMIT (NOT via `allow_clones`,
-        // which stays unset — VERIFIED LIVE, experiments/clone_experiment.sh
-        // table --no-clones). When an equivalent WOULD be cloned but clones are
-        // forbidden, the hosted service does NOT emit a generic execute: it
-        // returns `ready_to_execute` with skip_rejection_reason=1
-        // (TARGET_TABLE_MISMATCH), clone_rejection_reason=10
-        // (CLONE_CHAIN_LIMIT_EXCEEDED) and the description below. We reproduce
-        // that exact shape (fixture clone_submit_allow_clones_false.jsonl).
-        let clones_forbidden =
-            req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
-        // When volatile evaluation is requested (`tolerate_nondeterminism=false`,
-        // i.e. `evaluate_volatile_sql=true`), the model's output depends on a
-        // nondeterministic expression (e.g. current_timestamp()), so a clone of
-        // an existing equivalent would serve a DIFFERENT evaluated value. VERIFIED
-        // LIVE (experiments/clone_eligibility.sh volatile,
-        // golden/fixtures/clone_fallback_volatile.jsonl): with a genuinely
-        // volatile model the hosted service does NOT clone — it EXECUTES
-        // (srr=6). The cross-name fallback is therefore gated on
-        // When volatile evaluation is requested (`tolerate_nondeterminism=false`,
-        // i.e. `evaluate_volatile_sql=true`) AND the SQL genuinely contains a
-        // volatile function (e.g. current_timestamp()), a clone of an existing
-        // equivalent would serve a DIFFERENT evaluated value, so the hosted
-        // service EXECUTES instead of cloning. VERIFIED LIVE: with a genuinely
-        // volatile model hosted does NOT clone (srr=6)
-        // (experiments/clone_eligibility.sh volatile,
-        // golden/fixtures/clone_fallback_volatile.jsonl), but with a
-        // DETERMINISTIC model carrying the same flag (tnd=false) hosted DOES
-        // clone ("an equivalent model exists under another name…")
-        // (experiments/clone_eligibility.sh volatile_det, review #2 4th
-        // follow-up P1 #3). So the suppression is gated on the SQL ACTUALLY being
-        // volatile — the earlier blanket `tolerate_nondeterminism` gate was too
-        // broad and wrongly suppressed clones for deterministic models. This is a
-        // CONSERVATIVE fallback keyed on a documented volatile-function set
-        // (sql_norm::VOLATILE_FUNCTIONS), NOT full volatile-evaluation
-        // conformance (the hosted `transformed_nodes_by_query` runtime values
-        // remain unimplemented — see golden/replay_gaps.json). The volatility
-        // check inspects the ROOT SQL **and every supplied dependency
-        // definition** (a view body `select current_timestamp()` makes the
-        // consumer nondeterministic even if its own SQL is deterministic), via a
-        // PARSE-based detector (no raw-text substring scan, so a clock keyword in
-        // a comment or string literal is not a false positive). Review #2 5th
-        // follow-up P1 #3.
-        let volatile_blocks_clone = !(req.dialect == "duckdb" && ns_logic_hash.is_some())
-            && !req.tolerate_nondeterminism
-            && crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
-                &req.sql,
-                req.query_dependencies.iter().map(|d| d.query.as_str()),
-            );
-        if candidate.is_none()
-            && !volatile_blocks_clone
-            && execution_type != EXECUTION_TYPE_DBT_DATA_TEST
-            && execution_type != EXECUTION_TYPE_VALUES
-        {
-            if let (Some(ns_hash), Some(ns)) = (ns_logic_hash.as_deref(), table_namespace) {
-                if let Some(eq) = self
-                    .0
-                    .store
-                    .find_clone_equivalent(
-                        &org_id,
-                        ns,
-                        ns_hash,
-                        execution_type,
-                        &target_table,
-                        &req.dialect,
-                    )
-                    .await
-                    .map_err(db_err)?
-                {
-                    // An equivalent exists under another name. If the target
-                    // forbids clones, suppress the clone and emit the hosted
-                    // CLONE_CHAIN_LIMIT_EXCEEDED execute shape; otherwise clone.
-                    if clones_forbidden
-                        || (req.dialect.eq_ignore_ascii_case("duckdb")
-                            && eq.duckdb_copy_depth
-                                >= req.clone_chain_depth_limit.unwrap_or(2).min(2) as usize)
-                    {
+        // RESULT COPY FALLBACK (see `result_copy`): with no reuse candidate, an
+        // equivalent model already built under another name is copied in.
+        if let Some(lookup) = crate::result_copy::submit_lookup(&req, row, candidate.is_some()) {
+            let equivalent = self
+                .0
+                .store
+                .find_clone_equivalent(
+                    &org_id,
+                    lookup.table_namespace,
+                    lookup.node_namespace_logic_hash,
+                    lookup.execution_type,
+                    lookup.exclude_target,
+                    &req.dialect,
+                )
+                .await
+                .map_err(db_err)?;
+            if let Some(equivalent) = equivalent {
+                match crate::result_copy::plan_submit(&req, equivalent) {
+                    SubmitCopyPlan::ChainLimitExecute => {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
-                        // Persist an ordinary (non-clone) pending row so the
+                        // Persist an ordinary (non-copy) pending row so the
                         // forthcoming ConfirmExecution records the normal build.
                         evidence
                             .write_pending(&self.0.store, &request_id, &execution_decision_id, None)
@@ -612,22 +540,12 @@ impl Sql for SqlService {
                         capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
                     }
-                    if let Ok(clone_sqls) = crate::clone::clone_sqls_with_properties(
-                        &req.dialect,
-                        &eq.source_table,
-                        &target_table,
-                        eq.table_type.as_deref(),
-                        req.clone_table_properties.as_ref(),
-                    )
-                    .and_then(|sqls| {
-                        if req.dialect.eq_ignore_ascii_case("duckdb")
-                            && eq.last_modified_epoch.is_none()
-                        {
-                            Err("DuckDB source requires recorded physical evidence")
-                        } else {
-                            Ok(sqls)
-                        }
-                    }) {
+                    SubmitCopyPlan::Copy {
+                        source_table,
+                        clone_sqls,
+                        source_last_modified_epoch,
+                        source_execution_runtime_ms,
+                    } => {
                         let request_id = new_uuid_v7();
                         let execution_decision_id = new_uuid_v7();
                         // Persist a pending row keyed on the submit target so the
@@ -638,22 +556,28 @@ impl Sql for SqlService {
                                 &self.0.store,
                                 &request_id,
                                 &execution_decision_id,
-                                Some(&eq.source_table),
+                                Some(&source_table),
                             )
                             .await
                             .map_err(db_err)?;
-
                         let response = submit_ready_to_clone_response(
                             request_id,
                             clone_sqls,
-                            eq.source_table.clone(),
+                            source_table,
                             target_table.clone(),
-                            eq.last_modified_epoch,
-                            eq.execution_runtime_ms,
+                            source_last_modified_epoch,
+                            source_execution_runtime_ms,
                             execution_decision_id,
                         );
                         capture_submit(&self.0, &cap_meta, &req, &response, input_tables, None);
                         return Ok(Response::new(response));
+                    }
+                    SubmitCopyPlan::Unavailable { reason } => {
+                        tracing::warn!(
+                            target = %target_table,
+                            reason,
+                            "equivalent found but no result copy is available; using the ordinary decision"
+                        );
                     }
                 }
             }
@@ -928,105 +852,67 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
-        // allow_clones=false: the Fusion client encodes a target that disallows
-        // clones as `clone_chain_depth_limit = 0`. VERIFIED LIVE: the hosted
-        // service answers `unable_to_clone` with clone_rejection_reason=10
-        // (CLONE_CHAIN_LIMIT_EXCEEDED) and decision=READY_TO_EXECUTE, writes no
-        // pending history, and leaves the deprecated oneof empty. The client then
-        // builds the node normally.
-        if req.clone_chain_depth_limit == Some(0) {
-            tracing::info!(
-                source = %req.clone_source_table,
-                target = %req.target_table,
-                "clone rejected: clone_chain_depth_limit=0 (allow_clones=false)"
-            );
-            return Ok(Response::new(unable_to_clone_response(
+        // Plan the client-requested copy (see `result_copy`): reject ineligible
+        // requests before any read, fetch the history the plan needs, then plan.
+        let refuse = |refusal| match refusal {
+            RegisterRefusal::Reject(rejection) => Ok(Response::new(unable_to_clone_response(
                 req.clone_source_table.clone(),
                 req.target_table.clone(),
-                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
-            )));
-        }
-
-        // Unlike Snowflake, DuckDB accepts this pre-compilation path only for
-        // the pinned incremental contract and a physically current source.
-        // The later SQL submit still must match the inherited logic/config hash.
-        let duckdb = crate::warehouse::Warehouse::from_dialect(&req.dialect)
-            == crate::warehouse::Warehouse::DuckDb;
-        let duckdb_source_logic = if duckdb {
-            match (
-                req.execution_type,
-                namespace(req.table_namespace.as_deref()),
-                req.clone_source_last_modified_epoch,
-                req.labels.get("duckdb_incremental_identity"),
-            ) {
-                (5, Some(ns), Some(epoch), Some(identity))
-                    if req
-                        .labels
-                        .get("duckdb_incremental_contract")
-                        .map(String::as_str)
-                        == Some("delete-insert-fixed-v1")
-                        && identity.starts_with("duckdb-incremental-init-v2:")
-                        && req.clone_source_table_type.as_deref() == Some("DUCKDB CTAS TABLE") =>
-                {
-                    self.0
-                        .store
-                        .find_duckdb_incremental_source(
-                            &org_id,
-                            &req.clone_source_table,
-                            ns,
-                            epoch,
-                            identity,
-                        )
-                        .await
-                        .map_err(db_err)?
-                }
-                _ => None,
-            }
-        } else {
-            None
+                match rejection {
+                    RegisterRejection::ChainLimitExceeded => REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+                    RegisterRejection::ForcedNotEligible => REJECTION_FORCED_NOT_ELIGIBLE,
+                },
+            ))),
+            RegisterRefusal::Unsupported(reason) => Err(Status::unimplemented(reason)),
         };
-        if duckdb && duckdb_source_logic.is_none() {
-            return Ok(Response::new(unable_to_clone_response(
-                req.clone_source_table.clone(),
-                req.target_table.clone(),
-                REJECTION_FORCED_NOT_ELIGIBLE,
-            )));
-        }
+        let history = match crate::result_copy::register_lookup(&req) {
+            Err(refusal) => {
+                if refusal == RegisterRefusal::Reject(RegisterRejection::ChainLimitExceeded) {
+                    tracing::info!(
+                        source = %req.clone_source_table,
+                        target = %req.target_table,
+                        "clone rejected: clone_chain_depth_limit=0 (allow_clones=false)"
+                    );
+                }
+                return refuse(refusal);
+            }
+            Ok(RegisterLookup::DuckDbIncrementalSource {
+                source,
+                table_namespace,
+                last_modified_epoch,
+                identity,
+            }) => RegisterHistory::DuckDbIncrementalSource(
+                self.0
+                    .store
+                    .find_duckdb_incremental_source(
+                        &org_id,
+                        source,
+                        table_namespace,
+                        last_modified_epoch,
+                        identity,
+                    )
+                    .await
+                    .map_err(db_err)?,
+            ),
+            Ok(RegisterLookup::SourceLogic {
+                source,
+                table_namespace,
+            }) => RegisterHistory::SourceLogic(
+                self.0
+                    .store
+                    .find_source_ns_logic_hash(&org_id, source, table_namespace, &req.dialect)
+                    .await
+                    .map_err(db_err)?,
+            ),
+            Ok(RegisterLookup::Nothing) => RegisterHistory::Nothing,
+        };
+        let plan = match crate::result_copy::plan_register(&req, history) {
+            Ok(plan) => plan,
+            Err(refusal) => return refuse(refusal),
+        };
+        let clone_sqls = plan.clone_sqls;
         let request_id = new_uuid_v7();
         let execution_decision_id = new_uuid_v7();
-
-        let clone_sqls = crate::clone::clone_sqls_with_properties(
-            &req.dialect,
-            &req.clone_source_table,
-            &req.target_table,
-            req.clone_source_table_type.as_deref(),
-            req.table_properties.as_ref(),
-        )
-        .map_err(Status::unimplemented)?;
-
-        // Inherit the clone SOURCE's schema-abstracted logic identity so a later
-        // submit for the clone TARGET can match it (the cloned object has the
-        // source's logic). Looked up by the source's physical name within the
-        // same namespace. If the source was never recorded here, the clone row
-        // carries no logic identity and a later submit falls back to EXECUTE
-        // (safe: we never skip without proven logic equivalence).
-        let inherited_ns_logic = if duckdb {
-            duckdb_source_logic.flatten()
-        } else if crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse()
-        {
-            self.0
-                .store
-                .find_source_ns_logic_hash(
-                    &org_id,
-                    &req.clone_source_table,
-                    namespace(req.table_namespace.as_deref()),
-                    &req.dialect,
-                )
-                .await
-                .map_err(db_err)?
-        } else {
-            None
-        };
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
@@ -1034,7 +920,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             &self.0.store,
             &org_id,
             &req,
-            inherited_ns_logic,
+            plan.inherited_ns_logic,
             &request_id,
             &execution_decision_id,
         )
@@ -1098,8 +984,8 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             execution_decision_id,
         );
 
-        if duckdb {
-            ready.clone_required_last_modified_epoch = req.clone_source_last_modified_epoch;
+        if plan.required_source_epoch.is_some() {
+            ready.clone_required_last_modified_epoch = plan.required_source_epoch;
         }
 
         // The real CloneResponse populates both the new `ready_to_clone` field
