@@ -1,12 +1,19 @@
 //! Execution evidence and publication shared by Submit, Record and result copies.
-//! Keep identity construction here; history selects candidates, decision remains pure,
-//! and the gRPC adapter owns wire responses. Submit selector writes are best effort;
-//! Record publishes its complete batch and selector state in one transaction.
+//! Keep identity construction here; `submit_decision` selects candidates and writes
+//! Submit's pending rows (its selector writes are best effort), decision remains
+//! pure, and the gRPC adapter owns wire responses. Record publishes its complete
+//! batch and selector state in one transaction.
 
 use crate::query_cache as qc;
 use crate::store::{ConfirmedExecution, InputTable, PendingExecution, Store};
 use crate::AppState;
 use tonic::Status;
+
+/// A blank `table_namespace` is read as absent when scoping State history
+/// lookups.
+pub(crate) fn namespace(value: Option<&str>) -> Option<&str> {
+    value.filter(|s| !s.is_empty())
+}
 
 /// Older clients publish identity only in labels.
 fn node_unique_id(
@@ -225,7 +232,7 @@ pub(crate) async fn register_copy(
 /// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
 /// or `None` when the node_state lacks the scope keys (project_id/target_name/
 /// node_unique_id) the selector needs. Pure — performs no I/O.
-fn node_state_upsert(
+pub(crate) fn node_state_upsert(
     org_id: &str,
     node_state: Option<&qc::DbtNodeState>,
     target_table: Option<&str>,
@@ -251,35 +258,6 @@ fn node_state_upsert(
         // tests) record NULL and are not deferrable.
         target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
     })
-}
-
-/// Record a node's comparison state for `state:*` selectors from a submitted
-/// `dbt_node_state` (latest wins). CHARACTERIZED LIVE: the hosted service
-/// records the client-supplied hashes verbatim on every Submit/Record — keyed
-/// by the logical (org, project_id, target env, node_unique_id) — regardless of
-/// the SKIP/EXECUTE verdict, and the selector compares against them (see
-/// `selector.rs`, migration 0009). A no-op when the node_state lacks the scope
-/// keys (target_name/project_id) the selector needs; the executions decision
-/// ledger is unaffected.
-pub(crate) async fn record_node_state(
-    state: &AppState,
-    org_id: &str,
-    node_state: Option<&qc::DbtNodeState>,
-    target_table: Option<&str>,
-) {
-    let Some(upsert) = node_state_upsert(org_id, node_state, target_table) else {
-        return;
-    };
-    if let Err(e) = state.store.upsert_node_state(&upsert).await {
-        // Recording selector state must never fail the decision path. Count the
-        // failure so it is observable (metric/alert) rather than silently lost:
-        // the execution ledger may advance while `state:*` selectors read a
-        // stale baseline, and that divergence must be measurable in deployment.
-        state
-            .selector_write_failures
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::warn!(error = %e, "failed to record node state for selectors");
-    }
 }
 
 pub(crate) async fn record_batch(

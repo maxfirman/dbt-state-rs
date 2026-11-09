@@ -413,7 +413,7 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
 /// freshness-driven EXECUTE must re-derive the SAME per-upstream freshness
 /// verdicts the DECISION used, not the raw (empty) clone-origin anchor.
 ///
-/// `history::prepare_sql` adopts a clone-origin row whose recorded `input_tables`
+/// `reuse_candidate::for_model` adopts a clone-origin row whose recorded `input_tables`
 /// is EMPTY by substituting the submit's CURRENT upstreams in memory (so the
 /// freshness check compares each upstream against the clone's own build epoch).
 /// That normalization is NOT persisted. Before the store fix, the explain path
@@ -432,7 +432,7 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
 /// clone-adoption normalization, passes after.
 ///
 /// The adopting lifecycle runs at `execution_type: 1` (FULL / table model), NOT
-/// incremental MERGE (type 3). Clone adoption in `history::prepare_sql` is
+/// incremental MERGE (type 3). Clone adoption in `reuse_candidate::for_model` is
 /// type-agnostic (it keys on clone-origin provenance + schema-abstracted logic
 /// identity, never on the execution_type), so a FULL model adopts the
 /// clone-origin row via the identical path — and FULL is a kind F7's

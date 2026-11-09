@@ -77,7 +77,7 @@ pub(crate) fn submit_lookup<'a>(
         return None;
     }
     Some(EquivalentLookup {
-        table_namespace: crate::history::namespace(req.table_namespace.as_deref())?,
+        table_namespace: crate::execution::namespace(req.table_namespace.as_deref())?,
         node_namespace_logic_hash: ns_logic_hash?,
         execution_type: req.execution_type,
         exclude_target: req.target_table.as_deref().unwrap_or_default(),
@@ -242,7 +242,7 @@ pub(crate) fn register_lookup(
     if warehouse == Warehouse::DuckDb {
         return match (
             req.execution_type,
-            crate::history::namespace(req.table_namespace.as_deref()),
+            crate::execution::namespace(req.table_namespace.as_deref()),
             req.clone_source_last_modified_epoch,
             req.labels.get("duckdb_incremental_identity"),
         ) {
@@ -271,7 +271,7 @@ pub(crate) fn register_lookup(
     if warehouse.supports_namespace_reuse() {
         return Ok(RegisterLookup::SourceLogic {
             source: &req.clone_source_table,
-            table_namespace: crate::history::namespace(req.table_namespace.as_deref()),
+            table_namespace: crate::execution::namespace(req.table_namespace.as_deref()),
         });
     }
     Ok(RegisterLookup::Nothing)

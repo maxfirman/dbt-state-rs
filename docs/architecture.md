@@ -36,7 +36,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
 | `store.rs` | Postgres writes via sqlx: pending→confirmed lifecycle and atomic batch publication. |
 | `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. |
-| `history.rs` | Fetches the latest execution in the submit's scope and hands it to `reuse_candidate`. |
+| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, id minting and the pending-row write) and returns one `SubmitOutcome`. |
 | `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone): eligibility, chain limits, DuckDB evidence and DDL. |
 | `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
@@ -46,7 +46,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity, clone eligibility and physical warehouse family. |
 | `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. |
 | `clone.rs` | Dialect-aware clone-DDL generation. |
-| `services.rs` | gRPC service impls binding the store + decision engine to the wire. |
+| `services.rs` | gRPC service impls. Submit handlers extract org/metadata, call `submit_decision`, map the outcome to the wire and capture. |
 | `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |
 | `main.rs` | Binary: connect, migrate, serve. |
 
@@ -56,15 +56,20 @@ so tests exercise the exact same wiring as production.
 ### Decision engine and persistence
 
 `decide(ctx, confirmed) -> Verdict` stays pure, and so does the reuse candidate
-selection that feeds it. `history.rs` makes one scoped store read and
-`reuse_candidate.rs` decides, on that row alone, whether it matches the
+selection that feeds it. `submit_decision.rs` owns a whole submit: it records
+the node's selector state (best effort), makes one scoped store read and lets
+`reuse_candidate.rs` decide, on that row alone, whether it matches the
 submit's identity and passes reuse qualification (physical target evidence or
-complete cached test results). SQL submit and seed
-submit consume prepared history and execution evidence. The evidence owns identity
-construction and pending-row recording; Record uses the same identity constructors
-and publishes its complete batch with selector/deferral state atomically. Submit retains selector updates, the call to `decide()`,
-the copy lookup, pending writes and wire responses; `result_copy.rs` decides
-whether and how a result is copied. The engine
+complete cached test results). A Result copy is considered only when there is
+no reuse candidate, and when one applies it overrides the verdict;
+`result_copy.rs` decides whether and how a result is copied. Otherwise the
+module calls `decide()`. It mints the request and execution decision ids,
+writes the pending row and returns a `SubmitOutcome` (Skip, Execute, Copy or
+the chain-limit Execute) carrying the matched execution, the Explain freshness
+anchor. SQL and seed submits share that tail. The handlers map the outcome to
+the wire and capture it. Execution evidence owns identity construction and
+pending-row contents; Record uses the same identity constructors and publishes
+its complete batch with selector/deferral state atomically. The engine
 compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
 from upstream drift. Freshness drift is an upstream newer than the node's own
@@ -83,8 +88,8 @@ decided on that row by `reuse_candidate.rs`, so an older row can never be
 resurrected after a later build. Cached results and recorded inputs are decoded
 only once the row is selected: result-serving matches still report corrupt
 results as an internal error, while adoption and non-matching rows ignore them.
-Preparation returns database errors for submit to translate to the existing wire
-error. `services::sql_execution` remains a public re-export for upgrade tests.
+The Submit decision module returns database errors for the handler to
+translate to the existing wire error. `services::sql_execution` remains a public re-export for upgrade tests.
 
 `fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
 mode), dialect/default context, sorted semantic extras and supplied dependency

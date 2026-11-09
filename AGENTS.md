@@ -12,7 +12,8 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 ## Layout
 - `crates/proto` — generated tonic stubs (server+client) from `proto/`.
 - `crates/server` — the server: `decision.rs` (pure engine), `store.rs` (sqlx),
-  `warehouse.rs` (dialect policy), `clone.rs` (DDL gen), `services.rs` (gRPC),
+  `warehouse.rs` (dialect policy), `clone.rs` (DDL gen), `submit_decision.rs`
+  (how one submit is decided), `services.rs` (gRPC),
   `lib.rs` (`build_router`), `main.rs`.
 - `crates/harness` — recording proxy, golden fixtures, differential + fuzz tools, tests.
 - `crates/ui` — optional read-only web console.

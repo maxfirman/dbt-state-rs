@@ -26,6 +26,9 @@ the schema. Cleanup also runs on assertion panics and failed server startup;
 a separate cleanup runtime makes this work with current-thread Tokio tests.
 Row assertions use the owner's already-scoped pool. The generated runner uses
 `TestDatabase` for the same schema ownership while retaining its production binary.
+Module-level tests that need no gRPC server (`submit_decision.rs`) take server
+state from `TestDatabase::state` and call the server module directly; the
+database owner must outlive that state.
 
 Fixed real-dbt cases use `server.python_project(...)` to own their temporary files
 and shared process configuration. Successful projects are removed; a panic or
