@@ -2,24 +2,22 @@
 //! prevents concatenation ambiguity; unknown dialects retain exact SQL bytes.
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
+use crate::warehouse::{NamespaceIdentity, Warehouse};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 fn normalized(dialect: &str, sql: &str) -> String {
-    crate::warehouse::Warehouse::from_dialect(dialect).normalized_sql(sql)
+    Warehouse::from_dialect(dialect).normalized_sql(sql)
 }
 
 /// Schema-abstracted normalization for the cross-environment (namespace-scoped)
 /// logic identity. The SAME model built in different environments differs only
 /// in the physical schema qualifier of its three-part names; abstracting that
 /// yields a shared identity (verified live — see sql_norm docs).
-/// Namespace-abstract normalization with a shared relative schema map.
-fn normalized_ns_with(dialect: &str, sql: &str, schemas: &crate::sql_norm::SchemaMap) -> String {
-    if dialect.eq_ignore_ascii_case("snowflake") {
-        crate::sql_norm::normalize_sql_namespace_abstracted_with(sql, schemas)
-    } else {
-        sql.to_owned()
-    }
+/// Namespace-abstract normalization with a shared relative schema map. Only
+/// a [`NamespaceIdentity::SchemaAbstracted`] warehouse reaches it.
+fn normalized_ns_with(sql: &str, schemas: &crate::sql_norm::SchemaMap) -> String {
+    crate::sql_norm::normalize_sql_namespace_abstracted_with(sql, schemas)
 }
 
 fn field(h: &mut Sha256, bytes: &[u8]) {
@@ -40,10 +38,7 @@ fn extras(h: &mut Sha256, values: &HashMap<String, String>) {
 /// `template` is the existing template-comparison mode, whose exact hosted
 /// truth table remains unresolved. Its namespace cannot collide with SQL mode.
 pub fn sql_logic_hash(req: &qc::SqlExecution, template: Option<&str>) -> String {
-    let version = match crate::warehouse::Warehouse::from_dialect(&req.dialect) {
-        crate::warehouse::Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1".as_slice(),
-        _ => b"dbt-state-sql-v4".as_slice(),
-    };
+    let version = Warehouse::from_dialect(&req.dialect).sql_identity_version();
     sql_logic_hash_with_version(req, template, version)
 }
 
@@ -214,15 +209,18 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
 /// the same logic (skips after a clone), while a genuine projection change
 /// executes. See experiments/clone_logic_sensitivity.sh.
 pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
-    if !crate::warehouse::Warehouse::from_dialect(&req.dialect).supports_namespace_reuse() {
-        // This public helper is also useful for comparing identities in tests.
-        // Give unverified dialects an exact, context-sensitive identity rather
-        // than applying Snowflake's lossy identifier/schema interpretation.
-        let mut h = Sha256::new();
-        field(&mut h, b"dbt-state-exact-ns-v1");
-        field(&mut h, sql_logic_hash(req, None).as_bytes());
-        return hex::encode(h.finalize());
-    }
+    let version = match Warehouse::from_dialect(&req.dialect).namespace_identity() {
+        NamespaceIdentity::SchemaAbstracted { version } => version,
+        NamespaceIdentity::Exact { version } => {
+            // This public helper is also useful for comparing identities in tests.
+            // Give unverified dialects an exact, context-sensitive identity rather
+            // than applying Snowflake's lossy identifier/schema interpretation.
+            let mut h = Sha256::new();
+            field(&mut h, version);
+            field(&mut h, sql_logic_hash(req, None).as_bytes());
+            return hex::encode(h.finalize());
+        }
+    };
     use crate::sql_norm::{
         abstract_object_name_components_with, schema_of_object_name, schemas_in_sql, SchemaMap,
     };
@@ -247,7 +245,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
     let schemas = SchemaMap::from_schemas(all_schemas);
 
     let mut h = Sha256::new();
-    field(&mut h, b"dbt-state-ns-logic-v4");
+    field(&mut h, version);
     field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
     // The default_schema is folded in as its RELATIVE token (not its physical
     // name), so the SAME model across environments (whose default_schema differs
@@ -261,10 +259,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
         .map(|ds| schemas.placeholder_for_schema(ds))
         .unwrap_or_default();
     field(&mut h, default_schema_token.as_bytes());
-    field(
-        &mut h,
-        normalized_ns_with(&req.dialect, &req.sql, &schemas).as_bytes(),
-    );
+    field(&mut h, normalized_ns_with(&req.sql, &schemas).as_bytes());
     extras(&mut h, &req.semantic_extras);
     // Dependencies: bind each dependency's schema-abstracted NAME to its
     // schema-abstracted definition, sorted by that pair, ALL under the shared
@@ -291,7 +286,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
         .map(|d| {
             (
                 abstract_object_name_components_with(&d.name, &schemas),
-                normalized_ns_with(&req.dialect, &d.query, &schemas),
+                normalized_ns_with(&d.query, &schemas),
             )
         })
         .collect();
@@ -1302,6 +1297,21 @@ mod tests {
             namespace_logic_hash(&a),
             namespace_logic_hash(&b),
             "identical bindings must share identity"
+        );
+    }
+    /// The namespace identity follows the Warehouse rules for every spelling
+    /// they accept: a padded Snowflake dialect abstracts the schemas of its
+    /// SQL too, so the same model across environments shares one identity.
+    #[test]
+    fn ns_padded_snowflake_dialect_abstracts_sql_schemas() {
+        let padded = |sql: &str, schema: &str| qc::SqlExecution {
+            dialect: " snowflake ".into(),
+            default_schema: Some(schema.into()),
+            ..exec(sql, vec![])
+        };
+        assert_eq!(
+            namespace_logic_hash(&padded("select order_id from CDO.prod.t", "prod")),
+            namespace_logic_hash(&padded("select order_id from CDO.dev.t", "dev")),
         );
     }
 }

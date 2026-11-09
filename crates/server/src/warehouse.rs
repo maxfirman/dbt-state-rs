@@ -13,6 +13,24 @@
 mod duckdb;
 mod snowflake;
 
+/// The strict SQL identity's version tag for warehouses without their own.
+const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-sql-v4";
+
+/// The exact namespace identity's version tag.
+const EXACT_NAMESPACE_IDENTITY_VERSION: &[u8] = b"dbt-state-exact-ns-v1";
+
+/// The namespace logic identity a warehouse records
+/// ([`Warehouse::namespace_identity`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamespaceIdentity {
+    /// The strict identity under its own tag: no cross-environment
+    /// equivalence.
+    Exact { version: &'static [u8] },
+    /// Physical schema qualifiers are abstracted, so the same model built in
+    /// two environments shares one identity.
+    SchemaAbstracted { version: &'static [u8] },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Warehouse {
     Snowflake,
@@ -71,8 +89,39 @@ impl Warehouse {
         crate::sql_identity::normalized_sql(self, sql)
     }
 
+    /// Whether the namespace logic identity abstracts physical schemas, so
+    /// the same model can be reused across environments.
     pub fn supports_namespace_reuse(self) -> bool {
-        matches!(self, Self::Snowflake)
+        matches!(
+            self.namespace_identity(),
+            NamespaceIdentity::SchemaAbstracted { .. }
+        )
+    }
+
+    // ── Fingerprint version tags ────────────────────────────────────────────
+    //
+    // Each tag leads its fingerprint. A change to a warehouse's identity
+    // semantics takes a new tag, so older history cold-misses instead of being
+    // reinterpreted (ADR 0004).
+
+    /// The version tag of the strict SQL identity, in both rendered and
+    /// template mode.
+    pub fn sql_identity_version(self) -> &'static [u8] {
+        match self {
+            Self::DuckDb => duckdb::SQL_IDENTITY_VERSION,
+            _ => SQL_IDENTITY_VERSION,
+        }
+    }
+
+    /// How the namespace (cross-environment) logic identity reads this
+    /// warehouse's SQL, and its version tag.
+    pub fn namespace_identity(self) -> NamespaceIdentity {
+        match self {
+            Self::Snowflake => snowflake::NAMESPACE_IDENTITY,
+            _ => NamespaceIdentity::Exact {
+                version: EXACT_NAMESPACE_IDENTITY_VERSION,
+            },
+        }
     }
 
     pub fn has_volatile_sql<'a>(
@@ -246,7 +295,7 @@ pub enum IncrementalCopyContract<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::{IncrementalCopyContract, Warehouse};
+    use super::{IncrementalCopyContract, NamespaceIdentity, Warehouse};
 
     #[test]
     fn redshift_options_keep_one_physical_family() {
@@ -271,6 +320,51 @@ mod tests {
             assert!(!warehouse.supports_namespace_reuse());
             assert_eq!(warehouse.normalized_sql("SELECT  a"), "SELECT  a");
             assert!(warehouse.has_volatile_sql("select rand()", std::iter::empty()));
+        }
+    }
+
+    // ---- Fingerprint version tags -------------------------------------------
+
+    const OTHERS: [Warehouse; 4] = [
+        Warehouse::BigQuery,
+        Warehouse::Databricks,
+        Warehouse::Redshift,
+        Warehouse::Other,
+    ];
+
+    #[test]
+    fn duckdb_strict_identities_carry_their_own_version_tag() {
+        assert_eq!(
+            Warehouse::DuckDb.sql_identity_version(),
+            b"dbt-state-duckdb-sql-v1"
+        );
+        for warehouse in OTHERS.into_iter().chain([Warehouse::Snowflake]) {
+            assert_eq!(
+                warehouse.sql_identity_version(),
+                b"dbt-state-sql-v4",
+                "{warehouse:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_snowflake_abstracts_schemas_in_the_namespace_identity() {
+        assert_eq!(
+            Warehouse::Snowflake.namespace_identity(),
+            NamespaceIdentity::SchemaAbstracted {
+                version: b"dbt-state-ns-logic-v4"
+            }
+        );
+        assert!(Warehouse::Snowflake.supports_namespace_reuse());
+        for warehouse in OTHERS.into_iter().chain([Warehouse::DuckDb]) {
+            assert_eq!(
+                warehouse.namespace_identity(),
+                NamespaceIdentity::Exact {
+                    version: b"dbt-state-exact-ns-v1"
+                },
+                "{warehouse:?}"
+            );
+            assert!(!warehouse.supports_namespace_reuse(), "{warehouse:?}");
         }
     }
 

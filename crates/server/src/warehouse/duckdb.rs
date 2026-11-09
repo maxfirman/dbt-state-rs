@@ -10,6 +10,10 @@ use crate::query_cache::ModelExecutionType;
 use crate::sql_identity::{duckdb_relation, DuckDbRelation};
 use std::collections::HashMap;
 
+/// The strict SQL identity's version tag. It differs from the shared tag
+/// because DuckDB normalizes a validated formatting subset.
+pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-duckdb-sql-v1";
+
 /// The table type the client reports for a source it inspected as
 /// CTAS-compatible.
 const CTAS_TABLE_TYPE: &str = "DUCKDB CTAS TABLE";
