@@ -145,6 +145,24 @@ impl DecisionKind {
             Self::Clone => "clone",
         }
     }
+
+    /// The class a stored [`as_str`](Self::as_str) value names; `None` for
+    /// anything else.
+    pub fn from_stored(stored: &str) -> Option<Self> {
+        [Self::Build, Self::Skip, Self::Clone]
+            .into_iter()
+            .find(|kind| kind.as_str() == stored)
+    }
+
+    /// The wire `decision` int (`SubmitSQLResultType`, shared.proto).
+    pub fn wire_decision(self) -> i32 {
+        let result_type = match self {
+            Self::Skip => qc::SubmitSqlResultType::SkipExecution,
+            Self::Build => qc::SubmitSqlResultType::ReadyToExecute,
+            Self::Clone => qc::SubmitSqlResultType::ReadyToClone,
+        };
+        result_type as i32
+    }
 }
 
 /// Decision verdict with the fields needed to build a SubmitSQLResponse.
@@ -180,10 +198,12 @@ impl Verdict {
 /// Everything a Submit decision tells the client and records for capture:
 /// the class, its one reason, the hosted description and rejection codes,
 /// `is_stale`, and the prior execution the decision was made against (the
-/// Explain freshness anchor). Only the constructors below build one, so the
+/// Explain freshness anchor). Only the constructors below build one (the
+/// private `sealed` field stops struct literals, in this crate too), so the
 /// reason always agrees with the wire values.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
+// `#[non_exhaustive]` would not stop construction inside this crate.
+#[allow(clippy::manual_non_exhaustive)]
 pub struct DecisionRecord {
     pub class: DecisionKind,
     pub reason: DecisionReason,
@@ -194,6 +214,7 @@ pub struct DecisionRecord {
     /// `executions.id` of the reuse candidate `decide` evaluated: set on a
     /// Skip and on a freshness-driven Execute, `None` otherwise.
     pub matched_execution_id: Option<i64>,
+    sealed: (),
 }
 
 impl DecisionRecord {
@@ -213,6 +234,7 @@ impl DecisionRecord {
                 clone_rejection_reason: None,
                 is_stale,
                 matched_execution_id,
+                sealed: (),
             },
             Verdict::Execute {
                 description,
@@ -228,6 +250,7 @@ impl DecisionRecord {
                 clone_rejection_reason: Some(clone_rejection_reason),
                 is_stale,
                 matched_execution_id,
+                sealed: (),
             },
         }
     }
@@ -244,6 +267,7 @@ impl DecisionRecord {
             clone_rejection_reason: None,
             is_stale: false,
             matched_execution_id: None,
+            sealed: (),
         }
     }
 
@@ -260,6 +284,7 @@ impl DecisionRecord {
             clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
             is_stale: false,
             matched_execution_id: None,
+            sealed: (),
         }
     }
 }
@@ -274,14 +299,18 @@ const RESULT_COPY_DESCRIPTION: &str =
 const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
     "model was executed because the maximum number of nested clones has been reached";
 
-// RejectionReason enum values (from shared.proto).
-pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = 1;
-pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = 6;
+// The wire rejection codes (`RejectionReason`, shared.proto) the service sends.
+pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = qc::RejectionReason::TargetTableMismatch as i32;
+/// A client-requested copy the service cannot prove eligible (RegisterClone
+/// `unable_to_clone`), and the skip rejection on every `ready_to_clone`.
+pub const REJECTION_FORCED_NOT_ELIGIBLE: i32 = qc::RejectionReason::ForcedNotEligible as i32;
+pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = qc::RejectionReason::NoSuitableMatchFound as i32;
 /// VERIFIED LIVE: when a target disallows clones (profile `allow_clones:
 /// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`, and
 /// the hosted service answers RegisterClone with `unable_to_clone` carrying
 /// this rejection reason and decision=READY_TO_EXECUTE.
-pub const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 = 10;
+pub const REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED: i32 =
+    qc::RejectionReason::CloneChainLimitExceeded as i32;
 
 /// A human noun for the node kind, matching the hosted service's wording.
 fn node_noun(execution_type: i32) -> &'static str {
@@ -1743,6 +1772,37 @@ mod tests {
         }
         assert_eq!(DecisionReason::from_stored("no_reuse_candidate"), None);
         assert_eq!(DecisionReason::from_stored("FIRST_BUILD"), None);
+    }
+
+    /// One definition of the decision class: its stored string, read back by
+    /// Explain, and its wire `decision` int (SubmitSQLResultType).
+    #[test]
+    fn decision_kinds_are_stored_and_sent_as_pinned() {
+        let pinned = [
+            (DecisionKind::Skip, "skip", 0),
+            (DecisionKind::Build, "build", 1),
+            (DecisionKind::Clone, "clone", 3),
+        ];
+        for (kind, stored, wire) in pinned {
+            assert_eq!(kind.as_str(), stored);
+            assert_eq!(DecisionKind::from_stored(stored), Some(kind));
+            assert_eq!(kind.wire_decision(), wire);
+        }
+        assert_eq!(DecisionKind::from_stored("execute"), None);
+        assert_eq!(DecisionKind::from_stored("SKIP"), None);
+    }
+
+    #[test]
+    fn rejection_codes_are_the_wire_values() {
+        assert_eq!(
+            [
+                REJECTION_TARGET_TABLE_MISMATCH,
+                REJECTION_FORCED_NOT_ELIGIBLE,
+                REJECTION_NO_SUITABLE_MATCH_FOUND,
+                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+            ],
+            [1, 5, 6, 10]
+        );
     }
 }
 

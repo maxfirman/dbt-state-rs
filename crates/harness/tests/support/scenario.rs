@@ -17,6 +17,7 @@
 use std::collections::{BTreeSet, HashMap};
 
 use dbt_state_proto::query_cache as qc;
+use dbt_state_server::store::Store;
 use qc::submit_sql_response::Response;
 use tonic::transport::Channel;
 use tonic::Status;
@@ -146,6 +147,57 @@ pub fn duckdb_model(schema: &str) -> Submit {
             )]
             .into(),
             tables: vec![table("db.raw.input", Some(10))],
+            ..Default::default()
+        },
+        sql_follows_body: false,
+    }
+}
+
+/// The namespace of [`environment_model`] and [`environment_seed`].
+pub const ENVIRONMENT_NAMESPACE: &str = "ns-environments";
+/// The epoch [`environment_model`] reports for its upstream.
+pub const ENVIRONMENT_UPSTREAM_EPOCH: i64 = 500;
+
+/// The physical target of [`environment_model`] in environment `schema`.
+pub fn environment_target(schema: &str) -> String {
+    format!("\"DB\".\"{}\".\"M\"", schema.to_uppercase())
+}
+
+/// The upstream [`environment_model`] reads in environment `schema`.
+pub fn environment_upstream(schema: &str) -> String {
+    format!("\"DB\".\"{}\".\"UP\"", schema.to_uppercase())
+}
+
+/// One Snowflake table model (`FULL`, unique id `model.p.m`, project
+/// `project`) built in environment `schema`: it builds
+/// [`environment_target`] from [`environment_upstream`] (at
+/// [`ENVIRONMENT_UPSTREAM_EPOCH`]) with default schema and dbt target name
+/// `schema`, under [`ENVIRONMENT_NAMESPACE`]. Its own target is absent. The
+/// SQL follows the schema, so the model in two environments shares one
+/// schema-abstracted logic identity (a Result copy equivalent) but not its
+/// rendered SQL.
+pub fn environment_model(schema: &str) -> Submit {
+    Submit {
+        req: qc::SubmitEnrichedSqlRequest {
+            target_table: Some(environment_target(schema)),
+            dialect: "snowflake".into(),
+            default_catalog: "DB".into(),
+            default_schema: Some(schema.into()),
+            execution_type: ExecutionType::Full as i32,
+            sql: format!("select id from DB.{schema}.up"),
+            tolerate_nondeterminism: true,
+            tables: vec![table(
+                &environment_upstream(schema),
+                Some(ENVIRONMENT_UPSTREAM_EPOCH),
+            )],
+            table_namespace: Some(ENVIRONMENT_NAMESPACE.into()),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.p.m".into(),
+                node_body_hash: Some(DEFAULT_BODY.into()),
+                project_id: Some("project".into()),
+                target_name: schema.into(),
+                ..Default::default()
+            }),
             ..Default::default()
         },
         sql_follows_body: false,
@@ -496,6 +548,20 @@ impl Seed {
     }
 }
 
+/// The seed of [`environment_model`]'s project in environment `schema`:
+/// `"DB"."<SCHEMA>"."SEED"` (unique id `seed.p.s`, project `project`, dbt
+/// target name `schema`) under [`ENVIRONMENT_NAMESPACE`], its own target
+/// absent.
+pub fn environment_seed(schema: &str) -> Seed {
+    seed(&format!("\"DB\".\"{}\".\"SEED\"", schema.to_uppercase()))
+        .catalog("DB")
+        .namespace(ENVIRONMENT_NAMESPACE)
+        .own_epoch(None)
+        .unique_id("seed.p.s")
+        .project("project")
+        .target_name(schema)
+}
+
 impl From<Seed> for qc::SubmitValuesRequest {
     fn from(seed: Seed) -> Self {
         seed.build()
@@ -661,6 +727,23 @@ impl From<Outcome> for qc::ExecutionOutcome {
     fn from(outcome: Outcome) -> Self {
         outcome.outcome
     }
+}
+
+/// Apply a ConfirmExecution straight to the store, as the Execution service
+/// does, for module tests that run without gRPC. Returns `success`.
+pub async fn confirm_in(store: &Store, org: &str, confirm: qc::ConfirmExecutionRequest) -> bool {
+    store
+        .confirm(
+            org,
+            &confirm.request_id,
+            confirm.last_modified_epoch,
+            confirm.table_type.as_deref(),
+            confirm.execution_runtime_ms,
+            confirm.execution_results.as_ref(),
+            confirm.failed_to_clone,
+        )
+        .await
+        .expect("confirm")
 }
 
 /// The outcome [`Scenario::build`] confirms: `epoch`, a `TABLE`, 10 ms.

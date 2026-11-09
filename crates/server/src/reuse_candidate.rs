@@ -229,6 +229,7 @@ fn strict_match(
     row.execution_type == req.execution_type
         && identity_matches(evidence, row)
         && logic_compatible
+        // Exact on purpose: strict same-target identity, not dialect recognition.
         && row.dialect == req.dialect
 }
 

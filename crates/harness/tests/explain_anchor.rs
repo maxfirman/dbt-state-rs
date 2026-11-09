@@ -6,50 +6,16 @@
 #[path = "support.rs"]
 mod support;
 
-use dbt_state_proto::query_cache as qc;
 use dbt_state_server::capture::{self, CaptureInput, DecisionKind};
 use dbt_state_server::decision::{DecisionReason, Reuse};
 use dbt_state_server::submit_decision::{self, SubmitOutcome};
+use support::scenario::{
+    confirm_in, environment_model, environment_target, outcome, ENVIRONMENT_NAMESPACE,
+};
 use support::TestDatabase;
 
 const ORG: &str = "org-explain-anchor";
-const NS: &str = "ns-explain-anchor";
-const TARGET: &str = "\"DB\".\"PROD\".\"M\"";
-const UPSTREAM: &str = "\"DB\".\"PROD\".\"UP\"";
 const BUILT: i64 = 1_000;
-
-/// A Snowflake model submit whose own target is at `own_epoch` (None: absent).
-fn model(own_epoch: Option<i64>) -> qc::SubmitEnrichedSqlRequest {
-    let mut tables = vec![qc::TableModifiedInfo {
-        name: UPSTREAM.into(),
-        last_modified_epoch: Some(500),
-    }];
-    if let Some(epoch) = own_epoch {
-        tables.push(qc::TableModifiedInfo {
-            name: TARGET.into(),
-            last_modified_epoch: Some(epoch),
-        });
-    }
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(TARGET.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some("prod".into()),
-        execution_type: 1,
-        sql: "select id from DB.prod.up".into(),
-        tolerate_nondeterminism: true,
-        tables,
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.p.m".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("project".into()),
-            target_name: "prod".into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
 
 /// The `node_decisions` row a Skip capture writes, anchored on `matched`.
 fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
@@ -76,8 +42,8 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         execution_decision_id: Some(execution_decision_id.into()),
         node_body_hash: Some("body".into()),
         values_hash: None,
-        table_namespace: Some(NS.into()),
-        target_table: Some(TARGET.into()),
+        table_namespace: Some(ENVIRONMENT_NAMESPACE.into()),
+        target_table: Some(environment_target("prod")),
         default_schema: Some("prod".into()),
         clone_source: None,
         clone_sqls: None,
@@ -94,30 +60,23 @@ async fn explain_anchor_is_the_complete_matched_execution() {
     let state = db.state(false).await;
     let store = &state.store;
 
-    let SubmitOutcome::Execute { ids, .. } = submit_decision::submit_sql(store, ORG, &model(None))
-        .await
-        .expect("first submit")
+    // The model in `prod`, its own target absent and then at the build epoch.
+    let model = environment_model("prod");
+    let SubmitOutcome::Execute { ids, .. } =
+        submit_decision::submit_sql(store, ORG, &model.clone().build())
+            .await
+            .expect("first submit")
     else {
         panic!("a first build executes");
     };
-    assert!(store
-        .confirm(
-            ORG,
-            &ids.request_id,
-            Some(BUILT),
-            Some("TABLE"),
-            Some(42),
-            None,
-            false
-        )
-        .await
-        .expect("confirm"));
+    let built = outcome().epoch(BUILT).table().runtime(42);
+    assert!(confirm_in(store, ORG, built.confirm(&ids.request_id)).await);
 
     let SubmitOutcome::Skip {
         execution_decision_id,
         matched_execution,
         ..
-    } = submit_decision::submit_sql(store, ORG, &model(Some(BUILT)))
+    } = submit_decision::submit_sql(store, ORG, &model.own_epoch(Some(BUILT)).build())
         .await
         .expect("second submit")
     else {

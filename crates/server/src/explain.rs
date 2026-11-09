@@ -19,7 +19,7 @@
 //! dialect-specific WORDING must be confined to [`line_vocabulary`] (mirroring
 //! the `warehouse.rs` "Snowflake characterized, others conservative" seam).
 
-use crate::decision::{self, DecisionReason, NoCandidate, Reuse};
+use crate::decision::{self, DecisionKind, DecisionReason, NoCandidate, Reuse};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::store::{ExecutionRow, InputTable};
@@ -38,45 +38,13 @@ const BADGE_NODE_QUERY_UNCHANGED: i32 = 5;
 const BADGE_UPSTREAM_QUERY_CHANGED: i32 = 6;
 const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 
-// SubmitSQLResultType decision ints (shared.proto).
-const DECISION_SKIP: i32 = 0;
-const DECISION_EXECUTE: i32 = 1;
-const DECISION_CLONE: i32 = 3;
-
-/// The persisted decision class, re-read from `node_decisions.decision`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecisionClass {
-    Skip,
-    Build,
-    Clone,
-}
-
-impl DecisionClass {
-    pub fn from_decision_str(s: &str) -> Option<Self> {
-        match s {
-            "skip" => Some(Self::Skip),
-            "build" => Some(Self::Build),
-            "clone" => Some(Self::Clone),
-            _ => None,
-        }
-    }
-
-    fn decision_int(self) -> i32 {
-        match self {
-            Self::Skip => DECISION_SKIP,
-            Self::Build => DECISION_EXECUTE,
-            Self::Clone => DECISION_CLONE,
-        }
-    }
-}
-
 /// A snapshot of one persisted decision, everything the pure generator needs to
 /// re-derive the explain tree. Read from a single `node_decisions` row (plus,
 /// for #30, the matched `executions` anchor row). Keyed by `execution_decision_id`.
 #[derive(Debug, Clone)]
 pub struct ExplainNode {
     pub execution_decision_id: String,
-    pub decision: DecisionClass,
+    pub decision: DecisionKind,
     pub execution_type: i32,
     /// Persisted `decision_description` from the decision time. Used as the
     /// authoritative situation selector (the hosted service recorded exactly
@@ -157,7 +125,7 @@ fn section(text: impl Into<String>, children: Vec<qc::ExplainLine>) -> qc::Expla
 pub fn explain_entry(node: &ExplainNode) -> qc::ExplainMessageEntry {
     qc::ExplainMessageEntry {
         execution_decision_id: node.execution_decision_id.clone(),
-        decision: node.decision.decision_int(),
+        decision: node.decision.wire_decision(),
         decision_description: decision_description(node),
         explain_lines: explain_lines(node),
     }
@@ -180,13 +148,13 @@ pub fn decision_description(node: &ExplainNode) -> String {
     // Fallback: the engine's pinned wording (matches decision.rs). Used only
     // when the persisted description is absent.
     match node.decision {
-        DecisionClass::Skip if node.is_data_test() => {
+        DecisionKind::Skip if node.is_data_test() => {
             "data test was a no-op because both its query and its upstream data are up to date"
                 .to_string()
         }
-        DecisionClass::Skip => decision::DESC_SKIP.to_string(),
-        DecisionClass::Build => decision::DESC_EXECUTE.to_string(),
-        DecisionClass::Clone => {
+        DecisionKind::Skip => decision::DESC_SKIP.to_string(),
+        DecisionKind::Build => decision::DESC_EXECUTE.to_string(),
+        DecisionKind::Clone => {
             "an equivalent model exists under another name so we cloned that one".to_string()
         }
     }
@@ -207,17 +175,17 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
 /// hard rule is "mark as unimplemented rather than invent ... never ship
 /// invented output". Without this fence `explain_lines` dispatches on
-/// `DecisionClass` alone and renders a model-shaped tree for seed/snapshot/
+/// `DecisionKind` alone and renders a model-shaped tree for seed/snapshot/
 /// incremental decisions (e.g. a seed reload persists "seed was loaded because
 /// its data changed" and would fall through to the SHAPE-7 "the model query has
 /// changed" tree). PR #31 round-4 F7.
-fn is_characterized(execution_type: i32, decision: DecisionClass) -> bool {
+fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
     match ModelExecutionType::try_from(execution_type) {
         Ok(ModelExecutionType::Full | ModelExecutionType::View) => matches!(
             decision,
-            DecisionClass::Skip | DecisionClass::Build | DecisionClass::Clone
+            DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
         ),
-        Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionClass::Skip),
+        Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionKind::Skip),
         _ => false,
     }
 }
@@ -246,16 +214,16 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
     use DecisionReason as R;
     let reason = node.reason?;
     Some(match (node.decision, reason) {
-        (DecisionClass::Skip, R::Reused(Reuse::Fresh | Reuse::ToleratedStale)) => Shape::Skip,
-        (DecisionClass::Build, R::FirstBuild) => Shape::FirstBuild,
+        (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::ToleratedStale)) => Shape::Skip,
+        (DecisionKind::Build, R::FirstBuild) => Shape::FirstBuild,
         // The OUTDATED subtree is anchor-relative: it renders only when the
         // matched build is present and re-derives at least one OUTDATED
         // upstream. Without that the rebuild falls back to SHAPE 7.
-        (DecisionClass::Build, R::UpstreamOutdated) if has_outdated_upstream(node) => {
+        (DecisionKind::Build, R::UpstreamOutdated) if has_outdated_upstream(node) => {
             Shape::UpstreamOutdated
         }
         (
-            DecisionClass::Build,
+            DecisionKind::Build,
             R::UpstreamOutdated
             | R::NoReuseCandidate(
                 NoCandidate::IdentityMismatch
@@ -273,10 +241,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // capture only has to change this arm. See docs/explain-catalog.md
         // "Known limitation — dropped-own-target rebuild" and ADR 0006.
         (
-            DecisionClass::Build,
+            DecisionKind::Build,
             R::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) | R::NoBuildAnchor,
         ) => Shape::QueryChanged,
-        (DecisionClass::Clone, R::ResultCopy) => Shape::Clone,
+        (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         _ => return None,
     })
 }
@@ -738,19 +706,19 @@ mod tests {
         }
     }
 
-    fn node(decision: DecisionClass, et: i32, desc: &str) -> ExplainNode {
+    fn node(decision: DecisionKind, et: i32, desc: &str) -> ExplainNode {
         ExplainNode {
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,
             decision_description: Some(desc.into()),
             reason: Some(match decision {
-                DecisionClass::Skip => DecisionReason::Reused(Reuse::Fresh),
+                DecisionKind::Skip => DecisionReason::Reused(Reuse::Fresh),
                 // A rebuild whose identity no longer matches (SHAPE 7).
-                DecisionClass::Build => {
+                DecisionKind::Build => {
                     DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
                 }
-                DecisionClass::Clone => DecisionReason::ResultCopy,
+                DecisionKind::Clone => DecisionReason::ResultCopy,
             }),
             is_stale: false,
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
@@ -808,7 +776,7 @@ mod tests {
     fn model_skip_full_no_upstreams_is_shape0() {
         // et=1 FULL, zero genuine upstreams → `no upstream dependencies`.
         let mut n = node(
-            DecisionClass::Skip,
+            DecisionKind::Skip,
             ModelExecutionType::Full as i32,
             "model was a no-op because both its query and its upstream data are up to date",
         );
@@ -839,7 +807,7 @@ mod tests {
     fn model_skip_view_no_upstreams_is_shape1() {
         // et=10 VIEW, zero genuine upstreams → upstream-query line + up-to-date.
         let mut n = node(
-            DecisionClass::Skip,
+            DecisionKind::Skip,
             ModelExecutionType::View as i32,
             "model was a no-op because both its query and its upstream data are up to date",
         );
@@ -875,7 +843,7 @@ mod tests {
     #[test]
     fn model_execute_node_query_changed_is_shape7() {
         let n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::View as i32,
             "model was executed because either its query didn't match or its upstream data is out of date",
         );
@@ -910,7 +878,7 @@ mod tests {
     #[test]
     fn model_first_build_is_table_analysis_only() {
         let mut n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Full as i32,
             "model was executed because its table did not exist",
         );
@@ -944,7 +912,7 @@ mod tests {
         // Out-of-Scope "only SKIP captured"), so we emit nothing rather than
         // invent a structurally-impossible tree.
         let mut n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::DbtDataTest as i32,
             "data test was executed because it has no prior execution or its query changed",
         );
@@ -960,7 +928,7 @@ mod tests {
     fn data_test_skip_has_no_table_analysis() {
         // et=8 data test SKIP: no `table analysis`; query + per-upstream freshness.
         let mut n = node(
-            DecisionClass::Skip,
+            DecisionKind::Skip,
             ModelExecutionType::DbtDataTest as i32,
             "data test was a no-op because both its query and its upstream data are up to date",
         );
@@ -999,7 +967,7 @@ mod tests {
     #[test]
     fn clone_tree_has_vs_clone_sections() {
         let mut n = node(
-            DecisionClass::Clone,
+            DecisionKind::Clone,
             ModelExecutionType::Full as i32,
             "an equivalent model exists under another name so we cloned that one",
         );
@@ -1041,7 +1009,7 @@ mod tests {
     }
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
-    // explain_lines dispatches on DecisionClass alone; without an
+    // explain_lines dispatches on DecisionKind alone; without an
     // execution-type fence, seed (VALUES=9), snapshot (SNAPSHOT=7) and
     // incremental decisions render model-shaped trees that the hosted service
     // was never observed to produce (docs/explain-catalog.md "Unobserved — do
@@ -1051,7 +1019,7 @@ mod tests {
     fn seed_skip_emits_nothing() {
         // VALUES=9 seed SKIP: unobserved → no invented model-SKIP tree.
         let mut n = node(
-            DecisionClass::Skip,
+            DecisionKind::Skip,
             ModelExecutionType::Values as i32,
             "seed was a no-op because its data has not changed",
         );
@@ -1070,7 +1038,7 @@ mod tests {
         // data changed", which would otherwise fall through to SHAPE-7
         // "the model query has changed".
         let n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Values as i32,
             "seed was loaded because its data changed",
         );
@@ -1085,7 +1053,7 @@ mod tests {
     fn snapshot_execute_emits_nothing() {
         // SNAPSHOT=7 snapshot: unobserved → no invented tree.
         let n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Snapshot as i32,
             "snapshot was executed",
         );
@@ -1098,7 +1066,7 @@ mod tests {
 
     /// EXHAUSTIVE FENCE MATRIX. Sweep every `ModelExecutionType` value
     /// (shared.proto 0..=11, plus a couple of out-of-range sentinels) crossed
-    /// with every `DecisionClass`, and assert the fence contract exactly:
+    /// with every `DecisionKind`, and assert the fence contract exactly:
     /// a CHARACTERIZED (execution_type, decision) pair renders a non-empty
     /// cataloged tree; every other pair renders NOTHING.
     ///
@@ -1114,31 +1082,31 @@ mod tests {
     fn fence_matrix_is_exhaustive_and_matches_is_characterized() {
         // The ONLY pairs the fence may render, verified against the explain
         // fixtures (execution_type 1/10/8) + docs/explain-catalog.md.
-        let characterized = |et: i32, d: DecisionClass| -> bool {
+        let characterized = |et: i32, d: DecisionKind| -> bool {
             matches!(
                 (et, d),
-                (1, DecisionClass::Skip)        // model/table SKIP
-                    | (1, DecisionClass::Build) // model/table EXECUTE
-                    | (1, DecisionClass::Clone) // model/table CLONE
-                    | (10, DecisionClass::Skip) // view SKIP
-                    | (10, DecisionClass::Build)
-                    | (10, DecisionClass::Clone)
-                    | (8, DecisionClass::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
+                (1, DecisionKind::Skip)        // model/table SKIP
+                    | (1, DecisionKind::Build) // model/table EXECUTE
+                    | (1, DecisionKind::Clone) // model/table CLONE
+                    | (10, DecisionKind::Skip) // view SKIP
+                    | (10, DecisionKind::Build)
+                    | (10, DecisionKind::Clone)
+                    | (8, DecisionKind::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
             )
         };
 
         // A persisted description that DOES let a Build render SHAPE-7 for a
         // characterized kind (node-query-changed), so a rendered-vs-empty
         // mismatch is attributable to the fence, not a missing description.
-        let desc = |d: DecisionClass| {
+        let desc = |d: DecisionKind| {
             match d {
-            DecisionClass::Skip => {
+            DecisionKind::Skip => {
                 "model was a no-op because both its query and its upstream data are up to date"
             }
-            DecisionClass::Build => {
+            DecisionKind::Build => {
                 "model was executed because either its query didn't match or its upstream data is out of date"
             }
-            DecisionClass::Clone => {
+            DecisionKind::Clone => {
                 "an equivalent model exists under another name so we cloned that one"
             }
         }
@@ -1147,11 +1115,7 @@ mod tests {
         // 0..=11 covers the whole shared.proto ModelExecutionType enum; the
         // sentinels guard the `_ => false` arm against an unknown/garbage value.
         let execution_types = (0i32..=11).chain([99, -1]);
-        let decisions = [
-            DecisionClass::Skip,
-            DecisionClass::Build,
-            DecisionClass::Clone,
-        ];
+        let decisions = [DecisionKind::Skip, DecisionKind::Build, DecisionKind::Clone];
         for et in execution_types {
             for &d in &decisions {
                 // is_characterized is the fence predicate; the local table is an
@@ -1166,7 +1130,7 @@ mod tests {
                 let mut n = node(d, et, desc(d));
                 // CLONE needs a source to render its table-analysis line; give
                 // one so a characterized CLONE is genuinely non-empty.
-                if d == DecisionClass::Clone {
+                if d == DecisionKind::Clone {
                     n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
                 }
                 let empty = explain_lines(&n).is_empty();
@@ -1190,7 +1154,7 @@ mod tests {
     fn first_build_shape_is_selected_by_reason_not_description() {
         let first_build_tree = {
             let mut n = node(
-                DecisionClass::Build,
+                DecisionKind::Build,
                 ModelExecutionType::Full as i32,
                 "model was executed because its table did not exist",
             );
@@ -1198,7 +1162,7 @@ mod tests {
             render(&n)
         };
         let shape7_tree = render(&node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Full as i32,
             decision::DESC_EXECUTE,
         ));
@@ -1206,7 +1170,7 @@ mod tests {
 
         // A first build with any wording renders the first-build tree.
         let mut reworded = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Full as i32,
             decision::DESC_EXECUTE,
         );
@@ -1219,7 +1183,7 @@ mod tests {
             "model was executed because its table did not exist",
             "model has no prior execution",
         ] {
-            let n = node(DecisionClass::Build, ModelExecutionType::Full as i32, desc);
+            let n = node(DecisionKind::Build, ModelExecutionType::Full as i32, desc);
             assert_eq!(render(&n), shape7_tree, "{desc}");
         }
     }
@@ -1231,7 +1195,7 @@ mod tests {
     #[test]
     fn each_decision_reason_selects_todays_shape() {
         let shape7 = render(&node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Full as i32,
             decision::DESC_EXECUTE,
         ));
@@ -1248,7 +1212,7 @@ mod tests {
             DecisionReason::UpstreamOutdated,
         ] {
             let mut n = node(
-                DecisionClass::Build,
+                DecisionKind::Build,
                 ModelExecutionType::Full as i32,
                 decision::DESC_EXECUTE,
             );
@@ -1257,12 +1221,12 @@ mod tests {
         }
 
         for (d, reason) in [
-            (DecisionClass::Skip, DecisionReason::FirstBuild),
-            (DecisionClass::Skip, DecisionReason::ResultCopy),
-            (DecisionClass::Build, DecisionReason::Reused(Reuse::Fresh)),
-            (DecisionClass::Build, DecisionReason::ResultCopy),
-            (DecisionClass::Clone, DecisionReason::Reused(Reuse::Fresh)),
-            (DecisionClass::Clone, DecisionReason::CopyChainLimit),
+            (DecisionKind::Skip, DecisionReason::FirstBuild),
+            (DecisionKind::Skip, DecisionReason::ResultCopy),
+            (DecisionKind::Build, DecisionReason::Reused(Reuse::Fresh)),
+            (DecisionKind::Build, DecisionReason::ResultCopy),
+            (DecisionKind::Clone, DecisionReason::Reused(Reuse::Fresh)),
+            (DecisionKind::Clone, DecisionReason::CopyChainLimit),
         ] {
             let mut n = node(d, ModelExecutionType::Full as i32, decision::DESC_EXECUTE);
             n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
@@ -1273,7 +1237,7 @@ mod tests {
         // A tolerated-stale reuse renders the same SKIP tree as a fresh one.
         let skip = |reuse| {
             let mut n = node(
-                DecisionClass::Skip,
+                DecisionKind::Skip,
                 ModelExecutionType::Full as i32,
                 decision::DESC_SKIP,
             );
@@ -1289,7 +1253,7 @@ mod tests {
     #[test]
     fn upstream_outdated_with_anchor_is_shape9() {
         let mut n = node(
-            DecisionClass::Build,
+            DecisionKind::Build,
             ModelExecutionType::Full as i32,
             decision::DESC_EXECUTE,
         );
@@ -1332,14 +1296,14 @@ mod tests {
     #[test]
     fn null_decision_reason_renders_an_empty_tree() {
         for (d, desc) in [
-            (DecisionClass::Skip, decision::DESC_SKIP),
+            (DecisionKind::Skip, decision::DESC_SKIP),
             (
-                DecisionClass::Build,
+                DecisionKind::Build,
                 "model was executed because its table did not exist",
             ),
-            (DecisionClass::Build, decision::DESC_EXECUTE),
+            (DecisionKind::Build, decision::DESC_EXECUTE),
             (
-                DecisionClass::Clone,
+                DecisionKind::Clone,
                 "an equivalent model exists under another name so we cloned that one",
             ),
         ] {
@@ -1362,7 +1326,7 @@ mod tests {
     #[test]
     fn decision_description_prefers_persisted_situation_string() {
         let n = node(
-            DecisionClass::Skip,
+            DecisionKind::Skip,
             ModelExecutionType::Full as i32,
             "model was a no-op because its query is up to date and its data is within lag tolerance",
         );

@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-/// Test files that use the scenario module. Tickets #52 and #53 extend this.
+/// Test files that use the scenario module. Add a file when it migrates.
 const MIGRATED: &[&str] = &[
     "auth.rs",
     "c1_config_semantics.rs",
@@ -36,6 +36,7 @@ const MIGRATED: &[&str] = &[
     "duckdb_identity.rs",
     "duckdb_incremental.rs",
     "duckdb_outcomes.rs",
+    "explain_anchor.rs",
     "hardening.rs",
     "lag_freshness.rs",
     "lag_policy.rs",
@@ -44,6 +45,7 @@ const MIGRATED: &[&str] = &[
     "selector_conformance.rs",
     "selector_offline.rs",
     "sql_normalization.rs",
+    "submit_decision.rs",
     "template_comparison.rs",
     "warehouse_portability.rs",
 ];
@@ -118,6 +120,23 @@ fn code_lines(path: &Path) -> Vec<(usize, String)> {
         .collect()
 }
 
+fn is_ident(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Whether `haystack` contains `pattern`, ending at a word boundary when the
+/// pattern ends in an identifier (`-> Submit` is not `-> SubmitOutcome`).
+fn contains_pattern(haystack: &str, pattern: &str) -> bool {
+    let needs_boundary = pattern.chars().last().is_some_and(is_ident);
+    haystack.match_indices(pattern).any(|(i, _)| {
+        !needs_boundary
+            || !haystack[i + pattern.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident)
+    })
+}
+
 fn offences(path: &Path, patterns: &[&str], case_insensitive: bool) -> Vec<String> {
     code_lines(path)
         .into_iter()
@@ -129,10 +148,28 @@ fn offences(path: &Path, patterns: &[&str], case_insensitive: bool) -> Vec<Strin
             };
             patterns
                 .iter()
-                .find(|p| haystack.contains(*p))
+                .find(|p| contains_pattern(&haystack, p))
                 .map(|p| format!("{}:{n}: `{p}` in `{}`", path.display(), line.trim()))
         })
         .collect()
+}
+
+#[test]
+fn builder_patterns_match_whole_names() {
+    assert!(contains_pattern("fn base() -> Submit {", "-> Submit"));
+    assert!(contains_pattern("fn base(x: u8) -> Submit", "-> Submit"));
+    assert!(!contains_pattern(
+        "async fn submit(s: &Store) -> SubmitOutcome {",
+        "-> Submit"
+    ));
+    assert!(contains_pattern(
+        "fn f() -> support::scenario::Submit {",
+        "-> support::scenario::"
+    ));
+    assert!(contains_pattern(
+        "update executions set",
+        "update executions"
+    ));
 }
 
 #[test]

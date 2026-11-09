@@ -11,101 +11,40 @@ mod support;
 use dbt_state_proto::query_cache as qc;
 use dbt_state_server::decision::{DecisionReason, DecisionRecord, NoCandidate, Reuse};
 use dbt_state_server::store::Store;
-use dbt_state_server::submit_decision::{self, DecisionIds, SubmitOutcome};
+use dbt_state_server::submit_decision::{self, DecisionIds, ResultCopy, SubmitOutcome};
 use support::rows;
+use support::scenario::{
+    confirm_in, duckdb_ctas_at, duckdb_model, environment_model, environment_seed,
+    environment_upstream, outcome,
+};
 use support::TestDatabase;
 
 const ORG: &str = "org-submit-decision";
-const NS: &str = "ns-submit-decision";
 const PROD: &str = "\"DB\".\"PROD\".\"M\"";
 const DEV: &str = "\"DB\".\"DEV\".\"M\"";
 const BUILT: i64 = 1_000;
 
-fn upstream(schema: &str) -> String {
-    format!("\"DB\".\"{}\".\"UP\"", schema.to_uppercase())
+async fn submit_sql(store: &Store, req: impl Into<qc::SubmitEnrichedSqlRequest>) -> SubmitOutcome {
+    submit_decision::submit_sql(store, ORG, &req.into())
+        .await
+        .expect("submit")
 }
 
-/// A Snowflake model submit for `target` in environment `schema`. The SQL and
-/// upstream follow the schema, so PROD and DEV share one schema-abstracted
-/// logic identity (a Result copy equivalent) but not the same rendered SQL.
-/// `own_epoch` is the target's current epoch (None: absent); the upstream sits
-/// at `upstream_epoch`.
-fn model(
-    target: &str,
-    schema: &str,
-    own_epoch: Option<i64>,
-    upstream_epoch: i64,
-) -> qc::SubmitEnrichedSqlRequest {
-    let mut tables = vec![qc::TableModifiedInfo {
-        name: upstream(schema),
-        last_modified_epoch: Some(upstream_epoch),
-    }];
-    if let Some(epoch) = own_epoch {
-        tables.push(qc::TableModifiedInfo {
-            name: target.into(),
-            last_modified_epoch: Some(epoch),
-        });
-    }
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(target.into()),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        default_schema: Some(schema.into()),
-        execution_type: 1,
-        sql: format!("select id from DB.{schema}.up"),
-        tolerate_nondeterminism: true,
-        tables,
-        table_namespace: Some(NS.into()),
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "model.p.m".into(),
-            node_body_hash: Some("body".into()),
-            project_id: Some("project".into()),
-            target_name: schema.into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-}
-
-fn seed(values_hash: &str, own_epoch: Option<i64>) -> qc::SubmitValuesRequest {
-    qc::SubmitValuesRequest {
-        target_table: "\"DB\".\"PROD\".\"SEED\"".into(),
-        dialect: "snowflake".into(),
-        default_catalog: "DB".into(),
-        values_hash: values_hash.into(),
-        table_namespace: Some(NS.into()),
-        last_modified_epoch: own_epoch,
-        dbt_node_state: Some(qc::DbtNodeState {
-            node_unique_id: "seed.p.s".into(),
-            project_id: Some("project".into()),
-            target_name: "prod".into(),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
+async fn submit_values(store: &Store, req: impl Into<qc::SubmitValuesRequest>) -> SubmitOutcome {
+    submit_decision::submit_values(store, ORG, &req.into())
+        .await
+        .expect("submit")
 }
 
 /// Confirm a build at `epoch` through the store's confirm path.
 async fn confirm(store: &Store, ids: &DecisionIds, epoch: i64) {
-    assert!(store
-        .confirm(
-            ORG,
-            &ids.request_id,
-            Some(epoch),
-            Some("TABLE"),
-            Some(42),
-            None,
-            false
-        )
-        .await
-        .expect("confirm"));
+    let confirmed = outcome().epoch(epoch).table().runtime(42);
+    assert!(confirm_in(store, ORG, confirmed.confirm(&ids.request_id)).await);
 }
 
 /// Submit, expect an ordinary Execute, and confirm it at `epoch`.
-async fn build(store: &Store, req: &qc::SubmitEnrichedSqlRequest, epoch: i64) -> i64 {
-    let outcome = submit_decision::submit_sql(store, ORG, req)
-        .await
-        .expect("submit");
+async fn build(store: &Store, req: impl Into<qc::SubmitEnrichedSqlRequest>, epoch: i64) -> i64 {
+    let outcome = submit_sql(store, req).await;
     let SubmitOutcome::Execute { ids, .. } = outcome else {
         panic!("expected Execute, got {outcome:?}");
     };
@@ -122,9 +61,7 @@ async fn first_build_executes_and_writes_its_pending_row() {
     let state = db.state(false).await;
     let store = &state.store;
 
-    let outcome = submit_decision::submit_sql(store, ORG, &model(PROD, "prod", None, 500))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, environment_model("prod")).await;
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
@@ -167,12 +104,10 @@ async fn reuse_skips_against_the_matched_execution_without_a_pending_row() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    let built = build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    let built = build(store, environment_model("prod"), BUILT).await;
     let written = rows::executions_in(store, ORG).await.len();
 
-    let outcome = submit_decision::submit_sql(store, ORG, &model(PROD, "prod", Some(BUILT), 500))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, environment_model("prod").own_epoch(Some(BUILT))).await;
     let SubmitOutcome::Skip {
         execution_decision_id,
         matched_execution,
@@ -209,12 +144,16 @@ async fn freshness_driven_execute_keeps_the_matched_execution() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    let built = build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    let built = build(store, environment_model("prod"), BUILT).await;
 
     // Same identity, but the upstream changed after the build.
-    let outcome = submit_decision::submit_sql(store, ORG, &model(PROD, "prod", Some(BUILT), 2_000))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(
+        store,
+        environment_model("prod")
+            .own_epoch(Some(BUILT))
+            .upstream(&environment_upstream("prod"), 2_000),
+    )
+    .await;
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
@@ -244,21 +183,22 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    build(store, environment_model("prod"), BUILT).await;
 
-    let outcome = submit_decision::submit_sql(store, ORG, &model(DEV, "dev", None, 500))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, environment_model("dev")).await;
     assert!(
         outcome.matched_execution().is_none(),
         "a copy matches nothing"
     );
     let SubmitOutcome::Copy {
         ids,
-        source_table,
-        clone_sqls,
-        source_last_modified_epoch,
-        source_execution_runtime_ms,
+        copy:
+            ResultCopy {
+                source_table,
+                clone_sqls,
+                source_last_modified_epoch,
+                source_execution_runtime_ms,
+            },
         ..
     } = outcome
     else {
@@ -297,13 +237,9 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    build(store, environment_model("prod"), BUILT).await;
     // DEV becomes a confirmed copy of PROD: its own reuse candidate.
-    let SubmitOutcome::Copy { ids, .. } =
-        submit_decision::submit_sql(store, ORG, &model(DEV, "dev", None, 500))
-            .await
-            .expect("submit")
-    else {
+    let SubmitOutcome::Copy { ids, .. } = submit_sql(store, environment_model("dev")).await else {
         panic!("expected the first DEV submit to copy");
     };
     confirm(store, &ids, BUILT).await;
@@ -312,9 +248,7 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
         .unwrap()
         .id;
 
-    let outcome = submit_decision::submit_sql(store, ORG, &model(DEV, "dev", Some(BUILT), 500))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, environment_model("dev").own_epoch(Some(BUILT))).await;
     let SubmitOutcome::Skip {
         matched_execution, ..
     } = outcome
@@ -323,9 +257,13 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
     };
     assert_eq!(matched_execution.id, dev_copy);
 
-    let outcome = submit_decision::submit_sql(store, ORG, &model(DEV, "dev", Some(BUILT), 2_000))
-        .await
-        .expect("submit");
+    let outcome = submit_sql(
+        store,
+        environment_model("dev")
+            .own_epoch(Some(BUILT))
+            .upstream(&environment_upstream("dev"), 2_000),
+    )
+    .await;
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
@@ -346,13 +284,9 @@ async fn copy_forbidding_target_gets_the_chain_limit_execute() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    build(store, environment_model("prod"), BUILT).await;
 
-    let mut req = model(DEV, "dev", None, 500);
-    req.clone_chain_depth_limit = Some(0);
-    let outcome = submit_decision::submit_sql(store, ORG, &req)
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, environment_model("dev").clone_chain_depth_limit(0)).await;
     assert!(outcome.matched_execution().is_none());
     let SubmitOutcome::ChainLimitExecute { ids, .. } = outcome else {
         panic!("expected ChainLimitExecute, got {outcome:?}");
@@ -374,17 +308,16 @@ async fn unavailable_copy_falls_back_to_the_ordinary_decision() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
-    build(store, &model(PROD, "prod", None, 500), BUILT).await;
+    build(store, environment_model("prod"), BUILT).await;
 
     // No copy DDL exists for an expiring clone, so the equivalent is unusable.
-    let mut req = model(DEV, "dev", None, 500);
-    req.clone_table_properties = Some(qc::TableProperties {
-        hours_to_expiration: Some(1),
-        ..Default::default()
+    let req = environment_model("dev").with(|r| {
+        r.clone_table_properties = Some(qc::TableProperties {
+            hours_to_expiration: Some(1),
+            ..Default::default()
+        })
     });
-    let outcome = submit_decision::submit_sql(store, ORG, &req)
-        .await
-        .expect("submit");
+    let outcome = submit_sql(store, req).await;
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
@@ -414,12 +347,8 @@ async fn both_entry_points_record_node_state_for_selectors() {
     let state = db.state(false).await;
     let store = &state.store;
 
-    submit_decision::submit_sql(store, ORG, &model(PROD, "prod", None, 500))
-        .await
-        .expect("submit");
-    submit_decision::submit_values(store, ORG, &seed("v1", None))
-        .await
-        .expect("submit");
+    submit_sql(store, environment_model("prod")).await;
+    submit_values(store, environment_seed("prod").values("v1")).await;
 
     let uids = ["model.p.m".to_string(), "seed.p.s".to_string()];
     let recorded = store
@@ -446,9 +375,7 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
     let state = db.state(false).await;
     let store = &state.store;
 
-    let outcome = submit_decision::submit_values(store, ORG, &seed("v1", None))
-        .await
-        .expect("submit");
+    let outcome = submit_values(store, environment_seed("prod").values("v1")).await;
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
@@ -472,9 +399,11 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
     confirm(store, &ids, BUILT).await;
     let built = row.id;
 
-    let outcome = submit_decision::submit_values(store, ORG, &seed("v1", Some(BUILT)))
-        .await
-        .expect("submit");
+    let outcome = submit_values(
+        store,
+        environment_seed("prod").values("v1").own_epoch(Some(BUILT)),
+    )
+    .await;
     let SubmitOutcome::Skip {
         matched_execution,
         record: DecisionRecord { description, .. },
@@ -489,9 +418,11 @@ async fn values_submits_share_execute_skip_and_the_anchor() {
         "seed was a no-op because its data has not changed"
     );
 
-    let outcome = submit_decision::submit_values(store, ORG, &seed("v2", Some(BUILT)))
-        .await
-        .expect("submit");
+    let outcome = submit_values(
+        store,
+        environment_seed("prod").values("v2").own_epoch(Some(BUILT)),
+    )
+    .await;
     let SubmitOutcome::Execute {
         matched_execution,
         record: DecisionRecord { description, .. },
@@ -512,9 +443,7 @@ async fn every_outcome_carries_its_decision_reason() {
     let state = db.state(false).await;
     let store = &state.store;
     let sql = |req: qc::SubmitEnrichedSqlRequest| async move {
-        let outcome = submit_decision::submit_sql(store, ORG, &req)
-            .await
-            .expect("submit");
+        let outcome = submit_sql(store, req).await;
         assert_eq!(
             outcome.record().matched_execution_id,
             outcome.matched_execution().map(|r| r.id),
@@ -523,41 +452,44 @@ async fn every_outcome_carries_its_decision_reason() {
         outcome
     };
 
-    let first = sql(model(PROD, "prod", None, 500)).await;
+    let first = sql(environment_model("prod").build()).await;
     assert_eq!(first.record().reason, DecisionReason::FirstBuild);
     let SubmitOutcome::Execute { ids, .. } = first else {
         panic!("expected Execute, got {first:?}");
     };
     confirm(store, &ids, BUILT).await;
 
-    let fresh = sql(model(PROD, "prod", Some(BUILT), 500)).await;
+    let fresh = sql(environment_model("prod").own_epoch(Some(BUILT)).build()).await;
     assert_eq!(fresh.record().reason, DecisionReason::Reused(Reuse::Fresh));
-    let outdated = sql(model(PROD, "prod", Some(BUILT), 2_000)).await;
+    let outdated = sql(environment_model("prod")
+        .own_epoch(Some(BUILT))
+        .upstream(&environment_upstream("prod"), 2_000)
+        .build())
+    .await;
     assert_eq!(outdated.record().reason, DecisionReason::UpstreamOutdated);
-    let edited = sql(model(PROD, "prod", Some(BUILT + 1), 500)).await;
+    let edited = sql(environment_model("prod").own_epoch(Some(BUILT + 1)).build()).await;
     assert_eq!(
         edited.record().reason,
         DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
     );
 
-    let mut forbids_copies = model(DEV, "dev", None, 500);
-    forbids_copies.clone_chain_depth_limit = Some(0);
-    let limit = sql(forbids_copies).await;
+    let forbids_copies = environment_model("dev").clone_chain_depth_limit(0);
+    let limit = sql(forbids_copies.build()).await;
     assert_eq!(limit.record().reason, DecisionReason::CopyChainLimit);
-    let copy = sql(model(DEV, "dev", None, 500)).await;
+    let copy = sql(environment_model("dev").build()).await;
     assert_eq!(copy.record().reason, DecisionReason::ResultCopy);
 
-    let seed_first = submit_decision::submit_values(store, ORG, &seed("v1", None))
-        .await
-        .expect("submit");
+    let seed_first = submit_values(store, environment_seed("prod").values("v1")).await;
     assert_eq!(seed_first.record().reason, DecisionReason::FirstBuild);
     let SubmitOutcome::Execute { ids, .. } = seed_first else {
         panic!("expected Execute, got {seed_first:?}");
     };
     confirm(store, &ids, BUILT).await;
-    let changed = submit_decision::submit_values(store, ORG, &seed("v2", Some(BUILT)))
-        .await
-        .expect("submit");
+    let changed = submit_values(
+        store,
+        environment_seed("prod").values("v2").own_epoch(Some(BUILT)),
+    )
+    .await;
     assert_eq!(
         changed.record().reason,
         DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
@@ -565,27 +497,123 @@ async fn every_outcome_carries_its_decision_reason() {
     assert_eq!(changed.record().matched_execution_id, None);
 }
 
-/// A DuckDB table model in environment `schema`, reported under the wire
-/// spelling `dialect` and requesting volatile evaluation. DuckDB has no checked
-/// volatile-function detector, so only its schema-abstracted copy identity lets
-/// such a submit be copied.
-fn duckdb_model(dialect: &str, namespace: &str, schema: &str) -> qc::SubmitEnrichedSqlRequest {
-    qc::SubmitEnrichedSqlRequest {
-        target_table: Some(format!("\"db\".\"{schema}\".\"result\"")),
-        dialect: dialect.into(),
-        default_catalog: "db".into(),
-        default_schema: Some(schema.into()),
-        table_namespace: Some(namespace.into()),
-        sql: "select id, amount + 1 as amount from db.raw.input".into(),
-        execution_type: 1,
-        tolerate_nondeterminism: false,
-        semantic_extras: [("duckdb_copy_contract".into(), "rows-schema-v1".into())].into(),
-        tables: vec![qc::TableModifiedInfo {
-            name: "db.raw.input".into(),
-            last_modified_epoch: Some(10),
-        }],
-        ..Default::default()
-    }
+/// Reuse reads only the target's latest confirmed row in scope: an older
+/// build that still matches does not resurface once a different build of the
+/// target was confirmed after it, even when that later build's row was
+/// written first.
+#[tokio::test]
+async fn reuse_reads_only_the_latest_confirmed_build() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let original = environment_model("prod");
+    let changed = environment_model("prod").sql("select id, 2 as v from DB.prod.up");
+
+    // `changed` is submitted first and `original` second, so `original`'s
+    // row has the larger id; `original` is confirmed first, `changed` last.
+    let SubmitOutcome::Execute {
+        ids: changed_ids, ..
+    } = submit_sql(store, changed.clone()).await
+    else {
+        panic!("expected the first build");
+    };
+    let SubmitOutcome::Execute {
+        ids: original_ids, ..
+    } = submit_sql(store, original.clone()).await
+    else {
+        panic!("expected the first build");
+    };
+    confirm(store, &original_ids, BUILT).await;
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    confirm(store, &changed_ids, BUILT).await;
+    let current = rows::execution_in(store, ORG, &changed_ids.request_id)
+        .await
+        .expect("confirmed row")
+        .id;
+
+    // Both builds report the target at BUILT; only the later one is current.
+    let outcome = submit_sql(store, original.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Execute {
+        matched_execution,
+        record,
+        ..
+    } = outcome
+    else {
+        panic!("an older matching build must not be reused, got {outcome:?}");
+    };
+    assert!(matched_execution.is_none());
+    assert_eq!(
+        record.reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch)
+    );
+
+    let outcome = submit_sql(store, changed.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Skip {
+        matched_execution, ..
+    } = outcome
+    else {
+        panic!("the current build is reused, got {outcome:?}");
+    };
+    assert_eq!(matched_execution.id, current);
+}
+
+/// A pending row is not State history: a later submit that was never
+/// confirmed does not hide the latest confirmed build.
+#[tokio::test]
+async fn pending_row_does_not_hide_the_latest_confirmed_build() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let original = environment_model("prod");
+    let built = build(store, original.clone(), BUILT).await;
+
+    let changed = environment_model("prod")
+        .sql("select id, 2 as v from DB.prod.up")
+        .own_epoch(Some(BUILT));
+    let outcome = submit_sql(store, changed).await;
+    let SubmitOutcome::Execute { ids, .. } = outcome else {
+        panic!("changed SQL rebuilds, got {outcome:?}");
+    };
+    assert!(rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .expect("pending row written")
+        .is_pending());
+
+    let outcome = submit_sql(store, original.own_epoch(Some(BUILT))).await;
+    let SubmitOutcome::Skip {
+        matched_execution, ..
+    } = outcome
+    else {
+        panic!("the confirmed build is still current, got {outcome:?}");
+    };
+    assert_eq!(matched_execution.id, built);
+}
+
+/// The Result copy fallback reads each target's latest confirmed row too:
+/// once the equivalent's target was rebuilt with other logic, its older
+/// matching build is no copy source.
+#[tokio::test]
+async fn result_copy_reads_only_the_latest_confirmed_build_of_each_target() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    build(store, environment_model("prod"), BUILT).await;
+    let rebuilt = environment_model("prod")
+        .sql("select id, 2 as v from DB.prod.up")
+        .own_epoch(Some(BUILT));
+    build(store, rebuilt, BUILT + 1).await;
+
+    let outcome = submit_sql(store, environment_model("dev")).await;
+    let SubmitOutcome::Execute {
+        matched_execution,
+        record,
+        ..
+    } = outcome
+    else {
+        panic!("PROD's older build must not be copied, got {outcome:?}");
+    };
+    assert!(matched_execution.is_none());
+    assert_eq!(record.reason, DecisionReason::FirstBuild);
 }
 
 /// Dialect spelling does not change result copy: a client reporting `DuckDB`
@@ -597,33 +625,31 @@ async fn duckdb_result_copy_ignores_dialect_case() {
     let store = &state.store;
     for dialect in ["duckdb", "DuckDB", "DUCKDB"] {
         let namespace = format!("ns-{dialect}");
-        let prod = duckdb_model(dialect, &namespace, "prod");
-        let outcome = submit_decision::submit_sql(store, ORG, &prod)
-            .await
-            .expect("submit");
+        // The copy-eligible DuckDB model in `schema`, reported under the wire
+        // spelling `dialect` and requesting volatile evaluation. DuckDB has no
+        // checked volatile-function detector, so only its schema-abstracted
+        // copy identity lets such a submit be copied.
+        let model = |schema: &str| {
+            duckdb_model(schema)
+                .dialect(dialect)
+                .namespace(&namespace)
+                .tolerate_nondeterminism(false)
+        };
+        let outcome = submit_sql(store, model("prod")).await;
         let SubmitOutcome::Execute { ids, .. } = outcome else {
             panic!("{dialect}: expected the first build, got {outcome:?}");
         };
-        assert!(store
-            .confirm(
-                ORG,
-                &ids.request_id,
-                Some(20),
-                Some("DUCKDB CTAS TABLE"),
-                Some(42),
-                None,
-                false
-            )
-            .await
-            .expect("confirm"));
+        let confirmed = duckdb_ctas_at(20).runtime(42);
+        assert!(confirm_in(store, ORG, confirmed.confirm(&ids.request_id)).await);
 
-        let outcome =
-            submit_decision::submit_sql(store, ORG, &duckdb_model(dialect, &namespace, "dev"))
-                .await
-                .expect("submit");
+        let outcome = submit_sql(store, model("dev")).await;
         let SubmitOutcome::Copy {
-            source_table,
-            clone_sqls,
+            copy:
+                ResultCopy {
+                    source_table,
+                    clone_sqls,
+                    ..
+                },
             ..
         } = outcome
         else {

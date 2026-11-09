@@ -75,7 +75,7 @@ pub(crate) fn submit_lookup<'a>(
         return None;
     }
     Some(EquivalentLookup {
-        table_namespace: crate::execution::namespace(req.table_namespace.as_deref())?,
+        table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
         node_namespace_logic_hash: ns_logic_hash?,
         execution_type: req.execution_type,
         exclude_target: req.target_table.as_deref().unwrap_or_default(),
@@ -106,16 +106,22 @@ impl CloneEquivalent {
     }
 }
 
+/// A Result copy of an equivalent into the submit target: the source, the
+/// statements that copy it, and the source build evidence the `ready_to_clone`
+/// response echoes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultCopy {
+    pub source_table: String,
+    pub clone_sqls: Vec<String>,
+    pub source_last_modified_epoch: Option<i64>,
+    pub source_execution_runtime_ms: Option<i64>,
+}
+
 /// The submit fallback's outcome once an equivalent exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SubmitCopyPlan {
     /// Copy the equivalent into the submit target (`ready_to_clone`).
-    Copy {
-        source_table: String,
-        clone_sqls: Vec<String>,
-        source_last_modified_epoch: Option<i64>,
-        source_execution_runtime_ms: Option<i64>,
-    },
+    Copy(ResultCopy),
     /// An equivalent would be copied, but the target forbids copies or the
     /// copy chain is already at its limit. Hosted executes with
     /// TARGET_TABLE_MISMATCH / CLONE_CHAIN_LIMIT_EXCEEDED and a fixed
@@ -159,12 +165,12 @@ pub(crate) fn plan_submit(
                 .map(|()| sqls)
         });
     match ddl {
-        Ok(clone_sqls) => SubmitCopyPlan::Copy {
+        Ok(clone_sqls) => SubmitCopyPlan::Copy(ResultCopy {
             source_table: equivalent.source_table,
             clone_sqls,
             source_last_modified_epoch: equivalent.last_modified_epoch,
             source_execution_runtime_ms: equivalent.execution_runtime_ms,
-        },
+        }),
         Err(reason) => SubmitCopyPlan::Unavailable { reason },
     }
 }
@@ -263,7 +269,7 @@ pub(crate) fn register_lookup(
         }
         IncrementalCopyContract::Declared { identity } => {
             return match (
-                crate::execution::namespace(req.table_namespace.as_deref()),
+                crate::execution::non_blank_namespace(req.table_namespace.as_deref()),
                 req.clone_source_last_modified_epoch,
             ) {
                 (Some(ns), Some(epoch)) => Ok(RegisterLookup::DuckDbIncrementalSource {
@@ -282,7 +288,7 @@ pub(crate) fn register_lookup(
     if warehouse.supports_namespace_reuse() {
         return Ok(RegisterLookup::SourceLogic {
             source: &req.clone_source_table,
-            table_namespace: crate::execution::namespace(req.table_namespace.as_deref()),
+            table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref()),
         });
     }
     Ok(RegisterLookup::Nothing)
@@ -479,12 +485,12 @@ mod tests {
     #[test]
     fn snowflake_equivalent_is_copied_into_the_submit_target() {
         let req = submit("snowflake", "select id from DB.DEV.UP");
-        let SubmitCopyPlan::Copy {
+        let SubmitCopyPlan::Copy(ResultCopy {
             source_table,
             clone_sqls,
             source_last_modified_epoch,
             source_execution_runtime_ms,
-        } = plan_submit(&req, equivalent(PROD, 0, Some(5)))
+        }) = plan_submit(&req, equivalent(PROD, 0, Some(5)))
         else {
             panic!("expected a copy");
         };
@@ -527,7 +533,7 @@ mod tests {
         for (limit, depth, copies) in cases {
             let plan = plan_submit(&duck_submit(limit), duck_equivalent(depth, Some(5)));
             assert_eq!(
-                matches!(plan, SubmitCopyPlan::Copy { .. }),
+                matches!(plan, SubmitCopyPlan::Copy(_)),
                 copies,
                 "limit {limit:?}, depth {depth}: {plan:?}"
             );
