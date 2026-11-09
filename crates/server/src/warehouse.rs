@@ -258,16 +258,11 @@ impl Warehouse {
 
     /// Whether the submit fallback skips its volatile-SQL gate for a
     /// submission that has a copy logic identity. DuckDB computes that
-    /// identity only for its checked copy subset.
-    ///
-    /// `dialect` is the wire spelling. TODO(#50): only the exact lowercase
-    /// spelling `duckdb` qualifies, unlike every other DuckDB rule; this
-    /// case-sensitive quirk is preserved until the dialect-matching ticket.
-    pub fn copy_identity_skips_volatility_gate(self, dialect: &str) -> bool {
-        match self {
-            Self::DuckDb => duckdb::copy_identity_skips_volatility_gate(dialect),
-            _ => false,
-        }
+    /// identity only for its checked copy subset. Like every rule, this
+    /// follows [`Warehouse::from_dialect`], so the dialect's spelling (case,
+    /// surrounding whitespace) does not matter.
+    pub fn copy_identity_skips_volatility_gate(self) -> bool {
+        matches!(self, Self::DuckDb)
     }
 
     /// Whether `values` (submission semantic extras or copy request labels)
@@ -725,14 +720,23 @@ mod tests {
     }
 
     #[test]
-    fn only_exactly_lowercase_duckdb_skips_the_volatility_gate() {
-        assert!(Warehouse::from_dialect("duckdb").copy_identity_skips_volatility_gate("duckdb"));
-        // TODO(#50): mixed case is still refused here (preserved quirk).
-        assert!(!Warehouse::from_dialect("DuckDB").copy_identity_skips_volatility_gate("DuckDB"));
-        for dialect in ["snowflake", "bigquery", "unknown"] {
+    fn only_duckdb_in_any_spelling_skips_the_volatility_gate() {
+        for dialect in ["duckdb", "DuckDB", "DUCKDB", " duckdb "] {
             assert!(
-                !Warehouse::from_dialect(dialect).copy_identity_skips_volatility_gate(dialect),
-                "{dialect}"
+                Warehouse::from_dialect(dialect).copy_identity_skips_volatility_gate(),
+                "{dialect:?}"
+            );
+        }
+        for dialect in [
+            "snowflake",
+            "Snowflake",
+            "bigquery",
+            "unknown",
+            "duckdb, x = y",
+        ] {
+            assert!(
+                !Warehouse::from_dialect(dialect).copy_identity_skips_volatility_gate(),
+                "{dialect:?}"
             );
         }
     }
