@@ -130,7 +130,7 @@ impl Warehouse {
         dependencies: impl IntoIterator<Item = &'a str>,
     ) -> bool {
         match self {
-            Self::Snowflake => crate::sql_norm::request_has_volatile_sql(root, dependencies),
+            Self::Snowflake => snowflake::has_volatile_sql(root, dependencies),
             // Until each dialect has a checked parser and volatile-function set,
             // suppress the SQL-submit clone fallback. A normal build remains
             // available and can still be reused on a later strict match.
@@ -154,7 +154,7 @@ impl Warehouse {
         req: &crate::query_cache::SqlExecution,
     ) -> Option<CopyIdentity> {
         match self {
-            Self::Snowflake => Some(CopyIdentity::NamespaceLogic),
+            Self::Snowflake => Some(snowflake::copy_identity()),
             Self::DuckDb => duckdb::copy_identity(req),
             _ => None,
         }
