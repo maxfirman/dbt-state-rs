@@ -92,12 +92,30 @@ history match and the decision. The client derives:
   becomes `_`, default `append`; `merge` without `unique_key` → `APPEND`);
   otherwise `FULL`. A snapshot run under `--full-refresh` is sent as `FULL`
   (captured with client 2.0.11, `explain_snapshot_history.jsonl` entry 58).
-- `semantic_extras`, from these node config keys only. SQL nodes:
+  - **Unset strategy** (client 2.0.11 on Snowflake,
+    `explain_incremental_append_merge_history.jsonl` `u73`): an incremental
+    with a `unique_key` and no `incremental_strategy` is sent as `APPEND` (2),
+    the request builder's default, although the Snowflake adapter's default
+    strategy is merge. Its Explain trees are the APPEND ones.
+  - **`--full-refresh` incremental** (client 2.0.11, same fixture entries
+    69–70): the client sends no Submit. After the build it sends a write-only
+    `Execution.RecordExecutions` with the request built for a full refresh,
+    so `execution_type` is `FULL` (1), and the rebuilt Target relation's
+    epoch. Hosted answers `records_stored: 1`. The next ordinary run submits
+    the model as APPEND/MERGE again; hosted rebuilds it with "the table was
+    modified after the cached execution" (divergence #90).
+- `semantic_extras`, from these node config keys only (client 2.0.11 also
+  sends `unique_key` and `lookback` for incrementals,
+  `explain_incremental_append_merge_history.jsonl`). SQL nodes:
   `on_schema_change`, `incremental_predicates`, `merge_update_columns`,
   `merge_exclude_columns`, `severity`, `limit`, `where`, `fail_calc`,
   `warn_if`, `error_if`, `store_failures`, `store_failures_as`,
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
+- `tables` for a data test: the relations it reads, with no target. With
+  `store_failures: true` it also holds the test's audit relation (a table
+  named after the test) once a run has written it (client 2.0.11,
+  `explain_data_test_history.jsonl`).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - For a microbatch model, the run's resolved event-time window, added to the
   `semantic_extras` as `__microbatch_event_time_start` and
@@ -148,7 +166,13 @@ wire and in captured JSON.
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
   `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
   sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
-  `--full-refresh`), where this server sends 6 / 6 (#83).
+  `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
+  when a view or snapshot has an equivalent under another name that it will
+  not copy on submit because the execution type is not FULL, where this
+  server sends 6 / 6 (#92). It also sends 1 / 3 when it rebuilds a custom
+  materialization (`DBT_CUSTOM`) that has an equivalent under another name,
+  where this server answers a Result copy (`explain_custom_copy.jsonl` entry
+  9, #86).
 
 ### Decision descriptions
 
@@ -157,6 +181,7 @@ submits (`skip_description`, `execute_description`, `RESULT_COPY_DESCRIPTION`
 and `COPY_CHAIN_LIMIT_DESCRIPTION` in `crates/server/src/decision.rs`).
 `{noun}` is `snapshot` for `SNAPSHOT`, `data test` for `DBT_DATA_TEST`, `seed`
 for `VALUES` and `model` for every other execution type (`node_noun`).
+Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 
 | Decision | `decision_description` | When |
 |---|---|---|
@@ -259,7 +284,12 @@ and fingerprints.
    plus SQL/config/context identity. Reuse needs complete cached results
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
-   upstream epochs. Data tests never get a Result copy.
+   upstream epochs. Data tests never get a Result copy. A failing test is
+   reused like a passing one and the SKIP echoes the cached failure.
+   Hosted differs in two captured cases, both keyed divergences: it reuses a
+   test confirmed with incomplete results and echoes them (#87, crafted), and
+   it ignores a `store_failures` test's own audit relation, which the client
+   reports in `tables` once it exists (#88).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy
@@ -320,7 +350,8 @@ When the fallback applies:
   `request_id`; the first confirmed outcome, including results, is immutable.
   A confirm with `failed_to_clone=true` is recorded as a normal build.
 - `RecordExecutions{records[]}` → `{records_stored}`. Records outcomes without
-  a submit. Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
+  a submit. Client 2.0.11 sends it for an incremental model run under
+  `--full-refresh` (see [What the client computes](#what-the-client-computes)). Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
   executions and selector/deferral node state are written in one transaction.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
@@ -400,7 +431,13 @@ ExplainedDecision{decision=3, skip_rejection_reason=5,
 clone_rejection_reason=null, decision_description=""},
 clone_execution_results{fields:{}}, execution_decision_id}`.
 
-The server generates `clone_sqls`. Snowflake (captured):
+Hosted sends an empty `execution_decision_id` in every captured
+`RegisterClone` response, so the client never asks to explain the copy
+decision; it explains the post-copy submit instead
+(`explain_incremental_copy_history.jsonl`, client 2.0.11). This server mints
+one, so its copy decision can still be explained
+(`clone_lifecycle.rs::register_clone_decision_explains_as_a_clone`). The
+replay compares the response without ids.
 
 ```sql
 CREATE OR REPLACE TRANSIENT TABLE <target>
@@ -431,6 +468,21 @@ Lifecycle:
   epoch: an upstream newer than the copy drifts, one older than the copy but
   newer than the source's build does not (`clone_chain_source_age.jsonl`,
   `clone_chain_upstream_drift.jsonl`).
+- A later submit that cannot adopt the copy (its schema-abstracted logic
+  differs from the inherited one, or none was inherited) rebuilds with the
+  same wire answer as an identity mismatch (6 / 6) and the Decision reason
+  `no_reuse_candidate.copy_logic_mismatch`, which renders no Explain tree.
+  Hosted SKIPs such a submit when it has the source build's SQL text and only
+  the schemas differ (#93, `explain_snapshot_register_clone.jsonl` entry 7).
+
+Client 2.0.11 (VERIFIED LIVE 2026-11-10, `explain_snapshot_register_clone.jsonl`):
+the pre-step needs a deferred node whose relation differs from the dev one,
+which dbt State auto-deferral (`defer_to_target`) provides. A snapshot with
+`target_schema=target.schema` keeps the dev schema in its deferred node, so
+the client sends no RegisterClone for it. Hosted answered a snapshot
+(execution type 7) copy with `ready_to_clone`, 5 / -, and an empty
+`execution_decision_id`, so a RegisterClone copy has no Explain message. This
+server mints an id there; the replay compares responses without ids.
 
 ## Custom `Struct` type
 

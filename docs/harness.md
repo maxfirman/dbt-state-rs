@@ -11,7 +11,7 @@ this server against it. Wire semantics and the captured protocol facts live in
 | Binary (`crates/harness/Cargo.toml`) | Source | Purpose |
 |---|---|---|
 | `record-proxy` | `src/bin/record_proxy.rs` | Recording proxy (below). |
-| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py`, `seed_upstream.py` and `ambiguous_rebuilds.py` for synthetic-epoch sequences that need no warehouse. |
+| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py`, `seed_upstream.py`, `ambiguous_rebuilds.py` and `incomplete_test_results.py` for synthetic-epoch sequences that need no warehouse. |
 | `diff-fuzz` | `src/bin/diff_fuzz.rs` | Opt-in differential discovery against the hosted service; needs `--features fuzz` ([testing.md](testing.md#hosted-discovery-differential-fuzz)). |
 
 ### Recording proxy
@@ -71,7 +71,7 @@ ever mutate `CDO_DEMO_DB`.
 | Lag tolerance | `lag_experiment.sh LABEL {any\|all} LAG {none\|a\|b\|both}`, `lag_buildage.sh`, `lag_isolate.sh`, `lag_docs_example.sh` (`DIRECT=1` runs without the proxy as a control), `lag_matrix.py ARM…`, `copy_candidates.py`, `seed_upstream.py` |
 | Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh` |
 | Selectors and deferral | `selector_experiment.sh {baseline\|query CRIT\|mutate CRIT EDIT\|all-clean}`, `selector_last_write_wins.sh`, `deferral_experiment.sh` |
-| Explain | `explain_capture.py SCENARIO --port PORT` (the shared driver, [below](#shared-live-capture-driver-experimentsexplain_capturepy)), `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`, `ambiguous_rebuilds.py PROBE…` (crafted ambiguous Target relation probes d1–d4; point `PROBE_URL` at your own proxy); `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`) |
+| Explain | `explain_capture.py SCENARIO --port PORT` (the shared driver, [below](#shared-live-capture-driver-experimentsexplain_capturepy)), `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`, `ambiguous_rebuilds.py PROBE…` (crafted ambiguous Target relation probes d1–d4; point `PROBE_URL` at your own proxy); `incomplete_test_results.py PROBE…` (crafted data-test confirms without complete results, #75; same); `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`) |
 | Inspection and validation | `golden_tail.py FILE N [PREFIX]`, `lag_show.py`, `lag_rule_check.py [files]`, `trace_validate.py` and `oracles.py` (correlate captured source, clone and confirm evidence; tested by `trace_validate_test.py`) |
 
 `lag_experiment.sh` bumps upstreams by External modification of dbt-built
@@ -114,7 +114,8 @@ A run:
 4. stops only its own proxy (by pid), deletes the project copy (keep it with
    `--keep-project`), and writes `window.jsonl` (the whole capture),
    `fixture_candidate.jsonl` (only the methods the conformance replay
-   handles; telemetry, `GetStateSelection`, `RecordExecutions` and the like are
+   handles, including `RecordExecutions`; telemetry, `GetStateSelection` and
+   the like are
    dropped and counted), `steps.json` (bound steps and row offsets) and the
    oracle report on stdout.
 
@@ -157,11 +158,14 @@ SCENARIO = Scenario(
   through; write a literal `$` as `$$`.
 - `Write(path, text)` / `Remove(path)`: the path must stay inside the project
   and contain the run id, so tracked jaffle-shop files are never edited.
-- `Build(*select, target="prod_demo", full_refresh=False, args=())`: every
-  selector must name a per-run node and must not start with `+`, so shared
-  nodes are never rebuilt. `args` adds flag/value pairs from `BUILD_FLAGS`
-  only (`--event-time-start`, `--event-time-end`: the microbatch window);
-  anything else is refused at bind time.
+- `Build(*select, target="prod_demo", full_refresh=False, test_failures=False, args=())`:
+  every selector must name a per-run node and must not start with `+`, so
+  shared nodes are never rebuilt. Set `test_failures=True` when a selected
+  data test is meant to fail: dbt then exits 1, which the step accepts (any
+  other non-zero exit still stops the run; see `data_test_execute.py`). `args`
+  adds flag/value pairs from `BUILD_FLAGS` only (`--event-time-start`,
+  `--event-time-end`: the microbatch window); anything else is refused at bind
+  time.
 - `Sql(*statements, target="prod_demo")`: one `dbt run-operation` of a
   temporary macro that refuses a target database other than `CDO_DEMO_DB`.
   Every statement must name only three-part per-run objects in
@@ -173,7 +177,8 @@ SCENARIO = Scenario(
 - `Explain(select, intent, node=None, decision=None, execution_type=None,
   history=True, target="prod_demo")`: one `dbt state explain --verbose` per
   node. Set `node` to the `dbt_node_name` when the selector is not the name
-  (data tests: `test.jaffle_shop.<test>.*`). `decision=None` records whatever
+  (data tests: `test.jaffle_shop.<test>.*` for a generic test,
+  `test.jaffle_shop.<test>*` for a singular one, whose unique id has no hash). `decision=None` records whatever
   hosted decides.
 - Use `target="dev_clone"` for steps against the dev target; it is checked
   like `prod_demo`.
