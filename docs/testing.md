@@ -19,10 +19,33 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ./scripts/duckdb-ci.sh                                   # CI passes --jobs 4
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
+python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
 build the `fuzz` feature, so it never contacts the hosted service.
+
+## Explain tree census
+
+`experiments/explain_census.py` counts the Explain trees in the tracked
+fixtures per node kind × decision class: trees by origin (real client and its
+version, or crafted `state-probe`), empty trees, and each marker and badge. It
+names the fixture and entry of any `INFO`, `EM_UNSPECIFIED`, `EB_UNSPECIFIED`
+or unmapped tree. Method and output:
+[explain-catalog.md](explain-catalog.md#explain-tree-census).
+
+```bash
+python3 experiments/explain_census.py                    # tracked fixtures only
+python3 experiments/explain_census.py "$GOLDEN_DIR" more.jsonl   # plus capture files or directories
+python3 experiments/explain_census.py --no-fixtures "$GOLDEN_DIR"  # one campaign alone
+```
+
+Every #40 capture ticket reruns it after promoting its fixtures. It then
+updates, in `docs/explain-catalog.md`, the census table, the vocabulary line
+counts, the "not observed across N trees (date)" entries and the evidence
+column of the coverage table. A finding (an `INFO` line, an explicit
+unspecified value, or a tree no submit minted) needs a catalog entry before the
+fixture is promoted.
 
 ## Evidence rules and release gate
 
