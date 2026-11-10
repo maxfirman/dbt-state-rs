@@ -117,11 +117,16 @@ server keeps the conservative behavior described.
   (`explain.rs::is_characterized`) but no view copy was ever captured; the
   live attempt is part of #76. The SHAPE 7 query-changed tree is replayed from
   `explain_snapshot_history.jsonl` (FULL, VIEW and snapshot, client 2.0.11).
-- **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
-  Explain anchor, so its per-upstream listing renders `<FRESH>` and no
-  summary line. That matches every capture so far, where the upstream epoch
-  had moved back since the build. Hosted's tree for a query change whose
-  upstream also drifted is unobserved
+- **SHAPE 7 without a matched build (#89).** An identity-mismatch rebuild has
+  no Explain anchor (ADR 0005), so its per-upstream listing renders `<FRESH>`
+  and no summary line. Hosted judges that listing against the node's latest
+  build: it adds `upstream data is up to date` when every upstream epoch
+  equals the one that build recorded (`explain_incremental_microbatch.jsonl`
+  entry 40, a moving-window microbatch rebuild), and omits it in every other
+  capture, where the upstream epoch had moved back since the build. The local
+  tree lacks that line; keyed explain gap: `explain_incremental_microbatch.jsonl`
+  entry 40. Hosted's tree for a query change whose upstream also drifted is
+  unobserved
   ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the

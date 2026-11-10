@@ -171,5 +171,11 @@
     "entry": 60,
     "local_variant": "empty_tree",
     "reason": "DECISION DIVERGENCE explain of entry 58 (#83): hosted renders its node-query-unchanged tree for the execution-type change; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
+  },
+  {
+    "fixture": "explain_incremental_microbatch.jsonl",
+    "entry": 40,
+    "local_variant": "explain",
+    "reason": "EXPLAIN EVIDENCE GAP explain of entry 38 (#89): a moving-window microbatch rebuild (identity mismatch, same decision and description). Hosted ends the SHAPE 7 freshness listing with 'upstream data is up to date' because the upstream epoch equals the one the node's latest build (entry 34) recorded; an identity-mismatch rebuild has no Explain anchor here (ADR 0005), so the local tree omits that line."
   }
 ]
