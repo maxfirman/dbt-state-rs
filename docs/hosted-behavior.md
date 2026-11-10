@@ -15,7 +15,7 @@ Open questions and deliberate divergences live in
 | SQL model (view, table, incremental) | yes | Logic identity: normalized rendered SQL, all `semantic_extras` the client sends, and dependency definitions |
 | Snapshot (et=7) | yes | Same as models (`snapshot_reuse.jsonl`) |
 | Seed (`SubmitValues`) | yes | `values_hash` plus seed config (`seed_values_hash.jsonl`) |
-| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) plus complete cached results (`c1_test_node_identity.jsonl`) |
+| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) (`c1_test_node_identity.jsonl`). A failing test is reused like a passing one. Hosted also reuses a test confirmed with incomplete or no cached results and echoes them (crafted, `explain_incomplete_test_results.jsonl`); this server requires complete results (divergence #87) |
 | Custom materialization (et=11) | yes | Same as models; the public docs say it is never reused, but hosted skips an unchanged one (`custom_materialization_reuse.jsonl`) |
 | Python model | no | Always builds |
 
@@ -88,6 +88,7 @@ reproducible skip.
 | View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅, codes 6 / 6 ❌ (#92) |
 | Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
+| Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ❌ the server copies it (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
 | Resubmit the copy with changed logic | build | ✅ |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |

@@ -98,6 +98,10 @@ history match and the decision. The client derives:
   `warn_if`, `error_if`, `store_failures`, `store_failures_as`,
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
+- `tables` for a data test: the relations it reads, with no target. With
+  `store_failures: true` it also holds the test's audit relation (a table
+  named after the test) once a run has written it (client 2.0.11,
+  `explain_data_test_history.jsonl`).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - `table_namespace`: from the warehouse connection identifier
   (account/project/host).
@@ -139,7 +143,10 @@ wire and in captured JSON.
   `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
   when a view or snapshot has an equivalent under another name that it will
   not copy on submit because the execution type is not FULL, where this
-  server sends 6 / 6 (#92).
+  server sends 6 / 6 (#92). It also sends 1 / 3 when it rebuilds a custom
+  materialization (`DBT_CUSTOM`) that has an equivalent under another name,
+  where this server answers a Result copy (`explain_custom_copy.jsonl` entry
+  9, #86).
 
 ### Decision descriptions
 
@@ -148,6 +155,7 @@ submits (`skip_description`, `execute_description`, `RESULT_COPY_DESCRIPTION`
 and `COPY_CHAIN_LIMIT_DESCRIPTION` in `crates/server/src/decision.rs`).
 `{noun}` is `snapshot` for `SNAPSHOT`, `data test` for `DBT_DATA_TEST`, `seed`
 for `VALUES` and `model` for every other execution type (`node_noun`).
+Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 
 | Decision | `decision_description` | When |
 |---|---|---|
@@ -250,7 +258,12 @@ and fingerprints.
    plus SQL/config/context identity. Reuse needs complete cached results
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
-   upstream epochs. Data tests never get a Result copy.
+   upstream epochs. Data tests never get a Result copy. A failing test is
+   reused like a passing one and the SKIP echoes the cached failure.
+   Hosted differs in two captured cases, both keyed divergences: it reuses a
+   test confirmed with incomplete results and echoes them (#87, crafted), and
+   it ignores a `store_failures` test's own audit relation, which the client
+   reports in `tables` once it exists (#88).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy

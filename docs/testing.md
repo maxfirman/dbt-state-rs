@@ -121,6 +121,11 @@ Postgres.
   `copy_candidate_arms` (which build hosted reuses or copies when the latest
   build no longer qualifies). Most of its fixtures also replay in
   `conformance.rs`.
+- `data_test_explain.rs`: pins what the data-test Explain captures show by
+  fixture inspection: passing and failing tests render the same tree, the
+  EXECUTE tree does not depend on the rebuild reason, a `store_failures` test
+  reports its audit relation (#88), and hosted serves incomplete cached
+  results (#87). Both fixtures also replay in `conformance.rs`.
 
 ## DuckDB acceptance gate
 
@@ -172,7 +177,9 @@ returns, and a `reason`. Kinds:
 - **Whole-response gap** (no `ignore_fields`): the local response differs, for
   example missing source history for a hosted clone or a deliberate
   safety-floor divergence. For a submit, the local variant must equal
-  `local_variant`.
+  `local_variant`. A hosted rebuild that the server decides as another class
+  (a decision divergence, spec #40) needs one; its hosted confirm then has no
+  local counterpart.
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.

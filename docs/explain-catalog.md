@@ -33,6 +33,14 @@ Source fixtures (`golden/fixtures/`):
   change; FULL and VIEW logic-change rebuilds (SHAPE 7); a snapshot under
   `--full-refresh`. Captured by `experiments/explain_capture.py
   snapshot_explain`.
+- `explain_custom_history.jsonl` (client 2.0.11): custom materialization
+  (DBT_CUSTOM) first build, SKIPs, source drift under the default and a `0s`
+  Lag tolerance, upstream query change, logic change and a `--full-refresh`
+  rerun. Captured by `experiments/explain_capture.py custom_explain`.
+- `explain_custom_copy.jsonl` (client 2.0.11): a custom node and a FULL
+  control built in `dev_clone` over equivalent prod builds. Hosted copies only
+  the FULL one; its rebuild of the custom node is a keyed divergence (#86).
+  Captured by `experiments/explain_capture.py custom_copy`.
 - `explain_ambiguous_rebuilds.jsonl`: crafted probes d1–d4 for the
   [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
   first-build trees there are keyed divergences: the server decides
@@ -46,6 +54,14 @@ Source fixtures (`golden/fixtures/`):
   into `dev_clone` by the client's RegisterClone pre-step, then its post-copy
   SKIP (a keyed divergence, #93). Captured by `experiments/explain_capture.py
   snapshot_register_clone`.
+- `explain_data_test_history.jsonl` (client 2.0.11): data-test first
+  execution, unchanged rerun, logic change and upstream data drift for a
+  passing, a failing and a `store_failures` test. Captured by
+  `experiments/explain_capture.py data_test_execute`.
+- `explain_incomplete_test_results.jsonl`: crafted probes, a data test
+  confirmed without complete cached results, then resubmitted
+  (`experiments/incomplete_test_results.py`). Hosted SKIPs; keyed
+  divergence #87.
 
 ## How to read this catalog
 
@@ -66,7 +82,7 @@ original characterization capture; their meaning:
 
 | SHAPE | Tree |
 |---|---|
-| 0 | FULL model SKIP with no genuine upstreams: no "upstream model queries" line; freshness body `no upstream dependencies`. |
+| 0 | FULL model or custom materialization SKIP with no genuine upstreams: no "upstream model queries" line; freshness body `no upstream dependencies`. |
 | 1, 2, 4 | SKIPs that carry `upstream model queries have not changed` (a view, a data test, or any node with a genuine upstream). |
 | 7 | Node-query-changed EXECUTE (also the fallback for several rebuild reasons; see [Shape selection](#shape-selection)). |
 | 8 | SKIP with the anchored per-upstream `<FRESH>` listing (`explain_tolerance.jsonl` entry 1). |
@@ -95,8 +111,10 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. The evidence column gives the census tree counts by origin
 (see [Explain tree census](#explain-tree-census)). The real-client trees in the
 tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-13 in `explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl` and
-`explain_snapshot_register_clone.jsonl`, which come from 2.0.11.
+9 in `explain_snapshot_history.jsonl`, the 4 in `explain_copy_probes.jsonl`
+and `explain_snapshot_register_clone.jsonl`, the 11 in
+`explain_data_test_history.jsonl` and the 10 in `explain_custom_history.jsonl`
+and `explain_custom_copy.jsonl`, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
 |---|---|---|---|---|---|---|
@@ -107,10 +125,10 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
 | 5 | DELETE_INSERT (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 6 | MICROBATCH (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 7 | SNAPSHOT | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 4, EXECUTE 4, all client 2.0.11 (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`) |
-| 8 | DBT_DATA_TEST | characterized (live) | pending → #75 | out of scope → #68 | S | SKIP 1 (client) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 6 (3 client 2.0.11, 1 client 2.0.6, 2 crafted); EXECUTE 8 (client 2.0.11, `explain_data_test_history.jsonl`) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
 | 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 1 (client 2.0.6); EXECUTE 2 (client 2.0.11); CLONE 0 |
-| 11 | DBT_CUSTOM | pending → #74 | pending → #74 | pending → #74 | — | none |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | local-only, empty tree¹⁰ | S E | SKIP 5, EXECUTE 5, all client 2.0.11 (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Except the three rebuild reasons hosted never makes, which are
@@ -155,6 +173,19 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
    `an equivalent seed exists under another name so we cloned that one`).
    This server never copies seeds, so the decision diverges (#91) and the
    cell stays fenced until #91 lands. The captured tree is in [SEED](#seed).
+9. For a first execution, a logic change and upstream data drift
+   ([DATA TEST](#data-test)). Two rebuilds are local-only, empty tree,
+   because hosted SKIPs the test instead: cached results that are
+   incomplete (`no_reuse_candidate.incomplete_cached_test_results`, crafted
+   only, divergence #87) and a `store_failures` test whose audit relation
+   newly appears in its inputs (`dependency_set_changed`, divergence #88).
+   The other data-test rebuild reasons have no capture and render nothing.
+10. Hosted does not copy a custom node: built in `dev_clone` over an
+    equivalent prod build, it rebuilds with codes 1 / 3
+    (EXECUTION_TYPE_NOT_FULL) and the first-build tree, where it copies a FULL
+    control (`explain_custom_copy.jsonl`, one attempt). The client sends
+    `RegisterClone` only for incrementals and snapshots. This server copies the
+    custom node, a decision divergence (#86), and renders no tree for it.
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -162,29 +193,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 81 trees in the
+Line counts from the [census](#explain-tree-census) over the 104 trees in the
 tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(593 lines without a marker, 638 without a badge). Only an explicit `0` is
+(712 lines without a marker, 770 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 204 lines |
-| ExplainMarker | FAIL (2) | ✅ 99 lines |
-| ExplainMarker | INFO (3) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 67 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 3 lines (SHAPE 7, `explain_snapshot_history.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 66 lines |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 24 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 243 lines |
+| ExplainMarker | FAIL (2) | ✅ 108 lines |
+| ExplainMarker | INFO (3) | not observed across 104 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 104 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 75 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 4 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 78 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 30 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 44 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 14 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | FRESH (1) | ✅ 39 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 47 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 15 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 104 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 81 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 13 from client 2.0.11 and 59 for crafted
+1. The 104 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 34 from client 2.0.11 and 61 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -206,7 +237,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (81 trees, none empty, no findings):
+Tracked fixtures, 2026-11-10 (104 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -215,12 +246,15 @@ Tracked fixtures, 2026-11-10 (81 trees, none empty, no findings):
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | SNAPSHOT | SKIP | 4 | client 2.0.11 |
 | SNAPSHOT | EXECUTE | 4 | client 2.0.11 |
-| DBT_DATA_TEST | SKIP | 1 | client 2.0.6 |
+| DBT_DATA_TEST | SKIP | 6 | 3 client 2.0.11, 2 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 8 | client 2.0.11 |
 | VALUES | SKIP | 1 | crafted |
 | VALUES | EXECUTE | 5 | crafted |
 | VALUES | CLONE | 1 | client 2.0.11 (fenced, #91) |
 | VIEW | SKIP | 1 | client 2.0.6 |
 | VIEW | EXECUTE | 2 | client 2.0.11 |
+| DBT_CUSTOM | SKIP | 5 | client 2.0.11 |
+| DBT_CUSTOM | EXECUTE | 5 | client 2.0.11 |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -251,12 +285,12 @@ For a **CLONE** decision the latter two are suffixed **`(vs clone)`**.
 ```
 
 The `upstream model queries have not changed` line is omitted for a FULL model
-with no genuine upstreams (SHAPE 0) and present otherwise
-(`explain.rs::has_upstream_query_line`).
+or custom materialization with no genuine upstreams (SHAPE 0) and present
+otherwise (`explain.rs::has_upstream_query_line`).
 
 Freshness body (`explain.rs::data_freshness_analysis_fresh`):
 
-- **No genuine upstreams:** a FULL model renders
+- **No genuine upstreams:** a FULL model or custom materialization renders
   `- no upstream dependencies [SUCCESS]`; any other kind (e.g. a view) renders
   `- upstream data is up to date [SUCCESS]`.
 - **Genuine upstreams:** one child per upstream, then a summary:
@@ -403,6 +437,33 @@ the prod build's default schema but not in the dev submit's). It rebuilds
 with the Decision reason `no_reuse_candidate.copy_logic_mismatch` and renders
 no tree (decision divergence → #93).
 
+## DBT_CUSTOM (custom materialization)
+
+`explain_custom_history.jsonl`, `explain_custom_copy.jsonl` (client 2.0.11).
+The client sends execution type 11 for a materialization outside the built-in
+list (the scenarios use a per-run project macro that runs
+`create or replace table … as (sql)`), also under `--full-refresh`. A custom
+node renders the MODEL trees above exactly, with `model` as the noun, and
+with no genuine upstreams it renders SHAPE 0 like a FULL model
+(`no upstream dependencies`, no `upstream model queries` line). Its
+`decision_description` strings are the model ones.
+
+| Scenario (node) | Decision | Tree |
+|---|---|---|
+| first execution (`c74cd`) | EXECUTE | [First build](#first-build) |
+| unchanged rerun, no upstream (`c74c0`) | SKIP | SKIP, SHAPE 0 |
+| unchanged rerun, source upstream (`c74cd`) | SKIP | SKIP, `<FRESH>` listing, `upstream data is up to date` |
+| unchanged rerun, model upstream (`c74cl`) | SKIP | SKIP, `<FRESH>` listing, no summary (epoch moved back) |
+| its source gained rows, default 45 minute tolerance (`c74cd`) | SKIP (`is_stale`) | SKIP, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
+| its source gained rows, `lag_tolerance: 0s` (`c74cz`) | EXECUTE | SHAPE 9, data only: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated` |
+| upstream query change (`c74cu`) | EXECUTE | SHAPE 9 with the per-upstream query listing |
+| its own logic changed (`c74cl`) | EXECUTE | SHAPE 7 |
+| unchanged, run under `--full-refresh` (`c74cf`) | SKIP | SKIP, `<FRESH>` listing, no summary |
+| built in `dev_clone` over an equivalent prod build (`c74k`) | EXECUTE (hosted) | [First build](#first-build); this server copies it and renders nothing (#86) |
+
+Unlike a snapshot, a custom node under `--full-refresh` is still submitted as
+DBT_CUSTOM, and hosted reuses it.
+
 ## DATA TEST
 
 No `table analysis` section.
@@ -418,8 +479,54 @@ No `table analysis` section.
       - no updates since test last executed
       - last updated: «rel_time»
 ```
-One `upstream dependencies` child per tested upstream. Data test EXECUTE is
-unobserved.
+One `upstream dependencies` child per tested upstream. A failing test SKIPs
+like a passing one and is served its cached failure
+(`explain_data_test_history.jsonl`).
+
+### EXECUTE
+```
+- data freshness analysis
+  - upstream dependencies
+    - "«FQN»"                                          (no badge)
+      - last updated: «rel_time»
+```
+VERIFIED LIVE 2026-11-10 (`explain_data_test_history.jsonl`, client 2.0.11).
+No query analysis, no badges and no markers. The same tree for a first
+execution, a logic change (`the test query has changed` never appears) and
+upstream data drift (no `<OUTDATED>`, no `«gap»`), although the last two have
+a matched build. Each upstream is listed from the decision-time `tables`, so
+after drift `last updated` is the new epoch. The listing is the
+[CLONE](#clone-model) one without an anchor
+(`explain.rs::clone_upstream_dependencies`).
+
+The tree does not depend on the test's outcome: the passing and the failing
+test render the same tree in every round, and the outcome (`failures`,
+`should_warn`, `should_error`) only arrives later in the ConfirmExecution of
+that execution (`crates/harness/tests/data_test_explain.rs`).
+
+Rendered for `first_build`, `no_reuse_candidate.identity_mismatch` and
+`upstream_outdated` when the test has at least one upstream. Nothing else:
+
+- **`store_failures: true`.** Once the test has written its audit relation (a
+  table named after the test in the target schema), the client reports that
+  relation in `tables` too. Hosted neither rebuilds for it nor lists it: an
+  unchanged rerun SKIPs with the tree above, and after drift the EXECUTE tree
+  lists only the source. This server sees a name the build did not record and
+  rebuilds for `dependency_set_changed`, which renders nothing (divergence
+  #88, keyed gaps `explain_data_test_history.jsonl` 18, 21, 27, 45).
+- **Incomplete cached results** (crafted only). A test confirmed with
+  `execution_results: null`, or with only `failures`, is SKIPped by hosted,
+  which serves what was confirmed (`{"fields": {}}` or `failures` alone) with
+  the ordinary SKIP tree. This server rebuilds for
+  `no_reuse_candidate.incomplete_cached_test_results`, which renders nothing
+  (divergence #87, keyed gaps `explain_incomplete_test_results.jsonl` 2, 3,
+  6, 7). Client 2.0.11 always confirms all three result fields.
+- `upstream_query_changed`, `no_reuse_candidate.failed_reuse_qualification`,
+  and a test with no upstreams: no data-test capture.
+
+### CLONE
+
+Out of scope → #68.
 
 ## CLONE (model)
 
@@ -559,7 +666,9 @@ Not present in any capture; render nothing rather than invent:
 - **Badges:** `EB_UNSPECIFIED` (0); census counts in
   [Observed vocabulary](#observed-vocabulary).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0); same.
-- **Data test EXECUTE** tree.
+- **Data test EXECUTE** for `upstream_query_changed`,
+  `no_reuse_candidate.failed_reuse_qualification` and a test without
+  upstreams ([DATA TEST](#data-test)).
 - **`Explain.GetUpstreamDependencyChanges`**: the dbt Fusion client never calls
   it, so it cannot be captured through the recording proxy. The server keeps an
   empty stub. See [protocol.md](protocol.md).
@@ -585,6 +694,9 @@ Explain selects a shape from the persisted decision class, Decision reason
 | seed EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | seed EXECUTE | `no_reuse_candidate.identity_mismatch` | SEED, data changed (unchanged when the skip rejection code is 8) |
 | seed, other | any other reason | empty tree |
+| data test SKIP | `reused.fresh`, `reused.tolerated_stale`, `reused.within_lag_tolerance` | data-test SKIP |
+| data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`, `upstream_outdated`, with at least one upstream | data-test EXECUTE |
+| data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, #88), or no upstreams | empty tree |
 | SKIP | `reused.fresh`, `reused.tolerated_stale`, `reused.within_lag_tolerance` | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream; `upstream_query_changed` with an anchor | SHAPE 9 |
