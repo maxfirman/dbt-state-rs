@@ -230,6 +230,37 @@ with tempfile.TemporaryDirectory() as work:
         fail("every dbt invocation uses the validated profiles dir (Codex #85)", seen)
     ok(f"every dbt invocation uses the validated profiles dir ({len(seen)} invocations)")
 
+# --- build flags (#73: microbatch event-time window) ------------------------------
+WINDOW = ("--event-time-start", "2026-11-01", "--event-time-end", "2026-11-03")
+mb = ec.Scenario("mb", "", ("m",), [ec.Build("${m}", args=WINDOW)])
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(ec.bind(mb, RUN), 1, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    seen = []
+    real_run = ec.subprocess.run
+    ec.subprocess.run = lambda cmd, **kw: seen.append(cmd) or _Done()
+    try:
+        run.run_step(0, run.bound.steps[0])
+    finally:
+        ec.subprocess.run = real_run
+    cmd = seen[0] if seen else []
+    if [a for a in cmd if a in WINDOW] != list(WINDOW) or f"m_{RUN}" not in cmd:
+        fail("a Build passes its event-time window flags to dbt build", cmd)
+    ok("a Build passes its event-time window flags to dbt build")
+expect_refusal(
+    "a Build flag outside the allowed set is refused at bind time",
+    lambda: ec.bind(ec.Scenario("bad", "", ("m",), [ec.Build("${m}", args=("--target", "dev"))]), RUN),
+)
+expect_refusal(
+    "a Build flag without its value is refused at bind time",
+    lambda: ec.bind(ec.Scenario("bad", "", ("m",), [ec.Build("${m}", args=("--event-time-end",))]), RUN),
+)
+expect_refusal(
+    "a Build flag value that looks like another flag is refused",
+    lambda: ec.bind(ec.Scenario("bad", "", ("m",),
+                                [ec.Build("${m}", args=("--event-time-end", "--full-refresh"))]), RUN),
+)
+
 
 # --- oracle -------------------------------------------------------------------
 def submit(node, variant, edid, rid=None, et=1, decision=None):
