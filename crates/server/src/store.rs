@@ -683,7 +683,8 @@ impl Store {
                    execution_decision_id, decision, execution_type,
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
-                   freshness_tolerance_ms, build_age_ms, skip_rejection_reason
+                   freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
+                   unmatched_upstreams_unchanged
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -745,6 +746,9 @@ pub struct ExplainDecisionRow {
     pub build_age_ms: Option<i64>,
     /// The decision's wire skip rejection code (migration 0016).
     pub skip_rejection_reason: Option<i32>,
+    /// Migration 0017: a rebuild's upstreams unchanged since the latest build
+    /// in scope that did not have its identity.
+    pub unmatched_upstreams_unchanged: Option<bool>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -799,6 +803,7 @@ mod tests {
             freshness_tolerance_ms: None,
             build_age_ms: None,
             skip_rejection_reason: None,
+            unmatched_upstreams_unchanged: None,
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),

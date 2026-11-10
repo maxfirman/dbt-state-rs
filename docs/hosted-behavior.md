@@ -28,7 +28,8 @@ Open questions and deliberate divergences live in
 | View, logic unchanged, upstream advanced | 10 | skip (the client omits upstreams from `tables[]`) | ✅ |
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
-| Incremental `--full-refresh` | — | client bypasses dbt State (no submit) | ✅ |
+| Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
+| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution") | ❌ builds with the generic rebuild description (#90) |
 | Seed content change | VALUES | build (new `values_hash`) | ✅ |
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |
@@ -112,6 +113,10 @@ reproducible skip.
   it with `is_stale=true`; the server copies on the first submit. This
   interaction is open (see the `CHARACTERIZATION_ONLY` comments in
   `crates/harness/tests/conformance.rs`).
+- **Post-copy incremental submit** (#93, as for the snapshot below): after the dev-clone pre-step copies
+  an incremental that reads a source in the prod schema, hosted skips the
+  unchanged submit; the server does not adopt the copy and rebuilds
+  (`explain_incremental_copy_history.jsonl`).
 - **Incremental self-reference after a copy**: hosted skips the final resubmit
   in `clone_chain_source_age.jsonl`; the server rebuilds (pinned by
   `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`).

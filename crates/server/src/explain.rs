@@ -67,6 +67,10 @@ pub struct ExplainNode {
     pub build_age_ms: Option<i64>,
     /// The decision's wire skip rejection code, when persisted.
     pub skip_rejection_reason: Option<i32>,
+    /// A rebuild without a matched build: whether every genuine upstream's
+    /// epoch is unchanged since the latest build in scope that did not have
+    /// the workload's identity (migration 0017). Judges the SHAPE 7 summary.
+    pub unmatched_upstreams_unchanged: Option<bool>,
     /// The matched prior `executions` row (freshness anchor). ADR 0005: present
     /// only when the SKIP/reuse decision matched a prior build; `None` for
     /// first-build EXECUTE / clone. The per-upstream freshness SUBTREE
@@ -197,7 +201,10 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
 ///     local-only: hosted never copies one, #86).
-///   - everything else (incremental, any other execution_type): NONE.
+///   - append and merge incrementals (APPEND=2, MERGE=3): Skip | Build
+///     (Clone out of scope → #97).
+///   - everything else (other incremental strategies, any other
+///     execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
@@ -241,6 +248,13 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         // 2.0.11). Hosted never copies a custom node (explain_custom_copy.jsonl,
         // #86), so CLONE stays fenced: our copy of one is local-only.
         Ok(ModelExecutionType::DbtCustom) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
+        // VERIFIED LIVE 2026-11-10 (explain_incremental_append_merge_history.jsonl,
+        // client 2.0.11): an append or merge incremental renders the MODEL
+        // trees. CLONE stays fenced: see the INCREMENTAL section of
+        // docs/explain-catalog.md for its status.
+        Ok(ModelExecutionType::Append | ModelExecutionType::Merge) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         _ => false,
@@ -512,13 +526,18 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
 }
 
 /// Every genuine upstream's current epoch equals the epoch recorded for it at
-/// the anchored build. `false` without an anchor.
+/// the anchored build. Without an anchor, a rebuild is judged against the
+/// latest build in scope whose identity did not match, as recorded at
+/// decision time (VERIFIED LIVE 2026-11-10: hosted ends an incremental's
+/// SHAPE 7 listing with `upstream data is up to date` when the upstream
+/// epoch equals the one recorded at that build,
+/// explain_incremental_append_merge_history.jsonl, and with nothing when it
+/// moved back, explain_snapshot_history.jsonl).
 fn upstreams_unchanged(node: &ExplainNode) -> bool {
-    anchored_verdicts(node).is_some_and(|v| {
-        !v.is_empty()
-            && v.iter()
-                .all(|u| u.current_epoch == Some(u.anchor_epoch) && !u.unprovable)
-    })
+    match node.anchor.as_ref() {
+        Some(prev) => decision::upstream_freshness(freshness_inputs(node), prev).unchanged(),
+        None => node.unmatched_upstreams_unchanged == Some(true),
+    }
 }
 
 // ── SEED ────────────────────────────────────────────────────────────────────
@@ -742,12 +761,16 @@ fn rel_time_line(up: &InputTable) -> String {
 /// inputs, against the anchor.
 fn anchored_verdicts(node: &ExplainNode) -> Option<Vec<decision::UpstreamVerdict>> {
     let prev = node.anchor.as_ref()?;
-    let inputs = decision::FreshnessInputs {
+    Some(decision::upstream_freshness(freshness_inputs(node), prev).upstreams)
+}
+
+/// The persisted decision-time evidence per-upstream freshness is judged on.
+fn freshness_inputs(node: &ExplainNode) -> decision::FreshnessInputs<'_> {
+    decision::FreshnessInputs {
         execution_type: node.execution_type,
         input_tables: &node.input_tables,
         target_table: node.target_table.as_deref(),
-    };
-    Some(decision::upstream_freshness(inputs, prev).upstreams)
+    }
 }
 
 /// Whether the anchored decision has ANY drifted (OUTDATED) upstream — the
@@ -1075,6 +1098,7 @@ mod tests {
             tolerance_ms: 0,
             build_age_ms: None,
             skip_rejection_reason: None,
+            unmatched_upstreams_unchanged: None,
             anchor: None,
         }
     }
@@ -1572,6 +1596,10 @@ mod tests {
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
                     | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
+                    | (2, DecisionKind::Skip) // append SKIP (explain_incremental_append_merge_history)
+                    | (2, DecisionKind::Build) // append EXECUTE
+                    | (3, DecisionKind::Skip) // merge SKIP
+                    | (3, DecisionKind::Build) // merge EXECUTE
             )
         };
 
@@ -1791,16 +1819,23 @@ mod tests {
 
     /// A rebuild over a RegisterClone copy the submit could not adopt is a
     /// decision hosted makes differently: hosted reused the copy (#93,
-    /// explain_snapshot_register_clone.jsonl entry 7), so it renders nothing,
-    /// never a "query has changed" tree.
+    /// explain_snapshot_register_clone.jsonl entry 7 and
+    /// explain_incremental_copy_history.jsonl entries 12-15), so it renders
+    /// nothing, never a "query has changed" tree, for a model, a snapshot and
+    /// an incremental alike.
     #[test]
     fn copy_logic_mismatch_renders_nothing() {
-        for et in [ModelExecutionType::Full, ModelExecutionType::Snapshot] {
+        for et in [
+            ModelExecutionType::Full,
+            ModelExecutionType::Snapshot,
+            ModelExecutionType::Append,
+            ModelExecutionType::Merge,
+        ] {
             let mut n = node(DecisionKind::Build, et as i32, decision::DESC_EXECUTE);
             n.reason = Some(DecisionReason::NoReuseCandidate(
                 NoCandidate::CopyLogicMismatch,
             ));
-            assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
         }
     }
 

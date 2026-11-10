@@ -73,6 +73,19 @@ server keeps the conservative behavior described.
   (`clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`,
   fixture `clone_chain_source_age.jsonl`). #93 is a cleaner post-copy SKIP
   this server rebuilds (same SQL text, only the schemas differ).
+- **What a RecordExecutions row means to hosted decisions (#90).** After a
+  `--full-refresh` incremental run, which client 2.0.11 records as a FULL
+  execution, hosted judges the next APPEND/MERGE submit against the last
+  incremental build. Whether hosted leaves recorded executions out of
+  decisions, or prefers the latest row of the submit's execution type, is not
+  isolated; #83 shows hosted does consider another execution type for a
+  submit.
+- **Incremental CLONE (#97).** No APPEND/MERGE CLONE tree is captured on
+  client 2.0.11. Hosted answers `RegisterClone` with an empty
+  `execution_decision_id`, so the dev-clone copy decision is never explained;
+  one submit-time probe (`explain_incremental_submit_copy.jsonl`) was rebuilt
+  rather than copied, while client 2.0.6 did get an incremental submit copy
+  (`clone_failed_fallback.jsonl`). The cells stay fenced.
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
   as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
@@ -129,10 +142,13 @@ server keeps the conservative behavior described.
   tree is replayed from `explain_snapshot_history.jsonl` (FULL, VIEW and
   snapshot, client 2.0.11).
 - **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
-  Explain anchor, so its per-upstream listing renders `<FRESH>` and no
-  summary line. That matches every capture so far, where the upstream epoch
-  had moved back since the build. Hosted's tree for a query change whose
-  upstream also drifted is unobserved
+  Explain anchor, so its per-upstream listing renders `<FRESH>`. The
+  `upstream data is up to date` summary follows the epochs recorded at the
+  latest build in scope, persisted with the decision
+  (`node_decisions.unmatched_upstreams_unchanged`, migration 0017): present
+  when they are unchanged (`explain_incremental_append_merge_history.jsonl`),
+  absent when one moved back (`explain_snapshot_history.jsonl`). Hosted's tree
+  for a query change whose upstream also drifted is unobserved
   ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
@@ -172,6 +188,15 @@ replay fails when an entry becomes unused or resolved
   `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
   Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
   and 60 (`empty_tree`).
+- **Incremental rebuild after a `--full-refresh` run (#90).** Client 2.0.11
+  records the full refresh with `RecordExecutions` as a FULL execution, then
+  resubmits the model as APPEND/MERGE. Both rebuild with 6 / 6; hosted says
+  "the table was modified after the cached execution" (it judges against the
+  last incremental build), the server takes the recorded FULL row as the
+  latest, records `no_reuse_candidate.execution_type_changed` with the
+  generic rebuild description, and renders no Explain tree. Keyed gaps:
+  `explain_incremental_append_merge_history.jsonl` entries 74–75
+  (description) and 78–79 (`empty_tree`).
 - **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
   - Seed copy (#91). Hosted copies a seed loaded with the same values under
     another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
@@ -192,6 +217,19 @@ replay fails when an entry becomes unused or resolved
     Keyed gaps: `explain_snapshot_register_clone.jsonl` entries 7 and 8
     (`empty_tree`). The open "RegisterClone source-age chain, entry 4"
     question above may have the same cause.
+  - Post-copy incremental submit (#93, the APPEND/MERGE form, found by #73).
+    After the dev-clone pre-step copies an append or merge incremental
+    (`RegisterClone`, confirmed with the copy's epoch), the client submits it
+    with byte-identical SQL. Hosted skips it. The server does not adopt the
+    copy: the copy inherits the prod build's schema-abstracted logic, computed
+    under the prod default schema, where the submit's explicit prod-schema
+    source reference was abstracted; under the dev default schema it is not.
+    It rebuilds with `no_reuse_candidate.copy_logic_mismatch` (wire unchanged,
+    6 / 6) and renders no Explain tree. Keyed gaps:
+    `explain_incremental_copy_history.jsonl` entries 12–13 (whole response)
+    and 14–15 (`empty_tree`). The same root cause gives
+    `explain_incremental_submit_copy.jsonl` entries 9–10 skip code 6 where
+    hosted, which recognizes the prod equivalent, reports 1 (field-scoped).
 - **Custom materialization copy (#86).** A custom node (`DBT_CUSTOM`) built in
   `dev_clone` over an equivalent prod build: hosted rebuilds it as a first
   build with codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`), while it copies a FULL

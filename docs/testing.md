@@ -160,6 +160,9 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   `ready_to_clone_v1` mirror). A granted copy's confirm is correlated, so the
   copy is State history for the next submit, only when the copy's source was
   confirmed in the same fixture; otherwise the confirm is an unknown baseline.
+  `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
+  incremental run under `--full-refresh`) is driven and its response compared;
+  each record counts as confirmed history for its workload.
   `ResolveDeferredRelations` entries are counted but not driven here;
   `deferral.rs` covers them.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are

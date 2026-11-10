@@ -508,7 +508,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        44,
+        47,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -858,6 +858,33 @@ async fn conformance_replay_all_corpora() {
                     )
                     .await;
                     gaps += 0;
+                }
+                "RecordExecutions" => {
+                    // Write-only history (client 2.0.11 sends it for a
+                    // `--full-refresh` incremental instead of a submit, #73).
+                    // Driven so later decisions see the recorded builds.
+                    let response = exec
+                        .record_executions(support::captured_request(
+                            serde_json::from_value::<qc::RecordExecutionsRequest>(
+                                e.request.clone(),
+                            )
+                            .unwrap(),
+                            e,
+                        ))
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        e.response,
+                        "{context}"
+                    );
+                    for record in e.request["records"].as_array().unwrap() {
+                        let input = &record["input"];
+                        let req = input.get("enriched_sql").unwrap_or(&input["values"]);
+                        confirmed.insert(format!("{}|{}", support::captured_org(e), identity(req)));
+                    }
+                    asserted += 1;
                 }
                 "RegisterClone" => {
                     // The dev-clone pre-step's copy (client 2.0.11: incrementals

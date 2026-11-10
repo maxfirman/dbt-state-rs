@@ -114,7 +114,8 @@ A run:
 4. stops only its own proxy (by pid), deletes the project copy (keep it with
    `--keep-project`), and writes `window.jsonl` (the whole capture),
    `fixture_candidate.jsonl` (only the methods the conformance replay
-   handles; telemetry, `GetStateSelection`, `RecordExecutions` and the like are
+   handles, including `RecordExecutions`; telemetry, `GetStateSelection` and
+   the like are
    dropped and counted), `steps.json` (bound steps and row offsets) and the
    oracle report on stdout.
 

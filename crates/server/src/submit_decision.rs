@@ -208,6 +208,14 @@ pub async fn submit_sql(
     .await?;
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
+    let record = record.with_unmatched_build(
+        decision::FreshnessInputs {
+            execution_type: evidence.execution_type,
+            input_tables: &evidence.input_tables,
+            target_table: freshness.target_table,
+        },
+        selection.unmatched.as_ref(),
+    );
     settle(store, &evidence, record, candidate).await
 }
 
