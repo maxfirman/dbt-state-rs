@@ -371,9 +371,14 @@ kept, dropped = ec.trim(rows)
 if [r["method"] for r in kept] != [r["method"] for r in rows if r["method"] in ec.REPLAYED_METHODS]:
     fail("trim keeps replayed methods in order", [r["method"] for r in kept])
 ok("trim keeps replayed methods in order")
-if dict(dropped) != {"SubmitTelemetryBatch": 1, "RecordExecutions": 1, "GetStateSelection": 1}:
+if dict(dropped) != {"SubmitTelemetryBatch": 1, "GetStateSelection": 1}:
     fail("trim reports what it dropped", dropped)
 ok("trim reports what it dropped")
+# A `--full-refresh` incremental run records its build with RecordExecutions
+# (client 2.0.11, #73); the replay drives it, so the fixture keeps it.
+if "RecordExecutions" not in [r["method"] for r in kept]:
+    fail("trim keeps RecordExecutions", [r["method"] for r in kept])
+ok("trim keeps RecordExecutions")
 
 # --- bundled scenarios ------------------------------------------------------------
 names = ec.scenario_names()

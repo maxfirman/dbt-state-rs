@@ -63,7 +63,7 @@ PROFILE = "snowflake"
 REPLAYED_METHODS = {
     "SubmitEnrichedSQL", "SubmitValues", "ConfirmExecution", "ValidateClientVersion",
     "SubmitEnrichedSQLSpeculative", "GetExplainMessages", "RegisterClone",
-    "ResolveDeferredRelations",
+    "ResolveDeferredRelations", "RecordExecutions",
 }
 DECISION = {0: "SKIP", 1: "EXECUTE", 3: "CLONE", 4: "UNKNOWN"}
 EXECUTION_TYPE = {
