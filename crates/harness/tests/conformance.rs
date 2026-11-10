@@ -490,7 +490,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        38,
+        40,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -559,6 +559,33 @@ async fn conformance_replay_all_corpora() {
                         edid_remap.insert(hosted, local);
                     }
                     match real_variant(&e.response).as_deref().unwrap() {
+                        // DECISION DIVERGENCE (spec #40): hosted rebuilds where
+                        // this server decides another class. Allowed only for a
+                        // keyed whole-response gap naming the local variant; the
+                        // hosted confirm then has no local counterpart.
+                        "ready_to_execute"
+                            if support::response_variant(&response) != "ready_to_execute" =>
+                        {
+                            let local_variant = support::response_variant(&response);
+                            let gap = known.iter().find(|g| {
+                                g.fixture == path.file_name().unwrap().to_string_lossy()
+                                    && g.entry == i
+                                    && g.ignore_fields.is_empty()
+                            });
+                            let Some(gap) = gap else {
+                                panic!(
+                                    "{context}: hosted rebuild but local {local_variant} \
+                                     (add a keyed replay_gaps entry for a decision divergence)"
+                                );
+                            };
+                            assert!(!gap.reason.trim().is_empty());
+                            assert_eq!(
+                                local_variant, gap.local_variant,
+                                "{context}: characterized local decision changed"
+                            );
+                            seen_gaps.insert((gap.fixture.clone(), i));
+                            gaps += 1;
+                        }
                         "ready_to_execute" => {
                             assert_eq!(
                                 support::response_variant(&response),

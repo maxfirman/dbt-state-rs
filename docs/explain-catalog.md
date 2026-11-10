@@ -33,6 +33,14 @@ Source fixtures (`golden/fixtures/`):
   change; FULL and VIEW logic-change rebuilds (SHAPE 7); a snapshot under
   `--full-refresh`. Captured by `experiments/explain_capture.py
   snapshot_explain`.
+- `explain_custom_history.jsonl` (client 2.0.11): custom materialization
+  (DBT_CUSTOM) first build, SKIPs, source drift under the default and a `0s`
+  Lag tolerance, upstream query change, logic change and a `--full-refresh`
+  rerun. Captured by `experiments/explain_capture.py custom_explain`.
+- `explain_custom_copy.jsonl` (client 2.0.11): a custom node and a FULL
+  control built in `dev_clone` over equivalent prod builds. Hosted copies only
+  the FULL one; its rebuild of the custom node is a keyed divergence (#86).
+  Captured by `experiments/explain_capture.py custom_copy`.
 - `explain_ambiguous_rebuilds.jsonl`: crafted probes d1–d4 for the
   [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
   first-build trees there are keyed divergences: the server decides
@@ -57,7 +65,7 @@ original characterization capture; their meaning:
 
 | SHAPE | Tree |
 |---|---|
-| 0 | FULL model SKIP with no genuine upstreams: no "upstream model queries" line; freshness body `no upstream dependencies`. |
+| 0 | FULL model or custom materialization SKIP with no genuine upstreams: no "upstream model queries" line; freshness body `no upstream dependencies`. |
 | 1, 2, 4 | SKIPs that carry `upstream model queries have not changed` (a view, a data test, or any node with a genuine upstream). |
 | 7 | Node-query-changed EXECUTE (also the fallback for several rebuild reasons; see [Shape selection](#shape-selection)). |
 | 8 | SKIP with the anchored per-upstream `<FRESH>` listing (`explain_tolerance.jsonl` entry 1). |
@@ -86,7 +94,8 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. The evidence column gives the census tree counts by origin
 (see [Explain tree census](#explain-tree-census)). The real-client trees in the
 tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-9 in `explain_snapshot_history.jsonl`, which come from 2.0.11.
+9 in `explain_snapshot_history.jsonl` and the 10 in `explain_custom_history.jsonl`
+and `explain_custom_copy.jsonl`, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
 |---|---|---|---|---|---|---|
@@ -100,7 +109,7 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
 | 8 | DBT_DATA_TEST | characterized (live) | pending → #75 | out of scope → #68 | S | SKIP 1 (client) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | pending → #76 | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`) |
 | 10 | VIEW | characterized (live) | characterized (live)³ | pending → #78⁴ | S E C | SKIP 1 (client 2.0.6); EXECUTE 1 (client 2.0.11); CLONE 0 |
-| 11 | DBT_CUSTOM | pending → #74 | pending → #74 | pending → #74 | — | none |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | local-only, empty tree⁶ | S E | SKIP 5, EXECUTE 5, all client 2.0.11 (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Except the three rebuild reasons hosted never makes, which are
@@ -124,6 +133,12 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
 5. The client's `execution_type_from_input` always yields a concrete kind
    ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
    these values fenced regardless.
+6. Hosted does not copy a custom node: built in `dev_clone` over an
+   equivalent prod build, it rebuilds with codes 1 / 3
+   (EXECUTION_TYPE_NOT_FULL) and the first-build tree, where it copies a FULL
+   control (`explain_custom_copy.jsonl`, one attempt). The client sends
+   `RegisterClone` only for incrementals and snapshots. This server copies the
+   custom node, a decision divergence (#86), and renders no tree for it.
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -131,29 +146,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 77 trees in the
+Line counts from the [census](#explain-tree-census) over the 87 trees in the
 tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(582 lines without a marker, 620 without a badge). Only an explicit `0` is
+(639 lines without a marker, 685 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 198 lines |
-| ExplainMarker | FAIL (2) | ✅ 94 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 222 lines |
+| ExplainMarker | FAIL (2) | ✅ 103 lines |
 | ExplainMarker | INFO (3) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainMarker | EM_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 66 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 3 lines (SHAPE 7, `explain_snapshot_history.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 64 lines |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 24 lines |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 74 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 4 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 71 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 29 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 44 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 14 lines (Lag tolerance line) |
+| ExplainBadge | FRESH (1) | ✅ 33 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 47 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 15 lines (Lag tolerance line) |
 | ExplainBadge | EB_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 77 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 9 from client 2.0.11 and 59 for crafted
+1. The 87 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 19 from client 2.0.11 and 59 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -175,7 +190,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (77 trees, none empty, no findings):
+Tracked fixtures, 2026-11-10 (87 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -189,6 +204,8 @@ Tracked fixtures, 2026-11-10 (77 trees, none empty, no findings):
 | VALUES | EXECUTE | 5 | crafted |
 | VIEW | SKIP | 1 | client 2.0.6 |
 | VIEW | EXECUTE | 1 | client 2.0.11 |
+| DBT_CUSTOM | SKIP | 5 | client 2.0.11 |
+| DBT_CUSTOM | EXECUTE | 5 | client 2.0.11 |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -219,12 +236,12 @@ For a **CLONE** decision the latter two are suffixed **`(vs clone)`**.
 ```
 
 The `upstream model queries have not changed` line is omitted for a FULL model
-with no genuine upstreams (SHAPE 0) and present otherwise
-(`explain.rs::has_upstream_query_line`).
+or custom materialization with no genuine upstreams (SHAPE 0) and present
+otherwise (`explain.rs::has_upstream_query_line`).
 
 Freshness body (`explain.rs::data_freshness_analysis_fresh`):
 
-- **No genuine upstreams:** a FULL model renders
+- **No genuine upstreams:** a FULL model or custom materialization renders
   `- no upstream dependencies [SUCCESS]`; any other kind (e.g. a view) renders
   `- upstream data is up to date [SUCCESS]`.
 - **Genuine upstreams:** one child per upstream, then a summary:
@@ -353,6 +370,33 @@ unobserved; it renders like a view (`upstream model queries have not changed`
 and `upstream data is up to date`, `explain.rs::has_upstream_query_line`).
 
 Snapshot CLONE is pending → #76.
+
+## DBT_CUSTOM (custom materialization)
+
+`explain_custom_history.jsonl`, `explain_custom_copy.jsonl` (client 2.0.11).
+The client sends execution type 11 for a materialization outside the built-in
+list (the scenarios use a per-run project macro that runs
+`create or replace table … as (sql)`), also under `--full-refresh`. A custom
+node renders the MODEL trees above exactly, with `model` as the noun, and
+with no genuine upstreams it renders SHAPE 0 like a FULL model
+(`no upstream dependencies`, no `upstream model queries` line). Its
+`decision_description` strings are the model ones.
+
+| Scenario (node) | Decision | Tree |
+|---|---|---|
+| first execution (`c74cd`) | EXECUTE | [First build](#first-build) |
+| unchanged rerun, no upstream (`c74c0`) | SKIP | SKIP, SHAPE 0 |
+| unchanged rerun, source upstream (`c74cd`) | SKIP | SKIP, `<FRESH>` listing, `upstream data is up to date` |
+| unchanged rerun, model upstream (`c74cl`) | SKIP | SKIP, `<FRESH>` listing, no summary (epoch moved back) |
+| its source gained rows, default 45 minute tolerance (`c74cd`) | SKIP (`is_stale`) | SKIP, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
+| its source gained rows, `lag_tolerance: 0s` (`c74cz`) | EXECUTE | SHAPE 9, data only: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated` |
+| upstream query change (`c74cu`) | EXECUTE | SHAPE 9 with the per-upstream query listing |
+| its own logic changed (`c74cl`) | EXECUTE | SHAPE 7 |
+| unchanged, run under `--full-refresh` (`c74cf`) | SKIP | SKIP, `<FRESH>` listing, no summary |
+| built in `dev_clone` over an equivalent prod build (`c74k`) | EXECUTE (hosted) | [First build](#first-build); this server copies it and renders nothing (#86) |
+
+Unlike a snapshot, a custom node under `--full-refresh` is still submitted as
+DBT_CUSTOM, and hosted reuses it.
 
 ## DATA TEST
 

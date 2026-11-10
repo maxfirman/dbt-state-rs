@@ -168,7 +168,9 @@ returns, and a `reason`. Kinds:
 - **Whole-response gap** (no `ignore_fields`): the local response differs, for
   example missing source history for a hosted clone or a deliberate
   safety-floor divergence. For a submit, the local variant must equal
-  `local_variant`.
+  `local_variant`. A hosted rebuild that the server decides as another class
+  (a decision divergence, spec #40) needs one; its hosted confirm then has no
+  local counterpart.
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.

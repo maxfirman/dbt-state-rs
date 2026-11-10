@@ -195,7 +195,9 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
 ///   - seed (VALUES=9): Skip | Build (Clone unobserved).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone pending → #76).
-///   - everything else (incremental, custom, any other execution_type): NONE.
+///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
+///     local-only: hosted never copies one, #86).
+///   - everything else (incremental, any other execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
@@ -219,6 +221,12 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         }
         // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl).
         Ok(ModelExecutionType::Values) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
+        // VERIFIED LIVE 2026-11-10 (explain_custom_history.jsonl, client
+        // 2.0.11). Hosted never copies a custom node (explain_custom_copy.jsonl,
+        // #86), so CLONE stays fenced: our copy of one is local-only.
+        Ok(ModelExecutionType::DbtCustom) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         _ => false,
@@ -413,21 +421,32 @@ fn query_analysis_unchanged(node: &ExplainNode) -> qc::ExplainLine {
 }
 
 /// Whether the `upstream model queries have not changed [SUCCESS]` line is
-/// present. VERIFIED (catalog): a FULL model with zero genuine upstreams omits
-/// it (SHAPE 0); a VIEW, a data test, or any node with ≥1 genuine upstream
-/// carries it (SHAPEs 1/2/4…).
+/// present. VERIFIED (catalog): a FULL model or custom materialization with
+/// zero genuine upstreams omits it (SHAPE 0); a VIEW, a data test, or any node
+/// with ≥1 genuine upstream carries it (SHAPEs 1/2/4…).
 fn has_upstream_query_line(node: &ExplainNode) -> bool {
-    !node.genuine_upstreams().is_empty() || node.execution_type != ModelExecutionType::Full as i32
+    !node.genuine_upstreams().is_empty() || !says_no_upstream_dependencies(node)
+}
+
+/// The node kinds whose tree says `no upstream dependencies` (SHAPE 0) when
+/// they have no genuine upstreams: a FULL model, and a custom materialization
+/// (VERIFIED LIVE 2026-11-10, explain_custom_history.jsonl `c74c0`). A view,
+/// snapshot or data test says `upstream data is up to date` instead.
+fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
+    matches!(
+        ModelExecutionType::try_from(node.execution_type),
+        Ok(ModelExecutionType::Full | ModelExecutionType::DbtCustom)
+    )
 }
 
 /// `data freshness analysis` body for a SKIP, by upstream situation.
 fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     if upstreams.is_empty() {
-        // No genuine upstreams. A FULL model renders `no upstream dependencies`;
-        // a VIEW (which selects from an untracked source) renders `upstream data
-        // is up to date` (catalog SHAPE 0 vs 1).
-        let body = if node.execution_type == ModelExecutionType::Full as i32 {
+        // No genuine upstreams. A FULL model or custom materialization renders
+        // `no upstream dependencies`; a VIEW (which selects from an untracked
+        // source) renders `upstream data is up to date` (catalog SHAPE 0 vs 1).
+        let body = if says_no_upstream_dependencies(node) {
             leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)
         } else {
             leaf("upstream data is up to date", Some(MARKER_SUCCESS), None)
@@ -1292,12 +1311,12 @@ mod tests {
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
     // explain_lines dispatches on DecisionKind alone; without an
-    // execution-type fence, incremental and custom decisions (and a snapshot
+    // execution-type fence, incremental decisions (and a snapshot or custom
     // CLONE) render model-shaped trees that the hosted service was never
     // observed to produce (docs/explain-catalog.md "Unobserved — do not
     // implement until captured"; spec #27 Out-of-Scope). They must emit
-    // nothing. Seeds and snapshot SKIP/EXECUTE were characterized on
-    // 2026-11-10.
+    // nothing. Seeds, and snapshot and custom SKIP/EXECUTE, were
+    // characterized on 2026-11-10.
 
     // ── Seeds (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl) ───────────
     fn seed(decision: DecisionKind, reason: DecisionReason) -> ExplainNode {
@@ -1394,6 +1413,23 @@ mod tests {
     }
 
     #[test]
+    fn custom_clone_emits_nothing() {
+        // DBT_CUSTOM=11 CLONE: hosted rebuilds where this server copies
+        // (explain_custom_copy.jsonl entry 9, #86) → local-only, no tree.
+        let mut n = node(
+            DecisionKind::Clone,
+            ModelExecutionType::DbtCustom as i32,
+            "an equivalent model exists under another name so we cloned that one",
+        );
+        n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+        assert!(
+            explain_lines(&n).is_empty(),
+            "a custom CLONE is local-only → must emit no invented lines, got {:?}",
+            render(&n)
+        );
+    }
+
+    #[test]
     fn snapshot_clone_emits_nothing() {
         // SNAPSHOT=7 CLONE: no hosted capture yet (#76) → no invented tree.
         let mut n = node(
@@ -1441,6 +1477,8 @@ mod tests {
                     | (9, DecisionKind::Build) // seed reload
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE pending → #76)
+                    | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
+                    | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
             )
         };
 

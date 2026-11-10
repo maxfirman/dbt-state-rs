@@ -161,6 +161,14 @@ replay fails when an entry becomes unused or resolved
   `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
   Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
   and 60 (`empty_tree`).
+- **Custom materialization copy (#86).** A custom node (`DBT_CUSTOM`) built in
+  `dev_clone` over an equivalent prod build: hosted rebuilds it as a first
+  build with codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`), while it copies a FULL
+  control in the same run. The server answers a submit-time Result copy
+  (`result_copy::submit_lookup` excludes only data tests and seeds), and
+  renders no Explain tree for it (DBT_CUSTOM × CLONE stays fenced). Keyed
+  gaps: `explain_custom_copy.jsonl` entries 9 (whole response, local
+  `ready_to_clone`) and 12 (`empty_tree`).
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
