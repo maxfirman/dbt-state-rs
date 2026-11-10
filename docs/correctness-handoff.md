@@ -145,6 +145,26 @@ replay fails when an entry becomes unused or resolved
   locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
 - **Safety floor.** The externally modified seed table is reloaded.
+- **Crafted ambiguous Target relation evidence** (#71 probes,
+  `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
+  requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
+  Each rebuild below is local-only and its Explain tree is empty.
+  - A Target relation listed twice with the build's epoch: hosted reuses it,
+    the server rebuilds with `own_target_changed_or_missing` (#80). Keyed gaps:
+    `explain_ambiguous_rebuilds.jsonl` entries 2–3.
+  - A Target relation with no epoch: hosted rebuilds it as missing (codes
+    4 / 7, "did not exist"), the server as ambiguous (6 / 6, generic
+    description) (#80). Keyed gaps: entries 6–7.
+  - A model submit with no target: hosted fails it (`Internal` when unset,
+    `InvalidArgument` "Failed to process SQL" when `""`), the server answers a
+    Result copy of the node's own build (#81).
+  - A ConfirmExecution without an epoch for a target-bearing build: hosted
+    fails it (`Internal`, "Database operation failed"), the server records it
+    and later rebuilds with `no_build_anchor` (#82).
+
+  The proxy does not record failed calls (see "Proxy fidelity"), so the last
+  two have no fixture rows and no keyed gap. The driver's stdout is their only
+  record.
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
