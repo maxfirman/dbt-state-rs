@@ -84,6 +84,7 @@ reproducible skip.
 |---|---|---|
 | Incremental or snapshot | copy via `RegisterClone` | ✅ |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
+| Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ❌ the server copies it (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
 | Resubmit the copy with changed logic | build | ✅ |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |
