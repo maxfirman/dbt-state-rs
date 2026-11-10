@@ -262,9 +262,8 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
 /// identity, never on the execution_type), so a FULL model adopts the
 /// clone-origin row via the identical path — and FULL is a kind F7's
 /// `is_characterized` fence keeps characterized, so the SHAPE-9 subtree actually
-/// renders. (The incremental type-3 variant is correctly fenced to an EMPTY tree
-/// by F7 until a real incremental explain is captured; see the companion test
-/// `clone_adoption_incremental_execute_explain_is_fenced_empty`.)
+/// renders. The incremental type-3 variant renders the same SHAPE 9 tree; see
+/// `clone_adoption_incremental_execute_explain_is_shape9_outdated`.
 #[tokio::test]
 async fn clone_adoption_upstream_drift_execute_explain_is_shape9_outdated() {
     use qc::explain_client::ExplainClient;
@@ -426,22 +425,18 @@ async fn register_clone_decision_explains_as_a_clone() {
     );
 }
 
-/// COMPANION FENCE (PR #31 round-4 F7): the SAME clone-adoption upstream-drift
-/// EXECUTE lifecycle as `clone_adoption_upstream_drift_execute_explain_is_shape9_outdated`,
-/// but driven at `execution_type: 3` (incremental MERGE) — an UNOBSERVED node
-/// kind (docs/explain-catalog.md lists seed/snapshot/incremental as unobserved).
-///
-/// F7's `explain.rs::is_characterized` fence renders an EMPTY explain tree for
-/// uncharacterized kinds rather than inventing a model-shaped tree. This test
-/// pins that honest behavior: the clone-adoption EXECUTE decision is still
-/// recorded and GetExplainMessages still answers for its execution_decision_id,
-/// but the re-derived tree is EMPTY until a real incremental explain is captured.
-///
-/// This keeps the type-3 MERGE clone-adoption path covered as "fenced" and
-/// documents the F7 decision, complementing the type-1 SHAPE-9 assertion above.
+/// The SAME clone-adoption upstream-drift EXECUTE lifecycle as
+/// `clone_adoption_upstream_drift_execute_explain_is_shape9_outdated`, driven
+/// at `execution_type: 3` (incremental MERGE). A merge incremental renders the
+/// MODEL trees, including the SHAPE 9 upstream-OUTDATED rebuild (VERIFIED LIVE
+/// 2026-11-10, explain_incremental_append_merge_history.jsonl `m73z`), so the
+/// adopted copy's drift rebuild renders SHAPE 9 too. Until #73 opened the
+/// MERGE cells this test pinned an empty (fenced) tree.
 #[tokio::test]
-async fn clone_adoption_incremental_execute_explain_is_fenced_empty() {
+async fn clone_adoption_incremental_execute_explain_is_shape9_outdated() {
     use qc::explain_client::ExplainClient;
+
+    const BADGE_OUTDATED: i32 = 3;
 
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
@@ -491,12 +486,11 @@ async fn clone_adoption_incremental_execute_explain_is_fenced_empty() {
         .await;
     let edid = dev_exec.execution_decision_id.expect("edid");
 
-    // 4) GetExplainMessages → the tree must be EMPTY (F7 fence for an unobserved
-    //    incremental node kind). Poll briefly to allow the best-effort capture,
-    //    then assert that whatever is returned carries no explain lines.
+    // 4) GetExplainMessages → the re-derived SHAPE 9 tree (poll for the
+    //    best-effort capture).
     let mut explain = ExplainClient::new(sc.channel());
-    let mut saw_message = false;
-    for _ in 0..25 {
+    let mut msg = None;
+    for _ in 0..100 {
         let resp = explain
             .get_explain_messages(qc::GetExplainMessagesRequest {
                 execution_decision_ids: vec![edid.clone()],
@@ -505,21 +499,26 @@ async fn clone_adoption_incremental_execute_explain_is_fenced_empty() {
             .unwrap()
             .into_inner();
         if let Some(m) = resp.messages.into_iter().next() {
-            saw_message = true;
-            assert!(
-                m.explain_lines.is_empty(),
-                "incremental (execution_type 3) clone-adoption EXECUTE is UNOBSERVED and must \
-                 render an EMPTY explain tree (F7 fence), not an invented model-shaped tree; \
-                 got: {:?}",
-                m.explain_lines
-            );
+            msg = Some(m);
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    // Either a message was captured and asserted empty above, or no message was
-    // emitted at all for the fenced kind — both are catalog-consistent (nothing
-    // invented). What must never happen is a populated tree, which the assert
-    // inside the loop rules out.
-    let _ = saw_message;
+    let msg = msg.expect("clone-adoption MERGE EXECUTE explain message re-derived");
+    fn collect(lines: &[qc::ExplainLine], out: &mut Vec<(String, Option<i32>)>) {
+        for l in lines {
+            out.push((l.text.clone(), l.badge));
+            collect(&l.children, out);
+        }
+    }
+    let mut flat = Vec::new();
+    collect(&msg.explain_lines, &mut flat);
+    assert!(
+        flat.iter().any(|(_, b)| *b == Some(BADGE_OUTDATED))
+            && flat.iter().any(|(t, _)| t == "upstream data is outdated")
+            && flat
+                .iter()
+                .any(|(t, _)| t == "the model query has not changed"),
+        "a MERGE clone-adoption upstream-drift EXECUTE renders the SHAPE 9 tree; got: {flat:?}"
+    );
 }

@@ -59,6 +59,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         build_age_ms: None,
         skip_rejection_reason: None,
         clone_rejection_reason: None,
+        unmatched_upstreams_unchanged: None,
     }
 }
 

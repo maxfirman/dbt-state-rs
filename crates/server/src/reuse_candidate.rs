@@ -42,6 +42,11 @@ pub(crate) struct Selection {
     /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
     /// reused.
     pub rejected: Option<ExecutionRow>,
+    /// The latest row when it does not have the workload's identity (models
+    /// only). Never reused; Explain's SHAPE 7 freshness summary is judged
+    /// against its recorded upstream epochs (VERIFIED LIVE 2026-11-10,
+    /// explain_incremental_append_merge_history.jsonl).
+    pub unmatched: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -52,6 +57,7 @@ impl Selection {
             target_has_prior_build: true,
             why_no_candidate: None,
             rejected: None,
+            unmatched: None,
         }
     }
 
@@ -61,6 +67,7 @@ impl Selection {
         target_has_prior_build: false,
         why_no_candidate: None,
         rejected: None,
+        unmatched: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -91,6 +98,7 @@ impl Selection {
             target_has_prior_build,
             why_no_candidate,
             rejected,
+            unmatched: None,
         }
     }
 }
@@ -116,6 +124,7 @@ pub(crate) fn for_model(
         } else {
             NoCandidate::IdentityMismatch
         };
+    let mut unmatched = None;
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
         Some(current.into_checked(true)?)
@@ -131,9 +140,10 @@ pub(crate) fn for_model(
         adopt_current_inputs(&mut row, &evidence.input_tables);
         Some(row)
     } else {
+        unmatched = Some(current);
         None
     };
-    Ok(Selection::of(
+    let selection = Selection::of(
         identified,
         unidentified,
         |prev| {
@@ -149,7 +159,11 @@ pub(crate) fn for_model(
             }
         },
         true,
-    ))
+    );
+    Ok(Selection {
+        unmatched,
+        ..selection
+    })
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome

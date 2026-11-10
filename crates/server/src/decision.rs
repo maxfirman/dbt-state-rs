@@ -257,6 +257,13 @@ pub struct DecisionRecord {
     pub tolerance_ms: i64,
     pub build_age_ms: Option<i64>,
     pub input_tables: Vec<InputTable>,
+    /// For a rebuild without a matched build whose latest build in scope did
+    /// not have the workload's identity: whether every genuine upstream's
+    /// current epoch equals the epoch recorded for it at that build. Explain
+    /// renders the SHAPE 7 `upstream data is up to date` summary from it
+    /// (VERIFIED LIVE 2026-11-10, explain_incremental_append_merge_history).
+    /// `None` otherwise.
+    pub unmatched_upstreams_unchanged: Option<bool>,
     sealed: (),
 }
 
@@ -285,6 +292,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
+                unmatched_upstreams_unchanged: None,
                 sealed: (),
             },
             Verdict::Execute {
@@ -304,6 +312,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
+                unmatched_upstreams_unchanged: None,
                 sealed: (),
             },
         }
@@ -335,6 +344,21 @@ impl DecisionRecord {
         {
             self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_DOES_NOT_EXIST);
             self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+        }
+        self
+    }
+
+    /// A rebuild with no matched build, judged against the latest build in
+    /// scope that did not have the workload's identity (`unmatched`): records
+    /// whether every genuine upstream's epoch is unchanged since that build.
+    pub(crate) fn with_unmatched_build(
+        mut self,
+        inputs: FreshnessInputs<'_>,
+        unmatched: Option<&ExecutionRow>,
+    ) -> Self {
+        if self.class == DecisionKind::Build && self.matched_execution_id.is_none() {
+            self.unmatched_upstreams_unchanged =
+                unmatched.map(|build| upstream_freshness(inputs, build).unchanged());
         }
         self
     }
@@ -377,6 +401,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
+            unmatched_upstreams_unchanged: None,
             sealed: (),
         }
     }
@@ -397,6 +422,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
+            unmatched_upstreams_unchanged: None,
             sealed: (),
         }
     }
@@ -824,6 +850,21 @@ pub(crate) fn upstream_freshness<'a>(
         data_test,
         considered,
         drifted,
+    }
+}
+
+impl UpstreamFreshness {
+    /// Every genuine upstream was evaluated and its current epoch equals the
+    /// epoch recorded for it at the build: the condition for the Explain
+    /// `upstream data is up to date` summary under a per-upstream listing.
+    /// `false` with no upstreams or unprovable evidence.
+    pub(crate) fn unchanged(&self) -> bool {
+        self.evidence == FreshnessEvidence::Evaluated
+            && !self.upstreams.is_empty()
+            && self
+                .upstreams
+                .iter()
+                .all(|u| u.current_epoch == Some(u.anchor_epoch) && !u.unprovable)
     }
 }
 
