@@ -111,6 +111,15 @@ server keeps the conservative behavior described.
   (`reuse_candidate.rs::sql_submit_copy_with_no_recorded_upstreams_rebuilds_when_upstreams_appear`).
 - **Data tests and Lag tolerance.** Clients send tolerance 0 for data tests, so
   data tests as Lag tolerance subjects are uncharacterized.
+- **Data-test EXECUTE trees not captured.** Hosted's data-test EXECUTE tree
+  (#75) is the same for a first execution, a logic change and upstream data
+  drift, and for passing and failing tests. A data test over a model whose
+  logic changed (`upstream_query_changed`), one that fails SQL qualification,
+  one without upstreams, a test over several upstreams (listing order), and a
+  failing or `store_failures_as: view` store-failures test were not captured;
+  the server renders nothing for the first three
+  ([explain-catalog.md](explain-catalog.md#data-test)). How hosted recognizes
+  a `store_failures` audit relation is open (#88).
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
 - **Explain evidence gaps (#78).** The VIEW × CLONE Explain cell is open
@@ -181,6 +190,25 @@ replay fails when an entry becomes unused or resolved
   The proxy does not record failed calls (see "Proxy fidelity"), so the last
   two have no fixture rows and no keyed gap. The driver's stdout is their only
   record.
+- **Data test with incomplete cached results (#87, crafted,
+  `experiments/incomplete_test_results.py`).** A data test confirmed with
+  `execution_results: null`, or with only `failures`, then resubmitted
+  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
+  or `failures` alone). The server keeps its safety floor (reuse needs
+  complete cached results, AGENTS.md invariant 5) and rebuilds with
+  `no_reuse_candidate.incomplete_cached_test_results`, rendering no Explain
+  tree. Client 2.0.11 always confirms all three result fields. Keyed gaps:
+  `explain_incomplete_test_results.jsonl` entries 2, 6 (decision) and 3, 7
+  (`empty_tree`).
+- **`store_failures` data test audit relation (#88).** Once a
+  `store_failures: true` test has written its audit relation, the client
+  reports that relation in the test's `tables`. Hosted ignores it: the
+  unchanged test SKIPs and its trees list only the tested source. The server
+  sees a name the build did not record and rebuilds with
+  `dependency_set_changed`, rendering no Explain tree. Keyed gaps:
+  `explain_data_test_history.jsonl` entries 18, 27 (decision) and 21, 45
+  (`empty_tree`; at entry 45 both rebuild after upstream drift, for different
+  reasons).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the

@@ -98,6 +98,10 @@ history match and the decision. The client derives:
   `warn_if`, `error_if`, `store_failures`, `store_failures_as`,
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
+- `tables` for a data test: the relations it reads, with no target. With
+  `store_failures: true` it also holds the test's audit relation (a table
+  named after the test) once a run has written it (client 2.0.11,
+  `explain_data_test_history.jsonl`).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - `table_namespace`: from the warehouse connection identifier
   (account/project/host).
@@ -247,7 +251,12 @@ and fingerprints.
    plus SQL/config/context identity. Reuse needs complete cached results
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
-   upstream epochs. Data tests never get a Result copy.
+   upstream epochs. Data tests never get a Result copy. A failing test is
+   reused like a passing one and the SKIP echoes the cached failure.
+   Hosted differs in two captured cases, both keyed divergences: it reuses a
+   test confirmed with incomplete results and echoes them (#87, crafted), and
+   it ignores a `store_failures` test's own audit relation, which the client
+   reports in `tables` once it exists (#88).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy
