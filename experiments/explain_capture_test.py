@@ -308,6 +308,17 @@ if not res[2].ok:
     fail("other nodes keep their history", res[2])
 ok("other nodes keep their history")
 
+for label, resp in (("success=false", {"success": False, "request_id": "r2"}),
+                    ("success omitted", {"request_id": "r2"})):
+    rejected = [list(c) for c in per_step]
+    rejected[2] = [dict(r, response=resp) if r["method"] == "ConfirmExecution"
+                   and r["request"]["request_id"] == "r2" else r for r in rejected[2]]
+    res = run_oracle(rejected)
+    if res[1].ok or not any("history" in p for p in res[1].problems):
+        fail(f"a SKIP whose build's confirmation was rejected ({label}) fails the oracle (Codex #85)",
+             res[1])
+    ok(f"a SKIP whose build's confirmation was rejected ({label}) fails the oracle")
+
 wrong_node = [list(c) for c in per_step]
 wrong_node[6] = [explain("e3", 0)]
 res = run_oracle(wrong_node)

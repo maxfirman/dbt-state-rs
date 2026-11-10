@@ -439,7 +439,8 @@ def oracle(bound, rows, marks):
     mints = _mints(rows)
     confirms = {}
     for i, r in enumerate(rows):
-        if r.get("method") == "ConfirmExecution":
+        # Only an accepted confirmation records a build; hosted answers `success: true`.
+        if r.get("method") == "ConfirmExecution" and (r.get("response") or {}).get("success") is True:
             confirms.setdefault((r.get("request") or {}).get("request_id"), []).append(i)
     results = []
     for k, step in enumerate(bound.steps):

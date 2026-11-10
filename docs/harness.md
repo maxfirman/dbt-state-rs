@@ -121,7 +121,9 @@ A run:
 The oracle passes an `Explain` step when the step captured a
 `GetExplainMessages` call for the node's current decision (its latest submit
 before the step), hosted returned a message for it, the window holds a
-confirmed build of the node before that decision (unless `history=False`),
+confirmed build of the node before that decision (a build whose
+ConfirmExecution hosted answered with `success: true`; unless
+`history=False`),
 and the decision and execution type match the step's intent when given. An
 empty hosted tree is evidence, not a failure. The exit code is 0 only when
 every step ran and every Explain step passed.
