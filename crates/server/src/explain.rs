@@ -221,6 +221,13 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         Ok(ModelExecutionType::Values) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
+        // VERIFIED LIVE 2026-11-10, client 2.0.11: the insert_overwrite
+        // incremental renders the model trees
+        // (explain_incremental_insert_overwrite.jsonl). Its CLONE has no
+        // capture (pending → #73).
+        Ok(ModelExecutionType::InsertOverwrite) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
         _ => false,
     }
 }
@@ -1441,6 +1448,8 @@ mod tests {
                     | (9, DecisionKind::Build) // seed reload
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE pending → #76)
+                    | (4, DecisionKind::Skip) // insert_overwrite SKIP (explain_incremental_insert_overwrite)
+                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE pending)
             )
         };
 
