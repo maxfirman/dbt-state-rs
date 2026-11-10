@@ -2,40 +2,43 @@
 
 ## Toolchain
 
-- **Rust** 1.98 (selected by rust-toolchain.toml; server/proto/harness edition
-  2021, UI edition 2024).
-- **protoc** (protobuf compiler) — required by `tonic-prost-build`. Install it
-  and ensure it is on `PATH` (e.g. `brew install protobuf`, `apt-get install
-  protobuf-compiler`, or `arduino/setup-protoc` in CI). `tonic-prost-build` finds
-  it via `PATH` or the `PROTOC` env var.
-- **Postgres** 15+ reachable at `DATABASE_URL`.
+- **Rust** 1.98 (pinned by `rust-toolchain.toml`; server/proto/harness use
+  edition 2021, the UI edition 2024).
+- **protoc** (protobuf compiler), required by `tonic-prost-build`. Install it
+  and put it on `PATH` (e.g. `brew install protobuf`, `apt-get install
+  protobuf-compiler`), or set `PROTOC`.
+- **Postgres** reachable at `DATABASE_URL`. CI uses `postgres:17-alpine`.
+- **uv** and **Python 3.12** for the DuckDB acceptance cases
+  (`scripts/duckdb-ci.sh`).
 
-## Build & test
+## Build, lint and test
 
 ```bash
-cargo build                 # whole workspace
-cargo test                  # unit + integration (needs Postgres running)
-cargo test -p dbt-state-server --lib   # server library tests (no DB)
+cargo build --workspace --all-targets
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # same as CI
+cargo test --workspace                     # unit + integration (needs Postgres)
+cargo test -p dbt-state-server --lib       # server library tests (no DB)
+./scripts/duckdb-ci.sh                     # every fixed and generated DuckDB case
 ```
 
 Integration tests create a unique, isolated Postgres schema per test and run the
-migrations into it, so they are independent and repeatable.
+migrations into it, so they are independent and repeatable. CI
+(`.github/workflows/ci.yml`) runs the same commands; `duckdb-ci.sh` runs there
+with `--jobs 4`. Validation strategy is in [testing.md](testing.md).
 
 ## Pre-commit hook
 
-A tracked git hook in [`.githooks/`](../.githooks/) runs `cargo fmt --all --check`
-(~0.5s, no compilation) so a formatting miss is caught locally instead of as a
-red CI round-trip. Enable it once per clone:
+A tracked hook, [`.githooks/pre-commit`](../.githooks/pre-commit), runs
+`cargo fmt --all --check` when at least one staged file ends in `.rs`, and
+exits immediately otherwise. Enable it once per clone:
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-It is formatting-only by design: clippy, `cargo check`, and the test suite either
-recompile the workspace or build the heavy `duckdb_*` test binaries, so they stay
-in CI, not the inner commit loop. A docs/config-only commit skips the check. To
-bypass once (e.g. committing a deliberate work-in-progress): `git commit
---no-verify`.
+It checks formatting only; clippy and tests stay in CI. Bypass once with
+`git commit --no-verify`.
 
 ## Postgres
 
@@ -48,25 +51,31 @@ docker run -d --name dbt-state-pg \
 export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
 ```
 
-The server applies migrations (`crates/server/migrations/`) automatically on
-startup.
+The server applies the migrations (`crates/server/migrations/`) on startup.
 
 ## Running the server
 
 ```bash
 export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
 export DBT_STATE_LISTEN=127.0.0.1:50051        # optional, this is the default
-export DBT_STATE_REQUIRE_ORG_HEADER=false      # optional; set true for multi-tenant
-                                               # deployments to reject requests
-                                               # lacking x-organization-id
+export DBT_STATE_REQUIRE_ORG_HEADER=false      # optional; true rejects requests
+                                               # without x-organization-id
 RUST_LOG=info cargo run -p dbt-state-server
 ```
 
+## Running the UI
+
+```bash
+HOST=127.0.0.1 PORT=4000 DBT_STATE_UI_ORG_ID=local cargo run -p dbt-state-ui
+```
+
+It reads the same `DATABASE_URL`. `HOST`/`PORT` default to `127.0.0.1:3000`;
+`DBT_STATE_UI_ORG_ID` defaults to `local`. See [ui.md](ui.md).
+
 ## Pointing the dbt client at the server
 
-The dbt Fusion client (dbt v2) selects an insecure channel — and therefore sends
-**no OAuth** — when `RUN_CACHE_API_SECURE=false`. That is how you talk to a local
-server without auth:
+The dbt Fusion client (dbt v2) uses an insecure channel, and therefore sends
+**no OAuth**, when `RUN_CACHE_API_SECURE=false`:
 
 ```bash
 export DBT_ENGINE_MANAGE_STATE=true        # enable dbt State
@@ -75,36 +84,19 @@ export RUN_CACHE_API_SECURE=false          # insecure => no OAuth
 dbt build --profile <profile> --target <target> --skip-semantic-manifest-validation
 ```
 
+Client auth, metadata headers and configuration are described in
+[protocol.md](protocol.md).
+
 ### Warehouse note
 
-dbt State only engages for its supported warehouses (Snowflake, BigQuery,
-Databricks, Redshift). **Fusion with DuckDB does not trigger dbt State** — verified by
-running the Fusion client against a DuckDB target and observing zero State
-activity. Use a supported warehouse (this project was developed and validated
-against Snowflake) for Fusion validation. The optional [Python DuckDB local
-extension](../integrations/duckdb/README.md) now provides a credential-free
-complete [local workflow](duckdb.md) for seeds, tables, views, cached tests,
-pinned incremental execution and prod/dev copying. Run every fixed/generated
-acceptance case with `./scripts/duckdb-ci.sh`; `duckdb-smoke.sh` is only the initial
-compatibility slice.
-It uses versioned observed changes and durable ordinals rather than timestamps;
-see the extension README for the supported scalar subset and writer contract.
+Hosted dbt State does not engage for DuckDB, so Fusion validation against the
+hosted service needs Snowflake; local DuckDB runs use the
+[DuckDB workflow](duckdb.md).
 
-## Capturing real traffic / validating against the hosted service
+## Capturing real traffic
 
-See [harness.md](harness.md) (recording proxy) and [testing.md](testing.md)
-(conformance replay, property tests, differential fuzzing). Those flows need a
-dbt Cloud credential in `~/.dbt/dbt_cloud.yml` and will consume dbt State trial
-metering.
+See [harness.md](harness.md) (recording proxy) and [testing.md](testing.md).
+Those flows need a dbt Cloud credential in `~/.dbt/dbt_cloud.yml` and consume
+dbt State metering.
 
-## Key client/auth facts
-
-- Enable: `DBT_ENGINE_MANAGE_STATE=true`. Config via `RUN_CACHE_*` env vars.
-- Hosted auth: token-exchange of the dbt Cloud credential at
-  `https://auth.state.dbt.com/token` (client_id `2fd87cd5-...`) → `id_token`
-  sent as `Bearer` + `x-organization-id` (org id from the token scope).
-- Per-request metadata the client sends: `x-request-id`, `x-session-id`,
-  `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, `x-dbt-invocation-id`.
-
-See [protocol.md](protocol.md) for the full protocol and [architecture.md](architecture.md)
-for the server internals.
+Server internals are in [architecture.md](architecture.md).

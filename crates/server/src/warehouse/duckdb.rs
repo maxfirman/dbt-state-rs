@@ -2,7 +2,7 @@
 //! of one database file, accepted only for sources inspected as
 //! CTAS-compatible. Copy chains stop at two ancestors, so the clone-equivalent
 //! lookup walks each candidate's copy provenance. See
-//! `docs/duckdb-result-copy.md`.
+//! `docs/duckdb-identity-and-copy.md`.
 
 use super::{CopyIdentity, IncrementalCopyContract};
 use crate::query_cache as qc;
@@ -31,7 +31,8 @@ fn is_copy_environment(schema: &str) -> bool {
 /// CTAS-compatible.
 const CTAS_TABLE_TYPE: &str = "DUCKDB CTAS TABLE";
 
-/// Hosted DuckDB copy chains stop at two ancestors.
+/// This server's limit: DuckDB copy chains stop at two ancestors. There is no
+/// hosted DuckDB service to characterize.
 const MAX_COPY_DEPTH: i64 = 2;
 
 /// The two ends of a copy, parsed as fully qualified local relations.

@@ -11,7 +11,7 @@
 //! NOTE: this enforces that an org is SCOPED, not that the caller is
 //! AUTHENTICATED as that org — verifying the claimed org against a trusted
 //! bearer token remains deployment work (documented in
-//! docs/correctness-handoff.md §D and docs/protocol.md).
+//! docs/correctness-handoff.md "Deployment gaps" and docs/protocol.md).
 
 #[path = "support.rs"]
 mod support;

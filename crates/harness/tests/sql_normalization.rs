@@ -5,7 +5,7 @@
 //! (strip comments, collapse inter-token whitespace, case-fold keywords/unquoted
 //! identifiers, preserve string literals & quoted identifiers) but does NOT
 //! canonicalize semantics. Each (baseline, variant, expected) row below was
-//! VERIFIED live against api.state.dbt.com (see experiments/SQL_NORMALIZATION.md).
+//! VERIFIED live against api.state.dbt.com (see docs/sql-normalization.md).
 //! This test replays each pair against OUR server (execute+confirm the baseline,
 //! then submit the variant) and asserts we reproduce the hosted skip/execute.
 

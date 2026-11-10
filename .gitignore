@@ -14,3 +14,6 @@ __pycache__/
 
 # Credential-free DuckDB CI artifacts
 /artifacts/
+
+# dbt default log output when run from the repo root
+/logs/

@@ -1,7 +1,7 @@
 //! Restricted Snowflake AST canonicalization for versioned fingerprints.
 //! Preserve cast kinds, parameters and qualified function identities. Unsupported
 //! syntax stays byte-for-byte identical; other dialects bypass this module.
-//! Individual positive equivalences are captured in SQL_NORMALIZATION.md, not
+//! Individual positive equivalences are captured in docs/sql-normalization.md, not
 //! proof of a complete semantic equivalence catalog.
 
 use std::ops::ControlFlow;
@@ -29,7 +29,7 @@ pub fn normalize_sql(sql: &str) -> String {
 /// tokens 0 and 1 — so swapping their definitions changes the identity; review
 /// #2 2nd follow-up, P0). A single global placeholder would have collapsed X
 /// and Y and conflated the swap. VERIFIED LIVE for the single-schema cross-env
-/// case; see experiments/clone_logic_sensitivity.sh and docs/correctness-handoff.md.
+/// case; see experiments/clone_logic_sensitivity.sh and docs/sql-normalization.md.
 pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
     normalize_sql_namespace_abstracted_with(sql, &SchemaMap::collapse_all())
 }

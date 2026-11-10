@@ -154,8 +154,8 @@ pub fn explain_entry(node: &ExplainNode) -> qc::ExplainMessageEntry {
     }
 }
 
-/// Select the `decision_description` by SITUATION (independent of the tree),
-/// per docs/explain-catalog.md § decision_description. We trust the persisted
+/// Select the `decision_description` by SITUATION (independent of the tree;
+/// the strings are listed in docs/protocol.md). We trust the persisted
 /// decision-time string when present (the hosted service recorded exactly which
 /// of the coexisting SKIP reasons applied — e.g. plain vs lag-tolerance vs
 /// multi-upstream — a distinction not recoverable from the tree alone), and
@@ -187,12 +187,12 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// hosted service was observed to render and that we therefore reproduce. This
 /// is a strict positive allowlist; everything else returns an empty tree.
 ///
-/// Characterized matrix (verified against the explain fixtures — which carry
-/// ONLY execution_type 1/10/8 — and docs/explain-catalog.md):
+/// Characterized matrix (docs/explain-catalog.md "Execution type coverage"):
 ///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone.
-///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved — F4).
-///   - everything else (seed VALUES=9, snapshot SNAPSHOT=7, incremental,
-///     any other execution_type): NONE.
+///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
+///   - seed (VALUES=9): Skip | Build (Clone unobserved).
+///   - everything else (snapshot SNAPSHOT=7, incremental, any other
+///     execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
@@ -306,13 +306,14 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             | R::DependencySetChanged
             | R::CopyChainLimit,
         ) => Shape::QueryChanged,
-        // AWAITING HOSTED CAPTURE (#40). A dropped-own-target rebuild and a
-        // rebuild with no build anchor keep today's SHAPE-7 rendering
-        // ("table exists already" + "the model query has changed"), which is
-        // known to be wrong for a dropped target (PR #31 round-3 F6). Their
-        // hosted shapes are unobserved; the distinct persisted reason means a
-        // capture only has to change this arm. See docs/explain-catalog.md
-        // "Known limitation — dropped-own-target rebuild" and ADR 0006.
+        // AWAITING HOSTED CAPTURE (#40). A rebuild with ambiguous own-target
+        // evidence, an own-target-modified rebuild with upstreams but no
+        // anchor, and a rebuild with no build anchor keep the SHAPE-7
+        // rendering ("table exists already" + "the model query has changed"),
+        // which may be wrong. Their hosted shapes are unobserved; the distinct
+        // persisted reason means a capture only has to change this arm. See
+        // docs/explain-catalog.md "Known limitation — ambiguous own-target
+        // rebuild" and ADR 0006.
         (
             DecisionKind::Build,
             R::NoReuseCandidate(

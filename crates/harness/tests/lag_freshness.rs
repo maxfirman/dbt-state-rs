@@ -15,23 +15,10 @@
 //!   [6] ConfirmExecution    (records the new own-build epoch)
 //!   [9] own-build=16:50:18  upstream=16:49:48 (upstream < own) -> skip_execution
 //!
-//! KEY FINDING, scoped to EXTERNAL MODIFICATIONS of the upstream (the upstream
-//! table was recreated outside dbt). SUPERSEDED by ADR 0007: drift is measured
-//! against the epoch recorded for each upstream at the build, which agrees
-//! with every row here. The original reading was that the service
-//! rebuilds iff
-//!   max_upstream_epoch > own_last_build_epoch
-//! comparing each upstream against the node's OWN last-build epoch — NOT against
-//! the upstream epoch recorded at that build, and NOT against wall clock. A
-//! non-zero `freshness_tolerance_seconds` did NOT absorb the gap: entry [5]
-//! rebuilt with a 300s (5m) tolerance while the upstream was only ~tens of
-//! seconds newer than the build, and `is_stale=false` on every entry
-//! (staleness is a separate axis). See docs/correctness-handoff.md section C.
-//!
-//! The previous implementation compared `current_upstream > recorded_upstream +
-//! tolerance`, which could SKIP here (small upstream delta within tolerance) and
-//! serve data staler than the hosted service — the UNSAFE direction. The engine
-//! now anchors on the own-build epoch (decision.rs::is_stale).
+//! The upstream was recreated outside dbt (an External modification). Under
+//! ADR 0007, drift is measured against the epoch recorded for each upstream at
+//! the build, and every row here agrees with that rule: entry [5] rebuilds
+//! despite the 5m Lag tolerance. See docs/protocol.md and ADR 0007.
 
 #[path = "support.rs"]
 mod support;

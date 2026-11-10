@@ -1,137 +1,176 @@
 # Testing
 
-Correctness comes first. The offline suite (below) needs only Postgres and makes
-no hosted/Snowflake calls; it is the day-to-day gate. Behaviors are additionally
-characterized live against the real service via the recording proxy and the
-`experiments/` drivers (see [harness.md](harness.md)) — capture first, promote a
-golden fixture, then assert. Do not invent hosted behavior; document open
-questions in the [handoff](correctness-handoff.md), which also lists remaining
-work. The [conformance plan](conformance-plan.md) defines the next coverage and
-independent state-machine milestones, including release gates.
+The offline suite needs only Postgres and makes no hosted or Snowflake calls;
+it is the day-to-day gate. Hosted behavior is characterized live through the
+recording proxy and the `experiments/` drivers ([harness.md](harness.md)):
+capture first, promote a golden fixture, then assert. Do not invent hosted
+behavior. Record open questions in [correctness-handoff.md](correctness-handoff.md).
 
-## Local checks
+## Validation
+
+CI (`.github/workflows/ci.yml`) runs the first, third, fourth and fifth
+commands below. Run all of them before a change that touches decision logic.
 
 ```bash
-cargo test --workspace                          # requires Postgres
-cargo test -p dbt-state-server --lib             # no database required
+cargo test --workspace                                   # needs Postgres at $DATABASE_URL
+DATABASE_URL=postgres://invalid:invalid@127.0.0.1:1/invalid \
+  cargo test -p dbt-state-server --lib                   # proves library tests need no database
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
+./scripts/duckdb-ci.sh                                   # CI passes --jobs 4
+python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 ```
 
-Rust 1.98 is selected by rust-toolchain.toml. Integration tests keep an owned
-`TestServer` from `tests/support.rs` alive for their clients and row assertions.
-It creates an isolated Postgres schema and runs all migrations. Dropping the owner
-stops and joins its server runtime, including detached captures, before removing
-the schema. Cleanup also runs on assertion panics and failed server startup;
-a separate cleanup runtime makes this work with current-thread Tokio tests.
-Row assertions use the owner's already-scoped pool. The generated runner uses
-`TestDatabase` for the same schema ownership while retaining its production binary.
-Module-level tests that need no gRPC server (`submit_decision.rs`) take server
-state from `TestDatabase::state` and call the server module directly; the
-database owner must outlive that state.
+`rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
+build the `fuzz` feature, so it never contacts the hosted service.
 
-### Scenario helpers
+## Evidence rules and release gate
 
-Harness tests learn the protocol in one place, `tests/support/`:
+Two questions need different evidence (GLOSSARY: Hosted conformance, Reuse safety):
 
+- **Reuse safety**: can a SKIP or CLONE serve the wrong physical result? Offline
+  tests with an independent oracle can show this. The oracle must not call the
+  production fingerprint, freshness or decision code to decide what result
+  should exist.
+- **Hosted conformance**: does the server return the same gRPC status and full
+  response as dbt State for the same starting state and request? Only a
+  causally complete hosted capture for a pinned client and warehouse shows this.
+
+Conformance is claimed per **client/version × warehouse × feature slice**, never
+for the product as a whole. A slice needs: no wrong-result SKIP or CLONE in the
+fixed, generated and upgrade safety tests; zero unclassified mismatches in the
+captured-traffic replay; and a tested, documented fallback for every
+intentional gap. Offline evidence never promotes an item to hosted-verified.
+Fix wrong-result reuse and cross-tenant or cross-warehouse contamination first,
+then false rebuilds and missing features, then response fidelity.
+
+## Test support
+
+Integration tests share `crates/harness/tests/support.rs` and its modules in
+`crates/harness/tests/support/`.
+
+- `resources.rs` owns `TestServer` and `TestDatabase`. Each creates an isolated
+  Postgres schema, runs all migrations and removes the schema on drop, including
+  after a panic or failed server startup. `TestServer` also stops and joins its
+  server runtime. Tests that call server modules directly (such as
+  `submit_decision.rs`) take state from `TestDatabase::state`; the database
+  owner must outlive that state.
 - `scenario.rs` builds requests that fill in the reuse identity (`model`,
-  `view`, `data_test`, `duckdb_model`, `seed`, `clone_request`), the outcome a
-  confirm or record reports (`outcome`, `built_at`, `test_results`), and a
-  `Scenario` client that submits, confirms and expects decisions
-  (`expect_execute`/`expect_skip`/`expect_clone`, `verdict`, `build`,
-  `record`). `body(..)` changes the rendered SQL as well as the body hash,
-  because reuse ignores `node_body_hash`.
-- State history is seeded through the protocol: `Scenario::build` (submit,
-  expect a build, confirm) or `Scenario::record` with `Submit::record`.
+  `view`, `data_test`, `duckdb_model`, `seed`, `clone_request`), outcomes
+  (`outcome`, `built_at`, `test_results`), and a `Scenario` client with
+  `expect_execute`/`expect_skip`/`expect_clone`, `verdict`, `build` and
+  `record`. `Submit::body` changes the rendered SQL as well as the body hash,
+  because reuse ignores `node_body_hash`. Seed State history through the
+  protocol with `Scenario::build` or `Scenario::record`.
 - `rows.rs` reads `executions` and `node_states` back for assertions.
-- `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings, captured
-  node state) and `fault.rs` (fault-injection DDL) are the only code that
-  writes State with raw SQL.
+- `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
+  `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
+- `python.rs` provides `python_project(...)` for real-dbt cases. Successful
+  projects are removed; a failed one is kept and its path reported.
 
-`scenario_guard.rs` fails when a migrated file builds its own requests,
-destructures decisions by hand, runs SQL, or when raw State writes appear
-outside `legacy.rs`/`fault.rs`; add a file to its `MIGRATED` list when it moves.
+`scenario_guard.rs` fails when a file in its `MIGRATED` list builds requests by
+hand, destructures decisions, runs SQL, or when raw State writes appear outside
+`legacy.rs`/`fault.rs`. The capture database test lives in
+`crates/server/tests/capture.rs`, so server library tests stay independent of
+Postgres.
 
-Fixed real-dbt cases use `server.python_project(...)` to own their temporary files
-and shared process configuration. Successful projects are removed; a panic or
-unsuccessful Python process retains the project, with stdout/stderr logs for
-process failures. The failure reports its path. Python projects borrow their
-server owner so they cannot outlive it. Capture's database test lives in
-`crates/server/tests/capture.rs`, keeping library tests independent of Postgres.
+## Offline regressions
+
+- `offline_regressions.rs` and `correctness.rs`: public gRPC decisions and
+  persistent state, including overwritten history, target relation existence
+  and External modifications, scoped cached test outcomes, dependency and
+  context fingerprints, unknown freshness, seeds, duplicate confirms,
+  Record/Submit parity, corruption, old fingerprints and unsupported RPCs.
+- `warehouse_portability.rs`: independent physical histories across connection
+  namespaces and conservative same-target reuse for unverified warehouses. It
+  does not show hosted or warehouse parity.
+- `crates/ui/src/db.rs::every_read_is_scoped_to_the_configured_organization`:
+  organization isolation for every UI read.
+- `crates/server/src/decision_proptest.rs`: properties of the pure freshness
+  policy for an already selected candidate. They are a regression oracle, not
+  an independent model of store selection or hosted lag semantics.
+- `crates/server/src/sql_norm.rs` tests and `sql_normalization.rs`: captured
+  positive equivalences, negative cases and an arbitrary-UTF-8 no-panic
+  property ([sql-normalization.md](sql-normalization.md)).
+- `lag_tolerance.rs`: pins the hosted Lag tolerance rule (ADR 0007) by fixture
+  inspection, including `seed_upstream_arms` (seed upstreams) and
+  `copy_candidate_arms` (which build hosted reuses or copies when the latest
+  build no longer qualifies). Most of its fixtures also replay in
+  `conformance.rs`.
 
 ## DuckDB acceptance gate
 
-Every PR runs `./scripts/duckdb-ci.sh --jobs 4` alongside the ordinary workspace
-suite. It installs the locked Python environment, builds all targets once, and
-runs every fixed real-dbt/production-gRPC case plus four generated seeds with
-four random episodes and independent-oracle mutation probes. Postgres schemas
-and DuckDB files are isolated per case. The [workflow guide](duckdb.md) lists
-coverage, runtime measurements, supported versions, recovery and replay commands.
-Weekly/manual extended runs keep larger generated failure traces for replay.
-DuckDB checks establish local reuse safety; Snowflake capture replay remains the
-hosted-conformance evidence.
-
-## Offline regression tests
-
-`crates/harness/tests/offline_regressions.rs` exercises public gRPC decisions and
-persistent state: overwritten history, target existence/external edits, scoped
-cached test outcomes, dependency/context fingerprints, unknown/ambiguous
-freshness, seed configuration, duplicate confirms, Record/Submit parity,
-corruption, old fingerprints and unsupported RPC/clone errors. UI read tests
-verify organization isolation across every database read operation.
-
-SQL normalization combines positive captured equivalences with negative cases
-(cast kind, length/scale, qualified function identity) and an arbitrary UTF-8
-no-panic property. Pure decision properties test determinism and existing
-freshness/policy assumptions for already selected candidates; they are not an
-independent oracle for the complete service or hosted lag semantics.
-`warehouse_portability.rs` covers independent physical histories across
-connection namespaces and conservative BigQuery same-target reuse without a
-warehouse connection; it does not establish hosted or warehouse parity.
+`./scripts/duckdb-ci.sh` installs the locked Python environment, builds all
+targets once, and runs every fixed real-dbt case plus bounded generated traces
+with independent-oracle mutation probes. Each case gets its own Postgres schema
+and DuckDB file; logs land in `artifacts/duckdb/`. A scheduled or manual CI job
+runs a larger generated set (`--generated-only`). DuckDB checks establish local
+Reuse safety only; Snowflake captures remain the hosted-conformance evidence.
+See [duckdb.md](duckdb.md).
 
 ## Captured traffic replay
 
-`crates/harness/tests/conformance.rs` auto-discovers the `golden/fixtures/`
-corpus (36 causally-replayed fixtures; interleaved multi-run captures such as
-`lag_multi_upstream_policy.jsonl` are excluded via a `CHARACTERIZATION_ONLY` list
-and validated by dedicated tests). Invalid trace lines fail with a line number.
-It preserves complete captured confirmation outcomes and correlates hosted/local
-request IDs directly. It asserts hosted rebuild variants even after previous
-confirms, and compares complete causal SKIP responses after stripping only
-opaque IDs. Version/speculative responses are also compared. Dedicated tests
-cover captured materializations, seed/test lifecycles, both RegisterClone
-response mirrors, the clone register→confirm→reuse lifecycle
-(`clone_lifecycle.rs`), the `allow_clones=false` `unable_to_clone` rejection
-(`clone.rs`), the SQL-submit cross-name clone fallback
-(`clone_submit_fallback.rs`), the multi-upstream ANY/ALL + `is_stale`
-behavior (`lag_policy.rs`), and the dbt State-powered `state:*` selectors
-(`selector_conformance.rs` replays 67 captured `GetStateSelection` queries
-across all 10 criteria and asserts set-equality; `selector_offline.rs` exercises
-the record path and org/project/target scoping; plus the pure
-`selector::classify` unit tests in the server crate).
+`crates/harness/tests/conformance.rs::conformance_replay_all_corpora` loads
+every `golden/fixtures/*.jsonl` not named in its `CHARACTERIZATION_ONLY` list
+and replays it through the gRPC server against an empty store. The replayed
+corpus size is pinned there. Invalid trace lines fail with a line number.
 
-Leading hosted SKIPs and uncorrelated confirms depend on unknown initial
-history; they are counted, never hydrated with guessed epochs/results. Automatic
-cloning and deferral are counted gaps. Known causal mismatches must be explicitly
-identified by fixture entry and reason, with the rest of the response checked
-where possible. See the handoff for the exact remaining replay limitations.
-Passing these tests is not proof that every captured response or feature is
-implemented.
+- Confirms are correlated by mapping hosted request IDs to local ones, and keep
+  the captured outcome. A confirm with no local pending request is counted as
+  an unknown baseline.
+- Hosted `ready_to_execute` responses are compared in full after removing
+  opaque IDs. A first-build-versus-rebuild rationale difference is tolerated
+  only when the local store has no confirmed history for that workload, and
+  only for the exact (fixture, entry) set listed in the test.
+- A hosted SKIP is compared in full when the replay has confirmed history for
+  that workload. Otherwise it depends on unknown hosted history and is counted
+  as an unknown baseline, never hydrated with guessed epochs.
+- A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
+  correlated. `RegisterClone` and `ResolveDeferredRelations` entries are
+  counted but not driven here; `clone.rs`, `clone_lifecycle.rs`,
+  `clone_chain_provenance.rs` and `deferral.rs` cover them.
+- `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
+  compared too.
+
+`CHARACTERIZATION_ONLY` holds interleaved multi-run captures whose decisions
+depend on warehouse state or history outside the capture. Each entry has a
+comment naming the dedicated test that pins it.
+
+### `golden/replay_gaps.json`
+
+Each entry names a `fixture` and `entry` index, the `local_variant` the server
+returns, and a `reason`. Kinds:
+
+- **Whole-response gap** (no `ignore_fields`): the local response differs, for
+  example missing source history for a hosted clone or a deliberate
+  safety-floor divergence. For a submit, the local variant must equal
+  `local_variant`.
+- **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
+  both responses and the rest must match exactly. The named fields must still
+  differ.
+
+The replay fails if any gap is unused, if a whole-response gap now matches
+hosted ("gap is resolved; remove its exemption"), or if a field-scoped gap's
+fields no longer differ. Divergences are explained in
+[correctness-handoff.md](correctness-handoff.md), keyed by these entries.
+
+Passing the replay is evidence for the captured cases only. It does not show
+that every feature or response field is implemented.
+
+### `golden/upgrade/`
+
+Frozen rows captured from an old server revision. `clone_submit_fallback.rs`
+loads them (`upgrade_rejects_frozen_366be09_*`) and asserts the current server
+does not reuse them. Do not regenerate them with current hashing code.
 
 ## Hosted discovery (differential fuzz)
-
-The opt-in differential tool uses real credentials/metering:
 
 ```bash
 cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
   --seeds golden/fixtures/<file>.jsonl --iterations 200
 ```
 
-It needs a dbt Cloud credential in `~/.dbt/dbt_cloud.yml` and burns dbt State
-metering, so run it deliberately. Its local side has empty history and it
-compares variants only; zero divergences does not prove reuse conformance.
-Decode/transport failures, missing comparisons and reported
-divergences now fail the process. Future work must establish equivalent state,
-compare complete responses/errors, save reproducible scenarios and shrink
-stateful divergences. Promote useful controlled cases into golden/fixtures;
-keep raw session captures out of the tree.
+Needs `~/.dbt/dbt_cloud.yml` and uses dbt State metering. Its local side starts
+with empty history and compares decision variants only, so it is discovery,
+not a conformance gate. Failed comparisons and divergences fail the process.
+Promote useful controlled cases into `golden/fixtures/`.

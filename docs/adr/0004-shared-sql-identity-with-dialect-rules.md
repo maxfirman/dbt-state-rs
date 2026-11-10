@@ -1,19 +1,6 @@
 # Share SQL identity machinery with explicit warehouse semantics
 
-## Implementation status — 2026-11-07
-
-Shared fingerprint framing and dependency binding are implemented with explicit
-warehouse rules. [SQL identity](../duckdb-sql-identity.md) documents DuckDB's
-validated subset and exact fallback; [result copying](../duckdb-result-copy.md)
-documents the checked cross-environment subset and copy-to-SKIP lifecycle.
-These retain the documented Snowflake compatibility scope.
-
-The Python [Result copy module](../../integrations/duckdb/src/dbt_state_duckdb/result_copy.py)
-now concentrates both DuckDB copy entry paths, provenance, transactional source
-validation and path-specific recovery. Rust retains decision policy and State
-history; Python executes the warehouse operation as decided in ADR 0002.
-
-## Original decision
+## Decision
 
 Use one fingerprinting and dependency-binding pipeline for Snowflake and
 DuckDB, sharing traversal, provenance and execution lifecycle machinery.
@@ -41,3 +28,5 @@ safe invalidation rather than reinterpretation of old history.
 Evidence: current [SQL normalization](../../crates/server/src/sql_norm.rs),
 [fingerprinting](../../crates/server/src/fingerprint.rs), and
 [DuckDB identifier rules](https://duckdb.org/docs/2.0/sql/dialect/keywords_and_identifiers).
+
+Current rules: [DuckDB SQL identity and result copies](../duckdb-identity-and-copy.md).

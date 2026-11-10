@@ -1,68 +1,58 @@
 # dbt-state-rs
 
 An open-source, self-hostable reimplementation of the **dbt State** decision
-service — the hosted, metered gRPC "query cache" at `api.state.dbt.com` that
-lets dbt skip, clone, or defer model builds when nothing meaningful has changed.
+service, the hosted, metered gRPC "query cache" at `api.state.dbt.com` that lets
+dbt skip, copy or defer model builds when nothing meaningful has changed.
 
 Written in Rust (tonic + prost) with a Postgres backend (sqlx). The protocol was
 reverse-engineered from the open-source `.proto` definitions and from real
 traffic captured against the hosted service using the official dbt Fusion client.
 
-- **Core idea:** the dbt client sends each node's rendered SQL, config, hashes
-  and upstream freshness; the server derives a logic identity (a canonicalized
-  SQL + config fingerprint), matches it against recorded history, evaluates
-  freshness, and decides BUILD / SKIP / CLONE — recording outcomes so future
-  runs can skip. The decision engine is the novel part this project reproduces.
-- **Correctness status:** captured traffic, offline regressions and live
-  verification against the real service cover selected behavior — notably the
-  clone, lag/freshness, data-test upstream freshness, `compare_unrendered_code`
-  template, deferral and `state:*` selector paths; this is not yet a fully
-  conformant drop-in replacement. See the
-  [correctness handoff](docs/correctness-handoff.md) for live-verified behavior,
-  compatibility changes and concrete remaining tasks.
-- **Warehouse scope:** Snowflake is the only warehouse whose cross-environment
-  matching has been characterized against the hosted service. DuckDB has a
-  separate tested local copy/reuse contract. Other dialects use conservative
-  same-target reuse; BigQuery/Databricks clone DDL remains
-  unverified against those warehouses, and Redshift cloning is unsupported.
+The dbt client sends each node's rendered SQL, config, hashes and upstream
+freshness. The server derives a logic identity, matches it against recorded
+State history, evaluates freshness and Lag tolerance, and decides BUILD / SKIP /
+CLONE, recording outcomes so later runs can reuse them.
+
+- **Status:** selected hosted behavior is reproduced and pinned by captured
+  traffic replay; it is not yet a fully conformant drop-in replacement (see
+  [open questions and known divergences](docs/correctness-handoff.md)).
+- **Warehouse scope:** Snowflake is the characterized hosted warehouse, DuckDB
+  has a separately tested local workflow, and other dialects use conservative
+  same-target reuse.
 
 ## Quick start
 
+Details and options are in [docs/development.md](docs/development.md).
+
 ```bash
-# 1. Postgres (any reachable instance; a container is fine)
+# 1. Postgres
 docker run -d --name dbt-state-pg -e POSTGRES_USER=dbtstate \
   -e POSTGRES_PASSWORD=dbtstate -e POSTGRES_DB=dbtstate -p 55441:5432 postgres:17-alpine
 
-# 2. Build + run the server (applies migrations on start)
-export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
-cargo run -p dbt-state-server            # listens on 127.0.0.1:50051
+# 2. The server (applies migrations on start; listens on 127.0.0.1:50051)
+DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate cargo run -p dbt-state-server
 
-# 3. Point the dbt Fusion client at it (insecure => no OAuth)
-export DBT_ENGINE_MANAGE_STATE=true
-export RUN_CACHE_API_URL=127.0.0.1:50051
-export RUN_CACHE_API_SECURE=false
-dbt build --profile <snowflake-profile> --target <target>
+# 3. The dbt Fusion client, pointed at it without OAuth
+DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50051 RUN_CACHE_API_SECURE=false \
+  dbt build --profile <snowflake-profile> --target <target>
 ```
 
-For credential-free local exploration with a real Python dbt project, see the
-[DuckDB workflow](docs/duckdb.md). It includes seeds, tables, views, cached tests,
-pinned incremental execution and prod/dev result copying. DuckDB reuse-safety
-checks run in CI alongside the Snowflake hosted capture replay.
+For credential-free local runs with a real Python dbt project, see the
+[DuckDB workflow](docs/duckdb.md).
 
 ## Workspace layout
 
 | Crate | Purpose |
 |---|---|
-| `crates/proto` | Generated tonic server+client stubs from the `.proto` files. |
-| `crates/server` | The dbt State server: decision engine + Postgres store + gRPC services. |
-| `crates/harness` | Test harness: recording proxy, golden fixtures, differential + fuzz tools. |
-| `crates/ui` | Optional read-only web console for decisions and lineage. |
+| `crates/proto` | Generated tonic server and client stubs. |
+| `crates/server` | The server: decision engine, Postgres store, gRPC services. |
+| `crates/harness` | Recording proxy, golden fixtures, differential and fuzz tools, tests. |
+| `crates/ui` | Optional read-only web console. |
 
 ## Documentation
 
-Full documentation lives in [`docs/`](docs/). Start with
-[`docs/README.md`](docs/README.md). See [`AGENTS.md`](AGENTS.md) for a compact
-orientation aimed at coding agents.
+Start with [`docs/README.md`](docs/README.md). [`AGENTS.md`](AGENTS.md) is a
+compact orientation for coding agents.
 
 ## License
 

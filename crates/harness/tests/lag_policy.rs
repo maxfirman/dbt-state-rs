@@ -27,7 +27,7 @@
 //!     (entries 56/59, lag_tolerance.rs). is_stale is FALSE on every execute.
 //!   * `is_stale` is true ONLY on a tolerated-stale reuse. The engine now sets
 //!     it on Verdict::Skip (decision.rs::evaluate_freshness). See
-//!     docs/correctness-handoff.md §C.
+//!     docs/protocol.md and ADR 0007.
 
 #[path = "support.rs"]
 mod support;
@@ -71,7 +71,7 @@ fn lp_model2_decisions() -> Vec<(i64, i64, String, bool)> {
 /// advanced past its recorded epoch while the build was younger than
 /// lag_tolerance): `lag_tolerance` gates a rebuild under ANY policy. The rule
 /// was isolated on 2026-11-10 and is implemented (ADR 0007; see
-/// docs/correctness-handoff.md §C and `lag_tolerance.rs`).
+/// docs/protocol.md and `lag_tolerance.rs`).
 #[test]
 fn hosted_policy_is_stale_truth_table() {
     let decisions = lp_model2_decisions();

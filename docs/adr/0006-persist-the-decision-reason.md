@@ -61,3 +61,10 @@ costs one column and keeps the decision engine pure.
   rendering, flagged in `explain.rs::shape` and `docs/explain-catalog.md` as
   awaiting hosted capture (#40). Once captured, fixing them only changes that
   mapping.
+  > **Amended by [ADR 0007](0007-lag-tolerance-and-upstream-producers.md):** the
+  > shape fallbacks changed with its characterization. A dropped Target
+  > relation now persists `no_reuse_candidate.own_target_missing` and renders
+  > the first-build tree; `no_reuse_candidate.own_target_modified` has its own
+  > shape; `own_target_changed_or_missing` now means ambiguous own-target
+  > evidence and, with `no_build_anchor`, keeps SHAPE 7
+  > ([explain-catalog.md](../explain-catalog.md#shape-selection)).

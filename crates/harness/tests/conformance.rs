@@ -429,7 +429,7 @@ async fn conformance_replay_all_corpora() {
         // externally modified, then later copied it into the same target with
         // is_stale=true ("but it's old, so we will clone from …"). The local
         // fallback copies on the first submit. Uncharacterized; pinned by
-        // lag_tolerance.rs, see correctness-handoff.md §C open items.
+        // lag_tolerance.rs, see correctness-handoff.md "Open hosted questions".
         // Clone chain with the upstream's own builds (2026-11-10). Every copy
         // in it comes from a source built in an earlier session, so it cannot
         // replay from an empty store; pinned by lag_tolerance.rs.
@@ -1104,14 +1104,13 @@ async fn replay_explain_messages(
                     !gap.reason.trim().is_empty(),
                     "{context}: gap needs a reason"
                 );
-                // A `decision_description`-scoped explain gap (#34): the SKIP/
-                // CLONE tree and decision class ARE asserted to match hosted
-                // exactly — only the hosted `decision_description` wording
-                // differs (the version-dependent lag-tolerance phrasing our
-                // engine deliberately does not emit; see docs/explain-catalog.md
-                // and the #22 version-skew). This keeps the main gate asserting
-                // the hosted tree DIRECTLY while scoping the one tolerated field,
-                // rather than waving the whole entry through.
+                // A `decision_description`-scoped explain gap: the SKIP/CLONE
+                // tree and decision class ARE asserted to match hosted
+                // exactly; only the hosted `decision_description` wording
+                // differs (see the gap's reason in golden/replay_gaps.json). This
+                // keeps the main gate asserting the hosted tree DIRECTLY while
+                // scoping the one tolerated field, rather than waving the
+                // whole entry through.
                 let desc_scoped = gap
                     .ignore_fields
                     .iter()
@@ -1190,7 +1189,7 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     //    within-lag-tolerance reuse with a FRESH upstream subtree: ET_UP's
     //    current epoch differs from (is older than) the epoch recorded at the
     //    build, so it is neither drift nor "every upstream epoch equals its
-    //    recorded epoch" (explain-catalog §decision_description, `dsdec_young`).
+    //    recorded epoch" (the SKIP descriptions in docs/protocol.md, `dsdec_young`).
     //    Reproduce that by building against a NEWER ET_UP epoch, then confirming
     //    with the node's own build epoch.
     let up_name = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ET_UP\"";

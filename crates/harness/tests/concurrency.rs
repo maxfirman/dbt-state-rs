@@ -16,7 +16,7 @@
 //!   provenance signal available without stable warehouse object IDs.
 //!
 //! These are deterministic offline tests; the open question of stronger
-//! object-lineage provenance is documented in docs/correctness-handoff.md §A.
+//! object-lineage provenance is documented in docs/correctness-handoff.md.
 #[path = "support.rs"]
 mod support;
 

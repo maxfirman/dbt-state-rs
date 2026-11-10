@@ -25,7 +25,7 @@
 //!      pre-existing history) and reported separately as candidate golden cases.
 //!
 //! Usage:
-//!   cargo run -p dbt-state-harness --bin diff-fuzz -- \
+//!   cargo run -p dbt-state-harness --features fuzz --bin diff-fuzz -- \
 //!     --seeds golden/fixtures/golden_20261008T222744.061Z.jsonl --iterations 200
 //!
 //! Env: DATABASE_URL (temp schema for our server), PROXY_UPSTREAM (default

@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted (2026-11-10). Supersedes the own-build freshness anchor recorded in
-`docs/correctness-handoff.md` (finding 12), which was characterized only with
-External modifications of dbt-managed upstreams.
+Accepted (2026-11-10). Supersedes the earlier own-build freshness anchor (see
+[correctness-handoff.md](../correctness-handoff.md)), which was characterized
+only with External modifications of dbt-managed upstreams.
 
 ## Decision
 

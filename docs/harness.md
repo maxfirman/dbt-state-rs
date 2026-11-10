@@ -1,165 +1,86 @@
-# Test harness — dbt-state-rs
+# Test harness
 
-## Goal
-Validate our Rust server against the REAL dbt State service (`api.state.dbt.com`)
-using the official Fusion dbt client as the traffic generator.
+`crates/harness` captures real traffic between the official dbt client and the
+hosted dbt State service (`api.state.dbt.com`), and provides tools to compare
+this server against it. Wire semantics and the captured protocol facts live in
+[protocol.md](protocol.md); test strategy and the replay rules live in
+[testing.md](testing.md).
 
 ## Components
-### 1. Recording proxy (`crates/harness`, bin `record-proxy`) — DONE, WORKING
-A local INSECURE tonic server forwarding every query_cache service. The Fusion
-client is pointed at it; the proxy forwards each call to the real service over TLS
-with a minted Bearer token, and appends decoded request/response JSON to a golden
-`.jsonl` file.
 
-- `src/auth.rs` — parses `~/.dbt/dbt_cloud.yml` (active host + project token), does
-  the dbt platform token-exchange at `https://auth.state.dbt.com/token`
-  (grant_type=urn:ietf:params:oauth:grant-type:token-exchange, subject_token_type=dbt,
-  subject_token=<cloud token>, dbt_hostname=<host>, client_id=2fd87cd5-...),
-  caches the id_token, and extracts org_id from scope `runcache:scope:org:<ORG_ID>:...`.
-  Token TTL ~900s; minter refreshes with 60s slack.
-- `src/golden.rs` — append-only JSONL writer; one `GoldenEntry` per call
-  {service, method, recorded_at, metadata[], request, response}.
-- `src/bin/record_proxy.rs` — tonic server impls for SQL, Execution, Clone,
-  ClientValidation, Explain, SelectorService and ClientTelemetry (newtype
-  `ProxyService(Arc<Proxy>)` to satisfy the orphan rule; derives Clone for tonic).
-  Each handler clones the decoded message, forwards upstream with the client's
-  own metadata (`x-submitted-at-epoch`, `x-dbt-invocation-id`, ...; transport
-  and auth headers excluded) plus the proxy's auth metadata, logs, and returns
-  the real response verbatim. Captures before 2026-11-09 were made while the
-  proxy dropped the client metadata.
-- `src/bin/state_probe.rs` — sends ONE crafted RPC (submit, values, confirm,
-  explain) read as golden-format JSON from stdin, through the proxy, and prints
-  the response. Used by `experiments/lag_matrix.py` for synthetic-epoch
-  sequences that need no warehouse.
+| Binary (`crates/harness/Cargo.toml`) | Source | Purpose |
+|---|---|---|
+| `record-proxy` | `src/bin/record_proxy.rs` | Recording proxy (below). |
+| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py` and `seed_upstream.py` for synthetic-epoch sequences that need no warehouse. |
+| `diff-fuzz` | `src/bin/diff_fuzz.rs` | Opt-in differential discovery against the hosted service; needs `--features fuzz` ([testing.md](testing.md#hosted-discovery-differential-fuzz)). |
 
-### How to run a capture
-    # terminal: start proxy
-    cd /path/to/dbt-state-rs && cargo build -p dbt-state-harness
-    RUST_LOG=info GOLDEN_DIR=./golden PROXY_LISTEN=127.0.0.1:50099 ./target/debug/record-proxy
-    # then run Fusion dbt against it (Snowflake target — DuckDB does not trigger State):
-    cd /path/to/jaffle-shop
-    DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50099 RUN_CACHE_API_SECURE=false \
-      dbt build --profile snowflake --target prod_demo --select <model> --skip-semantic-manifest-validation
-    # To force EXECUTE: make a *semantic* SQL change (add a column). Comments alone are
-    # normalized away by the server fingerprint and still SKIP. --full-refresh does NOT
-    # force execute when logic+data unchanged.
+### Recording proxy
 
-### Scenario-specific capture drivers (`experiments/`)
-Reusable wrappers that start from a clean `jaffle-shop` tree, drive a focused
-scenario against `--target prod_demo`/`dev_clone`, and print the newly captured
-decisions. They **only ever mutate `CDO_DEMO_DB`** (demo schemas) and `git
-restore` the project afterwards.
+An insecure local tonic server for the SQL, Execution, Clone,
+ClientValidation, Explain, SelectorService and ClientTelemetry services. The
+dbt client points at it. Each call is forwarded over TLS to the hosted service
+with the client's own metadata (`x-submitted-at-epoch`, `x-dbt-invocation-id`,
+and so on; transport and auth headers excluded) plus a minted Bearer token. The
+proxy returns the hosted response unchanged and appends one JSON line per call
+to `golden_<timestamp>.jsonl`.
 
-- `proxy_up.sh` — start/restart the recording proxy (survives the shell).
-- `run.sh LABEL SELECT [EDIT_PY] [EXTRA…]` — generic single-model build.
-- `clone_experiment.sh LABEL {incremental|table|snapshot} [--fresh-source] [--no-clones]`
-  — prod→dev clone flow (RegisterClone / `unable_to_clone` on `allow_clones=false`).
-- `clone_logic_sensitivity.sh` — proves post-clone reuse is schema-abstracted and
-  logic-sensitive.
-- `lag_experiment.sh LABEL {any|all} LAG {none|a|b|both}` — two-upstream
-  `require_fresh_data_from` + `is_stale`. Its upstream bumps are EXTERNAL
-  MODIFICATIONS of dbt models' tables, which hosted treats as upstream query
-  changes; see `lag_matrix.py` for the representative cases.
-- `lag_matrix.py ARM…` — crafted-gRPC `lag_tolerance` matrix (recorded upstream
-  builds, external modifications, sources, build age, policy, descriptions)
-  through `state-probe`. `lag_show.py` pretty-prints its rows.
-- `lag_docs_example.sh` — the lag_tolerance docs' worked example, scaled down,
-  through the real client; `DIRECT=1` runs it without the proxy as a control.
-- `lag_rule_check.py [files]` — scores the characterized hosted lag rule
-  against every fixture. `golden_tail.py FILE N [PREFIX]` prints decisions
-  captured after line N.
-- `selector_experiment.sh {baseline|query CRIT|mutate CRIT EDIT|all-clean}` —
-  dbt State-powered `state:*` selectors (`GetStateSelection`). Builds a baseline
-  in `prod_demo`, then runs `dbt compile --select state:<crit>` from `dev_clone`
-  (`defer_to_target: prod_demo`) to capture the selector verdicts. The recording
-  proxy forwards `SelectorService` and `ClientTelemetry`.
+- `src/auth.rs` reads the active host and token from `~/.dbt/dbt_cloud.yml`,
+  performs the dbt platform token exchange, caches the token with 60s expiry
+  slack, and extracts the organization ID from the
+  `runcache:scope:org:<ORG_ID>:...` scope.
+- `src/golden.rs` defines `GoldenEntry` {`service`, `method`, `recorded_at`,
+  `metadata`, `request`, `response`} and the append-only writer.
+- Environment: `PROXY_LISTEN` (default `127.0.0.1:50099`), `PROXY_UPSTREAM`
+  (default `https://api.state.dbt.com:443`), `GOLDEN_DIR` (default `./golden`).
 
-Promote a useful capture into `golden/fixtures/` and drive it from a test.
+Older fixtures were captured before the proxy forwarded client metadata, so
+the hosted service did not receive those headers. Their recorded `metadata`
+still shows what the client sent.
 
-### 2. Differential tester — replays golden requests against OUR server
-Read golden `.jsonl`, feed each request into our server via an in-process tonic
-client, diff the response against the recorded one. Normalize nondeterministic
-fields before diff: request_id, execution_decision_id, timestamps/epochs,
-execution_runtime_ms. These are the TDD assertions.
+## Running a capture
 
-## Golden corpus (golden/fixtures/)
-First capture (golden_20261008T222744...jsonl), 22 entries:
-- ClientValidation.ValidateClientVersion x3  -> {is_supported: true}
-- SQL.SubmitEnrichedSQL x12: 8 skip_execution + 4 ready_to_execute
-- SQL.SubmitEnrichedSQLSpeculative x3
-- Execution.ConfirmExecution x4 -> {success:true, request_id}
+```bash
+cargo build -p dbt-state-harness
+RUST_LOG=info GOLDEN_DIR=./golden PROXY_LISTEN=127.0.0.1:50099 ./target/debug/record-proxy
 
-## Key protocol observations from REAL traffic
-- The REAL SubmitEnrichedSQLRequest has MANY more fields than the Fusion crate proto
-  (the dbt-core mirror we copied matches better). Observed request keys:
-  allow_clones, clone_chain_depth_limit, clone_table_properties, clone_time_travel_limit,
-  compare_unrendered_code, dbt_node_state, default_catalog, default_schema, defer_enabled,
-  dialect, execution_type, freshness_tolerance_seconds, ignore_external_modifications,
-  is_defer_to_profile, labels, lenient_dependencies, query_dependencies, semantic_extras,
-  sql, stale_upstream_policy, table_namespace, tables, target_table, tolerate_nondeterminism.
-- ExplainedDecision has a `decision_description` string field (not in the Fusion proto).
-- SKIP response: response.skip_execution { explained_decision{decision:0,
-  skip_rejection_reason:null, clone_rejection_reason:null, is_stale:false,
-  decision_description:"model was a no-op because both its query and its upstream data are up to date"},
-  transformed_nodes_by_query:{}, execution_results:{fields:{}}, execution_runtime_ms:<prev run ms>,
-  execution_decision_id:<uuidv7> }
-- EXECUTE response: response.ready_to_execute { request_id:<uuidv7>, last_modified_query:"",
-  explained_decision{decision:1, skip_rejection_reason:6 (NO_SUITABLE_MATCH_FOUND),
-  clone_rejection_reason:6, is_stale:false, decision_description:"model was executed because
-  either its query didn't match or its upstream data is out of date"},
-  transformed_nodes_by_query:{}, query_hash_metadata_info:null, execution_decision_id:<uuidv7> }
-- ConfirmExecutionRequest { request_id (== the ready_to_execute request_id),
-  last_modified_epoch, failed_to_clone:false, table_type:null, execution_results:null,
-  execution_runtime_ms, labels{dbt_node_name,dbt_node_fqn,dbt_node_unique_id} }
-  -> ConfirmExecutionResponse { success:true, request_id }
-- request_id correlates Submit(ready_to_execute) with the later ConfirmExecution.
-- execution_decision_id is a separate uuidv7 for Explain lookups.
-- Enums are serialized as ints in JSON: decision 0=SKIP_EXECUTION,1=READY_TO_EXECUTE,
-  3=READY_TO_CLONE; RejectionReason 6=NO_SUITABLE_MATCH_FOUND; execution_type 10=VIEW.
-- Metadata headers from the real client: x-request-id, x-session-id, x-submitted-at-epoch,
-  x-system-user-id, x-os-name, x-dbt-invocation-id, te, content-type, user-agent.
-  (NOTE: x-dbt-invocation-id is additional vs the Fusion crate's list.)
+# In the dbt project (a Snowflake target; DuckDB does not trigger dbt State):
+DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50099 RUN_CACHE_API_SECURE=false \
+  dbt build --profile snowflake --target prod_demo --select <model> --skip-semantic-manifest-validation
+```
 
-## CLONE + deferral capture (task 10-12) — DONE
-Triggered a REAL clone decision WITHOUT a dbt Cloud prod job (the managed git
-repo dbt-cloud-managed-repo is inaccessible and the prod job 404s).
-Instead used PROFILE-based auto-deferral: dbt State synthesizes defer nodes from
-the profile `defer_to_target` (run_cache_defer.rs), so:
-  1. Added an INCREMENTAL model (orders_incremental, merge strategy) — dev clone
-     only fires for incremental models + snapshots (run_cache_dev_clone.rs).
-  2. Set `defer_to_target: prod_demo` on the dev_clone profile target in profiles.yml.
-  3. Built in prod_demo (clone source), then built in dev_clone via the proxy.
-Captured golden_20261009T100637...jsonl: ValidateClientVersion, ResolveDeferredRelations,
-RegisterClone -> ready_to_clone, ConfirmExecution x2, SubmitEnrichedSQL.
+To force a build, make a semantic SQL change such as adding a column. Comment
+or whitespace edits are normalized away and still SKIP
+([sql-normalization.md](sql-normalization.md)). For an incremental model,
+`--full-refresh` makes the client bypass dbt State (no submit).
 
-RegisterClone request: {target_table(dev), dialect, execution_type:3(MERGE),
-clone_source_table(prod), clone_source_last_modified_epoch, clone_source_table_type:
-"TRANSIENT TABLE", table_namespace}.
-ready_to_clone response: {request_id, clone_sqls:[
-  "\n    CREATE OR REPLACE TRANSIENT TABLE <target>\n    CLONE <source>\n    COPY GRANTS"],
-  clone_source, clone_target, explained_decision{decision:3(READY_TO_CLONE),
-  skip_rejection_reason:5(FORCED_NOT_ELIGIBLE), clone_rejection_reason:null,
-  decision_description:""}, clone_execution_results{fields:{}}, execution_decision_id}.
-CloneResponse populates BOTH ready_to_clone (field 3) AND ready_to_clone_v1 (deprecated
-oneof 1) with the same payload.
-=> SERVER generates the clone DDL (dialect-specific). Current implementation:
-   the Warehouse rules (`Warehouse::result_copy_ddl` in
-   `crates/server/src/warehouse.rs`) support Snowflake TABLE/TRANSIENT TABLE,
-   BigQuery TABLE CLONE, and Databricks SHALLOW CLONE for an explicitly known
-   Delta source. View sources, Redshift and unknown dialects are rejected;
-   non-Snowflake templates have not been validated against warehouses or hosted
-   responses. See [protocol.md](protocol.md#clone-cloneregisterclone).
+Promote a useful capture into `golden/fixtures/` and drive it from a test
+([golden/README.md](../golden/README.md)).
 
-ResolveDeferredRelations request: {profile_name, target_name(defer-to), project_name,
-project_id, node_unique_ids[]} -> {fqn_by_unique_id: {}} in this initial capture:
-no upstreams had been built in the defer-to environment yet. Later non-empty
-captures established the mapping; the server now resolves recorded
-`node_unique_id` → physical FQN there. See [protocol.md](protocol.md#state-writes-execution).
+## Experiment drivers (`experiments/`)
 
-Differential tests (`crates/harness/tests/clone.rs`) pin the captured clone DDL,
-decision, source/target and both response mirrors. Deferral's non-empty mapping
-is covered by `crates/harness/tests/deferral.rs`.
+The drivers start from a clean `jaffle-shop` tree, run one focused scenario
+against `--target prod_demo` or `dev_clone` (`defer_to_target: prod_demo`),
+print the newly captured decisions and `git restore` the project. They only
+ever mutate `CDO_DEMO_DB`.
 
-NOTE on live clone: forcing the Fusion client to clone against OUR server live is
-state-dependent (clone-if-missing only fires when the dev table is absent). The
-differential replay against real golden traffic is the authoritative proof of parity.
+| Area | Drivers |
+|---|---|
+| Proxy and generic runs | `proxy_up.sh` (start or restart the proxy; captures go to `$GOLDEN_DIR`, default `/tmp/conf_golden`), `run.sh LABEL SELECT [EDIT_PY] [EXTRA…]` |
+| Result copy (clone) | `clone_experiment.sh LABEL {incremental\|table\|snapshot} [--fresh-source] [--no-clones]`, `clone_logic_sensitivity.sh`, `clone_eligibility.sh`, `clone_fallback_xenv.sh`, `clone_fallback_control.sh`, `clone_fallback_freshness.sh`, `clone_chain_provenance.sh`, `registerclone_source_age.sh`, `p0_fallback_over_existing.sh`, `physical_state_exec_type.sh` |
+| Dependency and SQL identity | `finding3_*.sh`, `quoted_identifier_case.sh`, `resolution_context.sh` |
+| Lag tolerance | `lag_experiment.sh LABEL {any\|all} LAG {none\|a\|b\|both}`, `lag_buildage.sh`, `lag_isolate.sh`, `lag_docs_example.sh` (`DIRECT=1` runs without the proxy as a control), `lag_matrix.py ARM…`, `copy_candidates.py`, `seed_upstream.py` |
+| Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh` |
+| Selectors and deferral | `selector_experiment.sh {baseline\|query CRIT\|mutate CRIT EDIT\|all-clean}`, `selector_last_write_wins.sh`, `deferral_experiment.sh` |
+| Explain | `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`; `explain_slice.py` renders captures |
+| Inspection and validation | `golden_tail.py FILE N [PREFIX]`, `lag_show.py`, `lag_rule_check.py [files]`, `trace_validate.py` and `oracles.py` (correlate captured source, clone and confirm evidence; tested by `trace_validate_test.py`) |
+
+`lag_experiment.sh` bumps upstreams by External modification of dbt-built
+tables, which hosted treats as an upstream query change; `lag_matrix.py`
+covers the representative Lag tolerance cases with crafted calls.
+
+## Live clone runs
+
+Forcing the dbt client to take a result copy against this server live depends
+on warehouse state (the client only asks to clone when the target relation is
+absent). Replay of captured traffic is evidence for the captured cases only;
+see [testing.md](testing.md#captured-traffic-replay).

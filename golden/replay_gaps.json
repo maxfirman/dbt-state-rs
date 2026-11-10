@@ -3,37 +3,37 @@
     "fixture": "c1_config_vs_logic.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
-    "reason": "Dependency SELECT text changes to full view DDL; conservative exact fingerprint misses. Hosted response also uses the unresolved lag-tolerance description. Handoff B/C."
+    "reason": "Dependency SELECT text changes to full view DDL; conservative exact fingerprint misses. Hosted response also uses the unresolved lag-tolerance description."
   },
   {
     "fixture": "c1_config_vs_logic.jsonl",
     "entry": 3,
     "local_variant": "ready_to_execute",
-    "reason": "Config-only change still carries dependency view DDL rather than the confirmed SELECT representation. Handoff B/C."
+    "reason": "Config-only change still carries dependency view DDL rather than the confirmed SELECT representation."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 13,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 14,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 15,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 16,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
   },
   {
     "fixture": "data_test_upstream_freshness.jsonl",
@@ -99,13 +99,13 @@
     "fixture": "lag_seed_upstream.jsonl",
     "entry": 22,
     "local_variant": "ready_to_execute",
-    "reason": "SAFETY FLOOR (deliberate divergence, seed arm C): the seed's own table was modified externally after its last confirmed load. Hosted skips the unchanged-values seed and serves the edited table; the local server reloads it, because reuse requires the own target to be as built (AGENTS.md: own-target existence and external edits are checked separately). Handoff C."
+    "reason": "SAFETY FLOOR (deliberate divergence, seed arm C): the seed's own table was modified externally after its last confirmed load. Hosted skips the unchanged-values seed and serves the edited table; the local server reloads it, because reuse requires the own target to be as built (AGENTS.md: own-target existence and external edits are checked separately)."
   },
   {
     "fixture": "lag_seed_upstream.jsonl",
     "entry": 23,
     "local_variant": "explain",
-    "reason": "SAFETY FLOOR explain of entry 22: hosted explains a SKIP of the externally modified seed; the local server explains the reload it decided. Handoff C."
+    "reason": "SAFETY FLOOR explain of entry 22: hosted explains a SKIP of the externally modified seed; the local server explains the reload it decided."
   },
   {
     "fixture": "lag_external_modification_linked.jsonl",

@@ -70,12 +70,17 @@ matched no prior row:
   `CloneEquivalent`, which carries no `executions.id`, so the column is NULL.
   This is the CLONE *decision* ONLY. Clone **adoption** reuse — a SKIP or a
   freshness-driven EXECUTE that reuses a clone-origin `executions` row through
-  `decide` — is NOT NULL: the reuse candidate is `Some(that row)` and
-  `services.rs` records `matched_execution_id = candidate.id` (PR #31 round-3
-  F5). The explain path therefore joins the clone-origin anchor and must apply
+  `decide` — is NOT NULL: the reuse candidate is `Some(that row)` and its id is
+  recorded. The explain path therefore joins the clone-origin anchor and must apply
   the clone-adoption input normalization (`store::ExplainDecisionRow::anchor`),
   which shares one rule with the decision
-  (`reuse_candidate::adopt_current_inputs`, 2026-11-09);
+  (`reuse_candidate::adopt_current_inputs`).
+  > **Amended by [ADR 0007](0007-lag-tolerance-and-upstream-producers.md):** a
+  > CLONE is not always NULL. A Result copy that stands in for a Target
+  > relation's own build, when that build had to rebuild, keeps the build as
+  > `matched_execution_id` (`DecisionRecord::result_copy_judged`). A rebuild of
+  > a missing or modified Target relation whose latest build had the
+  > workload's identity also keeps that build (`submit_decision::anchor_rejected`).
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
 
@@ -95,6 +100,9 @@ absent, and joining `executions` for the freshness anchor when present.
   the happy-path capture never produced that badge. It is an unobserved-behavior
   question pending a within-freshness-tolerance capture (map "Not yet specified"),
   not a re-derivation gap.
+  > **Amended by [ADR 0007](0007-lag-tolerance-and-upstream-producers.md):** Lag
+  > tolerance is applied, and Explain renders the `WITHIN_TOLERANCE` line from
+  > the tolerance and Build age persisted with the decision.
 - `ExplainService` gains a DB handle by becoming `ExplainService(pub AppState)`,
   mirroring `SelectorServiceImpl`; the router constructor passes `state.clone()`.
 
@@ -103,11 +111,11 @@ absent, and joining `executions` for the freshness anchor when present.
 ### Own-target existence is inferred, not probed (known limitation)
 
 > **Amended by [ADR 0006](0006-persist-the-decision-reason.md).** Explain no
-> longer reads the `decision_description` wording. It selects the shape from the
-> persisted decision reason, and a dropped-own-target rebuild now carries its
-> own reason (`no_reuse_candidate.own_target_changed_or_missing`). Its rendering
-> is unchanged (still SHAPE 7) until the hosted shape is captured (#40). The
-> text below records the original limitation.
+> longer infers existence from the `decision_description` wording; it selects
+> the shape from the persisted Decision reason. A dropped Target relation now
+> persists `no_reuse_candidate.own_target_missing` and renders the first-build
+> tree ([explain-catalog.md](../explain-catalog.md)). The text below records
+> the original limitation.
 
 The `table analysis` existence line (`TARGET_TABLE_EXISTS` for a table that
 exists, "table does not exist" for a first build) is NOT re-derived from a live
@@ -137,6 +145,7 @@ Snowflake capture plus a persisted own-target existence signal on
   verdicts, used by both the decision and the explanation of it.
 
 Evidence: ticket #20 capture (`golden/fixtures/explain_snowflake_happy.jsonl`,
+since replaced by `explain_happy_history.jsonl`;
 `experiments/explain_experiment.sh`); `crates/server/migrations/0001_init.sql`
 (executions), `0003_ui_domain.sql` (node_decisions);
 `crates/server/src/decision.rs::evaluate_freshness`;

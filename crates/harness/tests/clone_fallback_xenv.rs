@@ -20,7 +20,7 @@
 //!     logic/dependency abstraction is therefore MORE aggressive than this
 //!     server's schema-only abstraction.
 //!
-//! Determination (see docs/correctness-handoff.md §A/§B): on the finding-2a/3
+//! Determination (see docs/correctness-handoff.md): on the finding-2a/3
 //! axes the server is MORE CONSERVATIVE than hosted (hosted reuses aggressively
 //! — clones across differing dependency names and tolerates source staleness).
 //! Adding a speculative freshness/binding GATE to `find_clone_equivalent` would

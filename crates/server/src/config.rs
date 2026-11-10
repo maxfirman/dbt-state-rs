@@ -11,7 +11,7 @@ pub struct Config {
     /// an insecure endpoint). A multi-tenant deployment should enable this.
     /// NOTE: this enforces org SCOPING presence, not identity AUTHENTICATION —
     /// verifying the claimed org against a trusted bearer token remains
-    /// deployment work (see docs/correctness-handoff.md §D and docs/protocol.md).
+    /// deployment work (see docs/correctness-handoff.md "Deployment gaps" and docs/protocol.md).
     pub require_org_header: bool,
 }
 

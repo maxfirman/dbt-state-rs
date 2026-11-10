@@ -310,7 +310,7 @@ fn strict_match(
 /// not: that would let a genuine resolution-context change (e.g.
 /// `default_schema`) skip, which the hosted service rebuilds. Broader
 /// cross-environment reuse without a clone is a separate provenance feature
-/// (see correctness-handoff.md §A).
+/// (see correctness-handoff.md "Open hosted questions").
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,

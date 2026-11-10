@@ -1,16 +1,22 @@
 # Local DuckDB workflow
 
-The first release runs real Python dbt projects against a persistent local
-DuckDB file and the Rust gRPC service, with Postgres storing State history.
-It supports BUILD, SKIP and eligible prod/dev result copies without cloud
-credentials. DuckDB tests establish the declared local reuse-safety contract;
-the existing Snowflake captures establish hosted conformance for their covered
-cases. There is no official hosted DuckDB oracle.
+Real Python dbt projects run against a persistent local DuckDB file and the
+Rust gRPC server, with Postgres storing State history. The workflow supports
+BUILD, SKIP and result copies between the `prod` and `dev` targets without
+cloud credentials. There is no hosted DuckDB service to compare against: the
+DuckDB tests check this server's local reuse-safety contract, and the captured
+Snowflake traffic remains the hosted conformance evidence.
 
-## Start a fresh project
+Related pages: [evidence and eligibility](duckdb-evidence.md),
+[SQL identity and result copies](duckdb-identity-and-copy.md),
+[incremental models](duckdb-incremental.md),
+[generated checks](duckdb-generated.md) and the
+[package README](../integrations/duckdb/README.md).
 
-Requirements: Rust (the repository toolchain), `protoc`, `uv`, Python 3.12 and
-Postgres. From the repository root, start Postgres if needed:
+## Quickstart
+
+Requirements: Rust, `protoc`, `uv`, Python 3.12 and Postgres. Start Postgres if
+needed:
 
 ```sh
 docker run -d --name dbt-state-pg -e POSTGRES_USER=dbtstate \
@@ -18,7 +24,7 @@ docker run -d --name dbt-state-pg -e POSTGRES_USER=dbtstate \
   -p 55441:5432 postgres:17-alpine
 ```
 
-Start the server in its own terminal. Startup applies Postgres migrations:
+Start the server in its own terminal. Startup applies the migrations:
 
 ```sh
 export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
@@ -38,53 +44,52 @@ cp -R integrations/duckdb/example "$DUCKDB_WORKFLOW_DIR/project"
 export DUCKDB_WORKFLOW_PATH="$DUCKDB_WORKFLOW_DIR/warehouse.duckdb"
 export DBT_PROJECT_DIR="$DUCKDB_WORKFLOW_DIR/project"
 export DBT_PROFILES_DIR="$DBT_PROJECT_DIR"
+dbt_state() { uv run --project integrations/duckdb dbt-state-duckdb "$@"; }
 
-# Stage the shared raw inputs, then run all models and the data test.
-uv run --project integrations/duckdb dbt-state-duckdb seed --target prod
-uv run --project integrations/duckdb dbt-state-duckdb build --target prod --exclude resource_type:seed
-# Separate processes now reuse the seed and every supported result.
-uv run --project integrations/duckdb dbt-state-duckdb seed --target prod
-uv run --project integrations/duckdb dbt-state-duckdb build --target prod --exclude resource_type:seed
+# Stage the raw seed, then build the models and the data test.
+dbt_state seed --target prod
+dbt_state build --target prod --exclude resource_type:seed
+# Separate processes now SKIP the seed and every supported node.
+dbt_state seed --target prod
+dbt_state build --target prod --exclude resource_type:seed
 
-# dev's profile defers to prod; missing eligible results initialize by CTAS.
-uv run --project integrations/duckdb dbt-state-duckdb build --target dev --exclude resource_type:seed
-uv run --project integrations/duckdb dbt-state-duckdb build --target dev --exclude resource_type:seed
+# dev defers to prod; eligible missing results are copied by CTAS, then SKIP.
+dbt_state build --target dev --exclude resource_type:seed
+dbt_state build --target dev --exclude resource_type:seed
 ```
 
-The example has four dbt worker threads, an INTEGER seed with duplicate/NULL
-rows, an ordinary table, a view, an incremental ledger and a cached data test.
-The raw seed is shared by both schemas. Its small `generate_schema_name` macro
-uses the explicitly configured seed schema `raw`; ordinary models use `prod`
-or `dev`. The filename must remain `warehouse.duckdb`: the incremental SQL
-explicitly binds `warehouse.raw.inputs`. Put copies in different directories
-when experimenting with separate files. Incremental initialization deliberately
-accepts literal physical base-table references rather than `ref()`/`source()`
-Jinja, so seed staging is a separate command. This is also why `build` excludes
-the seed. Table/view/test dependencies use ordinary dbt `ref()` ordering.
+Calling plain `dbt` does not install the extension; use `dbt-state-duckdb`.
 
-With this input, `orders` and `order_view` contain `(1,11), (2,21), (2,21),
-(3,NULL)`; `ledger` contains `(1,10), (2,20), (2,20), (3,NULL)`. Both columns
-are INTEGER and `nonnegative` passes. The mixed gate verifies these literal
-rows and types independently, observes public State decisions and correlated
-confirmations, and requires real table and incremental copies followed by SKIP.
-It runs the checked-in example from a fresh directory, recovers from an actual
-SQL worker error, then restores/resets it
-and checks a second copied database file. The focused worker gate additionally
-forces simultaneous fan-out submissions and tests fan-in visibility/recovery.
+The example (`integrations/duckdb/example`) has four dbt worker threads, an
+INTEGER seed with duplicate and NULL rows, a table (`orders`), a view
+(`order_view`), a `delete+insert` incremental model (`ledger`) and a cached
+data test (`nonnegative`). The seed is written to schema `raw` by the
+project's `generate_schema_name` macro; models are written to `prod` or `dev`.
+The incremental SQL reads `warehouse.raw.inputs` literally, because
+initialization copies accept literal physical inputs rather than
+`ref()`/`source()`. That is why the file must be named `warehouse.duckdb` and
+why `build` excludes the seed. Expected results: `orders` and `order_view`
+hold `(1,11), (2,21), (2,21), (3,NULL)`; `ledger` holds `(1,10), (2,20),
+(2,20), (3,NULL)`. `crates/harness/tests/duckdb_workflow.rs` runs this
+example from a fresh directory and checks these rows and types.
 
-To change inputs, edit the copied CSV, run `seed`, then `build` in prod. The
-pinned delete+insert ledger updates keys selected by the query and retains rows
-whose keys disappear from the source. A dev initialization can intentionally
-copy a physically valid older prod result under the shared stale-source policy;
-it is not an unconditional latest-data rebuild. See the exact
-[incremental](duckdb-incremental.md) and [copy](duckdb-result-copy.md) contracts.
+### Changing inputs
 
-## Supported versions and features
+Edit the copied `seeds/inputs.csv`, run `seed`, then `build` in prod. The
+example profile sets no Lag tolerance, so within the client's 45-minute
+default a node whose upstream data changed can SKIP and keep its earlier rows
+(see [Lag tolerance](#operations)). Add `run_cache_freshness_tolerance: 0s` to
+both outputs in `profiles.yml` to rebuild on every change. The ledger keeps
+rows whose keys disappear from the source ([incremental](duckdb-incremental.md)),
+and a dev copy can take a valid older prod result ([copies](duckdb-identity-and-copy.md)).
 
-The lockfile pins all transitive dependencies. Upgrades require running the
-entire gate; these versions are the validated combination, not open-ended ranges.
+## Supported versions
 
-| Component | Pinned/tested version |
+This is the only place the versions are listed. `integrations/duckdb/pyproject.toml`
+pins them and `integrations/duckdb/uv.lock` pins every transitive dependency.
+They are the validated combination; an upgrade must pass the full gate.
+
+| Component | Version |
 | --- | --- |
 | Python | 3.12 |
 | dbt Core | 1.10.15 |
@@ -93,107 +98,94 @@ entire gate; these versions are the validated combination, not open-ended ranges
 | dbt-state Python client | 2.62.6 |
 | query-cache-common / query-cache-protobuf | 2.7.0 |
 
-| Workload/capability | First-release contract |
+## Support matrix
+
+| Workload or capability | Contract |
 | --- | --- |
-| SQL tables | Same-target reuse with supported deterministic inputs and known own-target evidence |
-| SQL views | Checked local dependency graphs; definition/schema observations and recursively resolved leaf freshness |
-| Seeds | CSV/config identity plus current physical evidence; ordinary dbt seed execution and completion |
-| Data tests | Complete cached pass/fail/warning outcomes; project-scoped identity; stored failures execute ordinarily |
-| Incremental | Explicit `delete+insert`, one non-NULL identifier key, explicit `on_schema_change='fail'` |
-| Result copies | Eligible local prod/dev tables, CTAS rows/names/types, validated current source provenance; narrower incremental initialization |
-| Parallelism | Normal dbt workers inside one exclusive invocation, including dependency completion visibility |
-| Environment scope | Separate prod/dev schemas in one persistent local file; separate files have separate history |
-| Input scalar evidence | BOOLEAN, signed/unsigned integers through HUGEINT, VARCHAR, BLOB, fixed-scale DECIMAL |
-| Unsupported | Snapshots, Python/custom materializations, other incremental strategies, attached/in-memory/remote files, arbitrary extensions and unsupported SQL/property requirements |
+| SQL tables | Same-target reuse with supported deterministic SQL and known evidence for the target relation |
+| SQL views | Checked local dependency graphs; definition/schema evidence plus freshness of the resolved leaf tables |
+| Seeds | CSV/config identity plus current physical evidence |
+| Data tests | Complete cached pass/fail/warn outcomes with project-scoped identity; stored failures execute ordinarily |
+| Incremental | Explicit `delete+insert`, one non-NULL `unique_key`, explicit `on_schema_change='fail'` |
+| Result copies | Eligible tables and checked view chains between `prod` and `dev` by CTAS (rows, names, types); narrower incremental initialization |
+| Parallelism | Normal dbt workers inside one exclusive invocation |
+| Target scope | `prod`/`dev` schemas in one persistent file; separate files have separate history |
+| Unsupported | Snapshots, Python and custom materializations, other incremental strategies, attached/in-memory/remote files, extensions, server-backed State selectors and deferred-relation RPCs |
 
-FLOAT/DOUBLE, date/time, complex/extension types and collated tables receive
-unknown evidence. Unknown evidence prevents reuse; ordinary dbt execution still
-runs. Unsupported materializations/strategies bypass State handling. Copy-only
-limitations (constraints/defaults/indexes/hooks/contracts, uncertain identity,
-unsupported functions, unknown dependencies) take ordinary execution or strict
-same-target reuse when independently eligible. CTAS never promises arbitrary
-physical-property preservation. See [SQL identity](duckdb-sql-identity.md),
-[result copying](duckdb-result-copy.md) and the [integration reference](../integrations/duckdb/README.md)
-for precise exclusions. Server-backed State selectors and deferred-relation RPC
-integration in this Python client remain separate work. Calling ordinary `dbt`
-does not install the extension; use `dbt-state-duckdb`.
+Unsupported materializations and strategies bypass State and run as ordinary
+dbt. Workloads outside the [eligibility subset](duckdb-evidence.md#sql-eligibility-subset)
+report unknown evidence, so they always build. Copy-only limitations
+(constraints, defaults, indexes, hooks, contracts, uncertain identity) fall
+back to ordinary execution or same-target reuse. CTAS does not preserve
+other physical properties.
 
-## Evidence, exclusive writers and recovery
+## Operations
 
-`_dbt_state` is reserved integration metadata. Do not edit it or use it for
-project relations. It contains versioned schema/content fingerprints, a global
-durable ordinal and a generation UUID. Protocol epochs represent DuckDB
-observation/write ordering, not Unix time. Supported unchanged scans retain
-their ordinal; changed observed contents/schema and every known committed build
-or copy advance it, even if a known write produces identical rows. Identical
-manual rewrites or edits reversed before observation can be invisible. This is
-observed-change evidence, not a complete write log.
+**Exclusive writer.** Each invocation and `reset` takes a nonblocking advisory
+lock on `<file>.dbt-state.lock` beside the database. An overlapping State
+command fails before warehouse work. Do not delete the lock file while
+commands run. Symlink aliases share the lock; hard-linked files are rejected.
+External tools do not honor the lock, so make manual edits between runs only.
 
-Lag tolerance (ADR 0007) applies on DuckDB: within a model's tolerance (client
-default 45 minutes) a source change, or an upstream model rebuilt by dbt with
-unchanged logic, is reused rather than rebuilt. Build age comes from the
-server's receipt of the build's confirmation, because ordinals are not time.
-An External modification of a dbt-built upstream always rebuilds its consumers.
-`integrations/duckdb/tests/lag_tolerance.py` covers reuse, expiry and external
-modification; the other end-to-end cases set tolerance 0 so that every evidence
-change propagates.
-
-File scope includes canonical path, device/inode and generation. Copying or
-recreating a file cannot adopt another file's history. Normal process restarts
-preserve scope. Missing/incompatible/corrupt evidence or an unfinished/uncertain
-invocation forces a fresh generation and cold execution. Old Postgres history
-remains stored but cannot authorize reuse in the new scope. Execution, evidence
-commit and State confirmation are separate durability boundaries; a proposal
-or pending operation is not a successful result.
-
-Give each invocation exclusive write access to its file. A cooperating advisory
-lock covers workers, metadata jobs and cleanup, and excludes simultaneous
-State invocations/reset commands. Symlink aliases share the lock; hard links
-are rejected. Do not remove the lock file while commands run. External tools
-do not honor this lock: manual edits are supported between runs only.
-
-**After restoring any backup, reset before the next State command.** Restored
-metadata cannot reliably detect its own rollback. With all writers stopped,
-restore the file, then run:
+**Reset after restoring a backup.** Restored metadata cannot detect its own
+rollback. Stop all writers, restore the file, then reset before the next State
+command:
 
 ```sh
-uv run --project integrations/duckdb dbt-state-duckdb reset --database "$DUCKDB_WORKFLOW_PATH"
-uv run --project integrations/duckdb dbt-state-duckdb build --target prod --exclude resource_type:seed
+dbt_state reset --database "$DUCKDB_WORKFLOW_PATH"
+dbt_state build --target prod --exclude resource_type:seed
 ```
 
-Reset preserves user relations and starts a new generation. It deliberately
-invalidates old reuse eligibility; a following unchanged run can SKIP after
-successful cold execution. The mixed gate tests backup restoration plus this
-procedure. The focused recovery/interruption gates cover damaged metadata,
-old formats, lost confirmation, killed processes and lock exclusion.
+Reset keeps user relations and starts a new evidence generation. The next run
+builds cold; later unchanged runs can SKIP. Details are in
+[recovery](duckdb-evidence.md#recovery-and-the-dirty-marker).
 
-## Mandatory and extended validation
+**Lag tolerance** ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md))
+applies on DuckDB. The client default is 45 minutes (`FRESHNESS_TOLERANCE_DEFAULT`
+in the pinned `dbt_state/config.py`). Set `run_cache_freshness_tolerance: 0s`
+on a profile output, or `state={'lag_tolerance': '0s'}` on a model, to rebuild
+on every upstream change. Upstream query changes and External modifications
+of a dbt-built upstream always rebuild consumers.
+
+## Validation
 
 ```sh
-# Postgres required; no cloud credentials. Installs the locked Python env,
-# builds all workspace targets once, then runs fixed cases with four processes.
+# Postgres required, no cloud credentials.
 ./scripts/duckdb-ci.sh --jobs 4
-# Existing offline/Snowflake captures and shared regressions remain required.
 cargo test --workspace
 ```
 
-Every pull request runs all fixed real-dbt acceptance tests (smoke/table evidence,
-views, formatting identity, recovery, interruptions, parallel workers, seeds,
-cached tests/stored failures, table/view-chain copying, incremental and the
-mixed project), the independent oracle unit tests and four generated seeds with
-four random episodes plus the mandatory lifecycle spine and mutation probes.
-Each fixed case starts an isolated Postgres schema and DuckDB file. Generated
-traces start isolated scope and the normal production server binary built from
-the same checkout. Bounded parallelism avoids competing Cargo builds; cases
-never share warehouse files. The ordinary workspace CI job retains Snowflake
-capture replay and all shared protocol/property/upgrade regressions.
+`scripts/duckdb-ci.sh` runs `scripts/duckdb-ci.py`, which syncs the locked
+Python environment, builds all workspace targets once, then runs, with bounded
+parallelism:
 
-Logs, generated seeds/traces/observations/server logs and `timing.json` are
-written under `artifacts/duckdb`; CI retains them for 14 days. Failed fixed-case
-projects remain in `artifacts/duckdb/fixed` and print their path in the per-case log. Generated failures have
-a `trace.json` replay input and named oracle failure, with optional bounded
-minimization. See [generated checks](duckdb-generated.md) for artifact semantics.
-Replay an uploaded trace after installing/building:
+- every ignored test in each harness target listed in `FIXED`: table evidence
+  and Lag tolerance (`duckdb_python`), function, hook, type and collation
+  semantics (`duckdb_functions_python`), formatting identity, recovery,
+  interruptions, parallel workers, seeds, cached data tests, result copies,
+  incremental models and the mixed example project (`duckdb_workflow`);
+- the oracle unit tests in `integrations/duckdb/tests/generated`;
+- bounded generation (`duckdb_generated`, default seeds and steps in
+  `crates/harness/tests/duckdb_generated.rs`) with the mutation probes.
+
+Every pull request runs this script after `cargo test --workspace` in the
+`test` job of `.github/workflows/ci.yml`. Each case gets its own Postgres
+schema and DuckDB file. Logs, `timing.json` and generated traces go to
+`artifacts/duckdb`; failed fixed-case projects stay under
+`artifacts/duckdb/fixed`. CI uploads the directory on every run and keeps it
+for 14 days. ADR 0001 sets an added-runtime target of about five minutes;
+read actual timings from `timing.json`.
+
+**Extended run.** A weekly schedule and manual dispatch run eight seeds with
+40 episodes each (manual `generated_steps` overrides 40) and keep artifacts for
+30 days. Reproduce locally:
+
+```sh
+DBT_STATE_GENERATED_SEEDS=0,1,2,3,4,5,6,7 DBT_STATE_GENERATED_STEPS=40 \
+  ./scripts/duckdb-ci.sh --generated-only
+```
+
+**Replay a trace** after installing and building:
 
 ```sh
 export DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python"
@@ -202,56 +194,20 @@ DBT_STATE_GENERATED_REPLAY=/path/to/trace.json \
   cargo test -p dbt-state-harness --test duckdb_generated -- --ignored --nocapture
 ```
 
-Weekly scheduled and manually dispatched runs add eight seeds with forty random
-episodes each (manual `generated_steps` overrides forty). They retain artifacts
-for 30 days. Reproduce locally:
+See [generated checks](duckdb-generated.md) for artifacts and minimization.
 
-```sh
-DBT_STATE_GENERATED_SEEDS=0,1,2,3,4,5,6,7 DBT_STATE_GENERATED_STEPS=40 \
-  ./scripts/duckdb-ci.sh --generated-only
-```
+## Snowflake compatibility assessment
 
-The approximately five-minute added-runtime goal is a target. The script reports
-setup/build time, acceptance time, per-case time and total wall time; hosted CI
-runtime must be read from actual runs rather than inferred from local timings.
-No required case is dropped to meet that goal.
+Each DuckDB difference is scoped and tested separately. DuckDB success does
+not establish Snowflake DDL, grants, time travel or hosted policy.
 
-The complete local gate measured on 2026-11-04 passed all fourteen real-client/
-generated cases and six independent oracle unit tests with `--jobs 4`:
-
-| Phase | Measured wall time |
+| Difference | Assessment and evidence |
 | --- | --- |
-| Locked environment setup and workspace build | 184.58 s (3 min 5 s) |
-| Fixed acceptance cases plus bounded generation | 619.08 s (10 min 19 s) |
-| Total standalone gate | 803.67 s (13 min 24 s) |
+| Observed-change ordinals instead of modification timestamps | DuckDB has no per-table modification timestamp. Identical external rewrites may be reused; known writes still advance. `duckdb_python`, `duckdb_parallel`, `duckdb_recovery`. Snowflake timestamps unchanged. |
+| Views carry definition, schema and leaf dependencies | Detects physical view and binding changes. `duckdb_python` view test. Captured Snowflake view policy unchanged. |
+| DuckDB identifier rules and a narrow SELECT identity | Kept behind the Warehouse rules; unsupported syntax gets no equivalence. `duckdb_identity`, `duckdb_identity_python`, `duckdb_copy`. Snowflake identities unchanged. |
+| CTAS copies with source inspection | Local result copy; unsupported physical requirements build normally. `duckdb_copy_python`, `duckdb_incremental_python`. Snowflake CLONE SQL and grants unchanged. |
+| Failed-copy confirmation clears unproven provenance | Shared correctness correction, not characterized hosted behavior. See [the assessment](duckdb-identity-and-copy.md#snowflake-confirmation-compatibility-assessment); `failed_clone_confirmation_does_not_certify_source_logic` in `crates/harness/tests/clone_lifecycle.rs`. |
 
-This **exceeds the approximately five-minute target**. The command was
-`./scripts/duckdb-ci.sh --jobs 4 --artifacts /tmp/ticket17-fullgate`, with
-`CARGO_TARGET_DIR` pointing to the existing shared Rust dependency cache. All
-workspace targets were relinked after source changes. The machine was a shared
-Fedora 44 desktop, Intel i7-7700HQ at 2.80 GHz (four cores/eight logical CPUs),
-62 GiB RAM, Python 3.12.12, Rust/Cargo 1.98.0, uv 0.12.21 and local Postgres at
-port 55441. The CI-pinned uv 0.8.22 separately passed a locked environment
-resolution dry-run. Fresh warehouse files and Postgres schemas were used in
-both fixed and generated cases. `timing.json` records every case; the mixed
-project took 116.89 s, the full incremental gate 281.59 s and the four-seed
-runner 70.08 s under contention. CI reuses the earlier workspace build, but
-**hosted-runner added time has not been measured**. These are local execution
-measurements; further runtime work must preserve all mandatory cases.
-
-## Snowflake compatibility assessments
-
-These distinctions are individually scoped and tested; DuckDB success does
-not establish Snowflake DDL, grants, time-travel or hosted-policy correctness.
-
-| Difference | Assessment and regression evidence |
-| --- | --- |
-| Observed changes/ordinals instead of warehouse modification timestamps | Required because DuckDB has no per-table modification timestamp. Identical external rewrites may reuse; known writes still advance. `duckdb_python`, `duckdb_parallel`, `duckdb_recovery`; Snowflake timestamp behavior remains unchanged. |
-| Views include definition/schema and leaf dependencies | Required to detect physical view and binding changes. `duckdb_python` view gate; captured Snowflake view policy remains unchanged. |
-| Case-insensitive quoted identifiers and conservative SELECT identity | DuckDB rules stay behind dialect semantics; unsupported syntax prevents automatic equivalence. `duckdb_identity`, `duckdb_identity_python`, `duckdb_copy`; existing Snowflake identities/captures remain unchanged. |
-| CTAS rows/schema capabilities and source inspection | Required local result-copy implementation; unsupported physical requirements execute ordinarily. `duckdb_copy_python`, `duckdb_incremental_python`; Snowflake CLONE SQL/grants remain separate. |
-| Failed-copy confirmation clears unproven provenance | Intentional common correctness correction, not characterized hosted behavior. Individually assessed in [result copying](duckdb-result-copy.md#snowflake-confirmation-compatibility-assessment); `failed_clone_confirmation_does_not_certify_source_logic` and frozen captured successful-copy regressions. |
-
-The shared stale-source policy is retained and explicitly tested with allowed
-older results; DuckDB does not introduce an always-latest rule. No Snowflake
-capture or replay exemption is weakened by the mandatory DuckDB gate.
+The shared stale-source policy still applies, and tests accept the permitted
+older results. The DuckDB gate weakens no Snowflake capture or replay exemption.

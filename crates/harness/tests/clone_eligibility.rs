@@ -21,7 +21,7 @@
 //! TOLERATES source staleness on this axis; it does not freshness-gate the
 //! clone candidate.
 //!
-//! DETERMINATION (docs/correctness-handoff.md §B finding 2): the server's
+//! DETERMINATION (docs/protocol.md, Result copy on submit): the server's
 //! `find_clone_equivalent` also clones here, so it MATCHES hosted — it is NOT
 //! over-conservative. Adding the review's implied freshness GATE would make the
 //! server reuse LESS than hosted (a conformance regression), so the fallback is

@@ -2,273 +2,384 @@
 
 The dbt State protocol is the gRPC **"query cache"** protocol, proto package
 `com.fivetran.query_cache` (plus `grpc.health.v1`). The authoritative `.proto`
-files are Apache-2.0, published by dbt Labs, and vendored in this repo under
+files are Apache-2.0, published by dbt Labs, and vendored under
 [`proto/query_cache_protobuf/query_cache/`](../proto/query_cache_protobuf/query_cache).
 
-## Transport & auth
+This page describes the wire contract and the results the server returns.
+Engine internals are in [architecture.md](architecture.md); open questions and
+pinned divergences are in [correctness-handoff.md](correctness-handoff.md).
+Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md).
 
-- Default endpoint `api.state.dbt.com:443` (TLS). The client picks TLS when the
-  URL is https or ends `:443`; otherwise it uses an insecure channel and sends
-  **no** OAuth — which is how we point the client at a local server.
-- Client config via env `RUN_CACHE_*` (e.g. `RUN_CACHE_API_URL`,
-  `RUN_CACHE_API_SECURE`) and `DBT_ENGINE_MANAGE_STATE=true` to enable.
-- Hosted auth: OAuth token-exchange of the dbt Cloud credential at
-  `https://auth.state.dbt.com/token` (client_id `2fd87cd5-...`), yielding an
-  `id_token` sent as `authorization: Bearer <id_token>` plus
-  `x-organization-id: <org_id>` (org id parsed from the token scope
-  `runcache:scope:org:<ORG_ID>:...`).
-- Per-request metadata headers from the real client: `x-request-id`,
-  `x-session-id`, `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`,
+## Transport and auth
+
+- Default endpoint `api.state.dbt.com:443` (TLS). The client uses TLS when the
+  URL is https or ends in `:443`. Otherwise it opens an insecure channel and
+  sends **no** OAuth token, which is how the client is pointed at a local server.
+- Client configuration: `RUN_CACHE_*` environment variables (for example
+  `RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`) and
+  `DBT_ENGINE_MANAGE_STATE=true`.
+- Hosted auth: an OAuth token exchange of the dbt Cloud credential at
+  `https://auth.state.dbt.com/token` yields an `id_token`, sent as
+  `authorization: Bearer <id_token>` with `x-organization-id: <org_id>` (parsed
+  from the token scope `runcache:scope:org:<ORG_ID>:...`).
+- Client request metadata: `x-request-id`, `x-session-id`,
+  `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, and in newer clients
   `x-dbt-invocation-id`.
-- Every store query is scoped by `x-organization-id` (default tenant `local`
-  when absent). Setting `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests
-  without a non-empty org header (`UNAUTHENTICATED`) for multi-tenant
-  deployments. This is org SCOPING presence, not identity authentication —
-  verifying the org against a trusted token (OAuth/TLS) is deployment work.
+- The server reads three of them:
+  - `x-organization-id` scopes every store query. When absent the tenant is
+    `local`. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without a
+    non-empty value (`UNAUTHENTICATED`). This checks presence only; it does not
+    authenticate the organization.
+  - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
+- `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
+  under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
+  that build age is measured against. Never enable that clock in a deployment.
 
 ## Services
 
-| Service | RPCs | Role | Our status |
-|---|---|---|---|
-| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | the verdict | BUILD / SKIP / cross-name CLONE (live-verified); speculative Undecided |
-| `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | writes state / deferral | Confirm/Record implemented; deferral implemented (live-verified) |
-| `Clone` | `RegisterClone` | clone decision + DDL | table DDL + lifecycle + `allow_clones=false` rejection (live-verified); non-Snowflake templates unverified |
-| `ClientValidation` | `ValidateClientVersion` | version gate | implemented (true) |
-| `Explain` | `GetExplainMessages` (served), `GetUpstreamDependencyChanges` (stub) | human text | `GetExplainMessages` re-derived on demand; `GetUpstreamDependencyChanges` is an empty, non-asserted stub — the dbt Fusion CLI never calls it (verified by binary inspection of v2.0.6 AND v2.0.11; see below) |
-| `SelectorService` | `GetStateSelection` | state:* selectors | implemented (live-verified) |
-| `ClientTelemetry` | `SubmitTelemetryBatch`, … | metering (dbt Labs only) | not served |
-| `Health` (grpc.health.v1) | `Check`, `Watch` | health | SERVING |
+| Service | RPCs | Server status |
+|---|---|---|
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | Submits decided; speculative always returns `Undecided` |
+| `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | Implemented |
+| `Clone` | `RegisterClone` | Implemented; non-Snowflake DDL unverified |
+| `ClientValidation` | `ValidateClientVersion` | Returns `is_supported=true` for every version |
+| `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | `GetExplainMessages` re-derived on demand ([explain-catalog.md](explain-catalog.md)); `GetUpstreamDependencyChanges` is an empty stub (see below) |
+| `SelectorService` | `GetStateSelection` | Implemented |
+| `ClientTelemetry` | `SubmitTelemetryBatch`, … | Not served |
+| `Health` (`grpc.health.v1`) | `Check`, `Watch` | Always `SERVING` |
 
-Wire service names must be preserved exactly (the proto service literally named
-`Clone` collides with Rust's `std::clone::Clone`; the proto build patches the
-generated std-derive impl while keeping the on-wire name — see
-[architecture.md](architecture.md#proto-crate)).
+The client treats `ValidateClientVersion` as fail-open: an RPC error is logged
+as a warning and dbt runs without dbt State
+(`validate_client_version_fail_open` in the client's `dbt-run-cache` crate).
+
+Wire service names must be preserved exactly. The service named `Clone`
+collides with Rust's `std::clone::Clone`; the proto build patches the generated
+impl and keeps the on-wire name (see [architecture.md](architecture.md#proto-crate)).
 
 ## The decision RPC: `SQL.SubmitEnrichedSQL`
 
-### Request `SubmitEnrichedSQLRequest` (observed fields)
+### Request `SubmitEnrichedSQLRequest`
 
 `target_table?`, `dialect`, `default_catalog`, `default_schema?`,
-`execution_type` (enum below), `sql` (raw compiled SQL),
-For the optional local DuckDB extension, `last_modified_epoch` is a durable
-file/generation-wide ordinal, rather than Unix milliseconds. Shared freshness
-policy currently compares ordering only. See the [evidence contract](../integrations/duckdb/README.md#evidence-format-and-ordering)
-for the versioned scalar representation, observation semantics and limitations.
-Other warehouses retain their existing timestamp interpretation.
-
-`tables[]` = `{name, last_modified_epoch?}` (per-input freshness),
-`query_dependencies[]`, `semantic_extras{}`, `freshness_tolerance_seconds`,
-`lenient_dependencies[]`, `tolerate_nondeterminism`, `labels{}`
-(`dbt_node_name`/`dbt_node_fqn`/`dbt_node_unique_id`),
-`stale_upstream_policy` (ANY=0 / ALL=1), `table_namespace?`,
-`compare_unrendered_code`, `ignore_external_modifications`, `allow_clones?`,
-`is_defer_to_profile`, `defer_enabled`, clone-related limits, and
+`execution_type`, `sql` (raw compiled SQL), `tables[]` =
+`{name, last_modified_epoch?}` (per-relation metadata, including the node's own
+target relation when it exists), `query_dependencies[]` =
+`{name, query, default_catalog, default_schema}`, `semantic_extras{}`,
+`freshness_tolerance_seconds`, `lenient_dependencies[]`,
+`tolerate_nondeterminism`, `labels{}` (`dbt_node_name`, `dbt_node_fqn`,
+`dbt_node_unique_id`), `clone_time_travel_limit?`, `clone_table_properties?`,
+`stale_upstream_policy` (`ANY=0`, `ALL=1`), `clone_chain_depth_limit?`,
 `dbt_node_state` = `{node_unique_id, node_hash, node_body_hash?,
-node_configs_hash?, node_contract_hash?, project_id?, …}`.
+node_configs_hash?, node_contract_hash?, project_id?, …}`,
+`compare_unrendered_code`, `table_namespace?`, `ignore_external_modifications`,
+`allow_clones?`, `is_defer_to_profile`, `defer_enabled`.
 
-### `ModelExecutionType` enum
+DuckDB note: for the optional local DuckDB extension, `last_modified_epoch` is
+a durable file/generation-wide ordinal, not Unix milliseconds, and freshness
+compares ordering only. See the
+[evidence contract](duckdb-evidence.md#ordering-and-build-age).
+Other warehouses use timestamps.
+
+### What the client computes
+
+The client sends raw compiled SQL. The server owns the fingerprint, the State
+history match and the decision. The client derives:
+
+- `execution_type` (`execution_type_from_input` in the client's
+  `request_builder.rs`), first match wins: data test → `DBT_DATA_TEST`; view →
+  `VIEW`; custom materialization → `DBT_CUSTOM`; snapshot → `SNAPSHOT`;
+  incremental model without `--full-refresh` → its strategy upper-cased (`+`
+  becomes `_`, default `append`; `merge` without `unique_key` → `APPEND`);
+  otherwise `FULL`.
+- `semantic_extras`, from these node config keys only. SQL nodes:
+  `on_schema_change`, `incremental_predicates`, `merge_update_columns`,
+  `merge_exclude_columns`, `severity`, `limit`, `where`, `fail_calc`,
+  `warn_if`, `error_if`, `store_failures`, `store_failures_as`,
+  `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
+  `quote_columns`, `delimiter`.
+- `values_hash` for seeds: the md5 of the seed file bytes.
+- `table_namespace`: from the warehouse connection identifier
+  (account/project/host).
+- Profile `allow_clones: false` is sent as `clone_chain_depth_limit = 0`, on both
+  `SubmitEnrichedSQL` and `RegisterClone`. `allow_clones` itself stays unset.
+- Node config `lag_tolerance` becomes `freshness_tolerance_seconds`,
+  `require_fresh_data_from` becomes `stale_upstream_policy`, and
+  `evaluate_volatile_sql: true` becomes `tolerate_nondeterminism = false`. These
+  are set under the nested `state={}` config.
+
+### `ModelExecutionType`
 
 `UNSPECIFIED=0, FULL=1, APPEND=2, MERGE=3, INSERT_OVERWRITE=4, DELETE_INSERT=5,
 MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
 
 ### Response `SubmitSQLResponse` (oneof)
 
-- `skip_execution` (the no-op): `ExplainedDecision{decision=0,
-  decision_description="model was a no-op because both its query and its
-  upstream data are up to date"}`, `execution_results` (complete cached Struct, empty for models when absent),
-  `execution_runtime_ms` (echo of the prior run), `execution_decision_id`.
-- `ready_to_execute`: `request_id`, `ExplainedDecision{decision=1,
-  skip_rejection_reason=6 (NO_SUITABLE_MATCH_FOUND), clone_rejection_reason=6,
-  decision_description="model was executed because either its query didn't match
-  or its upstream data is out of date"}`, `execution_decision_id`. The codes are
-  8/7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) when an older build
-  of the target would still qualify for this submit (then `is_stale` is as that
-  build would be reused), and 4/7 (`TARGET_TABLE_DOES_NOT_EXIST` /
-  `TARGET_TABLE_MATCH`) when the own target is absent but its latest build has
-  the workload's identity and would otherwise be reusable (live-verified
-  2026-11-10, `lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`).
-- `ready_to_clone`: see Clone below.
+- `skip_execution`: `explained_decision`, `execution_results` (the complete
+  cached Struct; an empty Struct when none was recorded), `execution_runtime_ms`
+  (echo of the reused run), `execution_decision_id`.
+- `ready_to_execute`: `request_id`, `explained_decision`,
+  `execution_decision_id`. The server always returns
+  `transformed_nodes_by_query` empty and `query_hash_metadata_info` unset.
+- `ready_to_clone`: a Result copy of an equivalent; see
+  [Result copy on submit](#result-copy-on-submit).
 
-`ExplainedDecision` = `{decision (SubmitSQLResultType), skip_rejection_reason?,
-clone_rejection_reason?, is_stale, decision_description}`. Enums serialize as
-ints on the wire/JSON.
+`ExplainedDecision` = `{decision, skip_rejection_reason?,
+clone_rejection_reason?, is_stale, decision_description}`. Enums are ints on the
+wire and in captured JSON.
 
-- `SubmitSQLResultType`: `SKIP_EXECUTION=0, READY_TO_EXECUTE=1, READY_TO_CLONE=3,
-  UNKNOWN=4`.
-- `RejectionReason` (subset): `TARGET_TABLE_MISMATCH=1`,
-  `TARGET_TABLE_DOES_NOT_EXIST=4`, `FORCED_NOT_ELIGIBLE=5`,
-  `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
-  `LATEST_QUERY_HASH_NOT_MATCH=8`, `CLONE_CHAIN_LIMIT_EXCEEDED=10`.
+- `SubmitSQLResultType`: `SKIP_EXECUTION=0, READY_TO_EXECUTE=1,
+  READY_TO_CLONE=3, UNKNOWN=4`.
+- `RejectionReason`: `TARGET_TABLE_MISMATCH=1`, `EXECUTION_TYPE_MISMATCH=2`,
+  `EXECUTION_TYPE_NOT_FULL=3`, `TARGET_TABLE_DOES_NOT_EXIST=4`,
+  `FORCED_NOT_ELIGIBLE=5`, `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
+  `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
+  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9.
+
+### Decision descriptions
+
+This is the complete set of `decision_description` strings the server sends on
+submits (`skip_description`, `execute_description`, `RESULT_COPY_DESCRIPTION`
+and `COPY_CHAIN_LIMIT_DESCRIPTION` in `crates/server/src/decision.rs`).
+`{noun}` is `snapshot` for `SNAPSHOT`, `data test` for `DBT_DATA_TEST`, `seed`
+for `VALUES` and `model` for every other execution type (`node_noun`).
+
+| Decision | `decision_description` | When |
+|---|---|---|
+| SKIP | `{noun} was a no-op because both its query and its upstream data are up to date` | Lag tolerance is 0, or every upstream epoch equals its recorded epoch |
+| SKIP | `{noun} was a no-op because its query is up to date and its data is within lag tolerance` | Upstream data moved and the build age is under the Lag tolerance |
+| SKIP | `{noun} was a no-op because its query is up to date and at least one upstream dependency is unchanged` | Upstream data moved, the build age is not under the tolerance, and the `ALL` policy tolerates it |
+| SKIP | `seed was a no-op because its data has not changed` | Seed reuse |
+| EXECUTE | `{noun} was executed because its table did not exist` | No prior build of the target relation, or the target relation is absent |
+| EXECUTE | `{noun} was executed because either its query didn't match or its upstream data is out of date` | Rebuild of an existing target relation (identity or freshness) |
+| EXECUTE | `{noun} was executed because the table was modified after the cached execution` | The target relation's epoch is later than its build (External modification) |
+| EXECUTE | `data test was executed because it has no prior execution or its query changed` | Every data-test execute |
+| EXECUTE | `seed was loaded because it did not exist` | Seed first load, or its table is absent |
+| EXECUTE | `seed was loaded because its data changed` | Seed reload |
+| EXECUTE | `model was executed because the maximum number of nested clones has been reached` | An equivalent exists but the submit forbids copies |
+| CLONE | `an equivalent model exists under another name so we cloned that one` | Result copy on submit |
+
+`RegisterClone` responses carry an empty `decision_description`.
+
+### Rejection codes
+
+`skip_rejection_reason` / `clone_rejection_reason` pairs, with `-` for unset.
+
+| Decision | Codes | When | Source |
+|---|---|---|---|
+| SKIP | - / - | Every reuse | `DecisionRecord::decided` |
+| EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
+| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit. Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
+| EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_chain_limit` |
+| CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit | `DecisionRecord::result_copy` |
+| CLONE (`RegisterClone`) | 5 / - (`FORCED_NOT_ELIGIBLE`) | Every `ready_to_clone` from `RegisterClone` | `services.rs::ready_to_clone_response` |
+| `unable_to_clone` | - / 10 | `clone_chain_depth_limit = 0` | `services.rs::unable_to_clone_response` |
+| `unable_to_clone` | - / 5 | DuckDB only: the pinned incremental contract or a current eligible source is missing | `result_copy::register_lookup`, `plan_register` |
+
+Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`,
+`lag_seed_upstream.jsonl` (arms G, H), `clone_submit_allow_clones_false.jsonl`,
+`clone_rejected_allow_clones_false.jsonl`.
 
 ### Current decision semantics
 
-These are offline correctness safeguards, not a complete specification of the
-hosted service. [correctness-handoff.md](correctness-handoff.md) records the
-remaining policies and compatibility gaps.
+The wire-visible rules below are what the server does. Some are conservative
+and execute where hosted might reuse; [correctness-handoff.md](correctness-handoff.md)
+lists those cases. [architecture.md](architecture.md) describes selection, scope
+and fingerprints.
 
-1. Select the newest confirmed physical target within its warehouse family and
-   `table_namespace` *before* matching its versioned SQL fingerprint, execution
-   type and dialect options. An old matching row
-   cannot resurrect a target overwritten by a later build. Data tests use
-   scoped project/namespace/node identity (including older label identity).
-2. Fingerprint root SQL, semantic extras, dialect/catalog/schema, and supplied
-   dependency definitions/context. Snowflake SQL uses a restricted AST
-   canonicalization preserving cast kinds, parameters and qualified functions;
-   parser failures and other dialects preserve exact SQL. Other dialects do not
-   produce a cross-environment equivalence identity until their relation and
-   dependency semantics are characterized. Template comparison
-   (`compare_unrendered_code=true`) is a DUAL identity: the server records both
-   the rendered logic hash and the unrendered-template hash and reuses when
-   EITHER matches — a rebuild occurs only when BOTH the rendered SQL and the
-   template change (documented contract, verified live; review #2 finding 6).
-   This dual identity applies to BOTH models and DATA TESTS
-   (`reuse_candidate::identity_matches`, used by both); the data-test lookup honoring the
-   template hash was the review #2 finding-6 FOLLOW-UP fix, also live-verified.
-3. Require a known current target epoch no newer than its recorded confirmation,
-   unless external modifications are explicitly ignored. A target later than its
-   build executes with "the table was modified after the cached execution"
-   (verified live 2026-11-10). Missing or ambiguous target metadata builds. Data
-   tests instead require complete cached results.
-4. Compare exact physical upstream names, excluding the own target from upstream
-   drift only. Unknown epochs, changed input sets, and duplicate evidence build.
-   Freshness follows [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md),
-   verified live 2026-11-10 (correctness-handoff.md §C):
-   - an upstream newer than the epoch RECORDED for it at the last confirmed
-     build is drift (models and data tests alike);
-   - an upstream whose producing build differs from the one the node consumed
-     (rebuilt with other logic, or an External modification of the consumed
-     build) is an upstream query change and always builds;
-   - `ALL` policy (`require_fresh_data_from`) is stale only when every direct
-     parent drifted, `ANY` when one did;
-   - a stale node is still SKIPPED while its build age (server clock minus the
-     ConfirmExecution epoch; DuckDB: minus the confirmation's receipt) is under
-     `freshness_tolerance_seconds` (Lag tolerance);
-   - a SKIP with drift present reports `is_stale=true`; every execute reports
-     `is_stale=false`. The SKIP description is "both … up to date" with no
-     tolerance or no moved upstream epoch, else "… within lag tolerance" while
-     the build is younger than the tolerance, else "… at least one upstream
-     dependency is unchanged".
-5. Snowflake cross-environment reuse (live-verified): an equivalent model under
-   another physical name in the same `table_namespace`, with matching
-   schema-abstracted logic, can be reused via CLONE. A confirmed clone target
-   SKIPS a later strict same-target match; a submit for an absent target whose
-   equivalent exists elsewhere returns `ready_to_clone`. The cross-name clone
-   fallback is suppressed only when `tolerate_nondeterminism=false` AND the SQL
-   genuinely contains a volatile function (e.g. `current_timestamp()`); a
-   deterministic model still clones. Runtime volatile-function VALUES
-   (`transformed_nodes_by_query`) are not yet evaluated (a conformance gap).
-   Other dialects do not use the SQL-submit cross-name clone fallback until
-   their equivalence and volatility rules are characterized.
+1. **Current state first.** The server reads the latest confirmed build of the
+   target relation in its scope (organization, warehouse family,
+   `table_namespace`, target relation) before comparing identity. An older
+   matching build never resurrects a relation overwritten since; it only
+   changes the rejection codes (8 / 7).
+2. **Identity.** The fingerprint covers the root SQL, semantic extras,
+   dialect/catalog/schema and every supplied dependency definition with its
+   resolution context. Snowflake SQL is canonicalized
+   ([sql-normalization.md](sql-normalization.md)); other dialects use exact SQL
+   ([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md) for DuckDB).
+   Empty SQL, an empty or duplicated dependency definition, or a changed set of
+   physical input names prevents reuse. So do unknown or duplicated epochs for
+   an upstream, and a recorded build with no epoch.
+3. **`compare_unrendered_code`.** The server records both the rendered identity
+   and the template identity (`node_body_hash`), and reuses when either
+   matches. A rebuild needs both the rendered SQL and the template to change.
+   This applies to models and data tests. Template mode needs a non-empty
+   `node_body_hash`. Fixtures `compare_unrendered_code.jsonl`,
+   `template_compare_unrendered.jsonl`, `data_test_compare_unrendered.jsonl`;
+   tests `template_comparison.rs`, `data_test_template.rs`.
+4. **Target relation.** Reuse needs exactly one entry for the target relation
+   in `tables` with a known epoch no later than the recorded build. A later
+   epoch executes with "the table was modified after the cached execution".
+   `ignore_external_modifications=true` accepts a later epoch but still needs
+   the entry. Data tests have no target relation and skip this check.
+5. **Freshness**, per [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md):
+   - An upstream drifted when its current epoch is later than the epoch recorded
+     for it at the node's last confirmed build.
+   - When the build that produced an upstream's current contents (its Upstream
+     producer) differs in logic from the one the node consumed, or the upstream
+     was externally modified after that build, the upstream's query changed.
+     The node rebuilds regardless of policy and tolerance.
+   - `ANY` rebuilds when any direct upstream drifted, `ALL` only when all did.
+   - Lag tolerance: a rebuild the policy requires becomes a reuse while the
+     build age is under `freshness_tolerance_seconds`. Build age is the server
+     clock minus the ConfirmExecution epoch (DuckDB: minus the confirmation's
+     receipt time).
+   - A seed reloaded with changed values or config is an upstream query change
+     for its consumers; a same-values reload is a data change.
 
-These checks can over-execute compared with hosted behavior. A passing replay
-only establishes its reproducible captured cases.
+   Fixtures `lag_tolerance_matrix.jsonl`, `lag_tolerance_docs_example.jsonl`,
+   `lag_external_modification_linked.jsonl`, `lag_seed_upstream.jsonl`; test
+   `crates/harness/tests/lag_tolerance.rs`.
+6. **`is_stale`.** True on a SKIP whenever upstream drift is present (tolerated
+   by `ALL` or within Lag tolerance). On an EXECUTE it is false, except a
+   rebuild reporting 8 / 7, where it is set as the older build would be reused.
+   On a Result copy it is set as the copied equivalent would be reused.
+7. **Data tests.** Matched by project, `table_namespace` and node unique ID,
+   plus SQL/config/context identity. Reuse needs complete cached results
+   (numeric `failures` and boolean `should_error` and `should_warn`), which
+   the SKIP echoes in `execution_results`. Freshness uses the recorded
+   upstream epochs. Data tests never get a Result copy.
+8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
+   never reuses a model or data test (it does not implement the hosted
+   `transformed_nodes_by_query` exchange). On Snowflake the Result copy
+   fallback is suppressed only when the root SQL or a dependency definition
+   contains a volatile function; a deterministic model is still copied (fixture
+   `clone_fallback_volatile.jsonl`, `experiments/clone_eligibility.sh`).
+
+A passing replay establishes only its captured cases.
+
+### Result copy on submit
+
+A submit can answer `ready_to_clone` with an equivalent model built under
+another physical name. The equivalent must share `table_namespace`, the copy
+logic identity and `execution_type`. On Snowflake that identity abstracts
+physical schemas and binds each dependency's schema-abstracted name to its
+definition, so swapping two definitions between references is not equivalent
+(`clone_fallback_swapped_bindings.jsonl`, `clone_fallback_dep_binding_swap.jsonl`).
+DuckDB computes it only for its checked copy subset
+([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md)). Other dialects
+have no copy identity and never take this path.
+
+Response: `decision=3`, codes 1 / -, the result-copy description,
+`clone_required_last_modified_epoch` = the equivalent's build epoch,
+`execution_runtime_ms` = the equivalent's runtime, and `clone_sqls`. Once
+confirmed, the copy is the target relation's current build and later matching
+submits SKIP.
+
+When the fallback applies:
+
+- **No reuse candidate** (first build, absent target relation, or identity
+  mismatch), unless the target relation was externally modified. This includes
+  a target relation that currently holds other logic
+  (`clone_fallback_over_existing_target.jsonl`).
+- **The reuse candidate must rebuild for freshness.** Then only an equivalent
+  that reads the same upstream relations is copied over the target relation,
+  and only if it qualifies for this submit, judged on its own build age.
+  Explain shows "but it's old, so we will clone from …".
+- An equivalent that reads the same upstream relations is always judged that
+  way. A stale one is skipped and the next same-upstream equivalent is tried,
+  newest build first, up to `COPY_CANDIDATE_LIMIT` (`submit_decision.rs`). An
+  equivalent in another target reads other relations and is copied without
+  that judgment (`clone_fallback_stale_source.jsonl`,
+  `clone_fallback_zero_tolerance.jsonl`). Fixtures `lag_copy_candidates.jsonl`,
+  `lag_dropped_targets.jsonl`.
+- Never for seeds, data tests, empty SQL, submits without `table_namespace`, or
+  `compare_unrendered_code=true` submits (they carry no copy identity), and
+  not when volatile SQL blocks it (rule 8 above).
+- When the submit forbids copies (`clone_chain_depth_limit = 0` or
+  `allow_clones = false`) and the target relation has no reuse candidate, the
+  server returns the chain-limit EXECUTE instead.
 
 ## State writes: `Execution`
 
 - `ConfirmExecution{request_id, last_modified_epoch?, failed_to_clone,
   table_type?, execution_results, execution_runtime_ms?, labels}` →
-  `{success, request_id}`. Correlates with the `request_id` from a prior
-  `ready_to_execute`/`ready_to_clone`; marks the pending row confirmed so future
-  matching submits skip. Idempotent for a repeated `request_id`; the first confirmed outcome, including
-  results, is immutable. Complete protobuf results are persisted through both
-  ConfirmExecution and RecordExecutions.
-- `RecordExecutions{records[]}` → `{records_stored}`. Bypass hydration path:
-  each `ExecutionRecord` has an `outcome` and a oneof input of `enriched_sql`
-  (`SQLExecution`, hashes via `dbt_node_state`) or `values` (`ValuesExecution`).
-  Processed atomically (all-or-nothing) — the executions batch AND the derived
-  selector/deferral `node_states` are written in a SINGLE transaction, so a
-  rejected batch or any write failure leaves no partial state (review #2
-  finding 5, full cross-store atomicity).
+  `{success, request_id}`. Confirms the pending row created by a
+  `ready_to_execute` or `ready_to_clone`. Idempotent for a repeated
+  `request_id`; the first confirmed outcome, including results, is immutable.
+  A confirm with `failed_to_clone=true` is recorded as a normal build.
+- `RecordExecutions{records[]}` → `{records_stored}`. Records outcomes without
+  a submit. Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
+  (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
+  executions and selector/deferral node state are written in one transaction.
+  `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
+  the rendered identity.
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
-  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. **Implemented
-  (live-verified, `experiments/deferral_experiment.sh`).** Resolves each
-  requested `node_unique_id` to the physical relation it was last built as in
-  the `target_name` (defer-to) env, scoped by `project_id` — i.e. the submit
-  `target_table` recorded in `node_states` for that (project, env, node). Nodes
-  not built in that env are omitted (an unresolvable scope yields an empty map,
-  matching the hosted empty-when-unknown behavior; the first captures we took
-  were empty precisely because nothing had been built there yet). The FQN is a
-  quoted 3-part name, e.g.
-  `"CDO_DEMO_DB"."PROD_STATE_DEMO"."STG_CUSTOMERS"`.
+  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Maps each requested
+  node to the target relation it was last recorded with in the `target_name`
+  (defer-to) target, scoped by organization and `project_id`, for example
+  `"CDO_DEMO_DB"."PROD_STATE_DEMO"."STG_CUSTOMERS"`. Nodes never recorded there
+  are omitted. An empty `project_id`, `target_name` or ID list returns an empty
+  map. Node state is published at submit time, before confirmation. Fixture
+  `deferral_resolve.jsonl`, test `deferral.rs`.
 
 ## Seeds: `SQL.SubmitValues`
 
-`SubmitValuesRequest{target_table, dialect, values_hash (md5 of seed bytes),
-last_modified_epoch?, dbt_node_state?, …}`. Decision mirrors
-`SubmitEnrichedSQL` but matches on data bytes plus seed configuration/context
-and latest physical state, requiring known current-target metadata;
-`execution_type` is implicitly `VALUES=9`.
+`SubmitValuesRequest{target_table, dialect, default_catalog, values_hash,
+semantic_extras{}, last_modified_epoch?, labels, dbt_node_state?,
+table_namespace?, …}`. The execution type is implicitly `VALUES=9`. Reuse
+matches the seed bytes plus seed configuration and context against the target
+relation's latest build, and needs the table's current epoch. Seeds have no Lag
+tolerance, always use `ANY`, and get no Result copy. An externally modified
+seed table is reloaded (hosted skips it; see
+[correctness-handoff.md](correctness-handoff.md)).
 
 ## State selectors: `SelectorService.GetStateSelection`
 
-Powers dbt State-powered `state:*` selectors (`state:new/old/modified/
-unmodified` and the `modified.*` sub-selectors). Used when dbt State is enabled,
-`project-id` is set, and no `--state` manifest is given; each node is compared
-against **its own last execution in the `defer_to_target` env** rather than a
-single `manifest.json`. Triggered by e.g. `dbt compile --select state:modified`
-(and build/run/test); `dbt ls` does **not** engage the service.
+Powers `state:new/old/modified/unmodified` and the `modified.*` sub-selectors
+when dbt State is enabled, `project-id` is set and no `--state` manifest is
+given. Each node is compared with its own last recorded state in the
+`defer_to_target` target. `dbt compile --select state:…` (and build, run, test)
+calls `GetStateSelection`; `dbt ls` does not.
 
-Request `SelectorRequest{target, selector_criteria (SelectorCriteria),
-project_id, nodes[] = DbtNodeData{node_unique_id, node_hash, node_body_hash?,
-node_configs_hash?, node_persisted_descriptions_hash?, node_macros_hash?,
-node_contract_hash?, node_database_representation?}}`. `target` is the
-`defer_to_target` ENV name (default `prod`), NOT a physical schema. The client
-batches ≤10,000 nodes/request and unions the responses. Response
-`SelectorResponse{node_unique_ids[]}` — the subset matching the criterion.
+Request `SelectorRequest{target, selector_criteria, project_id, nodes[] =
+DbtNodeData{node_unique_id, node_hash, node_body_hash?, node_configs_hash?,
+node_persisted_descriptions_hash?, node_macros_hash?, node_contract_hash?,
+node_database_representation?}}`. `target` is the `defer_to_target` name
+(default `prod`), not a schema. The client batches up to 10,000 nodes per
+request and unions the responses. Response `SelectorResponse{node_unique_ids[]}`.
 
 `SelectorCriteria`: `SC_UNSPECIFIED=0, MODIFIED=1, NEW=2, UNMODIFIED=3, OLD=4,
 BODY=5, CONFIGS=6, RELATION=7, PERSISTED_DESCRIPTIONS=8, MACROS=9, CONTRACT=10`.
 
-### Semantics (live-verified)
+The server records the client's `DbtNodeData` hashes on every Submit and
+Record (latest write wins) and compares them; it never recomputes. With `rec`
+the node's recorded state:
 
-Characterized against the real service (`api.state.dbt.com`, jaffle-shop,
-Snowflake `prod_demo` baseline, selector queried from `dev_clone`), reproduced
-by `dbt-state-rs`; see
-[`golden/fixtures/selector_state_selection.jsonl`](../golden/fixtures/selector_state_selection.jsonl),
-`experiments/selector_experiment.sh` and `crates/harness/tests/selector_conformance.rs`.
+- `new` ⇔ no `rec`; `old` ⇔ `rec` present.
+- `modified.<component>` ⇔ no `rec`, or that component hash differs.
+- `modified` ⇔ no `rec`, or any of body, configs, persisted_descriptions,
+  macros or contract differs. `relation` is excluded.
+- `unmodified` ⇔ `old` and not `modified`.
 
-The server does a **pure comparison** of the client-supplied `DbtNodeData`
-hashes against the node's recorded state (keyed by org / `project_id` / `target`
-env / `node_unique_id`) — it records the hashes verbatim on every
-Submit/Record and never recomputes. For a submitted node whose recorded state is
-`rec` (or absent → the node is *new*):
-
-- `new` ⇔ `rec` absent; `old` ⇔ `rec` present (`new`/`old` partition the sent set).
-- `modified.body/configs/relation/persisted_descriptions/macros/contract` ⇔
-  `rec` absent **or** that component hash differs. A *new* node matches every
-  `modified.*`.
-- `modified` ⇔ `rec` absent **or** any of body/configs/persisted_descriptions/
-  macros/contract differs. **`relation` is EXCLUDED from `modified`** (a
-  database/schema/alias difference across environments is not a content change).
-- `unmodified` ⇔ `old` and not `modified` (`modified`/`unmodified` partition the
-  sent set).
-
-Only node types dbt State records (models, seeds, snapshots, data tests) ever
-have recorded state; node types it never tracks (sources, unit tests, semantic
-models, metrics, saved queries) are always returned as `new`/`modified`.
-`node_body_hash` is a raw file hash, so whitespace/comment-only edits DO count as
-`modified.body` (the selector is file-hash based, unlike the semantic reuse
-decision). An unknown/`SC_UNSPECIFIED` criterion or an empty `project_id` is
-rejected with `INVALID_ARGUMENT`.
-
-The server records node state in a dedicated `node_states` table (migration
-0009), separate from the `executions` decision ledger, keyed by the logical
-(org, project_id, target env, node_unique_id) the selector scopes by.
+Only models, seeds, snapshots and data tests are recorded. Sources, unit tests,
+semantic models, metrics and saved queries are always `new`/`modified`.
+`node_body_hash` is a raw file hash, so whitespace-only edits count as
+`modified.body`. `SC_UNSPECIFIED` or an empty `project_id` returns
+`INVALID_ARGUMENT`. Fixtures `selector_state_selection.jsonl`,
+`selector_last_write_wins.jsonl`; tests `selector_conformance.rs`,
+`selector_offline.rs`.
 
 ## Clone: `Clone.RegisterClone`
 
-Request `CloneRequest{target_table (dev), dialect, execution_type,
-clone_source_table (prod), clone_source_last_modified_epoch?,
-clone_source_table_type? (e.g. "TRANSIENT TABLE"), table_namespace?, labels}`.
+The client calls `RegisterClone` for incremental models and snapshots (the
+`pre_clone` path). Table materializations get copies through the submit
+fallback above. The client requests a copy only when the profile sets
+`defer_to_target` and the dev relation is absent.
 
-Response `CloneResponse` populates **both** the `ready_to_clone` field (3) and
-the deprecated `ready_to_clone_v1` oneof (1) with the same `ReadyToCloneResponse`:
-`{request_id, clone_sqls[], clone_source, clone_target,
-ExplainedDecision{decision=3 (READY_TO_CLONE), skip_rejection_reason=5
-(FORCED_NOT_ELIGIBLE), clone_rejection_reason=null, decision_description=""},
+Request `CloneRequest{target_table, dialect, execution_type,
+clone_source_table, clone_source_last_modified_epoch?,
+clone_source_table_type?, table_namespace?, clone_chain_depth_limit?, labels,
+…}`.
+
+A successful `CloneResponse` sets **both** `ready_to_clone` (field 3) and the
+deprecated `ready_to_clone_v1` oneof (field 1) to the same
+`ReadyToCloneResponse{request_id, clone_sqls[], clone_source, clone_target,
+ExplainedDecision{decision=3, skip_rejection_reason=5,
+clone_rejection_reason=null, decision_description=""},
 clone_execution_results{fields:{}}, execution_decision_id}`.
 
-The **server generates `clone_sqls`** (dialect-specific DDL). Observed Snowflake:
+The server generates `clone_sqls`. Snowflake (captured):
 
 ```sql
 CREATE OR REPLACE TRANSIENT TABLE <target>
@@ -276,108 +387,40 @@ CLONE <source>
 COPY GRANTS
 ```
 
-The supported Snowflake kinds are TABLE and TRANSIENT TABLE. View sources
-return UNIMPLEMENTED.
-Other dialects: BigQuery `CREATE TABLE ... CLONE ...`; Databricks/Spark
-`CREATE TABLE ... SHALLOW CLONE ...` only for an explicitly identified Delta
-source. Redshift and unknown dialects return UNIMPLEMENTED. Non-Snowflake
-variants follow published syntax but are not verified against the real service
-or executed against those warehouses. Requests carrying retention properties
-return UNIMPLEMENTED until those properties can be honored.
+Snowflake sources are `TABLE` or `TRANSIENT TABLE`. BigQuery uses
+`CREATE TABLE ... CLONE ...`; Databricks/Spark use `CREATE TABLE ... SHALLOW
+CLONE ...` only for an explicitly Delta source. These two follow published
+syntax and are not verified against hosted or the warehouses. DuckDB is
+described in [duckdb-identity-and-copy.md](duckdb-identity-and-copy.md).
+`UNIMPLEMENTED` is returned for view sources, Redshift and unknown dialects,
+and requests with retention properties (`hours_to_expiration`,
+`partition_expiration_days`).
 
-### Clone eligibility, rejection and lifecycle (live-verified 2026-10-11)
+Lifecycle:
 
-- **Eligibility splits by materialization.** Incremental models and snapshots
-  clone via `RegisterClone` (the `pre_clone` path). Table materializations clone
-  via `SubmitEnrichedSQL` → `ready_to_clone` (see below). Clones require profile
-  `defer_to_target` and the dev object absent.
-- **`allow_clones: false`** is encoded by the client as
-  `clone_chain_depth_limit = 0`. The service answers `unable_to_clone`
-  (`UnableToCloneResponse{clone_source, clone_target, ExplainedDecision{decision=1
-  (READY_TO_EXECUTE), clone_rejection_reason=10 (CLONE_CHAIN_LIMIT_EXCEEDED),
-  decision_description=""}}`); the deprecated top-level oneof is left empty and no
-  history is written. The client then builds normally.
-- **Lifecycle.** After `RegisterClone` + `ConfirmExecution`, a later submit for
-  the cloned target SKIPS when its schema-abstracted logic matches (and executes
-  on a genuine logic change). See `decision_description` wording in the SKIP/
-  EXECUTE sections above.
-
-### SQL-submit cross-name clone (`SubmitEnrichedSQL` → `ready_to_clone`)
-
-A Snowflake `SubmitEnrichedSQL` for a target that does not yet exist, when an equivalent
-model (same `table_namespace` + schema-abstracted logic + `execution_type`) was
-already built under a DIFFERENT physical name, returns `ready_to_clone` cloning
-that equivalent in: `ExplainedDecision{decision=3 (READY_TO_CLONE),
-skip_rejection_reason=1 (TARGET_TABLE_MISMATCH), clone_rejection_reason=null,
-decision_description="an equivalent model exists under another name so we cloned
-that one"}`, with `clone_required_last_modified_epoch` = the source's build epoch
-and `execution_runtime_ms` echoing the source's runtime.
-
-The same response also answers a submit for an EXISTING or DROPPED target whose
-own build cannot be reused, when a same-environment equivalent (same upstream
-names) qualifies for this submit, judged as if it were the reuse candidate on
-its own build age. `is_stale` is then true when that reuse would be stale
-(within lag tolerance or tolerated by ALL), and for an existing target Explain
-shows "but it's old, so we will clone from …". A same-upstream equivalent that
-does not qualify is not copied (with tolerance 0, a stale one never is); the
-next same-upstream equivalent, in newest-build order, is tried instead (up
-to 16 are read). No
-copy is offered when the target's own table was modified externally.
-Live-verified 2026-11-10 (`lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`).
-An equivalent in another environment reads other relations and is copied
-without this judgment.
-
-When the submit target FORBIDS clones (the client sends
-`clone_chain_depth_limit = 0` on the submit — NOT `allow_clones`, which stays
-unset), the fallback is suppressed and the service returns `ready_to_execute`
-with `ExplainedDecision{decision=1, skip_rejection_reason=1
-(TARGET_TABLE_MISMATCH), clone_rejection_reason=10 (CLONE_CHAIN_LIMIT_EXCEEDED),
-is_stale=false, decision_description="model was executed because the maximum
-number of nested clones has been reached"}` (live-verified,
-`experiments/clone_experiment.sh table --no-clones`).
+- `clone_chain_depth_limit = 0` returns `unable_to_clone{clone_source,
+  clone_target, ExplainedDecision{decision=1, clone_rejection_reason=10,
+  decision_description=""}}` with the deprecated oneof empty. No history is
+  written and the client builds normally.
+- Otherwise a pending row is written for the target relation. On Snowflake it
+  inherits the source's current logic identity. After `ConfirmExecution`, a
+  later submit for the target relation SKIPS when its schema-abstracted logic
+  matches and executes on a logic change.
+- A copy records no inputs. Its freshness is anchored on the copy's own build
+  epoch: an upstream newer than the copy drifts, one older than the copy but
+  newer than the source's build does not (`clone_chain_source_age.jsonl`,
+  `clone_chain_upstream_drift.jsonl`).
 
 ## Custom `Struct` type
 
-`struct.proto` defines a `Struct`/`Value`/`ListValue` like `google.protobuf.Struct`
-but with `int64` support, used for `execution_results` / telemetry config.
+`struct.proto` defines a `Struct`/`Value`/`ListValue` like
+`google.protobuf.Struct` with `int64` support, used for `execution_results` and
+telemetry config.
 
-## Explain: `Explain.GetUpstreamDependencyChanges` is CLIENT-UNREACHABLE
+## Explain: `Explain.GetUpstreamDependencyChanges` is client-unreachable
 
-The `Explain` service declares two RPCs, but `dbt state explain` only ever calls
-`GetExplainMessages` (the two-phase re-Submit → `GetExplainMessages` flow).
-`GetUpstreamDependencyChanges` NEVER fired across any live capture (#20 happy
-path, #23 clone/deferral, #24 tolerance, #34 history-bearing), and it is not a
-missing command/flag: the dbt Fusion CLI does not contain the call at all.
-
-Evidence — binary inspection of the Fusion client (the traffic generator the
-whole harness depends on), on BOTH versions available to us:
-
-- `dbt 2.0.6` and `dbt 2.0.11`: a raw byte scan of the executable finds **zero**
-  occurrences of `GetUpstreamDependencyChanges` (and zero of the substring
-  `UpstreamDependency`, case-insensitive, including word-split variants). The
-  complete set of embedded `query_cache` gRPC method paths the client calls is:
-  `SQL/{SubmitEnrichedSQL,SubmitEnrichedSQLSpeculative,SubmitValues}`,
-  `Clone/RegisterClone`, `Explain/GetExplainMessages` (the ONLY `Explain`
-  method), `Execution/{ConfirmExecution,RecordExecutions,ResolveDeferredRelations}`,
-  `ClientTelemetry/SubmitTelemetryBatch`, `SelectorService/GetStateSelection`,
-  `ClientValidation/ValidateClientVersion`.
-
-Per the hosted docs, the upstream-dependency-changes narrative is surfaced by the
-**dbt platform "Explain tab"** (hosted UI/backend), not the CLI — so it is
-invoked by a surface that does NOT pass through our recording proxy (which sits
-only in front of the Fusion CLI). It is therefore UNCAPTURABLE with this harness
-by construction, not merely undiscovered.
-
-Our server keeps `GetUpstreamDependencyChanges` as an empty, non-asserted stub
-(`services.rs`), which is correct: no client we can drive calls it, so there is
-no hosted narrative to conform to. If a future surface (platform API, or a CLI
-version that adds the call) is ever observed, re-characterize then — do not
-invent the `UpstreamDependencyChanges` line tree before capture.
-
-## Coverage
-
-See the service table above and the complete remaining feature/testing backlog in
-[correctness-handoff.md](correctness-handoff.md). Captured response examples and
-experiments are useful evidence for individual scenarios; complete hosted
-conformance has not been established. Non-Snowflake automatic SQL cloning,
-telemetry, runtime transformations and several policy rules remain incomplete.
+The Fusion CLI embeds only `GetExplainMessages` from the `Explain` service, and
+no capture has ever called `GetUpstreamDependencyChanges`; the hosted docs place
+that view in the dbt platform UI, which the recording proxy does not see. The
+server keeps it as an empty stub (`services.rs::get_upstream_dependency_changes`).
+Characterize it before implementing it if a client ever calls it.

@@ -10,21 +10,28 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 → [docs/overview.md](docs/overview.md)
 
 ## Layout
-- `crates/proto` — generated tonic stubs (server+client) from `proto/`.
-- `crates/server` — the server: `decision.rs` (pure engine), `store.rs` (sqlx),
-  `warehouse.rs` + `warehouse/` (dialect policy and Warehouse rules,
-  including result copy DDL), `submit_decision.rs`
-  (how one submit is decided), `services.rs` (gRPC),
-  `lib.rs` (`build_router`), `main.rs`.
-- `crates/harness` — recording proxy, golden fixtures, differential + fuzz tools, tests.
-- `crates/ui` — optional read-only web console.
-→ [docs/architecture.md](docs/architecture.md)
+- `crates/proto`: generated tonic stubs (server+client) from `proto/`.
+- `crates/server`: the server. Modules to know:
+  - `decision.rs`: the pure decision engine (`decide`), freshness, descriptions.
+  - `reuse_candidate.rs`: pure Reuse candidate selection and Reuse qualification.
+  - `submit_decision.rs`: how one submit is decided, end to end.
+  - `result_copy.rs`: pure Result copy planning (submit fallback and RegisterClone).
+  - `explain.rs`: pure re-derivation of `dbt state explain` trees.
+  - `warehouse.rs` + `warehouse/`: dialect policy and the Warehouse rules.
+  - `store.rs` + `store/history.rs`: Postgres writes and scoped State history reads.
+  - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.
+- `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
+  and fuzz tools, integration tests.
+- `crates/ui`: optional read-only web console.
+→ full module table in [docs/architecture.md](docs/architecture.md)
 
 ## Build / test
 ```bash
 cargo build
 cargo test                              # needs Postgres at $DATABASE_URL
 cargo test -p dbt-state-server --lib    # server library tests, no DB
+cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lint
+./scripts/duckdb-ci.sh                  # DuckDB acceptance cases (needs uv, Python 3.12, Postgres)
 ```
 - `DATABASE_URL` default `postgres://dbtstate:dbtstate@localhost:55441/dbtstate`.
 - `protoc` is required and must be on `PATH` (or set `PROTOC`). `tonic-prost-build`
@@ -34,35 +41,46 @@ cargo test -p dbt-state-server --lib    # server library tests, no DB
 ## Critical gotchas
 - **Preserve on-wire proto service/method names.** The service literally named
   `Clone` collides with `std::clone::Clone`; `crates/proto/build.rs` patches the
-  generated std-derive impl — do not rename the service to "fix" it.
+  generated std-derive impl. Do not rename the service to "fix" it.
 - **Decision engine is pure** (`decision.rs::decide`). Keep it I/O-free so the
   property tests (`decision_proptest.rs`) and conformance replay stay valid.
-- **Reuse requires current evidence.** Scope physical history by organization,
-  warehouse family, connection namespace and target; select its latest row before
-  checking versioned SQL/dependency/context/config fingerprints. Compare exact
-  physical upstream names and preserve unknown epochs. Own-target existence and
-  external edits are checked separately from upstream freshness. Snowflake
-  cross-environment reuse is via CLONE (keyed by `table_namespace` +
-  schema-abstracted logic + execution type); other dialects retain exact SQL
-  and do not use automatic cross-target reuse. A namespace alone never justifies
-  SKIP; it still requires the strict same-target match. The schema-abstracted
-  logic identity binds each dependency's
-  schema-abstracted NAME to its definition (NOT a bare multiset of definitions),
-  so swapping two dependency definitions between references is NOT equivalent
-  (review #2 finding 3). Data tests require scoped UID identity and complete
-  cached results, and (under `compare_unrendered_code`) honor the dual
-  rendered/template identity just like models. →
-  [docs/correctness-handoff.md](docs/correctness-handoff.md)
+- **Reuse requires current evidence.** Invariants
+  (→ [docs/correctness-handoff.md](docs/correctness-handoff.md), ADR 0007):
+  1. Physical State history is scoped by organization, warehouse family,
+     connection namespace (`table_namespace`) and Target relation. Only the
+     latest row in that scope is considered, and its versioned
+     SQL/dependency/context/config fingerprints must match.
+  2. Upstream drift is measured against the epoch recorded for each upstream at
+     the build, by exact physical name; unknown epochs never prove freshness. A
+     changed Upstream producer always rebuilds. Lag tolerance only turns a
+     policy rebuild into a reuse.
+  3. The Target relation's existence and External modifications are checked
+     separately from upstream freshness.
+  4. Cross-target Result copy: Snowflake matches by `table_namespace` +
+     schema-abstracted logic + execution type, and that logic identity binds
+     each dependency's schema-abstracted name to its definition (swapping two
+     dependency definitions between references is not equivalent). DuckDB has
+     its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other
+     dialects keep exact SQL and do no automatic cross-target reuse. A namespace
+     alone never justifies SKIP.
+  5. Data tests require scoped UID identity and complete cached results. Under
+     `compare_unrendered_code`, models and data tests both use the dual
+     rendered/template identity.
 - **Org isolation.** Every store query is scoped by `org_id` (from the
   `x-organization-id` metadata header, default `local`). Never weaken this.
+- **Replay clock is test-only.** `Clock::Replay` lets a request's
+  `x-dbt-state-replay-now-ms` header set the server clock
+  (`crates/server/src/lib.rs`). Never enable it in a deployment: a client could
+  choose its own build age.
 - **Response shapes must match the hosted service exactly** (decision ints,
   rejection reasons, `decision_description` strings, both `ready_to_clone` and
   the deprecated `ready_to_clone_v1` oneof). → [docs/protocol.md](docs/protocol.md)
-- **DuckDB does not trigger dbt State** — use a supported warehouse (Snowflake)
-  for live validation.
+- **Hosted dbt State does not engage for DuckDB**, so live hosted validation
+  needs Snowflake. Local DuckDB runs go through `dbt-state-duckdb` against this
+  server ([docs/duckdb.md](docs/duckdb.md)).
 
 ## Validating faithfulness (do this when touching decision logic)
-1. `cargo test` — includes the conformance replay of real captured traffic
+1. `cargo test`: includes the conformance replay of real captured traffic
    (`crates/harness/tests/conformance.rs`) and property invariants.
 2. Opt-in differential fuzz vs the REAL service (burns dbt State metering, needs
    `~/.dbt/dbt_cloud.yml`):
@@ -81,7 +99,8 @@ cargo test -p dbt-state-server --lib    # server library tests, no DB
   Cloud credential in `~/.dbt/dbt_cloud.yml` and a Snowflake target; **only ever
   mutate the demo database (`CDO_DEMO_DB`)**. When live access is unavailable,
   use primary client/protocol evidence and offline regressions; do not infer
-  unresolved hosted policy — document open questions in the handoff.
+  unresolved hosted policy. Record open questions in
+  [docs/correctness-handoff.md](docs/correctness-handoff.md).
 - Keep golden session files out of the tree; only `golden/fixtures/` is tracked
   (see `golden/README.md`).
 - Don't commit unless asked; prefer small, focused commits.

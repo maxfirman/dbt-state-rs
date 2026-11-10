@@ -1,132 +1,108 @@
 # Generated DuckDB physical-state checks
 
-`crates/harness/tests/duckdb_generated.rs` launches the pinned Python driver
-against an isolated Postgres schema. The driver launches the normal production
-server binary, sends public Python State gRPC requests with organization
-metadata, and executes actual DuckDB statements. Restart terminates that binary
-and recreates its pools against the same isolated Postgres schema. It also
-checks pending execution confirmation across a restart. No production test
-endpoint or cloud credential is involved.
+`crates/harness/tests/duckdb_generated.rs` runs the Python driver
+`integrations/duckdb/tests/generated/runner.py` against an isolated Postgres
+schema. The driver starts the normal production server binary, sends public
+State gRPC requests with organization metadata, and executes real DuckDB
+statements. A restart step stops that binary and starts it again on the same
+schema, including with an execution confirmation still pending. No test-only
+server endpoint or cloud credential is involved.
 
-The bounded run uses four reproducible seeds, each with a fixed lifecycle spine
-and four randomized episodes. Each episode selects an environment, integer
-transformation and an interaction: changed logic, upstream data, target rows,
-target schema, dropped target, write-only recording, or process restart.
-The spine guarantees submit, execute, confirm, record, external mutation, drop,
-CTAS result copying, restart and evidence reset. It asserts positive SKIP after
-confirmed builds, positive prod-to-dev CTAS, and SKIP after confirmed copying;
-an always-build service fails. Reset calls the production recovery operation,
-keeps user relations, and starts a new warehouse namespace. It does not truncate
-Postgres history.
+## What a run does
 
-The independent oracle in `tests/generated/oracle.py` imports only DuckDB and
-uses a declared integer workload. It calculates expected row multisets from
-controlled input fixtures, including duplicate rows and NULL, and requires
-explicit INTEGER column names/types. It never calls decision, fingerprint,
-store or evidence helpers to derive expected answers. The driver uses the
-production evidence module only to supply protocol metadata. Expected copy
-sources are selected from independently tracked confirmed executions before
-the submit response is observed. Every returned SKIP checks actual target rows
-and schema; every CTAS checks source scope, actual source contents, and actual
-copied rows/schema.
+Each seed produces a fixed lifecycle spine plus a number of randomized
+episodes (defaults in `duckdb_generated.rs`). An episode picks a target, an
+integer transformation and one interaction: changed logic, upstream data,
+rows or schema of the target relation, a dropped target relation, write-only
+recording, or a process restart. The spine always covers submit, execute,
+confirm, record, External modification, drop, CTAS result copy, restart and
+evidence reset. It requires a SKIP after confirmed builds, a prod-to-dev CTAS
+and a SKIP after a confirmed copy, so an always-build server fails. Reset
+calls the production recovery operation, keeps user relations and starts a
+new warehouse namespace; it does not truncate Postgres history.
 
-One spine operation explicitly permits the recorded source's older result
-after the raw input advances. Its `stale` flag and policy annotation declare the
-SQL-submit fallback contract described in [result copying](duckdb-result-copy.md).
-The oracle requires that declared source result, rather than pretending that
-copying always returns current upstream data. Its following SKIP checkpoint explicitly permits that confirmed copied result
-as well: its own copy completion is newer than the upstream change. All other
-operations require the current fixture result. Externally modified or dropped sources are never
-accepted as that older result.
+The oracle (`integrations/duckdb/tests/generated/oracle.py`) imports only
+DuckDB. It computes expected row multisets from controlled inputs, including
+duplicates and NULL, and requires explicit INTEGER column names and types. It
+never calls decision, fingerprint, store or evidence code. The driver uses the
+production evidence module only to fill protocol metadata. Expected copy
+sources come from independently tracked confirmed executions, chosen before
+the submit response is read. Every SKIP checks the actual rows and schema of
+the target relation; every CTAS checks the source scope, the source contents
+and the copied rows and schema.
 
-Two fixed mutation traces run through the same production RPC and physical
-oracle path. A wrong-SKIP response fault after a logic change leaves the older
-physical target and must fail specifically with `wrong-skip:rows`. A
-wrong-source executor fault follows a real, validated copy proposal, executes
-CTAS from an actual decoy relation with different rows, and must fail with
-`wrong-source-copy:rows`. The latter models an executor selecting the wrong
-source after validation; it does not disable the production client's race
-checks or claim to mutate the server's source selection. Neither check accepts
-an arbitrary exception as evidence that the oracle works.
+One spine operation is marked `stale`: after the raw input advances, it
+accepts the recorded source's older result, as the SQL-submit fallback in
+[result copies](duckdb-identity-and-copy.md#client-execution) permits. The
+following SKIP also accepts that copied result, because its copy completion is
+newer than the upstream change. Every other operation requires the current
+result. Externally modified or dropped sources are never accepted.
+
+Two mutation traces check that the oracle catches wrong answers. A wrong-SKIP
+fault after a logic change leaves the older rows and must fail with
+`wrong-skip:rows`. A wrong-source fault follows a real, validated copy
+proposal, runs CTAS from a decoy relation with different rows, and must fail
+with `wrong-source-copy:rows`. It models an executor choosing the wrong source
+after validation; it does not disable the client's checks or alter the
+server's source selection. Neither probe accepts an arbitrary exception.
 
 ## Commands
 
 ```sh
 uv sync --project integrations/duckdb --locked
 cargo build -p dbt-state-server
-DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
-DBT_STATE_SERVER_BIN="$PWD/target/debug/dbt-state-server" \
+export DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python"
+export DBT_STATE_SERVER_BIN="$PWD/target/debug/dbt-state-server"
+cargo test -p dbt-state-harness --test duckdb_generated -- --ignored --nocapture
+# Larger run, as in the weekly CI job:
+DBT_STATE_GENERATED_SEEDS=0,1,2,3,4,5,6,7 DBT_STATE_GENERATED_STEPS=40 \
   cargo test -p dbt-state-harness --test duckdb_generated -- --ignored --nocapture
-```
-
-`DATABASE_URL` defaults to the ordinary local test Postgres. The Rust launcher
-creates/drops a fresh schema, preserving existing URL parameters and setting
-that schema as the server's search path. Each trace receives a fresh DuckDB
-file and organization. The binary must be built from the same checkout.
-`CARGO_TARGET_DIR` users should set `DBT_STATE_SERVER_BIN` accordingly.
-
-A larger manual/scheduled run uses the same gate:
-
-```sh
-DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
-DBT_STATE_SERVER_BIN="$PWD/target/debug/dbt-state-server" \
-DBT_STATE_GENERATED_SEEDS=0,1,2,3,4,5,6,7 \
-DBT_STATE_GENERATED_STEPS=40 \
-  cargo test -p dbt-state-harness --test duckdb_generated -- --ignored --nocapture
-```
-
-`STEPS` counts random episodes, each several causally related operations, in
-addition to the fixed spine. The driver reports per-operation and per-decision
-coverage, CTAS counts and wall time. The fixed oracle and trace-contract tests
-can also be run independently:
-
-```sh
+# Oracle and trace unit tests only:
 integrations/duckdb/.venv/bin/python -m unittest discover \
   -s integrations/duckdb/tests/generated
 ```
 
-## Replay and minimization
+`DATABASE_URL` defaults to the local test Postgres. The launcher creates and
+drops a fresh schema and sets it as the server's search path. Each trace gets a
+fresh DuckDB file and organization. Build the binary from the same checkout;
+with `CARGO_TARGET_DIR`, point `DBT_STATE_SERVER_BIN` at it.
+`DBT_STATE_GENERATED_STEPS` counts random episodes in addition to the spine.
+The driver reports per-operation and per-decision coverage, CTAS counts and
+wall time.
 
-Set `DBT_STATE_GENERATED_ARTIFACTS` to retain artifacts at a known directory;
-otherwise the test prints a temporary directory on failure. Each trace keeps
-its seed/version, symbolic operations and dependencies in `trace.json`, public
-requests/responses and execution observations in `observations.json`, the
-DuckDB file and `server.log`. Failures also have `failure.json` with the failing
-index and fingerprint. The complete planned trace is written before execution,
-so abrupt failures still leave a replay input. No credentials are recorded.
-Artifacts, including the intentionally failing mutation probes, are retained
-on successful runs too; CI should upload the configured directory on failure.
+## Artifacts, replay and minimization
 
-Replay with fresh warehouse/service scope:
+`DBT_STATE_GENERATED_ARTIFACTS` sets the artifact directory; otherwise the test
+uses a temporary directory and prints it on failure. Each trace keeps
+`trace.json` (seed, version, symbolic operations and dependencies, written
+before execution so abrupt failures still leave a replay input),
+`observations.json` (public requests, responses and execution observations),
+the DuckDB file and `server.log`. Failures add `failure.json` with the failing
+index and fingerprint. Artifacts, including those of the mutation probes, are
+kept on success too. No credentials are recorded. `scripts/duckdb-ci.py`
+writes them under `artifacts/duckdb/generated`, and CI uploads
+`artifacts/duckdb` on every run (`if: always()`), keeping it 14 days for pull
+requests and 30 days for the extended job.
+
+Replay with fresh warehouse and server scope:
 
 ```sh
-DBT_STATE_DUCKDB_PYTHON="$PWD/integrations/duckdb/.venv/bin/python" \
-DBT_STATE_SERVER_BIN="$PWD/target/debug/dbt-state-server" \
-DBT_STATE_GENERATED_REPLAY=/path/to/trace.json \
-DBT_STATE_GENERATED_SHRINK=1 \
+DBT_STATE_GENERATED_REPLAY=/path/to/trace.json DBT_STATE_GENERATED_SHRINK=1 \
   cargo test -p dbt-state-harness --test duckdb_generated -- --ignored --nocapture
 ```
 
-The optional minimizer makes at most 40 clean replays and retains a candidate
-only when it reproduces the same named oracle violation. Removing an operation
-also removes its dependent operations. Dependencies deliberately form a
-conservative chain within each reset-delimited episode, preserving source
-builds, confirmations, mutations and pending IDs; independent later episodes
-can be removed wholesale. This favors valid causal traces over aggressive
-shrinking. It writes `minimized.json` beside the original without overwriting
-it. Every shrink attempt retains its own artifacts. A minimized useful failure
-should be promoted to a fixed physical regression; the two mutation traces are
-permanent regressions for oracle sensitivity. This is local reuse-safety
-evidence, alongside the fixed real-dbt tests. Snowflake golden replay remains
-separate hosted-conformance evidence.
+The optional minimizer (`traces.py`) makes at most 40 clean replays and keeps
+a candidate only when it reproduces the same named oracle violation. Removing
+an operation removes its dependents. Dependencies form a conservative chain
+within each reset-delimited episode, so later independent episodes can be
+removed whole. It writes `minimized.json` beside the original and keeps each
+attempt's artifacts. Promote a useful minimized failure to a fixed physical
+regression.
 
-The generator covers the validated deterministic table/copy subset. Fixed
-real-dbt gates separately cover adapter materializations, views, seeds, cached
-data tests, incremental workloads, worker ordering and recovery. Passing these
-generated traces does not establish arbitrary SQL equivalence, overlapping
-writers, or hosted DuckDB conformance.
+## Scope
 
-The initial four-seed/four-episode run measured 146 seconds in the Python driver
-(154 seconds including launcher startup), with 50 BUILD, 30 SKIP, eight CTAS
-copies, and both mutation probes caught. This is a local measurement, not a CI
-time guarantee.
+The generator covers the deterministic table and copy subset. The fixed
+real-dbt tests cover adapter materializations, views, seeds, cached data
+tests, incremental models, worker ordering and recovery. Passing traces does
+not establish arbitrary SQL equivalence, support for overlapping writers or
+hosted conformance; Snowflake golden replay remains the hosted evidence.

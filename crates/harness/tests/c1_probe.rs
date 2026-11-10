@@ -1,6 +1,6 @@
 //! Captured config-only and SQL changes. The hosted skips remain golden evidence;
 //! our exact dependency-definition fingerprint conservatively rebuilds when
-//! SELECT dependency text changes to view DDL. See correctness-handoff.md B/C.
+//! SELECT dependency text changes to view DDL. See golden/replay_gaps.json.
 #[path = "support.rs"]
 mod support;
 

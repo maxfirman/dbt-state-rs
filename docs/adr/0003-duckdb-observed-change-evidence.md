@@ -1,20 +1,6 @@
 # Use observed changes as DuckDB freshness evidence
 
-## Implementation status — 2026-11-07
-
-Versioned schema/content fingerprints, ordered evidence, invocation locking,
-generation recovery and explicit reset are implemented. The
-[integration notes](../../integrations/duckdb/README.md) describe their current
-mechanics and supported evidence types. The
-[recovery acceptance case](../../crates/harness/tests/duckdb_recovery.rs) and
-[interruption acceptance case](../../crates/harness/tests/duckdb_interruptions.rs)
-exercise recovery through real dbt processes.
-
-The validation work anticipated below now has those concrete checks. The
-observed-change contract and explicit reset requirement after backup restoration
-remain in force.
-
-## Original decision
+## Decision
 
 DuckDB freshness may be based on observed differences in relation contents and
 schema, together with known writes performed by the integration. A manual
@@ -29,10 +15,14 @@ the shared server freshness policies while documenting the DuckDB evidence
 contract. Unknown or unsupported evidence causes a rebuild. This difference
 does not change Snowflake behavior or establish hosted conformance for DuckDB.
 
+Amended by ADR 0007: Lag tolerance needs elapsed time, which ordinals do not
+give, so DuckDB Build age is measured from the server's receipt of the build's
+confirmation.
+
 Known successful builds and copies must advance their recorded write evidence
 even when they produce identical contents. An unchanged scan must retain its
-previous evidence. The detailed ordering and recovery mechanism still needs
-validation; a digest is not itself a modification epoch.
+previous evidence. A digest is not itself a modification epoch. The ordering
+and recovery mechanism is described in [DuckDB evidence](../duckdb-evidence.md).
 
 Persist versioned content/schema fingerprints, ordered evidence and a database
 generation identifier in a reserved metadata schema inside the DuckDB file.

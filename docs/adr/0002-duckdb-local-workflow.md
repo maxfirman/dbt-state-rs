@@ -1,21 +1,6 @@
 # Integrate DuckDB through Python dbt and copy only eligible results
 
-## Implementation status — 2026-11-07
-
-The Python integration is implemented and tested with the pinned versions in
-[the workflow guide](../duckdb.md). The released dbt-state client already
-serializes warehouse namespace and node identity; the extension supplies local
-authentication handling and file/generation scope, as described in the
-[integration notes](../../integrations/duckdb/README.md). The compatibility
-uncertainties below refer to the original source investigation.
-
-The [mixed-workflow acceptance case](../../crates/harness/tests/duckdb_workflow.rs)
-exercises real builds, reuse, copies, recovery and file isolation. The supported
-workloads retain the restrictions documented in the [copy](../duckdb-result-copy.md)
-and [incremental](../duckdb-incremental.md) contracts. Freshness evidence is
-implemented under ADR 0003.
-
-## Original decision and planning evidence
+## Decision
 
 Start with Python dbt Core plus dbt-duckdb and a maintained DuckDB extension or
 patch to the Python State plugin, subject to a focused compatibility
@@ -32,7 +17,10 @@ namespace support. Relevant per-node state fields also need checking against
 this server's requirements. The first compatibility gate must demonstrate
 credential-free BUILD, confirmation and SKIP across separate real dbt
 processes, invalidation after changes, and isolation between database files.
-Package installation and exact dependency versions are not yet validated.
+
+Note: the pinned released client already serializes warehouse namespace and
+node identity; the extension supplies local authentication handling and
+file/generation scope. Pinned versions are listed in [the workflow guide](../duckdb.md#supported-versions).
 
 Retain the existing client/server split: the Python integration collects
 warehouse evidence and executes builds and copies; the Rust server owns shared
@@ -50,8 +38,8 @@ Manual changes to supported local tables between dbt runs must be detected,
 including changes made outside this integration. Scanning small tables is an
 acceptable cost for reliable evidence. DuckDB's documented table metadata has
 no per-table last-modified timestamp; [ADR 0003](0003-duckdb-observed-change-evidence.md)
-defines the accepted observation semantics, while the detailed mechanism
-remains open. Each dbt invocation requires exclusive write access to its
+defines the accepted observation semantics. Resolved by ADR 0003; the
+mechanism is described in [DuckDB evidence](../duckdb-evidence.md). Each dbt invocation requires exclusive write access to its
 DuckDB file. Manual edits are supported between runs; overlapping invocations
 and concurrent external writers are outside the initial scope. Normal dbt
 worker threads and dependency ordering remain in scope, subject to a correct
@@ -62,6 +50,10 @@ permitted stale-source copying. Tests must represent those allowed outcomes
 rather than always demanding the newest possible result. This does not imply
 that copying a source which was externally edited after its recorded build is
 safe; physical source validity and upstream freshness are separate checks.
+
+Amended by ADR 0007: freshness also compares recorded upstream epochs and
+producers, gated by Lag tolerance; on DuckDB, Build age is measured from the
+server's receipt of the build's confirmation.
 
 Treat result copying as a shared operation with warehouse-specific
 capabilities. Retain the existing CLONE wire names for compatibility. DuckDB

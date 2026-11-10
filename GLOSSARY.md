@@ -1,7 +1,7 @@
 # dbt State
 
 Language for deciding when a dbt workload can reuse recorded results across
-warehouse environments.
+dbt targets.
 
 ## Language
 
@@ -10,10 +10,14 @@ The database system in which dbt sources and model results reside and model
 queries execute.
 _Avoid_: State store
 
-**Environment**:
-A named context in which a dbt project produces its results, such as production
-or development.
-_Avoid_: Warehouse
+**Target**:
+A named dbt profile output a run writes its results to, such as `prod` or
+`dev`.
+_Avoid_: Environment
+
+**Target relation**:
+The physical relation a workload's result is written to.
+_Avoid_: Target, own target, target table
 
 **Result copy**:
 A new target relation populated from an eligible existing result rather than
@@ -47,6 +51,18 @@ still be reused although upstream data has changed since that build. It does
 not cover upstream logic changes or external modifications of an upstream
 result the workload consumed.
 _Avoid_: Freshness tolerance, build_after, freshness_tolerance_seconds
+
+**Build age**:
+The time since a workload's recorded result was built, as measured by the
+State service's clock. Lag tolerance is compared against it.
+_Avoid_: Staleness, upstream lag
+
+**Upstream producer**:
+The recorded build whose result an upstream relation held when a workload
+read it, or none, for a source or after an External modification. When the
+current producer's logic differs from the one the workload consumed, the
+upstream's query has changed, which Lag tolerance does not cover.
+_Avoid_: Upstream build, writer
 
 **Hosted conformance**:
 Agreement with the official dbt State service's observable behavior for a

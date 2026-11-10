@@ -1,9 +1,11 @@
-//! Pure freshness policy for a prevalidated confirmed candidate.
-//! Store/services validate fingerprints, target existence and cached outcomes.
+//! Pure freshness policy for a reuse candidate already selected by
+//! `reuse_candidate` (identity, own-target evidence, cached outcomes).
 //! Exact physical upstream identities and known, unambiguous metadata are
-//! required. Freshness compares each upstream epoch against the node's own
-//! last-build epoch (ANY/ALL policy); this anchor and the no-tolerance-
-//! absorption behavior were verified live — see correctness-handoff.md.
+//! required. Each upstream's current epoch is compared with the epoch recorded
+//! for it at the candidate's build. A changed Upstream producer always
+//! rebuilds; otherwise the ANY/ALL policy decides staleness, and Lag tolerance
+//! turns a policy rebuild into a reuse while the build age is under the
+//! tolerance (ADR 0007).
 
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
@@ -1106,7 +1108,7 @@ mod tests {
     /// not absorb a 120s gap were External modifications of a consumed build:
     /// a changed producer, which rebuilds regardless of tolerance
     /// (`changed_producer_rebuilds_regardless_of_policy_and_tolerance` below;
-    /// correctness-handoff.md §C).
+    /// ADR 0007).
     #[test]
     fn upstream_drift_executes_once_the_build_outgrows_the_tolerance() {
         // Recorded at 1_000_000; the upstream is now 1000ms newer.
@@ -1174,8 +1176,8 @@ mod tests {
     //   ALL, all drift          -> execute, is_stale=false
     // i.e. is_stale is true ONLY on a reuse that knowingly serves slightly stale
     // data: drift present but tolerated by the ALL policy or within the Lag
-    // tolerance. It is NEVER set on an execute. See docs/correctness-handoff.md
-    // §C and crates/harness/tests/lag_freshness.rs.
+    // tolerance. It is NEVER set on an execute. See docs/protocol.md
+    // and crates/harness/tests/lag_freshness.rs.
 
     /// ALL policy, only one of two parents drifted → SKIP with is_stale=TRUE.
     #[test]

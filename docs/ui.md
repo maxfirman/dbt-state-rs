@@ -1,81 +1,55 @@
-# UI console (Phase 1)
+# UI console
 
 A read-only web console for the dbt State server, built with
 [Topcoat](https://tokio.rs/blog/2026-07-22-announcing-topcoat) (server-rendered
-Rust, no WASM). It presents an audit log of what dbt State decided across
-projects and environments. It never executes dbt and never mutates state.
+Rust, no WASM). It shows what dbt State decided across projects and Targets. It
+never executes dbt and never writes to the database.
 
-Design stance: the UI is an **honest audit log of what happened**, not a control
-plane or an authoritative project/environment hierarchy. The deferral/clone
-"environment" is a client-side concept (the dbt profile `target_name`), so the UI
-presents it as the literal profile target rather than inventing a server-side
-environment model.
+A Target is the dbt profile output name the client sends (`target_name`). The
+UI shows it literally rather than inventing a server-side environment model;
+the underlying table is still called `environments`.
 
-## What it shows
+## Pages
 
-- **Overview** (`/`) — reuse rate, built/reused/cloned totals, recent invocations.
-- **Projects** (`/projects`) — every project; drill into a project to see its
-  environments with dbt State flags and per-environment built/reused/cloned.
-- **Invocations** (`/invocations`) — the audit log of runs. Each invocation
-  (`/invocations/{id}`) lists every node decision with its human-readable reason,
-  hashes, timing, and (for clones) the generated clone SQL; filterable by
-  decision.
-- **Lineage / catalog** (`/environments/{id}`) — a backend-rendered lineage
-  graph of the environment's latest node state (SVG laid out with `dagre-rs`),
-  with an accessible text node-list fallback.
+Routes come from the module tree under `crates/ui/src/app/` (`module_router!`).
 
-## How the data gets there
-
-The dbt State **server** records a forward-compatible domain model on every
-decision (best-effort, non-blocking — see `crates/server/src/capture.rs`):
-organization → project → environment → invocation → `node_decisions`
-(the append-only audit log). The UI reads that same Postgres read-only via sqlx.
-Migrations: `crates/server/migrations/0003_ui_domain.sql`.
+| Route | Source | Shows |
+|---|---|---|
+| `/` | `app.rs::home` | Reuse rate, built/reused/cloned totals, recent invocations. |
+| `/projects` | `app/projects.rs::index` | Every project with Target counts and totals. |
+| `/projects/{project_id}` | `app/projects.rs::project_id::detail` | The project's Targets with dbt State flags and per-Target totals. |
+| `/invocations` | `app/invocations.rs::index` | Recent runs. |
+| `/invocations/{invocation_id}` | `app/invocations.rs::invocation_id::detail` | Every node decision of a run with its description, hashes, timing and generated copy SQL; `?decision=build\|skip\|clone` filters it. |
+| `/environments/{environment_id}` | `app/environments.rs::environment_id::catalog` | Target lineage: the latest decision per node as a server-rendered SVG graph (`dagre-rs`) plus a text node list. |
 
 ## Running it
 
-The UI reads the same database the server writes to.
+The UI reads the database the server writes to.
 
 ```bash
-# 1. Postgres (shared with the server) + run the gRPC server so it captures state.
 export DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate
-cargo run -p dbt-state-server            # gRPC on 127.0.0.1:50051 (+ migrations)
-
-# 2. Point dbt at the server so decisions get captured (see docs/development.md).
-#    DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50051 RUN_CACHE_API_SECURE=false dbt build ...
-
-# 3. Run the UI (reads the same DATABASE_URL).
+cargo run -p dbt-state-server                   # captures decisions
 HOST=127.0.0.1 PORT=4000 cargo run -p dbt-state-ui
 # open http://127.0.0.1:4000
 ```
 
-During development, `topcoat dev` (from `crates/ui`) gives automatic rebuilds and
-live reload.
+`HOST` and `PORT` default to `127.0.0.1` and `3000`. During development,
+`topcoat dev` (from `crates/ui`) rebuilds and reloads automatically.
 
-## Design notes
+## Organization scope
 
-- **Multipage, server-rendered.** Each page is a Topcoat `#[page]`; the root
-  `#[layout]` is the app shell. No client-side framework; `dagre-rs` lays out
-  lineage on the server and we emit inline SVG.
-- **Accessibility.** Semantic landmarks (`header`/`nav`/`main`/`footer`), a skip
-  link, `aria-current` on the active nav item, visible focus rings, status shown
-  with text + colour (never colour alone), and the lineage SVG carries
-  `role="img"` + `<title>`/`<desc>` with a parallel text node list.
-- **Styling.** A small, self-contained high-contrast stylesheet (no build step)
-  lives in `crates/ui/src/app.rs` (`STYLES`). It can be swapped for Tailwind +
-  Topcoat UI components (`topcoat ui add`) later.
-- **Auth is deferred.** The domain model already carries the seams
-  (`organizations`/`actors`/`roles`/`role_bindings`, org-scoped rows, nullable
-  `actor_id` on audit rows) so SSO + RBAC drop in additively.
+Every UI query is filtered by `DBT_STATE_UI_ORG_ID` (default `local`). Set it to
+the organization ID the gRPC requests use. It is a single-organization filter,
+not authentication or tenant selection.
 
-## Status
+## Data
 
-Phase 1 complete: capture + Overview + Projects/Environments + Invocations audit
-log + backend lineage. Deferred to later phases: environment "clear state"
-action, built-vs-reused time-series charts, authenticated client parity, SSO +
-RBAC enforcement, and manifest/catalog ingestion for the richer Catalog.
+The server's best-effort capture (`crates/server/src/capture.rs`) writes
+`organizations`, `projects`, `environments`, `invocations` and
+`node_decisions`. The UI reads `projects`, `environments`, `invocations` and
+`node_decisions` (`crates/ui/src/db.rs`).
 
-UI database reads are scoped to `DBT_STATE_UI_ORG_ID` (default `local`). Set this
-to the same organization ID used by gRPC requests to inspect that organization's
-capture data. This configuration is a single-organization filter, not user
-authentication or dynamic tenant selection.
+## Known limitation
+
+The UI shows each decision's `decision_description`, not the persisted Decision
+reason (`node_decisions.decision_reason`).

@@ -1,12 +1,12 @@
 # Architecture
 
 Cargo workspace with four crates. The server depends on the proto crate; the
-harness depends on both (dev/opt-in) to drive differential tests.
+harness depends on both to drive replay and differential tests.
 
 ```
 crates/proto     generated tonic stubs (server + client) from the .proto files
 crates/server    the dbt State server (decision engine + Postgres store + gRPC)
-crates/harness   recording proxy, golden fixtures, differential + fuzz tooling
+crates/harness   recording proxy, state probe, golden fixtures, differential + fuzz tooling, tests
 crates/ui        optional read-only console, scoped to one configured organization
 ```
 
@@ -24,7 +24,7 @@ and differential tests). Two notable build steps:
   `Clone`; tonic generates a trait `clone_server::Clone` that shadows
   `std::clone::Clone` and makes the std-derive impl fail to compile. `build.rs`
   rewrites that one generated impl to `impl<T> std::clone::Clone for
-  CloneServer<T>` — preserving the on-wire service name
+  CloneServer<T>`, preserving the on-wire service name
   `com.fivetran.query_cache.Clone`.
 
 Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
@@ -33,125 +33,113 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 | Module | Responsibility |
 |---|---|
-| `config.rs` | Env config (`DBT_STATE_LISTEN`, `DATABASE_URL`). |
-| `store.rs` | Postgres writes via sqlx: pending→confirmed lifecycle and atomic batch publication. |
-| `store/history.rs` | Scoped State history reads: a target's current physical state, a data test's latest scoped outcome, copy candidates and historical-provenance lookups. Warehouse rule outcomes (candidate limit, provenance-walk depth) arrive as plain parameters; the store contains no dialect names. |
-| `submit_decision.rs` | The Submit decision module: decides one SQL or values submission (node-state write, State history selection, `decide()`, the Result copy fallback and its precedence, including the clone-equivalent lookup driven by the Warehouse rules, id minting and the pending-row write) and returns one `SubmitOutcome` carrying its `DecisionRecord`. |
-| `reuse_candidate.rs` | Pure reuse candidate selection: strict identity match or clone-origin adoption on the latest row, then reuse qualification. |
-| `result_copy.rs` | Pure Result copy planning for the submit fallback and client-requested copies (RegisterClone). It asks the Warehouse rules for chain limits, relation checks, source evidence, the incremental contract and DDL. |
-| `execution.rs` | Shared execution evidence, pending SQL/seed/copy recording, and atomic Record publication with selector/deferral state. |
-| `decision.rs` | The pure decision engine (`decide()`), freshness, policy, descriptions. |
-| `sql_identity.rs` | Shared parser/traversal and conservative DuckDB SQL identity policy. |
-| `sql_norm.rs` | Snowflake SQL canonicalization (exact SQL on parse failure); strict + schema-abstracted (cross-environment) variants. |
-| `warehouse.rs` | Interprets wire dialect and options; selects conservative SQL identity and physical warehouse family. The Warehouse rules answer each warehouse-specific question (fingerprint version tags and namespace identity; Result copy eligibility, DDL, relation checks, copy-chain limit, candidate limit, provenance walk, incremental contract), dispatching to `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
-| `fingerprint.rs` | Versioned SQL/dependency/context, seed, and schema-abstracted cross-environment logic fingerprints shared by Submit/Record. It computes identities only; the Warehouse rules choose version tags and decide copy eligibility. |
-| `services.rs` | gRPC service impls. Submit handlers extract org/metadata, call `submit_decision`, map the outcome to the wire and capture. |
-| `lib.rs` | `AppState` (pool + store), `build_router()` registering all services + health. |
-| `main.rs` | Binary: connect, migrate, serve. |
+| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_REQUIRE_ORG_HEADER` (reject requests without `x-organization-id`). |
+| `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations. |
+| `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
+| `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
+| `submit_decision.rs` | How one SQL or values submit is decided (flow below). Returns a `SubmitOutcome` carrying its `DecisionRecord`. |
+| `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate. |
+| `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
+| `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
+| `result_copy.rs` | Pure Result copy planning for the submit fallback and RegisterClone. Asks the Warehouse rules for chain limits, relation checks, source evidence, the incremental contract and DDL. |
+| `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
+| `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). |
+| `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
+| `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
+| `fingerprint.rs` | Versioned SQL/dependency/context, seed and schema-abstracted logic fingerprints shared by Submit and Record. Computes identities only. |
+| `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
+| `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
+| `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
+| `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, `resolve_deferred_fqns` for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
+| `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Warehouse rule outcomes arrive as parameters; the store holds no dialect names. |
 
-`build_router()` is shared by the binary and the in-process integration tests,
-so tests exercise the exact same wiring as production.
+### Registered services
 
-### Decision engine and persistence
+`build_router()` registers, against one shared `AppState`:
 
-`decide(ctx, confirmed) -> Verdict` stays pure, and so does the reuse candidate
-selection that feeds it. Every verdict names exactly one decision reason.
-Reuse candidate selection reports why the latest row was not a reuse
-candidate, and `decide` reports the freshness outcome when there is one.
-`submit_decision.rs` owns a whole submit: it records
-the node's selector state (best effort), makes one scoped store read and lets
-`reuse_candidate.rs` decide, on that row alone, whether it matches the
-submit's identity and passes reuse qualification (physical target evidence or
-complete cached test results). A Result copy is considered only when there is
-no reuse candidate, and when one applies it overrides the verdict;
-`result_copy.rs` decides whether and how a result is copied. Otherwise the
-module calls `decide()`. It mints the request and execution decision ids,
-writes the pending row and returns a `SubmitOutcome` (Skip, Execute, Copy or
-the chain-limit Execute) carrying the matched execution, the Explain freshness
-anchor, and a `DecisionRecord`: class, decision reason (including result copy
-and copy chain limit), hosted description, both rejection codes, `is_stale`
-and the matched execution id. SQL and seed submits share that tail. The
-handlers build the wire response and the capture input from the record and
-the request; nothing re-reads the response. Execution evidence owns identity construction and
-pending-row contents; Record uses the same identity constructors and publishes
-its complete batch with selector/deferral state atomically. The engine
-compares exact physical input names and optional epochs;
-unknown/missing/duplicate metadata builds, and the own target is excluded only
-from upstream drift. Freshness drift is an upstream newer than the epoch
-recorded for it at the build; a changed upstream producer always builds; the
-ANY/ALL policy decides staleness and Lag tolerance reuses a stale node while
-its build is young (ADR 0007, verified live). The service boundary resolves
-each input's producer and the build age on the server clock (`AppState::clock`)
-so `decide` stays pure. See [protocol.md](protocol.md#current-decision-semantics)
-and [correctness-handoff.md §C](correctness-handoff.md).
+| Service | Methods |
+|---|---|
+| `grpc.health.v1.Health` | reports `SERVING` |
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` (always `undecided`) |
+| `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` |
+| `Clone` | `RegisterClone` |
+| `ClientValidation` | `ValidateClientVersion` |
+| `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` (empty stub) |
+| `SelectorService` | `GetStateSelection` |
 
-Physical history lookups share one query constructor in `store/history.rs`. It
-selects the latest confirmed row for one target, or per target for copy candidates,
-inside organization/warehouse-family/namespace scope. Data-test UID lookups and
-historical copy-provenance walks retain their separate selection rules.
+The binary and the in-process integration tests share `build_router()`, so tests
+exercise the production wiring. Wire semantics are in [protocol.md](protocol.md).
 
-Model and seed submits make one read: the target's current physical state. The
-strict identity match, clone-origin adoption and prior-build existence are all
-decided on that row by `reuse_candidate.rs`, so an older row can never be
-resurrected after a later build. Cached results and recorded inputs are decoded
-only once the row is selected: result-serving matches still report corrupt
-results as an internal error, while adoption and non-matching rows ignore them.
-The Submit decision module returns database errors for the handler to
-translate to the existing wire error. `services::sql_execution` remains a public re-export for upgrade tests.
+### Submit flow
 
-`fingerprint.rs` length-frames a versioned SHA-256 fingerprint of SQL (or template
-mode), dialect/default context, sorted semantic extras and supplied dependency
-SQL/context. It also derives a schema-abstracted cross-environment logic hash
-(`namespace_logic_hash`) used, scoped by `table_namespace`, for Snowflake clone reuse: the
-same model built in different environments differs only by the physical schema
-qualifier, which the abstraction collapses. DuckDB normalizes a small [validated formatting subset](duckdb-sql-identity.md);
-other dialects retain exact SQL. A separate checked
-[DuckDB table copy slice](duckdb-result-copy.md) substitutes only supported
-environment context while retaining exact physical base inputs. Seeds share their own versioned configuration hash.
-Unsupported SQL is retained exactly; old hashes cold miss rather than being
-reinterpreted.
+`submit_decision::submit_sql`:
+
+1. Record the node's selector state in `node_states` (best effort; a failure
+   is counted, never fails the submit).
+2. Build the execution evidence and resolve each input's Upstream producer
+   from State history (`resolve_producers`).
+3. Read State history once: the Target relation's current physical state, or a
+   data test's latest outcome by scoped UID. `reuse_candidate` decides on that
+   row alone whether it is a Reuse candidate.
+4. With no Reuse candidate (and no External modification of the Target
+   relation), try the Result copy fallback. A copy overrides the verdict.
+5. Otherwise call `decide()`, with the build age measured on `AppState::clock`.
+6. If the Reuse candidate must rebuild for upstream freshness, try a Result
+   copy of a same-upstream equivalent over the existing Target relation.
+7. For a rebuild, report an older build that would still qualify
+   (`report_older_match`).
+8. `settle`: mint the ids, write the pending row for every outcome except SKIP,
+   and return the `SubmitOutcome`.
+
+`submit_values` (seeds) follows steps 1, 3, 5, 7 and 8: no producers, no Result
+copy, no Lag tolerance, ANY policy.
+
+### Physical scope rule
 
 The physical execution scope is organization + warehouse family + client
-`table_namespace` + exact target name. The namespace is derived by dbt from an
-adapter-specific warehouse identifier. Selecting latest history *within that
-physical scope* prevents a same-named table in another account/project/host from
+`table_namespace` + exact Target relation name. dbt derives the namespace from
+an adapter-specific warehouse identifier. Selecting the latest row *within that
+scope* stops a same-named relation in another account, project or host from
 shadowing this one; execution type, dialect options and logic are checked only
-after selecting the current row. The namespace may be absent for nonstandard
-clients, in which case that family has an isolated absent-namespace scope.
+after the current row is selected, so an older row is never resurrected after a
+later build. A client without a namespace gets an isolated absent-namespace
+scope per family. Data tests select by org, project, warehouse scope and UID.
+Every store query is org-scoped; neither this nor the UI's
+`DBT_STATE_UI_ORG_ID` filter is authentication.
 
-Migrations 0001–0014 define execution history, UI capture tables, selector and
-deferral `node_states`, template fingerprints, the generated
-`warehouse_family` column/index, the Explain anchor
-(`node_decisions.matched_execution_id`, 0013) and the persisted decision reason
-(`node_decisions.decision_reason`, 0014). `executions` stores identity/context hashes
-(including the cross-environment `node_namespace_logic_hash` and clone
-provenance `clone_source_table` from 0008), optional freshness snapshots,
-confirmed outcomes and complete protobuf result bytes. Models/seeds select the
-latest confirmed physical target in the warehouse scope before matching its
-fingerprint; Snowflake cross-environment clone reuse additionally matches by
-namespace + abstracted logic. Data tests select by org/project/warehouse
-scope/UID and then check logic/results. Pending rows do not permit reuse.
-Confirm writes an outcome once; Record batches and their selector/deferral
-state updates are transactional.
+### Store tables
 
-Every execution store query is org scoped from x-organization-id (default local).
-UI reads use DBT_STATE_UI_ORG_ID (default local) in every query. These scope
-boundaries do not provide authentication. Cross-target provenance, authoritative
-selector/deferral state and concurrent physical lifecycle modelling remain in
-[correctness-handoff.md](correctness-handoff.md).
+Schema is defined by `crates/server/migrations/` (applied on startup).
 
-### Lifecycle (submit → confirm → skip)
+| Table | Contents |
+|---|---|
+| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`). |
+| `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus `target_table` for deferral. |
+| `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs. Read by Explain and the UI. |
+| `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
+| `actors`, `roles`, `role_bindings` | Reserved for future auth; nothing writes them. |
 
-1. `SubmitEnrichedSQL`: look up confirmed history → `decide()`. On EXECUTE, mint
-   a `request_id`, insert a `pending` row, return `ready_to_execute`.
-2. The client builds the model, then `ConfirmExecution(request_id, …)` flips the
-   row to `confirmed` with the outcome.
-3. A later identical submit now finds a confirmed match and (if upstream fresh)
-   returns `skip_execution`, echoing the recorded `execution_runtime_ms`.
+### Lifecycle
+
+1. A submit that returns SKIP writes no `executions` row. EXECUTE, CLONE
+   (`ready_to_clone`) and the chain-limit EXECUTE write a `pending` row keyed
+   by `request_id`; `RegisterClone` does too.
+2. `ConfirmExecution(request_id, …)` flips the row to `confirmed` with the
+   outcome and the server receipt time, exactly once. A repeat confirm succeeds
+   without rewriting it.
+3. `RecordExecutions` writes a batch of confirmed rows and their `node_states`
+   in one transaction.
+4. Later submits consider only confirmed rows. A SKIP echoes the recorded
+   `execution_runtime_ms`.
+
+## ui crate
+
+`crates/ui` (bin `dbt-state-ui`) reads the capture tables read-only. See
+[ui.md](ui.md).
 
 ## harness crate
 
-See [harness.md](harness.md) and [testing.md](testing.md). Contains the
-recording proxy (`bin/record_proxy.rs`), the opt-in differential-fuzz tool
-(`bin/diff_fuzz.rs`, `--features fuzz`), golden/auth/diff support modules, and
-the integration tests.
+The recording proxy (`record-proxy`), the single-RPC `state-probe` used by
+live characterization drivers, the opt-in `diff-fuzz` tool (`--features fuzz`),
+golden/auth/diff support modules and the integration tests. See
+[harness.md](harness.md) and [testing.md](testing.md).
