@@ -66,7 +66,9 @@ impl TestDatabase {
             .run(&pool)
             .await
             .expect("migrate");
-        AppState::from_pool(pool).with_require_org_header(require_org_header)
+        AppState::from_pool(pool)
+            .with_require_org_header(require_org_header)
+            .with_clock(dbt_state_server::Clock::Replay)
     }
 }
 

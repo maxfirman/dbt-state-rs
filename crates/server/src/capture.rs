@@ -65,6 +65,13 @@ pub struct CaptureInput {
     /// the decision exactly. Best-effort and separate from the `executions`
     /// write — the column is intrinsically nullable.
     pub matched_execution_id: Option<i64>,
+    /// The node's Lag tolerance and the reuse candidate's build age at
+    /// decision time (ADR 0007), for the Explain tolerance line.
+    pub freshness_tolerance_ms: Option<i64>,
+    pub build_age_ms: Option<i64>,
+    /// The decision's wire rejection codes (migration 0016).
+    pub skip_rejection_reason: Option<i32>,
+    pub clone_rejection_reason: Option<i32>,
 }
 
 /// Record a decision. Best-effort: logs a warning on failure, never panics.
@@ -189,10 +196,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             node_body_hash, values_hash, table_namespace, target_table,
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
             execution_runtime_ms, query_dependencies, matched_execution_id,
-            decision_reason
+            decision_reason, freshness_tolerance_ms, build_age_ms,
+            skip_rejection_reason, clone_rejection_reason
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26,$27)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)
         "#,
     )
     .bind(&i.org_id)
@@ -222,6 +230,10 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(serde_json::to_value(&i.query_dependencies).unwrap_or_default())
     .bind(i.matched_execution_id)
     .bind(i.decision_reason.as_str())
+    .bind(i.freshness_tolerance_ms)
+    .bind(i.build_age_ms)
+    .bind(i.skip_rejection_reason)
+    .bind(i.clone_rejection_reason)
     .execute(pool)
     .await?;
 

@@ -289,6 +289,10 @@ fn submit_capture(
         // freshness anchor (ADR 0005 / ticket #30). `None` for a first-build /
         // fingerprint-miss Execute and for a Copy.
         matched_execution_id: record.matched_execution_id,
+        freshness_tolerance_ms: Some(record.tolerance_ms).filter(|t| *t > 0),
+        build_age_ms: record.build_age_ms,
+        skip_rejection_reason: record.skip_rejection_reason,
+        clone_rejection_reason: record.clone_rejection_reason,
     }
 }
 
@@ -303,7 +307,13 @@ fn capture_submit(
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
-        input_tables: req.tables.iter().map(Into::into).collect(),
+        // The decision-time inputs with their resolved producers (ADR 0007);
+        // the submitted tables when the decision recorded none (a copy).
+        input_tables: if outcome.record().input_tables.is_empty() {
+            req.tables.iter().map(Into::into).collect()
+        } else {
+            outcome.record().input_tables.clone()
+        },
         query_dependencies: req
             .query_dependencies
             .iter()
@@ -364,9 +374,10 @@ impl Sql for SqlService {
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
+        let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
 
-        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req)
+        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req, now_ms)
             .await
             .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
@@ -381,9 +392,10 @@ impl Sql for SqlService {
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
+        let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
 
-        let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req)
+        let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req, now_ms)
             .await
             .map_err(store_status)?;
         capture_submit_values(&self.0, &cap_meta, &req, &outcome);
@@ -414,6 +426,7 @@ impl Execution for ExecutionService {
         request: Request<qc::ConfirmExecutionRequest>,
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
         let org_id = org_id_checked(&self.0, &request)?;
+        let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
         let found = self
             .0
@@ -426,6 +439,7 @@ impl Execution for ExecutionService {
                 req.execution_runtime_ms,
                 req.execution_results.as_ref(),
                 req.failed_to_clone,
+                now_ms,
             )
             .await
             .map_err(store_status)?;
@@ -633,6 +647,10 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     // CLONE registration matches no prior `executions` row to
                     // anchor freshness against (ADR 0005): NULL.
                     matched_execution_id: None,
+                    freshness_tolerance_ms: None,
+                    build_age_ms: None,
+                    skip_rejection_reason: None,
+                    clone_rejection_reason: None,
                 },
             );
         }
@@ -741,6 +759,9 @@ impl Explain for ExplainService {
                 target_table: row.target_table.clone(),
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
+                tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
+                build_age_ms: row.build_age_ms,
+                skip_rejection_reason: row.skip_rejection_reason,
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
                 // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a

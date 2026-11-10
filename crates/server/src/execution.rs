@@ -9,7 +9,8 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::{InputTable, Store};
+use crate::store::{logic_identity, InputTable, Producer, Store};
+use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
 /// lookups.
@@ -323,6 +324,8 @@ pub(crate) async fn record_batch(
     // now written atomically (insert_confirmed_batch_with_node_states): a
     // rejected request or any write failure has NO persisted side effect.
     let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
+    let mut batch: Vec<(ExecutionEvidence, qc::ExecutionOutcome)> =
+        Vec::with_capacity(records.len());
     for record in records {
         let outcome = record.outcome.clone().unwrap_or_default();
         let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
@@ -335,8 +338,7 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
-        let row = evidence.confirmed(outcome);
-        rows.push(row);
+        batch.push((evidence, outcome));
 
         // Collect each node's comparison state for `state:*` selectors; the
         // actual write happens in the SAME transaction as the executions
@@ -354,6 +356,28 @@ pub(crate) async fn record_batch(
         }
     }
 
+    // Producers are resolved against State history AND the batch itself: a
+    // consumer recorded alongside the upstream build it read records that
+    // build, as the batch's builds are not yet in history (ADR 0007).
+    let built_in_batch = batch_builds(&batch);
+    for (mut evidence, outcome) in batch {
+        crate::submit_decision::resolve_producers(store, &mut evidence)
+            .await
+            .map_err(RecordError::Store)?;
+        let scope = BatchScope::of(&evidence);
+        let target = evidence.target_table.clone();
+        for input in evidence
+            .input_tables
+            .iter_mut()
+            .filter(|t| t.name != target)
+        {
+            if let Some(builds) = built_in_batch.get(&(input.name.clone(), scope.clone())) {
+                input.producer = batch_producer(builds, input.last_modified_epoch);
+            }
+        }
+        rows.push(evidence.confirmed(outcome));
+    }
+
     // Write the executions batch AND the selector/deferral node_states in a
     // SINGLE transaction (review #2 finding 5, full atomicity): a successful
     // RecordExecutions publishes execution and logical state consistently,
@@ -365,6 +389,70 @@ pub(crate) async fn record_batch(
         .map_err(RecordError::Store)?;
 
     Ok(stored)
+}
+
+/// The physical scope a producer is resolved in: connection namespace and
+/// warehouse family (the organization is the batch's).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BatchScope {
+    table_namespace: Option<String>,
+    warehouse_family: String,
+}
+
+impl BatchScope {
+    fn of(evidence: &ExecutionEvidence) -> Self {
+        Self {
+            table_namespace: non_blank_namespace(evidence.table_namespace.as_deref())
+                .map(str::to_owned),
+            warehouse_family: crate::warehouse::Warehouse::from_dialect(&evidence.dialect)
+                .family_key(&evidence.dialect),
+        }
+    }
+}
+
+/// A relation's builds in a batch: logic identity and build epoch, in record
+/// order.
+type BatchBuilds = Vec<(String, Option<i64>)>;
+
+/// Each relation built in a batch, by name and scope: the logic identity and
+/// build epoch of every record of it, in record order.
+fn batch_builds(
+    batch: &[(ExecutionEvidence, qc::ExecutionOutcome)],
+) -> HashMap<(String, BatchScope), BatchBuilds> {
+    let mut builds: HashMap<_, Vec<_>> = HashMap::new();
+    for (e, outcome) in batch.iter().filter(|(e, _)| !e.target_table.is_empty()) {
+        let Some(identity) = logic_identity(
+            e.node_sql_hash.as_deref(),
+            e.node_namespace_logic_hash.as_deref(),
+            e.values_hash.as_deref(),
+        ) else {
+            continue;
+        };
+        builds
+            .entry((e.target_table.clone(), BatchScope::of(e)))
+            .or_default()
+            .push((identity, outcome.last_modified_epoch));
+    }
+    builds
+}
+
+/// Which of a relation's builds in the batch produced the contents a consumer
+/// read at `read`: the earliest build not older than the read (the last
+/// record among equal epochs). None of them when the read is later than every
+/// build, or unknown: the contents were modified outside dbt, as a later
+/// submit would also conclude ([`Producer::of`]).
+fn batch_producer(builds: &[(String, Option<i64>)], read: Option<i64>) -> Producer {
+    let Some(read) = read else {
+        return Producer::NoBuild;
+    };
+    builds
+        .iter()
+        .rev()
+        .filter_map(|(identity, built)| built.filter(|b| *b >= read).map(|b| (b, identity)))
+        .min_by_key(|(built, _)| *built)
+        .map_or(Producer::NoBuild, |(_, identity)| {
+            Producer::Build(identity.clone())
+        })
 }
 
 /// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint
@@ -458,6 +546,7 @@ mod tests {
             vec![InputTable {
                 name: UPSTREAM.into(),
                 last_modified_epoch: Some(500),
+                ..Default::default()
             }]
         );
         assert_eq!(e.values_hash, None);

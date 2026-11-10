@@ -37,9 +37,9 @@ fn skip_would_be_safe(
     {
         return false;
     }
-    // Verified rule: an upstream is drift iff it is strictly newer than our own
-    // last-build epoch. `freshness_tolerance_seconds` does not absorb the gap
-    // (verified live; see correctness-handoff.md) and never reaches `decide`.
+    // Verified rule (ADR 0007): an upstream is drift iff it is strictly newer
+    // than the epoch recorded for it at the build. These properties run with
+    // no Lag tolerance and unrecorded producers, so neither applies.
     // No genuine upstreams to compare → a hash/identity match alone is safe to
     // skip, independent of whether an own-build epoch was recorded (mirrors the
     // engine's short-circuit; a source-less model or no-input node is fresh).
@@ -51,9 +51,9 @@ fn skip_would_be_safe(
         return true;
     }
     // With upstreams to check, an unknown own-build epoch cannot prove freshness.
-    let Some(own_build_epoch) = prev.last_modified_epoch else {
+    if prev.last_modified_epoch.is_none() {
         return false;
-    };
+    }
     let mut considered = 0usize;
     let mut drifted = 0usize;
     for c in current {
@@ -72,7 +72,10 @@ fn skip_would_be_safe(
         if matches.len() != 1 {
             return false;
         }
-        if current_epoch > own_build_epoch {
+        let Some(recorded_epoch) = matches[0].last_modified_epoch else {
+            return false;
+        };
+        if current_epoch > recorded_epoch {
             drifted += 1;
         }
     }
@@ -94,6 +97,7 @@ fn tables_strategy() -> impl Strategy<Value = Vec<InputTable>> {
             .map(|(n, e)| InputTable {
                 name: format!("upstream_{n}"),
                 last_modified_epoch: Some(e),
+                ..Default::default()
             })
             .collect()
     })
@@ -113,6 +117,7 @@ fn recorded_tables_strategy() -> impl Strategy<Value = Vec<InputTable>> {
             .map(|(n, e)| InputTable {
                 name: format!("upstream_{n}"),
                 last_modified_epoch: e,
+                ..Default::default()
             })
             .collect()
     })
@@ -152,6 +157,9 @@ fn ctx<'a>(
         stale_upstream_policy: policy,
         target_has_prior_build: false,
         why_no_candidate: None,
+        tolerance_ms: 0,
+        build_age_ms: None,
+        own_target_absent: false,
     }
 }
 
@@ -183,7 +191,8 @@ proptest! {
     }
 
     // 3. Self-table immunity: changing only the node's own target-table epoch
-    //    never changes the verdict.
+    //    never changes the verdict. (Own-target changes are rejected by reuse
+    //    candidate selection before `decide`.)
     #[test]
     fn self_table_immunity(
         upstreams in tables_strategy(),
@@ -196,9 +205,9 @@ proptest! {
         let prev = confirmed_row("h", upstreams.clone(), Some(1_000_000));
 
         let mut a_tables = upstreams.clone();
-        a_tables.push(InputTable { name: target.into(), last_modified_epoch: Some(self_epoch_a) });
+        a_tables.push(InputTable { name: target.into(), last_modified_epoch: Some(self_epoch_a), ..Default::default() });
         let mut b_tables = upstreams.clone();
-        b_tables.push(InputTable { name: target.into(), last_modified_epoch: Some(self_epoch_b) });
+        b_tables.push(InputTable { name: target.into(), last_modified_epoch: Some(self_epoch_b), ..Default::default() });
 
         let va = decide(&ctx(&a_tables, p, Some(target)), Some(&prev));
         let vb = decide(&ctx(&b_tables, p, Some(target)), Some(&prev));
@@ -213,14 +222,14 @@ proptest! {
         // Recorded upstreams all at `base`.
         let recorded: Vec<InputTable> = names
             .iter()
-            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base) })
+            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base), ..Default::default() })
             .collect();
         let prev = confirmed_row("h", recorded.clone(), Some(base));
 
         // Current upstreams at or below base (no drift) → must Skip.
         let current_fresh: Vec<InputTable> = names
             .iter()
-            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base) })
+            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base), ..Default::default() })
             .collect();
         let v_fresh = decide(&ctx(&current_fresh, p, None), Some(&prev));
         prop_assert!(is_skip(&v_fresh), "no upstream drift must skip");
@@ -316,13 +325,13 @@ proptest! {
         tol in 0i64..600,
     ) {
         // Recorded run saw only "u_known".
-        let recorded = vec![InputTable { name: "u_known".into(), last_modified_epoch: Some(base) }];
+        let recorded = vec![InputTable { name: "u_known".into(), last_modified_epoch: Some(base), ..Default::default() }];
         let prev = confirmed_row("h", recorded, Some(base));
         // Current adds a never-seen upstream well beyond tolerance.
         let newer = base.saturating_add(tol.saturating_mul(1000)).saturating_add(gap);
         let current = vec![
-            InputTable { name: "u_known".into(), last_modified_epoch: Some(base) },
-            InputTable { name: "u_brand_new".into(), last_modified_epoch: Some(newer) },
+            InputTable { name: "u_known".into(), last_modified_epoch: Some(base), ..Default::default() },
+            InputTable { name: "u_brand_new".into(), last_modified_epoch: Some(newer), ..Default::default() },
         ];
         let v = decide(&ctx(&current, StaleUpstreamPolicy::Any, None), Some(&prev));
         prop_assert!(!is_skip(&v), "a new, newer, untracked upstream must execute under ANY");
@@ -357,15 +366,15 @@ proptest! {
         p in policy_strategy(),
     ) {
         let recorded: Vec<InputTable> = names.iter()
-            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base) })
+            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base), ..Default::default() })
             .collect();
         let prev = confirmed_row("h", recorded, Some(base));
 
         let low: Vec<InputTable> = names.iter()
-            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base) })
+            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base), ..Default::default() })
             .collect();
         let high: Vec<InputTable> = names.iter()
-            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base + bump) })
+            .map(|n| InputTable { name: format!("u_{n}"), last_modified_epoch: Some(base + bump), ..Default::default() })
             .collect();
 
         let v_low = decide(&ctx(&low, p, None), Some(&prev));
@@ -421,13 +430,30 @@ fn hosted_wire(
         }
         _ => "model was executed because either its query didn't match or its upstream data is out of date",
     };
+    let modified = match kind {
+        Some(ModelExecutionType::Snapshot) => {
+            "snapshot was executed because the table was modified after the cached execution"
+        }
+        _ => "model was executed because the table was modified after the cached execution",
+    };
     match reason {
         DecisionReason::Reused(_) => (DecisionKind::Skip, skip, None, None),
         DecisionReason::FirstBuild => (DecisionKind::Build, first, Some(6), Some(6)),
+        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`, lag_seed G):
+        // the target-table codes (4/7) are applied by the caller only when the
+        // rejected latest build would be reusable; `decide` alone gives 6/6.
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing) => {
+            (DecisionKind::Build, first, Some(6), Some(6))
+        }
+        // VERIFIED LIVE (2026-11-10, lag_tolerance_matrix `ot*_u`).
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified) => {
+            (DecisionKind::Build, modified, Some(6), Some(6))
+        }
         DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
         | DecisionReason::NoBuildAnchor
-        | DecisionReason::UpstreamOutdated => (DecisionKind::Build, rebuild, Some(6), Some(6)),
+        | DecisionReason::UpstreamOutdated
+        | DecisionReason::UpstreamQueryChanged => (DecisionKind::Build, rebuild, Some(6), Some(6)),
         DecisionReason::ResultCopy => (
             DecisionKind::Clone,
             "an equivalent model exists under another name so we cloned that one",
@@ -478,8 +504,25 @@ fn no_candidate_strategy() -> impl Strategy<Value = NoCandidate> {
         Just(NoCandidate::IdentityMismatch),
         Just(NoCandidate::FailedReuseQualification),
         Just(NoCandidate::OwnTargetChangedOrMissing),
+        Just(NoCandidate::OwnTargetModified),
+        Just(NoCandidate::OwnTargetMissing),
         Just(NoCandidate::IncompleteCachedTestResults),
     ]
+}
+
+/// Whether reuse candidate selection can report `why` for this node kind: a
+/// data test has no own target, and only models and snapshots are judged
+/// modified after their build (a seed's table edit is not a candidate).
+fn selection_reports(execution_type: i32, why: NoCandidate) -> bool {
+    let kind = ModelExecutionType::try_from(execution_type).ok();
+    match why {
+        NoCandidate::OwnTargetMissing => kind != Some(ModelExecutionType::DbtDataTest),
+        NoCandidate::OwnTargetModified => !matches!(
+            kind,
+            Some(ModelExecutionType::DbtDataTest | ModelExecutionType::Values)
+        ),
+        _ => true,
+    }
 }
 
 proptest! {
@@ -499,7 +542,8 @@ proptest! {
             row.execution_type = execution_type;
             row
         });
-        let why_no_candidate = if prev.is_some() { None } else { why_no_candidate };
+        let why_no_candidate = if prev.is_some() { None } else { why_no_candidate }
+            .filter(|why| selection_reports(execution_type, *why));
         let c = SubmitContext {
             execution_type,
             input_tables: &current,
@@ -510,6 +554,9 @@ proptest! {
             target_has_prior_build: why_no_candidate.is_some()
                 && execution_type != ModelExecutionType::DbtDataTest as i32,
             why_no_candidate,
+            tolerance_ms: 0,
+            build_age_ms: None,
+            own_target_absent: why_no_candidate == Some(NoCandidate::OwnTargetMissing),
         };
         let record = DecisionRecord::decided(&c, prev.as_ref());
         assert_record_agrees(execution_type, &record)?;

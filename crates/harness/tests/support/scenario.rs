@@ -27,8 +27,10 @@ pub use qc::StaleUpstreamPolicy as Policy;
 
 use super::TestServer;
 
-/// The current epoch [`model`] reports for its own target: present, and older
-/// than any confirmed build in these suites.
+/// The current epoch [`model`] reports for its own target before this
+/// scenario has built it. Once a [`Scenario`] has confirmed a build of the
+/// target, a submit reporting `OWN_EPOCH` reports that build's epoch instead,
+/// as a warehouse would: the table was last modified by its build.
 pub const OWN_EPOCH: i64 = 1;
 /// The body hash a builder starts from.
 pub const DEFAULT_BODY: &str = "body";
@@ -741,6 +743,7 @@ pub async fn confirm_in(store: &Store, org: &str, confirm: qc::ConfirmExecutionR
             confirm.execution_runtime_ms,
             confirm.execution_results.as_ref(),
             confirm.failed_to_clone,
+            dbt_state_server::Clock::System.now_ms(&Default::default()),
         )
         .await
         .expect("confirm")
@@ -822,11 +825,23 @@ pub fn into_clone(resp: qc::SubmitSqlResponse) -> qc::ReadyToCloneResponse {
 
 /// A protocol client for one test server, optionally scoped to an org with
 /// the `x-organization-id` header (no header: the default `local` org).
-/// Cheap to clone; every call opens a client on the shared channel.
+/// Cheap to clone; every call opens a client on the shared channel. Clones
+/// share the record of which targets were built at which epoch.
 #[derive(Clone)]
 pub struct Scenario {
     channel: Channel,
     org: Option<String>,
+    builds: std::sync::Arc<std::sync::Mutex<Builds>>,
+}
+
+/// Build epochs this scenario confirmed, so a submit reporting [`OWN_EPOCH`]
+/// for its own target reports the epoch the target was built at.
+#[derive(Default)]
+struct Builds {
+    /// Ready request id → (org, target) awaiting confirmation.
+    pending: HashMap<String, (Option<String>, String)>,
+    /// (org, target) → epoch of its latest confirmed build.
+    built: HashMap<(Option<String>, String), i64>,
 }
 
 impl Scenario {
@@ -834,6 +849,7 @@ impl Scenario {
         Self {
             channel: super::channel(server.addr).await,
             org: None,
+            builds: Default::default(),
         }
     }
 
@@ -842,6 +858,39 @@ impl Scenario {
         Self {
             channel: self.channel.clone(),
             org: Some(org.into()),
+            builds: self.builds.clone(),
+        }
+    }
+
+    /// Replace an own-target [`OWN_EPOCH`] with the target's confirmed build
+    /// epoch, when this scenario built it.
+    fn report_built_epoch(&self, req: &mut qc::SubmitEnrichedSqlRequest) {
+        let Some(target) = req.target_table.clone() else {
+            return;
+        };
+        let builds = self.builds.lock().unwrap();
+        let Some(epoch) = builds.built.get(&(self.org.clone(), target.clone())) else {
+            return;
+        };
+        for t in req.tables.iter_mut() {
+            if t.name == target && t.last_modified_epoch == Some(OWN_EPOCH) {
+                t.last_modified_epoch = Some(*epoch);
+            }
+        }
+    }
+
+    fn note_ready(&self, request_id: &str, target: &str) {
+        self.builds
+            .lock()
+            .unwrap()
+            .pending
+            .insert(request_id.into(), (self.org.clone(), target.into()));
+    }
+
+    fn note_confirmed(&self, request_id: &str, epoch: Option<i64>) {
+        let mut builds = self.builds.lock().unwrap();
+        if let (Some(key), Some(epoch)) = (builds.pending.remove(request_id), epoch) {
+            builds.built.insert(key, epoch);
         }
     }
 
@@ -868,10 +917,22 @@ impl Scenario {
         &self,
         req: impl Into<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<qc::SubmitSqlResponse, Status> {
-        self.sql()
-            .submit_enriched_sql(self.request(req.into()))
+        let mut req = req.into();
+        self.report_built_epoch(&mut req);
+        let target = req.target_table.clone();
+        let resp = self
+            .sql()
+            .submit_enriched_sql(self.request(req))
             .await
-            .map(tonic::Response::into_inner)
+            .map(tonic::Response::into_inner)?;
+        if let Some(target) = target {
+            match &resp.response {
+                Some(Response::ReadyToExecute(r)) => self.note_ready(&r.request_id, &target),
+                Some(Response::ReadyToClone(r)) => self.note_ready(&r.request_id, &target),
+                _ => {}
+            }
+        }
+        Ok(resp)
     }
 
     pub async fn submit(
@@ -937,10 +998,16 @@ impl Scenario {
         &self,
         req: qc::ConfirmExecutionRequest,
     ) -> Result<qc::ConfirmExecutionResponse, Status> {
-        self.execution()
+        let (request_id, epoch) = (req.request_id.clone(), req.last_modified_epoch);
+        let resp = self
+            .execution()
             .confirm_execution(self.request(req))
             .await
-            .map(tonic::Response::into_inner)
+            .map(tonic::Response::into_inner)?;
+        if resp.success {
+            self.note_confirmed(&request_id, epoch);
+        }
+        Ok(resp)
     }
 
     /// Confirm `request_id` with `outcome`; returns the server's `success`.
@@ -990,22 +1057,45 @@ impl Scenario {
         &self,
         records: impl IntoIterator<Item = qc::ExecutionRecord>,
     ) -> Result<u32, Status> {
-        self.execution()
-            .record_executions(self.request(qc::RecordExecutionsRequest {
-                records: records.into_iter().collect(),
-            }))
+        let records: Vec<_> = records.into_iter().collect();
+        let built: Vec<(String, i64)> = records
+            .iter()
+            .filter_map(|r| {
+                let epoch = r.outcome.as_ref()?.last_modified_epoch?;
+                match r.input.as_ref()? {
+                    qc::execution_record::Input::EnrichedSql(s) => {
+                        Some((s.target_table.clone()?, epoch))
+                    }
+                    qc::execution_record::Input::Values(_) => None,
+                }
+            })
+            .collect();
+        let stored = self
+            .execution()
+            .record_executions(self.request(qc::RecordExecutionsRequest { records }))
             .await
-            .map(|r| r.into_inner().records_stored)
+            .map(|r| r.into_inner().records_stored)?;
+        let mut builds = self.builds.lock().unwrap();
+        for (target, epoch) in built {
+            builds.built.insert((self.org.clone(), target), epoch);
+        }
+        Ok(stored)
     }
 
     pub async fn register_clone(
         &self,
         req: impl Into<qc::CloneRequest>,
     ) -> Result<qc::CloneResponse, Status> {
-        qc::clone_client::CloneClient::new(self.channel.clone())
-            .register_clone(self.request(req.into()))
+        let req = req.into();
+        let target = req.target_table.clone();
+        let resp = qc::clone_client::CloneClient::new(self.channel.clone())
+            .register_clone(self.request(req))
             .await
-            .map(tonic::Response::into_inner)
+            .map(tonic::Response::into_inner)?;
+        if let Some(ready) = &resp.ready_to_clone {
+            self.note_ready(&ready.request_id, &target);
+        }
+        Ok(resp)
     }
 
     pub async fn try_select(&self, req: qc::SelectorRequest) -> Result<BTreeSet<String>, Status> {

@@ -13,10 +13,12 @@ root.mkdir(parents=True, exist_ok=True)
     'name: incremental_test\nversion: "1.0"\nconfig-version: 2\nprofile: incremental_test\n'
 )
 path = root / "warehouse.duckdb"
+# Lag tolerance 0: these cases test that every evidence change propagates
+# (lag_tolerance.py covers reuse within a tolerance, ADR 0007).
 (root / "profiles.yml").write_text(
     "incremental_test:\n  target: prod\n  outputs:\n"
     + "".join(
-        f"    {env}:\n      type: duckdb\n      path: {path}\n      schema: {env}\n      threads: 2\n      run_cache_enabled: true\n"
+        f"    {env}:\n      type: duckdb\n      path: {path}\n      schema: {env}\n      threads: 2\n      run_cache_enabled: true\n      run_cache_freshness_tolerance: 0s\n"
         for env in ["prod", "dev"]
     )
 )

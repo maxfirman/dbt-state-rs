@@ -1,22 +1,130 @@
 [
-  {"fixture":"c1_config_vs_logic.jsonl","entry":2,"local_variant":"ready_to_execute","reason":"Dependency SELECT text changes to full view DDL; conservative exact fingerprint misses. Hosted response also uses the unresolved lag-tolerance description. Handoff B/C."},
-  {"fixture":"c1_config_vs_logic.jsonl","entry":3,"local_variant":"ready_to_execute","reason":"Config-only change still carries dependency view DDL rather than the confirmed SELECT representation. Handoff B/C."},
-  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":13,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
-  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":14,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
-  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":15,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
-  {"fixture":"golden_20261009T083754.534Z.jsonl","entry":16,"local_variant":"ready_to_execute","reason":"Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."},
-  {"fixture":"data_test_upstream_freshness.jsonl","entry":6,"local_variant":"ready_to_execute","reason":"MISSING HISTORY, not a policy mismatch: this entry is the upstream MODEL (dt_up) that was replaced in place EXTERNALLY (CREATE OR REPLACE) with no recorded dbt build, so the server has no confirmed history for it and executes ('table did not exist'), while hosted saw the earlier external build and skips. Isolated per review #2 testing bullet so the 8 TEST-NODE (execution_type 8) assertions in this fixture replay as true conformance rather than excluding the whole capture. Handoff #2 finding 1."},
-  {"fixture":"clone_chain_upstream_drift.jsonl","entry":0,"local_variant":"ready_to_execute","reason":"MISSING SOURCE HISTORY: hosted clones from PROD_STATE_DEMO.CF2_MODEL_164819, whose build is from an earlier live session and is NOT in this capture, so the empty local store cannot clone and executes. The point of this fixture — the POST-CLONE upstream-drift REBUILD (entry 4) — still replays and is asserted. Review #2 2nd follow-up finding 2."},
-  {"fixture":"clone_chain_upstream_drift.jsonl","entry":2,"local_variant":"ready_to_execute","reason":"MISSING SOURCE HISTORY (same CF2_MODEL_164819 source as entry 0, not in this capture). The post-clone rebuild assertion (entry 4) is the conformance signal. Review #2 2nd follow-up finding 2."},
-  {"fixture":"clone_failed_fallback.jsonl","entry":2,"local_variant":"ready_to_execute","reason":"MISSING SOURCE HISTORY: hosted clones from ANALYTICS_DB.DEV_CLONE.ORDERS_INCREMENTAL (an incremental source not built in this capture); the empty local store executes. The failed_to_clone handling characterized elsewhere is unaffected."},
-  {"fixture":"clone_fallback_dep_binding_swap.jsonl","entry":0,"local_variant":"ready_to_execute","reason":"CROSS-RUN SOURCE LEAK, not a policy mismatch: the prod consumer submit returned ready_to_clone from an earlier identical-logic model (DV_CONS_183902) not in this capture, so the empty local store executes. The conformance signal of THIS fixture is the dev swapped-dependency submit (entry 2) returning ready_to_execute, which IS asserted. Review #2 2nd follow-up finding 3."},
-  {"fixture":"clone_submit_equivalent_fallback.jsonl","entry":1,"local_variant":"ready_to_execute","reason":"MISSING SOURCE HISTORY: hosted clones from DEV_CLONE_DEMO.CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."},
-  {"fixture":"clone_submit_equivalent_fallback.jsonl","entry":2,"local_variant":"ready_to_execute","reason":"MISSING SOURCE HISTORY: hosted clones from a CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."},
-  {"fixture":"clone_fallback_volatile.jsonl","entry":0,"local_variant":"ready_to_execute","ignore_fields":["transformed_nodes_by_query"],"reason":"VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): both systems EXECUTE and the rest of the payload matches exactly, but hosted returns a nonempty transformed_nodes_by_query recording the runtime value of CURRENT_TIMESTAMP() (here 2026-10-12 21:52:38.577832) so the client can substitute a deterministic value; the local server does not yet evaluate volatile functions and returns {}. Narrowly scoped to this one field. The conservative tolerate_nondeterminism clone-suppression gate is NOT full volatile conformance (handoff B)."},
-  {"fixture":"clone_fallback_volatile.jsonl","entry":2,"local_variant":"ready_to_execute","ignore_fields":["transformed_nodes_by_query"],"reason":"VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): dev arm, same as entry 0 — hosted records CURRENT_TIMESTAMP() = 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. Field-scoped visible gap; volatile function evaluation is unimplemented."},
-  {"fixture":"c1_config_semantics.jsonl","entry":7,"local_variant":"ready_to_execute","ignore_fields":["explained_decision.skip_rejection_reason","explained_decision.clone_rejection_reason"],"reason":"REBUILD REJECTION-CODE GAP (review #2 5th follow-up, P1 #4): after a confirmed prior build, a changed submit that misses the logic fingerprint rebuilds. The DESCRIPTION now matches hosted ('query didn't match or upstream out of date', fixed via target_has_prior_build), but hosted here reports skip_rejection_reason=8 (LATEST_QUERY_HASH_NOT_MATCH) / clone_rejection_reason=7 whereas the server reports 6/6 (NO_SUITABLE_MATCH_FOUND). Other post-confirmed-baseline rebuilds in this corpus use 6/6 WITH the same rebuild description, so the 8/7-vs-6/6 selection is a finer, uncharacterized distinction — recorded as an EXACT field-scoped gap on these two codes only (not blanket-ignoring the explained_decision). The decision int and description match."},
-  {"fixture":"explain_tolerance_history.jsonl","entry":7,"local_variant":"skip_execution","ignore_fields":["explained_decision.decision_description"],"reason":"DECISION_DESCRIPTION LAG-TOLERANCE SKEW (#34, #22 version skew): history-bearing SKIP over real seeded state — the whole SKIP payload AND (entry 8) the full explain TREE match hosted exactly; ONLY the hosted decision_description is the lag-tolerance variant ('its query is up to date and its data is within lag tolerance') while our engine deliberately pins the plain SKIP description and never applies freshness_tolerance_seconds (docs/explain-catalog.md §decision_description). Field-scoped to the one wording; NOT a missing-history artifact (the baseline build+Confirm are in-window)."},
-  {"fixture":"explain_tolerance_history.jsonl","entry":8,"local_variant":"skip_execution","ignore_fields":["decision_description"],"reason":"DECISION_DESCRIPTION LAG-TOLERANCE SKEW (#34): the GetExplainMessages SKIP entry paired with entry 7 — the re-derived explain TREE and decision class match hosted EXACTLY over seeded history; only the hosted decision_description is the lag-tolerance variant our engine does not emit. The main gate still asserts the full tree directly (the ignore_fields=decision_description explain branch requires decision+tree to match)."},
-  {"fixture":"explain_happy_history.jsonl","entry":12,"local_variant":"skip_execution","ignore_fields":["explained_decision.decision_description"],"reason":"DECISION_DESCRIPTION LAG-TOLERANCE SKEW (#34, #22 version skew): the HH_MID model SKIP (it carries a lag_tolerance over HH_UP) — the whole SKIP payload AND (entry 16) the full explain TREE (with the per-upstream FRESH subtree) match hosted exactly; ONLY the hosted decision_description is the lag-tolerance variant ('its query is up to date and its data is within lag tolerance') our engine deliberately does not emit (docs/explain-catalog.md §decision_description). The sibling SKIPs (HH_UP source-less model entry 11/15, the data test entry 13/18, HH_VIEW entry 14/17) use the plain description and match hosted FULLY with no gap. Field-scoped; NOT missing history (baseline build+Confirm are in-window)."},
-  {"fixture":"explain_happy_history.jsonl","entry":16,"local_variant":"skip_execution","ignore_fields":["decision_description"],"reason":"DECISION_DESCRIPTION LAG-TOLERANCE SKEW (#34): the GetExplainMessages SKIP entry for HH_MID paired with entry 12 — the re-derived explain TREE and decision class match hosted EXACTLY over seeded history; only the hosted decision_description is the lag-tolerance variant. The main gate still asserts the full tree directly (the decision_description-scoped explain branch requires decision+tree to match)."}
+  {
+    "fixture": "c1_config_vs_logic.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "Dependency SELECT text changes to full view DDL; conservative exact fingerprint misses. Hosted response also uses the unresolved lag-tolerance description. Handoff B/C."
+  },
+  {
+    "fixture": "c1_config_vs_logic.jsonl",
+    "entry": 3,
+    "local_variant": "ready_to_execute",
+    "reason": "Config-only change still carries dependency view DDL rather than the confirmed SELECT representation. Handoff B/C."
+  },
+  {
+    "fixture": "golden_20261009T083754.534Z.jsonl",
+    "entry": 13,
+    "local_variant": "ready_to_execute",
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+  },
+  {
+    "fixture": "golden_20261009T083754.534Z.jsonl",
+    "entry": 14,
+    "local_variant": "ready_to_execute",
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+  },
+  {
+    "fixture": "golden_20261009T083754.534Z.jsonl",
+    "entry": 15,
+    "local_variant": "ready_to_execute",
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+  },
+  {
+    "fixture": "golden_20261009T083754.534Z.jsonl",
+    "entry": 16,
+    "local_variant": "ready_to_execute",
+    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance. Handoff A/B."
+  },
+  {
+    "fixture": "data_test_upstream_freshness.jsonl",
+    "entry": 6,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING HISTORY, not a policy mismatch: this entry is the upstream MODEL (dt_up) that was replaced in place EXTERNALLY (CREATE OR REPLACE) with no recorded dbt build, so the server has no confirmed history for it and executes ('table did not exist'), while hosted saw the earlier external build and skips. Isolated per review #2 testing bullet so the 8 TEST-NODE (execution_type 8) assertions in this fixture replay as true conformance rather than excluding the whole capture. Handoff #2 finding 1."
+  },
+  {
+    "fixture": "clone_chain_upstream_drift.jsonl",
+    "entry": 0,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING SOURCE HISTORY: hosted clones from PROD_STATE_DEMO.CF2_MODEL_164819, whose build is from an earlier live session and is NOT in this capture, so the empty local store cannot clone and executes. The point of this fixture — the POST-CLONE upstream-drift REBUILD (entry 4) — still replays and is asserted. Review #2 2nd follow-up finding 2."
+  },
+  {
+    "fixture": "clone_chain_upstream_drift.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING SOURCE HISTORY (same CF2_MODEL_164819 source as entry 0, not in this capture). The post-clone rebuild assertion (entry 4) is the conformance signal. Review #2 2nd follow-up finding 2."
+  },
+  {
+    "fixture": "clone_failed_fallback.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING SOURCE HISTORY: hosted clones from ANALYTICS_DB.DEV_CLONE.ORDERS_INCREMENTAL (an incremental source not built in this capture); the empty local store executes. The failed_to_clone handling characterized elsewhere is unaffected."
+  },
+  {
+    "fixture": "clone_fallback_dep_binding_swap.jsonl",
+    "entry": 0,
+    "local_variant": "ready_to_execute",
+    "reason": "CROSS-RUN SOURCE LEAK, not a policy mismatch: the prod consumer submit returned ready_to_clone from an earlier identical-logic model (DV_CONS_183902) not in this capture, so the empty local store executes. The conformance signal of THIS fixture is the dev swapped-dependency submit (entry 2) returning ready_to_execute, which IS asserted. Review #2 2nd follow-up finding 3."
+  },
+  {
+    "fixture": "clone_submit_equivalent_fallback.jsonl",
+    "entry": 1,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING SOURCE HISTORY: hosted clones from DEV_CLONE_DEMO.CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."
+  },
+  {
+    "fixture": "clone_submit_equivalent_fallback.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING SOURCE HISTORY: hosted clones from a CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."
+  },
+  {
+    "fixture": "clone_fallback_volatile.jsonl",
+    "entry": 0,
+    "local_variant": "ready_to_execute",
+    "ignore_fields": [
+      "transformed_nodes_by_query"
+    ],
+    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): both systems EXECUTE and the rest of the payload matches exactly, but hosted returns a nonempty transformed_nodes_by_query recording the runtime value of CURRENT_TIMESTAMP() (here 2026-10-12 21:52:38.577832) so the client can substitute a deterministic value; the local server does not yet evaluate volatile functions and returns {}. Narrowly scoped to this one field. The conservative tolerate_nondeterminism clone-suppression gate is NOT full volatile conformance (handoff B)."
+  },
+  {
+    "fixture": "clone_fallback_volatile.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "ignore_fields": [
+      "transformed_nodes_by_query"
+    ],
+    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): dev arm, same as entry 0 — hosted records CURRENT_TIMESTAMP() = 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. Field-scoped visible gap; volatile function evaluation is unimplemented."
+  },
+  {
+    "fixture": "lag_seed_upstream.jsonl",
+    "entry": 22,
+    "local_variant": "ready_to_execute",
+    "reason": "SAFETY FLOOR (deliberate divergence, seed arm C): the seed's own table was modified externally after its last confirmed load. Hosted skips the unchanged-values seed and serves the edited table; the local server reloads it, because reuse requires the own target to be as built (AGENTS.md: own-target existence and external edits are checked separately). Handoff C."
+  },
+  {
+    "fixture": "lag_seed_upstream.jsonl",
+    "entry": 23,
+    "local_variant": "explain",
+    "reason": "SAFETY FLOOR explain of entry 22: hosted explains a SKIP of the externally modified seed; the local server explains the reload it decided. Handoff C."
+  },
+  {
+    "fixture": "lag_external_modification_linked.jsonl",
+    "entry": 3,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING HISTORY rejection codes: lp_up_b's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rule itself is implemented (NoCandidate::OwnTargetMissing, lag_copy_candidates `dt`); only the prior-session history is missing.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "lag_external_modification_linked.jsonl",
+    "entry": 4,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING HISTORY rejection codes: lp_up_a's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rule itself is implemented (NoCandidate::OwnTargetMissing, lag_copy_candidates `dt`); only the prior-session history is missing.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  }
 ]

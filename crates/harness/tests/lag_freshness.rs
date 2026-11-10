@@ -15,8 +15,11 @@
 //!   [6] ConfirmExecution    (records the new own-build epoch)
 //!   [9] own-build=16:50:18  upstream=16:49:48 (upstream < own) -> skip_execution
 //!
-//! KEY FINDING (contradicts the lag_tolerance doc PROSE and the pre-hardening
-//! review's "wall-clock build-age gate" hypothesis): the service rebuilds iff
+//! KEY FINDING, scoped to EXTERNAL MODIFICATIONS of the upstream (the upstream
+//! table was recreated outside dbt). SUPERSEDED by ADR 0007: drift is measured
+//! against the epoch recorded for each upstream at the build, which agrees
+//! with every row here. The original reading was that the service
+//! rebuilds iff
 //!   max_upstream_epoch > own_last_build_epoch
 //! comparing each upstream against the node's OWN last-build epoch — NOT against
 //! the upstream epoch recorded at that build, and NOT against wall clock. A

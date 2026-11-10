@@ -22,7 +22,7 @@ use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::store::{ExecutionRow, InputTable};
+use crate::store::{ExecutionRow, InputTable, Producer};
 
 /// The outcome of reuse candidate selection for one submit.
 #[derive(Debug)]
@@ -37,14 +37,30 @@ pub(crate) struct Selection {
     /// Why the latest row in scope is not a reuse candidate. `None` when there
     /// is a candidate or no latest row at all (a first build).
     pub why_no_candidate: Option<NoCandidate>,
+    /// The latest row when it has the workload's identity but its own target
+    /// is missing or was modified after it: what Explain renders against
+    /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
+    /// reused.
+    pub rejected: Option<ExecutionRow>,
 }
 
 impl Selection {
+    /// `row` as the reuse candidate, for judging it as if selected.
+    pub(crate) fn of_candidate(row: ExecutionRow) -> Selection {
+        Selection {
+            candidate: Some(row),
+            target_has_prior_build: true,
+            why_no_candidate: None,
+            rejected: None,
+        }
+    }
+
     /// No confirmed build of the target exists in scope.
     const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
         why_no_candidate: None,
+        rejected: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -59,10 +75,20 @@ impl Selection {
             None => Some(NoCandidate::IdentityMismatch),
             Some(row) => rejection(row),
         };
+        let own_target = matches!(
+            why_no_candidate,
+            Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
+        );
+        let (candidate, rejected) = match identified {
+            Some(row) if why_no_candidate.is_none() => (Some(row), None),
+            Some(row) if own_target => (None, Some(row)),
+            _ => (None, None),
+        };
         Selection {
-            candidate: identified.filter(|_| why_no_candidate.is_none()),
+            candidate,
             target_has_prior_build,
             why_no_candidate,
+            rejected,
         }
     }
 }
@@ -102,10 +128,13 @@ pub(crate) fn for_model(
         |prev| {
             if !sql_qualifies(req, evidence) {
                 Some(NoCandidate::FailedReuseQualification)
-            } else if !current_target_matches(req, prev) {
-                Some(NoCandidate::OwnTargetChangedOrMissing)
             } else {
-                None
+                match own_target(req, prev) {
+                    OwnTarget::AsBuilt => None,
+                    OwnTarget::Modified => Some(NoCandidate::OwnTargetModified),
+                    OwnTarget::Missing => Some(NoCandidate::OwnTargetMissing),
+                    OwnTarget::Ambiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
+                }
             }
         },
         true,
@@ -169,6 +198,10 @@ pub(crate) fn for_seed(
         |prev| {
             if req.values_hash.is_empty() {
                 Some(NoCandidate::FailedReuseQualification)
+            } else if req.last_modified_epoch.is_none() {
+                // VERIFIED LIVE (lag_seed_upstream G): a seed reloaded into a
+                // missing table "did not exist".
+                Some(NoCandidate::OwnTargetMissing)
             } else if !not_modified_since(req.last_modified_epoch, prev.last_modified_epoch) {
                 Some(NoCandidate::OwnTargetChangedOrMissing)
             } else {
@@ -179,11 +212,40 @@ pub(crate) fn for_seed(
     ))
 }
 
+/// Whether an OLDER build of the target (overwritten since) has the workload's
+/// strict identity and the workload qualifies for reuse: the first step of
+/// reporting a rebuild whose earlier build would still be reusable
+/// (LATEST_QUERY_HASH_NOT_MATCH). Freshness is judged by the caller.
+pub(crate) fn older_build_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    row.clone_source_table.is_none()
+        && sql_qualifies(req, evidence)
+        && strict_match(req, evidence, row)
+}
+
+/// [`older_build_matches`] for a seed.
+pub(crate) fn older_seed_matches(
+    req: &qc::SubmitValuesRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    row.execution_type == ModelExecutionType::Values as i32
+        && !req.values_hash.is_empty()
+        && row.values_hash.as_deref() == Some(req.values_hash.as_str())
+        && row.node_sql_hash.is_some()
+        && row.node_sql_hash == evidence.node_sql_hash
+}
+
 /// A client-requested copy (RegisterClone) records NO upstream evidence: it
 /// is clone-origin, carries no rendered identity and no inputs. When such a
 /// row is the freshness anchor, the submit's CURRENT inputs stand in as the
-/// recorded set, so each upstream is compared against the copy's own build
-/// epoch instead of reading "nothing recorded" as a dependency-set change.
+/// recorded set, each recorded at the copy's own build epoch (or at its
+/// current epoch, if earlier), so an upstream counts as drifted exactly when
+/// it is newer than the copy (clone-age anchor, verified live). Their
+/// producers are unrecorded: a copy is never an upstream query change.
 ///
 /// Every other row keeps exactly what it recorded. In particular a copy made
 /// by the SQL-submit fallback recorded that submit's inputs; an EMPTY list
@@ -196,7 +258,18 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
         && anchor.node_sql_hash.is_none()
         && anchor.input_tables.is_empty()
     {
-        anchor.input_tables = current.to_vec();
+        let built = anchor.last_modified_epoch;
+        anchor.input_tables = current
+            .iter()
+            .map(|t| InputTable {
+                name: t.name.clone(),
+                last_modified_epoch: match (t.last_modified_epoch, built) {
+                    (Some(cur), Some(built)) => Some(cur.min(built)),
+                    _ => built,
+                },
+                producer: Producer::Unrecorded,
+            })
+            .collect();
     }
 }
 
@@ -272,21 +345,44 @@ fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {
         .all(|d| !d.name.trim().is_empty() && !d.query.trim().is_empty() && names.insert(&d.name))
 }
 
+/// What the submit reports about the node's own target, against the build.
+enum OwnTarget {
+    /// Present exactly once, with a known epoch no later than the build's
+    /// (or `ignore_external_modifications`).
+    AsBuilt,
+    /// Present once with a known epoch later than the build's: modified after
+    /// the cached execution (VERIFIED LIVE 2026-11-10, even 1s later).
+    Modified,
+    /// Not reported: the table does not exist (VERIFIED LIVE 2026-11-10).
+    Missing,
+    /// Duplicated, of unknown epoch, or another target.
+    Ambiguous,
+}
+
 /// Own-target existence and external edits, checked separately from upstream
 /// freshness. Missing or ambiguous target evidence cannot establish that the
 /// object exists.
-fn current_target_matches(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> bool {
+fn own_target(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> OwnTarget {
     let Some(target) = req.target_table.as_deref().filter(|s| !s.is_empty()) else {
-        return false;
+        return OwnTarget::Ambiguous;
     };
     if prev.target_table != target {
-        return false;
+        return OwnTarget::Ambiguous;
     }
     let own: Vec<_> = req.tables.iter().filter(|t| t.name == target).collect();
-    own.len() == 1
-        && own[0].last_modified_epoch.is_some()
-        && (req.ignore_external_modifications
-            || not_modified_since(own[0].last_modified_epoch, prev.last_modified_epoch))
+    if own.is_empty() {
+        return OwnTarget::Missing;
+    }
+    if own.len() != 1 || own[0].last_modified_epoch.is_none() {
+        return OwnTarget::Ambiguous;
+    }
+    if req.ignore_external_modifications
+        || not_modified_since(own[0].last_modified_epoch, prev.last_modified_epoch)
+    {
+        OwnTarget::AsBuilt
+    } else {
+        OwnTarget::Modified
+    }
 }
 
 /// The target's current epoch is known and no newer than the recorded build:
@@ -522,6 +618,7 @@ mod tests {
         row.input_tables = vec![InputTable {
             name: UPSTREAM.into(),
             last_modified_epoch: Some(1),
+            ..Default::default()
         }];
         let c = model(&req, Some(row)).candidate.expect("adopted");
         assert_eq!(c.input_tables.len(), 1);
@@ -551,6 +648,9 @@ mod tests {
             stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
             target_has_prior_build: true,
             why_no_candidate: None,
+            tolerance_ms: 0,
+            build_age_ms: None,
+            own_target_absent: false,
         };
         assert!(matches!(
             crate::decision::decide(&ctx, Some(&c)),
@@ -814,15 +914,25 @@ mod tests {
         let row = recorded(&evidence(&dropped));
         assert_eq!(
             why(&dropped, Some(row)),
+            Some(NoCandidate::OwnTargetMissing)
+        );
+
+        let mut no_epoch = base.clone();
+        no_epoch.tables[0].last_modified_epoch = None;
+        let row = recorded(&evidence(&no_epoch));
+        assert_eq!(
+            why(&no_epoch, Some(row)),
             Some(NoCandidate::OwnTargetChangedOrMissing)
         );
 
+        // VERIFIED LIVE (2026-11-10): an own target later than its build, even
+        // by a second, is modified after the cached execution.
         let mut edited = base.clone();
         edited.tables[0].last_modified_epoch = Some(BUILT + 1);
         let row = recorded(&evidence(&edited));
         assert_eq!(
             why(&edited, Some(row)),
-            Some(NoCandidate::OwnTargetChangedOrMissing)
+            Some(NoCandidate::OwnTargetModified)
         );
     }
 

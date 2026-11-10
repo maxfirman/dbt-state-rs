@@ -273,12 +273,9 @@ may abort client operations.
 >   gate needs a fresh capture of its own confirmed baseline + a no-swap control.
 >   (The SELF-CONTAINED gate `dep_binding_swap_gated_against_present_baseline_with_control`
 >   covers the server-side property.)
-> - **Rebuild rejection-code mapping** (5th follow-up finding 4): after a
->   confirmed baseline, a changed submit that misses the fingerprint now reports
->   the correct rebuild DESCRIPTION, but hosted's rejection CODES vary
->   (`c1_config_semantics` entry 7 uses skip=8/clone=7 while other post-baseline
->   rebuilds use 6/6). The 8/7-vs-6/6 selection is uncharacterized; recorded as an
->   EXACT field-scoped conformance gap on those two codes only.
+> - **Rebuild rejection-code mapping** (5th follow-up finding 4): RESOLVED
+>   2026-11-10. 8/7 means an older build of the target would still qualify;
+>   4/7 means the own target is absent; 6/6 otherwise (§C).
 > - Prior-acknowledged open items (below) remain: stale-same-target vs
 >   fresh-alternative, exact lag/time-travel window, the unconfirmed/failed-submit
 >   publication point, wildcard-view columns, graph/ordering, proxy fidelity, the
@@ -589,6 +586,134 @@ assessment where the follow-up was right.
   Explicitly deployment requirements and known documented gaps (see §D).
 
 ### C. Lag tolerance and template comparison (review 11, 12)
+
+> **RE-SCOPED 2026-11-09, then CHARACTERIZED 2026-11-10.** Every experiment below that
+> showed `lag_tolerance` not absorbing drift changed the upstream by an
+> EXTERNAL MODIFICATION of a dbt-managed table (`create or replace` via
+> `run-operation`) and then ran `--select <model>` only, so hosted never
+> recorded the upstream's new epoch. Hosted Explain reported those changes as
+> "an upstream model query has changed", and the docs say a query change
+> rebuilds regardless of tolerance. The only within-tolerance ANY skips
+> (lag_multi_upstream_policy entries 56/59) followed a submit of the upstream
+> itself at its new epoch (entry 54, via `--select +lp_model2`). So the
+> conclusions "tolerance never absorbs" and "own-build anchor verified" below
+> hold ONLY for external modifications of a model's table. Upstream changes
+> that dbt builds, and source changes, are uncharacterized; a new experiment
+> matrix is in progress. Separately, the own-build anchor is now never later
+> than the own target's epoch reported in the submit: the Fusion client
+> stamps ConfirmExecution with a heuristic warehouse clock that ran up to
+> ~23s ahead (entry 11 rebuilt on hosted but skipped locally; pinned by
+> `lag_policy.rs::server_rebuilds_entry_11_despite_inflated_confirm_epoch`).
+>
+> **Hosted rule, characterized 2026-11-10** (crafted gRPC matrix
+> `experiments/lag_matrix.py`, the docs' worked example through the real
+> 2.0.11 client `experiments/lag_docs_example.sh`, proxy forwarding client
+> metadata, plus a no-proxy control run that matched). Fixtures
+> `lag_tolerance_matrix.jsonl`, `lag_tolerance_docs_example.jsonl`,
+> `lag_external_modification_linked.jsonl`; pinned by
+> `crates/harness/tests/lag_tolerance.rs`. `experiments/lag_rule_check.py`
+> finds 0 mismatches over the decidable rows of the 2026-11-08 sessions (22)
+> and this session's raw capture (62), and 2 of 88 across all fixtures: one
+> clone-chain row whose upstream build history is outside its fixture, and
+> the snapshot noun in a skip description. **The docs are right for the
+> representative setup.**
+> 1. Upstream drift: current upstream epoch > the epoch recorded for it at
+>    the node's last confirmed build (NOT the own-build epoch: a change
+>    between submit and confirm still counts, `cdb_m`).
+> 2. Upstream changed outside dbt: if the build that produced an upstream's
+>    current contents differs from the one the node consumed at its build
+>    (an external modification of a consumed dbt build), hosted reports "an
+>    upstream model query has changed" and rebuilds regardless of policy and
+>    tolerance. An upstream the node consumed after an external modification,
+>    or a source, is plain data.
+> 3. Policy: ANY rebuilds if any upstream drifted, ALL only if all did.
+> 4. Tolerance: a rebuild the policy requires becomes a reuse (`is_stale`
+>    true) while build age < tolerance, where build age = hosted clock minus
+>    the ConfirmExecution epoch (not the own-target epoch, not the client's
+>    `x-submitted-at-epoch`).
+> 5. Skip description: "both … up to date" when tolerance is 0 or every
+>    upstream equals its recorded epoch; else "within lag tolerance" while
+>    build age < tolerance; else "at least one upstream dependency is
+>    unchanged". Explain adds "the model was last built N ago, within lag
+>    tolerance of T" (badge 2 `WITHIN_TOLERANCE`, marker SUCCESS) or "exceeds
+>    lag tolerance of T" (badge 3, marker FAIL) when upstream data is outdated
+>    and tolerance > 0.
+> 6. Own target modified after the build (even by 1 s) now rebuilds with
+>    "model was executed because the table was modified after the cached
+>    execution". The 2026-10-11 captures (client 2.0.6) skipped in that case;
+>    hosted behavior changed between the two dates. No ledger of earlier
+>    skips exists (`altr_m`), and unconfirmed executes change nothing.
+> **IMPLEMENTED 2026-11-10** per [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md):
+> `decision.rs` (recorded-epoch drift, producer change, tolerance fold,
+> descriptions), `submit_decision.rs::resolve_producers` + `store::Producer`
+> (each recorded input stores its producing build's logic identity),
+> `warehouse.rs::build_time_ms` (DuckDB uses the confirmation's receipt time),
+> `AppState::clock` (`Clock::Replay` lets the conformance replay decide at each
+> capture's `recorded_at`), migration 0015 + `explain.rs` (tolerance and
+> upstream-query lines). `lag_tolerance_matrix`, `lag_tolerance_docs_example`
+> and `lag_external_modification_linked` now replay exactly in
+> `conformance.rs`, and the four "lag-tolerance description skew" known gaps
+> were removed as resolved.
+> **CLOSED 2026-11-10** (`experiments/copy_candidates.py`,
+> `experiments/seed_upstream.py`; fixtures `lag_copy_candidates.jsonl`,
+> `lag_dropped_targets.jsonl` and `lag_seed_upstream.jsonl`, all replayed in
+> `conformance.rs` and pinned by
+> `lag_tolerance.rs::{copy_candidate_arms,seed_upstream_arms}`):
+> - **Result copy over an existing target**: when the target's own build must
+>   rebuild for freshness, hosted copies an equivalent under another name that
+>   qualifies for this submit, judged as if it were the reuse candidate (on the
+>   equivalent's build age), and reports `is_stale` as that reuse would. No
+>   copy when the target's own table was modified externally (`ome`) or the
+>   equivalent does not qualify either (`esb`). Explain shows "but it's old,
+>   so we will clone from …", the target's analysis against its own build, and
+>   the equivalent's freshness summary. `submit_decision.rs::result_copy_fallback`,
+>   `DecisionRecord::result_copy_judged`, `explain.rs::copy_over_tree`.
+>   `lag_upstream_query_listing.jsonl` now replays. A DROPPED target is
+>   treated the same way: a same-upstream equivalent is copied only if it
+>   qualifies (`lag_dropped_targets.jsonl`: stale with tolerance 0 → execute,
+>   `dset0`; within a 600s tolerance → copy with `is_stale`, `dset600`). An
+>   equivalent in another environment reads other relations and is still
+>   copied without that judgment (`clone_fallback_stale_source`,
+>   `clone_fallback_zero_tolerance`). The DuckDB generated trace now asks for
+>   its stale copy with a lag tolerance. Up to 16 equivalents are read, newest
+>   build first. Only a same-upstream equivalent rejected on freshness lets
+>   the search go on, and then only to another same-upstream equivalent:
+>   hosted copied an older, current equivalent when the newest was stale
+>   (`sne`); falling back to an unjudged equivalent from another environment
+>   after such a rejection is uncharacterized, so the target rebuilds.
+> - **Rebuild rejection codes**: 8/7 (LATEST_QUERY_HASH_NOT_MATCH /
+>   TARGET_TABLE_MATCH) when an OLDER build of the target would still qualify,
+>   `is_stale` as it would be reused (`ob*`, seed arm H); 4/7
+>   (TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH) when the own target is
+>   absent and its latest build has the workload's identity and would otherwise
+>   be reusable (`dt`, seed arm G); 6/6 otherwise, including a dropped target
+>   whose build is stale (`lag_dropped_targets.jsonl` `ddc`, `dset0`). `reuse_candidate.rs::{older_build_matches,older_seed_matches}`,
+>   `NoCandidate::OwnTargetMissing`, migration 0016 (both codes persisted for
+>   Explain). The c1_config_semantics entry-7 gap was removed as resolved.
+> - **Seeds**: a reloaded seed with changed values or semantic config is an
+>   upstream query change for its consumers; a same-values reload is a data
+>   change; v1 → v2 → v1 is reused. This matches the engine's rule. Seed
+>   Explain trees ("the seed file exists already", "the seed data has (not)
+>   changed") are rendered.
+> - **Fresh skip summary**: an anchored skip ends with "upstream data is up to
+>   date" only when every upstream epoch equals its recorded epoch.
+>
+> Open:
+> - **Seed own-table external modification (SAFETY FLOOR, deliberate)**: hosted
+>   SKIPS an unchanged-values seed whose own table was modified externally
+>   (seed arm C), serving the edited table; the engine reloads it. Keyed gaps
+>   `lag_seed_upstream.jsonl` entries 22–23. No Explain tree is rendered for
+>   that reload (hosted has none).
+> - **Own-target modification in the 2026-10-11 captures**: hosted (client
+>   2.0.6) skipped an own target modified after its build; it rebuilds today.
+>   The engine follows today's behavior, so `lag_multi_upstream_policy.jsonl`
+>   stays characterization only (its lp_model2 decisions all replay).
+> - **Data tests as Lag tolerance subjects**: clients send tolerance 0 for data
+>   tests.
+> - **First-build rejection codes with prior hosted history**: hosted reports
+>   4/7 from builds in earlier sessions that the captures lack
+>   (`lag_external_modification_linked` entries 3–4, field-scoped
+>   missing-history gaps). The rule itself is implemented.
 
 **Lag/data freshness — RESOLVED (live-verified 2026-10-11).** The freshness
 rule was characterized against the real service (api.state.dbt.com, dbt Fusion

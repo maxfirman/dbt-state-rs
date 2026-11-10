@@ -17,6 +17,10 @@ use support::TestDatabase;
 const ORG: &str = "org-explain-anchor";
 const BUILT: i64 = 1_000;
 
+fn now_ms() -> i64 {
+    dbt_state_server::Clock::System.now_ms(&Default::default())
+}
+
 /// The `node_decisions` row a Skip capture writes, anchored on `matched`.
 fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
     CaptureInput {
@@ -51,6 +55,10 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         query_dependencies: Vec::new(),
         execution_runtime_ms: None,
         matched_execution_id: Some(matched),
+        freshness_tolerance_ms: None,
+        build_age_ms: None,
+        skip_rejection_reason: None,
+        clone_rejection_reason: None,
     }
 }
 
@@ -63,7 +71,7 @@ async fn explain_anchor_is_the_complete_matched_execution() {
     // The model in `prod`, its own target absent and then at the build epoch.
     let model = environment_model("prod");
     let SubmitOutcome::Execute { ids, .. } =
-        submit_decision::submit_sql(store, ORG, &model.clone().build())
+        submit_decision::submit_sql(store, ORG, &model.clone().build(), now_ms())
             .await
             .expect("first submit")
     else {
@@ -76,7 +84,7 @@ async fn explain_anchor_is_the_complete_matched_execution() {
         execution_decision_id,
         matched_execution,
         ..
-    } = submit_decision::submit_sql(store, ORG, &model.own_epoch(Some(BUILT)).build())
+    } = submit_decision::submit_sql(store, ORG, &model.own_epoch(Some(BUILT)).build(), now_ms())
         .await
         .expect("second submit")
     else {

@@ -15,8 +15,10 @@ for folder in ("models", "seeds"):
 (root / "dbt_project.yml").write_text(
     'name: seed_cases\nversion: "1.0"\nconfig-version: 2\nprofile: seeds\nmodels:\n  seed_cases:\n    +materialized: table\n'
 )
+# Lag tolerance 0: these cases test that every evidence change propagates
+# (lag_tolerance.py covers reuse within a tolerance, ADR 0007).
 (root / "profiles.yml").write_text(
-    f"seeds:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n"
+    f"seeds:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n      run_cache_freshness_tolerance: 0s\n"
 )
 (root / "seeds/numbers.csv").write_text("id,amount\n1,10\n2,20\n2,20\n3,\n")
 (root / "models/totals.sql").write_text(

@@ -64,6 +64,16 @@ async fn real_dbt_durable_table_reuse_and_external_changes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires pinned Python environment; run scripts/duckdb-smoke.sh"]
+async fn real_dbt_lag_tolerance_reuse_expiry_and_external_change() {
+    let server = support::start_server().await;
+    server
+        .python_project("duckdb-lag-tolerance")
+        .run("lag_tolerance.py", &[])
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned Python environment; run scripts/duckdb-smoke.sh"]
 async fn real_dbt_views_dependency_evidence() {
     let server = support::start_server().await;
     let project = server.python_project("duckdb-views");

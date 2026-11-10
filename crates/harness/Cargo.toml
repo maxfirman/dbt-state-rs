@@ -14,6 +14,10 @@ name = "diff-fuzz"
 path = "src/bin/diff_fuzz.rs"
 required-features = ["fuzz"]
 
+[[bin]]
+name = "state-probe"
+path = "src/bin/state_probe.rs"
+
 [features]
 # Opt-in differential-fuzz tool: pulls in the server + sqlx so it can run our
 # server in-process and compare against the real service. Not needed for CI.

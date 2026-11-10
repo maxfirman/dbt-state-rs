@@ -25,15 +25,19 @@ const DEV: &str = "\"DB\".\"DEV\".\"M\"";
 const BUILT: i64 = 1_000;
 
 async fn submit_sql(store: &Store, req: impl Into<qc::SubmitEnrichedSqlRequest>) -> SubmitOutcome {
-    submit_decision::submit_sql(store, ORG, &req.into())
+    submit_decision::submit_sql(store, ORG, &req.into(), now_ms())
         .await
         .expect("submit")
 }
 
 async fn submit_values(store: &Store, req: impl Into<qc::SubmitValuesRequest>) -> SubmitOutcome {
-    submit_decision::submit_values(store, ORG, &req.into())
+    submit_decision::submit_values(store, ORG, &req.into(), now_ms())
         .await
         .expect("submit")
+}
+
+fn now_ms() -> i64 {
+    dbt_state_server::Clock::System.now_ms(&Default::default())
 }
 
 /// Confirm a build at `epoch` through the store's confirm path.
@@ -470,7 +474,47 @@ async fn every_outcome_carries_its_decision_reason() {
     let edited = sql(environment_model("prod").own_epoch(Some(BUILT + 1)).build()).await;
     assert_eq!(
         edited.record().reason,
-        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified)
+    );
+    assert_eq!(
+        edited.record().description,
+        "model was executed because the table was modified after the cached execution"
+    );
+    let dropped = sql(environment_model("prod").own_epoch(None).build()).await;
+    assert_eq!(
+        dropped.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+    );
+    assert_eq!(
+        dropped.record().description,
+        "model was executed because its table did not exist"
+    );
+    assert_eq!(
+        (
+            dropped.record().skip_rejection_reason,
+            dropped.record().clone_rejection_reason
+        ),
+        (Some(4), Some(7)),
+        "TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH: the dropped build \
+         would otherwise be reusable"
+    );
+    // VERIFIED LIVE (2026-11-10, lag_dropped_targets `ddc`): when the dropped
+    // target's build would be stale too, hosted reports 6/6.
+    let dropped_stale = sql(environment_model("prod")
+        .own_epoch(None)
+        .upstream(&environment_upstream("prod"), 2_000)
+        .build())
+    .await;
+    assert_eq!(
+        dropped_stale.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+    );
+    assert_eq!(
+        (
+            dropped_stale.record().skip_rejection_reason,
+            dropped_stale.record().clone_rejection_reason
+        ),
+        (Some(6), Some(6))
     );
 
     let forbids_copies = environment_model("dev").clone_chain_depth_limit(0);
@@ -616,7 +660,64 @@ async fn result_copy_reads_only_the_latest_confirmed_build_of_each_target() {
     assert_eq!(record.reason, DecisionReason::FirstBuild);
 }
 
-/// Dialect spelling does not change result copy: a client reporting `DuckDB`
+/// A same-upstream equivalent rejected on freshness does not end the copy
+/// search (Codex review, PR #69; VERIFIED LIVE 2026-11-10, lag_copy_candidates
+/// `sne`): the newest build of an equivalent can have consumed older
+/// upstream data than an older build of another, and hosted then copies the
+/// current one.
+#[tokio::test]
+async fn result_copy_skips_a_stale_newest_equivalent() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let up = environment_upstream("prod");
+    let named =
+        |table: &str| environment_model("prod").target(&format!("\"DB\".\"PROD\".\"{table}\""));
+
+    // STALE read the upstream at 500 but its build finished last (epoch 9_000);
+    // FRESH read it at 2_000 and finished earlier (epoch 3_000).
+    build(store, named("STALE"), 9_000).await;
+    build(store, named("FRESH").upstream(&up, 2_000), 3_000).await;
+
+    let outcome = submit_sql(store, environment_model("prod").upstream(&up, 2_000)).await;
+    let SubmitOutcome::Copy { copy, record, .. } = outcome else {
+        panic!("the current equivalent is copied, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"FRESH\"");
+    assert!(!record.is_stale);
+}
+
+/// After a same-upstream equivalent is rejected on freshness, the search
+/// accepts only another same-upstream equivalent: falling back to an unjudged
+/// copy from another environment is uncharacterized, so the target rebuilds.
+#[tokio::test]
+async fn result_copy_does_not_fall_back_to_another_environment_after_a_stale_equivalent() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let up = environment_upstream("prod");
+    build(store, environment_model("dev"), 5_000).await;
+    // STALE, in prod, is copied from dev and confirmed later (newest build).
+    let stale = environment_model("prod").target("\"DB\".\"PROD\".\"STALE\"");
+    let SubmitOutcome::Copy { ids, .. } = submit_sql(store, stale).await else {
+        panic!("STALE is copied from dev");
+    };
+    confirm(store, &ids, 9_000).await;
+
+    // Control: with prod's upstream unchanged, STALE is current and copied.
+    let outcome = submit_sql(store, environment_model("prod")).await;
+    let SubmitOutcome::Copy { copy, .. } = outcome else {
+        panic!("the current equivalent is copied, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"STALE\"");
+
+    // Prod's upstream moved on: STALE is rejected, and dev is not a fallback.
+    let outcome = submit_sql(store, environment_model("prod").upstream(&up, 2_000)).await;
+    let SubmitOutcome::Execute { record, .. } = outcome else {
+        panic!("no characterized copy remains, got {outcome:?}");
+    };
+    assert_eq!(record.reason, DecisionReason::FirstBuild);
+}
 /// gets the same copy, past the volatility gate, as one reporting `duckdb`.
 #[tokio::test]
 async fn duckdb_result_copy_ignores_dialect_case() {

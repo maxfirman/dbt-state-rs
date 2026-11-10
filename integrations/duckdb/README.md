@@ -107,9 +107,13 @@ the hosted conformance contract.
 for the entire file/generation. `_dbt_state.relation_evidence` stores version 1
 schema/content SHA-256 digests and each relation's ordinal. These are protocol
 `last_modified_epoch` values interpreted as DuckDB **ordinals**, not Unix
-milliseconds. Current shared freshness/target policies compare ordering only;
-Snowflake timestamps and decision policy are unchanged. A future policy needing
-elapsed time must explicitly support this distinction before enabling it here.
+milliseconds. Freshness and target policies compare ordering only. Lag
+tolerance (ADR 0007) needs elapsed time: the server measures a build's age from
+when it received the build's confirmation, never from ordinal arithmetic
+(`warehouse.rs::build_time_ms`). The client's default tolerance is 45 minutes;
+set `run_cache_freshness_tolerance: 0s` in the profile, or
+`state={'lag_tolerance': '0s'}` on a model, to rebuild on every upstream change.
+An External modification of a dbt-built upstream always rebuilds its consumers.
 
 A single process-wide lock serializes fresh transaction snapshots, scans and
 metadata writes. Unchanged supported observations retain their ordinal. Changed

@@ -5,6 +5,7 @@
 use super::*;
 use crate::query_cache::ModelExecutionType;
 use sqlx::{Postgres, QueryBuilder};
+use std::collections::HashMap;
 
 /// The physical warehouse family a dialect's history is scoped by; matches the
 /// generated `executions.warehouse_family` column.
@@ -78,6 +79,71 @@ impl Store {
             .await
     }
 
+    /// Every confirmed build of a target in its physical scope, newest first
+    /// (the first row is [`Store::current_target_state`]). Older rows never
+    /// describe the target's current contents; they are read only to report
+    /// which earlier build would have qualified (rejection codes).
+    pub async fn target_history(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<Vec<ExecutionRow>> {
+        let mut query = QueryBuilder::new("SELECT ");
+        query
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ")
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect))
+            .push(" AND table_namespace IS NOT DISTINCT FROM ")
+            .push_bind(table_namespace)
+            .push(" AND target_table = ")
+            .push_bind(target_table)
+            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+        query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await
+    }
+
+    /// The CURRENT physical state of each named target (see
+    /// [`Store::current_target_state`]), keyed by target. Targets with no
+    /// confirmed build in this scope are absent. Used to resolve which build
+    /// produced each input a submit reads (ADR 0007).
+    pub async fn current_target_states(
+        &self,
+        org_id: &str,
+        targets: &[String],
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<HashMap<String, ExecutionRow>> {
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = QueryBuilder::new("SELECT DISTINCT ON (target_table) ");
+        query
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ")
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect))
+            .push(" AND table_namespace IS NOT DISTINCT FROM ")
+            .push_bind(table_namespace)
+            .push(" AND target_table = ANY(")
+            .push_bind(targets)
+            .push(") ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC");
+        let rows = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.target_table.clone(), r))
+            .collect())
+    }
+
     /// Data tests have no physical target. Their latest confirmed outcome is
     /// scoped by node UID, project, namespace and warehouse family; identity is
     /// compared on that row rather than resurrecting older history.
@@ -136,10 +202,8 @@ impl Store {
         query.push("SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms FROM current_state WHERE node_namespace_logic_hash = ")
             .push_bind(q.node_namespace_logic_hash).push(" AND execution_type = ").push_bind(q.execution_type)
             .push(" AND target_table <> ").push_bind(q.exclude_target)
-            .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table");
-        if let Some(limit) = q.limit {
-            query.push(" LIMIT ").push_bind(limit);
-        }
+            .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
+            .push_bind(q.limit);
         query
             .build_query_as::<CopyCandidate>()
             .fetch_all(&self.pool)

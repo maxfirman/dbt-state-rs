@@ -418,7 +418,22 @@ async fn conformance_replay_all_corpora() {
     // GetStateSelection queries read it) that the generic SKIP/EXECUTE/CLONE
     // replay does not model — it is driven by `selector_conformance.rs`.
     const CHARACTERIZATION_ONLY: &[&str] = &[
+        // Every lp_model2 decision now replays exactly (2026-11-10), but the
+        // upstream models' own-target checks do not: in these 2026-10-11
+        // captures hosted SKIPPED an own target modified after its build,
+        // which it rebuilds today ("the table was modified after the cached
+        // execution", lag_tolerance_matrix `ot*_u`). Pinned by lag_policy.rs.
         "lag_multi_upstream_policy.jsonl",
+        // Result copy interacting with upstream producers (2026-11-10): hosted
+        // did NOT copy an equivalent whose consumed upstream had since been
+        // externally modified, then later copied it into the same target with
+        // is_stale=true ("but it's old, so we will clone from …"). The local
+        // fallback copies on the first submit. Uncharacterized; pinned by
+        // lag_tolerance.rs, see correctness-handoff.md §C open items.
+        // Clone chain with the upstream's own builds (2026-11-10). Every copy
+        // in it comes from a source built in an earlier session, so it cannot
+        // replay from an empty store; pinned by lag_tolerance.rs.
+        "clone_chain_upstream_history.jsonl",
         "selector_state_selection.jsonl",
         // Interleaved clone→rebuild→clone over the SAME physical target (the
         // decision depends on warehouse state not in the protocol). Pinned by
@@ -475,7 +490,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        29,
+        36,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -904,6 +919,13 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
             "last updated: «rel_time»".to_string()
         } else if t.starts_with("updated ") && t.contains("last executed") {
             "«gap»".to_string()
+        } else if let Some(rest) = t
+            .strip_prefix("the model was last built ")
+            .and_then(|r| r.split_once(" ago, ").map(|(_, tol)| tol))
+        {
+            // The build age is runtime-dependent (decision vs replay clock);
+            // within/exceeds and the tolerance are compared.
+            format!("the model was last built «age» ago, {rest}")
         } else if t.starts_with("no updates since") && t.contains("last executed") {
             // Collapse both the model-anchor and test-anchor variants onto one
             // masked form so the anchor FQN is a runtime slot.
@@ -1164,13 +1186,21 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
 
-    // 1) First submit → EXECUTE (first build). Confirm it with the node's own
-    //    build epoch so a later identical submit can prove freshness and SKIP.
-    let r1 = sql
-        .submit_enriched_sql(submit0.clone())
-        .await
-        .unwrap()
-        .into_inner();
+    // 1) First submit → EXECUTE (first build). Hosted's SKIP was a
+    //    within-lag-tolerance reuse with a FRESH upstream subtree: ET_UP's
+    //    current epoch differs from (is older than) the epoch recorded at the
+    //    build, so it is neither drift nor "every upstream epoch equals its
+    //    recorded epoch" (explain-catalog §decision_description, `dsdec_young`).
+    //    Reproduce that by building against a NEWER ET_UP epoch, then confirming
+    //    with the node's own build epoch.
+    let up_name = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ET_UP\"";
+    let mut first = submit0.clone();
+    for t in &mut first.tables {
+        if t.name == up_name {
+            t.last_modified_epoch = t.last_modified_epoch.map(|e| e + 1_000);
+        }
+    }
+    let r1 = sql.submit_enriched_sql(first).await.unwrap().into_inner();
     let qc::submit_sql_response::Response::ReadyToExecute(exec1) = r1.response.unwrap() else {
         panic!("first submit must EXECUTE");
     };
@@ -1192,7 +1222,7 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     .await
     .unwrap();
 
-    // 2) Identical re-submit → SKIP (query unchanged, upstream fresh).
+    // 2) Re-submit with the current ET_UP epoch → SKIP within lag tolerance.
     let r2 = sql
         .submit_enriched_sql(submit0.clone())
         .await
@@ -1227,25 +1257,11 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         msg.decision,
         hosted_explain["decision"].as_i64().unwrap() as i32
     );
-    // decision_description: the hosted capture is the lag-tolerance variant (#2,
-    // "its data is within lag tolerance"). Our engine pins the plain SKIP
-    // description (#1) and deliberately never applies freshness_tolerance_seconds
-    // (decision.rs), so it selects #1 here. Selecting #2 requires detecting a
-    // lag_tolerance config — a decision-engine wording concern tracked
-    // separately (docs/explain-catalog.md §decision_description / issue #22), not
-    // part of the explain TREE this ticket derives. The three SKIP descriptions
-    // share ONE structurally identical tree (the point of the catalog), so the
-    // tree cross-check below is the faithful explain assertion. We assert the
-    // re-derived description is a valid member of the pinned SKIP set.
-    assert!(
-        matches!(
-            msg.decision_description.as_str(),
-            "model was a no-op because both its query and its upstream data are up to date"
-                | "model was a no-op because its query is up to date and its data is within lag tolerance"
-                | "model was a no-op because its query is up to date and at least one upstream dependency is unchanged"
-        ),
-        "SKIP description must be a pinned catalog variant, got: {}",
-        msg.decision_description
+    // decision_description: the hosted capture is the lag-tolerance variant
+    // ("its data is within lag tolerance"); the seeded history reproduces it.
+    assert_eq!(
+        msg.decision_description,
+        hosted_explain["decision_description"].as_str().unwrap()
     );
     // The FULL normalized tree — including the per-upstream FRESH freshness
     // subtree — matches the hosted SKIP tree exactly via the matched_execution_id
@@ -1298,6 +1314,40 @@ async fn explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
+
+    // 0) Seed the upstream ET_UP's own build at the epoch ET_MODEL later
+    //    recorded for it: hosted built it just before (explain_tolerance.sh).
+    //    Entry 2's newer ET_UP is then an External modification of the build
+    //    ET_MODEL consumed (ADR 0007), which hosted reports as an upstream
+    //    query change, so the 240h Lag tolerance does not apply.
+    let et_up = submit0
+        .tables
+        .iter()
+        .find(|t| Some(t.name.as_str()) != submit0.target_table.as_deref())
+        .unwrap()
+        .clone();
+    let up_build = sql
+        .submit_enriched_sql(
+            support::scenario::model(&et_up.name)
+                .namespace(submit0.table_namespace.as_deref().unwrap())
+                .no_tables()
+                .build(),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(up_exec) = up_build.response.unwrap()
+    else {
+        panic!("the upstream's first submit must EXECUTE");
+    };
+    exec.confirm_execution(
+        support::scenario::outcome()
+            .epoch(et_up.last_modified_epoch.unwrap())
+            .table()
+            .confirm(&up_exec.request_id),
+    )
+    .await
+    .unwrap();
 
     // 1) Seed the prior build: first submit → EXECUTE (first build), confirm it
     //    with the node's own build epoch (strictly newer than entry-0's ET_UP,

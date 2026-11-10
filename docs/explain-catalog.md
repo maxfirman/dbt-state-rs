@@ -4,10 +4,13 @@ The authoritative per-node-type catalog of the structured explain tree
 (`ExplainMessageEntry` → `ExplainLine` / `ExplainMarker` / `ExplainBadge`) that
 `ExplainService.GetExplainMessages` must return. Pinned from live captures
 against `api.state.dbt.com` (Snowflake), **not** inferred. It is a living
-document: it grows as unobserved node kinds (seed/snapshot/incremental) are
+document: it grows as unobserved node kinds (snapshot/incremental) are
 captured.
 
 Source fixtures (wayfinder map #19):
+- `golden/fixtures/lag_seed_upstream.jsonl` (2026-11-10) — seed SKIP/reload/first-load trees.
+- `golden/fixtures/lag_copy_candidates.jsonl` (2026-11-10) — CLONE over an existing target, anchored CLONE listing, absent-target rebuilds.
+- `golden/fixtures/lag_dropped_targets.jsonl` (2026-11-10) — stale CLONE into a dropped target, dropped-target rebuilds with a stale build.
 - `golden/fixtures/explain_happy_history.jsonl` (#34) — HISTORY-BEARING model/view/data-test SKIP batch (supersedes the empty-store `explain_snowflake_happy.jsonl` from #20).
 - `golden/fixtures/explain_clone_history.jsonl` (#34) — HISTORY-BEARING CLONE tree with the clone source built in-window (supersedes the empty-store `explain_clone_deferral.jsonl` from #23).
 - `golden/fixtures/explain_tolerance_history.jsonl` (#34) — HISTORY-BEARING within-lag-tolerance SKIP + upstream-OUTDATED EXECUTE, asserted directly in the main gate.
@@ -52,7 +55,7 @@ so a kind cannot graduate in one place and not the other).
 | 6 | MICROBATCH (incremental) | ❌ unobserved → empty tree |
 | 7 | SNAPSHOT | ❌ unobserved → empty tree |
 | 8 | DBT_DATA_TEST | ⚠️ SKIP only characterized; EXECUTE/CLONE unobserved → empty tree |
-| 9 | VALUES (seed) | ❌ unobserved → empty tree |
+| 9 | VALUES (seed) | ✅ characterized — SKIP, EXECUTE (2026-11-10); CLONE unobserved → empty tree |
 | 10 | VIEW | ✅ characterized — SKIP, EXECUTE, CLONE |
 | 11 | DBT_CUSTOM | ❌ unobserved → empty tree |
 | 0 / other | UNSPECIFIED / unknown | ❌ unobserved → empty tree |
@@ -78,8 +81,8 @@ kinds are elaborated in [§ unobserved](#unobserved--do-not-implement-until-capt
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ |
 | ExplainBadge | FRESH (1) | ✅ |
 | ExplainBadge | OUTDATED (3) | ✅ |
-| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ❌ never (the "upstream model queries have not changed" line carries NO badge) |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ❌ never — see [§ unobserved](#unobserved--do-not-implement-until-captured) |
+| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ (SHAPE 9 per-upstream query listing; the "upstream model queries have not changed" line carries NO badge) |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ (lag tolerance line) |
 | ExplainBadge | EB_UNSPECIFIED (0) | ❌ never |
 
 ## Section structure
@@ -124,6 +127,13 @@ Freshness-analysis body, by upstream situation (all observed):
   ```
   (for a data test the anchor line reads `- no updates since test last executed`)
 
+  An anchored model SKIP follows the listing with `- upstream data is up to
+  date [SUCCESS]` only when every upstream's current epoch equals the epoch
+  recorded for it at the build (VERIFIED LIVE 2026-11-10: lag_seed_upstream
+  entry 32; absent in explain_tolerance entry 1 and `dsdec_young`, whose
+  upstream is older than recorded). With drifted upstream data it is followed
+  by the lines in [§ Lag tolerance lines](#lag-tolerance-lines-observed-2026-11-10).
+
 The `upstream model queries have not changed [SUCCESS]` line carries **no badge**
 (the `UPSTREAM_QUERY_UNCHANGED` enum exists but is unused here).
 
@@ -141,6 +151,14 @@ The `upstream model queries have not changed [SUCCESS]` line carries **no badge*
 ```
 
 **(b) upstream drift / OUTDATED** (fixture #24):
+
+> **Scope (2026-11-09):** every capture of this shape came from an EXTERNAL
+> MODIFICATION of a dbt-managed upstream (`create or replace` outside dbt).
+> The `UPSTREAM_QUERY_CHANGED` / "an upstream model query has changed" [FAIL]
+> lines appeared although the upstream's SQL never changed, so this shape may
+> combine two causes: hosted reading an epoch it never recorded as an
+> upstream query change, and data drift. Do not assume upstream data drift
+> alone renders the query-analysis FAIL; see correctness-handoff.md §C.
 ```
 - table analysis ("«FQN»")
   - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
@@ -206,12 +224,93 @@ executed` anchor line** — just the humanized `last updated: …` child per
 upstream. VERIFIED LIVE by the history-bearing `explain_clone_history.jsonl`
 (#34); the earlier catalog draft (and generator) wrongly reused the anchored
 SKIP listing here. Rendered by `explain.rs::clone_upstream_dependencies`.
+When the copy keeps the target's own (rebuilt-for-freshness or dropped) build
+as its anchor, the listing is the anchored SKIP one instead (VERIFIED LIVE
+2026-11-10, lag_copy_candidates `de`). A copy of a stale equivalent ends with
+`upstream data is outdated` [FAIL] and the lag tolerance line in place of
+`upstream data is up to date` (lag_dropped_targets `dset600`).
+
+### CLONE over an existing target ("but it's old")
+
+VERIFIED LIVE 2026-11-10 (`lag_copy_candidates.jsonl` arms `fe`, `st`, `wba`).
+The target exists, but its own build had to rebuild for freshness, so an
+equivalent that qualifies for this submit is copied over it. The query and
+freshness sections analyse the target against its OWN build (the anchor);
+the summary says how fresh the copied equivalent is.
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+  - but it's old, so we will clone from "«FQN»" to recreate it   [FAIL]
+- query analysis (vs clone)
+  <the SHAPE 9 query analysis against the target's own build>
+- data freshness analysis (vs clone)
+  - upstream dependencies                              (anchored listing)
+  - upstream data is up to date                       [SUCCESS]   (equivalent fresh)
+    OR
+  - upstream data is outdated                         [FAIL]      (equivalent stale)
+  - the model was last built «age» ago, within lag tolerance of «T»   [SUCCESS] <WITHIN_TOLERANCE>
+```
+The age is the equivalent's build age (`wba`). Rendered by
+`explain.rs::copy_over_tree`.
+
+## SEED
+
+VERIFIED LIVE 2026-11-10 (`lag_seed_upstream.jsonl`). A seed has no upstreams,
+so there is no freshness section.
+
+**SKIP**, and a reload whose data did not change since an older load (arm H,
+rejection codes 8/7):
+```
+- table analysis ("«FQN»")
+  - the seed file exists already                      [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - the seed data has not changed                     [SUCCESS] <NODE_QUERY_UNCHANGED>
+```
+**Reload with changed values or config**: as above, with
+`- the seed data has changed [FAIL]` (no badge).
+
+**Load into a missing table** (first load, or a dropped table, arm G):
+```
+- table analysis ("«FQN»")
+  - the seed table does not exist                     [FAIL]
+  - there is no other table that the seed could be cloned from  [FAIL]
+```
+The engine's reload of a seed whose own table was modified externally is a
+deliberate divergence (hosted skips it; correctness-handoff.md §C) and renders
+no tree.
 
 ## UNKNOWN (untracked kinds, e.g. unit tests)
 
 Client-side only (resolved in #20): State never tracks these nodes, they never
 hit the Explain RPC, and the server returns **nothing** for them. The client
 prints `UNKNOWN <uid> - dbt State explain details unavailable`. No server work.
+
+## Lag tolerance lines (observed 2026-11-10)
+
+Captured in `lag_tolerance_matrix.jsonl` and `lag_upstream_query_listing.jsonl`;
+rendered by `explain.rs` from the tolerance and build age persisted with the
+decision (migration 0015).
+
+- **SKIP with drifted upstream data** adds, under `data freshness analysis`
+  after the `upstream dependencies` listing:
+  ```
+  - upstream data is outdated                                   [FAIL]
+  - the model was last built «age» ago, within lag tolerance of «T»   [SUCCESS] <WITHIN_TOLERANCE>
+  ```
+  or, when the build is older than the tolerance (an ALL-policy reuse),
+  `… exceeds lag tolerance of «T»` [FAIL] <OUTDATED>. With tolerance 0 only the
+  `upstream data is outdated` line appears. Durations read like "a moment",
+  "7 seconds", "a minute", "10 minutes".
+- **EXECUTE (SHAPE 9)**: the query analysis lists every upstream with
+  `query or upstream query changed` <UPSTREAM_QUERY_CHANGED> or
+  `query or upstream query unchanged` <UPSTREAM_QUERY_UNCHANGED>, then
+  `an upstream model query has changed` [FAIL], only when an upstream's
+  producing build changed (ADR 0007). A data-only rebuild instead shows
+  `upstream model queries have not changed` [SUCCESS]. No tolerance line.
+- The `«gap»` line `updated N seconds after «FQN» last executed` is the
+  upstream's current epoch minus the epoch recorded for it at the build.
+- **Own target modified** (no upstreams): `table exists already`, `the model
+  query has not changed`, `no upstream dependencies`.
 
 ## decision_description (separate output)
 
@@ -220,14 +319,21 @@ distinct coexisting reasons on one hosted version (confirmed #24):
 
 | # | string | situation |
 |---|---|---|
-| 1 | `model was a no-op because both its query and its upstream data are up to date` | model, no `lag_tolerance`, simple fresh |
-| 2 | `model was a no-op because its query is up to date and its data is within lag tolerance` | model that CARRIES a `lag_tolerance` config, upstream fresh |
-| 3 | `model was a no-op because its query is up to date and at least one upstream dependency is unchanged` | model, target exists, ≥1 genuine upstream unchanged (multi-upstream) |
+| 1 | `model was a no-op because both its query and its upstream data are up to date` | tolerance 0, or every upstream epoch equals its recorded epoch |
+| 2 | `model was a no-op because its query is up to date and its data is within lag tolerance` | otherwise, while build age < tolerance |
+| 3 | `model was a no-op because its query is up to date and at least one upstream dependency is unchanged` | otherwise |
+
+Characterized live 2026-11-10 (`lag_tolerance_matrix.jsonl`, `dsdec_*`, `pao_m`,
+`dsall_m`), replacing the earlier situation guesses. The noun follows the node
+kind ("snapshot was a no-op …").
 
 Other pinned strings (match our engine's current pins; see `decision.rs`):
 - model EXECUTE: `model was executed because either its query didn't match or its upstream data is out of date`
-- model first build: `model was executed because its table did not exist`
+- model first build, or a rebuild of an absent target: `model was executed because its table did not exist`
+- own target modified after the build: `model was executed because the table was modified after the cached execution`
 - data test SKIP: `data test was a no-op because both its query and its upstream data are up to date`
+- seed SKIP: `seed was a no-op because its data has not changed`
+- seed reload: `seed was loaded because its data changed`; into a missing table: `seed was loaded because it did not exist`
 - CLONE: `an equivalent model exists under another name so we cloned that one`
 
 ## Re-derivation binding (ADR 0005)
@@ -236,7 +342,7 @@ Each tree signal maps to a re-derivable source (see ADR 0005):
 
 | Line / badge | Re-derivation source |
 |---|---|
-| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + persisted `decision_reason` (ADR 0006; NO live physical-existence probe — see [§ dropped-target known limitation](#known-limitation--dropped-own-target-rebuild-mislabel)) |
+| `table analysis` existence + `<TARGET_TABLE_EXISTS>` | `node_decisions` decision class + persisted `decision_reason` + whether the decision-time `input_tables` report the own target (ADR 0006; NO live physical-existence probe — see [§ ambiguous own-target known limitation](#known-limitation--ambiguous-own-target-rebuild)) |
 | `<NODE_QUERY_CHANGED>` / `<NODE_QUERY_UNCHANGED>` | node SQL/template fingerprint vs matched row |
 | per-upstream `<FRESH>` / `<OUTDATED>` + `«gap»` | decision-time `input_tables` (node_decisions) vs matched `executions.input_tables` + `executions.last_modified_epoch` (own-build anchor), via `matched_execution_id` |
 | `<UPSTREAM_QUERY_CHANGED>` + "an upstream model query has changed" | per-upstream name-set / logic diff (same two snapshots) |
@@ -251,14 +357,10 @@ snapshots. The catalog's per-upstream lines are the render target for that.
 Not present in any capture; mark as unimplemented rather than invent (each is a
 future-capture fog item on map #19):
 
-- **Node kinds:** seed (`execution_type` 9), snapshot (7), incremental model.
+- **Node kinds:** snapshot (7), incremental model, seed CLONE.
   Their explain trees (esp. whether incremental/snapshot add lines) are unknown.
-- **Badges:** `WITHIN_TOLERANCE` — never produced even for a `lag_tolerance`
-  model (#24: a fresh upstream shows `<FRESH>`, a newer one shows `<OUTDATED>` +
-  EXECUTE; tolerance did not absorb an 11s gap under a 240h setting). May be
-  unreachable on this hosted version; needs a dedicated probe before implementing.
-  `UPSTREAM_QUERY_UNCHANGED` (7) — the corresponding line carries no badge, so
-  this enum may be vestigial. `EB_UNSPECIFIED` (0).
+- **Badges:** `EB_UNSPECIFIED` (0). (`WITHIN_TOLERANCE` (2) and
+  `UPSTREAM_QUERY_UNCHANGED` (7) are now observed; see "Lag tolerance lines".)
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
 - **`Explain.GetUpstreamDependencyChanges`** — CLIENT-UNREACHABLE, not merely
@@ -317,31 +419,32 @@ anchor (`explain.rs::shape`), after the node-kind fence. It never reads the
 
 | class | decision reason | shape |
 |---|---|---|
-| SKIP | `reused.fresh`, `reused.tolerated_stale` | SKIP (SHAPE 0/1/2/4 by kind and upstreams) |
-| EXECUTE | `first_build` | first build (`table analysis` only) |
-| EXECUTE | `upstream_outdated`, anchor re-derives an OUTDATED upstream | SHAPE 9 |
-| EXECUTE | `upstream_outdated` without that anchor; `no_reuse_candidate.identity_mismatch`, `.failed_reuse_qualification`, `.incomplete_cached_test_results`; `dependency_set_changed`; `copy_chain_limit` | SHAPE 7 |
-| EXECUTE | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | SHAPE 7, **awaiting hosted capture (#40)** |
-| CLONE | `result_copy` (Submit Result copy and RegisterClone) | CLONE |
+| SKIP | `reused.fresh`, `reused.tolerated_stale`, `reused.within_lag_tolerance` | SKIP (SHAPE 0/1/2/4 by kind and upstreams) |
+| EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build (`table analysis` only) |
+| EXECUTE | `upstream_outdated`, anchor re-derives an OUTDATED upstream; `upstream_query_changed` with an anchor | SHAPE 9 |
+| EXECUTE | `no_reuse_candidate.own_target_modified`, with an anchor or no upstreams | SKIP-shaped tree ("table exists already", "query has not changed") |
+| EXECUTE | any other reason when the decision-time inputs lack the own target | first build (VERIFIED LIVE 2026-11-10, `dt_m`) |
+| EXECUTE | `upstream_outdated`/`upstream_query_changed` without that anchor; `no_reuse_candidate.identity_mismatch`, `.failed_reuse_qualification`, `.incomplete_cached_test_results`; `dependency_set_changed`; `copy_chain_limit` | SHAPE 7 |
+| EXECUTE | `no_reuse_candidate.own_target_changed_or_missing` (ambiguous own-target evidence), `no_build_anchor`, `own_target_modified` without anchor | SHAPE 7, **awaiting hosted capture (#40)** |
+| CLONE | `result_copy` with an anchor and the own target present | CLONE over an existing target |
+| CLONE | `result_copy` otherwise (Submit Result copy and RegisterClone) | CLONE |
+| seed SKIP | `reused.*` | SEED, data unchanged |
+| seed EXECUTE | `no_reuse_candidate.identity_mismatch` | SEED, data changed (unchanged when skip rejection is 8) |
+| seed EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | any | NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
-## Known limitation — dropped-own-target rebuild mislabel
+## Known limitation — ambiguous own-target rebuild
 
-**Awaiting hosted capture (#40).** Explain has NO own-target physical-existence
-signal and runs NO live warehouse probe. Since ADR 0006 a dropped-own-target
-rebuild persists its own decision reason
-(`no_reuse_candidate.own_target_changed_or_missing`), and a rebuild with no
-build anchor persists `no_build_anchor`, so both are distinguishable from a
-node-query-changed rebuild. Both still render SHAPE 7, deliberately.
-
-CONSEQUENCE (PR #31 round-3 F6): if a confirmed model's own target is later
-DROPPED and then rebuilt with UNCHANGED SQL, Explain renders "the model table
-exists already" `<TARGET_TABLE_EXISTS>` + "the model query has changed"
-`<NODE_QUERY_CHANGED>` + "upstream data is up to date". That is wrong on both
-counts (the table is gone; the query did not change).
-
-The correct hosted shapes for a dropped-then-rebuilt target and for a rebuild
-with no build anchor are UNOBSERVED (no Snowflake capture; DuckDB does not
-trigger dbt State explain). Per the do-not-invent rule above, we keep today's
-rendering rather than ship a guessed tree. Once a capture exists, fixing them
-only changes their arm in `explain.rs::shape`.
+A dropped own target is now its own reason
+(`no_reuse_candidate.own_target_missing`, VERIFIED LIVE 2026-11-10,
+`lag_copy_candidates` `dt`) and renders the first-build tree, as hosted does.
+What remains **awaiting hosted capture (#40)**: a rebuild whose own-target
+evidence is ambiguous (duplicate entries, no epoch, or a target that does not
+match the build's) persists `no_reuse_candidate.own_target_changed_or_missing`,
+and a rebuild with no build anchor persists `no_build_anchor`. Explain has NO
+own-target physical-existence signal and runs NO live warehouse probe, so both
+keep the SHAPE 7 rendering ("the model table exists already" + "the model
+query has changed"), which may be wrong on both counts. Their hosted shapes
+are unobserved; per the do-not-invent rule above, we keep today's rendering
+rather than ship a guessed tree. Once a capture exists, fixing them only
+changes their arm in `explain.rs::shape`.

@@ -8,19 +8,102 @@ use sqlx::PgPool;
 
 mod history;
 
-/// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
+/// and the build that produced it when the decision recorded one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InputTable {
     pub name: String,
     pub last_modified_epoch: Option<i64>,
+    #[serde(default, skip_serializing_if = "Producer::is_unrecorded")]
+    pub producer: Producer,
+}
+
+impl InputTable {
+    /// An input at `epoch` with no recorded producer.
+    pub fn at(name: &str, epoch: Option<i64>) -> Self {
+        Self {
+            name: name.into(),
+            last_modified_epoch: epoch,
+            producer: Producer::Unrecorded,
+        }
+    }
+}
+
+/// The recorded build whose result an input relation held when it was read:
+/// its logic identity, or that no recorded build produced it (a source, or an
+/// External modification of a dbt-managed relation). Stored with each recorded
+/// input as `"producer": "<logic identity>" | null`; rows written before
+/// producers were recorded have no key and read as `Unrecorded`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Producer {
+    #[default]
+    Unrecorded,
+    NoBuild,
+    Build(String),
+}
+
+impl Producer {
+    fn is_unrecorded(&self) -> bool {
+        matches!(self, Self::Unrecorded)
+    }
+
+    /// Which build produced a relation read at `epoch`, given the relation's
+    /// current physical state: that build, identified by its logic, when the
+    /// read is not later than the build's epoch; otherwise no recorded build
+    /// (an External modification, or no build in scope at all).
+    pub(crate) fn of(current_build: Option<&ExecutionRow>, epoch: Option<i64>) -> Self {
+        match current_build {
+            Some(build) => Self::of_build(build.logic_identity(), build.last_modified_epoch, epoch),
+            None => Self::NoBuild,
+        }
+    }
+
+    /// [`Producer::of`] for a build known by its logic identity and epoch.
+    pub(crate) fn of_build(identity: String, build_epoch: Option<i64>, read: Option<i64>) -> Self {
+        match (build_epoch, read) {
+            (Some(built), Some(read)) if read <= built => Self::Build(identity),
+            _ => Self::NoBuild,
+        }
+    }
+}
+
+impl Serialize for Producer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Build(logic) => s.serialize_some(logic),
+            Self::Unrecorded | Self::NoBuild => s.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Producer {
+    /// Only called when the key is present (`#[serde(default)]` covers absent).
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match Option::<String>::deserialize(d)? {
+            Some(logic) => Self::Build(logic),
+            None => Self::NoBuild,
+        })
+    }
 }
 
 impl From<&qc::TableModifiedInfo> for InputTable {
     fn from(t: &qc::TableModifiedInfo) -> Self {
-        Self {
-            name: t.name.clone(),
-            last_modified_epoch: t.last_modified_epoch,
-        }
+        Self::at(&t.name, t.last_modified_epoch)
+    }
+}
+
+/// The logic identity a producer is recorded by (ADR 0007): the rendered
+/// logic hash with a seed's values, else a copy's schema-abstracted logic.
+/// `None` when the execution has neither (its identity is then its id).
+pub(crate) fn logic_identity(
+    node_sql_hash: Option<&str>,
+    node_namespace_logic_hash: Option<&str>,
+    values_hash: Option<&str>,
+) -> Option<String> {
+    match (node_sql_hash, node_namespace_logic_hash) {
+        (Some(sql), _) => Some(format!("sql:{sql}:{}", values_hash.unwrap_or(""))),
+        (None, Some(ns)) => Some(format!("ns:{ns}")),
+        (None, None) => None,
     }
 }
 
@@ -58,6 +141,8 @@ pub struct ExecutionRow {
     /// Set only for clone-origin rows: the physical source this target was
     /// copied from. Enables clone adoption on a later submit.
     pub clone_source_table: Option<String>,
+    /// When the server recorded the confirmation (Unix ms, server clock).
+    pub confirmed_at_ms: Option<i64>,
     /// Why recorded inputs or cached results could not be decoded, if they
     /// could not. Raised by [`ExecutionRow::into_checked`].
     pub(crate) undecodable: Undecodable,
@@ -71,12 +156,24 @@ pub(crate) struct Undecodable {
 }
 
 impl ExecutionRow {
+    /// The logic identity a producer is recorded by (ADR 0007): the rendered
+    /// logic hash with a seed's values, else the copy's schema-abstracted
+    /// logic, else the execution itself.
+    pub(crate) fn logic_identity(&self) -> String {
+        logic_identity(
+            self.node_sql_hash.as_deref(),
+            self.node_namespace_logic_hash.as_deref(),
+            self.values_hash.as_deref(),
+        )
+        .unwrap_or_else(|| format!("execution:{}", self.id))
+    }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
         node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table";
+        clone_source_table, \
+        (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
     /// results (protobuf bytes) onto the row, keeping any failure for
@@ -145,6 +242,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             status: row.try_get("status")?,
             request_id: row.try_get("request_id")?,
             clone_source_table: row.try_get("clone_source_table")?,
+            confirmed_at_ms: row.try_get("confirmed_at_ms")?,
             ..ExecutionRow::default()
         };
         Ok(read.with_encoded_evidence(
@@ -164,8 +262,10 @@ pub struct CopyCandidate {
     pub execution_runtime_ms: Option<i64>,
 }
 
-/// What [`Store::find_copy_candidates`] selects. `limit` is the warehouse
-/// rules' candidate limit (`None`: every candidate).
+/// What [`Store::find_copy_candidates`] selects: up to `limit` current
+/// equivalents, newest build first. More than one, because candidates can
+/// still be rejected after the read (relation check, provenance walk,
+/// freshness judgment).
 #[derive(Debug, Clone, Copy)]
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
@@ -173,7 +273,7 @@ pub struct CopyCandidateQuery<'a> {
     pub execution_type: i32,
     pub exclude_target: &'a str,
     pub dialect: &'a str,
-    pub limit: Option<i64>,
+    pub limit: i64,
 }
 
 /// The current state a client-requested copy's source must have
@@ -362,6 +462,7 @@ impl Store {
         execution_runtime_ms: Option<i64>,
         execution_results: Option<&qc::Struct>,
         failed_to_clone: bool,
+        confirmed_at_ms: i64,
     ) -> sqlx::Result<bool> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
@@ -376,7 +477,7 @@ impl Store {
                 node_namespace_logic_hash = CASE
                     WHEN $7 AND node_sql_hash IS NULL THEN NULL
                     ELSE node_namespace_logic_hash END,
-                confirmed_at = now()
+                confirmed_at = to_timestamp($8::double precision / 1000.0)
             WHERE org_id = $1
               AND request_id = $2
               AND status = 'pending'
@@ -389,6 +490,7 @@ impl Store {
         .bind(execution_runtime_ms)
         .bind(execution_results.map(Message::encode_to_vec))
         .bind(failed_to_clone)
+        .bind(confirmed_at_ms)
         .execute(&self.pool)
         .await?
         .rows_affected();
@@ -580,7 +682,8 @@ impl Store {
             SELECT DISTINCT ON (execution_decision_id)
                    execution_decision_id, decision, execution_type,
                    decision_description, is_stale, target_table, clone_source,
-                   input_tables, matched_execution_id, decision_reason
+                   input_tables, matched_execution_id, decision_reason,
+                   freshness_tolerance_ms, build_age_ms, skip_rejection_reason
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -636,6 +739,12 @@ pub struct ExplainDecisionRow {
     /// The decision reason's stored string (ADR 0006); NULL only for a row
     /// written before it was persisted.
     pub decision_reason: Option<String>,
+    /// The node's Lag tolerance and the reuse candidate's build age at
+    /// decision time (ADR 0007); NULL before they were persisted.
+    pub freshness_tolerance_ms: Option<i64>,
+    pub build_age_ms: Option<i64>,
+    /// The decision's wire skip rejection code (migration 0016).
+    pub skip_rejection_reason: Option<i32>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -687,6 +796,9 @@ mod tests {
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
             matched_execution_id: Some(1),
             decision_reason: Some("reused.fresh".into()),
+            freshness_tolerance_ms: None,
+            build_age_ms: None,
+            skip_rejection_reason: None,
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),
