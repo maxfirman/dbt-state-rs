@@ -68,3 +68,9 @@ costs one column and keeps the decision engine pure.
   > shape; `own_target_changed_or_missing` now means ambiguous own-target
   > evidence and, with `no_build_anchor`, keeps SHAPE 7
   > ([explain-catalog.md](../explain-catalog.md#shape-selection)).
+  >
+  > **Resolved by #71 (spec #40):** crafted probes showed hosted never makes
+  > either rebuild (#80, #82). Both reasons, and `own_target_modified` without
+  > a matched build, now render nothing, as anticipated above: only their
+  > mapping in `explain.rs::shape` changed
+  > ([explain-catalog.md](../explain-catalog.md#ambiguous-rebuild-reasons)).

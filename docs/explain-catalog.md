@@ -28,6 +28,10 @@ Source fixtures (`golden/fixtures/`):
 - `lag_dropped_targets.jsonl`: stale CLONE into a dropped Target relation.
 - `lag_tolerance_matrix.jsonl`, `lag_upstream_query_listing.jsonl`: Lag
   tolerance lines and the per-upstream query listing.
+- `explain_ambiguous_rebuilds.jsonl`: crafted probes d1–d4 for the
+  [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
+  first-build trees there are keyed divergences: the server decides
+  differently and renders nothing.
 
 ## How to read this catalog
 
@@ -81,7 +85,7 @@ come from 2.0.11 yet.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ | characterized (live) | S E C | SKIP 18 (4 client, 14 crafted), EXECUTE 32 (2 client, 30 crafted), CLONE 8 (1 client, 7 crafted) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ | characterized (live) | S E C | SKIP 19 (4 client, 15 crafted), EXECUTE 33 (2 client, 31 crafted), CLONE 8 (1 client, 7 crafted) |
 | 2 | APPEND (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 3 | MERGE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 4 | INSERT_OVERWRITE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
@@ -94,11 +98,12 @@ come from 2.0.11 yet.
 | 11 | DBT_CUSTOM | pending → #74 | pending → #74 | pending → #74 | — | none |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
-1. Except the three ambiguous rebuild reasons in
-   [Known limitation](#known-limitation--ambiguous-own-target-rebuild),
-   pending → #71.
-2. Except the reload of an externally modified seed table, which renders no
-   tree; pending → #71 (local-only).
+1. Except the three rebuild reasons hosted never makes, which are
+   local-only, empty tree ([Ambiguous rebuild reasons](#ambiguous-rebuild-reasons)).
+2. Except the reload of an externally modified seed table, which is
+   local-only, empty tree: hosted SKIPs it
+   ([correctness-handoff.md](correctness-handoff.md), "Seed table externally
+   modified").
 3. The SHAPE 7 tree (`the model query has changed` <NODE_QUERY_CHANGED>) was
    captured for 3 VIEW EXECUTE decisions in `explain_snowflake_happy.jsonl`
    (client 2.0.6, commit `8dff472`). That fixture was removed in `2024a9e`
@@ -116,28 +121,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 66 trees in the
+Line counts from the [census](#explain-tree-census) over the 68 trees in the
 tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(518 lines without a marker, 547 without a badge). Only an explicit `0` is
+(526 lines without a marker, 558 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 171 lines |
-| ExplainMarker | FAIL (2) | ✅ 84 lines |
-| ExplainMarker | INFO (3) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 57 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 175 lines |
+| ExplainMarker | FAIL (2) | ✅ 86 lines |
+| ExplainMarker | INFO (3) | not observed across 68 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 68 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 58 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 0 lines in tracked fixtures; 3 in the removed SHAPE 7 capture (see coverage note 3, #78) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 58 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 59 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 23 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 23 lines |
+| ExplainBadge | FRESH (1) | ✅ 24 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 42 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 13 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 68 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
 
-1. The 66 trees are 9 real-client trees (client 2.0.6) and 57 trees for
+1. The 68 trees are 9 real-client trees (client 2.0.6) and 59 trees for
    crafted `state-probe` requests, so none of them comes from client 2.0.11
    itself. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
@@ -160,12 +165,12 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (66 trees, none empty, no findings):
+Tracked fixtures, 2026-11-10 (68 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 18 | 14 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 32 | 30 crafted, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | SKIP | 19 | 15 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 33 | 31 crafted, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | SKIP | 1 | client 2.0.6 |
 | VALUES | SKIP | 1 | crafted |
@@ -375,8 +380,8 @@ rejection codes 8/7):
   - there is no other table that the seed could be cloned from  [FAIL]
 ```
 The engine's reload of a seed whose table was modified externally is a known
-divergence (hosted skips it; see [correctness-handoff.md](correctness-handoff.md))
-and renders no tree.
+divergence (hosted skips it; see [correctness-handoff.md](correctness-handoff.md)).
+Its status is local-only, empty tree.
 
 ## UNKNOWN (untracked kinds, e.g. unit tests)
 
@@ -457,25 +462,48 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream; `upstream_query_changed` with an anchor | SHAPE 9 |
 | EXECUTE | `no_reuse_candidate.own_target_modified` with an anchor or no genuine upstreams | SKIP-shaped tree |
+| EXECUTE | `no_reuse_candidate.own_target_changed_or_missing`; `no_reuse_candidate.own_target_modified` otherwise; `no_build_anchor` | empty tree, local-only ([below](#ambiguous-rebuild-reasons)) |
 | EXECUTE | any other reason when the decision-time inputs lack the Target relation | first build (`lag_copy_candidates` `dt_m`) |
 | EXECUTE | `upstream_outdated` / `upstream_query_changed` otherwise; `no_reuse_candidate.identity_mismatch`, `.failed_reuse_qualification`, `.incomplete_cached_test_results`; `dependency_set_changed`; `copy_chain_limit` | SHAPE 7 |
-| EXECUTE | `no_reuse_candidate.own_target_changed_or_missing`; `no_reuse_candidate.own_target_modified` otherwise; `no_build_anchor` | SHAPE 7, **awaiting hosted capture** (below) |
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | any | NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
-## Known limitation — ambiguous own-target rebuild
+## Ambiguous rebuild reasons
 
-Three rebuilds keep the SHAPE 7 rendering ("the model table exists already" +
-"the model query has changed"), which may be wrong on both counts, because
-their hosted shapes are unobserved:
+Three model rebuild reasons used to fall back to the SHAPE 7 tree. Crafted
+probes show hosted never makes any of them, so each one is local-only and
+renders nothing (`explain.rs::shape`). Client 2.0.11 sends none of the
+requests that lead to them. Probes: `experiments/ambiguous_rebuilds.py`
+(2026-11-10, fixture `explain_ambiguous_rebuilds.jsonl`, crafted only). Each
+probe builds and confirms a FULL model over one source, then resubmits it with
+the same identity two seconds later.
 
-- `no_reuse_candidate.own_target_changed_or_missing`: the Target relation is
-  reported ambiguously (duplicate entries, no epoch, or a name that does not
-  match the build's);
-- `no_reuse_candidate.own_target_modified` with genuine upstreams but no
-  matched build;
-- `no_build_anchor`: the build has upstreams but no epoch to compare them with.
+| Decision reason | When this server records it | Hosted (crafted probe) | Status |
+|---|---|---|---|
+| `no_reuse_candidate.own_target_changed_or_missing` (model) | The Target relation is reported twice or with no epoch, or the submit has no target and a build with no target exists | d1, reported twice with the build's epoch: SKIP, ordinary SKIP tree (entries 2–3). d2, no epoch: rebuild as a missing Target relation, codes 4 / 7, first-build tree (entries 6–7). d3 / d3e, target unset / `""`: `Internal` / `InvalidArgument` error, not recorded | local-only, empty tree. Divergences #80 (d1, d2) and #81 (d3: this server answers a Result copy of the node's own build) |
+| `no_build_anchor` | The reuse candidate's build was confirmed without an epoch and the node has genuine upstreams | d4: the ConfirmExecution without an epoch fails (`Internal`, "Database operation failed"), so hosted holds no such build. The decisive submit was not sent | local-only, empty tree. Divergence #82 |
+| `no_reuse_candidate.own_target_modified` with genuine upstreams and no matched build | The anchor's `executions` row disappeared after the decision (`reuse_candidate::Selection::of` keeps the rejected row otherwise) | not probed: no request produces it | local-only, empty tree |
 
-Explain runs no live warehouse probe. Once a capture exists, fixing these only
-changes their arm in `explain.rs::shape`.
+A seed's `no_reuse_candidate.own_target_changed_or_missing` (its table was
+modified after the load) is the seed safety floor in [SEED](#seed), also
+local-only, empty tree.
+
+Why client 2.0.11 cannot produce the first two (`a0fc53e`):
+
+- `collect_table_modified_infos` keys the relations it reports by name, so
+  `tables` holds one entry per relation
+  (`crates/dbt-tasks-core/src/run_cache/run_cache_service.rs:3718-3722`,
+  `:3807-3815`).
+- It drops the Target relation when its epoch is unknown (`:3809`). This
+  server then sees a missing Target relation (`own_target_missing`).
+- It always sets the target for non-test nodes
+  (`crates/dbt-tasks-core/src/run_cache/run_cache_request.rs:543`); only data
+  tests clear it (`:322`).
+- It sends no ConfirmExecution for a non-test build without an epoch
+  (`run_cache_service.rs:2162-2172`).
+
+The hosted d1 and d2 trees use existing shapes (the anchored SKIP tree and the
+first-build tree). If #80 aligns the decisions, the server renders them
+through the ordinary SKIP and first-build arms, and the stale-exemption guard
+fails the four keyed gaps until they are removed.
