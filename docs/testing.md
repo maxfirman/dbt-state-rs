@@ -172,6 +172,9 @@ returns, and a `reason`. Kinds:
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.
+- **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
+  decision this server makes differently (spec #40). The local Explain tree
+  for it must be empty, and must differ from hosted's.
 
 The replay fails if any gap is unused, if a whole-response gap now matches
 hosted ("gap is resolved; remove its exemption"), or if a field-scoped gap's

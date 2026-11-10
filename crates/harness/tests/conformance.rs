@@ -490,7 +490,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        36,
+        37,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -1129,6 +1129,16 @@ async fn replay_explain_messages(
                          match; remove the ignore_fields exemption"
                     );
                 } else {
+                    // A decision divergence (spec #40): our tree for a decision
+                    // hosted makes differently must render nothing, never an
+                    // invented explanation of our own decision.
+                    if gap.local_variant == "empty_tree" {
+                        assert!(
+                            local.explain_lines.is_empty(),
+                            "{context}: an `empty_tree` explain gap requires the local tree to be \
+                             empty (#40 divergence rule); got local={local_tree}"
+                        );
+                    }
                     // Stale-exemption guard: the decision/description/tree must
                     // genuinely differ — otherwise the exemption is stale and
                     // must be removed (e.g. if history becomes seedable in-arm).

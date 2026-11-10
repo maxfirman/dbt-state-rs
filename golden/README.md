@@ -46,6 +46,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `explain_happy_history.jsonl` | yes | History-bearing Explain trees for model, view and data-test SKIPs; `conformance.rs` Explain arm. |
 | `explain_clone_history.jsonl` | yes | History-bearing Explain tree for a result copy; `conformance.rs` and `crates/server/src/explain.rs` tests. |
 | `explain_tolerance_history.jsonl` | yes | History-bearing Explain trees for a within-tolerance SKIP and an outdated-upstream build; `conformance.rs` Explain arm. |
+| `explain_snapshot_history.jsonl` | yes | Client 2.0.11 snapshot Explain trees (first build, SKIPs, source drift, upstream and logic changes, `--full-refresh`) plus FULL and VIEW logic-change rebuilds, from `experiments/explain_capture.py snapshot_explain`; `conformance.rs` Explain arm. |
 | `explain_tolerance.jsonl` | char-only | Explain trees seeded programmatically from its first submit; `conformance.rs::explain_skip_tree_matches_hosted_oracle_when_history_seeded`, `explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded`. |
 | `lag_freshness_own_build.jsonl` | yes | `lp_model` (5m Lag tolerance) over an upstream recreated in place outside dbt with identical content; `lag_freshness.rs`. |
 | `lag_multi_upstream_policy.jsonl` | char-only | Two upstreams under ANY and ALL policies with per-upstream epoch bumps; `lag_policy.rs`. |

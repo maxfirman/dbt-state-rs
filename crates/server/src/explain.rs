@@ -80,6 +80,8 @@ impl ExplainNode {
         match ModelExecutionType::try_from(self.execution_type) {
             Ok(ModelExecutionType::DbtDataTest) => "test",
             Ok(ModelExecutionType::Values) => "seed",
+            // VERIFIED LIVE 2026-11-10 (explain_snapshot_history.jsonl).
+            Ok(ModelExecutionType::Snapshot) => "snapshot",
             _ => "model",
         }
     }
@@ -192,8 +194,8 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///     Clone has no hosted capture yet (pending → #78).
 ///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
 ///   - seed (VALUES=9): Skip | Build (Clone unobserved).
-///   - everything else (snapshot SNAPSHOT=7, incremental, any other
-///     execution_type): NONE.
+///   - snapshot (SNAPSHOT=7): Skip | Build (Clone pending → #76).
+///   - everything else (incremental, custom, any other execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
@@ -210,6 +212,11 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
             DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
         ),
         Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionKind::Skip),
+        // VERIFIED LIVE 2026-11-10 (explain_snapshot_history.jsonl, client
+        // 2.0.11). Snapshot CLONE is pending on #76.
+        Ok(ModelExecutionType::Snapshot) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
         // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl).
         Ok(ModelExecutionType::Values) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
@@ -291,6 +298,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             if node.anchor.is_some() || node.genuine_upstreams().is_empty() =>
         {
             Shape::OwnTargetModified
+        }
+        // DECISION DIVERGENCE (#83): hosted rejects an execution-type change
+        // with its own code and tree; ours renders nothing (#40 rule).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged)) => {
+            return None;
         }
         // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of
         // an absent target reads like a first build, whatever the reason.
@@ -682,20 +694,17 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
 /// The node-query-changed rebuild tree (catalog SHAPE 7): table exists, query
-/// CHANGED, upstream queries unchanged, upstream data up to date. See [`shape`]
-/// for the reasons that render it, including the two awaiting capture (#40).
+/// CHANGED, upstream queries unchanged, then the same freshness body as the
+/// SKIP tree (VERIFIED LIVE 2026-11-10, explain_snapshot_history.jsonl: a
+/// FULL model and a snapshot list their upstream, a view without reported
+/// upstreams says `upstream data is up to date`). See [`shape`] for the
+/// reasons that render it, including the two awaiting capture (#40).
 fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let mut out = vec![table_analysis_exists(node)];
-    out.push(query_analysis_changed(node));
-    out.push(section(
-        "data freshness analysis",
-        vec![leaf(
-            "upstream data is up to date",
-            Some(MARKER_SUCCESS),
-            None,
-        )],
-    ));
-    out
+    vec![
+        table_analysis_exists(node),
+        query_analysis_changed(node),
+        data_freshness_analysis_fresh(node),
+    ]
 }
 
 /// The upstream-drift EXECUTE tree (catalog SHAPE 9). The node's own query is
@@ -1282,11 +1291,12 @@ mod tests {
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
     // explain_lines dispatches on DecisionKind alone; without an
-    // execution-type fence, snapshot (SNAPSHOT=7) and incremental decisions
-    // render model-shaped trees that the hosted service was never observed to
-    // produce (docs/explain-catalog.md "Unobserved — do not implement until
-    // captured"; spec #27 Out-of-Scope). They must emit nothing. Seeds were
-    // characterized on 2026-11-10 and render their own trees below.
+    // execution-type fence, incremental and custom decisions (and a snapshot
+    // CLONE) render model-shaped trees that the hosted service was never
+    // observed to produce (docs/explain-catalog.md "Unobserved — do not
+    // implement until captured"; spec #27 Out-of-Scope). They must emit
+    // nothing. Seeds and snapshot SKIP/EXECUTE were characterized on
+    // 2026-11-10.
 
     // ── Seeds (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl) ───────────
     fn seed(decision: DecisionKind, reason: DecisionReason) -> ExplainNode {
@@ -1383,16 +1393,17 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_execute_emits_nothing() {
-        // SNAPSHOT=7 snapshot: unobserved → no invented tree.
-        let n = node(
-            DecisionKind::Build,
+    fn snapshot_clone_emits_nothing() {
+        // SNAPSHOT=7 CLONE: no hosted capture yet (#76) → no invented tree.
+        let mut n = node(
+            DecisionKind::Clone,
             ModelExecutionType::Snapshot as i32,
-            "snapshot was executed",
+            "an equivalent model exists under another name so we cloned that one",
         );
+        n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
         assert!(
             explain_lines(&n).is_empty(),
-            "snapshot is unobserved → must emit no invented lines, got {:?}",
+            "snapshot CLONE is uncaptured → must emit no invented lines, got {:?}",
             render(&n)
         );
     }
@@ -1427,6 +1438,8 @@ mod tests {
                     | (8, DecisionKind::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
                     | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
                     | (9, DecisionKind::Build) // seed reload
+                    | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
+                    | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE pending → #76)
             )
         };
 
@@ -1580,6 +1593,25 @@ mod tests {
             render(&n)
         };
         assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
+    }
+
+    /// A rebuild because the latest build was another execution type (a
+    /// snapshot under `--full-refresh`, sent as FULL) is a decision hosted
+    /// makes differently (#83, explain_snapshot_history.jsonl entry 58), so
+    /// it renders nothing, whether or not the Target relation is reported.
+    #[test]
+    fn execution_type_change_renders_nothing() {
+        let mut n = node(
+            DecisionKind::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        );
+        n.reason = Some(DecisionReason::NoReuseCandidate(
+            NoCandidate::ExecutionTypeChanged,
+        ));
+        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+        n.input_tables.clear();
+        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
     /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the

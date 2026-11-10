@@ -66,13 +66,15 @@ impl Selection {
     /// The outcome for a latest row in scope: the reuse candidate when the
     /// row's identity matched (`identified`) and `rejection` found nothing
     /// against it, otherwise why it is not one.
+    /// `unidentified` says why when the row's identity did not match.
     fn of(
         identified: Option<ExecutionRow>,
+        unidentified: NoCandidate,
         rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
         target_has_prior_build: bool,
     ) -> Selection {
         let why_no_candidate = match &identified {
-            None => Some(NoCandidate::IdentityMismatch),
+            None => Some(unidentified),
             Some(row) => rejection(row),
         };
         let own_target = matches!(
@@ -106,6 +108,14 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
+    // Same identity, other execution type: a distinct reason so Explain can
+    // render nothing for it (#40 divergence rule, #83).
+    let unidentified =
+        if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
+            NoCandidate::ExecutionTypeChanged
+        } else {
+            NoCandidate::IdentityMismatch
+        };
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
         Some(current.into_checked(true)?)
@@ -125,6 +135,7 @@ pub(crate) fn for_model(
     };
     Ok(Selection::of(
         identified,
+        unidentified,
         |prev| {
             if !sql_qualifies(req, evidence) {
                 Some(NoCandidate::FailedReuseQualification)
@@ -160,6 +171,7 @@ pub(crate) fn for_data_test(
     };
     Ok(Selection::of(
         identified,
+        NoCandidate::IdentityMismatch,
         |prev| {
             if !sql_qualifies(req, evidence) {
                 Some(NoCandidate::FailedReuseQualification)
@@ -195,6 +207,7 @@ pub(crate) fn for_seed(
     };
     Ok(Selection::of(
         identified,
+        NoCandidate::IdentityMismatch,
         |prev| {
             if req.values_hash.is_empty() {
                 Some(NoCandidate::FailedReuseQualification)
@@ -292,6 +305,15 @@ fn strict_match(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
+    row.execution_type == req.execution_type && same_identity(req, evidence, row)
+}
+
+/// [`strict_match`] without the execution type.
+fn same_identity(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
     let logic_compatible = match (
         &row.node_namespace_logic_hash,
         &evidence.node_namespace_logic_hash,
@@ -299,8 +321,7 @@ fn strict_match(
         (Some(recorded), Some(current)) => recorded == current,
         _ => true,
     };
-    row.execution_type == req.execution_type
-        && identity_matches(evidence, row)
+    identity_matches(evidence, row)
         && logic_compatible
         // Exact on purpose: strict same-target identity, not dialect recognition.
         && row.dialect == req.dialect

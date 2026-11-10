@@ -35,6 +35,11 @@ impl StaleUpstreamPolicy {
 pub enum NoCandidate {
     /// The latest row does not have the workload's identity.
     IdentityMismatch,
+    /// The latest row has the workload's identity but was built as another
+    /// execution type (a snapshot run under `--full-refresh` is sent as
+    /// FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH; this server
+    /// still reports NO_SUITABLE_MATCH_FOUND (#83).
+    ExecutionTypeChanged,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,
     /// The node's own target is reported ambiguously or without an epoch.
@@ -94,9 +99,10 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 16] = [
+    const ALL: [DecisionReason; 17] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
         Self::NoReuseCandidate(NoCandidate::OwnTargetModified),
@@ -120,6 +126,9 @@ impl DecisionReason {
             Self::FirstBuild => "first_build",
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
+                "no_reuse_candidate.execution_type_changed"
             }
             Self::NoReuseCandidate(NoCandidate::FailedReuseQualification) => {
                 "no_reuse_candidate.failed_reuse_qualification"
@@ -435,13 +444,16 @@ fn node_noun(execution_type: i32) -> &'static str {
 /// api.state.dbt.com, 2026-11-10): "both … up to date" when the node has no
 /// Lag tolerance or no upstream epoch moved since the build; otherwise
 /// "within lag tolerance" while the build is younger than the tolerance;
-/// otherwise "at least one upstream dependency is unchanged".
+/// otherwise "at least one upstream dependency is unchanged". A snapshot
+/// always says "both … up to date" (explain_snapshot_history.jsonl: an epoch
+/// that moved back, and drift within the tolerance).
 fn skip_description(execution_type: i32, f: &Freshness, ctx: &SubmitContext) -> String {
     if execution_type == ModelExecutionType::Values as i32 {
         return "seed was a no-op because its data has not changed".to_string();
     }
     let noun = node_noun(execution_type);
-    if ctx.tolerance_ms == 0 || f.upstreams_unchanged {
+    let snapshot = execution_type == ModelExecutionType::Snapshot as i32;
+    if snapshot || ctx.tolerance_ms == 0 || f.upstreams_unchanged {
         format!("{noun} was a no-op because both its query and its upstream data are up to date")
     } else if within_lag_tolerance(ctx) {
         format!(
@@ -1427,6 +1439,47 @@ mod tests {
         assert_eq!(desc(&one_drifted, 20, 25, all), (ATLEAST1.into(), true));
     }
 
+    /// VERIFIED LIVE (2026-11-10, explain_snapshot_history.jsonl entries
+    /// 29-31, 40, 43): a snapshot SKIP always reads "both … up to date", for
+    /// an epoch that moved back and for drift within its Lag tolerance, where
+    /// a model says "within lag tolerance". The snapshot ALL-policy reuse past
+    /// its tolerance is unobserved and keeps the same wording.
+    #[test]
+    fn snapshot_skip_description_does_not_vary_with_freshness() {
+        let prev = confirmed("h", vec![tbl("a", 1_000), tbl("b", 1_000)], Some(1_000));
+        let snapshot_desc = |current: &[InputTable], tol, age, policy| {
+            let mut c = tolerant(current, tol, age);
+            c.execution_type = ModelExecutionType::Snapshot as i32;
+            c.stale_upstream_policy = policy;
+            match decide(&c, Some(&prev)) {
+                Verdict::Skip {
+                    description,
+                    is_stale,
+                    ..
+                } => (description, is_stale),
+                other => panic!("expected skip, got {other:?}"),
+            }
+        };
+        let both =
+            "snapshot was a no-op because both its query and its upstream data are up to date";
+        let decreased = [tbl("a", 700), tbl("b", 1_000)];
+        let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
+        let any = StaleUpstreamPolicy::Any;
+        let all = StaleUpstreamPolicy::All;
+        assert_eq!(
+            snapshot_desc(&decreased, 2_700, 9, any),
+            (both.into(), false)
+        );
+        assert_eq!(
+            snapshot_desc(&one_drifted, 2_700, 26, any),
+            (both.into(), true)
+        );
+        assert_eq!(
+            snapshot_desc(&one_drifted, 20, 25, all),
+            (both.into(), true)
+        );
+    }
+
     /// Different schema input cannot match recorded physical evidence.
     #[test]
     fn upstream_schema_change_requires_execution() {
@@ -2024,6 +2077,10 @@ mod tests {
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
                 "no_reuse_candidate.identity_mismatch",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
+                "no_reuse_candidate.execution_type_changed",
             ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
