@@ -80,7 +80,13 @@ MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
 - `ready_to_execute`: `request_id`, `ExplainedDecision{decision=1,
   skip_rejection_reason=6 (NO_SUITABLE_MATCH_FOUND), clone_rejection_reason=6,
   decision_description="model was executed because either its query didn't match
-  or its upstream data is out of date"}`, `execution_decision_id`.
+  or its upstream data is out of date"}`, `execution_decision_id`. The codes are
+  8/7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) when an older build
+  of the target would still qualify for this submit (then `is_stale` is as that
+  build would be reused), and 4/7 (`TARGET_TABLE_DOES_NOT_EXIST` /
+  `TARGET_TABLE_MATCH`) when the own target is absent but its latest build has
+  the workload's identity and would otherwise be reusable (live-verified
+  2026-11-10, `lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`).
 - `ready_to_clone`: see Clone below.
 
 `ExplainedDecision` = `{decision (SubmitSQLResultType), skip_rejection_reason?,
@@ -89,7 +95,10 @@ ints on the wire/JSON.
 
 - `SubmitSQLResultType`: `SKIP_EXECUTION=0, READY_TO_EXECUTE=1, READY_TO_CLONE=3,
   UNKNOWN=4`.
-- `RejectionReason` (subset): `FORCED_NOT_ELIGIBLE=5, NO_SUITABLE_MATCH_FOUND=6`.
+- `RejectionReason` (subset): `TARGET_TABLE_MISMATCH=1`,
+  `TARGET_TABLE_DOES_NOT_EXIST=4`, `FORCED_NOT_ELIGIBLE=5`,
+  `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
+  `LATEST_QUERY_HASH_NOT_MATCH=8`, `CLONE_CHAIN_LIMIT_EXCEEDED=10`.
 
 ### Current decision semantics
 
@@ -303,6 +312,18 @@ skip_rejection_reason=1 (TARGET_TABLE_MISMATCH), clone_rejection_reason=null,
 decision_description="an equivalent model exists under another name so we cloned
 that one"}`, with `clone_required_last_modified_epoch` = the source's build epoch
 and `execution_runtime_ms` echoing the source's runtime.
+
+The same response also answers a submit for an EXISTING or DROPPED target whose
+own build cannot be reused, when a same-environment equivalent (same upstream
+names) qualifies for this submit, judged as if it were the reuse candidate on
+its own build age. `is_stale` is then true when that reuse would be stale
+(within lag tolerance or tolerated by ALL), and for an existing target Explain
+shows "but it's old, so we will clone from …". A same-upstream equivalent that
+does not qualify is not copied (with tolerance 0, a stale one never is). No
+copy is offered when the target's own table was modified externally.
+Live-verified 2026-11-10 (`lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`).
+An equivalent in another environment reads other relations and is copied
+without this judgment.
 
 When the submit target FORBIDS clones (the client sends
 `clone_chain_depth_limit = 0` on the submit — NOT `allow_clones`, which stays

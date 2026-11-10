@@ -659,7 +659,7 @@ impl Store {
                    execution_decision_id, decision, execution_type,
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
-                   freshness_tolerance_ms, build_age_ms
+                   freshness_tolerance_ms, build_age_ms, skip_rejection_reason
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -719,6 +719,8 @@ pub struct ExplainDecisionRow {
     /// decision time (ADR 0007); NULL before they were persisted.
     pub freshness_tolerance_ms: Option<i64>,
     pub build_age_ms: Option<i64>,
+    /// The decision's wire skip rejection code (migration 0016).
+    pub skip_rejection_reason: Option<i32>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -772,6 +774,7 @@ mod tests {
             decision_reason: Some("reused.fresh".into()),
             freshness_tolerance_ms: None,
             build_age_ms: None,
+            skip_rejection_reason: None,
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),

@@ -159,6 +159,7 @@ fn ctx<'a>(
         why_no_candidate: None,
         tolerance_ms: 0,
         build_age_ms: None,
+        own_target_absent: false,
     }
 }
 
@@ -429,9 +430,25 @@ fn hosted_wire(
         }
         _ => "model was executed because either its query didn't match or its upstream data is out of date",
     };
+    let modified = match kind {
+        Some(ModelExecutionType::Snapshot) => {
+            "snapshot was executed because the table was modified after the cached execution"
+        }
+        _ => "model was executed because the table was modified after the cached execution",
+    };
     match reason {
         DecisionReason::Reused(_) => (DecisionKind::Skip, skip, None, None),
         DecisionReason::FirstBuild => (DecisionKind::Build, first, Some(6), Some(6)),
+        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`, lag_seed G):
+        // the target-table codes (4/7) are applied by the caller only when the
+        // rejected latest build would be reusable; `decide` alone gives 6/6.
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing) => {
+            (DecisionKind::Build, first, Some(6), Some(6))
+        }
+        // VERIFIED LIVE (2026-11-10, lag_tolerance_matrix `ot*_u`).
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified) => {
+            (DecisionKind::Build, modified, Some(6), Some(6))
+        }
         DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
         | DecisionReason::NoBuildAnchor
@@ -487,8 +504,25 @@ fn no_candidate_strategy() -> impl Strategy<Value = NoCandidate> {
         Just(NoCandidate::IdentityMismatch),
         Just(NoCandidate::FailedReuseQualification),
         Just(NoCandidate::OwnTargetChangedOrMissing),
+        Just(NoCandidate::OwnTargetModified),
+        Just(NoCandidate::OwnTargetMissing),
         Just(NoCandidate::IncompleteCachedTestResults),
     ]
+}
+
+/// Whether reuse candidate selection can report `why` for this node kind: a
+/// data test has no own target, and only models and snapshots are judged
+/// modified after their build (a seed's table edit is not a candidate).
+fn selection_reports(execution_type: i32, why: NoCandidate) -> bool {
+    let kind = ModelExecutionType::try_from(execution_type).ok();
+    match why {
+        NoCandidate::OwnTargetMissing => kind != Some(ModelExecutionType::DbtDataTest),
+        NoCandidate::OwnTargetModified => !matches!(
+            kind,
+            Some(ModelExecutionType::DbtDataTest | ModelExecutionType::Values)
+        ),
+        _ => true,
+    }
 }
 
 proptest! {
@@ -508,7 +542,8 @@ proptest! {
             row.execution_type = execution_type;
             row
         });
-        let why_no_candidate = if prev.is_some() { None } else { why_no_candidate };
+        let why_no_candidate = if prev.is_some() { None } else { why_no_candidate }
+            .filter(|why| selection_reports(execution_type, *why));
         let c = SubmitContext {
             execution_type,
             input_tables: &current,
@@ -521,6 +556,7 @@ proptest! {
             why_no_candidate,
             tolerance_ms: 0,
             build_age_ms: None,
+            own_target_absent: why_no_candidate == Some(NoCandidate::OwnTargetMissing),
         };
         let record = DecisionRecord::decided(&c, prev.as_ref());
         assert_record_agrees(execution_type, &record)?;

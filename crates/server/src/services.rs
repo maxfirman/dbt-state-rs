@@ -291,6 +291,8 @@ fn submit_capture(
         matched_execution_id: record.matched_execution_id,
         freshness_tolerance_ms: Some(record.tolerance_ms).filter(|t| *t > 0),
         build_age_ms: record.build_age_ms,
+        skip_rejection_reason: record.skip_rejection_reason,
+        clone_rejection_reason: record.clone_rejection_reason,
     }
 }
 
@@ -647,6 +649,8 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     matched_execution_id: None,
                     freshness_tolerance_ms: None,
                     build_age_ms: None,
+                    skip_rejection_reason: None,
+                    clone_rejection_reason: None,
                 },
             );
         }
@@ -757,6 +761,7 @@ impl Explain for ExplainService {
                 input_tables: row.input_tables(),
                 tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
                 build_age_ms: row.build_age_ms,
+                skip_rejection_reason: row.skip_rejection_reason,
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
                 // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a

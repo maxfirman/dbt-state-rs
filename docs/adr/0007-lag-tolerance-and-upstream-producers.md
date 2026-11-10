@@ -56,6 +56,16 @@ reused within tolerance.
 - Copies registered with RegisterClone record no inputs. Their freshness stays
   anchored on the copy's own build epoch, so a copy is never treated as
   fresher than when it was made.
-- A seed's producer identity includes its values, so a reloaded seed counts
-  as an upstream query change. Hosted behavior for seeds is uncharacterized;
-  this is the conservative choice.
+- A seed's producer identity includes its values, so a reloaded seed with
+  changed values or config counts as an upstream query change, and a
+  same-values reload as a data change. Characterized live on 2026-11-10
+  (`lag_seed_upstream.jsonl`): hosted does the same.
+- The same freshness judgment decides which other build may stand in when the
+  target's own build must rebuild (2026-11-10, `lag_copy_candidates.jsonl`).
+  A same-environment equivalent under another name is judged as if it were
+  the reuse candidate, on its own build age, and copied over the target (or
+  into it, when dropped) when it qualifies. An older build of the target
+  itself is never reused (the latest build wins), but when one would qualify,
+  the rebuild reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH as
+  hosted does; a dropped target whose latest build would qualify reports
+  TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH.

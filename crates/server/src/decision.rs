@@ -35,9 +35,12 @@ pub enum NoCandidate {
     IdentityMismatch,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,
-    /// The node's own target is missing, ambiguous, or changed since the
-    /// recorded build.
+    /// The node's own target is reported ambiguously or without an epoch.
+    /// (Persisted name predates [`NoCandidate::OwnTargetMissing`].)
     OwnTargetChangedOrMissing,
+    /// The node's own target is absent from the submit: it does not exist,
+    /// although the latest build has the workload's identity.
+    OwnTargetMissing,
     /// The node's own target was modified after the recorded build (its
     /// reported epoch is later than the build's).
     OwnTargetModified,
@@ -89,12 +92,13 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 15] = [
+    const ALL: [DecisionReason; 16] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
         Self::NoReuseCandidate(NoCandidate::OwnTargetModified),
+        Self::NoReuseCandidate(NoCandidate::OwnTargetMissing),
         Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
         Self::DependencySetChanged,
         Self::NoBuildAnchor,
@@ -123,6 +127,9 @@ impl DecisionReason {
             }
             Self::NoReuseCandidate(NoCandidate::OwnTargetModified) => {
                 "no_reuse_candidate.own_target_modified"
+            }
+            Self::NoReuseCandidate(NoCandidate::OwnTargetMissing) => {
+                "no_reuse_candidate.own_target_missing"
             }
             Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults) => {
                 "no_reuse_candidate.incomplete_cached_test_results"
@@ -291,6 +298,59 @@ impl DecisionRecord {
         }
     }
 
+    /// A rebuild while an OLDER build of the target would still be reusable
+    /// for this submit (its contents were overwritten since): VERIFIED LIVE
+    /// (2026-11-10, lag_copy_candidates `ob*`, lag_seed_upstream H) hosted
+    /// reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, and
+    /// `is_stale` as that build would be reused.
+    pub fn with_older_match(mut self, older: Reuse) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(REJECTION_LATEST_QUERY_HASH_NOT_MATCH);
+            self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+            self.is_stale = older != Reuse::Fresh;
+        }
+        self
+    }
+
+    /// A rebuild of an absent own target whose latest build has the
+    /// workload's identity and would otherwise be reusable for this submit:
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt`, lag_seed_upstream
+    /// G) hosted reports TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH. When
+    /// that build would be stale it reports NO_SUITABLE_MATCH_FOUND (`ddc`,
+    /// `dset0`), the [`decide`] default.
+    pub fn with_absent_target_match(mut self) -> Self {
+        if self.class == DecisionKind::Build
+            && self.reason == DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+        {
+            self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_DOES_NOT_EXIST);
+            self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+        }
+        self
+    }
+
+    /// A copy of an equivalent judged reusable for this submit as `source`
+    /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates): `is_stale` and the
+    /// build age are the equivalent's. `own` is the target's reuse candidate
+    /// when the copy goes over an existing target whose build had to rebuild
+    /// (Explain: "but it's old, so we will clone from …"); it stays the
+    /// Explain anchor.
+    pub fn result_copy_judged(
+        own: Option<&ExecutionRow>,
+        source: Reuse,
+        tolerance_ms: i64,
+        build_age_ms: Option<i64>,
+        input_tables: &[InputTable],
+    ) -> Self {
+        Self {
+            is_stale: source != Reuse::Fresh,
+            matched_execution_id: own.map(|c| c.id),
+            tolerance_ms,
+            build_age_ms,
+            input_tables: input_tables.to_vec(),
+            ..Self::result_copy()
+        }
+    }
+
     /// An equivalent model built under another name is copied in. VERIFIED
     /// LIVE shape: READY_TO_CLONE with TARGET_TABLE_MISMATCH and no clone
     /// rejection.
@@ -347,6 +407,11 @@ pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = qc::RejectionReason::TargetTabl
 /// `unable_to_clone`), and the skip rejection on every `ready_to_clone`.
 pub const REJECTION_FORCED_NOT_ELIGIBLE: i32 = qc::RejectionReason::ForcedNotEligible as i32;
 pub const REJECTION_NO_SUITABLE_MATCH_FOUND: i32 = qc::RejectionReason::NoSuitableMatchFound as i32;
+pub const REJECTION_TARGET_TABLE_DOES_NOT_EXIST: i32 =
+    qc::RejectionReason::TargetTableDoesNotExist as i32;
+pub const REJECTION_TARGET_TABLE_MATCH: i32 = qc::RejectionReason::TargetTableMatch as i32;
+pub const REJECTION_LATEST_QUERY_HASH_NOT_MATCH: i32 =
+    qc::RejectionReason::LatestQueryHashNotMatch as i32;
 /// VERIFIED LIVE: when a target disallows clones (profile `allow_clones:
 /// false`), the Fusion client encodes it as `clone_chain_depth_limit = 0`, and
 /// the hosted service answers RegisterClone with `unable_to_clone` carrying
@@ -455,6 +520,9 @@ pub struct SubmitContext<'a> {
     /// Server clock minus the reuse candidate's build time; `None` when there
     /// is no candidate or its build time is unknown.
     pub build_age_ms: Option<i64>,
+    /// The submit does not report the node's own target: it does not exist.
+    /// A rebuild of an absent target is described as "did not exist".
+    pub own_target_absent: bool,
 }
 
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
@@ -467,7 +535,7 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
         // `target_has_prior_build` carries the physical-existence signal.
         None => execute(
             ctx.execution_type,
-            ctx.target_has_prior_build,
+            ctx.target_has_prior_build && !ctx.own_target_absent,
             ctx.why_no_candidate
                 .map_or(DecisionReason::FirstBuild, DecisionReason::NoReuseCandidate),
         ),
@@ -485,6 +553,15 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
             }
         }
     }
+}
+
+/// How fresh `build` would be if reused for this submit, or `None` if the
+/// submit would rebuild it. Used to report an older build of the target that
+/// would still qualify, and to choose an equivalent to copy (both judged as
+/// if `build` were the reuse candidate, with `ctx.build_age_ms` its age).
+pub fn reusable(ctx: &SubmitContext, build: &ExecutionRow) -> Option<Reuse> {
+    let f = evaluate_freshness(ctx, build);
+    f.rebuild.is_none().then_some(f.reuse)
 }
 
 /// Result of the freshness evaluation: why to rebuild, if the evidence
@@ -824,6 +901,7 @@ mod tests {
             why_no_candidate: None,
             tolerance_ms: 0,
             build_age_ms: None,
+            own_target_absent: false,
         }
     }
 
@@ -1473,6 +1551,7 @@ mod tests {
             why_no_candidate: None,
             tolerance_ms: 0,
             build_age_ms: None,
+            own_target_absent: false,
         }
     }
 
@@ -1953,6 +2032,10 @@ mod tests {
                 "no_reuse_candidate.own_target_modified",
             ),
             (
+                DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
+                "no_reuse_candidate.own_target_missing",
+            ),
+            (
                 DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
                 "no_reuse_candidate.incomplete_cached_test_results",
             ),
@@ -2012,8 +2095,150 @@ mod tests {
                 REJECTION_FORCED_NOT_ELIGIBLE,
                 REJECTION_NO_SUITABLE_MATCH_FOUND,
                 REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+                REJECTION_TARGET_TABLE_DOES_NOT_EXIST,
+                REJECTION_TARGET_TABLE_MATCH,
+                REJECTION_LATEST_QUERY_HASH_NOT_MATCH,
             ],
-            [1, 5, 6, 10]
+            [1, 5, 6, 10, 4, 7, 8]
+        );
+    }
+
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`, lag_seed_upstream
+    /// G, lag_dropped_targets `ddc`): an absent target whose latest build still
+    /// has the workload's identity is described as a first build. It reports
+    /// TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH only when that build
+    /// would otherwise be reusable (the caller judges it), else 6/6.
+    #[test]
+    fn missing_own_target_reports_target_table_codes() {
+        let mut c = ctx(&[]);
+        c.execution_type = ModelExecutionType::Full as i32;
+        c.target_has_prior_build = true;
+        c.own_target_absent = true;
+        c.why_no_candidate = Some(NoCandidate::OwnTargetMissing);
+        let record = DecisionRecord::decided(&c, None);
+        assert_eq!(
+            record.description,
+            "model was executed because its table did not exist"
+        );
+        assert_eq!(
+            record.reason,
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+        );
+        assert!(!record.is_stale);
+        assert_eq!(
+            (record.skip_rejection_reason, record.clone_rejection_reason),
+            (
+                Some(REJECTION_NO_SUITABLE_MATCH_FOUND),
+                Some(REJECTION_NO_SUITABLE_MATCH_FOUND)
+            ),
+            "a stale latest build"
+        );
+        let matched = record.clone().with_absent_target_match();
+        assert_eq!(
+            (
+                matched.skip_rejection_reason,
+                matched.clone_rejection_reason
+            ),
+            (
+                Some(REJECTION_TARGET_TABLE_DOES_NOT_EXIST),
+                Some(REJECTION_TARGET_TABLE_MATCH)
+            )
+        );
+        assert_eq!(matched.description, record.description);
+
+        // Any other rebuild is left alone.
+        let other = DecisionRecord::decided(&ctx(&[]), None);
+        assert_eq!(other.clone().with_absent_target_match(), other);
+    }
+
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `ob*`): a rebuild while
+    /// an older build would still be reusable reports
+    /// LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, with `is_stale` as
+    /// that build would be reused. A reuse is left alone.
+    #[test]
+    fn older_match_overrides_only_a_rebuild() {
+        let c = ctx(&[]);
+        let rebuild = DecisionRecord::decided(&c, None);
+        for (older, stale) in [
+            (Reuse::Fresh, false),
+            (Reuse::WithinLagTolerance, true),
+            (Reuse::ToleratedStale, true),
+        ] {
+            let r = rebuild.clone().with_older_match(older);
+            assert_eq!(r.class, DecisionKind::Build);
+            assert_eq!(r.reason, rebuild.reason, "the reason is the rebuild's");
+            assert_eq!(r.description, rebuild.description);
+            assert_eq!(
+                r.skip_rejection_reason,
+                Some(REJECTION_LATEST_QUERY_HASH_NOT_MATCH)
+            );
+            assert_eq!(r.clone_rejection_reason, Some(REJECTION_TARGET_TABLE_MATCH));
+            assert_eq!(r.is_stale, stale, "{older:?}");
+        }
+
+        let tables = [tbl("a", 100)];
+        let prev = confirmed("h", tables.to_vec(), Some(100));
+        let skip = DecisionRecord::decided(&ctx(&tables), Some(&prev));
+        assert_eq!(skip.class, DecisionKind::Skip);
+        assert_eq!(
+            skip.clone().with_older_match(Reuse::WithinLagTolerance),
+            skip
+        );
+    }
+
+    /// A judged result copy keeps the copy's wire shape and carries the
+    /// equivalent's staleness and build age, anchored on the target's own
+    /// build when it copies over an existing target.
+    #[test]
+    fn judged_result_copy_carries_the_equivalents_freshness() {
+        let tables = [tbl("a", 100)];
+        let own = confirmed("h", tables.to_vec(), Some(100));
+        let over = DecisionRecord::result_copy_judged(
+            Some(&own),
+            Reuse::WithinLagTolerance,
+            600_000,
+            Some(5_000),
+            &tables,
+        );
+        assert_eq!(over.class, DecisionKind::Clone);
+        assert_eq!(over.reason, DecisionReason::ResultCopy);
+        assert_eq!(over.description, RESULT_COPY_DESCRIPTION);
+        assert_eq!(
+            over.skip_rejection_reason,
+            Some(REJECTION_TARGET_TABLE_MISMATCH)
+        );
+        assert_eq!(over.clone_rejection_reason, None);
+        assert!(over.is_stale);
+        assert_eq!(over.matched_execution_id, Some(own.id));
+        assert_eq!(
+            (over.tolerance_ms, over.build_age_ms),
+            (600_000, Some(5_000))
+        );
+        assert_eq!(over.input_tables, tables);
+
+        let fresh = DecisionRecord::result_copy_judged(None, Reuse::Fresh, 0, None, &[]);
+        assert!(!fresh.is_stale);
+        assert_eq!(fresh.matched_execution_id, None);
+        assert_eq!(fresh, DecisionRecord::result_copy());
+    }
+
+    /// `reusable` judges a build as if it were the reuse candidate.
+    #[test]
+    fn reusable_judges_a_build_as_the_reuse_candidate() {
+        let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
+        let unchanged = [tbl("a", 100)];
+        let drifted = [tbl("a", 900)];
+        assert_eq!(reusable(&ctx(&unchanged), &prev), Some(Reuse::Fresh));
+        assert_eq!(reusable(&ctx(&drifted), &prev), None);
+        let mut within = ctx(&drifted);
+        within.tolerance_ms = 600;
+        within.build_age_ms = Some(10);
+        assert_eq!(reusable(&within, &prev), Some(Reuse::WithinLagTolerance));
+        within.build_age_ms = Some(600);
+        assert_eq!(
+            reusable(&within, &prev),
+            None,
+            "age == tolerance is too old"
         );
     }
 }

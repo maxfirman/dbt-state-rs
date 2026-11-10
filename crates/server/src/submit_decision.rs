@@ -149,30 +149,187 @@ pub async fn submit_sql(
     resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
 
-    // Precedence: a Result copy is considered only when there is no reuse
-    // candidate, and when it applies it overrides the ordinary verdict.
-    let has_reuse_candidate = selection.candidate.is_some();
-    if let Some(outcome) =
-        result_copy_fallback(store, org_id, req, &evidence, has_reuse_candidate).await?
-    {
-        return Ok(outcome);
+    // Precedence: with no reuse candidate, a Result copy of an equivalent
+    // overrides the ordinary verdict. Not when the target's own table was
+    // modified after its build: hosted rebuilds it (VERIFIED LIVE 2026-11-10,
+    // lag_copy_candidates `ome`).
+    let copy_considered = selection.candidate.is_none()
+        && selection.why_no_candidate != Some(decision::NoCandidate::OwnTargetModified);
+    let freshness = Freshness {
+        target_table: req.target_table.as_deref(),
+        stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
+        tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
+        now_ms,
+        own_target_absent: req
+            .target_table
+            .as_deref()
+            .is_some_and(|t| !req.tables.iter().any(|x| x.name == t)),
+    };
+    if copy_considered {
+        if let Some(outcome) = result_copy_fallback(
+            store,
+            org_id,
+            req,
+            &evidence,
+            &freshness,
+            None,
+            selection.rejected.as_ref(),
+        )
+        .await?
+        {
+            return Ok(outcome);
+        }
     }
+    let (record, candidate) = decide(&evidence, &selection, &freshness);
+    let candidate = candidate.cloned();
+    // The target's own reuse candidate must rebuild for freshness, but an
+    // equivalent under another name may still be reusable for this submit
+    // (VERIFIED LIVE 2026-11-10, lag_copy_candidates `fe`, `st`, `wba`; not
+    // when the equivalent is itself stale, `esb`).
+    if let (Some(own), true) = (&candidate, rebuilds_for_freshness(&record)) {
+        if let Some(outcome) = result_copy_fallback(
+            store,
+            org_id,
+            req,
+            &evidence,
+            &freshness,
+            Some(own),
+            Some(own),
+        )
+        .await?
+        {
+            log_decision(&evidence, outcome.record(), true, &req.labels);
+            return Ok(outcome);
+        }
+    }
+    let record = report_older_match(store, &evidence, &freshness, record, |row| {
+        reuse_candidate::older_build_matches(req, &evidence, row)
+    })
+    .await?;
+    log_decision(&evidence, &record, candidate.is_some(), &req.labels);
+    let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
+    settle(store, &evidence, record, candidate).await
+}
 
-    decide_and_settle(
-        store,
-        &evidence,
-        selection,
-        Freshness {
-            target_table: req.target_table.as_deref(),
-            stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
-                req.stale_upstream_policy,
-            ),
-            tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
-            now_ms,
-        },
-        &req.labels,
-    )
-    .await
+/// A rebuild whose latest build had the workload's identity but whose own
+/// target was missing or modified keeps that build as its Explain anchor.
+fn anchor_rejected(
+    mut record: DecisionRecord,
+    candidate: Option<ExecutionRow>,
+    rejected: Option<ExecutionRow>,
+) -> (DecisionRecord, Option<ExecutionRow>) {
+    match (candidate, rejected) {
+        (None, Some(row)) if record.class == DecisionKind::Build => {
+            record.matched_execution_id = Some(row.id);
+            (record, Some(row))
+        }
+        (candidate, _) => (record, candidate),
+    }
+}
+
+/// A rebuild the reuse candidate's freshness required (not its identity).
+fn rebuilds_for_freshness(record: &DecisionRecord) -> bool {
+    record.class == DecisionKind::Build
+        && matches!(
+            record.reason,
+            decision::DecisionReason::UpstreamOutdated
+                | decision::DecisionReason::UpstreamQueryChanged
+        )
+}
+
+/// The decision context for judging `build` as the reuse candidate: the
+/// submit's inputs and freshness parameters, with `build`'s age on the
+/// server clock (ADR 0007: the ConfirmExecution epoch where epochs are
+/// wall-clock milliseconds, the confirmation's receipt on DuckDB).
+fn context<'a>(
+    evidence: &'a ExecutionEvidence,
+    selection: &Selection,
+    freshness: &Freshness<'a>,
+    build: Option<&ExecutionRow>,
+) -> SubmitContext<'a> {
+    let build_age_ms = build.and_then(|c| {
+        Warehouse::from_dialect(&evidence.dialect)
+            .build_time_ms(c)
+            .map(|built| freshness.now_ms.saturating_sub(built))
+    });
+    SubmitContext {
+        execution_type: evidence.execution_type,
+        input_tables: &evidence.input_tables,
+        target_table: freshness.target_table,
+        stale_upstream_policy: freshness.stale_upstream_policy,
+        target_has_prior_build: selection.target_has_prior_build,
+        why_no_candidate: selection.why_no_candidate,
+        tolerance_ms: freshness.tolerance_ms,
+        build_age_ms,
+        own_target_absent: freshness.own_target_absent,
+    }
+}
+
+/// The ordinary decision against the selected reuse candidate. A rebuild of
+/// an absent own target reports the target-table codes when the latest build
+/// it rejected would otherwise be reusable for this submit.
+fn decide<'s>(
+    evidence: &ExecutionEvidence,
+    selection: &'s Selection,
+    freshness: &Freshness<'_>,
+) -> (DecisionRecord, Option<&'s ExecutionRow>) {
+    let candidate = selection.candidate.as_ref();
+    let ctx = context(evidence, selection, freshness, candidate);
+    let mut record = DecisionRecord::decided(&ctx, candidate);
+    if let Some(rejected) = &selection.rejected {
+        let ctx = context(evidence, selection, freshness, Some(rejected));
+        if decision::reusable(&ctx, rejected).is_some() {
+            record = record.with_absent_target_match();
+        }
+    }
+    (record, candidate)
+}
+
+/// When a rebuild's target had an OLDER build (overwritten since) with the
+/// workload's identity that would still be reusable for this submit, report
+/// it the way hosted does (LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH,
+/// `is_stale` as that build would be reused). Only the newest such build is
+/// judged. First builds, absent targets and own-target edits are left as is.
+async fn report_older_match(
+    store: &Store,
+    evidence: &ExecutionEvidence,
+    freshness: &Freshness<'_>,
+    record: DecisionRecord,
+    matches: impl Fn(&ExecutionRow) -> bool,
+) -> sqlx::Result<DecisionRecord> {
+    use decision::{DecisionReason as R, NoCandidate as N};
+    let applies = record.class == DecisionKind::Build
+        && !freshness.own_target_absent
+        && matches!(
+            record.reason,
+            R::UpstreamOutdated
+                | R::UpstreamQueryChanged
+                | R::DependencySetChanged
+                | R::NoReuseCandidate(N::IdentityMismatch)
+        );
+    if !applies {
+        return Ok(record);
+    }
+    let history = store
+        .target_history(
+            &evidence.org_id,
+            &evidence.target_table,
+            execution::non_blank_namespace(evidence.table_namespace.as_deref()),
+            &evidence.dialect,
+        )
+        .await?;
+    let Some(older) = history.into_iter().skip(1).find(|row| matches(row)) else {
+        return Ok(record);
+    };
+    let Ok(older) = older.into_checked(false) else {
+        return Ok(record);
+    };
+    let selection = Selection::of_candidate(older.clone());
+    let ctx = context(evidence, &selection, freshness, Some(&older));
+    Ok(match decision::reusable(&ctx, &older) {
+        Some(reuse) => record.with_older_match(reuse),
+        None => record,
+    })
 }
 
 /// Record, on each input the evidence read, which build in State history
@@ -214,6 +371,8 @@ struct Freshness<'a> {
     stale_upstream_policy: decision::StaleUpstreamPolicy,
     tolerance_ms: i64,
     now_ms: i64,
+    /// The submit does not report the node's own target.
+    own_target_absent: bool,
 }
 
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Result copy
@@ -243,19 +402,22 @@ pub async fn submit_values(
         .await?;
     let selection = reuse_candidate::for_seed(req, &evidence, current)?;
 
-    decide_and_settle(
-        store,
-        &evidence,
-        selection,
-        Freshness {
-            target_table: Some(req.target_table.as_str()),
-            stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
-            tolerance_ms: 0,
-            now_ms,
-        },
-        &req.labels,
-    )
-    .await
+    let freshness = Freshness {
+        target_table: Some(req.target_table.as_str()),
+        stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
+        tolerance_ms: 0,
+        now_ms,
+        own_target_absent: req.last_modified_epoch.is_none(),
+    };
+    let (record, candidate) = decide(&evidence, &selection, &freshness);
+    let candidate = candidate.cloned();
+    let record = report_older_match(store, &evidence, &freshness, record, |row| {
+        reuse_candidate::older_seed_matches(req, &evidence, row)
+    })
+    .await?;
+    log_decision(&evidence, &record, candidate.is_some(), &req.labels);
+    let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
+    settle(store, &evidence, record, candidate).await
 }
 
 /// State history selection for a SQL submission. Models read the target's
@@ -297,24 +459,72 @@ async fn select_sql(
 }
 
 /// The Result copy fallback (see [`result_copy`]): an equivalent model already
-/// built under another name is copied in. `None` means the ordinary decision
-/// applies: no lookup was warranted, no equivalent exists, or no copy can be
-/// produced for it.
+/// built under another name is copied in. `own` is the target's reuse
+/// candidate when it had one but must rebuild for freshness (the copy then
+/// goes over the existing target). `None` means the ordinary decision
+/// applies: no lookup was warranted, no equivalent exists, the equivalent is
+/// not fresh enough for this submit, or no copy can be produced for it.
+///
+/// An equivalent that read the same upstream relations as this submit is
+/// judged exactly as if it were the reuse candidate, for an existing or a
+/// dropped target (VERIFIED LIVE 2026-11-10, lag_copy_candidates: an
+/// equivalent whose consumed upstream was since externally modified is not
+/// copied; lag_dropped_targets `dset0`/`dset600`). One in another environment reads
+/// other relations and is copied without that judgment, as verified earlier
+/// (clone_fallback_stale_source, clone_fallback_zero_tolerance).
 async fn result_copy_fallback(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
-    has_reuse_candidate: bool,
+    freshness: &Freshness<'_>,
+    own: Option<&ExecutionRow>,
+    anchor: Option<&ExecutionRow>,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    let Some(lookup) = result_copy::submit_lookup(req, evidence, has_reuse_candidate) else {
+    let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(None);
     };
     let Some(equivalent) = find_equivalent(store, org_id, req, &lookup).await? else {
         return Ok(None);
     };
+    let source = store
+        .current_target_state(
+            org_id,
+            &equivalent.source_table,
+            Some(lookup.table_namespace),
+            &req.dialect,
+        )
+        .await?;
+    let judged = match source {
+        Some(mut source) if reads_same_upstreams(evidence, &source) => {
+            // The submit's upstream evidence, as read by the equivalent.
+            let upstreams: Vec<_> = evidence
+                .input_tables
+                .iter()
+                .filter(|t| t.name != evidence.target_table)
+                .cloned()
+                .collect();
+            reuse_candidate::adopt_current_inputs(&mut source, &upstreams);
+            let selection = Selection::of_candidate(source.clone());
+            let mut ctx = context(evidence, &selection, freshness, Some(&source));
+            ctx.input_tables = &upstreams;
+            ctx.target_table = Some(source.target_table.as_str());
+            match decision::reusable(&ctx, &source) {
+                Some(reuse) => Some((reuse, ctx.build_age_ms)),
+                None => return Ok(None),
+            }
+        }
+        Some(_) => None,
+        // The equivalent's current state vanished between the two reads.
+        None => return Ok(None),
+    };
+    if own.is_some() && judged.is_none() {
+        // A copy over an existing target is only characterized for an
+        // equivalent in the same environment.
+        return Ok(None);
+    }
     match result_copy::plan_submit(req, equivalent) {
-        SubmitCopyPlan::ChainLimitExecute => {
+        SubmitCopyPlan::ChainLimitExecute if own.is_none() => {
             let ids = DecisionIds::mint();
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
@@ -329,12 +539,19 @@ async fn result_copy_fallback(
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
             write_pending(store, &evidence.copied_from(&copy.source_table), &ids).await?;
-            Ok(Some(SubmitOutcome::Copy {
-                ids,
-                copy,
-                record: DecisionRecord::result_copy(),
-            }))
+            let record = match judged {
+                Some((reuse, build_age_ms)) => DecisionRecord::result_copy_judged(
+                    anchor,
+                    reuse,
+                    freshness.tolerance_ms,
+                    build_age_ms,
+                    &evidence.input_tables,
+                ),
+                None => DecisionRecord::result_copy(),
+            };
+            Ok(Some(SubmitOutcome::Copy { ids, copy, record }))
         }
+        SubmitCopyPlan::ChainLimitExecute => Ok(None),
         SubmitCopyPlan::Unavailable { reason } => {
             tracing::warn!(
                 target = %req.target_table.as_deref().unwrap_or_default(),
@@ -344,6 +561,24 @@ async fn result_copy_fallback(
             Ok(None)
         }
     }
+}
+
+/// Whether `source` recorded exactly the genuine upstream relations this
+/// submit reads.
+fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
+    let names = |tables: &[crate::store::InputTable], own: &str| {
+        let mut n: Vec<String> = tables
+            .iter()
+            .filter(|t| t.name != own)
+            .map(|t| t.name.clone())
+            .collect();
+        n.sort();
+        n
+    };
+    // A client-requested copy records none; it reads what its submit reads.
+    source.input_tables.is_empty() && source.clone_source_table.is_some()
+        || names(&source.input_tables, &source.target_table)
+            == names(&evidence.input_tables, &evidence.target_table)
 }
 
 /// The clone-equivalent lookup: the first current equivalent, in the store's
@@ -398,51 +633,22 @@ async fn find_equivalent(
     Ok(None)
 }
 
-/// The step both entry points share once State history is selected (and, for
-/// SQL, no Result copy applied): build the decision context from the
-/// evidence, decide, log the decision and settle it.
-async fn decide_and_settle(
-    store: &Store,
+fn log_decision(
     evidence: &ExecutionEvidence,
-    selection: Selection,
-    freshness: Freshness<'_>,
+    record: &DecisionRecord,
+    had_match: bool,
     labels: &HashMap<String, String>,
-) -> sqlx::Result<SubmitOutcome> {
-    let Selection {
-        candidate,
-        target_has_prior_build,
-        why_no_candidate,
-    } = selection;
-    // Build age on the server clock (ADR 0007): the build's ConfirmExecution
-    // epoch where epochs are wall-clock milliseconds, the server's receipt of
-    // the confirmation where they are not (DuckDB ordinals).
-    let build_age_ms = candidate.as_ref().and_then(|c| {
-        Warehouse::from_dialect(&evidence.dialect)
-            .build_time_ms(c)
-            .map(|built| freshness.now_ms.saturating_sub(built))
-    });
-    let ctx = SubmitContext {
-        execution_type: evidence.execution_type,
-        input_tables: &evidence.input_tables,
-        target_table: freshness.target_table,
-        stale_upstream_policy: freshness.stale_upstream_policy,
-        target_has_prior_build,
-        why_no_candidate,
-        tolerance_ms: freshness.tolerance_ms,
-        build_age_ms,
-    };
-    let record = DecisionRecord::decided(&ctx, candidate.as_ref());
+) {
     tracing::info!(
         node = %labels.get("dbt_node_name").map(String::as_str).unwrap_or_default(),
         execution_type = evidence.execution_type,
-        had_match = candidate.is_some(),
+        had_match,
         body_hash = %evidence.node_body_hash.as_deref().unwrap_or_default(),
         values_hash = %evidence.values_hash.as_deref().unwrap_or_default(),
-        verdict = verdict_label(&record),
+        verdict = verdict_label(record),
         reason = ?record.reason,
         "decision"
     );
-    settle(store, evidence, record, candidate).await
 }
 
 /// The shared tail of both entry points: mint ids, write the pending row for

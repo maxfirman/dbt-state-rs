@@ -273,12 +273,9 @@ may abort client operations.
 >   gate needs a fresh capture of its own confirmed baseline + a no-swap control.
 >   (The SELF-CONTAINED gate `dep_binding_swap_gated_against_present_baseline_with_control`
 >   covers the server-side property.)
-> - **Rebuild rejection-code mapping** (5th follow-up finding 4): after a
->   confirmed baseline, a changed submit that misses the fingerprint now reports
->   the correct rebuild DESCRIPTION, but hosted's rejection CODES vary
->   (`c1_config_semantics` entry 7 uses skip=8/clone=7 while other post-baseline
->   rebuilds use 6/6). The 8/7-vs-6/6 selection is uncharacterized; recorded as an
->   EXACT field-scoped conformance gap on those two codes only.
+> - **Rebuild rejection-code mapping** (5th follow-up finding 4): RESOLVED
+>   2026-11-10. 8/7 means an older build of the target would still qualify;
+>   4/7 means the own target is absent; 6/6 otherwise (§C).
 > - Prior-acknowledged open items (below) remain: stale-same-target vs
 >   fresh-alternative, exact lag/time-travel window, the unconfirmed/failed-submit
 >   publication point, wildcard-view columns, graph/ordering, proxy fidelity, the
@@ -656,21 +653,62 @@ assessment where the follow-up was right.
 > upstream-query lines). `lag_tolerance_matrix`, `lag_tolerance_docs_example`
 > and `lag_external_modification_linked` now replay exactly in
 > `conformance.rs`, and the four "lag-tolerance description skew" known gaps
-> were removed as resolved. Open:
-> - **Result copy after an upstream query change**: hosted answered an ALL-policy
->   submit whose consumed upstream had been externally modified and then rebuilt
->   with `ready_to_clone` + `is_stale=true` from an equivalent ("but it's old,
->   so we will clone from …"); the engine executes
->   (`lag_upstream_query_listing.jsonl`, characterization only).
+> were removed as resolved.
+> **CLOSED 2026-11-10** (`experiments/copy_candidates.py`,
+> `experiments/seed_upstream.py`; fixtures `lag_copy_candidates.jsonl`,
+> `lag_dropped_targets.jsonl` and `lag_seed_upstream.jsonl`, all replayed in
+> `conformance.rs` and pinned by
+> `lag_tolerance.rs::{copy_candidate_arms,seed_upstream_arms}`):
+> - **Result copy over an existing target**: when the target's own build must
+>   rebuild for freshness, hosted copies an equivalent under another name that
+>   qualifies for this submit, judged as if it were the reuse candidate (on the
+>   equivalent's build age), and reports `is_stale` as that reuse would. No
+>   copy when the target's own table was modified externally (`ome`) or the
+>   equivalent does not qualify either (`esb`). Explain shows "but it's old,
+>   so we will clone from …", the target's analysis against its own build, and
+>   the equivalent's freshness summary. `submit_decision.rs::result_copy_fallback`,
+>   `DecisionRecord::result_copy_judged`, `explain.rs::copy_over_tree`.
+>   `lag_upstream_query_listing.jsonl` now replays. A DROPPED target is
+>   treated the same way: a same-upstream equivalent is copied only if it
+>   qualifies (`lag_dropped_targets.jsonl`: stale with tolerance 0 → execute,
+>   `dset0`; within a 600s tolerance → copy with `is_stale`, `dset600`). An
+>   equivalent in another environment reads other relations and is still
+>   copied without that judgment (`clone_fallback_stale_source`,
+>   `clone_fallback_zero_tolerance`). The DuckDB generated trace now asks for
+>   its stale copy with a lag tolerance.
+> - **Rebuild rejection codes**: 8/7 (LATEST_QUERY_HASH_NOT_MATCH /
+>   TARGET_TABLE_MATCH) when an OLDER build of the target would still qualify,
+>   `is_stale` as it would be reused (`ob*`, seed arm H); 4/7
+>   (TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH) when the own target is
+>   absent and its latest build has the workload's identity and would otherwise
+>   be reusable (`dt`, seed arm G); 6/6 otherwise, including a dropped target
+>   whose build is stale (`lag_dropped_targets.jsonl` `ddc`, `dset0`). `reuse_candidate.rs::{older_build_matches,older_seed_matches}`,
+>   `NoCandidate::OwnTargetMissing`, migration 0016 (both codes persisted for
+>   Explain). The c1_config_semantics entry-7 gap was removed as resolved.
+> - **Seeds**: a reloaded seed with changed values or semantic config is an
+>   upstream query change for its consumers; a same-values reload is a data
+>   change; v1 → v2 → v1 is reused. This matches the engine's rule. Seed
+>   Explain trees ("the seed file exists already", "the seed data has (not)
+>   changed") are rendered.
+> - **Fresh skip summary**: an anchored skip ends with "upstream data is up to
+>   date" only when every upstream epoch equals its recorded epoch.
+>
+> Open:
+> - **Seed own-table external modification (SAFETY FLOOR, deliberate)**: hosted
+>   SKIPS an unchanged-values seed whose own table was modified externally
+>   (seed arm C), serving the edited table; the engine reloads it. Keyed gaps
+>   `lag_seed_upstream.jsonl` entries 22–23. No Explain tree is rendered for
+>   that reload (hosted has none).
 > - **Own-target modification in the 2026-10-11 captures**: hosted (client
 >   2.0.6) skipped an own target modified after its build; it rebuilds today.
 >   The engine follows today's behavior, so `lag_multi_upstream_policy.jsonl`
 >   stays characterization only (its lp_model2 decisions all replay).
-> - **Seeds and data tests as Lag tolerance subjects**: clients send tolerance 0
->   for data tests; a reloaded seed upstream counts as an upstream query change
->   (conservative, uncharacterized).
-> - **First-build rejection codes with prior hosted history**: 4/7 instead of
->   6/6 (`lag_external_modification_linked` entries 3–4, field-scoped gaps).
+> - **Data tests as Lag tolerance subjects**: clients send tolerance 0 for data
+>   tests.
+> - **First-build rejection codes with prior hosted history**: hosted reports
+>   4/7 from builds in earlier sessions that the captures lack
+>   (`lag_external_modification_linked` entries 3–4, field-scoped
+>   missing-history gaps). The rule itself is implemented.
 
 **Lag/data freshness — RESOLVED (live-verified 2026-10-11).** The freshness
 rule was characterized against the real service (api.state.dbt.com, dbt Fusion

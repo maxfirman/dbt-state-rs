@@ -430,17 +430,10 @@ async fn conformance_replay_all_corpora() {
         // is_stale=true ("but it's old, so we will clone from …"). The local
         // fallback copies on the first submit. Uncharacterized; pinned by
         // lag_tolerance.rs, see correctness-handoff.md §C open items.
-        "lag_upstream_query_listing.jsonl",
         // Clone chain with the upstream's own builds (2026-11-10). Every copy
         // in it comes from a source built in an earlier session, so it cannot
         // replay from an empty store; pinned by lag_tolerance.rs.
         "clone_chain_upstream_history.jsonl",
-        // Seeds as upstreams (2026-11-10). Every model decision replays; the
-        // seeds' own Explain trees (unrendered locally), hosted's SKIP of a
-        // seed whose table was modified externally (we rebuild it), and the
-        // `upstream data is up to date` summary line on a fully unchanged
-        // skip do not yet. Pinned by lag_tolerance.rs.
-        "lag_seed_upstream.jsonl",
         "selector_state_selection.jsonl",
         // Interleaved clone→rebuild→clone over the SAME physical target (the
         // decision depends on warehouse state not in the protocol). Pinned by
@@ -497,7 +490,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        32,
+        36,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -926,6 +919,13 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
             "last updated: «rel_time»".to_string()
         } else if t.starts_with("updated ") && t.contains("last executed") {
             "«gap»".to_string()
+        } else if let Some(rest) = t
+            .strip_prefix("the model was last built ")
+            .and_then(|r| r.split_once(" ago, ").map(|(_, tol)| tol))
+        {
+            // The build age is runtime-dependent (decision vs replay clock);
+            // within/exceeds and the tolerance are compared.
+            format!("the model was last built «age» ago, {rest}")
         } else if t.starts_with("no updates since") && t.contains("last executed") {
             // Collapse both the model-anchor and test-anchor variants onto one
             // masked form so the anchor FQN is a runtime slot.
@@ -1186,13 +1186,21 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
 
-    // 1) First submit → EXECUTE (first build). Confirm it with the node's own
-    //    build epoch so a later identical submit can prove freshness and SKIP.
-    let r1 = sql
-        .submit_enriched_sql(submit0.clone())
-        .await
-        .unwrap()
-        .into_inner();
+    // 1) First submit → EXECUTE (first build). Hosted's SKIP was a
+    //    within-lag-tolerance reuse with a FRESH upstream subtree: ET_UP's
+    //    current epoch differs from (is older than) the epoch recorded at the
+    //    build, so it is neither drift nor "every upstream epoch equals its
+    //    recorded epoch" (explain-catalog §decision_description, `dsdec_young`).
+    //    Reproduce that by building against a NEWER ET_UP epoch, then confirming
+    //    with the node's own build epoch.
+    let up_name = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ET_UP\"";
+    let mut first = submit0.clone();
+    for t in &mut first.tables {
+        if t.name == up_name {
+            t.last_modified_epoch = t.last_modified_epoch.map(|e| e + 1_000);
+        }
+    }
+    let r1 = sql.submit_enriched_sql(first).await.unwrap().into_inner();
     let qc::submit_sql_response::Response::ReadyToExecute(exec1) = r1.response.unwrap() else {
         panic!("first submit must EXECUTE");
     };
@@ -1214,7 +1222,7 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     .await
     .unwrap();
 
-    // 2) Identical re-submit → SKIP (query unchanged, upstream fresh).
+    // 2) Re-submit with the current ET_UP epoch → SKIP within lag tolerance.
     let r2 = sql
         .submit_enriched_sql(submit0.clone())
         .await
@@ -1249,25 +1257,11 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         msg.decision,
         hosted_explain["decision"].as_i64().unwrap() as i32
     );
-    // decision_description: the hosted capture is the lag-tolerance variant (#2,
-    // "its data is within lag tolerance"). Our engine pins the plain SKIP
-    // description (#1) and deliberately never applies freshness_tolerance_seconds
-    // (decision.rs), so it selects #1 here. Selecting #2 requires detecting a
-    // lag_tolerance config — a decision-engine wording concern tracked
-    // separately (docs/explain-catalog.md §decision_description / issue #22), not
-    // part of the explain TREE this ticket derives. The three SKIP descriptions
-    // share ONE structurally identical tree (the point of the catalog), so the
-    // tree cross-check below is the faithful explain assertion. We assert the
-    // re-derived description is a valid member of the pinned SKIP set.
-    assert!(
-        matches!(
-            msg.decision_description.as_str(),
-            "model was a no-op because both its query and its upstream data are up to date"
-                | "model was a no-op because its query is up to date and its data is within lag tolerance"
-                | "model was a no-op because its query is up to date and at least one upstream dependency is unchanged"
-        ),
-        "SKIP description must be a pinned catalog variant, got: {}",
-        msg.decision_description
+    // decision_description: the hosted capture is the lag-tolerance variant
+    // ("its data is within lag tolerance"); the seeded history reproduces it.
+    assert_eq!(
+        msg.decision_description,
+        hosted_explain["decision_description"].as_str().unwrap()
     );
     // The FULL normalized tree — including the per-upstream FRESH freshness
     // subtree — matches the hosted SKIP tree exactly via the matched_execution_id

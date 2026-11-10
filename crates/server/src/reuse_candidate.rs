@@ -37,14 +37,30 @@ pub(crate) struct Selection {
     /// Why the latest row in scope is not a reuse candidate. `None` when there
     /// is a candidate or no latest row at all (a first build).
     pub why_no_candidate: Option<NoCandidate>,
+    /// The latest row when it has the workload's identity but its own target
+    /// is missing or was modified after it: what Explain renders against
+    /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
+    /// reused.
+    pub rejected: Option<ExecutionRow>,
 }
 
 impl Selection {
+    /// `row` as the reuse candidate, for judging it as if selected.
+    pub(crate) fn of_candidate(row: ExecutionRow) -> Selection {
+        Selection {
+            candidate: Some(row),
+            target_has_prior_build: true,
+            why_no_candidate: None,
+            rejected: None,
+        }
+    }
+
     /// No confirmed build of the target exists in scope.
     const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
         why_no_candidate: None,
+        rejected: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -59,10 +75,20 @@ impl Selection {
             None => Some(NoCandidate::IdentityMismatch),
             Some(row) => rejection(row),
         };
+        let own_target = matches!(
+            why_no_candidate,
+            Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
+        );
+        let (candidate, rejected) = match identified {
+            Some(row) if why_no_candidate.is_none() => (Some(row), None),
+            Some(row) if own_target => (None, Some(row)),
+            _ => (None, None),
+        };
         Selection {
-            candidate: identified.filter(|_| why_no_candidate.is_none()),
+            candidate,
             target_has_prior_build,
             why_no_candidate,
+            rejected,
         }
     }
 }
@@ -106,7 +132,8 @@ pub(crate) fn for_model(
                 match own_target(req, prev) {
                     OwnTarget::AsBuilt => None,
                     OwnTarget::Modified => Some(NoCandidate::OwnTargetModified),
-                    OwnTarget::MissingOrAmbiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
+                    OwnTarget::Missing => Some(NoCandidate::OwnTargetMissing),
+                    OwnTarget::Ambiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
                 }
             }
         },
@@ -171,6 +198,10 @@ pub(crate) fn for_seed(
         |prev| {
             if req.values_hash.is_empty() {
                 Some(NoCandidate::FailedReuseQualification)
+            } else if req.last_modified_epoch.is_none() {
+                // VERIFIED LIVE (lag_seed_upstream G): a seed reloaded into a
+                // missing table "did not exist".
+                Some(NoCandidate::OwnTargetMissing)
             } else if !not_modified_since(req.last_modified_epoch, prev.last_modified_epoch) {
                 Some(NoCandidate::OwnTargetChangedOrMissing)
             } else {
@@ -179,6 +210,33 @@ pub(crate) fn for_seed(
         },
         true,
     ))
+}
+
+/// Whether an OLDER build of the target (overwritten since) has the workload's
+/// strict identity and the workload qualifies for reuse: the first step of
+/// reporting a rebuild whose earlier build would still be reusable
+/// (LATEST_QUERY_HASH_NOT_MATCH). Freshness is judged by the caller.
+pub(crate) fn older_build_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    row.clone_source_table.is_none()
+        && sql_qualifies(req, evidence)
+        && strict_match(req, evidence, row)
+}
+
+/// [`older_build_matches`] for a seed.
+pub(crate) fn older_seed_matches(
+    req: &qc::SubmitValuesRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    row.execution_type == ModelExecutionType::Values as i32
+        && !req.values_hash.is_empty()
+        && row.values_hash.as_deref() == Some(req.values_hash.as_str())
+        && row.node_sql_hash.is_some()
+        && row.node_sql_hash == evidence.node_sql_hash
 }
 
 /// A client-requested copy (RegisterClone) records NO upstream evidence: it
@@ -295,8 +353,10 @@ enum OwnTarget {
     /// Present once with a known epoch later than the build's: modified after
     /// the cached execution (VERIFIED LIVE 2026-11-10, even 1s later).
     Modified,
-    /// Absent, duplicated, of unknown epoch, or another target.
-    MissingOrAmbiguous,
+    /// Not reported: the table does not exist (VERIFIED LIVE 2026-11-10).
+    Missing,
+    /// Duplicated, of unknown epoch, or another target.
+    Ambiguous,
 }
 
 /// Own-target existence and external edits, checked separately from upstream
@@ -304,14 +364,17 @@ enum OwnTarget {
 /// object exists.
 fn own_target(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> OwnTarget {
     let Some(target) = req.target_table.as_deref().filter(|s| !s.is_empty()) else {
-        return OwnTarget::MissingOrAmbiguous;
+        return OwnTarget::Ambiguous;
     };
     if prev.target_table != target {
-        return OwnTarget::MissingOrAmbiguous;
+        return OwnTarget::Ambiguous;
     }
     let own: Vec<_> = req.tables.iter().filter(|t| t.name == target).collect();
+    if own.is_empty() {
+        return OwnTarget::Missing;
+    }
     if own.len() != 1 || own[0].last_modified_epoch.is_none() {
-        return OwnTarget::MissingOrAmbiguous;
+        return OwnTarget::Ambiguous;
     }
     if req.ignore_external_modifications
         || not_modified_since(own[0].last_modified_epoch, prev.last_modified_epoch)
@@ -587,6 +650,7 @@ mod tests {
             why_no_candidate: None,
             tolerance_ms: 0,
             build_age_ms: None,
+            own_target_absent: false,
         };
         assert!(matches!(
             crate::decision::decide(&ctx, Some(&c)),
@@ -850,6 +914,14 @@ mod tests {
         let row = recorded(&evidence(&dropped));
         assert_eq!(
             why(&dropped, Some(row)),
+            Some(NoCandidate::OwnTargetMissing)
+        );
+
+        let mut no_epoch = base.clone();
+        no_epoch.tables[0].last_modified_epoch = None;
+        let row = recorded(&evidence(&no_epoch));
+        assert_eq!(
+            why(&no_epoch, Some(row)),
             Some(NoCandidate::OwnTargetChangedOrMissing)
         );
 

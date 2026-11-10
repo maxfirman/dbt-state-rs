@@ -483,7 +483,38 @@ async fn every_outcome_carries_its_decision_reason() {
     let dropped = sql(environment_model("prod").own_epoch(None).build()).await;
     assert_eq!(
         dropped.record().reason,
-        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+    );
+    assert_eq!(
+        dropped.record().description,
+        "model was executed because its table did not exist"
+    );
+    assert_eq!(
+        (
+            dropped.record().skip_rejection_reason,
+            dropped.record().clone_rejection_reason
+        ),
+        (Some(4), Some(7)),
+        "TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH: the dropped build \
+         would otherwise be reusable"
+    );
+    // VERIFIED LIVE (2026-11-10, lag_dropped_targets `ddc`): when the dropped
+    // target's build would be stale too, hosted reports 6/6.
+    let dropped_stale = sql(environment_model("prod")
+        .own_epoch(None)
+        .upstream(&environment_upstream("prod"), 2_000)
+        .build())
+    .await;
+    assert_eq!(
+        dropped_stale.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing)
+    );
+    assert_eq!(
+        (
+            dropped_stale.record().skip_rejection_reason,
+            dropped_stale.record().clone_rejection_reason
+        ),
+        (Some(6), Some(6))
     );
 
     let forbids_copies = environment_model("dev").clone_chain_depth_limit(0);

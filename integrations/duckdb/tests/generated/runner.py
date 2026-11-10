@@ -96,7 +96,7 @@ class Runner:
         with duckdb.connect(str(self.path)) as db:
             return db.execute(statement, params).fetchall()
 
-    def request(self, env, k, clones=False):
+    def request(self, env, k, clones=False, tolerance_s=0):
         invocation = Invocation(self.path)
         namespace = invocation.namespace
         invocation.finish(True)
@@ -110,6 +110,7 @@ class Runner:
             tables=[TableModifiedInfo(name=n, last_modified_epoch=evidence.observe(n))
                     for n in [raw, target]],
             tolerate_nondeterminism=True, allow_clones=clones,
+            freshness_tolerance_seconds=tolerance_s,
             semantic_extras={'duckdb_copy_contract': 'rows-schema-v1'},
             table_namespace=namespace,
             dbt_node_state=DbtNodeState(node_unique_id='model.generated.result',
@@ -175,7 +176,7 @@ class Runner:
 
     def submit(self, op):
         env, k = op['env'], op['k']
-        req = self.request(env, k, op.get('clones', False))
+        req = self.request(env, k, op.get('clones', False), op.get('tolerance_s', 0))
         # The permitted source set and snapshots exist BEFORE observing response.
         # Staleness is explicitly allowed only by an annotated trace operation.
         allowed_sources = {self.relation(e): h for e, h in self.confirmed.items()

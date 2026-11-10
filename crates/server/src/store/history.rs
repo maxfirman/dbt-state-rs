@@ -79,6 +79,35 @@ impl Store {
             .await
     }
 
+    /// Every confirmed build of a target in its physical scope, newest first
+    /// (the first row is [`Store::current_target_state`]). Older rows never
+    /// describe the target's current contents; they are read only to report
+    /// which earlier build would have qualified (rejection codes).
+    pub async fn target_history(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<Vec<ExecutionRow>> {
+        let mut query = QueryBuilder::new("SELECT ");
+        query
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ")
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect))
+            .push(" AND table_namespace IS NOT DISTINCT FROM ")
+            .push_bind(table_namespace)
+            .push(" AND target_table = ")
+            .push_bind(target_table)
+            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+        query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await
+    }
+
     /// The CURRENT physical state of each named target (see
     /// [`Store::current_target_state`]), keyed by target. Targets with no
     /// confirmed build in this scope are absent. Used to resolve which build

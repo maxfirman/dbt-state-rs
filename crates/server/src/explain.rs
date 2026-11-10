@@ -65,6 +65,8 @@ pub struct ExplainNode {
     /// at decision time (ADR 0007).
     pub tolerance_ms: i64,
     pub build_age_ms: Option<i64>,
+    /// The decision's wire skip rejection code, when persisted.
+    pub skip_rejection_reason: Option<i32>,
     /// The matched prior `executions` row (freshness anchor). ADR 0005: present
     /// only when the SKIP/reuse decision matched a prior build; `None` for
     /// first-build EXECUTE / clone. The per-upstream freshness SUBTREE
@@ -75,10 +77,25 @@ pub struct ExplainNode {
 
 impl ExplainNode {
     fn noun(&self) -> &'static str {
-        if self.execution_type == ModelExecutionType::DbtDataTest as i32 {
-            "test"
-        } else {
-            "model"
+        match ModelExecutionType::try_from(self.execution_type) {
+            Ok(ModelExecutionType::DbtDataTest) => "test",
+            Ok(ModelExecutionType::Values) => "seed",
+            _ => "model",
+        }
+    }
+
+    fn is_seed(&self) -> bool {
+        self.execution_type == ModelExecutionType::Values as i32
+    }
+
+    /// A model whose decision-time inputs do not report its own target: the
+    /// table does not exist.
+    fn own_target_absent(&self) -> bool {
+        match self.target_table.as_deref() {
+            Some(target) if !target.is_empty() && !self.is_seed() && !self.is_data_test() => {
+                !self.input_tables.iter().any(|t| t.name == target)
+            }
+            _ => false,
         }
     }
 
@@ -192,6 +209,10 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
             DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
         ),
         Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionKind::Skip),
+        // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl).
+        Ok(ModelExecutionType::Values) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
         _ => false,
     }
 }
@@ -210,6 +231,12 @@ enum Shape {
     /// Own target modified after the build, for a node with no upstreams
     /// (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`).
     OwnTargetModified,
+    /// A seed whose table exists: its data changed (`true`) or not.
+    Seed { changed: bool },
+    /// A copy of an equivalent over a target whose own build had to rebuild
+    /// ("but it's old, so we will clone from …"), rendered against the
+    /// target's own build (VERIFIED LIVE 2026-11-10, lag_copy_candidates).
+    CopyOver,
     /// CLONE (`vs clone` sections).
     Clone,
 }
@@ -222,12 +249,34 @@ enum Shape {
 fn shape(node: &ExplainNode) -> Option<Shape> {
     use DecisionReason as R;
     let reason = node.reason?;
+    if node.is_seed() {
+        // VERIFIED LIVE (lag_seed_upstream.jsonl): a seed's tree is its table
+        // and its data. A rebuild whose older build still matched reports
+        // LATEST_QUERY_HASH_NOT_MATCH and "the seed data has not changed".
+        return Some(match (node.decision, reason) {
+            (DecisionKind::Skip, R::Reused(_)) => Shape::Seed { changed: false },
+            (
+                DecisionKind::Build,
+                R::FirstBuild | R::NoReuseCandidate(NoCandidate::OwnTargetMissing),
+            ) => Shape::FirstBuild,
+            (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch)) => {
+                Shape::Seed {
+                    changed: node.skip_rejection_reason
+                        != Some(decision::REJECTION_LATEST_QUERY_HASH_NOT_MATCH),
+                }
+            }
+            _ => return None,
+        });
+    }
     Some(match (node.decision, reason) {
         (
             DecisionKind::Skip,
             R::Reused(Reuse::Fresh | Reuse::ToleratedStale | Reuse::WithinLagTolerance),
         ) => Shape::Skip,
-        (DecisionKind::Build, R::FirstBuild) => Shape::FirstBuild,
+        (
+            DecisionKind::Build,
+            R::FirstBuild | R::NoReuseCandidate(NoCandidate::OwnTargetMissing),
+        ) => Shape::FirstBuild,
         // The OUTDATED subtree is anchor-relative: it renders only when the
         // matched build is present and re-derives at least one OUTDATED
         // upstream. Without that the rebuild falls back to SHAPE 7.
@@ -238,10 +287,13 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             Shape::UpstreamOutdated
         }
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
-            if node.genuine_upstreams().is_empty() =>
+            if node.anchor.is_some() || node.genuine_upstreams().is_empty() =>
         {
             Shape::OwnTargetModified
         }
+        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of
+        // an absent target reads like a first build, whatever the reason.
+        (DecisionKind::Build, _) if node.own_target_absent() => Shape::FirstBuild,
         (
             DecisionKind::Build,
             R::UpstreamOutdated
@@ -268,6 +320,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             )
             | R::NoBuildAnchor,
         ) => Shape::QueryChanged,
+        (DecisionKind::Clone, R::ResultCopy)
+            if node.anchor.is_some() && !node.own_target_absent() =>
+        {
+            Shape::CopyOver
+        }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         _ => return None,
     })
@@ -288,6 +345,8 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::QueryChanged) => query_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
         Some(Shape::OwnTargetModified) => skip_tree(node),
+        Some(Shape::Seed { changed }) => seed_tree(node, changed),
+        Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
     }
 }
@@ -366,15 +425,86 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     // FRESH/OUTDATED badge + «gap»/«rel_time» text are the anchor-dependent
     // slots that the conformance gate fences until #30.
     let mut children = vec![upstream_dependencies_freshness(node, &upstreams)];
-    if has_outdated_upstream(node) {
-        // VERIFIED LIVE (2026-11-10): a reuse that serves drifted upstream data
-        // says so, and with a Lag tolerance states the build age against it.
-        children.push(leaf("upstream data is outdated", Some(MARKER_FAIL), None));
-        if node.tolerance_ms > 0 {
-            children.push(lag_tolerance_line(node));
-        }
-    }
+    children.extend(freshness_summary(node));
     section("data freshness analysis", children)
+}
+
+/// Every genuine upstream's current epoch equals the epoch recorded for it at
+/// the anchored build. `false` without an anchor.
+fn upstreams_unchanged(node: &ExplainNode) -> bool {
+    anchored_verdicts(node).is_some_and(|v| {
+        !v.is_empty()
+            && v.iter()
+                .all(|u| u.current_epoch == Some(u.anchor_epoch) && !u.unprovable)
+    })
+}
+
+// ── SEED ────────────────────────────────────────────────────────────────────
+
+/// A seed whose table exists: `the seed file exists already`, then whether
+/// its data changed (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl). No
+/// freshness section: a seed has no upstreams.
+fn seed_tree(node: &ExplainNode, changed: bool) -> Vec<qc::ExplainLine> {
+    let data = if changed {
+        leaf("the seed data has changed", Some(MARKER_FAIL), None)
+    } else {
+        leaf(
+            "the seed data has not changed",
+            Some(MARKER_SUCCESS),
+            Some(BADGE_NODE_QUERY_UNCHANGED),
+        )
+    };
+    vec![
+        section(
+            format!("table analysis ({})", fqn(node)),
+            vec![leaf(
+                "the seed file exists already",
+                Some(MARKER_SUCCESS),
+                Some(BADGE_TARGET_TABLE_EXISTS),
+            )],
+        ),
+        section("query analysis", vec![data]),
+    ]
+}
+
+// ── COPY OVER AN EXISTING TARGET ────────────────────────────────────────────
+
+/// The target's own analysis against its own build (query listing and
+/// per-upstream freshness), with `(vs clone)` sections, the "but it's old"
+/// table line, and a summary saying how fresh the copied equivalent is: up to
+/// date, or outdated with its build age against the tolerance (VERIFIED LIVE
+/// 2026-11-10, lag_copy_candidates `fe`, `st`, `wba`).
+fn copy_over_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let source = node.clone_source.clone().unwrap_or_default();
+    let mut out = vec![section(
+        format!("table analysis ({})", fqn(node)),
+        vec![
+            leaf(
+                format!("the {} table exists already", node.noun()),
+                Some(MARKER_SUCCESS),
+                Some(BADGE_TARGET_TABLE_EXISTS),
+            ),
+            leaf(
+                format!(
+                    "but it's old, so we will clone from {} to recreate it",
+                    quote(&source)
+                ),
+                Some(MARKER_FAIL),
+                None,
+            ),
+        ],
+    )];
+    let upstreams = node.genuine_upstreams();
+    let mut query = query_analysis_vs_build(node, &upstreams);
+    query.text = "query analysis (vs clone)".into();
+    out.push(query);
+    let mut freshness = Vec::new();
+    if !upstreams.is_empty() {
+        freshness.push(upstream_dependencies_freshness(node, &upstreams));
+    }
+    freshness.extend(copied_freshness_summary(node));
+    out.push(section("data freshness analysis (vs clone)", freshness));
+    out
 }
 
 /// `the <noun> was last built «age» ago, within|exceeds lag tolerance of «T»`
@@ -577,6 +707,44 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 ///                    outdated` [FAIL]
 fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let upstreams = node.genuine_upstreams();
+    let mut out = vec![table_analysis_exists(node)];
+    out.push(query_analysis_vs_build(node, &upstreams));
+    let mut freshness = vec![upstream_dependencies_freshness(node, &upstreams)];
+    freshness.extend(freshness_summary(node));
+    out.push(section("data freshness analysis", freshness));
+    out
+}
+
+/// The summary lines under a node's per-upstream freshness listing, judged
+/// against its own build (VERIFIED LIVE 2026-11-10): outdated when an
+/// upstream drifted, with the tolerance line when the decision knowingly
+/// serves (or, for a rebuild, would have served) stale data; up to date when
+/// no upstream epoch moved; nothing when one only moved back.
+fn freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    if has_outdated_upstream(node) {
+        let mut lines = vec![leaf("upstream data is outdated", Some(MARKER_FAIL), None)];
+        let reused = node.decision == DecisionKind::Skip;
+        if node.tolerance_ms > 0 && (reused || node.is_stale) {
+            lines.push(lag_tolerance_line(node));
+        }
+        lines
+    } else if upstreams_unchanged(node) {
+        vec![leaf(
+            "upstream data is up to date",
+            Some(MARKER_SUCCESS),
+            None,
+        )]
+    } else {
+        Vec::new()
+    }
+}
+
+/// `query analysis` for a node judged against its own build: the node query
+/// unchanged, then either every upstream's query verdict and the FAIL
+/// summary (an upstream's producing build changed, ADR 0007), or the SUCCESS
+/// summary alone (VERIFIED LIVE 2026-11-10: a data-only rebuild lists no
+/// upstream queries).
+fn query_analysis_vs_build(node: &ExplainNode, upstreams: &[&InputTable]) -> qc::ExplainLine {
     let verdicts = anchored_verdicts(node);
     let changed = |up: &InputTable| {
         verdicts
@@ -584,9 +752,6 @@ fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             .and_then(|v| v.iter().find(|u| u.name == up.name))
             .is_some_and(|u| u.producer_changed)
     };
-
-    let mut out = vec![table_analysis_exists(node)];
-
     // query analysis: node-query unchanged, then either every upstream's
     // query verdict and the FAIL summary (an upstream's producing build
     // changed, ADR 0007), or the SUCCESS summary alone (VERIFIED LIVE
@@ -632,18 +797,7 @@ fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             None,
         ));
     }
-    out.push(section("query analysis", query_children));
-
-    // data freshness analysis: the per-upstream OUTDATED freshness subtree + the
-    // FAIL summary.
-    out.push(section(
-        "data freshness analysis",
-        vec![
-            upstream_dependencies_freshness(node, &upstreams),
-            leaf("upstream data is outdated", Some(MARKER_FAIL), None),
-        ],
-    ));
-    out
+    section("query analysis", query_children)
 }
 
 /// First build — `table analysis` only: the table does not exist and there is
@@ -731,18 +885,38 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let upstreams = node.genuine_upstreams();
     let mut freshness_children = Vec::new();
     if !upstreams.is_empty() {
-        freshness_children.push(clone_upstream_dependencies(&upstreams));
+        // Against the target's own build when the decision kept one as its
+        // anchor (VERIFIED LIVE 2026-11-10, lag_copy_candidates `de`).
+        freshness_children.push(if node.anchor.is_some() {
+            upstream_dependencies_freshness(node, &upstreams)
+        } else {
+            clone_upstream_dependencies(&upstreams)
+        });
     }
-    freshness_children.push(leaf(
-        "upstream data is up to date",
-        Some(MARKER_SUCCESS),
-        None,
-    ));
+    freshness_children.extend(copied_freshness_summary(node));
     out.push(section(
         "data freshness analysis (vs clone)",
         freshness_children,
     ));
     out
+}
+
+/// How fresh the copied equivalent is: up to date, or outdated with its build
+/// age against the tolerance (VERIFIED LIVE 2026-11-10, lag_copy_candidates
+/// `st`, `wba`; lag_dropped_targets `dset600`).
+fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    if !node.is_stale {
+        return vec![leaf(
+            "upstream data is up to date",
+            Some(MARKER_SUCCESS),
+            None,
+        )];
+    }
+    let mut lines = vec![leaf("upstream data is outdated", Some(MARKER_FAIL), None)];
+    if node.tolerance_ms > 0 {
+        lines.push(lag_tolerance_line(node));
+    }
+    lines
 }
 
 /// The CLONE `upstream dependencies` listing. Unlike the SKIP/anchored listing
@@ -819,6 +993,7 @@ mod tests {
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
             tolerance_ms: 0,
             build_age_ms: None,
+            skip_rejection_reason: None,
             anchor: None,
         }
     }
@@ -1105,43 +1280,104 @@ mod tests {
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
     // explain_lines dispatches on DecisionKind alone; without an
-    // execution-type fence, seed (VALUES=9), snapshot (SNAPSHOT=7) and
-    // incremental decisions render model-shaped trees that the hosted service
-    // was never observed to produce (docs/explain-catalog.md "Unobserved — do
-    // not implement until captured"; spec #27 Out-of-Scope). They must emit
-    // nothing.
-    #[test]
-    fn seed_skip_emits_nothing() {
-        // VALUES=9 seed SKIP: unobserved → no invented model-SKIP tree.
-        let mut n = node(
-            DecisionKind::Skip,
-            ModelExecutionType::Values as i32,
-            "seed was a no-op because its data has not changed",
-        );
-        n.input_tables = vec![tbl("\"DB\".\"S\".\"T\"")];
-        assert!(
-            explain_lines(&n).is_empty(),
-            "seed SKIP is unobserved → must emit no invented lines, got {:?}",
-            render(&n)
-        );
+    // execution-type fence, snapshot (SNAPSHOT=7) and incremental decisions
+    // render model-shaped trees that the hosted service was never observed to
+    // produce (docs/explain-catalog.md "Unobserved — do not implement until
+    // captured"; spec #27 Out-of-Scope). They must emit nothing. Seeds were
+    // characterized on 2026-11-10 and render their own trees below.
+
+    // ── Seeds (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl) ───────────
+    fn seed(decision: DecisionKind, reason: DecisionReason) -> ExplainNode {
+        let mut n = node(decision, ModelExecutionType::Values as i32, "");
+        n.reason = Some(reason);
+        n
+    }
+
+    fn seed_tree_of(changed: Option<bool>) -> Vec<(usize, String, Option<i32>, Option<i32>)> {
+        let data = match changed {
+            Some(true) => (
+                1,
+                "the seed data has changed".into(),
+                Some(MARKER_FAIL),
+                None,
+            ),
+            _ => (
+                1,
+                "the seed data has not changed".into(),
+                Some(MARKER_SUCCESS),
+                Some(BADGE_NODE_QUERY_UNCHANGED),
+            ),
+        };
+        vec![
+            (0, "table analysis («FQN»)".into(), None, None),
+            (
+                1,
+                "the seed file exists already".into(),
+                Some(MARKER_SUCCESS),
+                Some(BADGE_TARGET_TABLE_EXISTS),
+            ),
+            (0, "query analysis".into(), None, None),
+            data,
+        ]
     }
 
     #[test]
-    fn seed_execute_emits_nothing() {
-        // The finding's concrete reachable case: submit_values captures seed
-        // decision ids; a seed reload persists "seed was loaded because its
-        // data changed", which would otherwise fall through to SHAPE-7
-        // "the model query has changed".
-        let n = node(
+    fn seed_skip_says_its_data_has_not_changed() {
+        let n = seed(DecisionKind::Skip, DecisionReason::Reused(Reuse::Fresh));
+        assert_eq!(render(&n), seed_tree_of(Some(false)));
+    }
+
+    #[test]
+    fn seed_reload_says_whether_its_data_changed() {
+        let mut n = seed(
             DecisionKind::Build,
-            ModelExecutionType::Values as i32,
-            "seed was loaded because its data changed",
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
         );
-        assert!(
-            explain_lines(&n).is_empty(),
-            "seed EXECUTE is unobserved → must emit no invented lines, got {:?}",
-            render(&n)
+        assert_eq!(render(&n), seed_tree_of(Some(true)));
+        // An older load of the same values still matched (arm H): the data
+        // has not changed, though the latest load differs.
+        n.skip_rejection_reason = Some(decision::REJECTION_LATEST_QUERY_HASH_NOT_MATCH);
+        assert_eq!(render(&n), seed_tree_of(Some(false)));
+    }
+
+    #[test]
+    fn seed_load_into_a_missing_table_is_a_first_build() {
+        for reason in [
+            DecisionReason::FirstBuild,
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
+        ] {
+            let n = seed(DecisionKind::Build, reason);
+            assert_eq!(
+                render(&n),
+                [
+                    (0, "table analysis («FQN»)".into(), None, None),
+                    (
+                        1,
+                        "the seed table does not exist".into(),
+                        Some(MARKER_FAIL),
+                        None
+                    ),
+                    (
+                        1,
+                        "there is no other table that the seed could be cloned from".into(),
+                        Some(MARKER_FAIL),
+                        None
+                    ),
+                ],
+                "{reason:?}"
+            );
+        }
+    }
+
+    /// The safety-floor reload of an externally modified seed has no hosted
+    /// counterpart (hosted skips it), so no tree is invented for it.
+    #[test]
+    fn seed_reload_over_a_modified_table_emits_nothing() {
+        let n = seed(
+            DecisionKind::Build,
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
         );
+        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
     #[test]
@@ -1187,6 +1423,8 @@ mod tests {
                     | (10, DecisionKind::Build)
                     | (10, DecisionKind::Clone)
                     | (8, DecisionKind::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
+                    | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
+                    | (9, DecisionKind::Build) // seed reload
             )
         };
 
@@ -1411,6 +1649,165 @@ mod tests {
             "updated 4 seconds after \"DB\".\"S\".\"T\" last executed"
         );
         assert_eq!(lines[2].children[1].text, "upstream data is outdated");
+    }
+
+    /// A node of `decision`/`reason` that read UP at `current`, anchored on a
+    /// build (epoch 1_000) that recorded UP at `recorded`, same producer.
+    fn anchored(
+        decision: DecisionKind,
+        reason: DecisionReason,
+        current: i64,
+        recorded: i64,
+    ) -> ExplainNode {
+        let mut n = node(decision, ModelExecutionType::Full as i32, "");
+        n.reason = Some(reason);
+        let up = |epoch| InputTable {
+            name: "\"DB\".\"S\".\"UP\"".into(),
+            last_modified_epoch: Some(epoch),
+            producer: Producer::Build("a".into()),
+        };
+        n.input_tables = vec![tbl("\"DB\".\"S\".\"T\""), up(current)];
+        n.anchor = Some(ExecutionRow {
+            id: 7,
+            target_table: "\"DB\".\"S\".\"T\"".into(),
+            execution_type: ModelExecutionType::Full as i32,
+            last_modified_epoch: Some(1_000),
+            input_tables: vec![up(recorded)],
+            status: "confirmed".into(),
+            ..ExecutionRow::default()
+        });
+        n
+    }
+
+    fn freshness_texts(lines: &[qc::ExplainLine]) -> Vec<String> {
+        let section = lines
+            .iter()
+            .find(|l| l.text.starts_with("data freshness analysis"))
+            .expect("freshness section");
+        section.children.iter().map(|l| l.text.clone()).collect()
+    }
+
+    /// VERIFIED LIVE (2026-11-10, lag_seed_upstream 32, explain_tolerance 1,
+    /// lag_tolerance_matrix `dsdec_young`): an anchored SKIP ends its freshness
+    /// section with `upstream data is up to date` only when every upstream
+    /// epoch equals its recorded epoch. An older-than-recorded upstream is
+    /// fresh, with no summary line.
+    #[test]
+    fn fresh_skip_summary_needs_every_upstream_epoch_unchanged() {
+        let skip = |current, reuse| {
+            freshness_texts(&explain_lines(&anchored(
+                DecisionKind::Skip,
+                DecisionReason::Reused(reuse),
+                current,
+                900,
+            )))
+        };
+        assert_eq!(
+            skip(900, Reuse::Fresh),
+            ["upstream dependencies", "upstream data is up to date"]
+        );
+        assert_eq!(
+            skip(700, Reuse::WithinLagTolerance),
+            ["upstream dependencies"]
+        );
+    }
+
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of an
+    /// absent own target reads like a first build, whatever the reason.
+    #[test]
+    fn rebuild_of_an_absent_target_is_a_first_build() {
+        for reason in [
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            DecisionReason::DependencySetChanged,
+            DecisionReason::NoBuildAnchor,
+        ] {
+            let mut n = anchored(DecisionKind::Build, reason, 900, 900);
+            n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
+            let lines = explain_lines(&n);
+            assert_eq!(lines.len(), 1, "{reason:?}: {:?}", render(&n));
+            assert_eq!(lines[0].children[0].text, "the model table does not exist");
+        }
+    }
+
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `fe`, `st`, `wba`): a
+    /// copy over an existing target whose own build had to rebuild says the
+    /// table is old, analyses the target against its own build, and
+    /// summarises how fresh the copied equivalent is.
+    #[test]
+    fn copy_over_an_existing_target_is_old_then_judged() {
+        let copy = |is_stale: bool, tolerance_ms, build_age_ms| {
+            let mut n = anchored(DecisionKind::Clone, DecisionReason::ResultCopy, 5_000, 900);
+            n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+            n.is_stale = is_stale;
+            n.tolerance_ms = tolerance_ms;
+            n.build_age_ms = build_age_ms;
+            explain_lines(&n)
+        };
+        let fresh = copy(false, 0, None);
+        let table: Vec<_> = fresh[0].children.iter().map(|l| l.text.clone()).collect();
+        assert_eq!(
+            table,
+            [
+                "the model table exists already",
+                "but it's old, so we will clone from \"DB\".\"S\".\"SRC\" to recreate it"
+            ]
+        );
+        assert_eq!(fresh[1].text, "query analysis (vs clone)");
+        let freshness = &fresh[2];
+        assert_eq!(freshness.text, "data freshness analysis (vs clone)");
+        assert_eq!(
+            freshness.children[0].children[0].badge,
+            Some(BADGE_OUTDATED),
+            "the target's upstream is judged against the target's own build"
+        );
+        assert_eq!(
+            freshness_texts(&fresh),
+            ["upstream dependencies", "upstream data is up to date"]
+        );
+
+        let stale = copy(true, 600_000, Some(3_000));
+        assert_eq!(
+            freshness_texts(&stale),
+            [
+                "upstream dependencies",
+                "upstream data is outdated",
+                "the model was last built 3 seconds ago, within lag tolerance of 10 minutes"
+            ]
+        );
+
+        // Without the target's own build there is nothing to call old: the
+        // ordinary copy tree.
+        let mut plain = anchored(DecisionKind::Clone, DecisionReason::ResultCopy, 5_000, 900);
+        plain.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+        plain.anchor = None;
+        assert_eq!(
+            explain_lines(&plain)[0].children[0].text,
+            "the model table does not exist"
+        );
+
+        // VERIFIED LIVE (2026-11-10, lag_dropped_targets `dset600`): a stale
+        // copy into a dropped target is the ordinary copy tree, anchored on
+        // the dropped build, with the stale summary.
+        let mut dropped = anchored(DecisionKind::Clone, DecisionReason::ResultCopy, 5_000, 900);
+        dropped
+            .input_tables
+            .retain(|t| t.name != "\"DB\".\"S\".\"T\"");
+        dropped.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+        dropped.is_stale = true;
+        dropped.tolerance_ms = 600_000;
+        dropped.build_age_ms = Some(4_000);
+        let lines = explain_lines(&dropped);
+        assert_eq!(lines[0].children[0].text, "the model table does not exist");
+        assert_eq!(lines[2].children[0].children[0].badge, Some(BADGE_OUTDATED));
+        assert_eq!(
+            freshness_texts(&lines),
+            [
+                "upstream dependencies",
+                "upstream data is outdated",
+                "the model was last built 4 seconds ago, within lag tolerance of 10 minutes"
+            ]
+        );
     }
 
     /// A row written before the decision reason was persisted (NULL reason)

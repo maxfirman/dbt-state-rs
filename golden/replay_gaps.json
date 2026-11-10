@@ -96,20 +96,22 @@
     "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): dev arm, same as entry 0 — hosted records CURRENT_TIMESTAMP() = 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. Field-scoped visible gap; volatile function evaluation is unimplemented."
   },
   {
-    "fixture": "c1_config_semantics.jsonl",
-    "entry": 7,
+    "fixture": "lag_seed_upstream.jsonl",
+    "entry": 22,
     "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ],
-    "reason": "REBUILD REJECTION-CODE GAP (review #2 5th follow-up, P1 #4): after a confirmed prior build, a changed submit that misses the logic fingerprint rebuilds. The DESCRIPTION now matches hosted ('query didn't match or upstream out of date', fixed via target_has_prior_build), but hosted here reports skip_rejection_reason=8 (LATEST_QUERY_HASH_NOT_MATCH) / clone_rejection_reason=7 whereas the server reports 6/6 (NO_SUITABLE_MATCH_FOUND). Other post-confirmed-baseline rebuilds in this corpus use 6/6 WITH the same rebuild description, so the 8/7-vs-6/6 selection is a finer, uncharacterized distinction — recorded as an EXACT field-scoped gap on these two codes only (not blanket-ignoring the explained_decision). The decision int and description match."
+    "reason": "SAFETY FLOOR (deliberate divergence, seed arm C): the seed's own table was modified externally after its last confirmed load. Hosted skips the unchanged-values seed and serves the edited table; the local server reloads it, because reuse requires the own target to be as built (AGENTS.md: own-target existence and external edits are checked separately). Handoff C."
+  },
+  {
+    "fixture": "lag_seed_upstream.jsonl",
+    "entry": 23,
+    "local_variant": "explain",
+    "reason": "SAFETY FLOOR explain of entry 22: hosted explains a SKIP of the externally modified seed; the local server explains the reload it decided. Handoff C."
   },
   {
     "fixture": "lag_external_modification_linked.jsonl",
     "entry": 3,
     "local_variant": "ready_to_execute",
-    "reason": "MISSING HISTORY rejection codes: lp_up_b's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rejection-code selection is uncharacterized (see c1_config_semantics entry 7).",
+    "reason": "MISSING HISTORY rejection codes: lp_up_b's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rule itself is implemented (NoCandidate::OwnTargetMissing, lag_copy_candidates `dt`); only the prior-session history is missing.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason",
       "explained_decision.clone_rejection_reason"
@@ -119,7 +121,7 @@
     "fixture": "lag_external_modification_linked.jsonl",
     "entry": 4,
     "local_variant": "ready_to_execute",
-    "reason": "MISSING HISTORY rejection codes: lp_up_a's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rejection-code selection is uncharacterized (see c1_config_semantics entry 7).",
+    "reason": "MISSING HISTORY rejection codes: lp_up_a's first build in this capture, with its own target absent. Hosted held confirmed builds of this physical target from the 2026-10-11 sessions (lag_multi_upstream_policy), so it reports skip=4 (TARGET_TABLE_DOES_NOT_EXIST) / clone=7 (TARGET_TABLE_MATCH) with the first-build description; the empty local store reports 6/6. The rule itself is implemented (NoCandidate::OwnTargetMissing, lag_copy_candidates `dt`); only the prior-session history is missing.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason",
       "explained_decision.clone_rejection_reason"

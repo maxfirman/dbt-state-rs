@@ -18,10 +18,11 @@ class Trace:
         self.previous = identifier
         return identifier
 
-    def run(self, env='prod', k=1, expect=None, clones=False, stale=False):
+    def run(self, env='prod', k=1, expect=None, clones=False, stale=False, tolerance_s=0):
         submit = self.add('submit', env=env, k=k, expect=expect,
                           clones=clones, stale=stale,
-                          policy='recorded-source-result-permitted' if stale else 'current-result')
+                          policy='recorded-source-result-permitted' if stale else 'current-result',
+                          **({'tolerance_s': tolerance_s} if tolerance_s else {}))
         execution = self.add('copy' if expect == 'copy' else 'execute', submit=submit)
         self.add('confirm', execute=execution)
         return submit
@@ -40,7 +41,10 @@ def generate(seed, steps):
     t.add('submit', env='dev', k=1, expect='skip', clones=True, stale=False)
     t.add('mutate_input', revision=1)
     t.add('drop', env='dev')
-    t.run('dev', 1, 'copy', clones=True, stale=True)
+    # The prod equivalent reads the same input, so it is judged as dev's reuse
+    # candidate: a stale copy needs a lag tolerance (VERIFIED LIVE 2026-11-10,
+    # lag_dropped_targets.jsonl `dset600`; with tolerance 0 hosted builds).
+    t.run('dev', 1, 'copy', clones=True, stale=True, tolerance_s=3600)
     t.add('submit', env='dev', k=1, expect='skip', clones=True, stale=False,
           allowed_recorded_result=True, policy='confirmed-stale-copy-result-permitted')
     e = t.add('execute', env='prod', k=2)

@@ -15,9 +15,11 @@
 //!   MODIFICATION of lp_up_a then rebuilds lp_model2 despite ALL.
 //! * `lag_tolerance_matrix.jsonl`: crafted submit/confirm sequences with
 //!   synthetic epochs (`experiments/lag_matrix.py`), one variable at a time.
-//! * `lag_upstream_query_listing.jsonl` (`lag_matrix.py stale_on_execute`) and
-//!   `clone_chain_upstream_history.jsonl` (`clone_chain_provenance.sh`):
-//!   characterization only (see `conformance.rs`).
+//! * `lag_upstream_query_listing.jsonl` (`lag_matrix.py stale_on_execute`),
+//!   `lag_copy_candidates.jsonl` (`copy_candidates.py`) and
+//!   `lag_seed_upstream.jsonl` (`seed_upstream.py`) also replay in
+//!   `conformance.rs`; `clone_chain_upstream_history.jsonl`
+//!   (`clone_chain_provenance.sh`) is characterization only.
 //!
 //! Rules the captures support (ADR 0007):
 //!   1. Upstream drift: an upstream's current epoch is GREATER than the epoch
@@ -191,8 +193,8 @@ fn crafted_matrix_decisive_outcomes() {
 /// A changed upstream SQL rebuilt by dbt, and an upstream rebuilt by dbt after
 /// the node consumed it in an externally modified state, are both upstream
 /// query changes (rule 2). Under ALL policy the latter was answered with a
-/// result copy marked `is_stale` ("but it's old, so we will clone …"), which
-/// the engine does not reproduce (correctness-handoff.md §C open items).
+/// result copy marked `is_stale` ("but it's old, so we will clone …"): the
+/// equivalent's lineage still qualified (see `copy_candidate_arms`).
 #[test]
 fn upstream_query_change_arms() {
     let d = decisions("lag_upstream_query_listing.jsonl");
@@ -286,4 +288,90 @@ fn seed_upstream_arms() {
             "seed was a no-op because its data has not changed",
         ),
     );
+}
+
+/// (variant, is_stale, skip rejection, clone rejection) of a node's last
+/// SubmitEnrichedSQL.
+fn last_codes(fixture: &str, node: &str) -> (String, bool, Option<i64>, Option<i64>) {
+    let entries = diff::load_golden(&format!("{FIXTURES}{fixture}")).expect("load fixture");
+    let e = entries
+        .iter()
+        .rev()
+        .find(|e| e.method == "SubmitEnrichedSQL" && e.request["labels"]["dbt_node_name"] == node)
+        .unwrap_or_else(|| panic!("no submit for {node}"));
+    let v = diff::decision_variant(&e.response).unwrap();
+    let ed = &e.response["response"][&v]["explained_decision"];
+    (
+        v,
+        ed["is_stale"].as_bool().unwrap_or(false),
+        ed["skip_rejection_reason"].as_i64(),
+        ed["clone_rejection_reason"].as_i64(),
+    )
+}
+
+/// Which build hosted reuses or copies when a target's latest build no longer
+/// qualifies (`experiments/copy_candidates.py`, 2026-11-10; replayed in
+/// `conformance.rs`):
+/// * An equivalent under another name that qualifies for this submit is
+///   copied over the existing target (`fe`: fresh; `st`, `wba`: stale within
+///   tolerance, judged on the equivalent's build age), unless the target's own
+///   table was modified externally (`ome`) or the equivalent is stale beyond
+///   tolerance too (`esb`).
+/// * A rebuild while an older build of the target would still qualify
+///   reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, `is_stale` as
+///   that build would be reused (`oball`, `obany`, `obf`); a stale older build
+///   changes nothing (`obn`).
+/// * A dropped target with the latest build's logic reports
+///   TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH (`dt` second submit);
+///   with changed logic, NO_SUITABLE_MATCH_FOUND (`dt` third submit).
+#[test]
+fn copy_candidate_arms() {
+    let f = "lag_copy_candidates.jsonl";
+    let copy = |stale| ("ready_to_clone".to_string(), stale, Some(1), None);
+    let execute = |stale, srr, crr| ("ready_to_execute".to_string(), stale, Some(srr), Some(crr));
+    assert_eq!(last_codes(f, "ltx115931_fe_m2"), copy(false));
+    assert_eq!(last_codes(f, "ltx115931_st_m2"), copy(true));
+    assert_eq!(last_codes(f, "ltx120154_wba_m2"), copy(true));
+    assert_eq!(last_codes(f, "ltx120154_ome_m2"), execute(false, 6, 6));
+    assert_eq!(last_codes(f, "ltx120154_esb_m2"), execute(false, 6, 6));
+    assert_eq!(last_codes(f, "ltx115931_oball_m2"), execute(true, 8, 7));
+    assert_eq!(last_codes(f, "ltx115931_obany_m2"), execute(true, 8, 7));
+    assert_eq!(last_codes(f, "ltx120154_obf_m2"), execute(false, 8, 7));
+    assert_eq!(last_codes(f, "ltx120154_obn_m2"), execute(false, 6, 6));
+    assert_eq!(last_codes(f, "ltx115931_de_m2"), copy(false));
+
+    let entries = diff::load_golden(&format!("{FIXTURES}{f}")).unwrap();
+    let dt: Vec<_> = entries
+        .iter()
+        .filter(|e| {
+            e.method == "SubmitEnrichedSQL"
+                && e.request["labels"]["dbt_node_name"] == "ltx115931_dt_m"
+        })
+        .map(|e| {
+            let ed = &e.response["response"]["ready_to_execute"]["explained_decision"];
+            (
+                ed["skip_rejection_reason"].as_i64(),
+                ed["clone_rejection_reason"].as_i64(),
+                ed["decision_description"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let did_not_exist = "model was executed because its table did not exist".to_string();
+    assert_eq!(
+        dt,
+        [
+            (Some(6), Some(6), did_not_exist.clone()),
+            (Some(4), Some(7), did_not_exist.clone()),
+            (Some(6), Some(6), did_not_exist),
+        ]
+    );
+
+    // A dropped target (`lag_dropped_targets.jsonl`): the same-upstream
+    // equivalent is judged as for an existing target, so a stale copy needs a
+    // lag tolerance (`dset600`), and 4/7 needs the dropped build to be
+    // reusable (`dset0`, `ddc`: stale, so 6/6).
+    let f = "lag_dropped_targets.jsonl";
+    assert_eq!(last_codes(f, "ltx130355_dset0_m2"), execute(false, 6, 6));
+    assert_eq!(last_codes(f, "ltx130355_dset600_m2"), copy(true));
+    assert_eq!(last_codes(f, "ltx130458_ddc_m2"), execute(false, 6, 6));
 }
