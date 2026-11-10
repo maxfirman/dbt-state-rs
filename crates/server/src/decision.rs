@@ -40,10 +40,13 @@ pub enum NoCandidate {
     /// FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH; this server
     /// still reports NO_SUITABLE_MATCH_FOUND (#83).
     ExecutionTypeChanged,
-    /// The latest row is a Result copy that was not adopted: its recorded
-    /// schema-abstracted logic is missing or differs from the submit's.
-    /// Hosted skips a copy's unchanged post-copy submit where this server
-    /// rebuilds (#95).
+    /// The latest row is a client-requested copy (RegisterClone) that this
+    /// workload cannot adopt: its inherited schema-abstracted logic is absent
+    /// or differs. Hosted reused such a copy when the submit had the source
+    /// build's SQL text (#93: a snapshot, explain_snapshot_register_clone, and
+    /// append/merge incrementals, explain_incremental_copy_history); this
+    /// server rebuilds with the same wire answer as
+    /// [`NoCandidate::IdentityMismatch`].
     CopyLogicMismatch,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,

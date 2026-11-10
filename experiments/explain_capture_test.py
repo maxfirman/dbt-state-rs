@@ -230,6 +230,35 @@ with tempfile.TemporaryDirectory() as work:
         fail("every dbt invocation uses the validated profiles dir (Codex #85)", seen)
     ok(f"every dbt invocation uses the validated profiles dir ({len(seen)} invocations)")
 
+# --- failing data tests (#75) ---------------------------------------------------------
+# `dbt build` exits 1 when a data test fails. A Build that expects failing tests
+# accepts exit 1 (and only 1); every other Build still stops the run.
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(ec.bind(TOY, RUN), 1, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    real_run = ec.subprocess.run
+
+    def exits(rc):
+        class _Rc:
+            returncode = rc
+        ec.subprocess.run = lambda cmd, **kw: _Rc()
+
+    plain = ec.Build("tup_120000abcdef")
+    failing = ec.bind(ec.Scenario("f", "", ("tup",), [ec.Build("${tup}", test_failures=True)]),
+                      "120000abcdef").steps[0]
+    try:
+        if not failing.test_failures:
+            fail("binding keeps test_failures", failing)
+        ok("binding keeps test_failures")
+        exits(1)
+        expect_refusal("a Build exiting 1 stops the run", lambda: run.run_step(0, plain))
+        expect_accept("a Build expecting failing tests accepts exit 1", lambda: run.run_step(0, failing))
+        exits(2)
+        expect_refusal("a Build expecting failing tests still stops on exit 2",
+                       lambda: run.run_step(0, failing))
+    finally:
+        ec.subprocess.run = real_run
+
 
 # --- oracle -------------------------------------------------------------------
 def submit(node, variant, edid, rid=None, et=1, decision=None):
@@ -361,6 +390,19 @@ res = run_oracle(empty_tree)
 if not res[1].ok or res[1].lines != []:
     fail("an empty hosted tree is evidence, not a failure", res[1])
 ok("an empty hosted tree is evidence, not a failure")
+
+# --- demo database check (#75) ------------------------------------------------------
+# A data test has no target (`target_table: null`); it is not a submit outside the
+# demo database, and it must not crash the report.
+demo_rows = [
+    {"method": "SubmitEnrichedSQL", "request": {"target_table": None, "execution_type": 8}},
+    {"method": "SubmitEnrichedSQL", "request": {"target_table": '"CDO_DEMO_DB"."PROD_STATE_DEMO"."M"'}},
+    {"method": "SubmitEnrichedSQL", "request": {"target_table": '"OTHER_DB"."S"."M"'}},
+]
+off = ec.off_demo_submits(demo_rows)
+if off != [demo_rows[2]]:
+    fail("only a submit with a target outside CDO_DEMO_DB is off-demo", off)
+ok("only a submit with a target outside CDO_DEMO_DB is off-demo (a data test has none)")
 
 # --- fixture trim ---------------------------------------------------------------
 rows, _ = flatten(per_step)

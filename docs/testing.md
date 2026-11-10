@@ -121,6 +121,11 @@ Postgres.
   `copy_candidate_arms` (which build hosted reuses or copies when the latest
   build no longer qualifies). Most of its fixtures also replay in
   `conformance.rs`.
+- `data_test_explain.rs`: pins what the data-test Explain captures show by
+  fixture inspection: passing and failing tests render the same tree, the
+  EXECUTE tree does not depend on the rebuild reason, a `store_failures` test
+  reports its audit relation (#88), and hosted serves incomplete cached
+  results (#87). Both fixtures also replay in `conformance.rs`.
 
 ## DuckDB acceptance gate
 
@@ -150,17 +155,16 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   that workload. Otherwise it depends on unknown hosted history and is counted
   as an unknown baseline, never hydrated with guessed epochs.
 - A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
-  correlated.
-- `RegisterClone` (the dev-clone pre-step's copy) is driven and compared in
-  full without its ids (hosted sends an empty `execution_decision_id`), and its
-  confirm is correlated, so a post-copy submit sees the copy as State history.
-  This is the minimal arm #73 needed; #76 owns `RegisterClone` replay.
-- `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
+  correlated. A `RegisterClone` is driven and its full response compared
+  after removing opaque IDs (both the top-level copy and the deprecated
+  `ready_to_clone_v1` mirror). A granted copy's confirm is correlated, so the
+  copy is State history for the next submit, only when the copy's source was
+  confirmed in the same fixture; otherwise the confirm is an unknown baseline.
+  `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
   incremental run under `--full-refresh`) is driven and its response compared;
   each record counts as confirmed history for its workload.
-- `ResolveDeferredRelations` entries are counted but not driven here;
-  `clone.rs`, `clone_lifecycle.rs`, `clone_chain_provenance.rs` and
-  `deferral.rs` cover them and the other `RegisterClone` contracts.
+  `ResolveDeferredRelations` entries are counted but not driven here;
+  `deferral.rs` covers them.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too.
 
@@ -176,7 +180,9 @@ returns, and a `reason`. Kinds:
 - **Whole-response gap** (no `ignore_fields`): the local response differs, for
   example missing source history for a hosted clone or a deliberate
   safety-floor divergence. For a submit, the local variant must equal
-  `local_variant`.
+  `local_variant`. A hosted rebuild that the server decides as another class
+  (a decision divergence, spec #40) needs one; its hosted confirm then has no
+  local counterpart.
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.

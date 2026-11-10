@@ -71,9 +71,8 @@ server keeps the conservative behavior described.
   predicate and epochs at once; the local server does not. The cause is not
   isolated
   (`clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`,
-  fixture `clone_chain_source_age.jsonl`). A cleaner capture of the same
-  outcome, with identical SQL and aligned epochs, is the divergence #95
-  ([Known divergences](#known-divergences)).
+  fixture `clone_chain_source_age.jsonl`). #93 is a cleaner post-copy SKIP
+  this server rebuilds (same SQL text, only the schemas differ).
 - **What a RecordExecutions row means to hosted decisions (#90).** After a
   `--full-refresh` incremental run, which client 2.0.11 records as a FULL
   execution, hosted judges the next APPEND/MERGE submit against the last
@@ -126,12 +125,22 @@ server keeps the conservative behavior described.
   (`reuse_candidate.rs::sql_submit_copy_with_no_recorded_upstreams_rebuilds_when_upstreams_appear`).
 - **Data tests and Lag tolerance.** Clients send tolerance 0 for data tests, so
   data tests as Lag tolerance subjects are uncharacterized.
+- **Data-test EXECUTE trees not captured.** Hosted's data-test EXECUTE tree
+  (#75) is the same for a first execution, a logic change and upstream data
+  drift, and for passing and failing tests. A data test over a model whose
+  logic changed (`upstream_query_changed`), one that fails SQL qualification,
+  one without upstreams, a test over several upstreams (listing order), and a
+  failing or `store_failures_as: view` store-failures test were not captured;
+  the server renders nothing for the first three
+  ([explain-catalog.md](explain-catalog.md#data-test)). How hosted recognizes
+  a `store_failures` audit relation is open (#88).
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
-- **Explain evidence gaps (#78).** The VIEW × CLONE Explain cell is open
-  (`explain.rs::is_characterized`) but no view copy was ever captured; the
-  live attempt is part of #76. The SHAPE 7 query-changed tree is replayed from
-  `explain_snapshot_history.jsonl` (FULL, VIEW and snapshot, client 2.0.11).
+- **Explain evidence gaps (#78).** Resolved by #76: VIEW × CLONE is fenced as
+  unreachable on 2.0.11 (hosted answers a non-FULL submit copy candidate with
+  1 / 3, `explain_copy_probes.jsonl` entry 13). The SHAPE 7 query-changed
+  tree is replayed from `explain_snapshot_history.jsonl` (FULL, VIEW and
+  snapshot, client 2.0.11).
 - **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
   Explain anchor, so its per-upstream listing renders `<FRESH>`. The
   `upstream data is up to date` summary follows the epochs recorded at the
@@ -188,20 +197,47 @@ replay fails when an entry becomes unused or resolved
   generic rebuild description, and renders no Explain tree. Keyed gaps:
   `explain_incremental_append_merge_history.jsonl` entries 74–75
   (description) and 78–79 (`empty_tree`).
-- **Post-copy incremental submit (#95).** After the dev-clone pre-step copies
-  an append or merge incremental (`RegisterClone`, confirmed with the copy's
-  epoch), the client submits it with byte-identical SQL. Hosted skips it. The
-  server does not adopt the copy: the copy inherits the prod build's
-  schema-abstracted logic, computed under the prod default schema, where the
-  submit's explicit prod-schema source reference was abstracted; under the dev
-  default schema it is not. It rebuilds with
-  `no_reuse_candidate.copy_logic_mismatch` (wire unchanged, 6 / 6) and renders
-  no Explain tree. Keyed gaps: `explain_incremental_copy_history.jsonl`
-  entries 12–13 (whole response) and 14–15 (`empty_tree`). The same root
-  cause gives `explain_incremental_submit_copy.jsonl` entries 9–10 skip code
-  6 where hosted, which recognizes the prod equivalent, reports 1
-  (field-scoped). `clone_happy_path.jsonl` entry 7 is the missing-history
-  form: its copy source's build is not in the fixture.
+- **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
+  - Seed copy (#91). Hosted copies a seed loaded with the same values under
+    another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
+    exists under another name so we cloned that one`); the server never copies
+    seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
+    (submit) and 18 (Explain: the server explains the load it decided).
+  - Non-FULL copy candidate (#92). For a view or a snapshot whose equivalent
+    exists under another name, hosted builds with codes 1 / 3
+    (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`); the server sends
+    6 / 6. The class, description and Explain tree match. Keyed field-scoped
+    gaps: `explain_copy_probes.jsonl` entries 13 and 14.
+  - Post-RegisterClone submit (#93). After the client's dev-clone pre-step
+    copies a snapshot, hosted SKIPs the snapshot's own submit, which has the
+    prod build's SQL text. The server cannot adopt the copy's inherited
+    schema-abstracted logic (the upstream is in the prod build's default
+    schema but not in the dev submit's). It rebuilds with codes 6 / 6, records
+    `no_reuse_candidate.copy_logic_mismatch`, and renders no Explain tree.
+    Keyed gaps: `explain_snapshot_register_clone.jsonl` entries 7 and 8
+    (`empty_tree`). The open "RegisterClone source-age chain, entry 4"
+    question above may have the same cause.
+  - Post-copy incremental submit (#93, the APPEND/MERGE form, found by #73).
+    After the dev-clone pre-step copies an append or merge incremental
+    (`RegisterClone`, confirmed with the copy's epoch), the client submits it
+    with byte-identical SQL. Hosted skips it. The server does not adopt the
+    copy: the copy inherits the prod build's schema-abstracted logic, computed
+    under the prod default schema, where the submit's explicit prod-schema
+    source reference was abstracted; under the dev default schema it is not.
+    It rebuilds with `no_reuse_candidate.copy_logic_mismatch` (wire unchanged,
+    6 / 6) and renders no Explain tree. Keyed gaps:
+    `explain_incremental_copy_history.jsonl` entries 12–13 (whole response)
+    and 14–15 (`empty_tree`). The same root cause gives
+    `explain_incremental_submit_copy.jsonl` entries 9–10 skip code 6 where
+    hosted, which recognizes the prod equivalent, reports 1 (field-scoped).
+- **Custom materialization copy (#86).** A custom node (`DBT_CUSTOM`) built in
+  `dev_clone` over an equivalent prod build: hosted rebuilds it as a first
+  build with codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`), while it copies a FULL
+  control in the same run. The server answers a submit-time Result copy
+  (`result_copy::submit_lookup` excludes only data tests and seeds), and
+  renders no Explain tree for it (DBT_CUSTOM × CLONE stays fenced). Keyed
+  gaps: `explain_custom_copy.jsonl` entries 9 (whole response, local
+  `ready_to_clone`) and 12 (`empty_tree`).
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
@@ -222,6 +258,25 @@ replay fails when an entry becomes unused or resolved
   The proxy does not record failed calls (see "Proxy fidelity"), so the last
   two have no fixture rows and no keyed gap. The driver's stdout is their only
   record.
+- **Data test with incomplete cached results (#87, crafted,
+  `experiments/incomplete_test_results.py`).** A data test confirmed with
+  `execution_results: null`, or with only `failures`, then resubmitted
+  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
+  or `failures` alone). The server keeps its safety floor (reuse needs
+  complete cached results, AGENTS.md invariant 5) and rebuilds with
+  `no_reuse_candidate.incomplete_cached_test_results`, rendering no Explain
+  tree. Client 2.0.11 always confirms all three result fields. Keyed gaps:
+  `explain_incomplete_test_results.jsonl` entries 2, 6 (decision) and 3, 7
+  (`empty_tree`).
+- **`store_failures` data test audit relation (#88).** Once a
+  `store_failures: true` test has written its audit relation, the client
+  reports that relation in the test's `tables`. Hosted ignores it: the
+  unchanged test SKIPs and its trees list only the tested source. The server
+  sees a name the build did not record and rebuilds with
+  `dependency_set_changed`, rendering no Explain tree. Keyed gaps:
+  `explain_data_test_history.jsonl` entries 18, 27 (decision) and 21, 45
+  (`empty_tree`; at entry 45 both rebuild after upstream drift, for different
+  reasons).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the

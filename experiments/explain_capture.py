@@ -135,22 +135,30 @@ class Sql:
 
 @dataclass(init=False)
 class Build:
-    """One `dbt build --select ...` (optionally `--full-refresh`)."""
+    """One `dbt build --select ...` (optionally `--full-refresh`).
+
+    `test_failures=True` when a selected data test is meant to fail: dbt then
+    exits 1, which this step accepts (any other non-zero exit still stops the
+    run). Check the step's log for which nodes failed.
+    """
     select: tuple
     target: str = "prod_demo"
     full_refresh: bool = False
+    test_failures: bool = False
 
-    def __init__(self, *select, target="prod_demo", full_refresh=False):
+    def __init__(self, *select, target="prod_demo", full_refresh=False, test_failures=False):
         self.select = tuple(select)
         self.target = target
         self.full_refresh = full_refresh
+        self.test_failures = test_failures
 
     def bind(self, m, run):
         sel = tuple(_sub(s, m, "Build select") for s in self.select)
         for s in sel:
             if run not in s or s.startswith("+"):
                 raise CaptureError(f"Build selects outside the run's nodes: {s}")
-        return Build(*sel, target=self.target, full_refresh=self.full_refresh)
+        return Build(*sel, target=self.target, full_refresh=self.full_refresh,
+                     test_failures=self.test_failures)
 
 
 @dataclass
@@ -616,8 +624,10 @@ class Run:
             if step.full_refresh:
                 args.append("--full-refresh")
             rc, log = self.dbt(k, "build", args)
-            if rc:
+            if rc and not (rc == 1 and step.test_failures):
                 raise CaptureError(f"dbt build exited {rc}; see {log}")
+            if rc:
+                print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
         elif isinstance(step, Explain):
             rc, log = self.dbt(k, "explain", ["state", "explain", "--verbose", "--target",
                                               step.target, "--select", step.select])
@@ -629,6 +639,14 @@ class Run:
 def shared_status(path):
     return subprocess.run(["git", "-C", path, "status", "--porcelain"], check=True,
                           capture_output=True, text=True).stdout
+
+
+def off_demo_submits(rows):
+    """SQL submits whose target is outside CDO_DEMO_DB. A data test has no
+    target (`target_table: null`) and is not one."""
+    return [r for r in rows if r.get("method") == "SubmitEnrichedSQL"
+            and (r.get("request") or {}).get("target_table")
+            and not r["request"]["target_table"].upper().startswith(f'"{DEMO_DB}".')]
 
 
 def report(bound, rows, marks, work):
@@ -646,8 +664,7 @@ def report(bound, rows, marks, work):
                    "steps": [{"kind": type(s).__name__, **vars(s), "rows_after": m}
                              for s, m in zip(bound.steps, marks)]}, fh, indent=1, default=list)
     explain_slice.slice_window(rows)
-    off_demo = [r for r in rows if r.get("method") == "SubmitEnrichedSQL"
-                and not (r.get("request") or {}).get("target_table", "").upper().startswith(f'"{DEMO_DB}".')]
+    off_demo = off_demo_submits(rows)
     print(f"## fixture candidate: {cand} ({len(kept)} rows; dropped {dict(dropped)})")
     results = oracle(bound, rows, marks)
     print("## ORACLE (each Explain step explained the node's current decision over State history)")
