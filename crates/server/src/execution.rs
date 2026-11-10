@@ -9,7 +9,8 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::{InputTable, Store};
+use crate::store::{logic_identity, InputTable, Producer, Store};
+use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
 /// lookups.
@@ -323,11 +324,13 @@ pub(crate) async fn record_batch(
     // now written atomically (insert_confirmed_batch_with_node_states): a
     // rejected request or any write failure has NO persisted side effect.
     let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
+    let mut batch: Vec<(ExecutionEvidence, qc::ExecutionOutcome)> =
+        Vec::with_capacity(records.len());
     for record in records {
         let outcome = record.outcome.clone().unwrap_or_default();
         let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
 
-        let mut evidence = match input {
+        let evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
                 ExecutionEvidence::sql_record(org_id, sql)
             }
@@ -335,11 +338,7 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
-        crate::submit_decision::resolve_producers(store, &mut evidence)
-            .await
-            .map_err(RecordError::Store)?;
-        let row = evidence.confirmed(outcome);
-        rows.push(row);
+        batch.push((evidence, outcome));
 
         // Collect each node's comparison state for `state:*` selectors; the
         // actual write happens in the SAME transaction as the executions
@@ -357,6 +356,32 @@ pub(crate) async fn record_batch(
         }
     }
 
+    // Producers are resolved against State history AND the batch itself: an
+    // upstream built in this batch is the current state of its relation once
+    // the batch is published, so a consumer recorded alongside it records that
+    // build, exactly as a later submit will resolve it (ADR 0007).
+    let built_in_batch = batch_builds(&batch);
+    for (mut evidence, outcome) in batch {
+        crate::submit_decision::resolve_producers(store, &mut evidence)
+            .await
+            .map_err(RecordError::Store)?;
+        let scope = BatchScope::of(&evidence);
+        let target = evidence.target_table.clone();
+        for input in evidence
+            .input_tables
+            .iter_mut()
+            .filter(|t| t.name != target)
+        {
+            if let Some((identity, built)) =
+                built_in_batch.get(&(input.name.clone(), scope.clone()))
+            {
+                input.producer =
+                    Producer::of_build(identity.clone(), *built, input.last_modified_epoch);
+            }
+        }
+        rows.push(evidence.confirmed(outcome));
+    }
+
     // Write the executions batch AND the selector/deferral node_states in a
     // SINGLE transaction (review #2 finding 5, full atomicity): a successful
     // RecordExecutions publishes execution and logical state consistently,
@@ -368,6 +393,48 @@ pub(crate) async fn record_batch(
         .map_err(RecordError::Store)?;
 
     Ok(stored)
+}
+
+/// The physical scope a producer is resolved in: connection namespace and
+/// warehouse family (the organization is the batch's).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BatchScope {
+    table_namespace: Option<String>,
+    warehouse_family: String,
+}
+
+impl BatchScope {
+    fn of(evidence: &ExecutionEvidence) -> Self {
+        Self {
+            table_namespace: non_blank_namespace(evidence.table_namespace.as_deref())
+                .map(str::to_owned),
+            warehouse_family: crate::warehouse::Warehouse::from_dialect(&evidence.dialect)
+                .family_key(&evidence.dialect),
+        }
+    }
+}
+
+/// Each relation built in a batch, by name and scope: the logic identity and
+/// build epoch of its LAST record, which is its current state once the batch
+/// is published (rows are inserted in order).
+fn batch_builds(
+    batch: &[(ExecutionEvidence, qc::ExecutionOutcome)],
+) -> HashMap<(String, BatchScope), (String, Option<i64>)> {
+    batch
+        .iter()
+        .filter(|(e, _)| !e.target_table.is_empty())
+        .filter_map(|(e, outcome)| {
+            let identity = logic_identity(
+                e.node_sql_hash.as_deref(),
+                e.node_namespace_logic_hash.as_deref(),
+                e.values_hash.as_deref(),
+            )?;
+            Some((
+                (e.target_table.clone(), BatchScope::of(e)),
+                (identity, outcome.last_modified_epoch),
+            ))
+        })
+        .collect()
 }
 
 /// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint

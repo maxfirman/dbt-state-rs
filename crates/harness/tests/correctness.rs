@@ -258,6 +258,33 @@ async fn rejected_record_batch_does_not_leak_node_state() {
     );
 }
 
+/// A RecordExecutions batch that records an upstream build together with a
+/// consumer of it resolves the consumer's producer from the batch itself
+/// (Codex review, PR #69): the batch's builds are the current state once it is
+/// published, so the unchanged consumer is reused rather than rebuilt as an
+/// upstream query change. Record order within the batch does not matter.
+#[tokio::test]
+async fn record_batch_resolves_producers_within_the_batch() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let up = "\"DB\".\"S\".\"BATCH_UP\"";
+    let upstream = model(up).body("h-batch-up");
+    let consumer = model("\"DB\".\"S\".\"BATCH_M\"")
+        .body("h-batch-m")
+        .upstream(up, 1_000);
+
+    let stored = sc
+        .record([
+            consumer.record(built_at(2_000)),
+            upstream.record(built_at(1_000)),
+        ])
+        .await
+        .expect("record succeeds");
+    assert_eq!(stored, 2);
+
+    sc.expect_skip(consumer).await;
+}
+
 /// FULL CROSS-STORE ATOMICITY (review #2 finding 5, follow-up). A SUCCESSFUL
 /// RecordExecutions must not leave the execution ledger and the logical
 /// (selector/deferral) state inconsistent. Previously the executions batch

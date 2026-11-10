@@ -157,6 +157,31 @@ def arm_dropped_direct_with_stale_copy():
     report("dropped_direct_with_stale_copy", "m2", m2, v, b, explain=True)
 
 
+def arm_stale_newest_equivalent():
+    """Two equivalents: M (stale, but the NEWEST build epoch, as when an
+    overlapping build finishes last) and M3 (fresh, older epoch). M2 must
+    rebuild for freshness. Does hosted copy M3, or execute because the newest
+    equivalent is stale? (ANY, tolerance 0.)"""
+    (u,) = [Node("sne", "u0")]
+    build(u)
+    m = Node("sne", "m", [u], tol=0)
+    v, b = m.submit()
+    assert v == "ready_to_execute", v
+    m.confirm(b["request_id"], now_ms() + 600_000)  # finishes "last"
+    m2 = Node("sne", "m2", [u], tol=0)
+    v, _ = build(m2)
+    report("stale_newest_equivalent", "m2_created", m2, v, {})
+    time.sleep(2)
+    rebuild_upstream(u)
+    time.sleep(1)
+    m3 = Node("sne", "m3", [u], tol=0)
+    v, b = build(m3)
+    report("stale_newest_equivalent", "m3_created", m3, v, b)
+    time.sleep(1)
+    v, b = m2.submit()
+    report("stale_newest_equivalent", "m2", m2, v, b, explain=True)
+
+
 def arm_older_build_not_reusable():
     """As older_own_build, but ANY with tolerance 0, so the older matching
     build is itself stale. 8/7, or 6/6?"""

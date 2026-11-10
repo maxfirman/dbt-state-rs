@@ -203,9 +203,6 @@ impl Store {
             .push_bind(q.node_namespace_logic_hash).push(" AND execution_type = ").push_bind(q.execution_type)
             .push(" AND target_table <> ").push_bind(q.exclude_target)
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table");
-        if let Some(limit) = q.limit {
-            query.push(" LIMIT ").push_bind(limit);
-        }
         query
             .build_query_as::<CopyCandidate>()
             .fetch_all(&self.pool)

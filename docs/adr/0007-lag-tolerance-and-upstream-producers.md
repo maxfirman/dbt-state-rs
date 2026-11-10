@@ -53,6 +53,9 @@ reused within tolerance.
 
 - Inputs recorded before producers were stored read as unrecorded and never
   count as an upstream query change; they keep the drift and tolerance rules.
+- A RecordExecutions batch resolves producers against State history and the
+  batch itself: an upstream built in the same batch is the producer its
+  consumers record, as it is the current state once the batch is published.
 - Copies registered with RegisterClone record no inputs. Their freshness stays
   anchored on the copy's own build epoch, so a copy is never treated as
   fresher than when it was made.

@@ -52,10 +52,16 @@ impl Producer {
     /// read is not later than the build's epoch; otherwise no recorded build
     /// (an External modification, or no build in scope at all).
     pub(crate) fn of(current_build: Option<&ExecutionRow>, epoch: Option<i64>) -> Self {
-        match (current_build, epoch) {
-            (Some(build), Some(read)) if build.last_modified_epoch.is_some_and(|b| read <= b) => {
-                Self::Build(build.logic_identity())
-            }
+        match current_build {
+            Some(build) => Self::of_build(build.logic_identity(), build.last_modified_epoch, epoch),
+            None => Self::NoBuild,
+        }
+    }
+
+    /// [`Producer::of`] for a build known by its logic identity and epoch.
+    pub(crate) fn of_build(identity: String, build_epoch: Option<i64>, read: Option<i64>) -> Self {
+        match (build_epoch, read) {
+            (Some(built), Some(read)) if read <= built => Self::Build(identity),
             _ => Self::NoBuild,
         }
     }
@@ -83,6 +89,21 @@ impl<'de> Deserialize<'de> for Producer {
 impl From<&qc::TableModifiedInfo> for InputTable {
     fn from(t: &qc::TableModifiedInfo) -> Self {
         Self::at(&t.name, t.last_modified_epoch)
+    }
+}
+
+/// The logic identity a producer is recorded by (ADR 0007): the rendered
+/// logic hash with a seed's values, else a copy's schema-abstracted logic.
+/// `None` when the execution has neither (its identity is then its id).
+pub(crate) fn logic_identity(
+    node_sql_hash: Option<&str>,
+    node_namespace_logic_hash: Option<&str>,
+    values_hash: Option<&str>,
+) -> Option<String> {
+    match (node_sql_hash, node_namespace_logic_hash) {
+        (Some(sql), _) => Some(format!("sql:{sql}:{}", values_hash.unwrap_or(""))),
+        (None, Some(ns)) => Some(format!("ns:{ns}")),
+        (None, None) => None,
     }
 }
 
@@ -139,11 +160,12 @@ impl ExecutionRow {
     /// logic hash with a seed's values, else the copy's schema-abstracted
     /// logic, else the execution itself.
     pub(crate) fn logic_identity(&self) -> String {
-        match (&self.node_sql_hash, &self.node_namespace_logic_hash) {
-            (Some(sql), _) => format!("sql:{sql}:{}", self.values_hash.as_deref().unwrap_or("")),
-            (None, Some(ns)) => format!("ns:{ns}"),
-            (None, None) => format!("execution:{}", self.id),
-        }
+        logic_identity(
+            self.node_sql_hash.as_deref(),
+            self.node_namespace_logic_hash.as_deref(),
+            self.values_hash.as_deref(),
+        )
+        .unwrap_or_else(|| format!("execution:{}", self.id))
     }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
@@ -240,8 +262,9 @@ pub struct CopyCandidate {
     pub execution_runtime_ms: Option<i64>,
 }
 
-/// What [`Store::find_copy_candidates`] selects. `limit` is the warehouse
-/// rules' candidate limit (`None`: every candidate).
+/// What [`Store::find_copy_candidates`] selects: every current equivalent,
+/// because candidates can still be rejected after the read (relation check,
+/// provenance walk, freshness judgment).
 #[derive(Debug, Clone, Copy)]
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
@@ -249,7 +272,6 @@ pub struct CopyCandidateQuery<'a> {
     pub execution_type: i32,
     pub exclude_target: &'a str,
     pub dialect: &'a str,
-    pub limit: Option<i64>,
 }
 
 /// The current state a client-requested copy's source must have

@@ -23,7 +23,7 @@ use crate::query_cache::ModelExecutionType;
 pub use crate::result_copy::ResultCopy;
 use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
-use crate::store::{CopyCandidateQuery, ExecutionRow, Producer, Store};
+use crate::store::{CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, Store};
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
@@ -484,45 +484,45 @@ async fn result_copy_fallback(
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(None);
     };
-    let Some(equivalent) = find_equivalent(store, org_id, req, &lookup).await? else {
-        return Ok(None);
-    };
-    let source = store
-        .current_target_state(
-            org_id,
-            &equivalent.source_table,
-            Some(lookup.table_namespace),
-            &req.dialect,
-        )
-        .await?;
-    let judged = match source {
-        Some(mut source) if reads_same_upstreams(evidence, &source) => {
-            // The submit's upstream evidence, as read by the equivalent.
-            let upstreams: Vec<_> = evidence
-                .input_tables
-                .iter()
-                .filter(|t| t.name != evidence.target_table)
-                .cloned()
-                .collect();
-            reuse_candidate::adopt_current_inputs(&mut source, &upstreams);
-            let selection = Selection::of_candidate(source.clone());
-            let mut ctx = context(evidence, &selection, freshness, Some(&source));
-            ctx.input_tables = &upstreams;
-            ctx.target_table = Some(source.target_table.as_str());
-            match decision::reusable(&ctx, &source) {
-                Some(reuse) => Some((reuse, ctx.build_age_ms)),
-                None => return Ok(None),
+    // The first equivalent, in preference order, that the warehouse rules
+    // accept and that qualifies for this submit. A same-upstream equivalent
+    // rejected on freshness does not end the search: another may qualify
+    // (VERIFIED LIVE 2026-11-10, lag_copy_candidates `sne`: the newest
+    // equivalent was stale and hosted copied an older, current one).
+    let mut chosen = None;
+    for candidate in copy_candidates(store, org_id, req, &lookup).await? {
+        let Some(equivalent) = eligible_equivalent(store, org_id, req, &lookup, candidate).await?
+        else {
+            continue;
+        };
+        let source = store
+            .current_target_state(
+                org_id,
+                &equivalent.source_table,
+                Some(lookup.table_namespace),
+                &req.dialect,
+            )
+            .await?;
+        let judged = match source {
+            Some(source) if reads_same_upstreams(evidence, &source) => {
+                match judge_equivalent(evidence, freshness, source) {
+                    Some(judged) => Some(judged),
+                    None => continue,
+                }
             }
-        }
-        Some(_) => None,
-        // The equivalent's current state vanished between the two reads.
-        None => return Ok(None),
-    };
-    if own.is_some() && judged.is_none() {
-        // A copy over an existing target is only characterized for an
-        // equivalent in the same environment.
-        return Ok(None);
+            // A copy over an existing target is only characterized for an
+            // equivalent in the same environment.
+            Some(_) if own.is_some() => continue,
+            Some(_) => None,
+            // The equivalent's current state vanished between the two reads.
+            None => continue,
+        };
+        chosen = Some((equivalent, judged));
+        break;
     }
+    let Some((equivalent, judged)) = chosen else {
+        return Ok(None);
+    };
     match result_copy::plan_submit(req, equivalent) {
         SubmitCopyPlan::ChainLimitExecute if own.is_none() => {
             let ids = DecisionIds::mint();
@@ -563,6 +563,29 @@ async fn result_copy_fallback(
     }
 }
 
+/// How fresh a same-upstream equivalent would be if reused for this submit,
+/// with its build age, judged exactly as if it were the reuse candidate; or
+/// `None` when this submit would rebuild it.
+fn judge_equivalent(
+    evidence: &ExecutionEvidence,
+    freshness: &Freshness<'_>,
+    mut source: ExecutionRow,
+) -> Option<(decision::Reuse, Option<i64>)> {
+    // The submit's upstream evidence, as read by the equivalent.
+    let upstreams: Vec<_> = evidence
+        .input_tables
+        .iter()
+        .filter(|t| t.name != evidence.target_table)
+        .cloned()
+        .collect();
+    reuse_candidate::adopt_current_inputs(&mut source, &upstreams);
+    let selection = Selection::of_candidate(source.clone());
+    let mut ctx = context(evidence, &selection, freshness, Some(&source));
+    ctx.input_tables = &upstreams;
+    ctx.target_table = Some(source.target_table.as_str());
+    decision::reusable(&ctx, &source).map(|reuse| (reuse, ctx.build_age_ms))
+}
+
 /// Whether `source` recorded exactly the genuine upstream relations this
 /// submit reads.
 fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
@@ -581,19 +604,15 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
             == names(&evidence.input_tables, &evidence.target_table)
 }
 
-/// The clone-equivalent lookup: the first current equivalent, in the store's
-/// preference order, that the warehouse rules accept as a copy source for the
-/// submit target. Where the rules track copy depth, each candidate's copy
-/// provenance is walked and a candidate with too long or missing a chain is
-/// skipped.
-async fn find_equivalent(
+/// Every current equivalent of the submit, in the store's preference order
+/// (newest build first).
+async fn copy_candidates(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     lookup: &EquivalentLookup<'_>,
-) -> sqlx::Result<Option<CloneEquivalent>> {
-    let warehouse = Warehouse::from_dialect(&req.dialect);
-    let candidates = store
+) -> sqlx::Result<Vec<CopyCandidate>> {
+    store
         .find_copy_candidates(
             org_id,
             &CopyCandidateQuery {
@@ -602,35 +621,44 @@ async fn find_equivalent(
                 execution_type: lookup.execution_type,
                 exclude_target: lookup.exclude_target,
                 dialect: &req.dialect,
-                limit: warehouse.copy_candidate_limit(),
             },
         )
-        .await?;
-    for candidate in candidates {
-        if !warehouse.copy_relations_compatible(&candidate.target_table, lookup.exclude_target) {
-            continue;
-        }
-        let copy_depth = match warehouse.copy_provenance_depth() {
-            None => 0,
-            Some(max_ancestors) => {
-                let depth = store
-                    .copy_chain_depth(
-                        org_id,
-                        lookup.table_namespace,
-                        &req.dialect,
-                        &candidate.target_table,
-                        max_ancestors,
-                    )
-                    .await?;
-                let Some(depth) = depth else {
-                    continue;
-                };
-                depth
-            }
-        };
-        return Ok(Some(CloneEquivalent::new(candidate, copy_depth)));
+        .await
+}
+
+/// `candidate` as a copy source, if the warehouse rules accept it for the
+/// submit target. Where the rules track copy depth, its copy provenance is
+/// walked and a candidate with too long or missing a chain is rejected.
+async fn eligible_equivalent(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    lookup: &EquivalentLookup<'_>,
+    candidate: CopyCandidate,
+) -> sqlx::Result<Option<CloneEquivalent>> {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if !warehouse.copy_relations_compatible(&candidate.target_table, lookup.exclude_target) {
+        return Ok(None);
     }
-    Ok(None)
+    let copy_depth = match warehouse.copy_provenance_depth() {
+        None => 0,
+        Some(max_ancestors) => {
+            let depth = store
+                .copy_chain_depth(
+                    org_id,
+                    lookup.table_namespace,
+                    &req.dialect,
+                    &candidate.target_table,
+                    max_ancestors,
+                )
+                .await?;
+            let Some(depth) = depth else {
+                return Ok(None);
+            };
+            depth
+        }
+    };
+    Ok(Some(CloneEquivalent::new(candidate, copy_depth)))
 }
 
 fn log_decision(

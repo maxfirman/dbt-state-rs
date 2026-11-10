@@ -660,7 +660,32 @@ async fn result_copy_reads_only_the_latest_confirmed_build_of_each_target() {
     assert_eq!(record.reason, DecisionReason::FirstBuild);
 }
 
-/// Dialect spelling does not change result copy: a client reporting `DuckDB`
+/// A same-upstream equivalent rejected on freshness does not end the copy
+/// search (Codex review, PR #69; VERIFIED LIVE 2026-11-10, lag_copy_candidates
+/// `sne`): the newest build of an equivalent can have consumed older
+/// upstream data than an older build of another, and hosted then copies the
+/// current one.
+#[tokio::test]
+async fn result_copy_skips_a_stale_newest_equivalent() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let up = environment_upstream("prod");
+    let named =
+        |table: &str| environment_model("prod").target(&format!("\"DB\".\"PROD\".\"{table}\""));
+
+    // STALE read the upstream at 500 but its build finished last (epoch 9_000);
+    // FRESH read it at 2_000 and finished earlier (epoch 3_000).
+    build(store, named("STALE"), 9_000).await;
+    build(store, named("FRESH").upstream(&up, 2_000), 3_000).await;
+
+    let outcome = submit_sql(store, environment_model("prod").upstream(&up, 2_000)).await;
+    let SubmitOutcome::Copy { copy, record, .. } = outcome else {
+        panic!("the current equivalent is copied, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"FRESH\"");
+    assert!(!record.is_stale);
+}
 /// gets the same copy, past the volatility gate, as one reporting `duckdb`.
 #[tokio::test]
 async fn duckdb_result_copy_ignores_dialect_case() {

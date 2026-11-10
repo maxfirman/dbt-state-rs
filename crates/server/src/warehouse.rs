@@ -236,16 +236,6 @@ impl Warehouse {
         }
     }
 
-    /// How many current equivalents the clone-equivalent lookup returns, in
-    /// its preference order. `None`: every candidate, because candidates can
-    /// still be rejected after the read (relation check, provenance walk).
-    pub fn copy_candidate_limit(self) -> Option<i64> {
-        match self {
-            Self::DuckDb => None,
-            _ => Some(1),
-        }
-    }
-
     /// Physical evidence the submit fallback requires of a copy source beyond
     /// its DDL: the source's recorded build epoch, if any.
     pub fn copy_source_evidence(
@@ -734,13 +724,6 @@ mod tests {
             }
             assert_eq!(warehouse.copy_provenance_depth(), None, "{warehouse:?}");
         }
-    }
-
-    #[test]
-    fn only_duckdb_considers_every_equivalent_candidate() {
-        assert_eq!(Warehouse::DuckDb.copy_candidate_limit(), None);
-        assert_eq!(Warehouse::Snowflake.copy_candidate_limit(), Some(1));
-        assert_eq!(Warehouse::Other.copy_candidate_limit(), Some(1));
     }
 
     #[test]

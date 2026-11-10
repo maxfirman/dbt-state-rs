@@ -316,7 +316,8 @@ fn last_codes(fixture: &str, node: &str) -> (String, bool, Option<i64>, Option<i
 ///   copied over the existing target (`fe`: fresh; `st`, `wba`: stale within
 ///   tolerance, judged on the equivalent's build age), unless the target's own
 ///   table was modified externally (`ome`) or the equivalent is stale beyond
-///   tolerance too (`esb`).
+///   tolerance too (`esb`). A stale equivalent does not end the search: an
+///   older build of another equivalent that is current is copied (`sne`).
 /// * A rebuild while an older build of the target would still qualify
 ///   reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, `is_stale` as
 ///   that build would be reused (`oball`, `obany`, `obf`); a stale older build
@@ -339,6 +340,8 @@ fn copy_candidate_arms() {
     assert_eq!(last_codes(f, "ltx120154_obf_m2"), execute(false, 8, 7));
     assert_eq!(last_codes(f, "ltx120154_obn_m2"), execute(false, 6, 6));
     assert_eq!(last_codes(f, "ltx115931_de_m2"), copy(false));
+    // The newest equivalent is stale; an older, current one is copied.
+    assert_eq!(last_codes(f, "ltx151050_sne_m2"), copy(false));
 
     let entries = diff::load_golden(&format!("{FIXTURES}{f}")).unwrap();
     let dt: Vec<_> = entries
