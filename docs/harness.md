@@ -11,7 +11,7 @@ this server against it. Wire semantics and the captured protocol facts live in
 | Binary (`crates/harness/Cargo.toml`) | Source | Purpose |
 |---|---|---|
 | `record-proxy` | `src/bin/record_proxy.rs` | Recording proxy (below). |
-| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py` and `seed_upstream.py` for synthetic-epoch sequences that need no warehouse. |
+| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py`, `seed_upstream.py` and `ambiguous_rebuilds.py` for synthetic-epoch sequences that need no warehouse. |
 | `diff-fuzz` | `src/bin/diff_fuzz.rs` | Opt-in differential discovery against the hosted service; needs `--features fuzz` ([testing.md](testing.md#hosted-discovery-differential-fuzz)). |
 
 ### Recording proxy
@@ -71,7 +71,7 @@ ever mutate `CDO_DEMO_DB`.
 | Lag tolerance | `lag_experiment.sh LABEL {any\|all} LAG {none\|a\|b\|both}`, `lag_buildage.sh`, `lag_isolate.sh`, `lag_docs_example.sh` (`DIRECT=1` runs without the proxy as a control), `lag_matrix.py ARM…`, `copy_candidates.py`, `seed_upstream.py` |
 | Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh` |
 | Selectors and deferral | `selector_experiment.sh {baseline\|query CRIT\|mutate CRIT EDIT\|all-clean}`, `selector_last_write_wins.sh`, `deferral_experiment.sh` |
-| Explain | `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`; `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`) |
+| Explain | `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`, `ambiguous_rebuilds.py PROBE…` (crafted ambiguous Target relation probes d1–d4; point `PROBE_URL` at your own proxy); `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`) |
 | Inspection and validation | `golden_tail.py FILE N [PREFIX]`, `lag_show.py`, `lag_rule_check.py [files]`, `trace_validate.py` and `oracles.py` (correlate captured source, clone and confirm evidence; tested by `trace_validate_test.py`) |
 
 `lag_experiment.sh` bumps upstreams by External modification of dbt-built
