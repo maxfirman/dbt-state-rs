@@ -192,7 +192,7 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// Characterized matrix (docs/explain-catalog.md "Execution type coverage"):
 ///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone. VIEW ×
 ///     Clone has no hosted capture yet (pending → #78).
-///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
+///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
 ///   - seed (VALUES=9): Skip | Build (Clone unobserved).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone pending → #76).
 ///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
@@ -213,7 +213,11 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
             decision,
             DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
         ),
-        Ok(ModelExecutionType::DbtDataTest) => matches!(decision, DecisionKind::Skip),
+        Ok(ModelExecutionType::DbtDataTest) => {
+            // EXECUTE: VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl,
+            // client 2.0.11). Data-test CLONE is out of scope (→ #68).
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
         // VERIFIED LIVE 2026-11-10 (explain_snapshot_history.jsonl, client
         // 2.0.11). Snapshot CLONE is pending on #76.
         Ok(ModelExecutionType::Snapshot) => {
@@ -255,6 +259,9 @@ enum Shape {
     CopyOver,
     /// CLONE (`vs clone` sections).
     Clone,
+    /// A data test that executes: its tested upstreams, without verdicts
+    /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
+    DataTestExecute,
 }
 
 /// Select the tree shape from the persisted decision reason, the class and
@@ -281,6 +288,28 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                         != Some(decision::REJECTION_LATEST_QUERY_HASH_NOT_MATCH),
                 }
             }
+            _ => return None,
+        });
+    }
+    if node.is_data_test() {
+        // VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl, client
+        // 2.0.11): one EXECUTE tree for a first execution, a logic change and
+        // upstream data drift, whether the test passed or failed. Hosted SKIPs
+        // a test whose cached results are incomplete (#87) and one whose
+        // store_failures audit relation newly appears in its inputs (#88), so
+        // our rebuilds for those reasons render nothing; the other rebuild
+        // reasons, and a test without upstreams, have no data-test capture.
+        return Some(match (node.decision, reason) {
+            (
+                DecisionKind::Skip,
+                R::Reused(Reuse::Fresh | Reuse::ToleratedStale | Reuse::WithinLagTolerance),
+            ) => Shape::Skip,
+            (
+                DecisionKind::Build,
+                R::FirstBuild
+                | R::NoReuseCandidate(NoCandidate::IdentityMismatch)
+                | R::UpstreamOutdated,
+            ) if !node.genuine_upstreams().is_empty() => Shape::DataTestExecute,
             _ => return None,
         });
     }
@@ -371,6 +400,10 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
+        Some(Shape::DataTestExecute) => vec![section(
+            "data freshness analysis",
+            vec![clone_upstream_dependencies(&node.genuine_upstreams())],
+        )],
     }
 }
 
@@ -959,7 +992,9 @@ fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// history-bearing CLONE capture from #34). The earlier generator reused the
 /// anchored SKIP listing here and wrongly emitted a `<FRESH>` badge plus a
 /// `no updates since … last executed` line that hosted never renders for a
-/// clone.
+/// clone. A data-test EXECUTE lists its decision-time upstreams the same way,
+/// even when it has a matched build (VERIFIED LIVE 2026-11-10,
+/// explain_data_test_history.jsonl).
 fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
     let children = upstreams
         .iter()
@@ -1204,25 +1239,68 @@ mod tests {
     }
 
     #[test]
-    fn data_test_execute_emits_nothing() {
-        // F4 regression (PR #31): a data-test EXECUTE must NOT render a
-        // model-shaped first-build `table analysis` tree. The pinned data-test
-        // execute description contains "no prior execution", which used to trip
-        // the `is_first_build` substring heuristic. Data-test EXECUTE is
-        // UNOBSERVED/unimplemented (explain-catalog.md ~line 222, spec #27
-        // Out-of-Scope "only SKIP captured"), so we emit nothing rather than
-        // invent a structurally-impossible tree.
+    fn data_test_execute_lists_each_upstream_without_a_verdict() {
+        // VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl, client
+        // 2.0.11): a data-test EXECUTE has no table or query analysis; it lists
+        // each tested upstream with no badge and only `last updated`. The same
+        // tree for a first execution, a logic change and upstream data drift,
+        // and for a passing and a failing test. Not the model-shaped first
+        // build `table analysis` (F4 regression, PR #31).
+        let expected = vec![
+            (0, "data freshness analysis".to_string(), None, None),
+            (1, "upstream dependencies".to_string(), None, None),
+            (2, "«FQN»".to_string(), None, None),
+            (3, "last updated: «rel_time»".to_string(), None, None),
+        ];
+        for reason in [
+            DecisionReason::FirstBuild,
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            DecisionReason::UpstreamOutdated,
+        ] {
+            let mut n = node(
+                DecisionKind::Build,
+                ModelExecutionType::DbtDataTest as i32,
+                "data test was executed because it has no prior execution or its query changed",
+            );
+            n.target_table = None; // tests produce no physical object
+            n.input_tables = vec![tbl("\"DB\".\"S\".\"UP\"")];
+            n.reason = Some(reason);
+            assert_eq!(render(&n), expected, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn data_test_execute_renders_nothing_for_uncaptured_or_divergent_reasons() {
+        // Hosted SKIPs a data test whose cached results are incomplete and one
+        // whose store_failures audit relation newly appears in its inputs
+        // (#75 captures), so our rebuilds for those reasons have no hosted
+        // tree. The other rebuild reasons have no data-test capture, and a
+        // data test without upstreams was never captured executing.
+        for reason in [
+            DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
+            DecisionReason::DependencySetChanged,
+            DecisionReason::UpstreamQueryChanged,
+            DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+        ] {
+            let mut n = node(
+                DecisionKind::Build,
+                ModelExecutionType::DbtDataTest as i32,
+                "data test was executed because it has no prior execution or its query changed",
+            );
+            n.target_table = None;
+            n.input_tables = vec![tbl("\"DB\".\"S\".\"UP\"")];
+            n.reason = Some(reason);
+            assert!(explain_lines(&n).is_empty(), "{reason:?}: {:?}", render(&n));
+        }
         let mut n = node(
             DecisionKind::Build,
             ModelExecutionType::DbtDataTest as i32,
             "data test was executed because it has no prior execution or its query changed",
         );
-        n.target_table = None; // tests produce no physical object
-        assert!(
-            explain_lines(&n).is_empty(),
-            "data-test EXECUTE is unobserved → must emit no invented lines, got {:?}",
-            render(&n)
-        );
+        n.target_table = None;
+        n.input_tables = Vec::new();
+        n.reason = Some(DecisionReason::FirstBuild);
+        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
     #[test]
@@ -1472,7 +1550,8 @@ mod tests {
                     | (10, DecisionKind::Skip) // view SKIP
                     | (10, DecisionKind::Build)
                     | (10, DecisionKind::Clone)
-                    | (8, DecisionKind::Skip) // data test SKIP (EXECUTE/CLONE unobserved)
+                    | (8, DecisionKind::Skip) // data test SKIP
+                    | (8, DecisionKind::Build) // data test EXECUTE (explain_data_test_history; CLONE → #68)
                     | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
                     | (9, DecisionKind::Build) // seed reload
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
@@ -1519,6 +1598,11 @@ mod tests {
                 // one so a characterized CLONE is genuinely non-empty.
                 if d == DecisionKind::Clone {
                     n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+                }
+                // A data test has no target (hosted and the client send none),
+                // so its one input is a tested upstream.
+                if et == ModelExecutionType::DbtDataTest as i32 {
+                    n.target_table = None;
                 }
                 let empty = explain_lines(&n).is_empty();
                 assert_eq!(
