@@ -190,11 +190,11 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// is a strict positive allowlist; everything else returns an empty tree.
 ///
 /// Characterized matrix (docs/explain-catalog.md "Execution type coverage"):
-///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone. VIEW ×
-///     Clone has no hosted capture yet (pending → #78).
+///   - model/table (FULL=1): Skip | Build | Clone.
+///   - view (VIEW=10): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
-///   - seed (VALUES=9): Skip | Build (Clone unobserved).
-///   - snapshot (SNAPSHOT=7): Skip | Build (Clone pending → #76).
+///   - seed (VALUES=9): Skip | Build (Clone fenced until #91).
+///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
 ///     local-only: hosted never copies one, #86).
 ///   - everything else (incremental, any other execution_type): NONE.
@@ -209,21 +209,31 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// changed" tree). PR #31 round-4 F7.
 fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
     match ModelExecutionType::try_from(execution_type) {
-        Ok(ModelExecutionType::Full | ModelExecutionType::View) => matches!(
+        Ok(ModelExecutionType::Full) => matches!(
             decision,
             DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
         ),
+        // VIEW CLONE is unreachable on 2.0.11 (#76, explain_copy_probes.jsonl
+        // entry 13): hosted refuses a non-FULL copy on submit (1/3,
+        // EXECUTION_TYPE_NOT_FULL) and the client sends RegisterClone only for
+        // incrementals and snapshots.
+        Ok(ModelExecutionType::View) => {
+            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
+        }
         Ok(ModelExecutionType::DbtDataTest) => {
             // EXECUTE: VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl,
             // client 2.0.11). Data-test CLONE is out of scope (→ #68).
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         // VERIFIED LIVE 2026-11-10 (explain_snapshot_history.jsonl, client
-        // 2.0.11). Snapshot CLONE is pending on #76.
+        // 2.0.11). Snapshot CLONE is unreachable on 2.0.11 (#76): hosted
+        // refuses a submit copy as for views, and a RegisterClone copy mints
+        // no execution_decision_id, so it has no Explain message.
         Ok(ModelExecutionType::Snapshot) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
-        // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl).
+        // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl). Hosted copies
+        // seeds on submit; VALUES CLONE stays fenced until #91.
         Ok(ModelExecutionType::Values) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
@@ -339,6 +349,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // DECISION DIVERGENCE (#83): hosted rejects an execution-type change
         // with its own code and tree; ours renders nothing (#40 rule).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged)) => {
+            return None;
+        }
+        // DECISION DIVERGENCE (#93): hosted reused a RegisterClone copy this
+        // server could not adopt; ours renders nothing (#40 rule).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch)) => {
             return None;
         }
         // LOCAL-ONLY (crafted probes d1–d4, 2026-11-10,
@@ -1509,7 +1524,7 @@ mod tests {
 
     #[test]
     fn snapshot_clone_emits_nothing() {
-        // SNAPSHOT=7 CLONE: no hosted capture yet (#76) → no invented tree.
+        // SNAPSHOT=7 CLONE: unreachable on 2.0.11 (#76) → no invented tree.
         let mut n = node(
             DecisionKind::Clone,
             ModelExecutionType::Snapshot as i32,
@@ -1548,14 +1563,13 @@ mod tests {
                     | (1, DecisionKind::Build) // model/table EXECUTE
                     | (1, DecisionKind::Clone) // model/table CLONE
                     | (10, DecisionKind::Skip) // view SKIP
-                    | (10, DecisionKind::Build)
-                    | (10, DecisionKind::Clone)
+                    | (10, DecisionKind::Build) // view EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (8, DecisionKind::Skip) // data test SKIP
                     | (8, DecisionKind::Build) // data test EXECUTE (explain_data_test_history; CLONE → #68)
                     | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
-                    | (9, DecisionKind::Build) // seed reload
+                    | (9, DecisionKind::Build) // seed reload (CLONE fenced until #91)
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
-                    | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE pending → #76)
+                    | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
                     | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
             )
@@ -1773,6 +1787,21 @@ mod tests {
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
         n.input_tables.clear();
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+    }
+
+    /// A rebuild over a RegisterClone copy the submit could not adopt is a
+    /// decision hosted makes differently: hosted reused the copy (#93,
+    /// explain_snapshot_register_clone.jsonl entry 7), so it renders nothing,
+    /// never a "query has changed" tree.
+    #[test]
+    fn copy_logic_mismatch_renders_nothing() {
+        for et in [ModelExecutionType::Full, ModelExecutionType::Snapshot] {
+            let mut n = node(DecisionKind::Build, et as i32, decision::DESC_EXECUTE);
+            n.reason = Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::CopyLogicMismatch,
+            ));
+            assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+        }
     }
 
     /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the

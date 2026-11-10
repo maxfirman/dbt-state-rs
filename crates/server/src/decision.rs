@@ -40,6 +40,12 @@ pub enum NoCandidate {
     /// FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH; this server
     /// still reports NO_SUITABLE_MATCH_FOUND (#83).
     ExecutionTypeChanged,
+    /// The latest row is a client-requested copy (RegisterClone) that this
+    /// workload cannot adopt: its inherited schema-abstracted logic is absent
+    /// or differs. Hosted reused such a copy when the submit had the source
+    /// build's SQL text (#93); this server rebuilds with the same wire answer
+    /// as [`NoCandidate::IdentityMismatch`].
+    CopyLogicMismatch,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,
     /// The node's own target is reported ambiguously or without an epoch.
@@ -99,10 +105,11 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 17] = [
+    const ALL: [DecisionReason; 18] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
+        Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
         Self::NoReuseCandidate(NoCandidate::OwnTargetModified),
@@ -129,6 +136,9 @@ impl DecisionReason {
             }
             Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
                 "no_reuse_candidate.execution_type_changed"
+            }
+            Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch) => {
+                "no_reuse_candidate.copy_logic_mismatch"
             }
             Self::NoReuseCandidate(NoCandidate::FailedReuseQualification) => {
                 "no_reuse_candidate.failed_reuse_qualification"
@@ -2081,6 +2091,10 @@ mod tests {
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
                 "no_reuse_candidate.execution_type_changed",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
+                "no_reuse_candidate.copy_logic_mismatch",
             ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),

@@ -173,6 +173,50 @@
     "reason": "DECISION DIVERGENCE explain of entry 58 (#83): hosted renders its node-query-unchanged tree for the execution-type change; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
   },
   {
+    "fixture": "explain_copy_probes.jsonl",
+    "entry": 12,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#91): the dev_clone seed load of a seed already loaded in prod_demo with the same values. Hosted copies it on submit (ready_to_clone, 1/-, 'an equivalent seed exists under another name so we cloned that one'); this server never copies seeds and loads it ('seed was loaded because it did not exist', 6/6)."
+  },
+  {
+    "fixture": "explain_copy_probes.jsonl",
+    "entry": 13,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#92): the dev_clone first build of a view whose equivalent exists in prod_demo. Both build with 'model was executed because its table did not exist'; hosted reports TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL (1/3), this server 6/6.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "explain_copy_probes.jsonl",
+    "entry": 14,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#92): the dev_clone first build of a snapshot whose equivalent exists in prod_demo (no RegisterClone: its target_schema=target.schema makes the deferred relation the dev one). Both build with 'snapshot was executed because its table did not exist'; hosted reports 1/3, this server 6/6.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "explain_copy_probes.jsonl",
+    "entry": 18,
+    "local_variant": "explain",
+    "reason": "DECISION DIVERGENCE explain of entry 12 (#91): hosted explains its seed copy (VALUES x CLONE, fenced until #91); the local server explains the ordinary first load it decided, which no persisted evidence distinguishes from any other first load."
+  },
+  {
+    "fixture": "explain_snapshot_register_clone.jsonl",
+    "entry": 7,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#93): the snapshot submit right after its RegisterClone copy into dev_clone, with the prod build's SQL text (the upstream is a prod_state_demo source read by both targets). Hosted reuses the copy (SKIP, prod build's runtime); this server cannot adopt the copy's inherited schema-abstracted logic and rebuilds (6/6, no_reuse_candidate.copy_logic_mismatch)."
+  },
+  {
+    "fixture": "explain_snapshot_register_clone.jsonl",
+    "entry": 8,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 7 (#93): hosted renders its snapshot SKIP tree over the copy; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.copy_logic_mismatch."
+  },
+  {
     "fixture": "explain_data_test_history.jsonl",
     "entry": 18,
     "local_variant": "ready_to_execute",

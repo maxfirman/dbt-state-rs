@@ -82,7 +82,11 @@ reproducible skip.
 
 | Scenario | Hosted | Reproduced |
 |---|---|---|
-| Incremental or snapshot | copy via `RegisterClone` | ✅ |
+| Incremental | copy via `RegisterClone` | ✅ |
+| Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy; ❌ the post-copy submit: hosted skips, the server rebuilds (#93) |
+| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅, codes 6 / 6 ❌ (#92) |
+| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅, codes 6 / 6 ❌ (#92) |
+| Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
 | Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ❌ the server copies it (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
@@ -111,6 +115,8 @@ reproducible skip.
 - **Incremental self-reference after a copy**: hosted skips the final resubmit
   in `clone_chain_source_age.jsonl`; the server rebuilds (pinned by
   `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`).
+- **Copies seen by the #76 probes** (seed copy, non-FULL rejection codes, the
+  post-copy snapshot SKIP): #91, #92, #93, keyed in `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
 - **Unit test reuse** is not characterized.
