@@ -304,6 +304,22 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged)) => {
             return None;
         }
+        // LOCAL-ONLY (crafted probes d1–d4, 2026-11-10,
+        // explain_ambiguous_rebuilds.jsonl): rebuilds hosted never makes, so
+        // no hosted tree exists and none is rendered. Hosted reuses a
+        // duplicated Target relation entry and treats one of unknown epoch as
+        // missing (#80), and refuses to record a build without an epoch, so
+        // it has no build anchor to lack (#82). An own-target-modified
+        // rebuild with genuine upstreams and no matched build happens only
+        // when the anchor's execution row disappeared. See
+        // docs/explain-catalog.md "Ambiguous rebuild reasons".
+        (
+            DecisionKind::Build,
+            R::NoReuseCandidate(
+                NoCandidate::OwnTargetChangedOrMissing | NoCandidate::OwnTargetModified,
+            )
+            | R::NoBuildAnchor,
+        ) => return None,
         // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of
         // an absent target reads like a first build, whatever the reason.
         (DecisionKind::Build, _) if node.own_target_absent() => Shape::FirstBuild,
@@ -318,21 +334,6 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             )
             | R::DependencySetChanged
             | R::CopyChainLimit,
-        ) => Shape::QueryChanged,
-        // AWAITING HOSTED CAPTURE (#40). A rebuild with ambiguous own-target
-        // evidence, an own-target-modified rebuild with upstreams but no
-        // anchor, and a rebuild with no build anchor keep the SHAPE-7
-        // rendering ("table exists already" + "the model query has changed"),
-        // which may be wrong. Their hosted shapes are unobserved; the distinct
-        // persisted reason means a capture only has to change this arm. See
-        // docs/explain-catalog.md "Known limitation — ambiguous own-target
-        // rebuild" and ADR 0006.
-        (
-            DecisionKind::Build,
-            R::NoReuseCandidate(
-                NoCandidate::OwnTargetChangedOrMissing | NoCandidate::OwnTargetModified,
-            )
-            | R::NoBuildAnchor,
         ) => Shape::QueryChanged,
         (DecisionKind::Clone, R::ResultCopy)
             if node.anchor.is_some() && !node.own_target_absent() =>
@@ -1536,12 +1537,12 @@ mod tests {
         }
     }
 
-    /// Every reason a characterized rebuild can carry selects today's tree.
-    /// The dropped-own-target and no-build-anchor reasons keep SHAPE 7 while
-    /// their hosted shapes await capture (#40). A reason that contradicts the
-    /// class renders nothing.
+    /// Every reason a characterized rebuild can carry selects its tree. The
+    /// rebuilds hosted never makes render nothing (crafted probes d1–d4,
+    /// explain_ambiguous_rebuilds.jsonl; #80, #82). A reason that contradicts
+    /// the class renders nothing.
     #[test]
-    fn each_decision_reason_selects_todays_shape() {
+    fn each_decision_reason_selects_its_shape() {
         let shape7 = render(&node(
             DecisionKind::Build,
             ModelExecutionType::Full as i32,
@@ -1552,9 +1553,7 @@ mod tests {
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
             DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
-            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
             DecisionReason::DependencySetChanged,
-            DecisionReason::NoBuildAnchor,
             DecisionReason::CopyChainLimit,
             // Without an anchor the OUTDATED subtree cannot render.
             DecisionReason::UpstreamOutdated,
@@ -1567,6 +1566,46 @@ mod tests {
             n.reason = Some(reason);
             assert_eq!(render(&n), shape7, "{reason:?}");
         }
+
+        // Local-only rebuilds: with or without genuine upstreams, and whether
+        // or not the decision-time inputs report the Target relation.
+        for reason in [
+            DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+            DecisionReason::NoBuildAnchor,
+        ] {
+            for (upstream, own_target) in [(false, true), (true, true), (true, false)] {
+                let mut n = node(
+                    DecisionKind::Build,
+                    ModelExecutionType::Full as i32,
+                    decision::DESC_EXECUTE,
+                );
+                n.reason = Some(reason);
+                if upstream {
+                    n.input_tables
+                        .push(InputTable::at("\"DB\".\"S\".\"UP\"", Some(5_000)));
+                }
+                if !own_target {
+                    n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
+                }
+                assert!(
+                    explain_lines(&n).is_empty(),
+                    "{reason:?} upstream={upstream} own_target={own_target}"
+                );
+            }
+        }
+        // Own target modified with genuine upstreams but no matched build:
+        // only when the anchor's execution row disappeared.
+        let mut n = node(
+            DecisionKind::Build,
+            ModelExecutionType::Full as i32,
+            decision::DESC_EXECUTE,
+        );
+        n.reason = Some(DecisionReason::NoReuseCandidate(
+            NoCandidate::OwnTargetModified,
+        ));
+        n.input_tables
+            .push(InputTable::at("\"DB\".\"S\".\"UP\"", Some(5_000)));
+        assert!(explain_lines(&n).is_empty());
 
         for (d, reason) in [
             (DecisionKind::Skip, DecisionReason::FirstBuild),
@@ -1754,7 +1793,6 @@ mod tests {
             DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
             DecisionReason::DependencySetChanged,
-            DecisionReason::NoBuildAnchor,
         ] {
             let mut n = anchored(DecisionKind::Build, reason, 900, 900);
             n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
