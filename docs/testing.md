@@ -20,6 +20,7 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ./scripts/duckdb-ci.sh                                   # CI passes --jobs 4
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
+python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
