@@ -150,9 +150,17 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   that workload. Otherwise it depends on unknown hosted history and is counted
   as an unknown baseline, never hydrated with guessed epochs.
 - A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
-  correlated. `RegisterClone` and `ResolveDeferredRelations` entries are
-  counted but not driven here; `clone.rs`, `clone_lifecycle.rs`,
-  `clone_chain_provenance.rs` and `deferral.rs` cover them.
+  correlated.
+- `RegisterClone` (the dev-clone pre-step's copy) is driven and compared in
+  full without its ids (hosted sends an empty `execution_decision_id`), and its
+  confirm is correlated, so a post-copy submit sees the copy as State history.
+  This is the minimal arm #73 needed; #76 owns `RegisterClone` replay.
+- `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
+  incremental run under `--full-refresh`) is driven and its response compared;
+  each record counts as confirmed history for its workload.
+- `ResolveDeferredRelations` entries are counted but not driven here;
+  `clone.rs`, `clone_lifecycle.rs`, `clone_chain_provenance.rs` and
+  `deferral.rs` cover them and the other `RegisterClone` contracts.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too.
 

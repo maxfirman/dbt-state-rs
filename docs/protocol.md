@@ -92,7 +92,21 @@ history match and the decision. The client derives:
   becomes `_`, default `append`; `merge` without `unique_key` → `APPEND`);
   otherwise `FULL`. A snapshot run under `--full-refresh` is sent as `FULL`
   (captured with client 2.0.11, `explain_snapshot_history.jsonl` entry 58).
-- `semantic_extras`, from these node config keys only. SQL nodes:
+  - **Unset strategy** (client 2.0.11 on Snowflake,
+    `explain_incremental_append_merge_history.jsonl` `u73`): an incremental
+    with a `unique_key` and no `incremental_strategy` is sent as `APPEND` (2),
+    the request builder's default, although the Snowflake adapter's default
+    strategy is merge. Its Explain trees are the APPEND ones.
+  - **`--full-refresh` incremental** (client 2.0.11, same fixture entries
+    69–70): the client sends no Submit. After the build it sends a write-only
+    `Execution.RecordExecutions` with the request built for a full refresh,
+    so `execution_type` is `FULL` (1), and the rebuilt Target relation's
+    epoch. Hosted answers `records_stored: 1`. The next ordinary run submits
+    the model as APPEND/MERGE again; hosted rebuilds it with "the table was
+    modified after the cached execution" (divergence #90).
+- `semantic_extras`, from these node config keys only (client 2.0.11 also
+  sends `unique_key` and `lookback` for incrementals,
+  `explain_incremental_append_merge_history.jsonl`). SQL nodes:
   `on_schema_change`, `incremental_predicates`, `merge_update_columns`,
   `merge_exclude_columns`, `severity`, `limit`, `where`, `fail_calc`,
   `warn_if`, `error_if`, `store_failures`, `store_failures_as`,
@@ -308,7 +322,8 @@ When the fallback applies:
   `request_id`; the first confirmed outcome, including results, is immutable.
   A confirm with `failed_to_clone=true` is recorded as a normal build.
 - `RecordExecutions{records[]}` → `{records_stored}`. Records outcomes without
-  a submit. Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
+  a submit. Client 2.0.11 sends it for an incremental model run under
+  `--full-refresh` (see [What the client computes](#what-the-client-computes)). Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
   executions and selector/deferral node state are written in one transaction.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
@@ -388,7 +403,13 @@ ExplainedDecision{decision=3, skip_rejection_reason=5,
 clone_rejection_reason=null, decision_description=""},
 clone_execution_results{fields:{}}, execution_decision_id}`.
 
-The server generates `clone_sqls`. Snowflake (captured):
+Hosted sends an empty `execution_decision_id` in every captured
+`RegisterClone` response, so the client never asks to explain the copy
+decision; it explains the post-copy submit instead
+(`explain_incremental_copy_history.jsonl`, client 2.0.11). This server mints
+one, so its copy decision can still be explained
+(`clone_lifecycle.rs::register_clone_decision_explains_as_a_clone`). The
+replay compares the response without ids.
 
 ```sql
 CREATE OR REPLACE TRANSIENT TABLE <target>
