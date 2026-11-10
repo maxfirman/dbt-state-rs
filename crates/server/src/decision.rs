@@ -1100,30 +1100,36 @@ mod tests {
         );
     }
 
-    /// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake) for an
-    /// EXTERNAL MODIFICATION of the upstream: a non-zero
-    /// `freshness_tolerance_seconds` did not absorb the drift, and the service
-    /// rebuilt as soon as the upstream was newer than the own-build epoch (a
-    /// 300s tolerance did not absorb a 120s gap). Upstream changes dbt built
-    /// are uncharacterized (correctness-handoff.md §C).
-    /// The engine never receives the tolerance (see `SubmitContext`); the wire
-    /// behavior is pinned with a non-zero tolerance by `lag_policy.rs`.
+    /// Drift is against the epoch RECORDED for the upstream at the build (ADR
+    /// 0007), and the Lag tolerance absorbs it only while the build is younger
+    /// than the tolerance. The 2026-10-11 captures where a 300s tolerance did
+    /// not absorb a 120s gap were External modifications of a consumed build:
+    /// a changed producer, which rebuilds regardless of tolerance
+    /// (`changed_producer_rebuilds_regardless_of_policy_and_tolerance` below;
+    /// correctness-handoff.md §C).
     #[test]
-    fn freshness_tolerance_does_not_absorb_drift() {
-        // own build epoch = 1_000_000; upstream only 1000ms newer.
+    fn upstream_drift_executes_once_the_build_outgrows_the_tolerance() {
+        // Recorded at 1_000_000; the upstream is now 1000ms newer.
         let recorded = vec![tbl("a", 1_000_000)];
         let current = vec![tbl("a", 1_001_000)];
         let prev = confirmed("h", recorded, Some(1_000_000));
-        let c = ctx(&current);
-        assert!(
+        let executes = |c: &SubmitContext| {
             matches!(
-                decide(&c, Some(&prev)),
+                decide(c, Some(&prev)),
                 Verdict::Execute {
                     is_stale: false,
                     ..
                 }
-            ),
-            "upstream newer than own build must execute even within tolerance"
+            )
+        };
+        assert!(executes(&ctx(&current)), "tolerance 0");
+        assert!(
+            executes(&tolerant(&current, 300, 300)),
+            "build as old as the tolerance"
+        );
+        assert!(
+            !executes(&tolerant(&current, 300, 120)),
+            "build younger than the tolerance"
         );
     }
 
@@ -1167,11 +1173,9 @@ mod tests {
     //   ALL, one-of-two drift   -> skip,    is_stale=TRUE   (tolerated staleness)
     //   ALL, all drift          -> execute, is_stale=false
     // i.e. is_stale is true ONLY on a reuse that knowingly serves slightly stale
-    // data (drift present but tolerated by the ALL policy). It is NEVER set on an
-    // execute. For external modifications of the upstream, lag_tolerance did not
-    // gate: ALL/one-drift skips even at lag=0, and ANY/drift executes even within
-    // tolerance (own-build anchor). See docs/correctness-handoff.md §C (re-scoped)
-    // and crates/harness/tests/lag_freshness.rs.
+    // data: drift present but tolerated by the ALL policy or within the Lag
+    // tolerance. It is NEVER set on an execute. See docs/correctness-handoff.md
+    // §C and crates/harness/tests/lag_freshness.rs.
 
     /// ALL policy, only one of two parents drifted → SKIP with is_stale=TRUE.
     #[test]

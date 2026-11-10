@@ -320,7 +320,8 @@ its own build age. `is_stale` is then true when that reuse would be stale
 (within lag tolerance or tolerated by ALL), and for an existing target Explain
 shows "but it's old, so we will clone from …". A same-upstream equivalent that
 does not qualify is not copied (with tolerance 0, a stale one never is); the
-next equivalent, in newest-build order, is tried instead. No
+next same-upstream equivalent, in newest-build order, is tried instead (up
+to 16 are read). No
 copy is offered when the target's own table was modified externally.
 Live-verified 2026-11-10 (`lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`).
 An equivalent in another environment reads other relations and is copied

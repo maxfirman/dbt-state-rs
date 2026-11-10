@@ -356,10 +356,9 @@ pub(crate) async fn record_batch(
         }
     }
 
-    // Producers are resolved against State history AND the batch itself: an
-    // upstream built in this batch is the current state of its relation once
-    // the batch is published, so a consumer recorded alongside it records that
-    // build, exactly as a later submit will resolve it (ADR 0007).
+    // Producers are resolved against State history AND the batch itself: a
+    // consumer recorded alongside the upstream build it read records that
+    // build, as the batch's builds are not yet in history (ADR 0007).
     let built_in_batch = batch_builds(&batch);
     for (mut evidence, outcome) in batch {
         crate::submit_decision::resolve_producers(store, &mut evidence)
@@ -372,11 +371,8 @@ pub(crate) async fn record_batch(
             .iter_mut()
             .filter(|t| t.name != target)
         {
-            if let Some((identity, built)) =
-                built_in_batch.get(&(input.name.clone(), scope.clone()))
-            {
-                input.producer =
-                    Producer::of_build(identity.clone(), *built, input.last_modified_epoch);
+            if let Some(builds) = built_in_batch.get(&(input.name.clone(), scope.clone())) {
+                input.producer = batch_producer(builds, input.last_modified_epoch);
             }
         }
         rows.push(evidence.confirmed(outcome));
@@ -414,27 +410,49 @@ impl BatchScope {
     }
 }
 
+/// A relation's builds in a batch: logic identity and build epoch, in record
+/// order.
+type BatchBuilds = Vec<(String, Option<i64>)>;
+
 /// Each relation built in a batch, by name and scope: the logic identity and
-/// build epoch of its LAST record, which is its current state once the batch
-/// is published (rows are inserted in order).
+/// build epoch of every record of it, in record order.
 fn batch_builds(
     batch: &[(ExecutionEvidence, qc::ExecutionOutcome)],
-) -> HashMap<(String, BatchScope), (String, Option<i64>)> {
-    batch
+) -> HashMap<(String, BatchScope), BatchBuilds> {
+    let mut builds: HashMap<_, Vec<_>> = HashMap::new();
+    for (e, outcome) in batch.iter().filter(|(e, _)| !e.target_table.is_empty()) {
+        let Some(identity) = logic_identity(
+            e.node_sql_hash.as_deref(),
+            e.node_namespace_logic_hash.as_deref(),
+            e.values_hash.as_deref(),
+        ) else {
+            continue;
+        };
+        builds
+            .entry((e.target_table.clone(), BatchScope::of(e)))
+            .or_default()
+            .push((identity, outcome.last_modified_epoch));
+    }
+    builds
+}
+
+/// Which of a relation's builds in the batch produced the contents a consumer
+/// read at `read`: the earliest build not older than the read (the last
+/// record among equal epochs). None of them when the read is later than every
+/// build, or unknown: the contents were modified outside dbt, as a later
+/// submit would also conclude ([`Producer::of`]).
+fn batch_producer(builds: &[(String, Option<i64>)], read: Option<i64>) -> Producer {
+    let Some(read) = read else {
+        return Producer::NoBuild;
+    };
+    builds
         .iter()
-        .filter(|(e, _)| !e.target_table.is_empty())
-        .filter_map(|(e, outcome)| {
-            let identity = logic_identity(
-                e.node_sql_hash.as_deref(),
-                e.node_namespace_logic_hash.as_deref(),
-                e.values_hash.as_deref(),
-            )?;
-            Some((
-                (e.target_table.clone(), BatchScope::of(e)),
-                (identity, outcome.last_modified_epoch),
-            ))
+        .rev()
+        .filter_map(|(identity, built)| built.filter(|b| *b >= read).map(|b| (b, identity)))
+        .min_by_key(|(built, _)| *built)
+        .map_or(Producer::NoBuild, |(_, identity)| {
+            Producer::Build(identity.clone())
         })
-        .collect()
 }
 
 /// Convert a `SubmitEnrichedSqlRequest` into the `SqlExecution` the fingerprint

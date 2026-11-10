@@ -67,13 +67,11 @@ fn lp_model2_decisions() -> Vec<(i64, i64, String, bool)> {
 /// Pin the robustly-verified hosted facts by fixture inspection (no server).
 ///
 /// NOTE: this corpus ALSO contains ANY-policy skips with is_stale=true and the
-/// description "…its data is within lag tolerance" (entries where an upstream is
-/// newer than the own build by LESS than lag_tolerance). That is live evidence
-/// that `lag_tolerance` CAN gate a rebuild under ANY policy — contradicting the
-/// prior "own-build anchor, tolerance never absorbs" conclusion. The exact rule
-/// (which clock the tolerance is measured against) is NOT yet isolated, so the
-/// engine conservatively still rebuilds on any ANY-drift (the SAFE direction).
-/// See docs/correctness-handoff.md §C "OPEN: lag_tolerance gating".
+/// description "…its data is within lag tolerance" (entries where an upstream
+/// advanced past its recorded epoch while the build was younger than
+/// lag_tolerance): `lag_tolerance` gates a rebuild under ANY policy. The rule
+/// was isolated on 2026-11-10 and is implemented (ADR 0007; see
+/// docs/correctness-handoff.md §C and `lag_tolerance.rs`).
 #[test]
 fn hosted_policy_is_stale_truth_table() {
     let decisions = lp_model2_decisions();
@@ -109,9 +107,8 @@ fn hosted_policy_is_stale_truth_table() {
             .any(|(p, _t, v, _s)| *p == 1 && v == "ready_to_execute"),
         "corpus must contain an ALL-policy all-drift execute"
     );
-    // CHARACTERIZED (open): at least one ANY-policy skip with is_stale=true and a
-    // non-zero tolerance exists — the lag_tolerance-gating evidence. Pinned so a
-    // future engine change that implements it can be validated against this.
+    // The lag_tolerance-gating evidence (implemented, ADR 0007): at least one
+    // ANY-policy skip with is_stale=true and a non-zero tolerance exists.
     assert!(
         decisions
             .iter()

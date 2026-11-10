@@ -485,10 +485,14 @@ async fn result_copy_fallback(
         return Ok(None);
     };
     // The first equivalent, in preference order, that the warehouse rules
-    // accept and that qualifies for this submit. A same-upstream equivalent
-    // rejected on freshness does not end the search: another may qualify
+    // accept and that qualifies for this submit. Only a same-upstream
+    // equivalent rejected on freshness lets the search go on to the next one
     // (VERIFIED LIVE 2026-11-10, lag_copy_candidates `sne`: the newest
-    // equivalent was stale and hosted copied an older, current one).
+    // equivalent was stale and hosted copied an older, current one). After
+    // such a rejection the search accepts only another same-upstream
+    // equivalent: copying an unjudged one from another environment instead is
+    // uncharacterized.
+    let mut rejected_on_freshness = false;
     let mut chosen = None;
     for candidate in copy_candidates(store, org_id, req, &lookup).await? {
         let Some(equivalent) = eligible_equivalent(store, org_id, req, &lookup, candidate).await?
@@ -507,15 +511,20 @@ async fn result_copy_fallback(
             Some(source) if reads_same_upstreams(evidence, &source) => {
                 match judge_equivalent(evidence, freshness, source) {
                     Some(judged) => Some(judged),
-                    None => continue,
+                    None => {
+                        rejected_on_freshness = true;
+                        continue;
+                    }
                 }
             }
-            // A copy over an existing target is only characterized for an
-            // equivalent in the same environment.
-            Some(_) if own.is_some() => continue,
-            Some(_) => None,
-            // The equivalent's current state vanished between the two reads.
-            None => continue,
+            // An equivalent in another environment is copied unjudged, but
+            // only as the first choice for an absent target: a copy over an
+            // existing target is only characterized for an equivalent in the
+            // same environment.
+            Some(_) if own.is_none() && !rejected_on_freshness => None,
+            // Otherwise, or if the equivalent's current state vanished between
+            // the two reads, the ordinary decision applies.
+            Some(_) | None => break,
         };
         chosen = Some((equivalent, judged));
         break;
@@ -604,8 +613,15 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
             == names(&evidence.input_tables, &evidence.target_table)
 }
 
-/// Every current equivalent of the submit, in the store's preference order
-/// (newest build first).
+/// How many current equivalents the Result copy fallback considers, newest
+/// build first. Each costs a state read (and a provenance walk where copy
+/// depth is tracked), so a rebuild in a namespace with many environments
+/// does not pay one read per environment. An equivalent past the cap is never
+/// copied; the ordinary decision applies instead.
+const COPY_CANDIDATE_LIMIT: i64 = 16;
+
+/// Every current equivalent of the submit, up to [`COPY_CANDIDATE_LIMIT`], in
+/// the store's preference order (newest build first).
 async fn copy_candidates(
     store: &Store,
     org_id: &str,
@@ -621,6 +637,7 @@ async fn copy_candidates(
                 execution_type: lookup.execution_type,
                 exclude_target: lookup.exclude_target,
                 dialect: &req.dialect,
+                limit: COPY_CANDIDATE_LIMIT,
             },
         )
         .await

@@ -262,9 +262,10 @@ pub struct CopyCandidate {
     pub execution_runtime_ms: Option<i64>,
 }
 
-/// What [`Store::find_copy_candidates`] selects: every current equivalent,
-/// because candidates can still be rejected after the read (relation check,
-/// provenance walk, freshness judgment).
+/// What [`Store::find_copy_candidates`] selects: up to `limit` current
+/// equivalents, newest build first. More than one, because candidates can
+/// still be rejected after the read (relation check, provenance walk,
+/// freshness judgment).
 #[derive(Debug, Clone, Copy)]
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
@@ -272,6 +273,7 @@ pub struct CopyCandidateQuery<'a> {
     pub execution_type: i32,
     pub exclude_target: &'a str,
     pub dialect: &'a str,
+    pub limit: i64,
 }
 
 /// The current state a client-requested copy's source must have

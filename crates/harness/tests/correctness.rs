@@ -285,6 +285,73 @@ async fn record_batch_resolves_producers_within_the_batch() {
     sc.expect_skip(consumer).await;
 }
 
+fn epoch_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
+
+/// An upstream rebuilt with other logic twice in one batch: each consumer
+/// records the build that produced what it read (the earliest build not
+/// older than its read), not the batch's last build. So the consumer that read
+/// the first build sees an upstream query change and rebuilds despite its lag
+/// tolerance, while the consumer that read the second is reused.
+#[tokio::test]
+async fn record_batch_attributes_each_read_to_the_build_that_produced_it() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let now = epoch_now_ms();
+    let (t1, t2) = (now - 60_000, now - 30_000);
+    let up = "\"DB\".\"S\".\"TWICE_UP\"";
+    let consumer = |table: &str, read: i64| {
+        model(&format!("\"DB\".\"S\".\"{table}\""))
+            .body(&format!("h-{table}"))
+            .upstream(up, read)
+            .tolerance_seconds(3_600)
+    };
+    let (read_v1, read_v2) = (consumer("TWICE_M1", t1), consumer("TWICE_M2", t2));
+
+    sc.record([
+        model(up).body("h-twice-up-v1").record(built_at(t1)),
+        read_v1.record(built_at(t1 + 1_000)),
+        model(up).body("h-twice-up-v2").record(built_at(t2)),
+        read_v2.record(built_at(t2 + 1_000)),
+    ])
+    .await
+    .expect("record succeeds");
+
+    sc.expect_execute(read_v1.upstream(up, t2)).await;
+    sc.expect_skip(read_v2).await;
+}
+
+/// A batch build without an epoch cannot be shown to have produced what a
+/// consumer read, so the consumer records no build, which is also what a
+/// later submit resolves against that build. It does not keep the earlier
+/// history build as its producer, so the unchanged consumer is reused.
+#[tokio::test]
+async fn record_batch_build_without_epoch_is_no_producer() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let up = "\"DB\".\"S\".\"NOEPOCH_UP\"";
+    let upstream = model(up).body("h-noepoch-up");
+    sc.record([upstream.record(built_at(1_000))])
+        .await
+        .expect("history build");
+    let consumer = model("\"DB\".\"S\".\"NOEPOCH_M\"")
+        .body("h-noepoch-m")
+        .upstream(up, 1_000);
+
+    sc.record([
+        upstream.record(outcome().table()),
+        consumer.record(built_at(2_000)),
+    ])
+    .await
+    .expect("record succeeds");
+
+    sc.expect_skip(consumer).await;
+}
+
 /// FULL CROSS-STORE ATOMICITY (review #2 finding 5, follow-up). A SUCCESSFUL
 /// RecordExecutions must not leave the execution ledger and the logical
 /// (selector/deferral) state inconsistent. Previously the executions batch

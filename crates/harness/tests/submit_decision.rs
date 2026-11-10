@@ -686,6 +686,38 @@ async fn result_copy_skips_a_stale_newest_equivalent() {
     assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"FRESH\"");
     assert!(!record.is_stale);
 }
+
+/// After a same-upstream equivalent is rejected on freshness, the search
+/// accepts only another same-upstream equivalent: falling back to an unjudged
+/// copy from another environment is uncharacterized, so the target rebuilds.
+#[tokio::test]
+async fn result_copy_does_not_fall_back_to_another_environment_after_a_stale_equivalent() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let up = environment_upstream("prod");
+    build(store, environment_model("dev"), 5_000).await;
+    // STALE, in prod, is copied from dev and confirmed later (newest build).
+    let stale = environment_model("prod").target("\"DB\".\"PROD\".\"STALE\"");
+    let SubmitOutcome::Copy { ids, .. } = submit_sql(store, stale).await else {
+        panic!("STALE is copied from dev");
+    };
+    confirm(store, &ids, 9_000).await;
+
+    // Control: with prod's upstream unchanged, STALE is current and copied.
+    let outcome = submit_sql(store, environment_model("prod")).await;
+    let SubmitOutcome::Copy { copy, .. } = outcome else {
+        panic!("the current equivalent is copied, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"STALE\"");
+
+    // Prod's upstream moved on: STALE is rejected, and dev is not a fallback.
+    let outcome = submit_sql(store, environment_model("prod").upstream(&up, 2_000)).await;
+    let SubmitOutcome::Execute { record, .. } = outcome else {
+        panic!("no characterized copy remains, got {outcome:?}");
+    };
+    assert_eq!(record.reason, DecisionReason::FirstBuild);
+}
 /// gets the same copy, past the volatility gate, as one reporting `duckdb`.
 #[tokio::test]
 async fn duckdb_result_copy_ignores_dialect_case() {

@@ -675,9 +675,12 @@ assessment where the follow-up was right.
 >   equivalent in another environment reads other relations and is still
 >   copied without that judgment (`clone_fallback_stale_source`,
 >   `clone_fallback_zero_tolerance`). The DuckDB generated trace now asks for
->   its stale copy with a lag tolerance. Equivalents are tried newest build
->   first, and one rejected on freshness does not end the search: hosted
->   copied an older, current equivalent when the newest was stale (`sne`).
+>   its stale copy with a lag tolerance. Up to 16 equivalents are read, newest
+>   build first. Only a same-upstream equivalent rejected on freshness lets
+>   the search go on, and then only to another same-upstream equivalent:
+>   hosted copied an older, current equivalent when the newest was stale
+>   (`sne`); falling back to an unjudged equivalent from another environment
+>   after such a rejection is uncharacterized, so the target rebuilds.
 > - **Rebuild rejection codes**: 8/7 (LATEST_QUERY_HASH_NOT_MATCH /
 >   TARGET_TABLE_MATCH) when an OLDER build of the target would still qualify,
 >   `is_stale` as it would be reused (`ob*`, seed arm H); 4/7
