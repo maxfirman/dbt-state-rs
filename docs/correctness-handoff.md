@@ -113,6 +113,13 @@ server keeps the conservative behavior described.
   data tests as Lag tolerance subjects are uncharacterized.
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
+- **Explain evidence gaps (#78).** The VIEW × CLONE Explain cell is open
+  (`explain.rs::is_characterized`) but no view copy was ever captured, and the
+  SHAPE 7 query-changed tree survives only in `explain_snowflake_happy.jsonl`,
+  removed in `2024a9e`, so no tracked fixture replays it. All real-client
+  Explain trees in the tracked fixtures are from client 2.0.6; none are from
+  2.0.11 (`experiments/explain_census.py`,
+  [explain-catalog.md](explain-catalog.md#explain-tree-census)).
 - **Non-Snowflake copy DDL.** BigQuery and Databricks templates follow published
   syntax but were never run against hosted or the warehouses. View copies need
   the view definition, not `CREATE VIEW ... CLONE`.

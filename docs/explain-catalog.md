@@ -62,20 +62,53 @@ the node kind. The generator is a strict allowlist over
 everything else renders nothing. Enforced by `explain.rs::is_characterized` and
 the `fence_matrix_is_exhaustive_and_matches_is_characterized` test.
 
-| `execution_type` | Node kind | Explain coverage |
-|---|---|---|
-| 1 | FULL (table / model) | ✅ SKIP, EXECUTE, CLONE |
-| 2 | APPEND (incremental) | ❌ unobserved → empty tree |
-| 3 | MERGE (incremental) | ❌ unobserved → empty tree |
-| 4 | INSERT_OVERWRITE (incremental) | ❌ unobserved → empty tree |
-| 5 | DELETE_INSERT (incremental) | ❌ unobserved → empty tree |
-| 6 | MICROBATCH (incremental) | ❌ unobserved → empty tree |
-| 7 | SNAPSHOT | ❌ unobserved → empty tree |
-| 8 | DBT_DATA_TEST | ⚠️ SKIP only; EXECUTE/CLONE → empty tree |
-| 9 | VALUES (seed) | ✅ SKIP, EXECUTE; CLONE → empty tree |
-| 10 | VIEW | ✅ SKIP, EXECUTE, CLONE |
-| 11 | DBT_CUSTOM | ❌ unobserved → empty tree |
-| 0 / other | UNSPECIFIED / unknown | ❌ unobserved → empty tree |
+Each node kind × decision cell has one status (spec #40):
+
+| Status | Meaning |
+|---|---|
+| characterized (live) | captured from hosted through the real client; the server renders the exact tree |
+| characterized (crafted only) | captured from hosted for a `state-probe` request; the server renders the exact tree |
+| unreachable on 2.0.11 | client-source evidence or a live negative result shows the cell cannot occur |
+| local-only, empty tree | a decision this server makes that hosted never makes; the server renders nothing |
+| out of scope → #N | owned by another issue |
+| pending → #N | not yet settled; the named #40 child ticket sets the final status |
+
+A cell renders a tree only if `is_characterized` opens it. "Fence" says
+whether it is open. The evidence column gives the census tree counts by origin
+(see [Explain tree census](#explain-tree-census)). The real-client trees in the
+tracked fixtures were all recorded with `dbt_run_cache_version` 2.0.6. None
+come from 2.0.11 yet.
+
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
+|---|---|---|---|---|---|---|
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ | characterized (live) | S E C | SKIP 18 (4 client, 14 crafted), EXECUTE 32 (2 client, 30 crafted), CLONE 8 (1 client, 7 crafted) |
+| 2 | APPEND (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 3 | MERGE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 4 | INSERT_OVERWRITE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 5 | DELETE_INSERT (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 6 | MICROBATCH (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 7 | SNAPSHOT | pending → #72 | pending → #72 | pending → #76 | — | none |
+| 8 | DBT_DATA_TEST | characterized (live) | pending → #75 | out of scope → #68 | S | SKIP 1 (client) |
+| 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | pending → #76 | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`) |
+| 10 | VIEW | characterized (live) | characterized (live)³ | pending → #78⁴ | S E C | SKIP 1 (client); EXECUTE 0, CLONE 0 |
+| 11 | DBT_CUSTOM | pending → #74 | pending → #74 | pending → #74 | — | none |
+| 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
+
+1. Except the three ambiguous rebuild reasons in
+   [Known limitation](#known-limitation--ambiguous-own-target-rebuild),
+   pending → #71.
+2. Except the reload of an externally modified seed table, which renders no
+   tree; pending → #71 (local-only).
+3. The SHAPE 7 tree (`the model query has changed` <NODE_QUERY_CHANGED>) was
+   captured for 3 VIEW EXECUTE decisions in `explain_snowflake_happy.jsonl`
+   (client 2.0.6, commit `8dff472`). That fixture was removed in `2024a9e`
+   because it had no State history, so no tracked fixture carries SHAPE 7
+   (#78).
+4. The cell has been open since `bc8d80e`, together with FULL × CLONE, but no
+   capture of a view copy exists (#78).
+5. The client's `execution_type_from_input` always yields a concrete kind
+   ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
+   these values fenced regardless.
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -83,21 +116,64 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
+Line counts from the [census](#explain-tree-census) over the 66 trees in the
+tracked fixtures (2026-11-10). A line without a marker or badge is "none"
+(518 lines without a marker, 547 without a badge). Only an explicit `0` is
+counted as unspecified.
+
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ |
-| ExplainMarker | FAIL (2) | ✅ |
-| ExplainMarker | INFO (3) | ❌ never |
-| ExplainMarker | EM_UNSPECIFIED (0) | ❌ never |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ |
-| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ |
-| ExplainBadge | OUTDATED (3) | ✅ |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | ❌ never |
+| ExplainMarker | SUCCESS (1) | ✅ 171 lines |
+| ExplainMarker | FAIL (2) | ✅ 84 lines |
+| ExplainMarker | INFO (3) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 57 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 0 lines in tracked fixtures; 3 in the removed SHAPE 7 capture (see coverage note 3, #78) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 58 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 23 lines |
+| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
+| ExplainBadge | FRESH (1) | ✅ 23 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 42 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 13 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 66 trees (2026-11-10; client 2.0.6 and crafted probes)¹ |
+
+1. The 66 trees are 9 real-client trees (client 2.0.6) and 57 trees for
+   crafted `state-probe` requests, so none of them comes from client 2.0.11
+   itself. The removed `explain_snowflake_happy.jsonl` and
+   `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
+   either.
+
+Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
+renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
+treats `INFO` specially. A hosted `INFO` line or unspecified value would
+therefore print like any other line, and the census names the fixture and
+entry of any it finds.
+
+## Explain tree census
+
+`experiments/explain_census.py` counts, for each node kind × decision class,
+the trees, the empty trees, their origin, and every marker and badge over all
+tree lines. A tree's node kind comes from the submit that minted its
+`execution_decision_id` (SubmitEnrichedSQL and RegisterClone by
+`execution_type`, SubmitValues as VALUES). Its origin is `crafted` when that
+submit came from `state-probe`, otherwise the client version. The census
+names the fixture and entry of every `INFO`, unspecified or unmapped value.
+How to rerun it: [testing.md](testing.md#explain-tree-census).
+
+Tracked fixtures, 2026-11-10 (66 trees, none empty, no findings):
+
+| Node kind | Decision | Trees | Origin |
+|---|---|---|---|
+| FULL | SKIP | 18 | 14 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 32 | 30 crafted, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | SKIP | 1 | client 2.0.6 |
+| VALUES | SKIP | 1 | crafted |
+| VALUES | EXECUTE | 5 | crafted |
+| VIEW | SKIP | 1 | client 2.0.6 |
+
+The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
+which was trimmed without its ValidateClientVersion row.
 
 ## Section structure
 
@@ -346,9 +422,11 @@ decision's copy-adoption input rule, `reuse_candidate::adopt_current_inputs`).
 
 Not present in any capture; render nothing rather than invent:
 
-- **Node kinds:** snapshot (7), incremental models, seed CLONE.
-- **Badges:** `EB_UNSPECIFIED` (0).
-- **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
+- **Node kinds:** snapshot (7), incremental models, seed CLONE, view CLONE
+  (fence open without a capture, #78).
+- **Badges:** `EB_UNSPECIFIED` (0); census counts in
+  [Observed vocabulary](#observed-vocabulary).
+- **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0); same.
 - **Data test EXECUTE** tree.
 - **`Explain.GetUpstreamDependencyChanges`**: the dbt Fusion client never calls
   it, so it cannot be captured through the recording proxy. The server keeps an

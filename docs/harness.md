@@ -71,7 +71,7 @@ ever mutate `CDO_DEMO_DB`.
 | Lag tolerance | `lag_experiment.sh LABEL {any\|all} LAG {none\|a\|b\|both}`, `lag_buildage.sh`, `lag_isolate.sh`, `lag_docs_example.sh` (`DIRECT=1` runs without the proxy as a control), `lag_matrix.py ARM…`, `copy_candidates.py`, `seed_upstream.py` |
 | Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh` |
 | Selectors and deferral | `selector_experiment.sh {baseline\|query CRIT\|mutate CRIT EDIT\|all-clean}`, `selector_last_write_wins.sh`, `deferral_experiment.sh` |
-| Explain | `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`; `explain_slice.py` renders captures |
+| Explain | `explain_experiment.sh`, `explain_*_history.sh`, `explain_tolerance.sh`, `explain_clone_deferral.sh`, `explain_dependency_set_changed.sh`, `explain_dep_set_*.sh`; `explain_slice.py` renders captures; `explain_census.py [captures]` counts markers and badges per node kind × decision (tested by `explain_census_test.py`) |
 | Inspection and validation | `golden_tail.py FILE N [PREFIX]`, `lag_show.py`, `lag_rule_check.py [files]`, `trace_validate.py` and `oracles.py` (correlate captured source, clone and confirm evidence; tested by `trace_validate_test.py`) |
 
 `lag_experiment.sh` bumps upstreams by External modification of dbt-built

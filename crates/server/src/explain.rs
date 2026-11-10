@@ -188,7 +188,8 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// is a strict positive allowlist; everything else returns an empty tree.
 ///
 /// Characterized matrix (docs/explain-catalog.md "Execution type coverage"):
-///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone.
+///   - model/table (FULL=1) and view (VIEW=10): Skip | Build | Clone. VIEW ×
+///     Clone has no hosted capture yet (pending → #78).
 ///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
 ///   - seed (VALUES=9): Skip | Build (Clone unobserved).
 ///   - everything else (snapshot SNAPSHOT=7, incremental, any other
