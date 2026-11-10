@@ -114,12 +114,20 @@ server keeps the conservative behavior described.
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
 - **Explain evidence gaps (#78).** The VIEW × CLONE Explain cell is open
-  (`explain.rs::is_characterized`) but no view copy was ever captured, and the
-  SHAPE 7 query-changed tree survives only in `explain_snowflake_happy.jsonl`,
-  removed in `2024a9e`, so no tracked fixture replays it. All real-client
-  Explain trees in the tracked fixtures are from client 2.0.6; none are from
-  2.0.11 (`experiments/explain_census.py`,
-  [explain-catalog.md](explain-catalog.md#explain-tree-census)).
+  (`explain.rs::is_characterized`) but no view copy was ever captured; the
+  live attempt is part of #76. The SHAPE 7 query-changed tree is replayed from
+  `explain_snapshot_history.jsonl` (FULL, VIEW and snapshot, client 2.0.11).
+- **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
+  Explain anchor, so its per-upstream listing renders `<FRESH>` and no
+  summary line. That matches every capture so far, where the upstream epoch
+  had moved back since the build. Hosted's tree for a query change whose
+  upstream also drifted is unobserved
+  ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
+- **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
+  observed snapshot SKIP "both … up to date", including drift within the
+  tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy
+  reuse past the tolerance is unobserved for snapshots; the server keeps the
+  same string ([protocol.md](protocol.md#decision-descriptions)).
 - **Non-Snowflake copy DDL.** BigQuery and Databricks templates follow published
   syntax but were never run against hosted or the warehouses. View copies need
   the view definition, not `CREATE VIEW ... CLONE`.
@@ -145,16 +153,24 @@ replay fails when an entry becomes unused or resolved
   locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
 - **Safety floor.** The externally modified seed table is reloaded.
+- **Execution-type change (#83).** A snapshot run under `--full-refresh` is
+  submitted as FULL over its SNAPSHOT State history. Hosted rebuilds with
+  rejection codes 2 / 2 (`EXECUTION_TYPE_MISMATCH`) and explains it with the
+  node-query-unchanged tree. The server rebuilds with the same class and
+  description but codes 6 / 6, records the Decision reason
+  `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
+  Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
+  and 60 (`empty_tree`).
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
   Each rebuild below is local-only and its Explain tree is empty.
   - A Target relation listed twice with the build's epoch: hosted reuses it,
     the server rebuilds with `own_target_changed_or_missing` (#80). Keyed gaps:
-    `explain_ambiguous_rebuilds.jsonl` entries 2–3.
+    `explain_ambiguous_rebuilds.jsonl` entries 2 and 3 (`empty_tree`).
   - A Target relation with no epoch: hosted rebuilds it as missing (codes
     4 / 7, "did not exist"), the server as ambiguous (6 / 6, generic
-    description) (#80). Keyed gaps: entries 6–7.
+    description) (#80). Keyed gaps: entries 6 and 7 (`empty_tree`).
   - A model submit with no target: hosted fails it (`Internal` when unset,
     `InvalidArgument` "Failed to process SQL" when `""`), the server answers a
     Result copy of the node's own build (#81).

@@ -90,7 +90,8 @@ history match and the decision. The client derives:
   `VIEW`; custom materialization → `DBT_CUSTOM`; snapshot → `SNAPSHOT`;
   incremental model without `--full-refresh` → its strategy upper-cased (`+`
   becomes `_`, default `append`; `merge` without `unique_key` → `APPEND`);
-  otherwise `FULL`.
+  otherwise `FULL`. A snapshot run under `--full-refresh` is sent as `FULL`
+  (captured with client 2.0.11, `explain_snapshot_history.jsonl` entry 58).
 - `semantic_extras`, from these node config keys only. SQL nodes:
   `on_schema_change`, `incremental_predicates`, `merge_update_columns`,
   `merge_exclude_columns`, `severity`, `limit`, `where`, `fail_calc`,
@@ -133,7 +134,9 @@ wire and in captured JSON.
   `EXECUTION_TYPE_NOT_FULL=3`, `TARGET_TABLE_DOES_NOT_EXIST=4`,
   `FORCED_NOT_ELIGIBLE=5`, `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
-  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9.
+  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
+  sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
+  `--full-refresh`), where this server sends 6 / 6 (#83).
 
 ### Decision descriptions
 
@@ -145,9 +148,9 @@ for `VALUES` and `model` for every other execution type (`node_noun`).
 
 | Decision | `decision_description` | When |
 |---|---|---|
-| SKIP | `{noun} was a no-op because both its query and its upstream data are up to date` | Lag tolerance is 0, or every upstream epoch equals its recorded epoch |
-| SKIP | `{noun} was a no-op because its query is up to date and its data is within lag tolerance` | Upstream data moved and the build age is under the Lag tolerance |
-| SKIP | `{noun} was a no-op because its query is up to date and at least one upstream dependency is unchanged` | Upstream data moved, the build age is not under the tolerance, and the `ALL` policy tolerates it |
+| SKIP | `{noun} was a no-op because both its query and its upstream data are up to date` | Lag tolerance is 0, or every upstream epoch equals its recorded epoch; every snapshot SKIP |
+| SKIP | `{noun} was a no-op because its query is up to date and its data is within lag tolerance` | Upstream data moved and the build age is under the Lag tolerance (not snapshots) |
+| SKIP | `{noun} was a no-op because its query is up to date and at least one upstream dependency is unchanged` | Upstream data moved, the build age is not under the tolerance, and the `ALL` policy tolerates it (not snapshots) |
 | SKIP | `seed was a no-op because its data has not changed` | Seed reuse |
 | EXECUTE | `{noun} was executed because its table did not exist` | No prior build of the target relation, or the target relation is absent |
 | EXECUTE | `{noun} was executed because either its query didn't match or its upstream data is out of date` | Rebuild of an existing target relation (identity or freshness) |
@@ -159,6 +162,12 @@ for `VALUES` and `model` for every other execution type (`node_noun`).
 | CLONE | `an equivalent model exists under another name so we cloned that one` | Result copy on submit |
 
 `RegisterClone` responses carry an empty `decision_description`.
+
+Hosted words a snapshot SKIP as "both … up to date" even when an upstream
+epoch moved back or drifted within the Lag tolerance, where a model gets the
+"within lag tolerance" string (`explain_snapshot_history.jsonl` entries 28-31,
+40). A snapshot reuse past its tolerance under the `ALL` policy is unobserved
+and keeps the same string.
 
 ### Rejection codes
 

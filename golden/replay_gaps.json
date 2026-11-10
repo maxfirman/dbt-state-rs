@@ -136,7 +136,7 @@
   {
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 3,
-    "local_variant": "explain",
+    "local_variant": "empty_tree",
     "reason": "CRAFTED DIVERGENCE explain of entry 2 (#80): hosted explains its SKIP; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
   },
   {
@@ -153,7 +153,23 @@
   {
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 7,
-    "local_variant": "explain",
+    "local_variant": "empty_tree",
     "reason": "CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
+  },
+  {
+    "fixture": "explain_snapshot_history.jsonl",
+    "entry": 58,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#83): a snapshot run under --full-refresh is submitted as FULL over its SNAPSHOT State history. Hosted rejects with EXECUTION_TYPE_MISMATCH (2/2); this server rebuilds with the same class and description but reports 6/6 (Decision reason no_reuse_candidate.execution_type_changed).",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "explain_snapshot_history.jsonl",
+    "entry": 60,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 58 (#83): hosted renders its node-query-unchanged tree for the execution-type change; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
   }
 ]
