@@ -31,8 +31,10 @@ if not (root / "dbt_project.yml").exists():
     (root / "tests/positive.sql").write_text(
         "select * from {{ ref('totals') }} where amount <= 0"
     )
+    # Lag tolerance 0: these cases test that every evidence change propagates
+    # (lag_tolerance.py covers reuse within a tolerance, ADR 0007).
     (root / "profiles.yml").write_text(
-        f"smoke:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 2\n      run_cache_enabled: true\n      run_cache_enable_data_tests: true\n"
+        f"smoke:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 2\n      run_cache_enabled: true\n      run_cache_freshness_tolerance: 0s\n      run_cache_enable_data_tests: true\n"
     )
 
 path = str(root / "warehouse.duckdb")

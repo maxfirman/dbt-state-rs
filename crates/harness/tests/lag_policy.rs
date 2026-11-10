@@ -21,9 +21,10 @@
 //!     reuse is a SKIP that reports is_stale=TRUE (knowingly serving slightly
 //!     stale data). This holds even at lag_tolerance=0 — proving the ALL skip is
 //!     PURE POLICY, not lag absorption.
-//!   * ANY policy: an upstream newer than the own build rebuilds even within
-//!     tolerance (own-build anchor; lag_tolerance does not absorb). is_stale is
-//!     FALSE on every execute.
+//!   * ANY policy: an EXTERNALLY MODIFIED upstream the model consumed as a
+//!     dbt build rebuilds even within tolerance (an upstream query change,
+//!     ADR 0007); a recorded upstream rebuild is reused within tolerance
+//!     (entries 56/59, lag_tolerance.rs). is_stale is FALSE on every execute.
 //!   * `is_stale` is true ONLY on a tolerated-stale reuse. The engine now sets
 //!     it on Verdict::Skip (decision.rs::evaluate_freshness). See
 //!     docs/correctness-handoff.md §C.
@@ -32,6 +33,7 @@
 mod support;
 
 use dbt_state_harness::diff;
+use dbt_state_proto::query_cache as qc;
 use support::scenario::{model, outcome, Policy, Scenario};
 use support::start_server;
 
@@ -177,5 +179,47 @@ async fn server_reproduces_all_policy_tolerated_stale_skip() {
         sc.verdict(probe(Policy::All, build + 50_000, build + 90_000))
             .await,
         "ready_to_execute"
+    );
+}
+
+/// Fixture entry 11 replayed against our server. The client stamped
+/// lp_model2's ConfirmExecution epoch (…844933) about 16s later than the
+/// table's real epoch (…828536, reported for the own target in entry 11's
+/// `tables`): the Fusion client's heuristic warehouse clock absorbed a slow
+/// first query. LP_UP_A was then externally modified at …843490, which is
+/// after the real build but before the inflated confirm epoch. Hosted
+/// EXECUTED; anchoring on the confirm epoch would SKIP, serving stale data.
+/// The freshness anchor is never later than the own target's reported epoch.
+#[tokio::test]
+async fn server_rebuilds_entry_11_despite_inflated_confirm_epoch() {
+    let entries = diff::load_golden(FIXTURE).expect("load lag fixture");
+    let lp_model2: Vec<&diff::GoldenEntry> = entries
+        .iter()
+        .filter(|e| {
+            e.method == "SubmitEnrichedSQL"
+                && e.request["labels"]["dbt_node_name"].as_str() == Some("lp_model2")
+        })
+        .collect();
+    let (build, entry_11) = (lp_model2[0], lp_model2[1]);
+    assert_eq!(
+        diff::decision_variant(&entry_11.response).unwrap(),
+        "ready_to_execute",
+        "fixture precondition: hosted rebuilt at entry 11"
+    );
+
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let first: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(build.request.clone()).unwrap();
+    let rid = sc.execute_id(first).await;
+    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
+    support::confirm_captured(&mut exec, &entries, build, rid).await;
+
+    let resubmit: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(entry_11.request.clone()).unwrap();
+    assert_eq!(
+        sc.verdict(resubmit).await,
+        "ready_to_execute",
+        "an upstream newer than the own target's real epoch must rebuild"
     );
 }

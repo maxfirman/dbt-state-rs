@@ -418,7 +418,29 @@ async fn conformance_replay_all_corpora() {
     // GetStateSelection queries read it) that the generic SKIP/EXECUTE/CLONE
     // replay does not model — it is driven by `selector_conformance.rs`.
     const CHARACTERIZATION_ONLY: &[&str] = &[
+        // Every lp_model2 decision now replays exactly (2026-11-10), but the
+        // upstream models' own-target checks do not: in these 2026-10-11
+        // captures hosted SKIPPED an own target modified after its build,
+        // which it rebuilds today ("the table was modified after the cached
+        // execution", lag_tolerance_matrix `ot*_u`). Pinned by lag_policy.rs.
         "lag_multi_upstream_policy.jsonl",
+        // Result copy interacting with upstream producers (2026-11-10): hosted
+        // did NOT copy an equivalent whose consumed upstream had since been
+        // externally modified, then later copied it into the same target with
+        // is_stale=true ("but it's old, so we will clone from …"). The local
+        // fallback copies on the first submit. Uncharacterized; pinned by
+        // lag_tolerance.rs, see correctness-handoff.md §C open items.
+        "lag_upstream_query_listing.jsonl",
+        // Clone chain with the upstream's own builds (2026-11-10). Every copy
+        // in it comes from a source built in an earlier session, so it cannot
+        // replay from an empty store; pinned by lag_tolerance.rs.
+        "clone_chain_upstream_history.jsonl",
+        // Seeds as upstreams (2026-11-10). Every model decision replays; the
+        // seeds' own Explain trees (unrendered locally), hosted's SKIP of a
+        // seed whose table was modified externally (we rebuild it), and the
+        // `upstream data is up to date` summary line on a fully unchanged
+        // skip do not yet. Pinned by lag_tolerance.rs.
+        "lag_seed_upstream.jsonl",
         "selector_state_selection.jsonl",
         // Interleaved clone→rebuild→clone over the SAME physical target (the
         // decision depends on warehouse state not in the protocol). Pinned by
@@ -475,7 +497,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        29,
+        32,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -1298,6 +1320,40 @@ async fn explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
+
+    // 0) Seed the upstream ET_UP's own build at the epoch ET_MODEL later
+    //    recorded for it: hosted built it just before (explain_tolerance.sh).
+    //    Entry 2's newer ET_UP is then an External modification of the build
+    //    ET_MODEL consumed (ADR 0007), which hosted reports as an upstream
+    //    query change, so the 240h Lag tolerance does not apply.
+    let et_up = submit0
+        .tables
+        .iter()
+        .find(|t| Some(t.name.as_str()) != submit0.target_table.as_deref())
+        .unwrap()
+        .clone();
+    let up_build = sql
+        .submit_enriched_sql(
+            support::scenario::model(&et_up.name)
+                .namespace(submit0.table_namespace.as_deref().unwrap())
+                .no_tables()
+                .build(),
+        )
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(up_exec) = up_build.response.unwrap()
+    else {
+        panic!("the upstream's first submit must EXECUTE");
+    };
+    exec.confirm_execution(
+        support::scenario::outcome()
+            .epoch(et_up.last_modified_epoch.unwrap())
+            .table()
+            .confirm(&up_exec.request_id),
+    )
+    .await
+    .unwrap();
 
     // 1) Seed the prior build: first submit → EXECUTE (first build), confirm it
     //    with the node's own build epoch (strictly newer than entry-0's ET_UP,

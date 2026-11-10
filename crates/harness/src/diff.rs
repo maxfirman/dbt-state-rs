@@ -10,10 +10,22 @@ use serde::Deserialize;
 pub struct GoldenEntry {
     pub service: String,
     pub method: String,
+    /// When the recording proxy logged the exchange (RFC 3339), just after
+    /// the hosted response. Replays decide at this time.
+    #[serde(default)]
+    pub recorded_at: Option<String>,
     #[serde(default)]
     pub metadata: Vec<(String, String)>,
     pub request: serde_json::Value,
     pub response: serde_json::Value,
+}
+
+impl GoldenEntry {
+    /// [`GoldenEntry::recorded_at`] in Unix milliseconds.
+    pub fn recorded_at_ms(&self) -> Option<i64> {
+        let at = chrono::DateTime::parse_from_rfc3339(self.recorded_at.as_deref()?).ok()?;
+        Some(at.timestamp_millis())
+    }
 }
 
 /// Load and parse a golden `.jsonl` file.

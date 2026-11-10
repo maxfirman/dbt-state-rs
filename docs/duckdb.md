@@ -129,6 +129,15 @@ or copy advance it, even if a known write produces identical rows. Identical
 manual rewrites or edits reversed before observation can be invisible. This is
 observed-change evidence, not a complete write log.
 
+Lag tolerance (ADR 0007) applies on DuckDB: within a model's tolerance (client
+default 45 minutes) a source change, or an upstream model rebuilt by dbt with
+unchanged logic, is reused rather than rebuilt. Build age comes from the
+server's receipt of the build's confirmation, because ordinals are not time.
+An External modification of a dbt-built upstream always rebuilds its consumers.
+`integrations/duckdb/tests/lag_tolerance.py` covers reuse, expiry and external
+modification; the other end-to-end cases set tolerance 0 so that every evidence
+change propagates.
+
 File scope includes canonical path, device/inode and generation. Copying or
 recreating a file cannot adopt another file's history. Normal process restarts
 preserve scope. Missing/incompatible/corrupt evidence or an unfinished/uncertain

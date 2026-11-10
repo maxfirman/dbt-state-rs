@@ -25,15 +25,19 @@ const DEV: &str = "\"DB\".\"DEV\".\"M\"";
 const BUILT: i64 = 1_000;
 
 async fn submit_sql(store: &Store, req: impl Into<qc::SubmitEnrichedSqlRequest>) -> SubmitOutcome {
-    submit_decision::submit_sql(store, ORG, &req.into())
+    submit_decision::submit_sql(store, ORG, &req.into(), now_ms())
         .await
         .expect("submit")
 }
 
 async fn submit_values(store: &Store, req: impl Into<qc::SubmitValuesRequest>) -> SubmitOutcome {
-    submit_decision::submit_values(store, ORG, &req.into())
+    submit_decision::submit_values(store, ORG, &req.into(), now_ms())
         .await
         .expect("submit")
+}
+
+fn now_ms() -> i64 {
+    dbt_state_server::Clock::System.now_ms(&Default::default())
 }
 
 /// Confirm a build at `epoch` through the store's confirm path.
@@ -470,6 +474,15 @@ async fn every_outcome_carries_its_decision_reason() {
     let edited = sql(environment_model("prod").own_epoch(Some(BUILT + 1)).build()).await;
     assert_eq!(
         edited.record().reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified)
+    );
+    assert_eq!(
+        edited.record().description,
+        "model was executed because the table was modified after the cached execution"
+    );
+    let dropped = sql(environment_model("prod").own_epoch(None).build()).await;
+    assert_eq!(
+        dropped.record().reason,
         DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
     );
 

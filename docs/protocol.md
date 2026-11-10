@@ -116,20 +116,29 @@ remaining policies and compatibility gaps.
    (`reuse_candidate::identity_matches`, used by both); the data-test lookup honoring the
    template hash was the review #2 finding-6 FOLLOW-UP fix, also live-verified.
 3. Require a known current target epoch no newer than its recorded confirmation,
-   unless external modifications are explicitly ignored. Missing or ambiguous
-   target metadata builds. Data tests instead require complete cached results.
+   unless external modifications are explicitly ignored. A target later than its
+   build executes with "the table was modified after the cached execution"
+   (verified live 2026-11-10). Missing or ambiguous target metadata builds. Data
+   tests instead require complete cached results.
 4. Compare exact physical upstream names, excluding the own target from upstream
    drift only. Unknown epochs, changed input sets, and duplicate evidence build.
-   An upstream newer than the node's own last-build epoch is drift. `ALL` policy
-   (`require_fresh_data_from`) rebuilds only when every direct parent drifted,
-   else a tolerated-stale SKIP with `is_stale=true`; every execute reports
-   `is_stale=false`. This own-build anchor and the `is_stale` reporting were
-   verified live; `freshness_tolerance_seconds` is intentionally not applied
-   (though it IS known to gate under some conditions — see
-   [correctness-handoff.md §C](correctness-handoff.md)). A data test produces no
-   object, so it has no own-build epoch: it anchors drift on the epoch RECORDED
-   for each upstream at its last confirmation (per input, strict `>`), rebuilding
-   when the tested data changed (review #2 finding 1, verified live).
+   Freshness follows [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md),
+   verified live 2026-11-10 (correctness-handoff.md §C):
+   - an upstream newer than the epoch RECORDED for it at the last confirmed
+     build is drift (models and data tests alike);
+   - an upstream whose producing build differs from the one the node consumed
+     (rebuilt with other logic, or an External modification of the consumed
+     build) is an upstream query change and always builds;
+   - `ALL` policy (`require_fresh_data_from`) is stale only when every direct
+     parent drifted, `ANY` when one did;
+   - a stale node is still SKIPPED while its build age (server clock minus the
+     ConfirmExecution epoch; DuckDB: minus the confirmation's receipt) is under
+     `freshness_tolerance_seconds` (Lag tolerance);
+   - a SKIP with drift present reports `is_stale=true`; every execute reports
+     `is_stale=false`. The SKIP description is "both … up to date" with no
+     tolerance or no moved upstream epoch, else "… within lag tolerance" while
+     the build is younger than the tolerance, else "… at least one upstream
+     dependency is unchanged".
 5. Snowflake cross-environment reuse (live-verified): an equivalent model under
    another physical name in the same `table_namespace`, with matching
    schema-abstracted logic, can be reused via CLONE. A confirmed clone target

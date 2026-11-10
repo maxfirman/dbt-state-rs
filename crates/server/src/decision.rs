@@ -7,7 +7,7 @@
 
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::store::{ExecutionRow, InputTable};
+use crate::store::{ExecutionRow, InputTable, Producer};
 
 /// stale_upstream_policy values (shared.proto StaleUpstreamPolicy).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +38,9 @@ pub enum NoCandidate {
     /// The node's own target is missing, ambiguous, or changed since the
     /// recorded build.
     OwnTargetChangedOrMissing,
+    /// The node's own target was modified after the recorded build (its
+    /// reported epoch is later than the build's).
+    OwnTargetModified,
     /// The latest data test outcome has no complete cached results to serve.
     IncompleteCachedTestResults,
 }
@@ -50,6 +53,9 @@ pub enum Reuse {
     /// Upstream drift is present but the stale-upstream policy tolerates it
     /// (hosted `is_stale = true`).
     ToleratedStale,
+    /// The stale-upstream policy requires a rebuild, but the build is younger
+    /// than the node's Lag tolerance (hosted `is_stale = true`).
+    WithinLagTolerance,
 }
 
 /// Why a submission was decided the way it was. Every decision has exactly
@@ -68,6 +74,10 @@ pub enum DecisionReason {
     /// An upstream changed after the reuse candidate's build (or its freshness
     /// cannot be proven), beyond what the stale-upstream policy tolerates.
     UpstreamOutdated,
+    /// An upstream's contents are no longer the result of the build the reuse
+    /// candidate consumed: it was rebuilt with different logic or externally
+    /// modified. Rebuilds regardless of policy and Lag tolerance.
+    UpstreamQueryChanged,
     /// The reuse candidate is served.
     Reused(Reuse),
     /// An equivalent result under another name is copied into the target.
@@ -79,17 +89,20 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 12] = [
+    const ALL: [DecisionReason; 15] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
+        Self::NoReuseCandidate(NoCandidate::OwnTargetModified),
         Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
         Self::DependencySetChanged,
         Self::NoBuildAnchor,
         Self::UpstreamOutdated,
+        Self::UpstreamQueryChanged,
         Self::Reused(Reuse::Fresh),
         Self::Reused(Reuse::ToleratedStale),
+        Self::Reused(Reuse::WithinLagTolerance),
         Self::ResultCopy,
         Self::CopyChainLimit,
     ];
@@ -108,14 +121,19 @@ impl DecisionReason {
             Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) => {
                 "no_reuse_candidate.own_target_changed_or_missing"
             }
+            Self::NoReuseCandidate(NoCandidate::OwnTargetModified) => {
+                "no_reuse_candidate.own_target_modified"
+            }
             Self::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults) => {
                 "no_reuse_candidate.incomplete_cached_test_results"
             }
             Self::DependencySetChanged => "dependency_set_changed",
             Self::NoBuildAnchor => "no_build_anchor",
             Self::UpstreamOutdated => "upstream_outdated",
+            Self::UpstreamQueryChanged => "upstream_query_changed",
             Self::Reused(Reuse::Fresh) => "reused.fresh",
             Self::Reused(Reuse::ToleratedStale) => "reused.tolerated_stale",
+            Self::Reused(Reuse::WithinLagTolerance) => "reused.within_lag_tolerance",
             Self::ResultCopy => "result_copy",
             Self::CopyChainLimit => "copy_chain_limit",
         }
@@ -214,6 +232,13 @@ pub struct DecisionRecord {
     /// `executions.id` of the reuse candidate `decide` evaluated: set on a
     /// Skip and on a freshness-driven Execute, `None` otherwise.
     pub matched_execution_id: Option<i64>,
+    /// The freshness context the decision used, persisted for Explain: the
+    /// node's Lag tolerance, the reuse candidate's build age, and the
+    /// decision-time inputs with their resolved producers. Zero, `None` and
+    /// empty for a result copy.
+    pub tolerance_ms: i64,
+    pub build_age_ms: Option<i64>,
+    pub input_tables: Vec<InputTable>,
     sealed: (),
 }
 
@@ -221,6 +246,11 @@ impl DecisionRecord {
     /// The record of [`decide`] against `candidate`.
     pub fn decided(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Self {
         let matched_execution_id = candidate.map(|c| c.id);
+        let (tolerance_ms, build_age_ms, input_tables) = (
+            ctx.tolerance_ms,
+            ctx.build_age_ms,
+            ctx.input_tables.to_vec(),
+        );
         match decide(ctx, candidate) {
             Verdict::Skip {
                 description,
@@ -234,6 +264,9 @@ impl DecisionRecord {
                 clone_rejection_reason: None,
                 is_stale,
                 matched_execution_id,
+                tolerance_ms,
+                build_age_ms,
+                input_tables,
                 sealed: (),
             },
             Verdict::Execute {
@@ -250,6 +283,9 @@ impl DecisionRecord {
                 clone_rejection_reason: Some(clone_rejection_reason),
                 is_stale,
                 matched_execution_id,
+                tolerance_ms,
+                build_age_ms,
+                input_tables,
                 sealed: (),
             },
         }
@@ -267,6 +303,9 @@ impl DecisionRecord {
             clone_rejection_reason: None,
             is_stale: false,
             matched_execution_id: None,
+            tolerance_ms: 0,
+            build_age_ms: None,
+            input_tables: Vec::new(),
             sealed: (),
         }
     }
@@ -284,6 +323,9 @@ impl DecisionRecord {
             clone_rejection_reason: Some(REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED),
             is_stale: false,
             matched_execution_id: None,
+            tolerance_ms: 0,
+            build_age_ms: None,
+            input_tables: Vec::new(),
             sealed: (),
         }
     }
@@ -322,29 +364,46 @@ fn node_noun(execution_type: i32) -> &'static str {
     }
 }
 
-/// SKIP description, node-kind specific (verified live against api.state.dbt.com).
-fn skip_description(execution_type: i32) -> String {
-    match ModelExecutionType::try_from(execution_type) {
-        Ok(ModelExecutionType::Values) => {
-            "seed was a no-op because its data has not changed".to_string()
-        }
-        Ok(ModelExecutionType::DbtDataTest) => {
-            "data test was a no-op because both its query and its upstream data are up to date"
-                .to_string()
-        }
-        Ok(ModelExecutionType::Snapshot) => {
-            "snapshot was a no-op because both its query and its upstream data are up to date"
-                .to_string()
-        }
-        _ => "model was a no-op because both its query and its upstream data are up to date"
-            .to_string(),
+/// SKIP description, node-kind and freshness specific (verified live against
+/// api.state.dbt.com, 2026-11-10): "both … up to date" when the node has no
+/// Lag tolerance or no upstream epoch moved since the build; otherwise
+/// "within lag tolerance" while the build is younger than the tolerance;
+/// otherwise "at least one upstream dependency is unchanged".
+fn skip_description(execution_type: i32, f: &Freshness, ctx: &SubmitContext) -> String {
+    if execution_type == ModelExecutionType::Values as i32 {
+        return "seed was a no-op because its data has not changed".to_string();
     }
+    let noun = node_noun(execution_type);
+    if ctx.tolerance_ms == 0 || f.upstreams_unchanged {
+        format!("{noun} was a no-op because both its query and its upstream data are up to date")
+    } else if within_lag_tolerance(ctx) {
+        format!(
+            "{noun} was a no-op because its query is up to date and its data is within lag tolerance"
+        )
+    } else {
+        format!(
+            "{noun} was a no-op because its query is up to date and at least one upstream dependency is unchanged"
+        )
+    }
+}
+
+/// Whether the reuse candidate's build is younger than the node's Lag
+/// tolerance. An unknown build age is never within it.
+fn within_lag_tolerance(ctx: &SubmitContext) -> bool {
+    ctx.tolerance_ms > 0 && ctx.build_age_ms.is_some_and(|age| age < ctx.tolerance_ms)
 }
 
 /// EXECUTE description, node-kind + reason specific. `had_prior` distinguishes a
 /// first build ("did not exist" / "no prior execution") from a rebuild of an
 /// existing node ("query didn't match or upstream out of date").
-fn execute_description(execution_type: i32, had_prior: bool) -> String {
+fn execute_description(execution_type: i32, had_prior: bool, reason: DecisionReason) -> String {
+    if reason == DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified) {
+        // VERIFIED LIVE (2026-11-10, lag_tolerance_matrix `ot*_u`).
+        return format!(
+            "{} was executed because the table was modified after the cached execution",
+            node_noun(execution_type)
+        );
+    }
     match (ModelExecutionType::try_from(execution_type), had_prior) {
         (Ok(ModelExecutionType::Values), false) => {
             "seed was loaded because it did not exist".to_string()
@@ -369,10 +428,10 @@ fn execute_description(execution_type: i32, had_prior: bool) -> String {
 
 /// Inputs distilled from a SubmitEnrichedSQLRequest for the decision.
 ///
-/// `freshness_tolerance_seconds` is deliberately absent: a non-zero tolerance
-/// does not absorb upstream drift (verified live; a 300s tolerance did not
-/// absorb a 120s upstream-newer-than-build gap). It is preserved on the wire
-/// only, so the engine never sees it.
+/// `input_tables` carry each current input's resolved producer (ADR 0007).
+/// `tolerance_ms` is the node's Lag tolerance and `build_age_ms` the reuse
+/// candidate's build age on the server clock, both computed at the service
+/// boundary so this engine stays pure.
 pub struct SubmitContext<'a> {
     pub execution_type: i32,
     pub input_tables: &'a [InputTable],
@@ -391,6 +450,11 @@ pub struct SubmitContext<'a> {
     /// Why reuse candidate selection rejected the latest row in scope. `None`
     /// when there was no latest row (a first build) or a candidate was found.
     pub why_no_candidate: Option<NoCandidate>,
+    /// `freshness_tolerance_seconds` in milliseconds (0: none).
+    pub tolerance_ms: i64,
+    /// Server clock minus the reuse candidate's build time; `None` when there
+    /// is no candidate or its build time is unknown.
+    pub build_age_ms: Option<i64>,
 }
 
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
@@ -411,35 +475,33 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
             let f = evaluate_freshness(ctx, prev);
             match f.rebuild {
                 Some(reason) => execute(ctx.execution_type, true, reason),
-                // Reuse. The hosted service still reports is_stale=true when
-                // upstream drift is present but tolerated (e.g. ALL policy with
-                // only some parents drifted) — the reused result is knowingly a
-                // little stale. A no-drift reuse reports is_stale=false.
+                // Reuse. is_stale is true whenever upstream drift is present:
+                // tolerated by the ALL policy, or within the Lag tolerance.
                 None => Verdict::Skip {
-                    description: skip_description(ctx.execution_type),
+                    description: skip_description(ctx.execution_type, &f, ctx),
                     is_stale: f.drift_present,
-                    reason: DecisionReason::Reused(if f.drift_present {
-                        Reuse::ToleratedStale
-                    } else {
-                        Reuse::Fresh
-                    }),
+                    reason: DecisionReason::Reused(f.reuse),
                 },
             }
         }
     }
 }
 
-/// Result of the freshness evaluation: why to rebuild, if the policy-applied
-/// evidence requires it, and whether any upstream drift is present at all (for
-/// hosted is_stale reporting).
+/// Result of the freshness evaluation: why to rebuild, if the evidence
+/// requires it; otherwise how fresh the reuse is. `drift_present` feeds the
+/// hosted is_stale and `upstreams_unchanged` the skip description.
 struct Freshness {
     rebuild: Option<DecisionReason>,
+    reuse: Reuse,
     drift_present: bool,
+    /// Every upstream's current epoch equals its recorded epoch (vacuously
+    /// true with no upstreams).
+    upstreams_unchanged: bool,
 }
 
 fn execute(execution_type: i32, had_prior: bool, reason: DecisionReason) -> Verdict {
     Verdict::Execute {
-        description: execute_description(execution_type, had_prior),
+        description: execute_description(execution_type, had_prior, reason),
         skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
         clone_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
         // VERIFIED LIVE: the hosted service reports is_stale=FALSE on every
@@ -464,8 +526,7 @@ pub(crate) fn physical_relation_key(name: &str) -> &str {
 /// OUTDATED (the explain `OUTDATED` badge); `false` means FRESH.
 ///
 /// `anchor_epoch` is the epoch this upstream was compared against with strict
-/// `>`: the node's OWN last-build epoch for object-producing nodes, or this
-/// upstream's RECORDED baseline epoch for a data test (which has no own build).
+/// `>`: the epoch recorded for it at the reuse candidate's build (ADR 0007).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpstreamVerdict {
     pub name: String,
@@ -473,11 +534,14 @@ pub(crate) struct UpstreamVerdict {
     pub anchor_epoch: i64,
     pub drifted: bool,
     /// True when this upstream's freshness could not be PROVEN (unknown current
-    /// epoch, or a data-test upstream with no recorded baseline epoch). The
-    /// pre-extraction engine short-circuited to a rebuild on the first such
-    /// upstream regardless of policy, so the fold must force EXECUTE when any
-    /// upstream is unprovable (an unprovable upstream is always also `drifted`).
+    /// or recorded epoch, or an ambiguous recorded baseline). The fold forces
+    /// EXECUTE when any upstream is unprovable (an unprovable upstream is
+    /// always also `drifted`).
     pub unprovable: bool,
+    /// The build that produced this upstream's contents differs from the one
+    /// the reuse candidate consumed (ADR 0007): hosted's "query or upstream
+    /// query changed". Never set when either side's producer is unrecorded.
+    pub producer_changed: bool,
 }
 
 /// Why the per-upstream freshness evidence resolved the way it did. These are
@@ -522,9 +586,9 @@ pub(crate) struct UpstreamFreshness {
     pub evidence: FreshnessEvidence,
     /// Per-genuine-upstream verdicts; populated only when `Evaluated`.
     pub upstreams: Vec<UpstreamVerdict>,
-    /// The anchor epoch for object-producing nodes (own last-build epoch); None
-    /// for data tests (which anchor per upstream on the recorded baseline).
-    pub anchor_epoch: Option<i64>,
+    /// Whether the node is a data test, which has no own build and gates
+    /// ANY-style regardless of the configured policy.
+    pub data_test: bool,
     /// Number of genuine upstreams considered (len of `upstreams` when Evaluated).
     pub considered: usize,
     /// Number of considered upstreams that drifted (OUTDATED).
@@ -557,8 +621,15 @@ pub(crate) fn upstream_freshness<'a>(
     prev: &ExecutionRow,
 ) -> UpstreamFreshness {
     let node: FreshnessInputs<'a> = node.into();
-    // No tolerance applies here; see `SubmitContext`.
     let genuine = |name: &str| node.target_table != Some(name);
+    let data_test = node.execution_type == ModelExecutionType::DbtDataTest as i32;
+    let outcome = |evidence| UpstreamFreshness {
+        evidence,
+        upstreams: Vec::new(),
+        data_test,
+        considered: 0,
+        drifted: 0,
+    };
 
     // Name-set diff over GENUINE upstreams (the node's own target excluded).
     let current_names: std::collections::BTreeSet<&str> = node
@@ -590,13 +661,7 @@ pub(crate) fn upstream_freshness<'a>(
     // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
     let ambiguous = current_names.len() != genuine_count;
     if added || removed || ambiguous {
-        return UpstreamFreshness {
-            evidence: FreshnessEvidence::DependencySetChanged,
-            upstreams: Vec::new(),
-            anchor_epoch: None,
-            considered: 0,
-            drifted: 0,
-        };
+        return outcome(FreshnessEvidence::DependencySetChanged);
     }
 
     // The genuine upstreams to evaluate (own target excluded). A node with none
@@ -608,55 +673,27 @@ pub(crate) fn upstream_freshness<'a>(
         .filter(|t| genuine(&t.name))
         .collect();
     if genuine_upstreams.is_empty() {
-        return UpstreamFreshness {
-            evidence: FreshnessEvidence::NoUpstreams,
-            upstreams: Vec::new(),
-            anchor_epoch: None,
-            considered: 0,
-            drifted: 0,
-        };
+        return outcome(FreshnessEvidence::NoUpstreams);
     }
 
-    // Freshness anchor. For object-producing nodes it is the node's OWN
-    // last-build epoch (strict `>`), verified live against api.state.dbt.com.
-    // A missing own-build epoch means either a data test (which has no physical
-    // object and anchors per-upstream on the RECORDED baseline — issue #2
-    // finding 1) or an object-producing node we cannot prove fresh.
-    let data_test = node.execution_type == ModelExecutionType::DbtDataTest as i32;
-    let own_build_epoch = match prev.last_modified_epoch {
-        Some(epoch) => Some(epoch),
-        None if data_test => None, // per-upstream recorded-baseline anchor below
-        None => {
-            // Object-producing node with no build epoch → cannot prove freshness.
-            return UpstreamFreshness {
-                evidence: FreshnessEvidence::NoBuildAnchor,
-                upstreams: Vec::new(),
-                anchor_epoch: None,
-                considered: 0,
-                drifted: 0,
-            };
-        }
-    };
+    // An object-producing node with no recorded build epoch cannot be shown to
+    // exist as built; data tests have no own object and record none.
+    if prev.last_modified_epoch.is_none() && !data_test {
+        return outcome(FreshnessEvidence::NoBuildAnchor);
+    }
 
-    // Per-upstream FRESH/OUTDATED verdicts. Any upstream whose evidence cannot
-    // establish freshness (unknown current epoch, missing/ambiguous recorded
-    // baseline, or a data test with no recorded baseline epoch) is OUTDATED
-    // against a `0` anchor — identical to the old safety-rebuild short-circuits,
-    // because `evaluate_freshness` turns any such drift into a rebuild and the
-    // ANY/ALL fold treats "all drifted" as rebuild. We never skip on unprovable
-    // freshness.
+    // Per-upstream verdicts against the epoch RECORDED for each upstream at the
+    // reuse candidate's build (ADR 0007, verified live 2026-11-10: a change
+    // between the build's submit and its confirmation still counts). Evidence
+    // that cannot establish freshness (unknown current or recorded epoch, an
+    // ambiguous recorded baseline) is OUTDATED and unprovable, which always
+    // rebuilds.
     let mut upstreams = Vec::with_capacity(genuine_upstreams.len());
     let mut drifted = 0usize;
     for current in &genuine_upstreams {
-        // Locate the recorded counterpart(s). The name set was validated above
-        // as an exact, non-ambiguous match on the CURRENT side, but a confirmed
-        // row may still record the SAME physical relation MORE THAN ONCE (the
-        // recorded set collapses duplicates when compared as a BTreeSet). `main`
-        // treated such a duplicate recorded baseline as ambiguous and forced a
-        // rebuild in BOTH `evaluate_freshness` and `data_test_upstream_freshness`
-        // (`matches.next().is_some()` after the first → rebuild): we cannot prove
-        // which epoch to anchor against, so we must not skip. Count the matches
-        // and mark an ambiguous (>1) baseline unprovable (F1 regression).
+        // A confirmed row may record the SAME physical relation more than once
+        // (the name-set check above collapses duplicates): we cannot prove
+        // which epoch to compare against, so it is unprovable (F1 regression).
         let mut recorded = prev
             .input_tables
             .iter()
@@ -664,27 +701,17 @@ pub(crate) fn upstream_freshness<'a>(
         let first_recorded = recorded.next();
         let ambiguous_recorded = recorded.next().is_some();
         let recorded_epoch = first_recorded.and_then(|t| t.last_modified_epoch);
-        // The anchor for THIS upstream: own-build epoch for object nodes, the
-        // upstream's own recorded baseline for a data test.
-        let anchor = match own_build_epoch {
-            Some(e) => e,
-            None => recorded_epoch.unwrap_or(0),
+        let (is_drift, unprovable) = match (
+            current.last_modified_epoch,
+            recorded_epoch,
+            ambiguous_recorded,
+        ) {
+            (Some(cur), Some(rec), false) => (cur > rec, false),
+            _ => (true, true),
         };
-        // Freshness is UNPROVABLE when the current epoch is unknown, when the
-        // recorded baseline is ambiguous (duplicate recorded counterparts), or
-        // (data test) the upstream has no recorded baseline epoch to anchor
-        // against.
-        let unprovable = current.last_modified_epoch.is_none()
-            || ambiguous_recorded
-            || (own_build_epoch.is_none() && recorded_epoch.is_none());
-        let is_drift = match current.last_modified_epoch {
-            // Unknown current epoch → unprovable → OUTDATED.
-            None => true,
-            // Ambiguous recorded baseline → unprovable → OUTDATED (force rebuild).
-            Some(_) if ambiguous_recorded => true,
-            // Data test with no recorded baseline epoch → unprovable → OUTDATED.
-            Some(_) if own_build_epoch.is_none() && recorded_epoch.is_none() => true,
-            Some(current_epoch) => current_epoch > anchor,
+        let producer_changed = match (first_recorded.map(|t| &t.producer), &current.producer) {
+            (Some(Producer::Unrecorded) | None, _) | (_, Producer::Unrecorded) => false,
+            (Some(recorded), current) => recorded != current,
         };
         if is_drift {
             drifted += 1;
@@ -692,9 +719,10 @@ pub(crate) fn upstream_freshness<'a>(
         upstreams.push(UpstreamVerdict {
             name: current.name.clone(),
             current_epoch: current.last_modified_epoch,
-            anchor_epoch: anchor,
+            anchor_epoch: recorded_epoch.unwrap_or(0),
             drifted: is_drift,
             unprovable,
+            producer_changed,
         });
     }
 
@@ -702,48 +730,49 @@ pub(crate) fn upstream_freshness<'a>(
     UpstreamFreshness {
         evidence: FreshnessEvidence::Evaluated,
         upstreams,
-        anchor_epoch: own_build_epoch,
+        data_test,
         considered,
         drifted,
     }
 }
 
-/// Fold the shared per-upstream freshness signals into a rebuild/skip decision,
-/// applying the ANY/ALL `stale_upstream_policy`. This is the ONLY place the
-/// policy is applied; `upstream_freshness` stays policy-neutral so the explain
-/// path can render the same per-parent verdicts the policy acted on.
+/// Fold the shared per-upstream freshness signals into a rebuild/skip decision:
+/// an upstream query change rebuilds; otherwise the ANY/ALL
+/// `stale_upstream_policy` decides whether the node is stale, and a stale node
+/// is still reused while its build is younger than the Lag tolerance. This is
+/// the ONLY place policy and tolerance are applied; `upstream_freshness` stays
+/// policy-neutral so the explain path can render the same per-parent verdicts.
 fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
     let f = upstream_freshness(ctx, prev);
+    let rebuild = |reason| Freshness {
+        rebuild: Some(reason),
+        reuse: Reuse::Fresh,
+        drift_present: true,
+        upstreams_unchanged: false,
+    };
     match f.evidence {
         // Missing/ambiguous evidence or an unprovable anchor always rebuilds;
         // its is_stale is irrelevant (executes report false).
-        FreshnessEvidence::DependencySetChanged => Freshness {
-            rebuild: Some(DecisionReason::DependencySetChanged),
-            drift_present: true,
-        },
-        FreshnessEvidence::NoBuildAnchor => Freshness {
-            rebuild: Some(DecisionReason::NoBuildAnchor),
-            drift_present: true,
-        },
+        FreshnessEvidence::DependencySetChanged => rebuild(DecisionReason::DependencySetChanged),
+        FreshnessEvidence::NoBuildAnchor => rebuild(DecisionReason::NoBuildAnchor),
         // Nothing to compare → a hash match alone is safe to skip.
         FreshnessEvidence::NoUpstreams => Freshness {
             rebuild: None,
+            reuse: Reuse::Fresh,
             drift_present: false,
+            upstreams_unchanged: true,
         },
         FreshnessEvidence::Evaluated => {
-            // Any upstream whose freshness could not be proven forces a rebuild
-            // regardless of policy — the pre-extraction engine short-circuited
-            // to a rebuild on the first such upstream before reaching the
-            // ANY/ALL fold.
-            let any_unprovable = f.upstreams.iter().any(|u| u.unprovable);
-            // A data test (no own-build epoch) gates ANY-style on its tested
-            // data regardless of the configured policy; object-producing nodes
-            // honor the ANY/ALL policy.
-            let data_test = f.anchor_epoch.is_none();
+            if f.upstreams.iter().any(|u| u.unprovable) {
+                return rebuild(DecisionReason::UpstreamOutdated);
+            }
+            if f.upstreams.iter().any(|u| u.producer_changed) {
+                return rebuild(DecisionReason::UpstreamQueryChanged);
+            }
             let drift_present = f.drifted > 0;
-            let should_rebuild = if any_unprovable {
-                true
-            } else if data_test {
+            // A data test gates ANY-style on its tested data regardless of the
+            // configured policy; object-producing nodes honor ANY/ALL.
+            let stale = if f.data_test {
                 drift_present
             } else {
                 match ctx.stale_upstream_policy {
@@ -751,9 +780,24 @@ fn evaluate_freshness(ctx: &SubmitContext, prev: &ExecutionRow) -> Freshness {
                     StaleUpstreamPolicy::All => f.drifted == f.considered,
                 }
             };
+            let reuse = if stale {
+                if !within_lag_tolerance(ctx) {
+                    return rebuild(DecisionReason::UpstreamOutdated);
+                }
+                Reuse::WithinLagTolerance
+            } else if drift_present {
+                Reuse::ToleratedStale
+            } else {
+                Reuse::Fresh
+            };
             Freshness {
-                rebuild: should_rebuild.then_some(DecisionReason::UpstreamOutdated),
+                rebuild: None,
+                reuse,
                 drift_present,
+                upstreams_unchanged: f
+                    .upstreams
+                    .iter()
+                    .all(|u| u.current_epoch == Some(u.anchor_epoch)),
             }
         }
     }
@@ -778,6 +822,8 @@ mod tests {
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
             why_no_candidate: None,
+            tolerance_ms: 0,
+            build_age_ms: None,
         }
     }
 
@@ -807,6 +853,7 @@ mod tests {
         InputTable {
             name: name.into(),
             last_modified_epoch: Some(epoch),
+            ..Default::default()
         }
     }
 
@@ -975,10 +1022,12 @@ mod tests {
         );
     }
 
-    /// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake): a non-zero
-    /// `freshness_tolerance_seconds` does NOT absorb upstream drift. The service
-    /// rebuilds as soon as an upstream is newer than the own-build epoch, even
-    /// with a large tolerance (a 300s tolerance did not absorb a 120s gap).
+    /// VERIFIED LIVE (api.state.dbt.com, Fusion client, Snowflake) for an
+    /// EXTERNAL MODIFICATION of the upstream: a non-zero
+    /// `freshness_tolerance_seconds` did not absorb the drift, and the service
+    /// rebuilt as soon as the upstream was newer than the own-build epoch (a
+    /// 300s tolerance did not absorb a 120s gap). Upstream changes dbt built
+    /// are uncharacterized (correctness-handoff.md §C).
     /// The engine never receives the tolerance (see `SubmitContext`); the wire
     /// behavior is pinned with a non-zero tolerance by `lag_policy.rs`.
     #[test]
@@ -1041,9 +1090,10 @@ mod tests {
     //   ALL, all drift          -> execute, is_stale=false
     // i.e. is_stale is true ONLY on a reuse that knowingly serves slightly stale
     // data (drift present but tolerated by the ALL policy). It is NEVER set on an
-    // execute. lag_tolerance does NOT gate: ALL/one-drift skips even at lag=0, and
-    // ANY/drift executes even within tolerance (own-build anchor). See
-    // docs/correctness-handoff.md §C and crates/harness/tests/lag_freshness.rs.
+    // execute. For external modifications of the upstream, lag_tolerance did not
+    // gate: ALL/one-drift skips even at lag=0, and ANY/drift executes even within
+    // tolerance (own-build anchor). See docs/correctness-handoff.md §C (re-scoped)
+    // and crates/harness/tests/lag_freshness.rs.
 
     /// ALL policy, only one of two parents drifted → SKIP with is_stale=TRUE.
     #[test]
@@ -1146,6 +1196,151 @@ mod tests {
             ),
             "upstream one ms newer than own build must execute even with 300s tolerance"
         );
+    }
+
+    /// ADR 0007 (VERIFIED LIVE 2026-11-10, `cdb_m`, lag_multi entry 11): an
+    /// upstream drifts when it is newer than the epoch RECORDED for it at the
+    /// build, even if it is older than the build's (client-stamped) confirm
+    /// epoch.
+    #[test]
+    fn drift_is_against_the_recorded_upstream_epoch() {
+        let target = "\"DB\".\"S\".\"M\"";
+        let prev = confirmed("h", vec![tbl("a", 990_000)], Some(1_016_000));
+        let current = vec![tbl(target, 1_000_000), tbl("a", 1_010_000)];
+        let mut c = ctx(&current);
+        c.target_table = Some(target);
+        assert!(matches!(
+            decide(&c, Some(&prev)),
+            Verdict::Execute {
+                is_stale: false,
+                reason: DecisionReason::UpstreamOutdated,
+                ..
+            }
+        ));
+        // An upstream older than its recorded epoch (a client-stamp artifact)
+        // is not drift.
+        let current = vec![tbl(target, 1_000_000), tbl("a", 989_700)];
+        let mut c = ctx(&current);
+        c.target_table = Some(target);
+        assert!(matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }));
+    }
+
+    fn tolerant<'a>(tables: &'a [InputTable], tol_s: i64, age_s: i64) -> SubmitContext<'a> {
+        let mut c = ctx(tables);
+        c.tolerance_ms = tol_s * 1000;
+        c.build_age_ms = Some(age_s * 1000);
+        c
+    }
+
+    const WITHIN: &str =
+        "model was a no-op because its query is up to date and its data is within lag tolerance";
+    const ATLEAST1: &str = "model was a no-op because its query is up to date and at least one upstream dependency is unchanged";
+
+    /// VERIFIED LIVE (`recy_m`, `reco_m`, `recz_m`, `bacfwd_m`): a rebuild
+    /// the policy requires is a reuse while the build is younger than the Lag
+    /// tolerance, and a rebuild once it is not. A forward-dated build has a
+    /// negative age and is within.
+    #[test]
+    fn lag_tolerance_gates_the_policy_rebuild_by_build_age() {
+        let prev = confirmed("h", vec![tbl("a", 100)], Some(100));
+        let current = vec![tbl("a", 5_000)];
+        let skip = decide(&tolerant(&current, 600, 7), Some(&prev));
+        assert_eq!(
+            skip,
+            Verdict::Skip {
+                description: WITHIN.into(),
+                is_stale: true,
+                reason: DecisionReason::Reused(Reuse::WithinLagTolerance),
+            }
+        );
+        assert!(matches!(
+            decide(&tolerant(&current, 20, 34), Some(&prev)),
+            Verdict::Execute {
+                reason: DecisionReason::UpstreamOutdated,
+                ..
+            }
+        ));
+        assert!(matches!(
+            decide(&tolerant(&current, 60, -98), Some(&prev)),
+            Verdict::Skip { .. }
+        ));
+        // Unknown build age is never within the tolerance.
+        let mut c = tolerant(&current, 600, 0);
+        c.build_age_ms = None;
+        assert!(matches!(decide(&c, Some(&prev)), Verdict::Execute { .. }));
+    }
+
+    /// VERIFIED LIVE (`lk*`, `ext*`, `soe*`): a changed producer is an upstream
+    /// query change and rebuilds regardless of ALL policy and tolerance.
+    /// Unrecorded producers never count.
+    #[test]
+    fn changed_producer_rebuilds_regardless_of_policy_and_tolerance() {
+        let with = |name: &str, epoch, producer| InputTable {
+            producer,
+            ..tbl(name, epoch)
+        };
+        let built = Producer::Build("sql:u0".into());
+        let recorded = vec![
+            with("a", 100, built.clone()),
+            with("b", 100, Producer::NoBuild),
+        ];
+        let prev = confirmed("h", recorded, Some(100));
+        let current = vec![
+            with("a", 5_000, Producer::NoBuild),
+            with("b", 100, Producer::NoBuild),
+        ];
+        let mut c = tolerant(&current, 600, 4);
+        c.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert!(matches!(
+            decide(&c, Some(&prev)),
+            Verdict::Execute {
+                is_stale: false,
+                reason: DecisionReason::UpstreamQueryChanged,
+                ..
+            }
+        ));
+        // The same producer is plain data drift: ALL with one of two drifted
+        // reuses.
+        let current = vec![with("a", 5_000, built), with("b", 100, Producer::NoBuild)];
+        let mut c = tolerant(&current, 600, 4);
+        c.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert!(matches!(decide(&c, Some(&prev)), Verdict::Skip { .. }));
+        // An unrecorded side never counts.
+        let legacy = confirmed("h", vec![tbl("a", 100), tbl("b", 100)], Some(100));
+        let current = vec![with("a", 5_000, Producer::NoBuild), tbl("b", 100)];
+        let mut c = tolerant(&current, 600, 4);
+        c.stale_upstream_policy = StaleUpstreamPolicy::All;
+        assert!(matches!(decide(&c, Some(&legacy)), Verdict::Skip { .. }));
+    }
+
+    /// VERIFIED LIVE (`dsdec_*`, `dsall_m`, `pao_m`): the skip description.
+    #[test]
+    fn skip_description_follows_tolerance_and_build_age() {
+        let prev = confirmed("h", vec![tbl("a", 1_000), tbl("b", 1_000)], Some(1_000));
+        let desc = |current: &[InputTable], tol, age, policy| {
+            let mut c = tolerant(current, tol, age);
+            c.stale_upstream_policy = policy;
+            match decide(&c, Some(&prev)) {
+                Verdict::Skip {
+                    description,
+                    is_stale,
+                    ..
+                } => (description, is_stale),
+                other => panic!("expected skip, got {other:?}"),
+            }
+        };
+        let any = StaleUpstreamPolicy::Any;
+        let all = StaleUpstreamPolicy::All;
+        let unchanged = [tbl("a", 1_000), tbl("b", 1_000)];
+        let decreased = [tbl("a", 700), tbl("b", 1_000)];
+        let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
+        assert_eq!(desc(&unchanged, 300, 5, any), (DESC_SKIP.into(), false));
+        assert_eq!(desc(&decreased, 0, 2, any), (DESC_SKIP.into(), false));
+        assert_eq!(desc(&decreased, 20, 2, any), (WITHIN.into(), false));
+        assert_eq!(desc(&decreased, 20, 25, any), (ATLEAST1.into(), false));
+        assert_eq!(desc(&one_drifted, 0, 2, all), (DESC_SKIP.into(), true));
+        assert_eq!(desc(&one_drifted, 300, 80, all), (WITHIN.into(), true));
+        assert_eq!(desc(&one_drifted, 20, 25, all), (ATLEAST1.into(), true));
     }
 
     /// Different schema input cannot match recorded physical evidence.
@@ -1276,6 +1471,8 @@ mod tests {
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
             why_no_candidate: None,
+            tolerance_ms: 0,
+            build_age_ms: None,
         }
     }
 
@@ -1333,6 +1530,7 @@ mod tests {
         let current = vec![InputTable {
             name: "DB.S.INPUT".into(),
             last_modified_epoch: None,
+            ..Default::default()
         }];
         assert!(matches!(
             decide(&data_test_ctx(&current), Some(&prev)),
@@ -1428,7 +1626,7 @@ mod tests {
         // A clean, unchanged name set does not short-circuit to
         // DependencySetChanged; it reaches the per-upstream evaluation.
         assert!(matches!(f.evidence, FreshnessEvidence::Evaluated));
-        assert_eq!(f.anchor_epoch, Some(100), "anchor is the own-build epoch");
+        assert!(!f.data_test);
         assert_eq!(f.considered, 2);
         assert_eq!(f.drifted, 1);
 
@@ -1533,6 +1731,7 @@ mod tests {
             InputTable {
                 name: "b".into(),
                 last_modified_epoch: None, // unknown → unprovable
+                ..Default::default()
             },
         ];
         let prev = confirmed("h", recorded, Some(100));
@@ -1663,6 +1862,7 @@ mod tests {
         let unknown = vec![InputTable {
             name: "a".into(),
             last_modified_epoch: None,
+            ..Default::default()
         }];
         assert_eq!(
             reason(&ctx(&unknown), Some(&prev)),
@@ -1749,6 +1949,10 @@ mod tests {
                 "no_reuse_candidate.own_target_changed_or_missing",
             ),
             (
+                DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified),
+                "no_reuse_candidate.own_target_modified",
+            ),
+            (
                 DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
                 "no_reuse_candidate.incomplete_cached_test_results",
             ),
@@ -1758,10 +1962,18 @@ mod tests {
             ),
             (DecisionReason::NoBuildAnchor, "no_build_anchor"),
             (DecisionReason::UpstreamOutdated, "upstream_outdated"),
+            (
+                DecisionReason::UpstreamQueryChanged,
+                "upstream_query_changed",
+            ),
             (DecisionReason::Reused(Reuse::Fresh), "reused.fresh"),
             (
                 DecisionReason::Reused(Reuse::ToleratedStale),
                 "reused.tolerated_stale",
+            ),
+            (
+                DecisionReason::Reused(Reuse::WithinLagTolerance),
+                "reused.within_lag_tolerance",
             ),
             (DecisionReason::ResultCopy, "result_copy"),
             (DecisionReason::CopyChainLimit, "copy_chain_limit"),

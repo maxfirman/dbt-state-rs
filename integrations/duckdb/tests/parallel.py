@@ -16,9 +16,11 @@ root.mkdir(parents=True)
     "models:\n  parallel:\n    +materialized: table\n"
 )
 path = root / "warehouse.duckdb"
+# Lag tolerance 0: these cases test that every evidence change propagates
+# (lag_tolerance.py covers reuse within a tolerance, ADR 0007).
 (root / "profiles.yml").write_text(
     f"parallel:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n"
-    f"      path: {path}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n"
+    f"      path: {path}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n      run_cache_freshness_tolerance: 0s\n"
 )
 (root / "models/root.sql").write_text("select * from main.inputs")
 for branch, expression in (

@@ -327,7 +327,7 @@ pub(crate) async fn record_batch(
         let outcome = record.outcome.clone().unwrap_or_default();
         let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
 
-        let evidence = match input {
+        let mut evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
                 ExecutionEvidence::sql_record(org_id, sql)
             }
@@ -335,6 +335,9 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
+        crate::submit_decision::resolve_producers(store, &mut evidence)
+            .await
+            .map_err(RecordError::Store)?;
         let row = evidence.confirmed(outcome);
         rows.push(row);
 
@@ -458,6 +461,7 @@ mod tests {
             vec![InputTable {
                 name: UPSTREAM.into(),
                 last_modified_epoch: Some(500),
+                ..Default::default()
             }]
         );
         assert_eq!(e.values_hash, None);

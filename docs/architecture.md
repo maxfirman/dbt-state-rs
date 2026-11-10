@@ -77,9 +77,12 @@ pending-row contents; Record uses the same identity constructors and publishes
 its complete batch with selector/deferral state atomically. The engine
 compares exact physical input names and optional epochs;
 unknown/missing/duplicate metadata builds, and the own target is excluded only
-from upstream drift. Freshness drift is an upstream newer than the node's own
-last-build epoch (ANY/ALL policy), verified live; `freshness_tolerance_seconds`
-is intentionally not applied. See [protocol.md](protocol.md#current-decision-semantics)
+from upstream drift. Freshness drift is an upstream newer than the epoch
+recorded for it at the build; a changed upstream producer always builds; the
+ANY/ALL policy decides staleness and Lag tolerance reuses a stale node while
+its build is young (ADR 0007, verified live). The service boundary resolves
+each input's producer and the build age on the server clock (`AppState::clock`)
+so `decide` stays pure. See [protocol.md](protocol.md#current-decision-semantics)
 and [correctness-handoff.md §C](correctness-handoff.md).
 
 Physical history lookups share one query constructor in `store/history.rs`. It

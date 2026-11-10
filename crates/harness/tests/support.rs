@@ -85,11 +85,20 @@ pub fn captured_org(entry: &dbt_state_harness::diff::GoldenEntry) -> &str {
         .unwrap_or("local")
 }
 
+/// The captured request, scoped to its org and decided at its recorded time
+/// (test servers use `Clock::Replay`).
 pub fn captured_request<T>(
     body: T,
     entry: &dbt_state_harness::diff::GoldenEntry,
 ) -> tonic::Request<T> {
-    request_with_org(body, captured_org(entry))
+    let mut req = request_with_org(body, captured_org(entry));
+    if let Some(at) = entry.recorded_at_ms() {
+        req.metadata_mut().insert(
+            dbt_state_server::REPLAY_NOW_HEADER,
+            at.to_string().parse().expect("valid metadata value"),
+        );
+    }
+    req
 }
 
 /// Preserve the captured outcome, correlating by the hosted request ID. Only

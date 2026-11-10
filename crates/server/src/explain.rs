@@ -30,12 +30,14 @@ const MARKER_SUCCESS: i32 = 1;
 const MARKER_FAIL: i32 = 2;
 // Badges (only the OBSERVED subset — see docs/explain-catalog.md).
 const BADGE_FRESH: i32 = 1;
+const BADGE_WITHIN_TOLERANCE: i32 = 2;
 const BADGE_OUTDATED: i32 = 3;
 const BADGE_NODE_QUERY_CHANGED: i32 = 4;
 const BADGE_NODE_QUERY_UNCHANGED: i32 = 5;
 // UPSTREAM_QUERY_CHANGED is emitted inside the OUTDATED-driven EXECUTE sub-shape
 // (catalog SHAPE 9), which is anchor-dependent (ADR 0005 / ticket #30).
 const BADGE_UPSTREAM_QUERY_CHANGED: i32 = 6;
+const BADGE_UPSTREAM_QUERY_UNCHANGED: i32 = 7;
 const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 
 /// A snapshot of one persisted decision, everything the pure generator needs to
@@ -59,6 +61,10 @@ pub struct ExplainNode {
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: Vec<InputTable>,
+    /// The node's Lag tolerance (0: none) and the reuse candidate's build age
+    /// at decision time (ADR 0007).
+    pub tolerance_ms: i64,
+    pub build_age_ms: Option<i64>,
     /// The matched prior `executions` row (freshness anchor). ADR 0005: present
     /// only when the SKIP/reuse decision matched a prior build; `None` for
     /// first-build EXECUTE / clone. The per-upstream freshness SUBTREE
@@ -201,6 +207,9 @@ enum Shape {
     QueryChanged,
     /// Upstream-drift rebuild (catalog SHAPE 9), rendered against the anchor.
     UpstreamOutdated,
+    /// Own target modified after the build, for a node with no upstreams
+    /// (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`).
+    OwnTargetModified,
     /// CLONE (`vs clone` sections).
     Clone,
 }
@@ -214,7 +223,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
     use DecisionReason as R;
     let reason = node.reason?;
     Some(match (node.decision, reason) {
-        (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::ToleratedStale)) => Shape::Skip,
+        (
+            DecisionKind::Skip,
+            R::Reused(Reuse::Fresh | Reuse::ToleratedStale | Reuse::WithinLagTolerance),
+        ) => Shape::Skip,
         (DecisionKind::Build, R::FirstBuild) => Shape::FirstBuild,
         // The OUTDATED subtree is anchor-relative: it renders only when the
         // matched build is present and re-derives at least one OUTDATED
@@ -222,9 +234,18 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Build, R::UpstreamOutdated) if has_outdated_upstream(node) => {
             Shape::UpstreamOutdated
         }
+        (DecisionKind::Build, R::UpstreamQueryChanged) if node.anchor.is_some() => {
+            Shape::UpstreamOutdated
+        }
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
+            if node.genuine_upstreams().is_empty() =>
+        {
+            Shape::OwnTargetModified
+        }
         (
             DecisionKind::Build,
             R::UpstreamOutdated
+            | R::UpstreamQueryChanged
             | R::NoReuseCandidate(
                 NoCandidate::IdentityMismatch
                 | NoCandidate::FailedReuseQualification
@@ -242,7 +263,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // "Known limitation — dropped-own-target rebuild" and ADR 0006.
         (
             DecisionKind::Build,
-            R::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing) | R::NoBuildAnchor,
+            R::NoReuseCandidate(
+                NoCandidate::OwnTargetChangedOrMissing | NoCandidate::OwnTargetModified,
+            )
+            | R::NoBuildAnchor,
         ) => Shape::QueryChanged,
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         _ => return None,
@@ -263,6 +287,7 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
         Some(Shape::QueryChanged) => query_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
+        Some(Shape::OwnTargetModified) => skip_tree(node),
         Some(Shape::Clone) => clone_tree(node),
     }
 }
@@ -340,10 +365,63 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     // parent with the per-upstream children so the tree SHAPE matches; the
     // FRESH/OUTDATED badge + «gap»/«rel_time» text are the anchor-dependent
     // slots that the conformance gate fences until #30.
-    section(
-        "data freshness analysis",
-        vec![upstream_dependencies_freshness(node, &upstreams)],
-    )
+    let mut children = vec![upstream_dependencies_freshness(node, &upstreams)];
+    if has_outdated_upstream(node) {
+        // VERIFIED LIVE (2026-11-10): a reuse that serves drifted upstream data
+        // says so, and with a Lag tolerance states the build age against it.
+        children.push(leaf("upstream data is outdated", Some(MARKER_FAIL), None));
+        if node.tolerance_ms > 0 {
+            children.push(lag_tolerance_line(node));
+        }
+    }
+    section("data freshness analysis", children)
+}
+
+/// `the <noun> was last built «age» ago, within|exceeds lag tolerance of «T»`
+/// (badge WITHIN_TOLERANCE + SUCCESS, or OUTDATED + FAIL), from the build age
+/// and tolerance persisted with the decision. Durations are worded like the
+/// hosted service's (`humanize_duration`).
+fn lag_tolerance_line(node: &ExplainNode) -> qc::ExplainLine {
+    let age = node.build_age_ms.unwrap_or(i64::MAX);
+    let within = age < node.tolerance_ms;
+    let text = format!(
+        "the {} was last built {} ago, {} lag tolerance of {}",
+        node.noun(),
+        humanize_duration(age),
+        if within { "within" } else { "exceeds" },
+        humanize_duration(node.tolerance_ms)
+    );
+    if within {
+        leaf(text, Some(MARKER_SUCCESS), Some(BADGE_WITHIN_TOLERANCE))
+    } else {
+        leaf(text, Some(MARKER_FAIL), Some(BADGE_OUTDATED))
+    }
+}
+
+/// A duration worded like the hosted service's Explain ("a moment", "a
+/// second", "7 seconds", "a minute", "10 minutes", "an hour", "3 hours", "a
+/// day", "10 days", "a month", "2 years"; whole units, rounded down; negative
+/// reads as zero). Observed live: "7 seconds", "25 seconds", "a minute",
+/// "10 minutes", "20 seconds", "a moment".
+pub(crate) fn humanize_duration(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    let days = seconds / 86_400;
+    let plural = |n: i64, one: &str, unit: &str| {
+        if n == 1 {
+            one.to_string()
+        } else {
+            format!("{n} {unit}")
+        }
+    };
+    match (days, seconds) {
+        (0, 0) => "a moment".to_string(),
+        (0, s) if s < 60 => plural(s, "a second", "seconds"),
+        (0, s) if s < 3_600 => plural(s / 60, "a minute", "minutes"),
+        (0, s) => plural(s / 3_600, "an hour", "hours"),
+        (d, _) if d < 31 => plural(d, "a day", "days"),
+        (d, _) if d < 365 => plural((d as f64 / 30.5).round() as i64, "a month", "months"),
+        (d, _) => plural(d / 365, "a year", "years"),
+    }
 }
 
 /// The per-upstream `upstream dependencies` listing with FRESH/OUTDATED badges,
@@ -500,47 +578,60 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 fn execute_outdated_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let upstreams = node.genuine_upstreams();
     let verdicts = anchored_verdicts(node);
-    // The OUTDATED upstreams, in the node's recorded input order.
-    let outdated: Vec<&InputTable> = upstreams
-        .iter()
-        .copied()
-        .filter(|up| {
-            verdicts
-                .as_ref()
-                .and_then(|v| v.iter().find(|u| u.name == up.name))
-                .map(|u| u.drifted)
-                .unwrap_or(false)
-        })
-        .collect();
+    let changed = |up: &InputTable| {
+        verdicts
+            .as_ref()
+            .and_then(|v| v.iter().find(|u| u.name == up.name))
+            .is_some_and(|u| u.producer_changed)
+    };
 
     let mut out = vec![table_analysis_exists(node)];
 
-    // query analysis: node-query unchanged + the OUTDATED upstreams' logic-diff
-    // listing + the FAIL summary.
+    // query analysis: node-query unchanged, then either every upstream's
+    // query verdict and the FAIL summary (an upstream's producing build
+    // changed, ADR 0007), or the SUCCESS summary alone (VERIFIED LIVE
+    // 2026-11-10: a data-only rebuild lists no upstream queries).
     let mut query_children = vec![leaf(
         format!("the {} query has not changed", node.noun()),
         Some(MARKER_SUCCESS),
         Some(BADGE_NODE_QUERY_UNCHANGED),
     )];
-    let query_listing: Vec<qc::ExplainLine> = outdated
-        .iter()
-        .map(|up| qc::ExplainLine {
-            text: quote(&up.name),
-            marker: None,
-            badge: None,
-            children: vec![leaf(
-                "query or upstream query changed",
-                None,
-                Some(BADGE_UPSTREAM_QUERY_CHANGED),
-            )],
-        })
-        .collect();
-    query_children.push(section("upstream dependencies", query_listing));
-    query_children.push(leaf(
-        "an upstream model query has changed",
-        Some(MARKER_FAIL),
-        None,
-    ));
+    if upstreams.iter().any(|up| changed(up)) {
+        let query_listing: Vec<qc::ExplainLine> = upstreams
+            .iter()
+            .map(|up| {
+                let (text, badge) = if changed(up) {
+                    (
+                        "query or upstream query changed",
+                        BADGE_UPSTREAM_QUERY_CHANGED,
+                    )
+                } else {
+                    (
+                        "query or upstream query unchanged",
+                        BADGE_UPSTREAM_QUERY_UNCHANGED,
+                    )
+                };
+                qc::ExplainLine {
+                    text: quote(&up.name),
+                    marker: None,
+                    badge: None,
+                    children: vec![leaf(text, None, Some(badge))],
+                }
+            })
+            .collect();
+        query_children.push(section("upstream dependencies", query_listing));
+        query_children.push(leaf(
+            "an upstream model query has changed",
+            Some(MARKER_FAIL),
+            None,
+        ));
+    } else {
+        query_children.push(leaf(
+            "upstream model queries have not changed",
+            Some(MARKER_SUCCESS),
+            None,
+        ));
+    }
     out.push(section("query analysis", query_children));
 
     // data freshness analysis: the per-upstream OUTDATED freshness subtree + the
@@ -698,11 +789,13 @@ fn line_vocabulary() {} // seam marker: dialect-specific wording lives in this m
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::Producer;
 
     fn tbl(name: &str) -> InputTable {
         InputTable {
             name: name.into(),
             last_modified_epoch: Some(100),
+            ..Default::default()
         }
     }
 
@@ -724,6 +817,8 @@ mod tests {
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             clone_source: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
+            tolerance_ms: 0,
+            build_age_ms: None,
             anchor: None,
         }
     }
@@ -1249,38 +1344,66 @@ mod tests {
 
     /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the
     /// OUTDATED upstream is re-derived from the persisted inputs against the
-    /// matched build.
+    /// matched build. A data-only rebuild lists no upstream queries; a changed
+    /// producer lists each upstream's query verdict (VERIFIED LIVE 2026-11-10).
     #[test]
     fn upstream_outdated_with_anchor_is_shape9() {
-        let mut n = node(
-            DecisionKind::Build,
-            ModelExecutionType::Full as i32,
-            decision::DESC_EXECUTE,
+        let shape9 = |reason, producers: (Producer, Producer)| {
+            let mut n = node(
+                DecisionKind::Build,
+                ModelExecutionType::Full as i32,
+                decision::DESC_EXECUTE,
+            );
+            n.reason = Some(reason);
+            n.input_tables = vec![InputTable {
+                name: "\"DB\".\"S\".\"UP\"".into(),
+                last_modified_epoch: Some(5_000),
+                producer: producers.1,
+            }];
+            let mut recorded = tbl("\"DB\".\"S\".\"UP\"");
+            recorded.producer = producers.0;
+            n.anchor = Some(ExecutionRow {
+                id: 7,
+                target_table: "\"DB\".\"S\".\"T\"".into(),
+                execution_type: ModelExecutionType::Full as i32,
+                last_modified_epoch: Some(1_000),
+                input_tables: vec![recorded],
+                status: "confirmed".into(),
+                ..ExecutionRow::default()
+            });
+            explain_lines(&n)
+        };
+        let texts = |lines: &[qc::ExplainLine]| -> Vec<String> {
+            lines[1].children.iter().map(|l| l.text.clone()).collect()
+        };
+        let data_only = shape9(
+            DecisionReason::UpstreamOutdated,
+            (Producer::Build("a".into()), Producer::Build("a".into())),
         );
-        n.reason = Some(DecisionReason::UpstreamOutdated);
-        n.input_tables = vec![InputTable {
-            name: "\"DB\".\"S\".\"UP\"".into(),
-            last_modified_epoch: Some(5_000),
-        }];
-        n.anchor = Some(ExecutionRow {
-            id: 7,
-            target_table: "\"DB\".\"S\".\"T\"".into(),
-            execution_type: ModelExecutionType::Full as i32,
-            last_modified_epoch: Some(1_000),
-            input_tables: vec![tbl("\"DB\".\"S\".\"UP\"")],
-            status: "confirmed".into(),
-            ..ExecutionRow::default()
-        });
-        let lines = explain_lines(&n);
-        let query: Vec<&str> = lines[1].children.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
-            query,
+            texts(&data_only),
+            [
+                "the model query has not changed",
+                "upstream model queries have not changed"
+            ]
+        );
+        let changed = shape9(
+            DecisionReason::UpstreamQueryChanged,
+            (Producer::Build("a".into()), Producer::NoBuild),
+        );
+        assert_eq!(
+            texts(&changed),
             [
                 "the model query has not changed",
                 "upstream dependencies",
                 "an upstream model query has changed"
             ]
         );
+        assert_eq!(
+            changed[1].children[1].children[0].children[0].badge,
+            Some(BADGE_UPSTREAM_QUERY_CHANGED)
+        );
+        let lines = data_only;
         let up = &lines[2].children[0].children[0];
         assert_eq!(up.badge, Some(BADGE_OUTDATED));
         assert_eq!(

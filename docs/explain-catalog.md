@@ -141,6 +141,14 @@ The `upstream model queries have not changed [SUCCESS]` line carries **no badge*
 ```
 
 **(b) upstream drift / OUTDATED** (fixture #24):
+
+> **Scope (2026-11-09):** every capture of this shape came from an EXTERNAL
+> MODIFICATION of a dbt-managed upstream (`create or replace` outside dbt).
+> The `UPSTREAM_QUERY_CHANGED` / "an upstream model query has changed" [FAIL]
+> lines appeared although the upstream's SQL never changed, so this shape may
+> combine two causes: hosted reading an epoch it never recorded as an
+> upstream query change, and data drift. Do not assume upstream data drift
+> alone renders the query-analysis FAIL; see correctness-handoff.md §C.
 ```
 - table analysis ("«FQN»")
   - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
@@ -213,6 +221,33 @@ Client-side only (resolved in #20): State never tracks these nodes, they never
 hit the Explain RPC, and the server returns **nothing** for them. The client
 prints `UNKNOWN <uid> - dbt State explain details unavailable`. No server work.
 
+## Lag tolerance lines (observed 2026-11-10)
+
+Captured in `lag_tolerance_matrix.jsonl` and `lag_upstream_query_listing.jsonl`;
+rendered by `explain.rs` from the tolerance and build age persisted with the
+decision (migration 0015).
+
+- **SKIP with drifted upstream data** adds, under `data freshness analysis`
+  after the `upstream dependencies` listing:
+  ```
+  - upstream data is outdated                                   [FAIL]
+  - the model was last built «age» ago, within lag tolerance of «T»   [SUCCESS] <WITHIN_TOLERANCE>
+  ```
+  or, when the build is older than the tolerance (an ALL-policy reuse),
+  `… exceeds lag tolerance of «T»` [FAIL] <OUTDATED>. With tolerance 0 only the
+  `upstream data is outdated` line appears. Durations read like "a moment",
+  "7 seconds", "a minute", "10 minutes".
+- **EXECUTE (SHAPE 9)**: the query analysis lists every upstream with
+  `query or upstream query changed` <UPSTREAM_QUERY_CHANGED> or
+  `query or upstream query unchanged` <UPSTREAM_QUERY_UNCHANGED>, then
+  `an upstream model query has changed` [FAIL], only when an upstream's
+  producing build changed (ADR 0007). A data-only rebuild instead shows
+  `upstream model queries have not changed` [SUCCESS]. No tolerance line.
+- The `«gap»` line `updated N seconds after «FQN» last executed` is the
+  upstream's current epoch minus the epoch recorded for it at the build.
+- **Own target modified** (no upstreams): `table exists already`, `the model
+  query has not changed`, `no upstream dependencies`.
+
 ## decision_description (separate output)
 
 Selected independently of the tree (issue #22). The three model-SKIP strings are
@@ -220,9 +255,13 @@ distinct coexisting reasons on one hosted version (confirmed #24):
 
 | # | string | situation |
 |---|---|---|
-| 1 | `model was a no-op because both its query and its upstream data are up to date` | model, no `lag_tolerance`, simple fresh |
-| 2 | `model was a no-op because its query is up to date and its data is within lag tolerance` | model that CARRIES a `lag_tolerance` config, upstream fresh |
-| 3 | `model was a no-op because its query is up to date and at least one upstream dependency is unchanged` | model, target exists, ≥1 genuine upstream unchanged (multi-upstream) |
+| 1 | `model was a no-op because both its query and its upstream data are up to date` | tolerance 0, or every upstream epoch equals its recorded epoch |
+| 2 | `model was a no-op because its query is up to date and its data is within lag tolerance` | otherwise, while build age < tolerance |
+| 3 | `model was a no-op because its query is up to date and at least one upstream dependency is unchanged` | otherwise |
+
+Characterized live 2026-11-10 (`lag_tolerance_matrix.jsonl`, `dsdec_*`, `pao_m`,
+`dsall_m`), replacing the earlier situation guesses. The noun follows the node
+kind ("snapshot was a no-op …").
 
 Other pinned strings (match our engine's current pins; see `decision.rs`):
 - model EXECUTE: `model was executed because either its query didn't match or its upstream data is out of date`
@@ -253,12 +292,8 @@ future-capture fog item on map #19):
 
 - **Node kinds:** seed (`execution_type` 9), snapshot (7), incremental model.
   Their explain trees (esp. whether incremental/snapshot add lines) are unknown.
-- **Badges:** `WITHIN_TOLERANCE` — never produced even for a `lag_tolerance`
-  model (#24: a fresh upstream shows `<FRESH>`, a newer one shows `<OUTDATED>` +
-  EXECUTE; tolerance did not absorb an 11s gap under a 240h setting). May be
-  unreachable on this hosted version; needs a dedicated probe before implementing.
-  `UPSTREAM_QUERY_UNCHANGED` (7) — the corresponding line carries no badge, so
-  this enum may be vestigial. `EB_UNSPECIFIED` (0).
+- **Badges:** `EB_UNSPECIFIED` (0). (`WITHIN_TOLERANCE` (2) and
+  `UPSTREAM_QUERY_UNCHANGED` (7) are now observed; see "Lag tolerance lines".)
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0).
 - **Data test EXECUTE** tree (only SKIP captured).
 - **`Explain.GetUpstreamDependencyChanges`** — CLIENT-UNREACHABLE, not merely

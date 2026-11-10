@@ -5,6 +5,7 @@
 use super::*;
 use crate::query_cache::ModelExecutionType;
 use sqlx::{Postgres, QueryBuilder};
+use std::collections::HashMap;
 
 /// The physical warehouse family a dialect's history is scoped by; matches the
 /// generated `executions.warehouse_family` column.
@@ -76,6 +77,42 @@ impl Store {
             .build_query_as::<ExecutionRow>()
             .fetch_optional(&self.pool)
             .await
+    }
+
+    /// The CURRENT physical state of each named target (see
+    /// [`Store::current_target_state`]), keyed by target. Targets with no
+    /// confirmed build in this scope are absent. Used to resolve which build
+    /// produced each input a submit reads (ADR 0007).
+    pub async fn current_target_states(
+        &self,
+        org_id: &str,
+        targets: &[String],
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<HashMap<String, ExecutionRow>> {
+        if targets.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut query = QueryBuilder::new("SELECT DISTINCT ON (target_table) ");
+        query
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ")
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect))
+            .push(" AND table_namespace IS NOT DISTINCT FROM ")
+            .push_bind(table_namespace)
+            .push(" AND target_table = ANY(")
+            .push_bind(targets)
+            .push(") ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC");
+        let rows = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.target_table.clone(), r))
+            .collect())
     }
 
     /// Data tests have no physical target. Their latest confirmed outcome is

@@ -78,6 +78,8 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         query_dependencies: vec![],
         execution_runtime_ms: Some(42),
         matched_execution_id: None,
+        freshness_tolerance_ms: None,
+        build_age_ms: None,
     }
 }
 

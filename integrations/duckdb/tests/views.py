@@ -14,8 +14,10 @@ root.mkdir(parents=True, exist_ok=True)
 (root / "dbt_project.yml").write_text(
     'name: view_cases\nversion: "1.0"\nconfig-version: 2\nprofile: views\nmodels:\n  view_cases:\n    +materialized: view\n'
 )
+# Lag tolerance 0: these cases test that every evidence change propagates
+# (lag_tolerance.py covers reuse within a tolerance, ADR 0007).
 (root / "profiles.yml").write_text(
-    f"views:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n"
+    f"views:\n  target: dev\n  outputs:\n    dev:\n      type: duckdb\n      path: {root / 'warehouse.duckdb'}\n      schema: dev\n      threads: 4\n      run_cache_enabled: true\n      run_cache_freshness_tolerance: 0s\n"
 )
 (root / "models/direct.sql").write_text(
     'select id, amount from {{ source("raw", "numbers") }}'

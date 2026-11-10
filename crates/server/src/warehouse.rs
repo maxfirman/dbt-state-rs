@@ -13,6 +13,8 @@
 mod duckdb;
 mod snowflake;
 
+use crate::store::ExecutionRow;
+
 /// The strict SQL identity's version tag for warehouses without their own.
 const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-sql-v4";
 
@@ -256,6 +258,18 @@ impl Warehouse {
         }
     }
 
+    /// When a recorded build happened on the server's wall clock (Unix ms),
+    /// for measuring its age against Lag tolerance (ADR 0007). Epochs are
+    /// wall-clock milliseconds on every warehouse except DuckDB, whose
+    /// epochs are evidence ordinals: there, the server's receipt of the
+    /// build's confirmation stands in.
+    pub fn build_time_ms(self, build: &ExecutionRow) -> Option<i64> {
+        match self {
+            Self::DuckDb => build.confirmed_at_ms,
+            _ => build.last_modified_epoch,
+        }
+    }
+
     /// Whether the submit fallback skips its volatile-SQL gate for a
     /// submission that has a copy logic identity. DuckDB computes that
     /// identity only for its checked copy subset. Like every rule, this
@@ -318,6 +332,31 @@ pub enum IncrementalCopyContract<'a> {
 #[cfg(test)]
 mod tests {
     use super::{CopyIdentity, IncrementalCopyContract, NamespaceIdentity, Warehouse};
+    use crate::store::ExecutionRow;
+
+    /// ADR 0007: build age is measured on the server clock. Millisecond
+    /// warehouses use the build's ConfirmExecution epoch; DuckDB's epochs are
+    /// evidence ordinals, so it uses the server's receipt of the confirmation.
+    #[test]
+    fn build_time_is_the_confirm_epoch_except_on_duckdb() {
+        let build = ExecutionRow {
+            last_modified_epoch: Some(7),
+            confirmed_at_ms: Some(1_794_000_000_000),
+            ..ExecutionRow::default()
+        };
+        assert_eq!(
+            Warehouse::from_dialect("snowflake").build_time_ms(&build),
+            Some(7)
+        );
+        assert_eq!(
+            Warehouse::from_dialect("postgres").build_time_ms(&build),
+            Some(7)
+        );
+        assert_eq!(
+            Warehouse::from_dialect("duckdb").build_time_ms(&build),
+            Some(1_794_000_000_000)
+        );
+    }
 
     #[test]
     fn redshift_options_keep_one_physical_family() {

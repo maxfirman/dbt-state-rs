@@ -23,7 +23,7 @@ use crate::query_cache::ModelExecutionType;
 pub use crate::result_copy::ResultCopy;
 use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
-use crate::store::{CopyCandidateQuery, ExecutionRow, Store};
+use crate::store::{CopyCandidateQuery, ExecutionRow, Producer, Store};
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
@@ -130,10 +130,12 @@ impl SubmitOutcome {
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
+/// `now_ms` is the server clock (Unix ms) the build age is measured against.
 pub async fn submit_sql(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
+    now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
     record_node_state(
         store,
@@ -143,7 +145,8 @@ pub async fn submit_sql(
     )
     .await;
 
-    let evidence = ExecutionEvidence::sql_submit(org_id, req);
+    let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
 
     // Precedence: a Result copy is considered only when there is no reuse
@@ -159,19 +162,67 @@ pub async fn submit_sql(
         store,
         &evidence,
         selection,
-        req.target_table.as_deref(),
-        decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
+        Freshness {
+            target_table: req.target_table.as_deref(),
+            stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(
+                req.stale_upstream_policy,
+            ),
+            tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
+            now_ms,
+        },
         &req.labels,
     )
     .await
 }
 
+/// Record, on each input the evidence read, which build in State history
+/// produced it (ADR 0007): the input relation's current physical state in the
+/// same organization, warehouse family and connection namespace, when the read
+/// is not later than that build. The node's own target is not an upstream.
+pub(crate) async fn resolve_producers(
+    store: &Store,
+    evidence: &mut ExecutionEvidence,
+) -> sqlx::Result<()> {
+    let names: Vec<String> = evidence
+        .input_tables
+        .iter()
+        .filter(|t| t.name != evidence.target_table)
+        .map(|t| t.name.clone())
+        .collect();
+    let builds = store
+        .current_target_states(
+            &evidence.org_id,
+            &names,
+            execution::non_blank_namespace(evidence.table_namespace.as_deref()),
+            &evidence.dialect,
+        )
+        .await?;
+    let target = evidence.target_table.clone();
+    for input in evidence
+        .input_tables
+        .iter_mut()
+        .filter(|t| t.name != target)
+    {
+        input.producer = Producer::of(builds.get(&input.name), input.last_modified_epoch);
+    }
+    Ok(())
+}
+
+/// The freshness parameters of one submission, distilled at the boundary.
+struct Freshness<'a> {
+    target_table: Option<&'a str>,
+    stale_upstream_policy: decision::StaleUpstreamPolicy,
+    tolerance_ms: i64,
+    now_ms: i64,
+}
+
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Result copy
-/// fallback and always use the ANY stale-upstream policy.
+/// fallback, no Lag tolerance and always use the ANY stale-upstream policy.
 pub async fn submit_values(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitValuesRequest,
+    now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
     record_node_state(
         store,
@@ -196,8 +247,12 @@ pub async fn submit_values(
         store,
         &evidence,
         selection,
-        Some(req.target_table.as_str()),
-        decision::StaleUpstreamPolicy::Any,
+        Freshness {
+            target_table: Some(req.target_table.as_str()),
+            stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
+            tolerance_ms: 0,
+            now_ms,
+        },
         &req.labels,
     )
     .await
@@ -350,8 +405,7 @@ async fn decide_and_settle(
     store: &Store,
     evidence: &ExecutionEvidence,
     selection: Selection,
-    target_table: Option<&str>,
-    stale_upstream_policy: decision::StaleUpstreamPolicy,
+    freshness: Freshness<'_>,
     labels: &HashMap<String, String>,
 ) -> sqlx::Result<SubmitOutcome> {
     let Selection {
@@ -359,13 +413,23 @@ async fn decide_and_settle(
         target_has_prior_build,
         why_no_candidate,
     } = selection;
+    // Build age on the server clock (ADR 0007): the build's ConfirmExecution
+    // epoch where epochs are wall-clock milliseconds, the server's receipt of
+    // the confirmation where they are not (DuckDB ordinals).
+    let build_age_ms = candidate.as_ref().and_then(|c| {
+        Warehouse::from_dialect(&evidence.dialect)
+            .build_time_ms(c)
+            .map(|built| freshness.now_ms.saturating_sub(built))
+    });
     let ctx = SubmitContext {
         execution_type: evidence.execution_type,
         input_tables: &evidence.input_tables,
-        target_table,
-        stale_upstream_policy,
+        target_table: freshness.target_table,
+        stale_upstream_policy: freshness.stale_upstream_policy,
         target_has_prior_build,
         why_no_candidate,
+        tolerance_ms: freshness.tolerance_ms,
+        build_age_ms,
     };
     let record = DecisionRecord::decided(&ctx, candidate.as_ref());
     tracing::info!(

@@ -31,6 +31,10 @@ in [docs/correctness-handoff.md](../docs/correctness-handoff.md).
 | upstream newer than own build (ANY) | — | execute, `is_stale=false` | ✅ |
 | `require_fresh_data_from: all`, some parents fresh | — | skip, `is_stale=true` (tolerated-stale) | ✅ |
 | `require_fresh_data_from: all`, all parents drifted | — | execute | ✅ |
+| upstream rebuilt by dbt (same logic) or source changed, build younger than `lag_tolerance` | — | skip "within lag tolerance", `is_stale=true` | ✅ |
+| same, build older than `lag_tolerance` | — | execute | ✅ |
+| upstream externally modified after the build the model consumed | — | execute ("an upstream model query has changed"), any policy/tolerance | ✅ |
+| own target modified after its build | — | execute "the table was modified after the cached execution" | ✅ |
 
 ## SQL / config equivalence (match key)
 
@@ -71,8 +75,9 @@ implement the reproducible-majority (skip) behavior.
 
 ## Known gaps / open
 
-- `lag_tolerance` CAN gate a rebuild under ANY policy (observed), but the exact
-  rule is not isolated; the engine keeps the safe own-build anchor. Handoff §C.
+- `lag_tolerance` with a result copy (an equivalent copied with `is_stale=true`
+  after an upstream query change, `lag_upstream_query_listing.jsonl`) and with
+  seed upstreams is uncharacterized. Handoff §C.
 - Non-Snowflake clone templates (BigQuery/Databricks/Spark) are our own, unverified.
 - Volatile-function evaluation and state-backed deferral (`ResolveDeferredRelations`): UNIMPLEMENTED.
 - `unit test` reuse: not characterized (state-explain shows "details unavailable").

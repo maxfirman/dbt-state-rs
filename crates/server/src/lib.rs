@@ -33,6 +33,42 @@ pub struct AppState {
     /// When true, reject requests lacking a non-empty `x-organization-id` header
     /// instead of bucketing them into the default tenant. See `config::Config`.
     pub require_org_header: bool,
+    /// The clock decisions measure build age against (ADR 0007).
+    pub clock: Clock,
+}
+
+/// The server clock. Lag tolerance compares a reuse candidate's build age on
+/// this clock, and ConfirmExecution stamps its receipt with it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Clock {
+    /// The host's wall clock.
+    #[default]
+    System,
+    /// Replaying captured traffic in tests: a request's
+    /// [`REPLAY_NOW_HEADER`] (Unix ms), when present, is the clock. Never
+    /// enable it in a deployment: a client could choose its own build age.
+    Replay,
+}
+
+/// The metadata header [`Clock::Replay`] reads.
+pub const REPLAY_NOW_HEADER: &str = "x-dbt-state-replay-now-ms";
+
+impl Clock {
+    /// Now, in Unix milliseconds, for a request with `metadata`.
+    pub fn now_ms(self, metadata: &tonic::metadata::MetadataMap) -> i64 {
+        let replayed = match self {
+            Self::System => None,
+            Self::Replay => metadata
+                .get(REPLAY_NOW_HEADER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse().ok()),
+        };
+        replayed.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64)
+        })
+    }
 }
 
 impl AppState {
@@ -45,6 +81,7 @@ impl AppState {
         Ok(Self {
             store: Arc::new(Store::new(pool)),
             require_org_header: false,
+            clock: Clock::System,
         })
     }
 
@@ -60,7 +97,14 @@ impl AppState {
         Self {
             store: Arc::new(Store::new(pool)),
             require_org_header: false,
+            clock: Clock::System,
         }
+    }
+
+    /// Use `clock` for build ages and confirmation receipt times.
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Current count of failed best-effort selector-state writes (for metrics

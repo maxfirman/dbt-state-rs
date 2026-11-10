@@ -31,10 +31,22 @@ A difference in a relation's contents or structure between observations;
 it does not imply that every intervening write is known.
 _Avoid_: Write event
 
+**External modification**:
+A change to a dbt-managed relation that was not made by a build recorded in
+State history.
+_Avoid_: Unregistered change, out-of-band write
+
 **Freshness evidence**:
 Information about the timing or ordering of observed changes and known writes
 used to assess whether a recorded result is fresh enough for reuse.
 _Avoid_: Proof of current contents
+
+**Lag tolerance**:
+The time after a workload's last build during which its recorded result may
+still be reused although upstream data has changed since that build. It does
+not cover upstream logic changes or external modifications of an upstream
+result the workload consumed.
+_Avoid_: Freshness tolerance, build_after, freshness_tolerance_seconds
 
 **Hosted conformance**:
 Agreement with the official dbt State service's observable behavior for a
