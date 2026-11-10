@@ -165,6 +165,70 @@ expect_refusal("a statement on a raw schema is refused",
                lambda: ec.check_sql(f"insert into CDO_DEMO_DB.RAW.src_{RUN} select 1", RUN))
 expect_refusal("an unqualified statement is refused",
                lambda: ec.check_sql(f"insert into src_{RUN} select 1", RUN))
+SRC = f"CDO_DEMO_DB.PROD_STATE_DEMO.src_{RUN}"
+expect_refusal("a destination spelled with spaces around the dots is refused (Codex #85)",
+               lambda: ec.check_sql(f"insert into OTHER_DB . PUBLIC . ORDERS select * from {SRC}", RUN))
+expect_refusal("an unqualified destination is refused even with a per-run source",
+               lambda: ec.check_sql(f"insert into ORDERS select * from {SRC}", RUN))
+expect_refusal("a two-part name is refused",
+               lambda: ec.check_sql(f"insert into {SRC} select * from PUBLIC.ORDERS", RUN))
+expect_refusal("a four-part name is refused",
+               lambda: ec.check_sql(f"insert into {SRC}.x select 1", RUN))
+expect_refusal("Jinja braces are refused (the macro would render them)",
+               lambda: ec.check_sql(f"insert into {SRC} select '{{{{ target.name }}}}'", RUN))
+expect_refusal("a second statement is refused",
+               lambda: ec.check_sql(f"insert into {SRC} select 1; delete from ORDERS", RUN))
+expect_refusal("a comment is refused",
+               lambda: ec.check_sql(f"insert into {SRC} select 1 -- x", RUN))
+expect_refusal("a case-mismatched quoted database is refused",
+               lambda: ec.check_sql(f'insert into "cdo_demo_db"."PROD_STATE_DEMO"."src_{RUN}" select 1', RUN))
+expect_refusal("an IDENTIFIER() reference is refused",
+               lambda: ec.check_sql(f"insert into {SRC} select * from identifier('OTHER_DB.S.T')", RUN))
+expect_refusal("an unsupported statement form is refused",
+               lambda: ec.check_sql(f"merge into {SRC} using {SRC} s on true when matched then delete", RUN))
+expect_refusal("an unterminated string is refused",
+               lambda: ec.check_sql(f"insert into {SRC} select 'x", RUN))
+for stmt in (
+    f"create or replace table {SRC} as select 1 as id, 'src0' as v",
+    f"insert into {SRC} select 2 as id, 'a.b.c' as v",
+    f"insert into {SRC} (id, v) values (1, 'x')",
+    f'insert into "CDO_DEMO_DB"."PROD_STATE_DEMO"."src_{RUN}" select 1.5',
+    f"insert into CDO_DEMO_DB . PROD_STATE_DEMO . src_{RUN} select 1",
+    f"update {SRC} set v = 'y' where id = 1",
+    f"delete from {SRC} where id = 2",
+    f"truncate table {SRC}",
+    f"drop table if exists {SRC}",
+):
+    expect_accept(f"accepted: {stmt[:48]}…", lambda: ec.check_sql(stmt, RUN))
+
+# --- profiles dir -----------------------------------------------------------------
+expect_refusal("a --profiles file not named profiles.yml is refused (dbt could not load it)",
+               lambda: ec.profiles_dir("/tmp/x/other.yml"))
+if ec.profiles_dir("/tmp/x/profiles.yml") != "/tmp/x":
+    fail("the profiles dir is the validated file's directory", ec.profiles_dir("/tmp/x/profiles.yml"))
+ok("the profiles dir is the validated file's directory")
+
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(ec.bind(TOY, RUN), 1, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    os.makedirs(os.path.join(run.project, "macros"))
+    seen = []
+    real_run = ec.subprocess.run
+
+    class _Done:
+        returncode = 0
+
+    ec.subprocess.run = lambda cmd, **kw: seen.append(cmd) or _Done()
+    try:
+        for k, step in enumerate(run.bound.steps):
+            if not isinstance(step, (ec.Write, ec.Remove)):
+                run.run_step(k, step)
+    finally:
+        ec.subprocess.run = real_run
+    if not seen or any(c[c.index("--profiles-dir") + 1] != "/validated/dir"
+                       if "--profiles-dir" in c else True for c in seen):
+        fail("every dbt invocation uses the validated profiles dir (Codex #85)", seen)
+    ok(f"every dbt invocation uses the validated profiles dir ({len(seen)} invocations)")
 
 
 # --- oracle -------------------------------------------------------------------

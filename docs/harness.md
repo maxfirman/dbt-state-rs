@@ -85,8 +85,11 @@ copying shell scripts. Each scenario is a Python module in
 `experiments/capture_scenarios/`. The driver starts its own recording proxy
 and refuses to run unless every target the scenario uses is
 a Snowflake output of the `snowflake` profile whose database is `CDO_DEMO_DB`,
-`~/.dbt/dbt_cloud.yml` exists, and the chosen port is free. It prints the dbt
-invocation count before it starts.
+`~/.dbt/dbt_cloud.yml` exists, and the chosen port is free. The profile is
+read from `--profiles` (default `~/.dbt/profiles.yml`, and the file must be
+named `profiles.yml`). Every dbt invocation gets that file's directory as
+`--profiles-dir`, so dbt uses the checked file and not one found in the
+project copy. It prints the dbt invocation count before it starts.
 
 ```bash
 cargo build -p dbt-state-harness --bin record-proxy
@@ -158,7 +161,11 @@ SCENARIO = Scenario(
 - `Sql(*statements, target="prod_demo")`: one `dbt run-operation` of a
   temporary macro that refuses a target database other than `CDO_DEMO_DB`.
   Every statement must name only three-part per-run objects in
-  `CDO_DEMO_DB.PROD_STATE_DEMO` or `CDO_DEMO_DB.DEV_CLONE_DEMO`.
+  `CDO_DEMO_DB.PROD_STATE_DEMO` or `CDO_DEMO_DB.DEV_CLONE_DEMO`. A statement
+  must be `create [or replace] table`, `insert into`, `update`, `delete from`,
+  `truncate table` or `drop table [if exists]` followed by the per-run
+  relation it writes. Unqualified names are allowed; two- or four-part names,
+  `IDENTIFIER(...)`, Jinja braces, comments and `;` are refused.
 - `Explain(select, intent, node=None, decision=None, execution_type=None,
   history=True, target="prod_demo")`: one `dbt state explain --verbose` per
   node. Set `node` to the `dbt_node_name` when the selector is not the name

@@ -269,6 +269,19 @@ def check_profile(path, profile, targets):
             raise CaptureError(f"target {t!r} database is {db!r}, not {DEMO_DB}")
 
 
+def profiles_dir(path):
+    """The directory every dbt invocation loads profiles from: the validated file's own.
+
+    dbt reads `profiles.yml` from `--profiles-dir`, so the validated file must
+    have that name; otherwise dbt would discover another file (the project
+    root's first, then `~/.dbt/`).
+    """
+    path = os.path.abspath(path)
+    if os.path.basename(path) != "profiles.yml":
+        raise CaptureError(f"--profiles must name a file called profiles.yml, not {path}")
+    return os.path.dirname(path)
+
+
 def check_port_free(port):
     with socket.socket() as s:
         s.settimeout(1)
@@ -276,24 +289,95 @@ def check_port_free(port):
             raise CaptureError(f"127.0.0.1:{port} is already in use; pick a port of your own")
 
 
-_PART = r'(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*)'
-_FQN = re.compile(rf"({_PART})\.({_PART})\.({_PART})")
-_FORBIDDEN = re.compile(r"\b(database|schema|grant|revoke|role|user|warehouse|account)\b", re.I)
+_FORBIDDEN = re.compile(
+    r"\b(database|schema|grant|revoke|role|user|warehouse|account|call|execute|use|alter|identifier)\b",
+    re.I)
+# Lexer: string literals, quoted identifiers, bare identifiers, numbers, then any one character.
+_TOKEN = re.compile(r"""\s+|'(?:[^'\\]|\\.)*'|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*|\d+(?:\.\d+)?|.""", re.S)
+# Statement heads; each is followed by the one relation the statement writes.
+_HEADS = (("create", "or", "replace", "table"), ("create", "table"), ("insert", "into"),
+          ("delete", "from"), ("update",), ("truncate", "table"), ("drop", "table", "if", "exists"),
+          ("drop", "table"))
+
+
+def _is_ident(tok):
+    return tok[0] == '"' or tok[0].isalpha() or tok[0] == "_"
+
+
+def _relations(statement):
+    """Lex `statement` into tokens and dotted name chains; refuse what the check cannot see through."""
+    if "{" in statement or "}" in statement:
+        # The run-operation macro embeds statements verbatim, so Jinja would render them, even
+        # inside a string literal.
+        raise CaptureError(f"statement contains Jinja braces: {statement!r}")
+    toks, code = [], []  # code: the statement with string literals blanked
+    for m in _TOKEN.finditer(statement):
+        t = m.group()
+        if t == "'":
+            raise CaptureError(f"statement has an unterminated string: {statement!r}")
+        code.append("''" if t[0] == "'" else t)
+        if not t.isspace():
+            toks.append(t)
+    code = "".join(code)
+    for bad in (";", "--", "/*", "//", "$$"):
+        if bad in code:
+            raise CaptureError(f"statement contains {bad!r} (a second statement or a comment): "
+                               f"{statement!r}")
+    # Join `ident . ident . ident` (whitespace allowed around the dots) into one chain.
+    chains, i = [], 0
+    while i < len(toks):
+        if toks[i] == ".":
+            raise CaptureError(f"statement has a dot outside a name: {statement!r}")
+        if not _is_ident(toks[i]):
+            i += 1
+            continue
+        parts, j = [toks[i]], i + 1
+        while j + 1 < len(toks) and toks[j] == "." and _is_ident(toks[j + 1]):
+            parts.append(toks[j + 1])
+            j += 2
+        if j < len(toks) and toks[j] == ".":
+            raise CaptureError(f"statement has a dot outside a name: {statement!r}")
+        chains.append((i, parts))
+        i = j
+    return toks, chains
+
+
+def _demo_object(parts, run):
+    """A three-part per-run object in a demo schema. Quoted parts are case-sensitive in Snowflake."""
+    if len(parts) != 3:
+        return False
+    db, schema, obj = (p[1:-1] if p[0] == '"' else p.upper() for p in parts)
+    return db == DEMO_DB and schema in DEMO_SCHEMAS and run.upper() in obj.upper()
 
 
 def check_sql(statement, run):
-    """A statement may only touch three-part per-run objects in the CDO_DEMO_DB demo schemas."""
+    """A statement may only touch three-part per-run objects in the CDO_DEMO_DB demo schemas.
+
+    It must be one of the `_HEADS` forms followed by the per-run relation it
+    writes, and every other dotted name in it must also be a per-run demo
+    object. Unqualified names (columns, functions, reads of current-schema
+    tables) are allowed; Jinja, comments, multiple statements and two- or
+    four-part names are refused.
+    """
     if run.lower() not in statement.lower():
         raise CaptureError(f"statement does not name a per-run object: {statement!r}")
     if _FORBIDDEN.search(statement):
         raise CaptureError(f"statement uses a forbidden keyword: {statement!r}")
-    fqns = _FQN.findall(statement)
-    if not fqns:
-        raise CaptureError(f"statement has no fully qualified object: {statement!r}")
-    for db, schema, obj in fqns:
-        db, schema, obj = (p.strip('"').upper() for p in (db, schema, obj))
-        if db != DEMO_DB or schema not in DEMO_SCHEMAS or run.upper() not in obj:
-            raise CaptureError(f"statement touches {db}.{schema}.{obj}, outside the run's demo objects")
+    toks, chains = _relations(statement)
+    for _, parts in chains:
+        if len(parts) > 1 and not _demo_object(parts, run):
+            name = ".".join(parts)
+            raise CaptureError(f"statement touches {name}, outside the run's demo objects")
+    lower = [t.lower() for t in toks]
+    for head in _HEADS:
+        if tuple(lower[:len(head)]) == head:
+            dest = next((p for i, p in chains if i == len(head)), None)
+            if dest is None or not _demo_object(dest, run):
+                raise CaptureError(f"statement does not write a three-part per-run demo object: "
+                                   f"{statement!r}")
+            return
+    raise CaptureError(f"statement form is not one of create table / insert / update / delete / "
+                       f"truncate / drop table: {statement!r}")
 
 
 # --- oracle ----------------------------------------------------------------------------
@@ -417,9 +501,10 @@ def trim(rows):
 
 
 class Run:
-    def __init__(self, bound, port, work, shared, keep_project):
+    def __init__(self, bound, port, work, shared, keep_project, profiles_dir):
         self.bound, self.port, self.work = bound, port, work
         self.shared, self.keep_project = shared, keep_project
+        self.profiles_dir = profiles_dir
         self.project = os.path.join(work, "jaffle-shop")
         self.golden_dir = os.path.join(work, "golden")
         self.logs = os.path.join(work, "dbt")
@@ -486,7 +571,8 @@ class Run:
     # steps
     def dbt(self, k, label, args):
         log = os.path.join(self.logs, f"{k:02d}_{label}.log")
-        cmd = ["dbt", *args, "--profile", PROFILE, "--skip-semantic-manifest-validation"]
+        cmd = ["dbt", *args, "--profiles-dir", self.profiles_dir, "--profile", PROFILE,
+               "--skip-semantic-manifest-validation"]
         print(f"  $ {' '.join(cmd)}")
         with open(log, "w") as fh:
             rc = subprocess.run(cmd, cwd=self.project, env=self.client_env(),
@@ -603,6 +689,7 @@ def main(argv=None):
           f"{p.explains} state explain); targets: {', '.join(sorted(p.targets))}")
 
     try:
+        profiles = profiles_dir(a.profiles)
         check_profile(a.profiles, PROFILE, p.targets)
         if not os.path.exists(os.path.expanduser("~/.dbt/dbt_cloud.yml")):
             raise CaptureError("~/.dbt/dbt_cloud.yml is missing (the proxy needs the dbt Cloud credential)")
@@ -625,7 +712,7 @@ def main(argv=None):
         return 2
     print(f"work dir {work}")
     before = shared_status(a.jaffle_shop)
-    run = Run(bound, a.port, work, a.jaffle_shop, a.keep_project)
+    run = Run(bound, a.port, work, a.jaffle_shop, a.keep_project, profiles)
     os.makedirs(run.logs)
     marks, failure = [], None
     try:
