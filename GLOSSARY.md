@@ -19,6 +19,12 @@ _Avoid_: Environment
 The physical relation a workload's result is written to.
 _Avoid_: Target, own target, target table
 
+**Node kind**:
+The category of dbt node a workload is, such as model, view, seed, snapshot,
+incremental model or data test. Each incremental strategy is a distinct node
+kind.
+_Avoid_: Execution type (except when naming the wire field), materialization
+
 **Result copy**:
 A new target relation populated from an eligible existing result rather than
 by executing the model's transformation again; required relation properties
@@ -90,6 +96,12 @@ The one cause a decision records for building, reusing or copying a workload's
 result, such as a first build, no reuse candidate, an outdated upstream or a
 result copy.
 _Avoid_: Decision description, rejection reason, rationale
+
+**Explain tree**:
+The structured explanation of one recorded decision that the State service
+returns for `dbt state explain`: nested lines, each with an optional marker
+and badge.
+_Avoid_: Explain messages, decision description
 
 **Reference execution**:
 An independent execution of a test workload used to establish its expected
