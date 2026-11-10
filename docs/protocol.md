@@ -140,7 +140,10 @@ wire and in captured JSON.
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
   `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
   sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
-  `--full-refresh`), where this server sends 6 / 6 (#83).
+  `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
+  when it rebuilds a custom materialization (`DBT_CUSTOM`) that has an
+  equivalent under another name, where this server answers a Result copy
+  (`explain_custom_copy.jsonl` entry 9, #86).
 
 ### Decision descriptions
 
@@ -149,6 +152,7 @@ submits (`skip_description`, `execute_description`, `RESULT_COPY_DESCRIPTION`
 and `COPY_CHAIN_LIMIT_DESCRIPTION` in `crates/server/src/decision.rs`).
 `{noun}` is `snapshot` for `SNAPSHOT`, `data test` for `DBT_DATA_TEST`, `seed`
 for `VALUES` and `model` for every other execution type (`node_noun`).
+Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 
 | Decision | `decision_description` | When |
 |---|---|---|
