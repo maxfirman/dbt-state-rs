@@ -109,10 +109,13 @@ pub(crate) fn for_model(
         return Ok(Selection::FIRST_BUILD);
     };
     // Same identity, other execution type: a distinct reason so Explain can
-    // render nothing for it (#40 divergence rule, #83).
+    // render nothing for it (#40 divergence rule, #83). Likewise a
+    // RegisterClone copy this submit cannot adopt (#93).
     let unidentified =
         if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
             NoCandidate::ExecutionTypeChanged
+        } else if is_copy_registration(&current) && !adoptable(req, evidence, &current) {
+            NoCandidate::CopyLogicMismatch
         } else {
             NoCandidate::IdentityMismatch
         };
@@ -267,10 +270,7 @@ pub(crate) fn older_seed_matches(
 /// The single rule for both the decision (here) and its explanation
 /// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
 pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if anchor.clone_source_table.is_some()
-        && anchor.node_sql_hash.is_none()
-        && anchor.input_tables.is_empty()
-    {
+    if is_copy_registration(anchor) && anchor.input_tables.is_empty() {
         let built = anchor.last_modified_epoch;
         anchor.input_tables = current
             .iter()
@@ -284,6 +284,13 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
             })
             .collect();
     }
+}
+
+/// A client-requested copy (RegisterClone): clone-origin with no rendered
+/// identity of its own. A Result copy made on submit records the submit's
+/// identity and is not one.
+fn is_copy_registration(row: &ExecutionRow) -> bool {
+    row.clone_source_table.is_some() && row.node_sql_hash.is_none()
 }
 
 /// Rendered identity, or (only in `compare_unrendered_code` mode, when the

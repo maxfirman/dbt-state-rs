@@ -136,7 +136,10 @@ wire and in captured JSON.
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
   `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
   sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
-  `--full-refresh`), where this server sends 6 / 6 (#83).
+  `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
+  when a view or snapshot has an equivalent under another name that it will
+  not copy on submit because the execution type is not FULL, where this
+  server sends 6 / 6 (#92).
 
 ### Decision descriptions
 
@@ -419,6 +422,21 @@ Lifecycle:
   epoch: an upstream newer than the copy drifts, one older than the copy but
   newer than the source's build does not (`clone_chain_source_age.jsonl`,
   `clone_chain_upstream_drift.jsonl`).
+- A later submit that cannot adopt the copy (its schema-abstracted logic
+  differs from the inherited one, or none was inherited) rebuilds with the
+  same wire answer as an identity mismatch (6 / 6) and the Decision reason
+  `no_reuse_candidate.copy_logic_mismatch`, which renders no Explain tree.
+  Hosted SKIPs such a submit when it has the source build's SQL text and only
+  the schemas differ (#93, `explain_snapshot_register_clone.jsonl` entry 7).
+
+Client 2.0.11 (VERIFIED LIVE 2026-11-10, `explain_snapshot_register_clone.jsonl`):
+the pre-step needs a deferred node whose relation differs from the dev one,
+which dbt State auto-deferral (`defer_to_target`) provides. A snapshot with
+`target_schema=target.schema` keeps the dev schema in its deferred node, so
+the client sends no RegisterClone for it. Hosted answered a snapshot
+(execution type 7) copy with `ready_to_clone`, 5 / -, and an empty
+`execution_decision_id`, so a RegisterClone copy has no Explain message. This
+server mints an id there; the replay compares responses without ids.
 
 ## Custom `Struct` type
 

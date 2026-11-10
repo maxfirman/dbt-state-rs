@@ -37,6 +37,15 @@ Source fixtures (`golden/fixtures/`):
   [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
   first-build trees there are keyed divergences: the server decides
   differently and renders nothing.
+- `explain_copy_probes.jsonl` (client 2.0.11): a seed, a snapshot and a view
+  built in `prod_demo`, then in `dev_clone` (one copy attempt per path, #76,
+  #78). Hosted copies the seed (VALUES CLONE tree, fenced → #91) and builds
+  the view and the snapshot. Captured by `experiments/explain_capture.py
+  copy_probes`.
+- `explain_snapshot_register_clone.jsonl` (client 2.0.11): a snapshot copied
+  into `dev_clone` by the client's RegisterClone pre-step, then its post-copy
+  SKIP (a keyed divergence, #93). Captured by `experiments/explain_capture.py
+  snapshot_register_clone`.
 
 ## How to read this catalog
 
@@ -86,20 +95,21 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. The evidence column gives the census tree counts by origin
 (see [Explain tree census](#explain-tree-census)). The real-client trees in the
 tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-9 in `explain_snapshot_history.jsonl`, which come from 2.0.11.
+13 in `explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl` and
+`explain_snapshot_register_clone.jsonl`, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ | characterized (live) | S E C | SKIP 19 (4 client, 15 crafted), EXECUTE 35 (4 client, 31 crafted), CLONE 8 (1 client, 7 crafted) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 19 (4 client, 15 crafted), EXECUTE 35 (4 client, 31 crafted), CLONE 8 (1 client, 7 crafted) |
 | 2 | APPEND (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 3 | MERGE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 4 | INSERT_OVERWRITE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 5 | DELETE_INSERT (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 6 | MICROBATCH (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
-| 7 | SNAPSHOT | characterized (live) | characterized (live) | pending → #76 | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_snapshot_history.jsonl`) |
+| 7 | SNAPSHOT | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 4, EXECUTE 4, all client 2.0.11 (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | pending → #75 | out of scope → #68 | S | SKIP 1 (client) |
-| 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | pending → #76 | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`) |
-| 10 | VIEW | characterized (live) | characterized (live)³ | pending → #78⁴ | S E C | SKIP 1 (client 2.0.6); EXECUTE 1 (client 2.0.11); CLONE 0 |
+| 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
+| 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 1 (client 2.0.6); EXECUTE 2 (client 2.0.11); CLONE 0 |
 | 11 | DBT_CUSTOM | pending → #74 | pending → #74 | pending → #74 | — | none |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
@@ -118,12 +128,33 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
    generic replay (#78 item 2). The 3 VIEW EXECUTE trees in the removed
    `explain_snowflake_happy.jsonl` (client 2.0.6, commit `8dff472`) had the
    same shape.
-4. The cell has been open since `bc8d80e`, together with FULL × CLONE, but no
-   capture of a view copy exists (#78 item 1). The live attempt is part of
-   #76.
+4. Closed by #76 (#78 item 1), live negative 2026-11-10
+   (`explain_copy_probes.jsonl` entry 13). A view built in `prod_demo`, then
+   in `dev_clone` with its target missing, is answered `ready_to_execute`
+   with codes 1 / 3 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL): hosted
+   finds the equivalent but does not copy a non-FULL node on submit. The
+   client sends RegisterClone only for incrementals and snapshots
+   (`run_cache_dev_clone.rs::dev_clone_candidate_for_node`). The cell had been
+   open since `bc8d80e` without a capture; it is now fenced. Our codes there
+   are 6 / 6 (divergence → #92).
 5. The client's `execution_type_from_input` always yields a concrete kind
    ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
    these values fenced regardless.
+6. Except a rebuild over a RegisterClone copy that the submit cannot adopt
+   (`no_reuse_candidate.copy_logic_mismatch`): hosted reused such a copy
+   (`explain_snapshot_register_clone.jsonl` entry 7), so the server renders
+   nothing for it (decision divergence → #93).
+7. Live, 2026-11-10 (#76). On submit, hosted answers a dev snapshot whose
+   equivalent exists in prod with 1 / 3, as for a view
+   (`explain_copy_probes.jsonl` entry 14). The copy through the client's
+   RegisterClone pre-step is granted (`explain_snapshot_register_clone.jsonl`
+   entry 5), but its response carries an empty `execution_decision_id`, so
+   no Explain message exists for it. The decision that follows is the
+   post-copy submit, a SKIP.
+8. Hosted copies a seed on submit (`explain_copy_probes.jsonl` entry 12,
+   `an equivalent seed exists under another name so we cloned that one`).
+   This server never copies seeds, so the decision diverges (#91) and the
+   cell stays fenced until #91 lands. The captured tree is in [SEED](#seed).
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -131,29 +162,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 77 trees in the
+Line counts from the [census](#explain-tree-census) over the 81 trees in the
 tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(582 lines without a marker, 620 without a badge). Only an explicit `0` is
+(593 lines without a marker, 638 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 198 lines |
-| ExplainMarker | FAIL (2) | ✅ 94 lines |
-| ExplainMarker | INFO (3) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 66 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 204 lines |
+| ExplainMarker | FAIL (2) | ✅ 99 lines |
+| ExplainMarker | INFO (3) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 67 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 3 lines (SHAPE 7, `explain_snapshot_history.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 64 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 66 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 24 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 29 lines |
+| ExplainBadge | FRESH (1) | ✅ 30 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 44 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 14 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 81 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 77 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 9 from client 2.0.11 and 59 for crafted
+1. The 81 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 13 from client 2.0.11 and 59 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -175,20 +206,21 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (77 trees, none empty, no findings):
+Tracked fixtures, 2026-11-10 (81 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
 | FULL | SKIP | 19 | 15 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
 | FULL | EXECUTE | 35 | 31 crafted, 2 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
-| SNAPSHOT | SKIP | 3 | client 2.0.11 |
-| SNAPSHOT | EXECUTE | 3 | client 2.0.11 |
+| SNAPSHOT | SKIP | 4 | client 2.0.11 |
+| SNAPSHOT | EXECUTE | 4 | client 2.0.11 |
 | DBT_DATA_TEST | SKIP | 1 | client 2.0.6 |
 | VALUES | SKIP | 1 | crafted |
 | VALUES | EXECUTE | 5 | crafted |
+| VALUES | CLONE | 1 | client 2.0.11 (fenced, #91) |
 | VIEW | SKIP | 1 | client 2.0.6 |
-| VIEW | EXECUTE | 1 | client 2.0.11 |
+| VIEW | EXECUTE | 2 | client 2.0.11 |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -334,6 +366,8 @@ and `an upstream model query has changed` keep `model`.
 | upstream query change (`s72su`) | EXECUTE | SHAPE 9 with the per-upstream query listing |
 | its own logic changed (`s72sl`) | EXECUTE | SHAPE 7 |
 | run under `--full-refresh` (`s72sf`) | EXECUTE | none (see below) |
+| `dev_clone` build, target missing, prod equivalent (`c76snap`, `explain_copy_probes.jsonl`) | EXECUTE (codes 1 / 3 hosted, 6 / 6 here, #92) | [First build](#first-build) |
+| post-copy submit after the RegisterClone pre-step (`c76rsnap`, `explain_snapshot_register_clone.jsonl`) | SKIP hosted, EXECUTE here | hosted: SKIP, `<FRESH>` listing with `no updates since "«dev FQN»" last executed`, `upstream data is up to date`; here: none (see below) |
 
 The client's default Lag tolerance for these snapshots was 45 minutes, so the
 source drift was a reuse within tolerance. A snapshot SKIP's
@@ -352,7 +386,22 @@ Every captured snapshot has an upstream. A snapshot without one is
 unobserved; it renders like a view (`upstream model queries have not changed`
 and `upstream data is up to date`, `explain.rs::has_upstream_query_line`).
 
-Snapshot CLONE is pending → #76.
+**Copies (#76).** Snapshot CLONE is unreachable on 2.0.11. On submit, hosted
+answers a dev snapshot whose prod equivalent exists with 1 / 3
+(TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL) and the first-build tree.
+Under auto-deferral (`defer_to_target`) the client's dev-clone pre-step
+copies a snapshot through RegisterClone (execution type 7, `state.pre_clone`
+default IfTableMissing). Hosted grants it (5 / unset, empty
+`execution_decision_id`, so it has no Explain message). The pre-step needs a
+deferred relation that differs from the dev one: a snapshot with
+`target_schema=target.schema` keeps the dev schema in its deferred node, and
+the client logs "source and target relations are identical" and sends no
+RegisterClone (`c76snap`). After the copy, hosted SKIPs the snapshot's own
+submit, reporting the prod build's `execution_runtime_ms`. This server cannot
+adopt the copy's inherited schema-abstracted logic there (the upstream is in
+the prod build's default schema but not in the dev submit's). It rebuilds
+with the Decision reason `no_reuse_candidate.copy_logic_mismatch` and renders
+no tree (decision divergence → #93).
 
 ## DATA TEST
 
@@ -445,6 +494,21 @@ The engine's reload of a seed whose table was modified externally is a known
 divergence (hosted skips it; see [correctness-handoff.md](correctness-handoff.md)).
 Its status is local-only, empty tree.
 
+**Copy (CLONE), hosted only** (`explain_copy_probes.jsonl` entry 18, client
+2.0.11). A seed loaded in `prod_demo` and then built in `dev_clone` with the
+same values is copied by hosted on submit (`an equivalent seed exists under
+another name so we cloned that one`):
+```
+- table analysis ("«FQN»")
+  - the seed table does not exist                     [FAIL]
+  - the seed table could be cloned from "«FQN»"       [SUCCESS]   (copy source)
+- query analysis (vs clone)
+  - the seed data has not changed                     [SUCCESS] <NODE_QUERY_UNCHANGED>
+```
+This server never copies seeds; it loads the seed and renders the first-load
+tree for that decision. VALUES × CLONE stays fenced until the decision lands
+(#91).
+
 ## UNKNOWN (untracked kinds, e.g. unit tests)
 
 Client-side only: State never tracks these nodes, they never reach the Explain
@@ -489,8 +553,9 @@ decision's copy-adoption input rule, `reuse_candidate::adopt_current_inputs`).
 
 Not present in any capture; render nothing rather than invent:
 
-- **Node kinds:** incremental models, snapshot CLONE (#76), seed CLONE, view
-  CLONE (fence open without a capture, #78).
+- **Node kinds:** incremental models (#73). Seed CLONE is captured but fenced
+  until its decision lands (#91); snapshot and view CLONE are unreachable on
+  2.0.11 (#76).
 - **Badges:** `EB_UNSPECIFIED` (0); census counts in
   [Observed vocabulary](#observed-vocabulary).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0); same.
@@ -525,6 +590,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream; `upstream_query_changed` with an anchor | SHAPE 9 |
 | EXECUTE | `no_reuse_candidate.own_target_modified` with an anchor or no genuine upstreams | SKIP-shaped tree |
 | EXECUTE | `no_reuse_candidate.execution_type_changed` | empty tree (decision divergence, #83) |
+| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` | empty tree (decision divergence, #93) |
 | EXECUTE | `no_reuse_candidate.own_target_changed_or_missing`; `no_reuse_candidate.own_target_modified` otherwise; `no_build_anchor` | empty tree, local-only ([below](#ambiguous-rebuild-reasons)) |
 | EXECUTE | any other reason when the decision-time inputs lack the Target relation | first build (`lag_copy_candidates` `dt_m`) |
 | EXECUTE | `upstream_outdated` / `upstream_query_changed` otherwise; `no_reuse_candidate.identity_mismatch`, `.failed_reuse_qualification`, `.incomplete_cached_test_results`; `dependency_set_changed`; `copy_chain_limit` | SHAPE 7 |

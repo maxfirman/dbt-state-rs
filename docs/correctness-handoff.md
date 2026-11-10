@@ -71,7 +71,8 @@ server keeps the conservative behavior described.
   predicate and epochs at once; the local server does not. The cause is not
   isolated
   (`clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`,
-  fixture `clone_chain_source_age.jsonl`).
+  fixture `clone_chain_source_age.jsonl`). #93 is a cleaner post-copy SKIP
+  this server rebuilds (same SQL text, only the schemas differ).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
   as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
@@ -113,10 +114,11 @@ server keeps the conservative behavior described.
   data tests as Lag tolerance subjects are uncharacterized.
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
-- **Explain evidence gaps (#78).** The VIEW × CLONE Explain cell is open
-  (`explain.rs::is_characterized`) but no view copy was ever captured; the
-  live attempt is part of #76. The SHAPE 7 query-changed tree is replayed from
-  `explain_snapshot_history.jsonl` (FULL, VIEW and snapshot, client 2.0.11).
+- **Explain evidence gaps (#78).** Resolved by #76: VIEW × CLONE is fenced as
+  unreachable on 2.0.11 (hosted answers a non-FULL submit copy candidate with
+  1 / 3, `explain_copy_probes.jsonl` entry 13). The SHAPE 7 query-changed
+  tree is replayed from `explain_snapshot_history.jsonl` (FULL, VIEW and
+  snapshot, client 2.0.11).
 - **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
   Explain anchor, so its per-upstream listing renders `<FRESH>` and no
   summary line. That matches every capture so far, where the upstream epoch
@@ -161,6 +163,26 @@ replay fails when an entry becomes unused or resolved
   `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
   Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
   and 60 (`empty_tree`).
+- **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
+  - Seed copy (#91). Hosted copies a seed loaded with the same values under
+    another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
+    exists under another name so we cloned that one`); the server never copies
+    seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
+    (submit) and 18 (Explain: the server explains the load it decided).
+  - Non-FULL copy candidate (#92). For a view or a snapshot whose equivalent
+    exists under another name, hosted builds with codes 1 / 3
+    (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`); the server sends
+    6 / 6. The class, description and Explain tree match. Keyed field-scoped
+    gaps: `explain_copy_probes.jsonl` entries 13 and 14.
+  - Post-RegisterClone submit (#93). After the client's dev-clone pre-step
+    copies a snapshot, hosted SKIPs the snapshot's own submit, which has the
+    prod build's SQL text. The server cannot adopt the copy's inherited
+    schema-abstracted logic (the upstream is in the prod build's default
+    schema but not in the dev submit's). It rebuilds with codes 6 / 6, records
+    `no_reuse_candidate.copy_logic_mismatch`, and renders no Explain tree.
+    Keyed gaps: `explain_snapshot_register_clone.jsonl` entries 7 and 8
+    (`empty_tree`). The open "RegisterClone source-age chain, entry 4"
+    question above may have the same cause.
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).

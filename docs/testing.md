@@ -150,9 +150,13 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   that workload. Otherwise it depends on unknown hosted history and is counted
   as an unknown baseline, never hydrated with guessed epochs.
 - A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
-  correlated. `RegisterClone` and `ResolveDeferredRelations` entries are
-  counted but not driven here; `clone.rs`, `clone_lifecycle.rs`,
-  `clone_chain_provenance.rs` and `deferral.rs` cover them.
+  correlated. A `RegisterClone` is driven and its full response compared
+  after removing opaque IDs (both the top-level copy and the deprecated
+  `ready_to_clone_v1` mirror). A granted copy's confirm is correlated, so the
+  copy is State history for the next submit, only when the copy's source was
+  confirmed in the same fixture; otherwise the confirm is an unknown baseline.
+  `ResolveDeferredRelations` entries are counted but not driven here;
+  `deferral.rs` covers them.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too.
 
