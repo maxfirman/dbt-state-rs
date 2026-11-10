@@ -33,6 +33,12 @@ Source fixtures (`golden/fixtures/`):
   change; FULL and VIEW logic-change rebuilds (SHAPE 7); a snapshot under
   `--full-refresh`. Captured by `experiments/explain_capture.py
   snapshot_explain`.
+- `explain_incremental_insert_overwrite.jsonl`,
+  `explain_incremental_delete_insert.jsonl`,
+  `explain_incremental_microbatch.jsonl` (client 2.0.11): per-strategy
+  [INCREMENTAL](#incremental) trees, captured by `experiments/explain_capture.py
+  incremental_insert_overwrite`, `incremental_delete_insert` and
+  `incremental_microbatch`.
 - `explain_ambiguous_rebuilds.jsonl`: crafted probes d1–d4 for the
   [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
   first-build trees there are keyed divergences: the server decides
@@ -86,16 +92,17 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. The evidence column gives the census tree counts by origin
 (see [Explain tree census](#explain-tree-census)). The real-client trees in the
 tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-9 in `explain_snapshot_history.jsonl`, which come from 2.0.11.
+9 in `explain_snapshot_history.jsonl` and the 20 in the three
+`explain_incremental_*.jsonl` fixtures, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
 |---|---|---|---|---|---|---|
 | 1 | FULL (table / model) | characterized (live) | characterized (live)¹ | characterized (live) | S E C | SKIP 19 (4 client, 15 crafted), EXECUTE 35 (4 client, 31 crafted), CLONE 8 (1 client, 7 crafted) |
 | 2 | APPEND (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
 | 3 | MERGE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
-| 4 | INSERT_OVERWRITE (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
-| 5 | DELETE_INSERT (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
-| 6 | MICROBATCH (incremental) | pending → #73 | pending → #73 | pending → #73 | — | none |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | pending → #73⁷ | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_incremental_insert_overwrite.jsonl`) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | pending → #73⁷ | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_incremental_delete_insert.jsonl`) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | pending → #73⁷ | S E | SKIP 4, EXECUTE 4, all client 2.0.11 (`explain_incremental_microbatch.jsonl`) |
 | 7 | SNAPSHOT | characterized (live) | characterized (live) | pending → #76 | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_snapshot_history.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | pending → #75 | out of scope → #68 | S | SKIP 1 (client) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | pending → #76 | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`) |
@@ -124,6 +131,14 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
 5. The client's `execution_type_from_input` always yields a concrete kind
    ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
    these values fenced regardless.
+6. The SHAPE 7 tree of a rebuild whose upstream epoch equals the one the
+   node's latest build recorded ends with `upstream data is up to date` on
+   hosted; the server omits that line, because an identity-mismatch rebuild
+   has no Explain anchor (keyed explain gap
+   `explain_incremental_microbatch.jsonl` entry 40, #89). The same gap applies
+   to every kind's SHAPE 7; the earlier captures never hit it.
+7. No copy of an insert_overwrite, delete+insert or microbatch model has been
+   captured. The #73 copy scenarios cover merge and append only.
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -131,29 +146,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 77 trees in the
+Line counts from the [census](#explain-tree-census) over the 97 trees in the
 tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(582 lines without a marker, 620 without a badge). Only an explicit `0` is
+(704 lines without a marker, 759 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 198 lines |
-| ExplainMarker | FAIL (2) | ✅ 94 lines |
-| ExplainMarker | INFO (3) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 66 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 3 lines (SHAPE 7, `explain_snapshot_history.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 64 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 253 lines |
+| ExplainMarker | FAIL (2) | ✅ 110 lines |
+| ExplainMarker | INFO (3) | not observed across 97 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 97 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 83 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 10 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_incremental_*.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 74 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 24 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 29 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 44 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 14 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 77 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | FRESH (1) | ✅ 43 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 47 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 17 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 97 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 77 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 9 from client 2.0.11 and 59 for crafted
+1. The 97 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 29 from client 2.0.11 and 59 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -175,13 +190,19 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (77 trees, none empty, no findings):
+Tracked fixtures, 2026-11-10 (97 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
 | FULL | SKIP | 19 | 15 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
 | FULL | EXECUTE | 35 | 31 crafted, 2 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
+| INSERT_OVERWRITE | SKIP | 3 | client 2.0.11 |
+| INSERT_OVERWRITE | EXECUTE | 3 | client 2.0.11 |
+| DELETE_INSERT | SKIP | 3 | client 2.0.11 |
+| DELETE_INSERT | EXECUTE | 3 | client 2.0.11 |
+| MICROBATCH | SKIP | 4 | client 2.0.11 |
+| MICROBATCH | EXECUTE | 4 | client 2.0.11 |
 | SNAPSHOT | SKIP | 3 | client 2.0.11 |
 | SNAPSHOT | EXECUTE | 3 | client 2.0.11 |
 | DBT_DATA_TEST | SKIP | 1 | client 2.0.6 |
@@ -261,6 +282,12 @@ executed`, with no summary line: the captured upstream epoch had moved back
 since the build. Without a matched build (an identity-mismatch rebuild has
 none) the listing renders `<FRESH>` for every upstream. A drifted upstream
 under a query change is unobserved.
+
+Hosted judges this listing against the node's latest build. When every
+upstream epoch equals the one that build recorded, hosted ends the listing
+with `upstream data is up to date [SUCCESS]`
+(`explain_incremental_microbatch.jsonl` entry 40). The server has no anchor
+for an identity-mismatch rebuild and omits that line (keyed explain gap, #89).
 
 ### EXECUTE: upstream, against the matched build (SHAPE 9)
 
@@ -353,6 +380,97 @@ unobserved; it renders like a view (`upstream model queries have not changed`
 and `upstream data is up to date`, `explain.rs::has_upstream_query_line`).
 
 Snapshot CLONE is pending → #76.
+
+## INCREMENTAL
+
+An incremental model's node kind is its strategy: the client sends the
+strategy as the execution type (`execution_type_from_input`,
+[protocol.md](protocol.md#what-the-client-computes)). Each strategy below is
+its own fence cell. Strategies share rendering only where their captured
+trees are identical. Every strategy captured so far names the node `model` in
+its tree lines and its `decision_description`, as a FULL model does.
+
+The client reports the Target relation once in the submit's tables, so a
+model that reads its own Target relation through `{{ this }}` lists only its
+genuine upstreams. Its first incremental run compiles the `is_incremental()`
+branch, so its query changed since the first build.
+
+### APPEND (2)
+
+Pending → #73 (append and merge are captured separately).
+
+### MERGE (3)
+
+Pending → #73.
+
+### INSERT_OVERWRITE (4), DELETE_INSERT (5)
+
+`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_delete_insert.jsonl`
+(client 2.0.11). The two strategies render identical trees, the MODEL trees
+above:
+
+| Scenario (node) | Decision | Tree |
+|---|---|---|
+| first build (`iod`, `did`) | EXECUTE | [First build](#first-build) |
+| unchanged rerun (`iod`, `did`) | SKIP | SKIP, `<FRESH>` listing, `upstream data is up to date` |
+| its source gained a row (`iod`, `did`) | SKIP (`is_stale`) | SKIP, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
+| its own logic changed (`iol`, `dil`) | EXECUTE | SHAPE 7 |
+| `{{ this }}` self-read, first incremental run (`ios`, `dis`) | EXECUTE | SHAPE 7 |
+| `{{ this }}` self-read, unchanged rerun (`ios`, `dis`) | SKIP | SKIP, `<FRESH>` listing of its one genuine upstream, `upstream data is up to date` |
+
+The client's default Lag tolerance for these models was 45 minutes, so the
+source drift was a reuse within tolerance, worded "its query is up to date and
+its data is within lag tolerance". Upstream drift past the tolerance is not
+captured for an incremental. CLONE: pending → #73 (no copy of these strategies
+was attempted).
+
+### MICROBATCH (6)
+
+`explain_incremental_microbatch.jsonl` (client 2.0.11). Built with a fixed
+`--event-time-start 2026-11-01 --event-time-end 2026-11-03` window, the six
+scenarios above (`mbd`, `mbl`, `mbs`) render the same trees as
+insert_overwrite and delete+insert.
+
+**Batch window.** The client submits once per model per run, not once per
+batch (10 batches, one submit). It folds the run's resolved window into the
+semantic extras as `__microbatch_event_time_start` and
+`__microbatch_event_time_end`, raw ISO-8601 strings such as
+`2026-11-01T00:00:00+00:00`. A different window is therefore an
+identity mismatch (codes 6 / 6, SHAPE 7, `the model query has changed`) even
+though the SQL did not change.
+
+**Default moving window** (`mbm`, `begin='2026-11-01'`, `batch_size='day'`,
+`lookback` 1, three builds on 2026-11-10):
+
+| Build | Window sent | Decision | Tree |
+|---|---|---|---|
+| 1 (table absent, not incremental) | `2026-11-01` → `2026-11-11` (`begin` → ceiling of now) | EXECUTE | [First build](#first-build) (not explained in the capture) |
+| 2 (first incremental run) | `2026-11-09` → `2026-11-11` (`lookback` + 1 batches before the ceiling of now) | EXECUTE | SHAPE 7, ending `upstream data is up to date`¹ |
+| 3 (same UTC day) | `2026-11-09` → `2026-11-11` | SKIP | SKIP, `<FRESH>` listing, `upstream data is up to date` |
+
+So a moving-window microbatch model SKIPs an unchanged rerun once its window
+is stable: from the second incremental run on, within the same batch period.
+By the client's window rule (`MicrobatchBuilder::build_end_time` takes the
+ceiling of now to the batch boundary, `a0fc53e`) it rebuilds when that
+ceiling crosses into the next batch; that rollover was not captured.
+
+1. Hosted's summary line comes from comparing against the node's latest
+   build; the server renders the listing without it (keyed explain gap
+   entry 40, #89).
+
+CLONE: pending → #73.
+
+### Unset strategy
+
+Pending → #73.
+
+### `--full-refresh`
+
+Pending → #73.
+
+### Result copy (merge and append)
+
+Pending → #73.
 
 ## DATA TEST
 
@@ -489,8 +607,9 @@ decision's copy-adoption input rule, `reuse_candidate::adopt_current_inputs`).
 
 Not present in any capture; render nothing rather than invent:
 
-- **Node kinds:** incremental models, snapshot CLONE (#76), seed CLONE, view
-  CLONE (fence open without a capture, #78).
+- **Node kinds:** append and merge incrementals (#73), incremental CLONE
+  (#73), snapshot CLONE (#76), seed CLONE, view CLONE (fence open without a
+  capture, #78).
 - **Badges:** `EB_UNSPECIFIED` (0); census counts in
   [Observed vocabulary](#observed-vocabulary).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0); same.

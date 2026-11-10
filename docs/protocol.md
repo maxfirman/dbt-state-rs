@@ -99,6 +99,18 @@ history match and the decision. The client derives:
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
 - `values_hash` for seeds: the md5 of the seed file bytes.
+- For a microbatch model, the run's resolved event-time window, added to the
+  `semantic_extras` as `__microbatch_event_time_start` and
+  `__microbatch_event_time_end` (raw ISO-8601 strings, e.g.
+  `2026-11-01T00:00:00+00:00`, not JSON-encoded). The client submits once per
+  model per run, not per batch. A fixed `--event-time-start/--event-time-end`
+  window sends the same values every run, so an unchanged rerun SKIPs. The
+  default moving window runs from `begin` on the first build and from
+  `lookback` + 1 batches before the ceiling of now on an incremental run, so
+  the first incremental run rebuilds and later runs in the same batch period
+  SKIP (captured with client 2.0.11, `explain_incremental_microbatch.jsonl`;
+  [explain-catalog.md](explain-catalog.md#microbatch-6)). The microbatch
+  submits also carry `event_time`, `lookback` and `on_schema_change`.
 - `table_namespace`: from the warehouse connection identifier
   (account/project/host).
 - Profile `allow_clones: false` is sent as `clone_chain_depth_limit = 0`, on both

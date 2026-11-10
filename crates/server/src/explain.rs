@@ -195,7 +195,11 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - data test (DBT_DATA_TEST=8): Skip only (Build/Clone unobserved).
 ///   - seed (VALUES=9): Skip | Build (Clone unobserved).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone pending → #76).
-///   - everything else (incremental, custom, any other execution_type): NONE.
+///   - insert_overwrite, delete+insert and microbatch incrementals
+///     (INSERT_OVERWRITE=4, DELETE_INSERT=5, MICROBATCH=6): Skip | Build
+///     (Clone pending → #73).
+///   - everything else (append and merge incrementals, custom, any other
+///     execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
 /// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
@@ -1303,12 +1307,13 @@ mod tests {
 
     // ── F7 (PR #31 round 4): fence uncharacterized node kinds ──────────────
     // explain_lines dispatches on DecisionKind alone; without an
-    // execution-type fence, incremental and custom decisions (and a snapshot
-    // CLONE) render model-shaped trees that the hosted service was never
-    // observed to produce (docs/explain-catalog.md "Unobserved — do not
-    // implement until captured"; spec #27 Out-of-Scope). They must emit
-    // nothing. Seeds and snapshot SKIP/EXECUTE were characterized on
-    // 2026-11-10.
+    // execution-type fence, append/merge incremental and custom decisions
+    // (and incremental and snapshot CLONEs) render model-shaped trees that the
+    // hosted service was never observed to produce (docs/explain-catalog.md
+    // "Unobserved — do not implement until captured"; spec #27 Out-of-Scope).
+    // They must emit nothing. Seeds, snapshot SKIP/EXECUTE and the
+    // insert_overwrite, delete+insert and microbatch SKIP/EXECUTE were
+    // characterized on 2026-11-10.
 
     // ── Seeds (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl) ───────────
     fn seed(decision: DecisionKind, reason: DecisionReason) -> ExplainNode {
