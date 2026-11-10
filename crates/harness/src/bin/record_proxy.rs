@@ -40,6 +40,16 @@ use qc::sql_server::{Sql, SqlServer};
 
 const AUTHORIZATION_HEADER: &str = "authorization";
 const ORG_ID_HEADER: &str = "x-organization-id";
+/// Inbound headers the proxy replaces (auth) or that belong to the local
+/// transport hop rather than the client's request.
+const NOT_FORWARDED: &[&str] = &[
+    AUTHORIZATION_HEADER,
+    ORG_ID_HEADER,
+    "te",
+    "content-type",
+    "user-agent",
+    "host",
+];
 
 /// Shared proxy state: upstream channel, token minter, golden log.
 struct Proxy {
@@ -75,8 +85,15 @@ impl Proxy {
             .collect()
     }
 
-    /// Build an upstream request from a decoded message, attaching auth metadata.
-    async fn upstream_request<T>(&self, msg: T) -> Result<Request<T>, Status> {
+    /// Build an upstream request from a decoded message. Forwards the client's
+    /// own metadata (`x-submitted-at-epoch`, `x-dbt-invocation-id`, ...) so the
+    /// hosted service sees what a direct client would send, then attaches this
+    /// proxy's auth metadata in place of the client's.
+    async fn upstream_request<T>(
+        &self,
+        inbound: &[(String, String)],
+        msg: T,
+    ) -> Result<Request<T>, Status> {
         let token = self
             .minter
             .token()
@@ -84,6 +101,17 @@ impl Proxy {
             .map_err(|e| Status::unauthenticated(format!("token exchange failed: {e}")))?;
         let mut req = Request::new(msg);
         let md = req.metadata_mut();
+        for (key, value) in inbound {
+            if NOT_FORWARDED.contains(&key.as_str()) || key.starts_with("grpc-") {
+                continue;
+            }
+            if let (Ok(k), Ok(v)) = (
+                key.parse::<tonic::metadata::MetadataKey<tonic::metadata::Ascii>>(),
+                value.parse(),
+            ) {
+                md.append(k, v);
+            }
+        }
         md.insert(
             AUTHORIZATION_HEADER,
             format!("Bearer {}", token.id_token)
@@ -132,7 +160,7 @@ impl Sql for ProxyService {
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = SqlClient::new(self.channel.clone())
             .submit_enriched_sql(up)
             .await?
@@ -147,7 +175,7 @@ impl Sql for ProxyService {
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = SqlClient::new(self.channel.clone())
             .submit_values(up)
             .await?
@@ -162,7 +190,7 @@ impl Sql for ProxyService {
     ) -> Result<Response<qc::SubmitSqlSpeculativeResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = SqlClient::new(self.channel.clone())
             .submit_enriched_sql_speculative(up)
             .await?
@@ -181,7 +209,7 @@ impl Execution for ProxyService {
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ExecutionClient::new(self.channel.clone())
             .confirm_execution(up)
             .await?
@@ -196,7 +224,7 @@ impl Execution for ProxyService {
     ) -> Result<Response<qc::RecordExecutionsResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ExecutionClient::new(self.channel.clone())
             .record_executions(up)
             .await?
@@ -211,7 +239,7 @@ impl Execution for ProxyService {
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ExecutionClient::new(self.channel.clone())
             .resolve_deferred_relations(up)
             .await?
@@ -230,7 +258,7 @@ impl CloneSvc for ProxyService {
     ) -> Result<Response<qc::CloneResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = CloneClient::new(self.channel.clone())
             .register_clone(up)
             .await?
@@ -249,7 +277,7 @@ impl ClientValidation for ProxyService {
     ) -> Result<Response<qc::ValidateClientVersionResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ClientValidationClient::new(self.channel.clone())
             .validate_client_version(up)
             .await?
@@ -274,7 +302,7 @@ impl Explain for ProxyService {
     ) -> Result<Response<qc::GetExplainMessagesResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ExplainClient::new(self.channel.clone())
             .get_explain_messages(up)
             .await?
@@ -289,7 +317,7 @@ impl Explain for ProxyService {
     ) -> Result<Response<qc::GetUpstreamDependencyChangesResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ExplainClient::new(self.channel.clone())
             .get_upstream_dependency_changes(up)
             .await?
@@ -308,7 +336,7 @@ impl SelectorService for ProxyService {
     ) -> Result<Response<qc::SelectorResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = SelectorServiceClient::new(self.channel.clone())
             .get_state_selection(up)
             .await?
@@ -330,7 +358,7 @@ impl ClientTelemetry for ProxyService {
     ) -> Result<Response<qc::SessionStartResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ClientTelemetryClient::new(self.channel.clone())
             .register_session_start(up)
             .await?
@@ -345,7 +373,7 @@ impl ClientTelemetry for ProxyService {
     ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(msg.clone()).await?;
+        let up = self.upstream_request(&meta, msg.clone()).await?;
         let resp = ClientTelemetryClient::new(self.channel.clone())
             .submit_telemetry_batch(up)
             .await?

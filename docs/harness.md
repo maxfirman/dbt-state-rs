@@ -22,8 +22,15 @@ with a minted Bearer token, and appends decoded request/response JSON to a golde
 - `src/bin/record_proxy.rs` — tonic server impls for SQL, Execution, Clone,
   ClientValidation, Explain, SelectorService and ClientTelemetry (newtype
   `ProxyService(Arc<Proxy>)` to satisfy the orphan rule; derives Clone for tonic).
-  Each handler clones the decoded message, forwards upstream with auth metadata,
-  logs, and returns the real response verbatim.
+  Each handler clones the decoded message, forwards upstream with the client's
+  own metadata (`x-submitted-at-epoch`, `x-dbt-invocation-id`, ...; transport
+  and auth headers excluded) plus the proxy's auth metadata, logs, and returns
+  the real response verbatim. Captures before 2026-11-09 were made while the
+  proxy dropped the client metadata.
+- `src/bin/state_probe.rs` — sends ONE crafted RPC (submit, values, confirm,
+  explain) read as golden-format JSON from stdin, through the proxy, and prints
+  the response. Used by `experiments/lag_matrix.py` for synthetic-epoch
+  sequences that need no warehouse.
 
 ### How to run a capture
     # terminal: start proxy
@@ -32,7 +39,7 @@ with a minted Bearer token, and appends decoded request/response JSON to a golde
     # then run Fusion dbt against it (Snowflake target — DuckDB does not trigger State):
     cd /path/to/jaffle-shop
     DBT_ENGINE_MANAGE_STATE=true RUN_CACHE_API_URL=127.0.0.1:50099 RUN_CACHE_API_SECURE=false \
-      dbt build --profile snowflake --target analytics_dev --select <model> --skip-semantic-manifest-validation
+      dbt build --profile snowflake --target prod_demo --select <model> --skip-semantic-manifest-validation
     # To force EXECUTE: make a *semantic* SQL change (add a column). Comments alone are
     # normalized away by the server fingerprint and still SKIP. --full-refresh does NOT
     # force execute when logic+data unchanged.
@@ -50,8 +57,17 @@ restore` the project afterwards.
 - `clone_logic_sensitivity.sh` — proves post-clone reuse is schema-abstracted and
   logic-sensitive.
 - `lag_experiment.sh LABEL {any|all} LAG {none|a|b|both}` — two-upstream
-  `require_fresh_data_from` + `is_stale`; `lag_isolate.sh` / `lag_buildage.sh`
-  probe the (unresolved) `lag_tolerance` gating.
+  `require_fresh_data_from` + `is_stale`. Its upstream bumps are EXTERNAL
+  MODIFICATIONS of dbt models' tables, which hosted treats as upstream query
+  changes; see `lag_matrix.py` for the representative cases.
+- `lag_matrix.py ARM…` — crafted-gRPC `lag_tolerance` matrix (recorded upstream
+  builds, external modifications, sources, build age, policy, descriptions)
+  through `state-probe`. `lag_show.py` pretty-prints its rows.
+- `lag_docs_example.sh` — the lag_tolerance docs' worked example, scaled down,
+  through the real client; `DIRECT=1` runs it without the proxy as a control.
+- `lag_rule_check.py [files]` — scores the characterized hosted lag rule
+  against every fixture. `golden_tail.py FILE N [PREFIX]` prints decisions
+  captured after line N.
 - `selector_experiment.sh {baseline|query CRIT|mutate CRIT EDIT|all-clean}` —
   dbt State-powered `state:*` selectors (`GetStateSelection`). Builds a baseline
   in `prod_demo`, then runs `dbt compile --select state:<crit>` from `dev_clone`
