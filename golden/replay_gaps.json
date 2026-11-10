@@ -126,5 +126,34 @@
       "explained_decision.skip_rejection_reason",
       "explained_decision.clone_rejection_reason"
     ]
+  },
+  {
+    "fixture": "explain_ambiguous_rebuilds.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#80, probe d1): the Target relation is reported twice in `tables` with the build's epoch. Hosted reuses it (SKIP); the local server cannot tell which entry describes the table and rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6). Client 2.0.11 never sends a repeated entry."
+  },
+  {
+    "fixture": "explain_ambiguous_rebuilds.jsonl",
+    "entry": 3,
+    "local_variant": "explain",
+    "reason": "CRAFTED DIVERGENCE explain of entry 2 (#80): hosted explains its SKIP; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
+  },
+  {
+    "fixture": "explain_ambiguous_rebuilds.jsonl",
+    "entry": 6,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#80, probe d2): the Target relation is reported with no epoch. Both rebuild, but hosted treats the table as missing (skip=4 TARGET_TABLE_DOES_NOT_EXIST / clone=7 TARGET_TABLE_MATCH, 'model was executed because its table did not exist'); the local server rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6, the generic rebuild description). Client 2.0.11 drops a Target relation of unknown epoch instead.",
+    "ignore_fields": [
+      "explained_decision.decision_description",
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "explain_ambiguous_rebuilds.jsonl",
+    "entry": 7,
+    "local_variant": "explain",
+    "reason": "CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
   }
 ]
