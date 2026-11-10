@@ -65,6 +65,29 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+/// A `CloneResponse` without its opaque ids: both mirrors (the top-level
+/// `ready_to_clone` / `unable_to_clone` and the deprecated `response` oneof)
+/// carry `request_id` and `execution_decision_id` (hosted sends an empty one).
+fn clone_without_ids(mut value: serde_json::Value) -> serde_json::Value {
+    let strip = |v: &mut serde_json::Value| {
+        if let serde_json::Value::Object(m) = v {
+            m.remove("request_id");
+            m.remove("execution_decision_id");
+        }
+    };
+    if let serde_json::Value::Object(root) = &mut value {
+        for k in ["ready_to_clone", "unable_to_clone"] {
+            if let Some(v) = root.get_mut(k) {
+                strip(v);
+            }
+        }
+        if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
+            variants.values_mut().for_each(strip);
+        }
+    }
+    value
+}
+
 /// After `without_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
 /// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
@@ -490,7 +513,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        39,
+        41,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -841,7 +864,36 @@ async fn conformance_replay_all_corpora() {
                     }
                     asserted += 1;
                 }
-                "RegisterClone" | "ResolveDeferredRelations" => {
+                "RegisterClone" => {
+                    // The dev-clone pre-step's copy (#73; RegisterClone replay
+                    // is #76's, this is the minimal arm the incremental copy
+                    // fixture needs). Driven so its confirmation and the
+                    // post-copy submit see the copy as State history.
+                    let response = qc::clone_client::CloneClient::new(ch.clone())
+                        .register_clone(support::captured_request(
+                            serde_json::from_value::<qc::CloneRequest>(e.request.clone()).unwrap(),
+                            e,
+                        ))
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    let ours = clone_without_ids(serde_json::to_value(&response).unwrap());
+                    let real = clone_without_ids(e.response.clone());
+                    if ours != real {
+                        mismatches.push(format!(
+                            "{context}: RegisterClone response differs ours={ours} real={real}"
+                        ));
+                    }
+                    if let (Some(local), Some(hosted)) = (
+                        response.ready_to_clone.as_ref(),
+                        e.response["ready_to_clone"]["request_id"].as_str(),
+                    ) {
+                        let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
+                        pending.insert(hosted.into(), (local.request_id.clone(), key));
+                    }
+                    asserted += 1;
+                }
+                "ResolveDeferredRelations" => {
                     gaps += 1;
                 }
                 other => panic!("{context}: unhandled method {other}"),
@@ -875,7 +927,6 @@ async fn conformance_replay_all_corpora() {
         ("clone_chain_upstream_drift.jsonl", 4),
         ("golden_20261008T222744.061Z.jsonl", 14),
         ("golden_20261009T083754.534Z.jsonl", 1),
-        ("golden_20261009T100637.316Z.jsonl", 4),
         ("incremental_merge_reuse.jsonl", 0),
         ("lag_freshness_own_build.jsonl", 5),
     ]

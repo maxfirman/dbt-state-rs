@@ -317,6 +317,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged)) => {
             return None;
         }
+        // DECISION DIVERGENCE (#95): hosted skips a copy's unchanged
+        // post-copy submit where this server rebuilds; ours renders nothing.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch)) => {
+            return None;
+        }
         // LOCAL-ONLY (crafted probes d1–d4, 2026-11-10,
         // explain_ambiguous_rebuilds.jsonl): rebuilds hosted never makes, so
         // no hosted tree exists and none is rendered. Hosted reuses a
@@ -1678,6 +1683,26 @@ mod tests {
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
         n.input_tables.clear();
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+    }
+
+    /// A rebuild because the latest row is a Result copy this server did not
+    /// adopt (its recorded logic is missing or differs from the submit's) is a
+    /// decision hosted makes differently: hosted skips the post-copy submit
+    /// (#95, explain_incremental_copy_history.jsonl entries 12-15). It renders
+    /// nothing, for an incremental and a FULL model alike.
+    #[test]
+    fn unadopted_copy_rebuild_renders_nothing() {
+        for et in [
+            ModelExecutionType::Append,
+            ModelExecutionType::Merge,
+            ModelExecutionType::Full,
+        ] {
+            let mut n = node(DecisionKind::Build, et as i32, decision::DESC_EXECUTE);
+            n.reason = Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::CopyLogicMismatch,
+            ));
+            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
+        }
     }
 
     /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the

@@ -201,5 +201,53 @@
     "entry": 79,
     "local_variant": "empty_tree",
     "reason": "DECISION DIVERGENCE explain of entry 74 (#90): hosted renders the SKIP-shaped own-target-modified tree; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
+  },
+  {
+    "fixture": "explain_incremental_copy_history.jsonl",
+    "entry": 12,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#95): the APPEND incremental `ca73` was copied into the dev target by the dev-clone pre-step (RegisterClone entry 8, confirmed with the copy's epoch), then submitted with byte-identical SQL and that epoch. Hosted skips it ('both its query and its upstream data are up to date'); this server does not adopt the copy, whose schema-abstracted logic was computed under the prod default schema, and rebuilds with no_reuse_candidate.copy_logic_mismatch (6/6, the generic rebuild description)."
+  },
+  {
+    "fixture": "explain_incremental_copy_history.jsonl",
+    "entry": 13,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#95): the MERGE incremental `cm73` was copied into the dev target by the dev-clone pre-step (RegisterClone entry 9, confirmed with the copy's epoch), then submitted with byte-identical SQL and that epoch. Hosted skips it ('both its query and its upstream data are up to date'); this server does not adopt the copy, whose schema-abstracted logic was computed under the prod default schema, and rebuilds with no_reuse_candidate.copy_logic_mismatch (6/6, the generic rebuild description)."
+  },
+  {
+    "fixture": "explain_incremental_copy_history.jsonl",
+    "entry": 14,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 12 (#95): hosted renders its post-copy SKIP tree; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.copy_logic_mismatch."
+  },
+  {
+    "fixture": "explain_incremental_copy_history.jsonl",
+    "entry": 15,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 13 (#95): hosted renders its post-copy SKIP tree; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.copy_logic_mismatch."
+  },
+  {
+    "fixture": "clone_happy_path.jsonl",
+    "entry": 7,
+    "local_variant": "ready_to_execute",
+    "reason": "MISSING HISTORY: the copy's RegisterClone (entry 5) is now replayed, but the copy source's own build is not in this fixture, so the local copy inherits no logic identity and is not adopted (no_reuse_candidate.copy_logic_mismatch); hosted skips the post-copy submit. Before the RegisterClone arm (#73) this was an unknown baseline."
+  },
+  {
+    "fixture": "explain_incremental_submit_copy.jsonl",
+    "entry": 9,
+    "local_variant": "ready_to_execute",
+    "reason": "CODE DIVERGENCE (#95): the APPEND incremental `sa73` (state.pre_clone never) is submitted into an absent dev relation while its prod build exists. Both build it as a first build with the same description and tree, but hosted reports skip=1 TARGET_TABLE_MISMATCH (an equivalent exists under another name) and does not copy it (clone=6); this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema, and reports 6/6.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason"
+    ]
+  },
+  {
+    "fixture": "explain_incremental_submit_copy.jsonl",
+    "entry": 10,
+    "local_variant": "ready_to_execute",
+    "reason": "CODE DIVERGENCE (#95): the MERGE incremental `sm73` (state.pre_clone never) is submitted into an absent dev relation while its prod build exists. Both build it as a first build with the same description and tree, but hosted reports skip=1 TARGET_TABLE_MISMATCH (an equivalent exists under another name) and does not copy it (clone=6); this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema, and reports 6/6.",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason"
+    ]
   }
 ]

@@ -116,11 +116,14 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
-    // Same identity, other execution type: a distinct reason so Explain can
-    // render nothing for it (#40 divergence rule, #83).
+    // Same identity, other execution type, or a Result copy that cannot be
+    // adopted: distinct reasons so Explain can render nothing for them (#40
+    // divergence rule, #83, #95).
     let unidentified =
         if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
             NoCandidate::ExecutionTypeChanged
+        } else if current.clone_source_table.is_some() {
+            NoCandidate::CopyLogicMismatch
         } else {
             NoCandidate::IdentityMismatch
         };
