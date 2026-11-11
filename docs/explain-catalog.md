@@ -612,7 +612,7 @@ type ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type
 | FULL (`--full-refresh`, RecordExecutions or a snapshot's FULL submit) only (`explain_reason_kind_cells.jsonl` `*_e`, `*_ez`) | MERGE, INSERT_OVERWRITE, DELETE_INSERT, MICROBATCH, SNAPSHOT, with and without an upstream; APPEND without | EXECUTE, 2 / 2 | SKIP tree against the latest build (entries 232–242) |
 | SNAPSHOT only (`sn_c`, `sn_cz`, round 2) | FULL (`--full-refresh`), with and without an upstream | EXECUTE, 2 / 2 | the same (entry 127 without an upstream) |
 | VIEW (`vc0`) / DBT_CUSTOM (`cv0`), the SQL reads no relation | DBT_CUSTOM / VIEW | EXECUTE, 2 / 2 | the same: renders for DBT_CUSTOM (entry 244); for VIEW it says `no upstream dependencies`, which this server cannot tell from a view over a `ref`, so it renders nothing (entry 246, #117) |
-| VIEW (`vc`) / DBT_CUSTOM (`cv`), over an upstream | DBT_CUSTOM / VIEW | EXECUTE, 6 / 6: the view reports no upstreams, the custom node does, so hosted sees another identity; then 8 / 7 for the custom node over VIEW, DBT_CUSTOM (`cv`, entry 322) | `the model query has not changed`; the view lists the custom build's upstream as `view ignored` under `query analysis`, then `an upstream model query has changed [FAIL]` (entry 245). This server answers 2 / 2 and 6 / 6 and renders nothing (divergence #116) |
+| VIEW (`vc`) / DBT_CUSTOM (`cv`), over an upstream | DBT_CUSTOM / VIEW | EXECUTE, 6 / 6: the view reports no upstreams, the custom node does, so hosted sees another identity; then 8 / 7 for the custom node over VIEW, DBT_CUSTOM (`cv`, entry 322) | [upstream names changed](#execute-same-sql-under-another-execution-type-with-other-upstream-names) (`no_reuse_candidate.upstream_names_changed`, #116): `the model query has not changed`; the custom node lists its upstream with only its `last updated` line (entries 243, 378); the view lists the custom build's upstream as `view ignored` under `query analysis`, then `an upstream model query has changed [FAIL]` (entry 245) |
 | FULL (`cf`) / DBT_CUSTOM (`fc`) with `on_schema_change` set (`explain_reason_kind_cells_custom.jsonl`) | DBT_CUSTOM / FULL | EXECUTE, 6 / 6, then 8 / 7: a custom node sends only `lookback` even with `on_schema_change` set, so it never shares a FULL table's identity | SHAPE 7 |
 
 The tree for 2 / 2 is the SKIP tree (`the model table exists already`, `the
@@ -631,6 +631,29 @@ no other kind sends a custom node's semantic extras with its upstreams (`cf`,
 
 2. The scenario explained those nodes after a later build of another node,
    and `dbt state explain` explained nothing for them.
+
+### EXECUTE: same SQL under another execution type, with other upstream names
+
+`explain_reason_kind_cells.jsonl` (client 2.0.11, #104 group b, #116). A
+view and a custom node send the same semantic extras, but client 2.0.11
+reports no upstreams for a view. So the same SQL over an upstream, switched
+between the two, keeps its SQL identity and changes its reported upstream
+names. Hosted treats that as another identity, not as an execution type
+change: 6 / 6 with the generic rebuild description, or 8 / 7 when an older
+build of the submit's type would still qualify (`cv` back to DBT_CUSTOM over
+VIEW, DBT_CUSTOM history, entry 322). This server records
+`no_reuse_candidate.upstream_names_changed` and persists the latest build as
+the unmatched build. The tree is judged against that build, with the node
+query unchanged:
+
+| Submit | Latest build | Tree |
+|---|---|---|
+| DBT_CUSTOM with an upstream (`vc`, entry 243; `cv`, entry 378) | VIEW, no upstreams | the SKIP tree against it: `the model query has not changed`, `upstream model queries have not changed`, each upstream with only its `last updated` line (the view did not record it), no summary |
+| VIEW (`cv`, entry 245) | DBT_CUSTOM with an upstream | `table analysis` as for SKIP; `query analysis`: `the model query has not changed`, then `upstream dependencies` listing each upstream the build recorded with one child, `view ignored` (no marker, no badge), then `an upstream model query has changed` [FAIL]; an empty `data freshness analysis` section |
+
+Any other kind, a submit over a dropped Target relation, or a rebuild without
+the persisted latest build renders nothing. On 2.0.11 only a view drops its
+upstreams, so the reason is unreachable for the other kinds.
 
 ### EXECUTE: rebuild over a RegisterClone copy
 
@@ -829,7 +852,9 @@ DBT_CUSTOM, and hosted reuses it. A custom node sends only `lookback` in its
 semantic extras even with `on_schema_change` set
 (`explain_reason_kind_cells_custom.jsonl`), so only a view shares its
 identity, and only when the SQL reads no relation (a view reports no
-upstreams, #116).
+upstreams; over an upstream the switch is
+[another identity](#execute-same-sql-under-another-execution-type-with-other-upstream-names),
+#116).
 
 ## INCREMENTAL
 
@@ -1280,8 +1305,10 @@ What this server never renders, each with its final status:
   `experiments/explain_dep_set_comment_ref.sh`. Switching the same SQL
   between a view (which reports no upstreams) and a custom node changes the
   reported upstreams without changing the SQL, but also the execution type:
-  hosted rebuilds it as another identity, this server as an execution type
-  change, and renders nothing (#116). For a data test it arises
+  hosted and this server rebuild it as another identity
+  (`no_reuse_candidate.upstream_names_changed`, #116,
+  [its trees](#execute-same-sql-under-another-execution-type-with-other-upstream-names)),
+  not as a dependency-set change. For a data test it arises
   only for a `store_failures` audit relation the request does not identify:
   local-only, not captured (→ #106, [DATA TEST](#data-test)).
 - **Every other Decision reason × node kind without a capture:**
@@ -1309,6 +1336,7 @@ there is no cell.
 | `upstream_query_changed` (SHAPE 9, query listing) ᶠ | L | L | L | L | U ᵇ | L | L | — |
 | `no_reuse_candidate.own_target_modified` ᵍ | L | L | L | LO (#115) | → #117 | LO (#115) | — | — |
 | `no_reuse_candidate.execution_type_changed` ᵏ | L | L | L | L | → #117 | L ⁿ | — | — |
+| `no_reuse_candidate.upstream_names_changed` ᵒ | U | U | U | U | L | L | — | — |
 | `no_reuse_candidate.copy_logic_mismatch` ˡ | C | L | L | L | L | L | — | — |
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ |
 | `no_reuse_candidate.failed_reuse_qualification` ⁱ | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | U ʲ |
@@ -1371,11 +1399,19 @@ last ones were settled.
   `sn_cz`), APPEND (`explain_execution_type_change.jsonl` `tv`, `a_ez`), the
   other incrementals and SNAPSHOT (`*_e`, `*_ez`). Hosted's VIEW tree (`cv0`)
   needs to know whether the view reads a relation (#117). Over an upstream,
-  a VIEW <-> DBT_CUSTOM switch is another identity on hosted (#116).
+  a VIEW <-> DBT_CUSTOM switch is another identity, ᵒ.
 - ⁿ Without an upstream (`vc0`). With one: unreachable on 2.0.11, as no other
   kind sends a custom node's semantic extras (only `lookback`, even with
   `on_schema_change` set, `explain_reason_kind_cells_custom.jsonl`) with its
   upstreams: a view reports none.
+- ᵒ The latest build has the node's SQL identity under another execution
+  type, but recorded other genuine upstream names (#116,
+  [its trees](#execute-same-sql-under-another-execution-type-with-other-upstream-names)).
+  Live for a custom node with an upstream over a view's build, and for a
+  view over a custom node's build with one (`vc`, `cv`). Unreachable for the
+  other kinds on 2.0.11: only a view drops its upstreams, and a view shares
+  only a custom node's semantic extras. A data test and a seed are not
+  judged on execution type.
 - ⁱ The client sends it for `evaluate_volatile_sql: true`
   (`tolerate_nondeterminism = false`): → #67. From a malformed request it is
   local-only, empty tree (crafted `experiments/malformed_requests.py`,
@@ -1434,6 +1470,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `upstream_outdated` when the anchor re-derives an upstream whose drift is proven (FULL, the five incrementals, SNAPSHOT, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, the incrementals, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |
 | EXECUTE | `no_reuse_candidate.own_target_modified` for FULL, with an anchor or no genuine upstreams; for the incrementals, with an anchor (not SNAPSHOT or DBT_CUSTOM, #115; not VIEW, #117) | SKIP-shaped tree |
 | EXECUTE | `no_reuse_candidate.execution_type_changed` with an anchor that recorded the node's genuine upstream names: FULL, the incrementals and SNAPSHOT; DBT_CUSTOM without upstreams (not VIEW, #117) | SKIP-shaped tree, against the latest build |
+| EXECUTE | `no_reuse_candidate.upstream_names_changed` with the Target relation present and the unmatched latest build persisted: DBT_CUSTOM with upstreams over a VIEW build without any, VIEW over a DBT_CUSTOM build with some | [upstream names changed](#execute-same-sql-under-another-execution-type-with-other-upstream-names), against the latest build |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` when the decision-time inputs lack the Target relation | first build (`lag_copy_candidates` `dt_m`, `explain_reason_kind_cells.jsonl` `*_d`) |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, with the Lag tolerance line when stale with a non-zero tolerance and drift against the unmatched build, unless the decision recorded no build age for it (a row written before #104) | SHAPE 7, judged against the unmatched latest build |
 | EXECUTE | `no_reuse_candidate.copy_logic_mismatch` when the decision-time inputs lack the Target relation | first build, every model kind (crafted `x11`–`x19`) |

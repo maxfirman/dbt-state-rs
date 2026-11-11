@@ -6,7 +6,8 @@ Accepted (2026-11-10). Supersedes the earlier own-build freshness anchor (see
 [correctness-handoff.md](../correctness-handoff.md)), which was characterized
 only with External modifications of dbt-managed upstreams. Amended by
 #83/#90 (2026-11-11): which build a submit is judged against when the node's
-execution type changed ([below](#execution-type-change)).
+execution type changed ([below](#execution-type-change)), and by #116
+(2026-11-11): only over the submit's genuine upstream names.
 
 ## Decision
 
@@ -84,8 +85,9 @@ Amendment (#83, #90; approved by the maintainer 2026-11-11).
 
 **Rule.** The SQL identity a submit is compared on excludes its execution
 type. When the latest build in scope has the submit's identity but another
-execution type, the submit is judged against the latest build in scope with
-its identity *and* execution type:
+execution type, and recorded the submit's genuine upstream names (its inputs
+other than its own Target relation), the submit is judged against the latest
+build in scope with its identity *and* execution type:
 
 - if there is one, it is judged as the reuse candidate would be for its own
   target: a Target relation modified after it rebuilds with "the table was
@@ -107,6 +109,20 @@ against the copy (clarification, #104, live:
 `explain_copy_logic_mismatch.jsonl` `kf4`). Other logic, including other
 semantic extras (a view, a custom node), is
 `no_reuse_candidate.copy_logic_mismatch` (6 / 6).
+
+**Other upstream names** (amendment, #116, 2026-11-11). A latest build
+with the submit's identity under another execution type that recorded other
+genuine upstream names is another identity, as hosted treats it, not an
+execution type change: `no_reuse_candidate.upstream_names_changed`, with
+the identity-mismatch answer (6 / 6, or 8 / 7 when an older build of the
+submit's type would qualify) and that latest build as the unmatched build
+Explain judges against. On client 2.0.11 this is the same SQL switched
+between a view, which reports no upstreams, and a custom node, which shares
+its semantic extras, over an upstream (live:
+`explain_reason_kind_cells.jsonl` `vc`, `cv`; with no upstream on either
+side it stays 2 / 2, `vc0`, `cv0`). Both answers rebuild, so no reuse
+changes. A RegisterClone copy records no inputs of its own and keeps the
+rule above.
 
 **Evidence** (live, client 2.0.11): `explain_snapshot_history.jsonl`
 entries 58–60 (FULL over SNAPSHOT history: 2 / 2);

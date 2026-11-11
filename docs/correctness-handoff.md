@@ -26,7 +26,8 @@ Do not weaken these without new evidence.
   latest confirmed build first and only then compares fingerprints, execution
   type and dialect. An older matching build never stands in for a relation
   overwritten since. When the latest build has the submit's identity under
-  another execution type, the rebuild is judged against the latest build of
+  another execution type, and recorded the submit's genuine upstream names,
+  the rebuild is judged against the latest build of
   the submit's type, which is never reused
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)). See
   [architecture.md](architecture.md#physical-scope-rule).
@@ -109,6 +110,21 @@ server keeps the conservative behavior described.
   Target relation is unchanged since is not characterized; the server
   rebuilds, as the execution type change against the latest build (2 / 2,
   `offline_regressions.rs::execution_type_change_is_judged_against_the_latest_build_of_that_type`).
+- **Same SQL under another execution type, other upstream names (#116,
+  resolved).** Hosted treats a view ↔ custom node switch over an upstream
+  (the view reports none, the custom node does) as another identity: 6 / 6,
+  and 8 / 7 over an older build of the submit's type
+  (`explain_reason_kind_cells.jsonl` `vc`, `cv`); with no upstream on either
+  side it is an execution type change (`vc0`, `cv0`, 2 / 2). The server
+  judges an execution type change only over a latest build that recorded
+  the submit's genuine upstream names, otherwise it records
+  `no_reuse_candidate.upstream_names_changed` and renders hosted's trees
+  ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)).
+  Both answers rebuild, so reuse is unchanged. Not characterized, and
+  unreachable through client 2.0.11: whether hosted also compares upstream
+  names between builds of the same execution type (the server's
+  `dependency_set_changed`). FULL, the incrementals and snapshots report the
+  same upstreams for the same SQL.
 - **Incremental CLONE (#97, resolved by #73).** Hosted 2.0.11 has no
   explainable incremental CLONE decision: its `RegisterClone` copy has an
   empty `execution_decision_id`, and it rebuilds incrementals on submit. This
@@ -330,16 +346,6 @@ replay fails when an entry becomes unused or resolved
   snapshot or custom node renders nothing. Keyed gaps: entries 171, 187,
   297, 311, 313, 323 (submits) and 225, 231, 369, 375, 376, 379 (Explain,
   `empty_tree`).
-- **View ↔ custom node over an upstream (#116, client 2.0.11).** With the
-  same SQL and semantic extras (`lookback`), hosted treats the switch as an
-  execution type change only when the SQL reads no relation (`vc0`, `cv0`,
-  2 / 2). Over an upstream, which the view does not report and the custom
-  node does, it answers 6 / 6, and 8 / 7 for the custom node over view and
-  custom builds (`vc`, `cv`). The server answers 2 / 2 and judges the last
-  one as `own_target_modified` (6 / 6) against the older custom build. Both
-  rebuild; codes and the last description differ, and the server's trees
-  for them render nothing. Keyed gaps: entries 163, 182, 322 (field-scoped)
-  and 243, 245, 378 (Explain, `empty_tree`).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
   2.0.6 got `ready_to_clone` for a MERGE incremental over an existing target
   (`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`
