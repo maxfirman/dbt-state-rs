@@ -401,7 +401,11 @@ migration 0017), and Explain re-derives the listing from it with the shared
 freshness helper, as for a matched build. A rebuild recorded before migration
 0017 has no such build: its listing keeps the default `<FRESH>` badges and
 the summary line is omitted, because unknown evidence never proves freshness
-(ADR 0007).
+(ADR 0007). A stale rebuild (an older matching build would have been reused
+stale, so `is_stale` is set) with a non-zero Lag tolerance and an upstream
+drifted against that build renders nothing: its summary would need a Lag
+tolerance line, which no capture backs for SHAPE 7 and for which the
+decision records no build age (→ #104).
 
 ### EXECUTE: upstream, against the matched build (SHAPE 9)
 
@@ -974,7 +978,8 @@ conformance replay; the cells marked → #104 are listed in #104.
   (`lag_seed_upstream` G). A data test has no Target relation, so only
   `first_build` applies.
 - ᵉ Over an absent Target relation the FULL rebuild renders the first-build
-  tree (lag_copy_candidates `dt_m`, crafted); other kinds: → #104.
+  tree (lag_copy_candidates `dt_m`, crafted); other kinds: → #104. A stale
+  rebuild (older match) under drift with a non-zero Lag tolerance: → #104.
 - ᶠ Needs the matched build. Without it (its execution row disappeared): LO.
   An `upstream_outdated` whose matched build re-derives no OUTDATED upstream
   (an unknown epoch): → #104.
@@ -1010,7 +1015,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream (FULL, APPEND, MERGE, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |
 | EXECUTE | `no_reuse_candidate.own_target_modified` for FULL, with an anchor or no genuine upstreams | SKIP-shaped tree |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` when the decision-time inputs lack the Target relation | first build for FULL (`lag_copy_candidates` `dt_m`); empty tree otherwise |
-| EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹ | SHAPE 7, judged against the unmatched latest build |
+| EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, unless the rebuild is stale with a non-zero tolerance and drift against the unmatched build | SHAPE 7, judged against the unmatched latest build |
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | any | every other reason (divergences #83, #90, #93; local-only reasons; cells → #104), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |

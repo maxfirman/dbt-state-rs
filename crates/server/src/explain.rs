@@ -423,8 +423,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             Shape::FirstBuild
         }
         // SHAPE 7, captured for every model kind (explain_snapshot_history,
-        // explain_custom_history, explain_incremental_*, explain_rebuild_reason_gaps).
-        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch)) if listing => {
+        // explain_custom_history, explain_incremental_*, explain_rebuild_reason_gaps),
+        // but not with a Lag tolerance line: a stale older match under drift
+        // against the unmatched build renders nothing (#104).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
+            if listing && !query_changed_needs_tolerance_line(node) =>
+        {
             Shape::QueryChanged
         }
         (DecisionKind::Clone, R::ResultCopy)
@@ -858,15 +862,30 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 /// and explain_rebuild_reason_gaps.jsonl `r40q`). Rendered only for
 /// `no_reuse_candidate.identity_mismatch` (see [`shape`]).
 fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let judged = ExplainNode {
-        anchor: node.unmatched.clone(),
-        ..node.clone()
-    };
+    let judged = judged_against_unmatched(node);
     vec![
         table_analysis_exists(node),
         query_analysis_changed(node),
         data_freshness_analysis_fresh(&judged),
     ]
+}
+
+/// The node with its freshness anchor replaced by the unmatched latest build,
+/// which SHAPE 7 judges its listing against.
+fn judged_against_unmatched(node: &ExplainNode) -> ExplainNode {
+    ExplainNode {
+        anchor: node.unmatched.clone(),
+        ..node.clone()
+    }
+}
+
+/// Whether SHAPE 7's summary would carry a Lag tolerance line: the rebuild
+/// is stale (an older matching build would have been reused stale,
+/// `report_older_match`), the tolerance is non-zero and an upstream drifted
+/// against the unmatched build. No capture backs that line for SHAPE 7, and
+/// the decision records no build age for it.
+fn query_changed_needs_tolerance_line(node: &ExplainNode) -> bool {
+    node.is_stale && node.tolerance_ms > 0 && has_outdated_upstream(&judged_against_unmatched(node))
 }
 
 /// The upstream-drift EXECUTE tree (catalog SHAPE 9). The node's own query is
@@ -2086,6 +2105,32 @@ mod tests {
         );
         let unrecorded = shape7(5_000, None);
         assert_eq!(freshness_texts(&unrecorded), ["upstream dependencies"]);
+    }
+
+    /// An identity-mismatch rebuild whose older matching build would have
+    /// been reused stale (`report_older_match` sets `is_stale`) records no
+    /// build age. Under drift against the unmatched build its summary would
+    /// need a Lag tolerance line, which no capture backs for SHAPE 7 (the
+    /// `ob*` captures are SHAPE 9), so it renders nothing (#104) instead of
+    /// an unknown age.
+    #[test]
+    fn shape7_with_a_stale_older_match_under_drift_renders_nothing() {
+        let mut n = anchored(
+            DecisionKind::Build,
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            5_000,
+            900,
+        );
+        n.unmatched = n.anchor.take();
+        n.tolerance_ms = 2_700_000;
+        n.build_age_ms = None;
+        n.is_stale = true;
+        assert!(explain_lines(&n).is_empty());
+        n.is_stale = false;
+        assert_eq!(
+            freshness_texts(&explain_lines(&n)),
+            ["upstream dependencies", "upstream data is outdated"]
+        );
     }
 
     fn freshness_texts(lines: &[qc::ExplainLine]) -> Vec<String> {
