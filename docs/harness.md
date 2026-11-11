@@ -157,7 +157,12 @@ SCENARIO = Scenario(
   `${run}` the run id (`HHMMSS` plus 6 random hex digits). Jinja braces pass
   through; write a literal `$` as `$$`.
 - `Write(path, text)` / `Remove(path)`: the path must stay inside the project
-  and contain the run id, so tracked jaffle-shop files are never edited.
+  and contain the run id, so tracked jaffle-shop files are never edited. The
+  one exception is `COPY_OVERRIDES` in the driver: a `Write` may replace
+  `macros/generate_schema_name.sql` in the run's own project copy (the shared
+  checkout is still never written), to place this run's nodes in another
+  schema of `CDO_DEMO_DB` (`store_failures_audit_schema.py`, #106). It cannot
+  be removed.
 - `Build(*select, target="prod_demo", full_refresh=False, test_failures=False, args=())`:
   every selector must name a per-run node and must not start with `+`, so
   shared nodes are never rebuilt. Set `test_failures=True` when a selected
