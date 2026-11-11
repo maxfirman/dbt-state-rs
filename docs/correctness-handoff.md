@@ -66,6 +66,18 @@ Do not weaken these without new evidence.
   logic is never reused: it is an execution type change (2 / 2) judged
   against the copy, as hosted does (`explain_copy_logic_mismatch.jsonl`
   `kf4`, #104).
+- **Submit-time equivalents read in another schema.** The Result copy
+  fallback finds an equivalent by the submit's schema-abstracted logic, or by
+  that logic with the submit's Target relation schema read as another schema
+  the request names (the #93 rule, `fingerprint::rehomed_copy_logic_hashes`,
+  Snowflake only, #107). A candidate found the second way must have its
+  Target relation in that schema: one elsewhere read other relations. Each
+  dependency's name stays bound to its definition, so a dev dependency whose
+  definition differs from the prod build's is not an equivalent
+  (`clone_submit_fallback.rs::a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build`).
+  Copying stays FULL only; other kinds only report the equivalent in their
+  codes. A candidate in a schema the request does not name is found only by
+  the plain logic, which is conservative (not captured).
 
 ## Open hosted questions
 
@@ -298,27 +310,6 @@ replay fails when an entry becomes unused or resolved
     exists under another name so we cloned that one`); the server never copies
     seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
     (submit) and 18 (Explain: the server explains the load it decided).
-  - Non-FULL copy candidate (#92, codes implemented; identity gap → #107).
-    For a view or a snapshot whose equivalent exists under another name,
-    hosted builds with codes 1 / 3 (`TARGET_TABLE_MISMATCH` /
-    `EXECUTION_TYPE_NOT_FULL`). The server sends 1 / 3 when it finds the
-    equivalent (`clone_submit_fallback.rs::a_view_with_an_equivalent_builds_with_execution_type_not_full`).
-    In this capture it finds none and sends 6 / 6: the dev SQL reads the
-    source in the prod schema while its default schema is the dev one, so its
-    schema-abstracted logic differs from the prod build's (the #107 cause
-    below). The class, description and Explain tree match.
-    Keyed field-scoped gaps: `explain_copy_probes.jsonl` entries 13 and 14.
-  - Submit-time equivalent over a fixed prod-schema source (#107). A model
-    whose SQL reads a source in the prod default schema has byte-identical
-    SQL in both targets, but the request-relative schema-abstracted logic
-    differs, so the Result copy fallback finds no equivalent where hosted
-    does. A FULL table is built instead of copied
-    (`explain_post_copy_identity.jsonl` entry 19, whole response); a view
-    and the append/merge incrementals are built with codes 6 / 6 where hosted
-    reports 1 / 3 and 1 / 6 (entry 18; `explain_incremental_submit_copy.jsonl`
-    entries 9–10; field-scoped). #93 resolved the same gap for RegisterClone
-    adoption, where the copy names its source; the equivalent search has no
-    source to read the submit against.
 - **Snapshot and custom node over a modified Target relation (#115, client
   2.0.11).** Hosted reuses a snapshot whose Target relation a later
   `--full-refresh` (FULL) build rewrote or an External modification changed,
