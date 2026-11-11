@@ -316,20 +316,6 @@ async fn a_same_named_relation_the_test_reads_stays_an_input() {
 const SF_AUDIT_SCHEMA: &str = "prod_state_demo_dbt_test__audit";
 const SF_SEPARATE_AUDIT: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"SF_TEST\"";
 
-fn sf_test_in(uid: &str, schema: &str, sql: &str) -> support::scenario::Submit {
-    data_test(uid)
-        .catalog("CDO_DEMO_DB")
-        .schema(schema)
-        .sql(sql)
-        .namespace(NS)
-        .project(PROJECT)
-        .target_name("prod_demo")
-        .label("dbt_node_name", "sf_test")
-        .extra("store_failures", "true")
-        .extra("store_failures_as", "\"table\"")
-        .upstream(SF_SOURCE, 100)
-}
-
 /// Client 2.0.11 sends the test's own schema as `default_schema`, so an audit
 /// relation in a separate audit schema is recognized: the unchanged rerun
 /// SKIPs as hosted does. The test's name in the target schema is a lookalike
@@ -339,6 +325,20 @@ fn sf_test_in(uid: &str, schema: &str, sql: &str) -> support::scenario::Submit {
 async fn audit_relation_in_a_separate_schema_is_ignored_but_lookalikes_rebuild() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
+    // A `store_failures: true` test over SF_SOURCE in the given schema.
+    let sf_test_in = |uid: &str, schema: &str, sql: &str| {
+        data_test(uid)
+            .catalog("CDO_DEMO_DB")
+            .schema(schema)
+            .sql(sql)
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "sf_test")
+            .extra("store_failures", "true")
+            .extra("store_failures_as", "\"table\"")
+            .upstream(SF_SOURCE, 100)
+    };
     let sql = "select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0";
 
     let test = sf_test_in("test.jaffle_shop.sf_test", SF_AUDIT_SCHEMA, sql);
@@ -391,11 +391,17 @@ async fn audit_relation_in_a_separate_schema_is_ignored_but_lookalikes_rebuild()
 async fn an_aliased_audit_relation_still_rebuilds() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
-    let test = sf_test_in(
-        "test.jaffle_shop.sf_test",
-        "prod_state_demo",
-        "select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0",
-    );
+    let test = data_test("test.jaffle_shop.sf_test")
+        .catalog("CDO_DEMO_DB")
+        .schema("prod_state_demo")
+        .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo")
+        .label("dbt_node_name", "sf_test")
+        .extra("store_failures", "true")
+        .extra("store_failures_as", "\"table\"")
+        .upstream(SF_SOURCE, 100);
     sc.build_with(test.clone(), outcome().results(test_results(0)))
         .await;
     assert_eq!(
