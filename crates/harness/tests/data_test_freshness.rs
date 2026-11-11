@@ -268,3 +268,40 @@ async fn tables_resembling_the_audit_relation_still_count() {
         );
     }
 }
+
+/// A `store_failures` test whose name matches a relation it reads (Codex
+/// review on #109: test `orders` with alias `orders_audit` reading `orders`).
+/// The request does not carry the alias, so the reported `orders` cannot be
+/// told apart from an unaliased audit relation by name; because the test's SQL
+/// reads it, it stays an input and its drift rebuilds the test.
+#[tokio::test]
+async fn a_same_named_relation_the_test_reads_stays_an_input() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let orders = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ORDERS\"";
+    let test = |epoch: i64| {
+        data_test("test.jaffle_shop.orders")
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql("select id from CDO_DEMO_DB.prod_state_demo.orders where id < 0")
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "orders")
+            .extra("store_failures", "true")
+            .extra("store_failures_as", "\"table\"")
+            .upstream(orders, epoch)
+    };
+    sc.build_with(test(100), outcome().results(test_results(0)))
+        .await;
+    assert_eq!(
+        sc.verdict(test(100)).await,
+        "skip_execution",
+        "unchanged (control)"
+    );
+    assert_eq!(
+        sc.verdict(test(200)).await,
+        "ready_to_execute",
+        "the read relation changed, so the cached result is stale"
+    );
+}

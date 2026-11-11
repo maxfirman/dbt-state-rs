@@ -770,7 +770,9 @@ the source (`explain_data_test_history.jsonl` `t75s`,
 `explain_store_failures_audit.jsonl`). This server drops the audit relation
 from the test's inputs, so it decides and renders the same (#88,
 `execution.rs::is_own_audit_relation`). It recognizes the relation only as
-`default_catalog`.`default_schema`.`dbt_node_name` on Snowflake; in another
+`default_catalog`.`default_schema`.`dbt_node_name` on Snowflake, and never
+when the test's SQL or a query dependency mentions that name (then it is a
+read, not the test's output); in another
 audit schema or under an alias the test rebuilds for
 `dependency_set_changed`, which renders nothing (not captured → #106).
 

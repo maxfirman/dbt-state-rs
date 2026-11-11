@@ -294,7 +294,8 @@ and fingerprints.
    `store_failures` test's own audit relation, which the client reports in
    `tables` once it exists, is not an input: the server recognizes it from
    the request (`store_failures: true`, Snowflake, exactly
-   `default_catalog`.`default_schema`.`dbt_node_name`) and hosted ignores it
+   `default_catalog`.`default_schema`.`dbt_node_name`, and not mentioned by
+   the test's SQL or its query dependencies) and hosted ignores it
    too (#88). Hosted differs in one captured case, a keyed divergence: it
    reuses a test confirmed with incomplete results and echoes them (#87,
    crafted).

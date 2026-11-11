@@ -50,6 +50,12 @@ fn node_unique_id(
 /// identifier rules (Snowflake only). Any other table still counts, so a
 /// changed dependency set still rebuilds. A test with a configured alias is not
 /// recognized and keeps rebuilding.
+///
+/// The request does not carry the alias, so a relation the test reads can
+/// have exactly that name (a test `orders` aliased `orders_audit` that reads
+/// `orders`). The audit relation is the test's output and never appears in its
+/// SQL, so a name the test's SQL or one of its query dependencies mentions is
+/// always kept as an input.
 fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
     let stores_failures = req
         .semantic_extras
@@ -65,12 +71,30 @@ fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
     ) else {
         return false;
     };
-    crate::warehouse::Warehouse::from_dialect(&req.dialect).names_relation(
-        name,
-        &req.default_catalog,
-        schema,
-        test,
-    )
+    let read_by_test = std::iter::once(req.sql.as_str())
+        .chain(req.query_dependencies.iter().map(|d| d.query.as_str()))
+        .any(|sql| mentions_identifier(sql, test));
+    !read_by_test
+        && crate::warehouse::Warehouse::from_dialect(&req.dialect).names_relation(
+            name,
+            &req.default_catalog,
+            schema,
+            test,
+        )
+}
+
+/// Whether `text` contains `identifier` as a whole word, ignoring ASCII case.
+/// This over-approximates a reference (a comment or string literal also
+/// counts), which only keeps a relation as an input.
+fn mentions_identifier(text: &str, identifier: &str) -> bool {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let (text, identifier) = (text.to_lowercase(), identifier.to_lowercase());
+    !identifier.is_empty()
+        && text.match_indices(&identifier).any(|(at, _)| {
+            let before = text[..at].chars().next_back();
+            let after = text[at + identifier.len()..].chars().next();
+            !before.is_some_and(is_word) && !after.is_some_and(is_word)
+        })
 }
 
 /// The identity and inputs of one execution, as submitted, recorded or
@@ -727,6 +751,57 @@ mod tests {
             let e = ExecutionEvidence::sql_submit("org", &req);
             assert_eq!(input_names(&e), vec![SOURCE, AUDIT], "{what}");
         }
+    }
+
+    /// The audit relation's name is the test's database, schema and name only
+    /// when no alias is configured, and the request does not carry the alias.
+    /// A same-named relation the test reads, directly or through a view it
+    /// reads, is therefore a genuine input and stays one.
+    #[test]
+    fn a_relation_the_test_reads_is_never_its_audit_relation() {
+        // Codex review on #109: a test named `orders` with alias
+        // `orders_audit` that reads `orders` reports the upstream under
+        // exactly the name the audit relation would have without the alias.
+        let upstream = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ORDERS\"";
+        let reads = [
+            "select id from CDO_DEMO_DB.prod_state_demo.orders where id < 0",
+            "select id from \"ORDERS\" where id < 0",
+            "select id from prod_state_demo.Orders where id < 0",
+        ];
+        for sql in reads {
+            let mut req = store_failures_test(&[upstream]);
+            req.labels.insert("dbt_node_name".into(), "orders".into());
+            req.sql = sql.into();
+            let e = ExecutionEvidence::sql_submit("org", &req);
+            assert_eq!(input_names(&e), vec![upstream], "{sql}");
+            let recorded = ExecutionEvidence::sql_record("org", &sql_execution(&req));
+            assert_eq!(input_names(&recorded), vec![upstream], "{sql}");
+        }
+
+        // Read through a view: the client reports the view's upstream in
+        // `tables` and the view's definition as a query dependency.
+        let mut req = store_failures_test(&[upstream]);
+        req.labels.insert("dbt_node_name".into(), "orders".into());
+        req.sql = "select id from CDO_DEMO_DB.prod_state_demo.orders_v where id < 0".into();
+        req.query_dependencies = vec![qc::QueryDependency {
+            name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ORDERS_V\"".into(),
+            query: "select * from CDO_DEMO_DB.prod_state_demo.orders".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            default_schema: "prod_state_demo".into(),
+        }];
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![upstream],
+            "read through a view"
+        );
+
+        // The name only as part of a longer identifier is not a read.
+        let mut req = store_failures_test(&[SOURCE, AUDIT]);
+        req.sql = "select id from CDO_DEMO_DB.prod_state_demo.t75src where t75s_id < 0".into();
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE]
+        );
     }
 
     fn outcome() -> qc::ExecutionOutcome {

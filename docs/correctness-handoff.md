@@ -144,7 +144,11 @@ server keeps the conservative behavior described.
   (`execution.rs::is_own_audit_relation`): a Snowflake data test whose
   semantic extras set `store_failures: true`, and a relation exactly
   `default_catalog`.`default_schema`.`dbt_node_name`. Every other unrecorded
-  table still changes the dependency set and rebuilds. Assumed, not
+  table still changes the dependency set and rebuilds. The request does not
+  carry the test's alias, so a relation the test reads can have exactly that
+  name (test `orders` aliased `orders_audit`, reading `orders`; Codex review
+  on #109): a name that the test's SQL or one of its query dependencies
+  mentions as a word is never the audit relation and stays an input. Assumed, not
   captured: that client 2.0.11's `default_schema` is the test's own schema
   (dbt-fusion builds `default_catalog` from `node.database()` and parses
   unqualified names against `node.database()`/`node.schema()`; the 2.0.11
