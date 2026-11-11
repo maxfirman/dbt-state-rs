@@ -38,7 +38,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
 | `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
 | `submit_decision.rs` | How one SQL or values submit is decided (flow below). Returns a `SubmitOutcome` carrying its `DecisionRecord`. |
-| `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate. |
+| `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback and RegisterClone. Asks the Warehouse rules for chain limits, relation checks, source evidence, the incremental contract and DDL. |
@@ -102,7 +102,10 @@ an adapter-specific warehouse identifier. Selecting the latest row *within that
 scope* stops a same-named relation in another account, project or host from
 shadowing this one; execution type, dialect options and logic are checked only
 after the current row is selected, so an older row is never resurrected after a
-later build. A client without a namespace gets an isolated absent-namespace
+later build. One exception for which row a rebuild is judged against: when the
+current row has the submit's identity under another execution type, the latest
+row of the submit's type is (`submit_decision::select_sql`, ADR 0007); it is
+never reused. A client without a namespace gets an isolated absent-namespace
 scope per family. Data tests select by org, project, warehouse scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.

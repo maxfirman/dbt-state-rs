@@ -29,7 +29,11 @@ Open questions and deliberate divergences live in
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
 | Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
-| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution") | ❌ builds with the generic rebuild description (#90) |
+| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution", judged against the last incremental build) | ✅ |
+| Same SQL, other execution type (snapshot under `--full-refresh`, table ↔ append, merge ↔ delete+insert), no build of the new type | — | build, 2 / 2 (`EXECUTION_TYPE_MISMATCH`), the node-query-unchanged Explain tree against the latest build (`explain_snapshot_history.jsonl`, `explain_execution_type_change.jsonl`) | ✅ |
+| Same, back to an execution type with an older build | — | build ("the table was modified after the cached execution", judged against that older build) | ✅ |
+| Same SQL, table → view → table | 1 | build, 8 / 7 (a view sends other `semantic_extras`, so its build has another identity; the older table build matches) | ✅ |
+| Incremental fully refreshed (recorded FULL), then materialized as a table with the same SQL and extras | 1 | skip (the recorded row is a build) | ✅ |
 | Seed content change | VALUES | build (new `values_hash`) | ✅ |
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |

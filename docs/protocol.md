@@ -102,8 +102,10 @@ history match and the decision. The client derives:
     `Execution.RecordExecutions` with the request built for a full refresh,
     so `execution_type` is `FULL` (1), and the rebuilt Target relation's
     epoch. Hosted answers `records_stored: 1`. The next ordinary run submits
-    the model as APPEND/MERGE again; hosted rebuilds it with "the table was
-    modified after the cached execution" (divergence #90).
+    the model as APPEND/MERGE again; hosted and this server rebuild it with
+    "the table was modified after the cached execution", judged against the
+    last APPEND/MERGE build (rule 1 of
+    [Current decision semantics](#current-decision-semantics)).
 - `semantic_extras`, from these node config keys only (client 2.0.11 also
   sends `unique_key` and `lookback` for incrementals,
   `explain_incremental_append_merge_history.jsonl`). SQL nodes:
@@ -164,9 +166,9 @@ wire and in captured JSON.
   `EXECUTION_TYPE_NOT_FULL=3`, `TARGET_TABLE_DOES_NOT_EXIST=4`,
   `FORCED_NOT_ELIGIBLE=5`, `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
-  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
-  sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
-  `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
+  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server sends 2 only as 2 / 2, for a
+  rebuild after an execution type change ([Rejection codes](#rejection-codes)),
+  and never sends 3 or 9. Hosted sends 1 / 3
   when a view or snapshot has an equivalent under another name that it will
   not copy on submit because the execution type is not FULL, where this
   server sends 6 / 6 (#92). It also sends 1 / 3 when it rebuilds a custom
@@ -218,6 +220,7 @@ and keeps the same string.
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
 | EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit. Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_chain_limit` |
 | CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit | `DecisionRecord::result_copy` |
@@ -226,6 +229,7 @@ and keeps the same string.
 | `unable_to_clone` | - / 5 | DuckDB only: the pinned incremental contract or a current eligible source is missing | `result_copy::register_lookup`, `plan_register` |
 
 Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`,
+`explain_execution_type_change.jsonl`, `explain_snapshot_history.jsonl` entry 58,
 `lag_seed_upstream.jsonl` (arms G, H), `clone_submit_allow_clones_false.jsonl`,
 `clone_rejected_allow_clones_false.jsonl`.
 
@@ -240,7 +244,15 @@ and fingerprints.
    target relation in its scope (organization, warehouse family,
    `table_namespace`, target relation) before comparing identity. An older
    matching build never resurrects a relation overwritten since; it only
-   changes the rejection codes (8 / 7).
+   changes the rejection codes (8 / 7). The identity excludes the execution
+   type. When the latest build has the workload's identity under another
+   execution type (a snapshot or incremental full refresh, a changed
+   materialization or incremental strategy), the submit is judged against the
+   latest build of its own type: a target relation modified since rebuilds
+   with "the table was modified after the cached execution" (6 / 6), and with
+   no such build the rebuild is 2 / 2 with the generic rebuild description.
+   That build is never reused; only the latest build is
+   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)).
 2. **Identity.** The fingerprint covers the root SQL, semantic extras,
    dialect/catalog/schema and every supplied dependency definition with its
    resolution context. Snowflake SQL is canonicalized
