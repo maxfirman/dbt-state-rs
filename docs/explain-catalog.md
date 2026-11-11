@@ -145,7 +145,7 @@ Source fixtures (`golden/fixtures/`):
   dropped (`x11`–`x19`) (`experiments/copy_logic_probes.py`).
 - `explain_malformed_requests.jsonl` (#104): crafted probe `e4`, a model
   whose query dependency is listed twice (`experiments/malformed_requests.py`).
-  Hosted SKIPs the resubmit; keyed divergence #114.
+  Hosted SKIPs the resubmit; keyed accepted divergence #114.
 
 ## How to read this catalog
 
@@ -582,7 +582,7 @@ Hosted does not make this rebuild for every kind (same fixture):
 
 | Kind | Target relation changed by | Hosted | This server |
 |---|---|---|---|
-| SNAPSHOT (`sn_c`, `sn_cz`; `sn_e`, `sn_ez`) | a later `--full-refresh` (FULL) build; an External modification | SKIP, the ordinary SKIP tree | rebuilds 6 / 6, renders nothing (divergence #115) |
+| SNAPSHOT (`sn_c`, `sn_cz`; `sn_e`, `sn_ez`) | a later `--full-refresh` (FULL) build; an External modification | SKIP, the ordinary SKIP tree | rebuilds 6 / 6, renders nothing (accepted divergence #115) |
 | DBT_CUSTOM (`vc`; `cv0`) | an External modification; a view build in between | SKIP | the same |
 | VIEW (`vc0`, history VIEW, DBT_CUSTOM, VIEW) | the custom node's build | EXECUTE 6 / 6, "model was executed because the view definition is newer than the cached execution", SKIP tree with `no upstream dependencies` | the same decision and description; renders nothing (#117) |
 
@@ -792,7 +792,7 @@ dependencies`, no upstream query line): its SKIP, logic change, `--full-refresh`
 rebuild and execution type change (`explain_reason_kind_cells.jsonl` `sn_z`,
 `sn_cz`, `sn_ez`). Hosted reuses a snapshot whose Target relation changed after
 its build, by an External modification or a later `--full-refresh`; this
-server rebuilds it and renders nothing (#115,
+server rebuilds it and renders nothing (accepted divergence #115,
 [Target relation modified](#execute-target-relation-modified-after-the-build)).
 
 **Copies (#76).** Snapshot CLONE is unreachable on 2.0.11. On submit, hosted
@@ -843,7 +843,7 @@ with no genuine upstreams it renders SHAPE 0 like a FULL model
 | back to an older build's logic while its source gained a row (`fr_cu`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | unchanged, run under `--full-refresh` (`c74cf`) | SKIP | SKIP, `<FRESH>` listing, no summary |
 | built in `dev_clone` over an equivalent prod build (`c74k`) | EXECUTE, codes 1 / 3 | [First build](#first-build) (#86) |
-| its Target relation modified externally (`vc`), or rewritten by a view build in between (`cv0`) (`explain_reason_kind_cells.jsonl`) | SKIP (this server: EXECUTE 6 / 6, divergence #115) | SKIP; this server renders nothing |
+| its Target relation modified externally (`vc`), or rewritten by a view build in between (`cv0`) (`explain_reason_kind_cells.jsonl`) | SKIP (this server: EXECUTE 6 / 6, accepted divergence #115) | SKIP; this server renders nothing |
 | first ordinary run over a view build with the same SQL, no upstream (`vc0`) | EXECUTE 2 / 2 | SKIP-shaped, SHAPE 0 ([execution type change](#execute-execution-type-change)) |
 | logic change over a dropped Target relation (`cu_d`) | EXECUTE | [First build](#first-build) |
 
@@ -1134,7 +1134,8 @@ upstream). Nothing else:
   2, 3, 6, 7). Client 2.0.11 always confirms all three result fields.
 - `no_reuse_candidate.failed_reuse_qualification`: out of scope → #67 for
   the cause the client sends (`evaluate_volatile_sql: true`). From a
-  malformed request, local-only, empty tree (crafted, divergence #114): hosted
+  malformed request, local-only, empty tree (crafted, accepted divergence
+  #114): hosted
   rejects empty SQL and SKIPs a test whose query dependency is listed twice
   (`explain_malformed_requests.jsonl` `e4-8`).
 
@@ -1384,8 +1385,9 @@ last ones were settled.
   `--full-refresh` or an External modification
   (`explain_reason_kind_cells.jsonl`). The incrementals need the matched
   build. Hosted reuses a snapshot or a custom node over a modified Target
-  relation (#115), so this server's rebuild is local-only. Hosted's VIEW tree
-  (`vc0`) needs to know whether the view reads a relation (#117).
+  relation (accepted divergence #115), so this server's rebuild is
+  local-only. Hosted's VIEW tree (`vc0`) needs to know whether the view
+  reads a relation (#117).
 - ʰ The seed safety floor ([SEED](#seed)).
 - ᵐ A snapshot gets the default Lag tolerance (45 minutes) and the ANY
   policy: client 2.0.11 reads `state` config from models only
@@ -1415,8 +1417,8 @@ last ones were settled.
 - ⁱ The client sends it for `evaluate_volatile_sql: true`
   (`tolerate_nondeterminism = false`): → #67. From a malformed request it is
   local-only, empty tree (crafted `experiments/malformed_requests.py`,
-  divergence #114). For a model of every kind and a data test, hosted
-  rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
+  accepted divergence #114). For a model of every kind and a data test,
+  hosted rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
   also a model with an empty dependency name or query. A query dependency
   listed twice is built, then SKIPped with the ordinary SKIP tree
   (`explain_malformed_requests.jsonl`, keyed gaps).
