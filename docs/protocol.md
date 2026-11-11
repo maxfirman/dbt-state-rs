@@ -250,7 +250,7 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
 | EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
-| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
+| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type and recorded the workload's genuine upstream names, and the target relation has no build of the workload's type (rule 1 below). Other upstream names are another identity: 6 / 6, or 8 / 7 (`explain_reason_kind_cells.jsonl` `vc`, `cv`). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise) |
 | EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate, or whose reuse candidate must rebuild for upstream data drift, whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
@@ -290,9 +290,12 @@ and fingerprints.
    no such build the rebuild is 2 / 2 with the generic rebuild description.
    That build is never reused; only the latest build is
    ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)).
-   Hosted treats a view ↔ custom node switch over an upstream (the view
-   reports none, the custom node does) as another identity (6 / 6, then
-   8 / 7); this server answers it as an execution type change (#116).
+   It is an execution type change only when the latest build also recorded
+   the workload's genuine upstream names. A view ↔ custom node switch over an
+   upstream (the view reports none, the custom node does) is another
+   identity, as on hosted: 6 / 6, or 8 / 7 when an older build of the
+   workload's type would qualify (`no_reuse_candidate.upstream_names_changed`,
+   `explain_reason_kind_cells.jsonl` `vc`, `cv`, #116).
 2. **Identity.** The fingerprint covers the root SQL, semantic extras,
    dialect/catalog/schema and every supplied dependency definition with its
    resolution context. Snowflake SQL is canonicalized

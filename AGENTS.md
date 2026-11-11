@@ -50,9 +50,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      connection namespace (`table_namespace`) and Target relation. Only the
      latest row in that scope can be reused, and its versioned
      SQL/dependency/context/config fingerprints must match. When the latest
-     row has the submit's identity under another execution type, the rebuild
-     is judged against the latest row of the submit's type, never reused
-     (ADR 0007 "Execution type change").
+     row has the submit's identity under another execution type and recorded
+     the submit's genuine upstream names, the rebuild is judged against the
+     latest row of the submit's type, never reused (ADR 0007 "Execution type
+     change"); other upstream names are another identity (#116).
   2. Upstream drift is measured against the epoch recorded for each upstream at
      the build, by exact physical name; unknown epochs never prove freshness. A
      changed Upstream producer always rebuilds. Lag tolerance only turns a

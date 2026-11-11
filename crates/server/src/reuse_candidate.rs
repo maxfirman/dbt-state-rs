@@ -144,6 +144,10 @@ pub(crate) fn for_model(
         NoCandidate::ExecutionTypeChanged
     } else if is_copy_registration(&current) && !adoptable(req, evidence, &current) {
         NoCandidate::CopyLogicMismatch
+    } else if identity_under_other_type(req, evidence, &current) {
+        // The identity under another type, but over other upstream names:
+        // another identity on hosted (#116).
+        NoCandidate::UpstreamNamesChanged
     } else {
         NoCandidate::IdentityMismatch
     };
@@ -201,7 +205,12 @@ fn model_rejection(
 /// workload's identity when the workload has the logic the copy inherited
 /// ([`copy_logic_matches`]; VERIFIED LIVE 2026-11-11,
 /// explain_copy_logic_mismatch.jsonl `kf4`: a table over an append copy with
-/// the same SQL and semantic extras is EXECUTION_TYPE_MISMATCH). Selection
+/// the same SQL and semantic extras is EXECUTION_TYPE_MISMATCH). Any other
+/// row must also have recorded the workload's genuine upstream names: hosted
+/// treats a changed upstream set as another identity (VERIFIED LIVE
+/// 2026-11-11, explain_reason_kind_cells.jsonl `cv`, `vc`: client 2.0.11
+/// reports no upstreams for a view, so the same SQL as a custom node over an
+/// upstream is not the view's identity, #116). Selection
 /// then also needs the target's latest build of the workload's own type
 /// ([`latest_build_of_type`]).
 pub(crate) fn execution_type_changed(
@@ -210,8 +219,35 @@ pub(crate) fn execution_type_changed(
     latest: &ExecutionRow,
 ) -> bool {
     latest.execution_type != req.execution_type
-        && (same_identity(req, evidence, latest)
+        && (same_identity(req, evidence, latest) && same_upstream_names(evidence, latest)
             || is_copy_registration(latest) && copy_logic_matches(req, evidence, latest))
+}
+
+/// Whether `latest` has the workload's identity under another execution type
+/// but recorded other genuine upstream names
+/// ([`NoCandidate::UpstreamNamesChanged`]).
+fn identity_under_other_type(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    latest: &ExecutionRow,
+) -> bool {
+    latest.execution_type != req.execution_type
+        && same_identity(req, evidence, latest)
+        && !same_upstream_names(evidence, latest)
+}
+
+/// Whether `row` recorded the workload's genuine upstream names: its inputs
+/// other than the workload's own target, by exact physical name.
+fn same_upstream_names(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
+    use std::collections::BTreeSet;
+    let names = |tables: &[InputTable]| -> BTreeSet<String> {
+        tables
+            .iter()
+            .map(|t| crate::decision::physical_relation_key(&t.name).to_string())
+            .filter(|name| *name != evidence.target_table)
+            .collect()
+    };
+    names(&evidence.input_tables) == names(&row.input_tables)
 }
 
 /// The newest build in `history` (the target's builds in scope, newest
@@ -1302,6 +1338,44 @@ mod tests {
         assert_eq!(s.why_no_candidate, Some(NoCandidate::IdentityMismatch));
         assert!(s.type_changed.is_none());
         assert_eq!(s.unmatched.map(|r| r.id), Some(8));
+    }
+
+    /// VERIFIED LIVE 2026-11-11 (explain_reason_kind_cells.jsonl `cv`, `vc`,
+    /// #116): the same SQL as a view and as a custom node over an upstream
+    /// is another identity on hosted, because client 2.0.11 reports no
+    /// upstreams for the view. The latest row is then no execution type
+    /// change in either direction, but an unmatched build; with the same
+    /// upstream names it still is one (`vc0`, `cv0`, no upstreams).
+    #[test]
+    fn other_upstream_names_under_another_type_are_another_identity() {
+        let custom = model_req("select id from DB.DEV.UP");
+        let custom = qc::SubmitEnrichedSqlRequest {
+            execution_type: 11,
+            ..custom
+        };
+        let mut view = custom.clone();
+        view.execution_type = 10;
+        view.tables.retain(|t| t.name != UPSTREAM);
+        let (custom_ev, view_ev) = (evidence(&custom), evidence(&view));
+
+        let view_build = built_as(&recorded(&view_ev), 8, 10, BUILT);
+        assert!(!execution_type_changed(&custom, &custom_ev, &view_build));
+        let s = model(&custom, Some(view_build));
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::UpstreamNamesChanged));
+        assert!(s.type_changed.is_none() && s.rejected.is_none());
+        assert_eq!(s.unmatched.map(|r| r.id), Some(8), "the Explain anchor");
+
+        let custom_build = built_as(&recorded(&custom_ev), 9, 11, BUILT);
+        assert!(!execution_type_changed(&view, &view_ev, &custom_build));
+        let s = model(&view, Some(custom_build));
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::UpstreamNamesChanged));
+        assert_eq!(s.unmatched.map(|r| r.id), Some(9));
+
+        let mut bare_custom = custom.clone();
+        bare_custom.tables.retain(|t| t.name != UPSTREAM);
+        let bare_ev = evidence(&bare_custom);
+        let bare_view = built_as(&recorded(&view_ev), 10, 10, BUILT);
+        assert!(execution_type_changed(&bare_custom, &bare_ev, &bare_view));
     }
 
     /// VERIFIED LIVE 2026-11-11 (explain_execution_type_change.jsonl `ta`,

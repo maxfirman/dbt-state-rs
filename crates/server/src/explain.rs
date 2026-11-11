@@ -310,6 +310,10 @@ enum Shape {
     CopyOver,
     /// CLONE (`vs clone` sections).
     Clone,
+    /// The node query unchanged against the latest build, which had another
+    /// execution type and other upstream names (#116,
+    /// [`upstream_names_changed_tree`]).
+    UpstreamNamesChanged,
     /// A build whose copy of an equivalent the submit disallowed
     /// (`allow_clones: false`): `table analysis` names the equivalent
     /// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`).
@@ -493,6 +497,34 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         {
             Shape::OwnTargetModified
         }
+        // The same SQL as a view and as a custom node over an upstream,
+        // which client 2.0.11 does not report for the view: another identity
+        // on hosted (#116), explained against the latest build, the node
+        // query unchanged. Captured both ways (explain_reason_kind_cells.jsonl
+        // `vc`, `cv`), so it renders only for a custom node with upstreams
+        // over a view's build without any, and for a view over a custom
+        // node's build with some.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::UpstreamNamesChanged))
+            if !node.own_target_absent()
+                && node.unmatched.as_ref().is_some_and(|latest| {
+                    let recorded = !recorded_upstreams(node, latest).is_empty();
+                    match kind {
+                        Some(ModelExecutionType::DbtCustom) => {
+                            upstreams
+                                && !recorded
+                                && latest.execution_type == ModelExecutionType::View as i32
+                        }
+                        Some(ModelExecutionType::View) => {
+                            !upstreams
+                                && recorded
+                                && latest.execution_type == ModelExecutionType::DbtCustom as i32
+                        }
+                        _ => false,
+                    }
+                }) =>
+        {
+            Shape::UpstreamNamesChanged
+        }
         // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`; 2026-11-11,
         // explain_reason_kind_cells.jsonl `*_d`, every model kind): a model
         // whose logic changed while its Target relation was dropped reads
@@ -633,6 +665,7 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
+        Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
     }
@@ -1144,6 +1177,64 @@ fn judged_against_unmatched(node: &ExplainNode) -> ExplainNode {
         anchor: node.unmatched.clone(),
         ..node.clone()
     }
+}
+
+/// The genuine upstreams `row` recorded: its inputs other than the node's own
+/// target.
+fn recorded_upstreams<'a>(node: &ExplainNode, row: &'a ExecutionRow) -> Vec<&'a InputTable> {
+    let target = node.target_table.as_deref();
+    row.input_tables
+        .iter()
+        .filter(|t| Some(t.name.as_str()) != target)
+        .collect()
+}
+
+/// A rebuild whose latest build had the node's SQL identity under another
+/// execution type and other upstream names (VERIFIED LIVE 2026-11-11,
+/// explain_reason_kind_cells.jsonl, #116). A custom node over a view's build
+/// (`vc`, `cv`) renders the SKIP-shaped tree judged against that build: each
+/// upstream it reports, unrecorded there, with only its `last updated` line.
+/// A view over a custom node's build (`cv`) lists, under `query analysis`,
+/// each upstream that build recorded as `view ignored`, then `an upstream
+/// model query has changed` [FAIL], and an empty `data freshness analysis`.
+fn upstream_names_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let judged = judged_against_unmatched(node);
+    if node.execution_type != ModelExecutionType::View as i32 {
+        return skip_tree(&judged);
+    }
+    let ignored = judged
+        .anchor
+        .as_ref()
+        .map(|latest| recorded_upstreams(node, latest))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line("view ignored")],
+        })
+        .collect();
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    format!("the {} query has not changed", node.noun()),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", ignored),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
+        section("data freshness analysis", Vec::new()),
+    ]
 }
 
 /// Whether SHAPE 7's summary would carry a Lag tolerance line: the rebuild
@@ -2418,6 +2509,113 @@ mod tests {
             .input_tables
             .clear();
         assert!(explain_lines(&other_upstreams).is_empty());
+    }
+
+    /// The same SQL as a view and as a custom node over an upstream, which
+    /// the view does not report, is another identity on hosted (#116). Its
+    /// trees, VERIFIED LIVE 2026-11-11 (explain_reason_kind_cells.jsonl):
+    /// the custom node over the view's build (`vc`, entry 243; `cv` over
+    /// VIEW, DBT_CUSTOM history, entry 378) lists its upstream with only its
+    /// `last updated` line; the view over the custom node's build (`cv`,
+    /// entry 245) lists the build's upstream as `view ignored` and fails the
+    /// upstream query check, with an empty freshness section. Nothing without
+    /// the latest build, over a dropped Target relation, or for other kinds.
+    #[test]
+    fn upstream_names_change_renders_the_unchanged_query_against_the_latest_build() {
+        use ModelExecutionType as K;
+        let reason = DecisionReason::NoReuseCandidate(NoCandidate::UpstreamNamesChanged);
+        let target = "\"DB\".\"S\".\"T\"";
+        let up = "\"DB\".\"RAW\".\"UP\"";
+        let build = |et: K, inputs: Vec<InputTable>| ExecutionRow {
+            id: 7,
+            target_table: target.into(),
+            execution_type: et as i32,
+            last_modified_epoch: Some(1_000),
+            input_tables: inputs,
+            status: "confirmed".into(),
+            ..ExecutionRow::default()
+        };
+        let mut custom = node(DecisionKind::Build, K::DbtCustom as i32, "");
+        custom.reason = Some(reason);
+        custom.input_tables = vec![tbl(target), tbl(up)];
+        custom.unmatched = Some(build(K::View, vec![tbl(target)]));
+        let s = |t: &str| t.to_string();
+        assert_eq!(
+            render(&custom),
+            vec![
+                (0, s("table analysis («FQN»)"), None, None),
+                (
+                    1,
+                    s("the model table exists already"),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS)
+                ),
+                (0, s("query analysis"), None, None),
+                (
+                    1,
+                    s("the model query has not changed"),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED)
+                ),
+                (
+                    1,
+                    s("upstream model queries have not changed"),
+                    Some(MARKER_SUCCESS),
+                    None
+                ),
+                (0, s("data freshness analysis"), None, None),
+                (1, s("upstream dependencies"), None, None),
+                (2, s("«FQN»"), None, None),
+                (3, s("last updated: «rel_time»"), None, None),
+            ]
+        );
+
+        let mut view = node(DecisionKind::Build, K::View as i32, "");
+        view.reason = Some(reason);
+        view.unmatched = Some(build(K::DbtCustom, vec![tbl(up)]));
+        assert_eq!(
+            render(&view),
+            vec![
+                (0, s("table analysis («FQN»)"), None, None),
+                (
+                    1,
+                    s("the model table exists already"),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS)
+                ),
+                (0, s("query analysis"), None, None),
+                (
+                    1,
+                    s("the model query has not changed"),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED)
+                ),
+                (1, s("upstream dependencies"), None, None),
+                (2, s("«FQN»"), None, None),
+                (3, s("view ignored"), None, None),
+                (
+                    1,
+                    s("an upstream model query has changed"),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+                (0, s("data freshness analysis"), None, None),
+            ]
+        );
+        assert_eq!(explain_lines(&view)[1].children[1].children[0].text, up);
+
+        for mut n in [custom.clone(), view.clone()] {
+            n.unmatched = None;
+            assert!(explain_lines(&n).is_empty(), "without the latest build");
+        }
+        let mut dropped = custom.clone();
+        dropped.input_tables.remove(0);
+        assert!(explain_lines(&dropped).is_empty(), "dropped target");
+        for et in [K::Full, K::Snapshot, K::Append] {
+            let mut n = custom.clone();
+            n.execution_type = et as i32;
+            assert!(explain_lines(&n).is_empty(), "{et:?}");
+        }
     }
 
     /// Own target modified: the SKIP-shaped tree against the matched build

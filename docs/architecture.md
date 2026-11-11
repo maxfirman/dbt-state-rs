@@ -107,9 +107,10 @@ scope* stops a same-named relation in another account, project or host from
 shadowing this one; execution type, dialect options and logic are checked only
 after the current row is selected, so an older row is never resurrected after a
 later build. One exception for which row a rebuild is judged against: when the
-current row has the submit's identity under another execution type, the latest
+current row has the submit's identity under another execution type and
+recorded the submit's genuine upstream names, the latest
 row of the submit's type is (`submit_decision::select_sql`, ADR 0007); it is
-never reused. A client without a namespace gets an isolated absent-namespace
+never reused. Other upstream names are another identity (#116). A client without a namespace gets an isolated absent-namespace
 scope per family. Data tests select by org, project, warehouse scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.

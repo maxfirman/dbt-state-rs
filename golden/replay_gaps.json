@@ -200,29 +200,9 @@
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 163,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ],
-    "reason": "DECISION DIVERGENCE (#116): a VIEW submit over DBT_CUSTOM history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (6/6); the local server answers the execution type change 2/2 (`cv`)."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 171,
     "local_variant": "ready_to_execute",
     "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_cz`, no upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 182,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ],
-    "reason": "DECISION DIVERGENCE (#116): a DBT_CUSTOM submit over VIEW history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (6/6); the local server answers the execution type change 2/2 (`vc`)."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -244,18 +224,6 @@
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 243,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 182: DECISION DIVERGENCE (#116): hosted's 6/6 tree (query unchanged, the upstream listed with only its last-updated line); the local execution type change over a row with other upstream names renders nothing."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 245,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 163: DECISION DIVERGENCE (#116): hosted's 6/6 tree (query unchanged, `view ignored`, an upstream model query has changed); the local VIEW execution type change renders nothing."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 297,
     "local_variant": "ready_to_execute",
     "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
@@ -271,17 +239,6 @@
     "entry": 313,
     "local_variant": "ready_to_execute",
     "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_e`, upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 322,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason",
-      "explained_decision.decision_description"
-    ],
-    "reason": "DECISION DIVERGENCE (#116): a DBT_CUSTOM submit over VIEW, DBT_CUSTOM history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (8/7 against the older custom build, 'either its query didn't match'); the local server judges it against the older custom build as own_target_modified (6/6, 'modified after the cached execution') (`cv`)."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -306,12 +263,6 @@
     "entry": 376,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED DIVERGENCE explain of entry 323 (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 378,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 322: DECISION DIVERGENCE (#116): hosted's 8/7 tree (query unchanged, the upstream listed with only its last-updated line); the local own_target_modified rebuild of a custom node renders nothing."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
