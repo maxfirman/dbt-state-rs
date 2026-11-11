@@ -714,21 +714,15 @@ fn judge_equivalent(
 }
 
 /// Whether `source` recorded exactly the genuine upstream relations this
-/// submit reads.
+/// submit reads, however each is spelled
+/// ([`result_copy::canonical_reads`]): a relation it shares with the submit
+/// is then judged for drift, never copied unjudged as if it were another
+/// environment's (PR #127 review).
 fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
-    let names = |tables: &[crate::store::InputTable], own: &str| {
-        let mut n: Vec<String> = tables
-            .iter()
-            .filter(|t| t.name != own)
-            .map(|t| t.name.clone())
-            .collect();
-        n.sort();
-        n
-    };
     // A client-requested copy records none; it reads what its submit reads.
     source.input_tables.is_empty() && source.clone_source_table.is_some()
-        || names(&source.input_tables, &source.target_table)
-            == names(&evidence.input_tables, &evidence.target_table)
+        || result_copy::canonical_reads(&source.input_tables, &source.target_table, None)
+            == result_copy::canonical_reads(&evidence.input_tables, &evidence.target_table, None)
 }
 
 /// How many current equivalents the Result copy fallback considers, newest
@@ -739,26 +733,32 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
 const COPY_CANDIDATE_LIMIT: i64 = 16;
 
 /// Every current equivalent of the submit, up to [`COPY_CANDIDATE_LIMIT`], in
-/// the store's preference order (newest build first).
+/// the store's preference order (newest build first). A candidate the lookup
+/// does not admit (a rehomed identity matched in another schema) is dropped
+/// after the read, so it can only cost an equivalent past the cap.
 async fn copy_candidates(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     lookup: &EquivalentLookup<'_>,
 ) -> sqlx::Result<Vec<CopyCandidate>> {
-    store
+    let candidates = store
         .find_copy_candidates(
             org_id,
             &CopyCandidateQuery {
                 table_namespace: lookup.table_namespace,
-                node_namespace_logic_hash: lookup.node_namespace_logic_hash,
+                node_namespace_logic_hashes: &lookup.logic_hashes(),
                 execution_type: lookup.execution_type,
                 exclude_target: lookup.exclude_target,
                 dialect: &req.dialect,
                 limit: COPY_CANDIDATE_LIMIT,
             },
         )
-        .await
+        .await?;
+    Ok(candidates
+        .into_iter()
+        .filter(|candidate| lookup.admits(candidate))
+        .collect())
 }
 
 /// `candidate` as a copy source, if the warehouse rules accept it for the

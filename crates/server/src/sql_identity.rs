@@ -452,3 +452,265 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
     graph.queries.sort();
     Some(graph)
 }
+
+/// Whether a model's SQL reads a relation: a table or view it names in a
+/// FROM or JOIN, other than a CTE in scope. A CTE, a VALUES list and a
+/// table function are not relations; a CTE reads one only through its own
+/// FROM. A CTE is in scope in its query's body and nested queries and in
+/// its later sibling CTEs (every sibling under RECURSIVE), never outside
+/// its query. `None` when the SQL is not one parseable query in `dialect`,
+/// or when a CTE names itself or a later sibling without RECURSIVE (which
+/// warehouses resolve differently) and no relation is read elsewhere.
+///
+/// Explain evidence for a view, whose upstreams client 2.0.11 does not
+/// report: hosted says `no upstream dependencies` for a view that reads no
+/// relation, and `upstream data is up to date` for one that does (VERIFIED
+/// LIVE 2026-11-11, explain_view_reads_no_relation.jsonl: no FROM, a CTE
+/// without FROM, VALUES and FLATTEN read none; a `ref` reads one; #117).
+pub fn reads_relation(sql: &str, dialect: &dyn Dialect) -> Option<bool> {
+    use sqlparser::ast::{Ident, Visit, Visitor};
+
+    // Snowflake identifier rules: unquoted folds to upper case, quoted is exact.
+    fn key(ident: &Ident) -> String {
+        match ident.quote_style {
+            Some(_) => ident.value.clone(),
+            None => ident.value.to_ascii_uppercase(),
+        }
+    }
+    /// What a one-part name means at a point of the query: a CTE in scope,
+    /// or a CTE whose resolution differs across warehouses.
+    #[derive(Clone, Default)]
+    struct Scope {
+        ctes: std::collections::HashSet<String>,
+        ambiguous: std::collections::HashSet<String>,
+    }
+    impl Scope {
+        fn with_cte(mut self, name: &str) -> Self {
+            self.ambiguous.remove(name);
+            self.ctes.insert(name.to_owned());
+            self
+        }
+        fn with_ambiguous(mut self, name: &str) -> Self {
+            self.ctes.remove(name);
+            self.ambiguous.insert(name.to_owned());
+            self
+        }
+    }
+    /// One query being visited: the scope around it, its own CTEs in
+    /// definition order, and the scope of its body.
+    struct Frame {
+        outer: Scope,
+        ctes: Vec<(*const Query, String)>,
+        recursive: bool,
+        body: Scope,
+    }
+    #[derive(Default)]
+    struct Relations {
+        frames: Vec<Frame>,
+        ambiguous: bool,
+    }
+    impl Visitor for Relations {
+        type Break = ();
+        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+            let outer = match self.frames.last() {
+                None => Scope::default(),
+                Some(parent) => {
+                    match parent
+                        .ctes
+                        .iter()
+                        .position(|(cte, _)| std::ptr::eq(*cte, query))
+                    {
+                        // The definition of the parent's i-th CTE sees the
+                        // earlier siblings; itself and later ones only under
+                        // RECURSIVE.
+                        Some(i) => parent.ctes.iter().enumerate().fold(
+                            parent.outer.clone(),
+                            |scope, (j, (_, name))| {
+                                if j < i || parent.recursive {
+                                    scope.with_cte(name)
+                                } else {
+                                    scope.with_ambiguous(name)
+                                }
+                            },
+                        ),
+                        None => parent.body.clone(),
+                    }
+                }
+            };
+            let (ctes, recursive) = match &query.with {
+                Some(with) => (
+                    with.cte_tables
+                        .iter()
+                        .map(|c| (&*c.query as *const Query, key(&c.alias.name)))
+                        .collect(),
+                    with.recursive,
+                ),
+                None => (Vec::new(), false),
+            };
+            let body = ctes.iter().fold(outer.clone(), |scope: Scope, (_, name)| {
+                scope.with_cte(name)
+            });
+            self.frames.push(Frame {
+                outer,
+                ctes,
+                recursive,
+                body,
+            });
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _query: &Query) -> ControlFlow<()> {
+            self.frames.pop();
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
+            let TableFactor::Table {
+                name, args: None, ..
+            } = factor
+            else {
+                return ControlFlow::Continue(());
+            };
+            let [ObjectNamePart::Identifier(ident)] = name.0.as_slice() else {
+                return ControlFlow::Break(());
+            };
+            let name = key(ident);
+            let scope = self.frames.last().map(|frame| &frame.body);
+            if scope.is_some_and(|scope| scope.ctes.contains(&name)) {
+                ControlFlow::Continue(())
+            } else if scope.is_some_and(|scope| scope.ambiguous.contains(&name)) {
+                self.ambiguous = true;
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+    }
+
+    let statements = Parser::parse_sql(dialect, sql).ok()?;
+    let [statement @ Statement::Query(_)] = statements.as_slice() else {
+        return None;
+    };
+    let mut relations = Relations::default();
+    if statement.visit(&mut relations).is_break() {
+        Some(true)
+    } else if relations.ambiguous {
+        None
+    } else {
+        Some(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_relation;
+    use sqlparser::dialect::SnowflakeDialect;
+
+    fn reads(sql: &str) -> Option<bool> {
+        reads_relation(sql, &SnowflakeDialect {})
+    }
+
+    /// The SQL of explain_view_reads_no_relation.jsonl's views, and of the
+    /// views over a `ref` in explain_happy_history.jsonl and
+    /// explain_snapshot_history.jsonl (`s72vl`).
+    #[test]
+    fn captured_views_read_a_relation_only_through_a_named_table() {
+        for sql in [
+            "\nselect 1 as id, 'vr0_0_x' as v",
+            "\nwith a as (select 1 as id, 'vrc_0_x' as v)\nselect id, v from a",
+            "\nselect column1 as id, column2 as v from (values (1, 'vrv_0_x'))",
+            "\nselect f.value::int as id, 'vrf_0_x' as v\nfrom table(flatten(input => array_construct(1, 2))) f",
+        ] {
+            assert_eq!(reads(sql), Some(false), "{sql}");
+        }
+        for sql in [
+            "\nselect id, v, 'vrr_0_x' as r from CDO_DEMO_DB.prod_state_demo.vrt_x",
+            "\nselect id, v from CDO_DEMO_DB.prod_state_demo.s72st_193451c25ab4 where id >= 1",
+            "\nselect id from CDO_DEMO_DB.prod_state_demo.hh_mid_000317",
+        ] {
+            assert_eq!(reads(sql), Some(true), "{sql}");
+        }
+    }
+
+    /// A relation read anywhere counts: through a CTE, a join, a subquery in
+    /// an expression or a set operation. A one-part name is a CTE only when
+    /// the query defines one by that name.
+    #[test]
+    fn a_relation_read_anywhere_in_the_query_counts() {
+        for sql in [
+            "with a as (select id from DB.S.T) select id from a",
+            "select 1 as id from (select 1) x join DB.S.T t on true",
+            "select (select max(id) from DB.S.T) as id",
+            "select 1 as id where exists (select 1 from T)",
+            "select 1 as id union all select id from DB.S.T",
+            "with a as (select 1 as id) select id from b",
+            "with a as (select 1 as id) select id from S.A",
+            "with \"a\" as (select 1 as id) select id from a",
+        ] {
+            assert_eq!(reads(sql), Some(true), "{sql}");
+        }
+        for sql in [
+            "with a as (select 1 as id) select id from A",
+            "with a as (select 1 as id), b as (select id from a) select id from b",
+            "select 1 as id union all select 2",
+        ] {
+            assert_eq!(reads(sql), Some(false), "{sql}");
+        }
+    }
+
+    /// A CTE name hides a table only inside the query that defines it: in
+    /// that query's body and its nested queries, and in its later sibling
+    /// CTEs. A CTE defined in a nested query does not hide the outer query's
+    /// table of the same name (#125 review).
+    #[test]
+    fn a_cte_name_hides_a_table_only_within_its_query() {
+        for sql in [
+            "select * from t where exists (with t as (select 1) select * from t)",
+            "select * from (with t as (select 1) select * from t) x join t on true",
+            "with a as (with t as (select 1) select * from t) select * from t",
+            "with a as (select 1) select * from (with t as (select 1) select * from a) x, t",
+        ] {
+            assert_eq!(reads(sql), Some(true), "{sql}");
+        }
+        for sql in [
+            "select * from (with t as (select 1) select * from t) x",
+            "with t as (select 1) select * from (select * from t) x",
+            "with t as (select 1) select * from t where exists (select 1 from t)",
+            "with a as (select 1), b as (select * from (select * from a) x) select * from b",
+            "with recursive r as (select 1 as n union all select n + 1 from r where n < 3) select n from r",
+        ] {
+            assert_eq!(reads(sql), Some(false), "{sql}");
+        }
+    }
+
+    /// A CTE that names itself or a later sibling without RECURSIVE resolves
+    /// differently across warehouses, so it is unknown evidence, unless a
+    /// relation is read elsewhere in the query.
+    #[test]
+    fn a_cte_naming_itself_or_a_later_sibling_is_unknown() {
+        for sql in [
+            "with a as (select * from b), b as (select 1) select * from a",
+            "with r as (select 1 as n union all select n + 1 from r where n < 3) select n from r",
+            "with t as (select 1) select * from (with a as (select * from t), t as (select 1) select * from a) x",
+        ] {
+            assert_eq!(reads(sql), None, "{sql}");
+        }
+        assert_eq!(
+            reads(
+                "with a as (select * from b), b as (select 1) select * from a join DB.S.T on true"
+            ),
+            Some(true)
+        );
+    }
+
+    /// Anything but one parseable query is unknown evidence.
+    #[test]
+    fn sql_that_is_not_one_query_is_unknown() {
+        for sql in [
+            "",
+            "select from from",
+            "select 1; select 2",
+            "create table DB.S.T as select 1",
+        ] {
+            assert_eq!(reads(sql), None, "{sql:?}");
+        }
+    }
+}

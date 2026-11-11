@@ -298,6 +298,7 @@ fn submit_capture(
         skip_rejection_reason: record.skip_rejection_reason,
         clone_rejection_reason: record.clone_rejection_reason,
         unmatched_execution_id: record.unmatched_execution_id,
+        reads_relation: None,
     }
 }
 
@@ -324,6 +325,13 @@ fn capture_submit(
             .iter()
             .map(|d| d.name.clone())
             .collect(),
+        // Client 2.0.11 reports no upstreams for a view, so Explain words its
+        // freshness from whether its SQL reads a relation (#117).
+        reads_relation: (req.execution_type == ModelExecutionType::View as i32)
+            .then(|| {
+                crate::warehouse::Warehouse::from_dialect(&req.dialect).sql_reads_relation(&req.sql)
+            })
+            .flatten(),
         ..submit_capture(
             meta,
             outcome,
@@ -676,6 +684,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     skip_rejection_reason: None,
                     clone_rejection_reason: None,
                     unmatched_execution_id: None,
+                    reads_relation: None,
                 },
             );
         }
@@ -791,6 +800,8 @@ impl Explain for ExplainService {
                 // did not have the identity of (migration 0017): the SHAPE 7
                 // freshness listing is judged against it.
                 unmatched: row.unmatched(),
+                // Whether a view's SQL reads a relation (migration 0019).
+                reads_relation: row.reads_relation,
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
                 // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a

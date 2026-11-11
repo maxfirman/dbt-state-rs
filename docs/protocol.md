@@ -367,6 +367,15 @@ logic identity and `execution_type`. On Snowflake that identity abstracts
 physical schemas and binds each dependency's schema-abstracted name to its
 definition, so swapping two definitions between references is not equivalent
 (`clone_fallback_swapped_bindings.jsonl`, `clone_fallback_dep_binding_swap.jsonl`).
+A Snowflake submit whose SQL reads a fixed schema other than its own, for
+example a dev model reading a prod source with byte-identical SQL, also
+matches a build in that schema when the submit, with its Target relation's
+schema read as that schema, has the build's logic (the RegisterClone
+adoption rule of #93; `explain_post_copy_identity.jsonl` entries 18–19,
+`explain_incremental_submit_copy.jsonl` entries 9–10, #107). Before such a
+build is copied, its recorded upstream reads must be exactly the submit's,
+read in that schema: its Target relation's schema alone does not show where
+it resolved its references.
 DuckDB computes it only for its checked copy subset
 ([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md)). Other dialects
 have no copy identity and never take this path.
@@ -388,7 +397,7 @@ ordinary description and Explain tree, and reports the equivalent in its codes
 | Submit | Newest equivalent | Codes | Hosted evidence (client 2.0.11) |
 |---|---|---|---|
 | view, snapshot, custom | same execution type | 1 / 3 | `explain_copy_probes.jsonl` entries 13–14, `explain_custom_copy.jsonl` entry 9 |
-| incremental (any strategy) | same execution type | 1 / 6 | `explain_incremental_copy_over.jsonl` entries 38, 39, 41 |
+| incremental (any strategy) | same execution type | 1 / 6 | `explain_incremental_copy_over.jsonl` entries 38, 39, 41; `explain_incremental_submit_copy.jsonl` entries 9–10 |
 | any of these | another execution type | 1 / 2 | `explain_incremental_copy_over.jsonl` entries 37, 40 |
 
 The equivalent is chosen the way a FULL submit chooses the one it copies,

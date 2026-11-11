@@ -75,6 +75,9 @@ pub struct CaptureInput {
     /// A rebuild without a matched build: the latest build in scope, whose
     /// identity did not match (migration 0017).
     pub unmatched_execution_id: Option<i64>,
+    /// A view decision: whether the view's SQL reads a relation (migration
+    /// 0019). `None` for every other node kind and for unparseable SQL.
+    pub reads_relation: Option<bool>,
 }
 
 /// Record a decision. Best-effort: logs a warning on failure, never panics.
@@ -200,10 +203,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
             execution_runtime_ms, query_dependencies, matched_execution_id,
             decision_reason, freshness_tolerance_ms, build_age_ms,
-            skip_rejection_reason, clone_rejection_reason, unmatched_execution_id
+            skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
+            reads_relation
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
         "#,
     )
     .bind(&i.org_id)
@@ -238,6 +242,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(i.skip_rejection_reason)
     .bind(i.clone_rejection_reason)
     .bind(i.unmatched_execution_id)
+    .bind(i.reads_relation)
     .execute(pool)
     .await?;
 

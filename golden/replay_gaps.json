@@ -157,64 +157,10 @@
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
-    "fixture": "explain_incremental_submit_copy.jsonl",
-    "entry": 9,
-    "local_variant": "ready_to_execute",
-    "reason": "CODE DIVERGENCE (#107): the APPEND incremental `sa73` (state.pre_clone never) is submitted into an absent dev relation while its prod build exists. Both build it as a first build with the same description and tree, but hosted reports skip=1 TARGET_TABLE_MISMATCH (an equivalent exists under another name) and does not copy it (clone=6); this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema (the submit-time equivalent search is not rehomed, unlike RegisterClone adoption), and reports 6/6.",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_incremental_submit_copy.jsonl",
-    "entry": 10,
-    "local_variant": "ready_to_execute",
-    "reason": "CODE DIVERGENCE (#107): the MERGE incremental `sm73` (state.pre_clone never) is submitted into an absent dev relation while its prod build exists. Both build it as a first build with the same description and tree, but hosted reports skip=1 TARGET_TABLE_MISMATCH (an equivalent exists under another name) and does not copy it (clone=6); this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema (the submit-time equivalent search is not rehomed, unlike RegisterClone adoption), and reports 6/6.",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_post_copy_identity.jsonl",
-    "entry": 18,
-    "local_variant": "ready_to_execute",
-    "reason": "CODE DIVERGENCE (#107): the dev_clone first build of the view `c93upv`, whose SQL reads a fixed prod_state_demo source, while its prod build exists. Both build it with 'model was executed because its table did not exist'; hosted reports 1/3 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL), this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema, and reports 6/6.",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_post_copy_identity.jsonl",
-    "entry": 19,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#107): the dev_clone submit of the FULL table `c93upt`, whose SQL reads a fixed prod_state_demo source, into an absent dev relation while its prod build exists. Hosted copies the prod build ('an equivalent model exists under another name so we cloned that one', 1/-); this server finds no equivalent, because the prod build's schema-abstracted logic was computed under the prod default schema, and builds it (6/6). Its confirmation is then an unknown baseline locally."
-  },
-  {
     "fixture": "explain_copy_probes.jsonl",
     "entry": 12,
     "local_variant": "ready_to_execute",
     "reason": "DECISION DIVERGENCE (#91): the dev_clone seed load of a seed already loaded in prod_demo with the same values. Hosted copies it on submit (ready_to_clone, 1/-, 'an equivalent seed exists under another name so we cloned that one'); this server never copies seeds and loads it ('seed was loaded because it did not exist', 6/6)."
-  },
-  {
-    "fixture": "explain_copy_probes.jsonl",
-    "entry": 13,
-    "local_variant": "ready_to_execute",
-    "reason": "IDENTITY GAP (#107), not the copy rule: the dev_clone first build of a view whose equivalent exists in prod_demo. Both build with 'model was executed because its table did not exist' and the same tree. Hosted reports TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL (1/3), which this server now sends for a view whose equivalent it finds (FULL-only submit copy, #92). It finds none here: the dev SQL reads the prod source through deferral under default schema dev_clone_demo, so its schema-abstracted logic differs from the prod build's and the submit-time equivalent search is not rehomed (as explain_incremental_submit_copy.jsonl entries 9-10), and it reports 6/6.",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_copy_probes.jsonl",
-    "entry": 14,
-    "local_variant": "ready_to_execute",
-    "reason": "IDENTITY GAP (#107), not the copy rule: the dev_clone first build of a snapshot whose equivalent exists in prod_demo (no RegisterClone: its target_schema=target.schema makes the deferred relation the dev one). Both build with 'snapshot was executed because its table did not exist'. Hosted reports 1/3, which this server now sends for a snapshot whose equivalent it finds (FULL-only submit copy, #92). It finds none here: the dev SQL reads the prod source under default schema dev_clone_demo, so its schema-abstracted logic differs from the prod build's and the submit-time equivalent search is not rehomed, and it reports 6/6.",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
   },
   {
     "fixture": "explain_copy_probes.jsonl",
@@ -278,12 +224,6 @@
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 246,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 181: NOT RENDERED (#117): same decision (execution_type_changed, 2/2); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 297,
     "local_variant": "ready_to_execute",
     "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
@@ -323,12 +263,6 @@
     "entry": 376,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED DIVERGENCE explain of entry 323 (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 377,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 305: NOT RENDERED (#117): same decision (own_target_modified, 'the view definition is newer'); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
