@@ -113,7 +113,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 
 | Table | Contents |
 |---|---|
-| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`). |
+| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`). |
 | `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus `target_table` for deferral. |
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs. Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |

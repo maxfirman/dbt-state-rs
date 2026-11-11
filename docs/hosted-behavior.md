@@ -84,7 +84,9 @@ reproducible skip.
 | Scenario | Hosted | Reproduced |
 |---|---|---|
 | Incremental | copy via `RegisterClone` | ✅ |
-| Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy; ❌ the post-copy submit: hosted skips, the server rebuilds (#93) |
+| Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy and the post-copy SKIP (#93) |
+| Post-copy submit after the dev-clone pre-step: the source build's SQL over a fixed prod source, a ref'd table or a ref'd view resolved per target (client 2.0.11, `explain_post_copy_identity.jsonl`) | skip, with the source build's `execution_runtime_ms` | ✅ (the submit is read in the copy source's schema, #93) |
+| Table or view whose SQL reads a fixed prod-schema source, dev target missing, prod equivalent exists (client 2.0.11, `explain_post_copy_identity.jsonl` entries 18–19) | table: `ready_to_clone` (srr=1); view: build 1 / 3 | ❌ no equivalent found: build 6 / 6 (#107) |
 | Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅, codes 6 / 6 ❌ (#92) |
 | View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅, codes 6 / 6 ❌ (#92) |
 | Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
@@ -113,15 +115,21 @@ reproducible skip.
   it with `is_stale=true`; the server copies on the first submit. This
   interaction is open (see the `CHARACTERIZATION_ONLY` comments in
   `crates/harness/tests/conformance.rs`).
-- **Post-copy incremental submit** (#93, as for the snapshot below): after the dev-clone pre-step copies
-  an incremental that reads a source in the prod schema, hosted skips the
-  unchanged submit; the server does not adopt the copy and rebuilds
-  (`explain_incremental_copy_history.jsonl`).
+- **Submit-time equivalent of a model over a fixed prod-schema source**
+  (#107): the Result copy fallback looks equivalents up by the submit's
+  request-relative schema-abstracted logic, which differs from the prod
+  build's when the fixed schema is the prod default schema. Hosted finds the
+  equivalent (`explain_post_copy_identity.jsonl` entries 18–19,
+  `explain_incremental_submit_copy.jsonl` entries 9–10). RegisterClone
+  adoption does not have this gap (#93).
 - **Incremental self-reference after a copy**: hosted skips the final resubmit
   in `clone_chain_source_age.jsonl`; the server rebuilds (pinned by
   `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`).
-- **Copies seen by the #76 probes** (seed copy, non-FULL rejection codes, the
-  post-copy snapshot SKIP): #91, #92, #93, keyed in `golden/replay_gaps.json`.
+  Not the #93 cause: that submit's schema already matched the copy, but it
+  adds an `is_incremental()` predicate and its Target relation's epoch is
+  newer than the copy's confirmation.
+- **Copies seen by the #76 probes** (seed copy, non-FULL rejection codes):
+  #91, #92, keyed in `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
 - **Unit test reuse** is not characterized.

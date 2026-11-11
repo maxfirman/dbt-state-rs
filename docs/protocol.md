@@ -479,19 +479,25 @@ Lifecycle:
   decision_description=""}}` with the deprecated oneof empty. No history is
   written and the client builds normally.
 - Otherwise a pending row is written for the target relation. On Snowflake it
-  inherits the source's current logic identity. After `ConfirmExecution`, a
+  inherits, from the source's current build, its logic identity, its
+  `execution_runtime_ms` and the names of the upstreams it recorded
+  (`executions.clone_source_inputs`). After `ConfirmExecution` (whose
+  runtime, null from client 2.0.11, does not replace the inherited one), a
   later submit for the target relation SKIPS when its schema-abstracted logic
-  matches and executes on a logic change.
+  matches, directly or with the submit's Target relation schema read as the
+  copy source's schema, and executes on a logic change. The SKIP reports the
+  source build's runtime, as hosted does (VERIFIED LIVE 2026-11-11,
+  `explain_post_copy_identity.jsonl`, `explain_snapshot_register_clone.jsonl`,
+  `explain_incremental_copy_history.jsonl`, #93).
 - A copy records no inputs. Its freshness is anchored on the copy's own build
   epoch: an upstream newer than the copy drifts, one older than the copy but
   newer than the source's build does not (`clone_chain_source_age.jsonl`,
   `clone_chain_upstream_drift.jsonl`).
-- A later submit that cannot adopt the copy (its schema-abstracted logic
-  differs from the inherited one, or none was inherited) rebuilds with the
-  same wire answer as an identity mismatch (6 / 6) and the Decision reason
-  `no_reuse_candidate.copy_logic_mismatch`, which renders no Explain tree.
-  Hosted SKIPs such a submit when it has the source build's SQL text and only
-  the schemas differ (#93, `explain_snapshot_register_clone.jsonl` entry 7).
+- A later submit that cannot adopt the copy (its logic differs from the
+  inherited one even read in the source's schema, or none was inherited)
+  rebuilds with the same wire answer as an identity mismatch (6 / 6) and the
+  Decision reason `no_reuse_candidate.copy_logic_mismatch`, which renders no
+  Explain tree (no capture, #104).
 
 Client 2.0.11 (VERIFIED LIVE 2026-11-10, `explain_snapshot_register_clone.jsonl`):
 the pre-step needs a deferred node whose relation differs from the dev one,
