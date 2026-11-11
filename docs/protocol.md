@@ -74,6 +74,13 @@ node_configs_hash?, node_contract_hash?, project_id?, …}`,
 `compare_unrendered_code`, `table_namespace?`, `ignore_external_modifications`,
 `allow_clones?`, `is_defer_to_profile`, `defer_enabled`.
 
+Only a data test (`DBT_DATA_TEST`) may leave `target_table` unset or `""`;
+client 2.0.11 always sets it for other nodes. The server rejects any other
+submit without a target with `INVALID_ARGUMENT` before deciding or recording
+anything (#81). Hosted answers `INVALID_ARGUMENT` "Failed to process SQL" for
+`""` and `INTERNAL` for unset (crafted d3 / d3e); the unset case is an
+[accepted divergence](correctness-handoff.md#accepted-divergences).
+
 DuckDB note: for the optional local DuckDB extension, `last_modified_epoch` is
 a durable file/generation-wide ordinal, not Unix milliseconds, and freshness
 compares ordering only. See the
@@ -289,7 +296,8 @@ and fingerprints.
    upstream epochs. Data tests never get a Result copy. A failing test is
    reused like a passing one and the SKIP echoes the cached failure.
    Hosted differs in two captured cases, both keyed divergences: it reuses a
-   test confirmed with incomplete results and echoes them (#87, crafted), and
+   test confirmed with incomplete results and echoes them (#87, crafted, an
+   [accepted divergence](correctness-handoff.md#accepted-divergences)), and
    it ignores a `store_failures` test's own audit relation, which the client
    reports in `tables` once it exists (#88).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server

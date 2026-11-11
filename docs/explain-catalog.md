@@ -85,7 +85,7 @@ Source fixtures (`golden/fixtures/`):
 - `explain_incomplete_test_results.jsonl`: crafted probes, a data test
   confirmed without complete cached results, then resubmitted
   (`experiments/incomplete_test_results.py`). Hosted SKIPs; keyed
-  divergence #87.
+  accepted divergence #87.
 
 ## How to read this catalog
 
@@ -213,7 +213,7 @@ delete+insert and microbatch fixtures and the 5 in
    ([DATA TEST](#data-test)). Two rebuilds are local-only, empty tree,
    because hosted SKIPs the test instead: cached results that are
    incomplete (`no_reuse_candidate.incomplete_cached_test_results`, crafted
-   only, divergence #87) and a `store_failures` test whose audit relation
+   only, accepted divergence #87) and a `store_failures` test whose audit relation
    newly appears in its inputs (`dependency_set_changed`, divergence #88).
    A test failing reuse qualification is out of scope → #67
    ([Decision reason coverage](#decision-reason-coverage)).
@@ -779,8 +779,8 @@ upstream). Nothing else:
   which serves what was confirmed (`{"fields": {}}` or `failures` alone) with
   the ordinary SKIP tree. This server rebuilds for
   `no_reuse_candidate.incomplete_cached_test_results`, which renders nothing
-  (divergence #87, keyed gaps `explain_incomplete_test_results.jsonl` 2, 3,
-  6, 7). Client 2.0.11 always confirms all three result fields.
+  (accepted divergence #87, keyed gaps `explain_incomplete_test_results.jsonl`
+  2, 3, 6, 7). Client 2.0.11 always confirms all three result fields.
 - `no_reuse_candidate.failed_reuse_qualification`: out of scope → #67 (the
   client sends it for `evaluate_volatile_sql: true`).
 
@@ -1050,8 +1050,8 @@ the same identity two seconds later.
 
 | Decision reason | When this server records it | Hosted (crafted probe) | Status |
 |---|---|---|---|
-| `no_reuse_candidate.own_target_changed_or_missing` (model) | The Target relation is reported twice or with no epoch, or the submit has no target and a build with no target exists | d1, reported twice with the build's epoch: SKIP, ordinary SKIP tree (entries 2–3). d2, no epoch: rebuild as a missing Target relation, codes 4 / 7, first-build tree (entries 6–7). d3 / d3e, target unset / `""`: `Internal` / `InvalidArgument` error, not recorded | local-only, empty tree. Divergences #80 (d1, d2) and #81 (d3: this server answers a Result copy of the node's own build) |
-| `no_build_anchor` | The reuse candidate's build was confirmed without an epoch and the node has genuine upstreams | d4: the ConfirmExecution without an epoch fails (`Internal`, "Database operation failed"), so hosted holds no such build. The decisive submit was not sent | local-only, empty tree. Divergence #82 |
+| `no_reuse_candidate.own_target_changed_or_missing` (model) | The Target relation is reported twice or with no epoch | d1, reported twice with the build's epoch: SKIP, ordinary SKIP tree (entries 2–3). d2, no epoch: rebuild as a missing Target relation, codes 4 / 7, first-build tree (entries 6–7). d3 / d3e, target unset / `""`: `Internal` / `InvalidArgument` error, not recorded | local-only, empty tree. Accepted divergence #80 (d1, d2). d3 / d3e: this server rejects a non-test submit with no target with `InvalidArgument` before deciding (#81) |
+| `no_build_anchor` | The reuse candidate's build was confirmed without an epoch and the node has genuine upstreams | d4: the ConfirmExecution without an epoch fails (`Internal`, "Database operation failed"), so hosted holds no such build. The decisive submit was not sent | local-only, empty tree. Accepted divergence #82 |
 | `no_reuse_candidate.own_target_modified` with genuine upstreams and no matched build | The anchor's `executions` row disappeared after the decision (`reuse_candidate::Selection::of` keeps the rejected row otherwise) | not probed: no request produces it | local-only, empty tree |
 
 A seed's `no_reuse_candidate.own_target_changed_or_missing` (its table was
@@ -1073,6 +1073,6 @@ Why client 2.0.11 cannot produce the first two (`a0fc53e`):
   (`run_cache_service.rs:2162-2172`).
 
 The hosted d1 and d2 trees use existing shapes (the anchored SKIP tree and the
-first-build tree). If #80 aligns the decisions, the server renders them
-through the ordinary SKIP and first-build arms, and the stale-exemption guard
-fails the four keyed gaps until they are removed.
+first-build tree). #80, #82 and #87 are accepted divergences
+([correctness-handoff.md](correctness-handoff.md#accepted-divergences)): the
+server keeps its conservative rebuilds, so their keyed gaps stay.
