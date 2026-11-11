@@ -218,6 +218,15 @@ server keeps the conservative behavior described.
   reason × node kind that renders a tree is backed by a tracked capture; the
   reachable cells without one render nothing until #104 captures them
   ([explain-catalog.md](explain-catalog.md#decision-reason-coverage)).
+- **A view that reads no relation (#117).** Client 2.0.11 reports no upstreams
+  for any view, yet hosted's VIEW tree says `no upstream dependencies` when
+  the view's SQL reads no relation (`explain_reason_kind_cells.jsonl` `vc0`,
+  `cv0`) and `upstream data is up to date` when it reads a `ref`
+  (`explain_snapshot_history.jsonl` `s72vl`). Neither the decision nor its
+  matched build records which, so the server renders nothing for the two
+  captured VIEW cells (`own_target_modified`, `execution_type_changed`; keyed
+  `empty_tree` gaps, entries 246 and 377) and its VIEW SKIP arm would use the
+  second wording for a view reading no relation (no capture of that SKIP).
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
   tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy
@@ -284,6 +293,27 @@ replay fails when an entry becomes unused or resolved
     entries 9–10; field-scoped). #93 resolved the same gap for RegisterClone
     adoption, where the copy names its source; the equivalent search has no
     source to read the submit against.
+- **Snapshot and custom node over a modified Target relation (#115, client
+  2.0.11).** Hosted reuses a snapshot whose Target relation a later
+  `--full-refresh` (FULL) build rewrote or an External modification changed,
+  and a custom node whose relation was modified externally or replaced by a
+  view build in between (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`,
+  `sn_e`, `sn_ez`, `vc`, `cv0`). The incrementals, FULL and VIEW rebuild in
+  the same situations. The server keeps reuse invariant 3 and rebuilds them
+  with `own_target_modified` (6 / 6); its Explain tree for that rebuild of a
+  snapshot or custom node renders nothing. Keyed gaps: entries 171, 187,
+  297, 311, 313, 323 (submits) and 225, 231, 369, 375, 376, 379 (Explain,
+  `empty_tree`).
+- **View ↔ custom node over an upstream (#116, client 2.0.11).** With the
+  same SQL and semantic extras (`lookback`), hosted treats the switch as an
+  execution type change only when the SQL reads no relation (`vc0`, `cv0`,
+  2 / 2). Over an upstream, which the view does not report and the custom
+  node does, it answers 6 / 6, and 8 / 7 for the custom node over view and
+  custom builds (`vc`, `cv`). The server answers 2 / 2 and judges the last
+  one as `own_target_modified` (6 / 6) against the older custom build. Both
+  rebuild; codes and the last description differ, and the server's trees
+  for them render nothing. Keyed gaps: entries 163, 182, 322 (field-scoped)
+  and 243, 245, 378 (Explain, `empty_tree`).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
   2.0.6 got `ready_to_clone` for a MERGE incremental over an existing target
   (`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`

@@ -30,7 +30,9 @@ Open questions and deliberate divergences live in
 | Incremental `unique_key` change | 3 | build | ✅ |
 | Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
 | Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution", judged against the last incremental build) | ✅ |
-| Same SQL, other execution type (snapshot under `--full-refresh`, table ↔ append, merge ↔ delete+insert), no build of the new type | — | build, 2 / 2 (`EXECUTION_TYPE_MISMATCH`), the node-query-unchanged Explain tree against the latest build (`explain_snapshot_history.jsonl`, `explain_execution_type_change.jsonl`) | ✅ |
+| Same SQL, other execution type (snapshot under `--full-refresh`, table ↔ append, merge ↔ delete+insert, an incremental or snapshot first built under `--full-refresh`, view ↔ custom node reading no relation), no build of the new type | — | build, 2 / 2 (`EXECUTION_TYPE_MISMATCH`), the node-query-unchanged Explain tree against the latest build (`explain_snapshot_history.jsonl`, `explain_execution_type_change.jsonl`, `explain_reason_kind_cells.jsonl`) | ✅ |
+| Same SQL, view ↔ custom node over an upstream (the view reports no upstreams, the custom node does) | 10, 11 | build, 6 / 6; back to the custom node, 8 / 7 (another identity) | ❌ 2 / 2, then 6 / 6 "modified after the cached execution" (#116) |
+| Custom node with `on_schema_change` set ↔ table, same SQL | 1, 11 | build, 6 / 6 or 8 / 7: the client sends only `lookback` for a custom node, so it never shares a table's identity (`explain_reason_kind_cells_custom.jsonl`) | ✅ |
 | Same, back to an execution type with an older build | — | build ("the table was modified after the cached execution", judged against that older build) | ✅ |
 | Same SQL, table → view → table | 1 | build, 8 / 7 (a view sends other `semantic_extras`, so its build has another identity; the older table build matches) | ✅ |
 | Incremental fully refreshed (recorded FULL), then materialized as a table with the same SQL and extras | 1 | skip (the recorded row is a build) | ✅ |
@@ -43,7 +45,8 @@ Open questions and deliberate divergences live in
 | Upstream rebuilt by dbt with the same logic, or source changed, Build age under `lag_tolerance` | — | skip "within lag tolerance", `is_stale=true` | ✅ |
 | Same, Build age over `lag_tolerance` | — | build | ✅ |
 | Upstream externally modified after the build the model consumed | — | build ("an upstream model query has changed") under any policy or tolerance | ✅ |
-| Target relation modified after its build | — | build ("the table was modified after the cached execution") | ✅ |
+| Target relation modified after its build | — | build ("the table was modified after the cached execution"; for a view, "the view definition is newer than the cached execution") | ✅ |
+| Snapshot or custom node whose Target relation was modified after its build (External modification, a later `--full-refresh`, or another materialization's build in between) | 7, 11 | skip (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`, `sn_e`, `sn_ez`, `vc`, `cv0`) | ❌ the server rebuilds (reuse invariant 3, #115) |
 | Seed's own table externally modified, values unchanged | VALUES | skip | ❌ deliberate: the server reloads (keyed safety floor, `lag_seed_upstream.jsonl`) |
 
 The Lag tolerance rule is recorded in
