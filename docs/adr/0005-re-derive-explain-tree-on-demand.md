@@ -22,7 +22,7 @@ recording which confirmed `executions` row the SKIP/reuse decision matched (the
 caller already holds this id). Everything else is re-derived.
 
 > **Amended by #73** (as revised by the #40 code review): a second nullable
-> id, `node_decisions.unmatched_execution_id BIGINT REFERENCES executions(id)`
+> id, `node_decisions.unmatched_execution_id BIGINT REFERENCES executions(id) ON DELETE SET NULL`
 > (migration 0017), records, for a rebuild with no matched build, the latest
 > build in scope, whose identity did not match. Hosted judges the SHAPE 7
 > freshness listing against that build (`<FRESH>` / `<OUTDATED>`, the `«gap»`

@@ -10,6 +10,8 @@
 --
 -- NULLABLE: every other decision has none, and so has a rebuild recorded
 -- before this migration. Unknown evidence never proves freshness, so Explain
--- then omits the freshness summary line.
+-- then omits the freshness summary line. The pointer is evidence for
+-- Explain only, so deleting the build it names clears it (ON DELETE SET
+-- NULL) instead of blocking the delete.
 ALTER TABLE node_decisions
-    ADD COLUMN unmatched_execution_id BIGINT REFERENCES executions(id);
+    ADD COLUMN unmatched_execution_id BIGINT REFERENCES executions(id) ON DELETE SET NULL;
