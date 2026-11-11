@@ -8,6 +8,7 @@ scenario must bind and plan. No warehouse, no proxy, no dbt. Exit 0 on success.
 
 Run: python3 experiments/explain_capture_test.py
 """
+import json
 import os
 import socket
 import sys
@@ -198,6 +199,8 @@ for stmt in (
     f"delete from {SRC} where id = 2",
     f"truncate table {SRC}",
     f"drop table if exists {SRC}",
+    f"drop view if exists {SRC}",
+    f"drop view {SRC}",
 ):
     expect_accept(f"accepted: {stmt[:48]}…", lambda: ec.check_sql(stmt, RUN))
 
@@ -289,6 +292,51 @@ with tempfile.TemporaryDirectory() as work:
                        lambda: run.run_step(0, failing))
     finally:
         ec.subprocess.run = real_run
+
+
+# --- probe explains (#104) ------------------------------------------------------------
+# `via="probe"` sends GetExplainMessages for the node's current decision with
+# state-probe through the run's proxy: no dbt invocation, no target.
+PROBED = ec.Scenario("p", "", ("pa",), [
+    ec.Build("${pa}"),
+    ec.Explain("${pa}", intent="probe", via="probe"),
+    ec.Explain("${pa}", intent="dbt"),
+])
+pb = ec.bind(PROBED, RUN)
+pp = ec.plan(pb)
+if (pp.explains, pp.probe_explains, pp.total) != (1, 1, 2):
+    fail("a probe explain is not a dbt invocation", pp)
+ok("a probe explain is not a dbt invocation")
+expect_refusal("an Explain via something else is refused at bind time",
+               lambda: ec.bind(ec.Scenario("bad", "", ("pa",),
+                                           [ec.Explain("${pa}", intent="x", via="curl")]), RUN))
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(pb, 50999, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    pa = pb.names["pa"]
+    older = {"method": "SubmitEnrichedSQL", "request": {"execution_type": 2, "labels": {"dbt_node_name": pa}},
+             "response": {"response": {"ready_to_execute": {"execution_decision_id": "old", "request_id": "r"}}}}
+    newer = {"method": "SubmitEnrichedSQL", "request": {"execution_type": 2, "labels": {"dbt_node_name": pa}},
+             "response": {"response": {"skip_execution": {"execution_decision_id": "new"}}}}
+    other = {"method": "SubmitEnrichedSQL", "request": {"execution_type": 1, "labels": {"dbt_node_name": "x"}},
+             "response": {"response": {"skip_execution": {"execution_decision_id": "other"}}}}
+    run.rows = lambda: [older, newer, other]
+    calls = []
+    real_run = ec.subprocess.run
+
+    class _Ok:
+        returncode = 0
+
+    ec.subprocess.run = lambda cmd, **kw: calls.append((cmd, kw)) or _Ok()
+    try:
+        run.run_step(1, pb.steps[1])
+    finally:
+        ec.subprocess.run = real_run
+    if (len(calls) != 1 or calls[0][0] != [ec.PROBE_BIN, "explain"]
+            or json.loads(calls[0][1]["input"]) != {"execution_decision_ids": ["new"]}
+            or calls[0][1]["env"].get("PROBE_URL") != "http://127.0.0.1:50999"):
+        fail("a probe explain asks the run's proxy for the node's latest decision", calls)
+    ok("a probe explain asks the run's proxy for the node's latest decision")
 
 
 # --- oracle -------------------------------------------------------------------

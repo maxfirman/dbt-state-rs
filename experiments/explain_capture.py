@@ -14,7 +14,8 @@ stops itself:
    `GOLDEN_DIR` and log file under the work directory;
 4. runs the scenario steps: writes temporary nodes with per-run unique names
    (`<logical>_<HHMMSS><6 random hex>`), runs SQL on per-run objects,
-   builds, and explains one node per `dbt state explain` call;
+   builds, and explains one node per `dbt state explain` call (or per
+   `state-probe` GetExplainMessages call for an `Explain(..., via="probe")`);
 5. slices the captured window, runs the oracle (every Explain step explained
    the node's current decision, over a confirmed build in the window unless
    the step says `history=False`, with the intended decision and kind), and
@@ -23,7 +24,7 @@ stops itself:
 
 Usage:
   explain_capture.py SCENARIO --port PORT [--work-dir DIR] [--dry-run] [--keep-project]
-                     [--run-id ID]
+                     [--run-id ID [--prior-window EARLIER_WINDOW.jsonl]]
   explain_capture.py --list
 
 Build the proxy first: `cargo build -p dbt-state-harness --bin record-proxy`.
@@ -57,6 +58,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 SCENARIO_DIR = os.path.join(HERE, "capture_scenarios")
 PROXY_BIN = os.path.join(REPO, "target", "debug", "record-proxy")
+PROBE_BIN = os.path.join(REPO, "target", "debug", "state-probe")
 DEMO_DB = "CDO_DEMO_DB"
 DEMO_SCHEMAS = {"PROD_STATE_DEMO", "DEV_CLONE_DEMO"}
 PROFILE = "snowflake"
@@ -183,6 +185,12 @@ class Explain:
     `decision` (SKIP / EXECUTE / CLONE) and `execution_type` are the intended
     cell; None means "record whatever hosted decides". `history=False` for a
     first build, which has no State history by definition.
+
+    `via="probe"` sends the same `Explain.GetExplainMessages` call (one
+    execution_decision_id, the node's current decision in the window so far)
+    with `state-probe` through this run's proxy instead of `dbt state explain`.
+    It costs no dbt invocation and is not limited to the latest invocation's
+    decisions, so several nodes can be explained after one build.
     """
     select: str
     intent: str
@@ -191,12 +199,15 @@ class Explain:
     execution_type: int = None
     history: bool = True
     target: str = "prod_demo"
+    via: str = "dbt"
 
     def bind(self, m, run):
         sel = _sub(self.select, m, "Explain select")
         node = _sub(self.node, m, "Explain node") if self.node else sel
         if run not in sel or run not in node:
             raise CaptureError(f"Explain selects outside the run's nodes: {sel}")
+        if self.via not in ("dbt", "probe"):
+            raise CaptureError(f"Explain via {self.via!r} is not 'dbt' or 'probe'")
         return replace(self, select=sel, node=node)
 
 
@@ -222,9 +233,11 @@ class Plan:
     run_operations: int
     explains: int
     targets: set
+    probe_explains: int = 0
 
     @property
     def total(self):
+        """dbt invocations (probe explains are not dbt invocations)."""
         return self.builds + self.run_operations + self.explains
 
 
@@ -243,8 +256,10 @@ def plan(bound):
     return Plan(
         builds=sum(isinstance(s, Build) for s in steps),
         run_operations=sum(isinstance(s, Sql) for s in steps),
-        explains=sum(isinstance(s, Explain) for s in steps),
-        targets={s.target for s in steps if isinstance(s, (Build, Sql, Explain))},
+        explains=sum(isinstance(s, Explain) and s.via == "dbt" for s in steps),
+        targets={s.target for s in steps if isinstance(s, (Build, Sql))
+                 or (isinstance(s, Explain) and s.via == "dbt")},
+        probe_explains=sum(isinstance(s, Explain) and s.via == "probe" for s in steps),
     )
 
 
@@ -318,7 +333,7 @@ _TOKEN = re.compile(r"""\s+|'(?:[^'\\]|\\.)*'|"[^"]+"|[A-Za-z_][A-Za-z0-9_$]*|\d
 # Statement heads; each is followed by the one relation the statement writes.
 _HEADS = (("create", "or", "replace", "table"), ("create", "table"), ("insert", "into"),
           ("delete", "from"), ("update",), ("truncate", "table"), ("drop", "table", "if", "exists"),
-          ("drop", "table"))
+          ("drop", "table"), ("drop", "view", "if", "exists"), ("drop", "view"))
 
 
 def _is_ident(tok):
@@ -398,7 +413,7 @@ def check_sql(statement, run):
                                    f"{statement!r}")
             return
     raise CaptureError(f"statement form is not one of create table / insert / update / delete / "
-                       f"truncate / drop table: {statement!r}")
+                       f"truncate / drop table / drop view: {statement!r}")
 
 
 # --- oracle ----------------------------------------------------------------------------
@@ -515,6 +530,7 @@ class Run:
         self.logs = os.path.join(work, "dbt")
         self.proxy = None
         self.invocations = Counter()
+        self.prior = []  # an earlier run's window (--prior-window), for probe explains
 
     # environment
     def client_env(self):
@@ -625,12 +641,32 @@ class Run:
                 raise CaptureError(f"dbt build exited {rc}; see {log}")
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
+        elif isinstance(step, Explain) and step.via == "probe":
+            self.probe_explain(k, step)
         elif isinstance(step, Explain):
             rc, log = self.dbt(k, "explain", ["state", "explain", "--verbose", "--target",
                                               step.target, "--select", step.select])
             if rc:
                 print(f"  (dbt state explain exited {rc}; see {log})")
         time.sleep(0.2)
+
+    def probe_explain(self, k, step):
+        """GetExplainMessages for the node's current decision, sent by state-probe via the proxy."""
+        current = max((v for v in _mints(self.prior + self.rows()).items() if v[1][1] == step.node),
+                      default=None, key=lambda v: v[1][0])
+        if current is None:
+            print(f"  (no decision of {step.node} to explain yet)")
+            return
+        edid = current[0]
+        log = os.path.join(self.logs, f"{k:02d}_probe_explain.log")
+        env = dict(os.environ, PROBE_URL=f"http://127.0.0.1:{self.port}")
+        print(f"  $ state-probe explain  # {step.node} {edid}")
+        with open(log, "w") as fh:
+            rc = subprocess.run([PROBE_BIN, "explain"], input=json.dumps(
+                {"execution_decision_ids": [edid]}), text=True, env=env, stdout=fh,
+                stderr=subprocess.STDOUT).returncode
+        if rc:
+            print(f"  (state-probe explain exited {rc}; see {log})")
 
 
 def shared_status(path):
@@ -646,7 +682,7 @@ def off_demo_submits(rows):
             and not r["request"]["target_table"].upper().startswith(f'"{DEMO_DB}".')]
 
 
-def report(bound, rows, marks, work):
+def report(bound, rows, marks, work, prior=()):
     sys.path.insert(0, HERE)
     import explain_slice  # noqa: E402
 
@@ -663,7 +699,10 @@ def report(bound, rows, marks, work):
     explain_slice.slice_window(rows)
     off_demo = off_demo_submits(rows)
     print(f"## fixture candidate: {cand} ({len(kept)} rows; dropped {dict(dropped)})")
-    results = oracle(bound, rows, marks)
+    # An earlier run's window (--prior-window) precedes this one: the oracle
+    # sees its decisions and builds, the fixture candidate holds only this run.
+    prior = list(prior)
+    results = oracle(bound, prior + rows, [m + len(prior) for m in marks])
     print("## ORACLE (each Explain step explained the node's current decision over State history)")
     for r in results:
         kind = KIND.get(r.execution_type, r.execution_type)
@@ -688,6 +727,8 @@ def main(argv=None):
     ap.add_argument("--profiles", default=os.path.expanduser("~/.dbt/profiles.yml"))
     ap.add_argument("--dry-run", action="store_true", help="check and print the plan, run nothing")
     ap.add_argument("--keep-project", action="store_true", help="keep the project copy afterwards")
+    ap.add_argument("--prior-window", help="an earlier run's window.jsonl (with --run-id): probe "
+                    "explains and the oracle also see its decisions and builds")
     ap.add_argument("--run-id", help="reuse an earlier run's id, so a follow-up scenario extends "
                     "that run's nodes and their State history (default: a new id)")
     a = ap.parse_args(argv)
@@ -700,12 +741,16 @@ def main(argv=None):
 
     if a.run_id and not re.fullmatch(r"\d{6}[0-9a-f]{6}", a.run_id):
         ap.error(f"--run-id {a.run_id!r} is not a run id (HHMMSS + 6 hex digits)")
+    if a.prior_window and not a.run_id:
+        ap.error("--prior-window needs the earlier run's --run-id")
     bound = bind(load_scenario(a.scenario), a.run_id or new_run_id())
     p = plan(bound)
     print(f"scenario {bound.scenario.name}: {bound.scenario.summary}")
     print(f"run id {bound.run}; nodes: {', '.join(bound.names.values())}")
     print(f"dbt invocations: {p.total} ({p.builds} build, {p.run_operations} run-operation, "
           f"{p.explains} state explain); targets: {', '.join(sorted(p.targets))}")
+    if p.probe_explains:
+        print(f"state-probe explains: {p.probe_explains} (GetExplainMessages, no dbt invocation)")
 
     try:
         profiles = profiles_dir(a.profiles)
@@ -715,6 +760,8 @@ def main(argv=None):
         check_port_free(a.port)
         if not os.access(PROXY_BIN, os.X_OK):
             raise CaptureError(f"{PROXY_BIN} missing; run `cargo build -p dbt-state-harness --bin record-proxy`")
+        if p.probe_explains and not os.access(PROBE_BIN, os.X_OK):
+            raise CaptureError(f"{PROBE_BIN} missing; run `cargo build -p dbt-state-harness --bin state-probe`")
         if not os.path.isdir(os.path.join(a.jaffle_shop, ".git")):
             raise CaptureError(f"{a.jaffle_shop} is not a git checkout")
     except CaptureError as e:
@@ -732,6 +779,9 @@ def main(argv=None):
     print(f"work dir {work}")
     before = shared_status(a.jaffle_shop)
     run = Run(bound, a.port, work, a.jaffle_shop, a.keep_project, profiles)
+    if a.prior_window:
+        with open(a.prior_window) as fh:
+            run.prior = [json.loads(line) for line in fh if line.strip()]
     os.makedirs(run.logs)
     marks, failure = [], None
     try:
@@ -749,7 +799,7 @@ def main(argv=None):
         if not run.keep_project and os.path.isdir(run.project):
             shutil.rmtree(run.project)
     marks += [marks[-1] if marks else 0] * (len(bound.steps) - len(marks))
-    ok = report(bound, run.rows() if os.path.isdir(run.golden_dir) else [], marks, work)
+    ok = report(bound, run.rows() if os.path.isdir(run.golden_dir) else [], marks, work, run.prior)
     after = shared_status(a.jaffle_shop)
     if after != before:
         print(f"WARNING: {a.jaffle_shop} status changed during the run:\n{after}")
