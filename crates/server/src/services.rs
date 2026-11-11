@@ -803,7 +803,7 @@ impl Explain for ExplainService {
         // through the recording proxy, so the hosted narrative is UNCAPTURABLE
         // with this harness. Do not invent the line tree before a real capture.
         // See docs/protocol.md § "Explain.GetUpstreamDependencyChanges is
-        // CLIENT-UNREACHABLE" and docs/explain-catalog.md § "Unobserved".
+        // CLIENT-UNREACHABLE" and docs/explain-catalog.md § "Not rendered".
         Ok(Response::new(qc::GetUpstreamDependencyChangesResponse {
             dependency_changes: Vec::new(),
         }))

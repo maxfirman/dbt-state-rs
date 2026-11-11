@@ -779,7 +779,7 @@ pub(crate) fn upstream_freshness<'a>(
     // the hosted service renders no dependency-set-diff subtree (it surfaces a
     // node/upstream-query change by physical FQN and never lists the
     // added/removed/ambiguous names), so the diff itself has no faithful reader.
-    // See docs/explain-catalog.md § "Unobserved" (Dependency-set change).
+    // See docs/explain-catalog.md § "Not rendered" (Dependency-set change).
     let added = !current_names.is_subset(&recorded_names);
     let removed = !recorded_names.is_subset(&current_names);
     // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.

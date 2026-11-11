@@ -128,12 +128,13 @@ server keeps the conservative behavior described.
 - **Data tests and Lag tolerance.** Clients send tolerance 0 for data tests, so
   data tests as Lag tolerance subjects are uncharacterized.
 - **Data-test EXECUTE trees not captured.** Hosted's data-test EXECUTE tree
-  (#75) is the same for a first execution, a logic change and upstream data
-  drift, and for passing and failing tests. A data test over a model whose
-  logic changed (`upstream_query_changed`), one that fails SQL qualification,
-  one without upstreams, a test over several upstreams (listing order), and a
-  failing or `store_failures_as: view` store-failures test were not captured;
-  the server renders nothing for the first three
+  (#75) is the same for a first execution, a logic change, upstream data
+  drift and an upstream whose logic changed, for passing and failing tests,
+  over one or two upstreams; a test without upstreams says `no upstream
+  dependencies` (`explain_rebuild_reason_gaps.jsonl`, #40 code review). A
+  test that fails reuse qualification (`evaluate_volatile_sql`, #67) and a
+  failing or `store_failures_as: view` store-failures test were not
+  captured; the server renders nothing for the first
   ([explain-catalog.md](explain-catalog.md#data-test)). How hosted recognizes
   a `store_failures` audit relation is open (#88).
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
@@ -143,21 +144,32 @@ server keeps the conservative behavior described.
   1 / 3, `explain_copy_probes.jsonl` entry 13). The SHAPE 7 query-changed
   tree is replayed from `explain_snapshot_history.jsonl` (FULL, VIEW and
   snapshot, client 2.0.11).
-- **SHAPE 7 without a matched build.** An identity-mismatch rebuild has no
-  Explain anchor, so its per-upstream listing renders `<FRESH>`. The
-  `upstream data is up to date` summary follows the epochs recorded at the
-  latest build in scope, persisted with the decision
-  (`node_decisions.unmatched_upstreams_unchanged`, migration 0017): present
-  when they are unchanged (`explain_incremental_append_merge_history.jsonl`,
-  `explain_incremental_microbatch.jsonl` entry 40, #89),
-  absent when one moved back (`explain_snapshot_history.jsonl`). Hosted's tree
-  for a query change whose upstream also drifted is unobserved
+- **SHAPE 7 without a matched build (resolved).** Hosted judges an
+  identity-mismatch rebuild's freshness listing against the latest build in
+  scope, whose identity did not match: `<FRESH>` and `upstream data is up to
+  date` when the upstream epoch is unchanged
+  (`explain_incremental_append_merge_history.jsonl`,
+  `explain_incremental_microbatch.jsonl` entry 40, #89), `<FRESH>` and no
+  summary when it moved back (`explain_snapshot_history.jsonl`), `<OUTDATED>`
+  with the `updated N seconds after …` line and `upstream data is outdated`
+  when it drifted (`explain_rebuild_reason_gaps.jsonl` entry 33). The
+  decision persists that build's id (`node_decisions.unmatched_execution_id`,
+  migration 0017) and Explain re-derives the listing from it. A rebuild
+  recorded before the migration has no such build: its listing keeps the
+  default `<FRESH>` badges and omits the summary, since unknown evidence
+  never proves freshness
   ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
+- **Reason × node kind cells without a capture (#104).** Every Decision
+  reason × node kind that renders a tree is backed by a tracked capture; the
+  reachable cells without one render nothing until #104 captures them
+  ([explain-catalog.md](explain-catalog.md#decision-reason-coverage)).
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
   tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy
   reuse past the tolerance is unobserved for snapshots; the server keeps the
-  same string ([protocol.md](protocol.md#decision-descriptions)).
+  same string ([protocol.md](protocol.md#decision-descriptions)), a local
+  choice pinned by
+  `decision.rs::unobserved_all_policy_snapshot_skip_past_tolerance_keeps_the_observed_wording`.
 - **Non-Snowflake copy DDL.** BigQuery and Databricks templates follow published
   syntax but were never run against hosted or the warehouses. View copies need
   the view definition, not `CREATE VIEW ... CLONE`.
@@ -207,6 +219,13 @@ replay fails when an entry becomes unused or resolved
   renders no Explain tree. Keyed gaps:
   `explain_incremental_append_merge_history.jsonl` entries 74–75
   (description and rejection codes) and 78–79 (`empty_tree`).
+- **Speculative SKIP (#103).** Hosted SKIPs an unchanged data test with no
+  upstreams on the `SubmitEnrichedSQLSpeculative` call, so the client sends
+  no ordinary submit; the server answers every speculative call `undecided`,
+  and the client then sends the ordinary submit, which the server SKIPs with
+  hosted's payload. The final class and the Explain tree match. Keyed gap:
+  `explain_rebuild_reason_gaps.jsonl` entry 39 (`local_variant: "undecided"`;
+  the replay drives the follow-up submit and asserts it).
 - **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
   - Seed copy (#91). Hosted copies a seed loaded with the same values under
     another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
@@ -317,7 +336,8 @@ test that pins each.
 - **Capture** runs as unbounded background tasks (`services.rs::spawn_capture`)
   with no retention policy. Bound both before heavy load.
 - **ClientValidation** accepts every client version.
-- **Speculative submits** always return `Undecided`.
+- **Speculative submits** always return `Undecided` (hosted decides some,
+  #103).
 
 ## Primary sources
 

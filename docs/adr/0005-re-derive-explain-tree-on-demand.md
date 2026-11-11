@@ -5,7 +5,8 @@
 Decided (wayfinder ticket #21, map #19 — faithful warehouse-general
 `dbt state explain` support). Amended by
 [ADR 0006](0006-persist-the-decision-reason.md): the decision reason is also
-persisted, and selects the tree shape.
+persisted, and selects the tree shape. Amended by #73: the unmatched latest
+build's id is also persisted ([below](#decision)).
 
 ## Decision
 
@@ -19,6 +20,18 @@ The one piece of new persisted state this requires is a single nullable column
 on `node_decisions`: `matched_execution_id BIGINT REFERENCES executions(id)`,
 recording which confirmed `executions` row the SKIP/reuse decision matched (the
 caller already holds this id). Everything else is re-derived.
+
+> **Amended by #73** (as revised by the #40 code review): a second nullable
+> id, `node_decisions.unmatched_execution_id BIGINT REFERENCES executions(id)`
+> (migration 0017), records, for a rebuild with no matched build, the latest
+> build in scope, whose identity did not match. Hosted judges the SHAPE 7
+> freshness listing against that build (`<FRESH>` / `<OUTDATED>`, the `«gap»`
+> line and the summary; `explain_incremental_*.jsonl`,
+> `explain_rebuild_reason_gaps.jsonl`), so Explain re-derives it from that row
+> with the same shared helper. As with `matched_execution_id`, only the id is
+> persisted, never a verdict. NULL for every other decision and for a rebuild
+> recorded before the migration; Explain then omits the summary line, because
+> unknown evidence never proves freshness.
 
 ## Why re-derive (not persist the tree)
 

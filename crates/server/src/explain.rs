@@ -208,8 +208,8 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - everything else (any other
 ///     execution_type): NONE.
 ///
-/// Anything outside this set is "Unobserved — do not implement until captured"
-/// (docs/explain-catalog.md) and is explicitly Out-of-Scope for spec #27, whose
+/// Anything outside this set renders nothing (docs/explain-catalog.md "Not
+/// rendered" gives each cell its status) and is explicitly Out-of-Scope for spec #27, whose
 /// hard rule is "mark as unimplemented rather than invent ... never ship
 /// invented output". Without this fence `explain_lines` dispatches on
 /// `DecisionKind` alone and renders a model-shaped tree for seed/snapshot/
@@ -1492,8 +1492,8 @@ mod tests {
     // explain_lines dispatches on DecisionKind alone; without an
     // execution-type fence, incremental decisions (and a snapshot or custom
     // CLONE) render model-shaped trees that the hosted service was never
-    // observed to produce (docs/explain-catalog.md "Unobserved — do not
-    // implement until captured"; spec #27 Out-of-Scope). They must emit
+    // observed to produce (docs/explain-catalog.md "Not rendered"; spec #27
+    // Out-of-Scope). They must emit
     // nothing. Seeds, snapshot and custom SKIP/EXECUTE, and the append, merge,
     // insert_overwrite, delete+insert and microbatch SKIP/EXECUTE were
     // characterized on 2026-11-10.
