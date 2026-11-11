@@ -25,7 +25,10 @@ Do not weaken these without new evidence.
   warehouse family, `table_namespace`, target relation), the server selects the
   latest confirmed build first and only then compares fingerprints, execution
   type and dialect. An older matching build never stands in for a relation
-  overwritten since. See
+  overwritten since. When the latest build has the submit's identity under
+  another execution type, the rebuild is judged against the latest build of
+  the submit's type, which is never reused
+  ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)). See
   [architecture.md](architecture.md#physical-scope-rule).
 - **Confirmation order defines current state.** The current build is the one
   with the newest confirmation (ties broken by row id), not the newest submit
@@ -75,13 +78,15 @@ server keeps the conservative behavior described.
   (`clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`,
   fixture `clone_chain_source_age.jsonl`). #93 is a cleaner post-copy SKIP
   this server rebuilds (same SQL text, only the schemas differ).
-- **What a RecordExecutions row means to hosted decisions (#90).** After a
-  `--full-refresh` incremental run, which client 2.0.11 records as a FULL
-  execution, hosted judges the next APPEND/MERGE submit against the last
-  incremental build. Whether hosted leaves recorded executions out of
-  decisions, or prefers the latest row of the submit's execution type, is not
-  isolated; #83 shows hosted does consider another execution type for a
-  submit.
+- **An older build of the submit's type that would qualify (#83, #90).**
+  Hosted judges a submit whose latest build has its identity under another
+  execution type against the latest build of its own type, RecordExecutions
+  rows included (resolved, [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change),
+  `explain_execution_type_change.jsonl`). Every capture had that build's
+  Target relation modified since. Whether hosted would reuse it when its
+  Target relation is unchanged since is not characterized; the server
+  rebuilds, as the execution type change against the latest build (2 / 2,
+  `offline_regressions.rs::execution_type_change_is_judged_against_the_latest_build_of_that_type`).
 - **Incremental CLONE (#97, resolved by #73).** Hosted 2.0.11 has no
   explainable incremental CLONE decision: its `RegisterClone` copy has an
   empty `execution_decision_id`, and it rebuilds incrementals on submit. This
@@ -226,30 +231,6 @@ replay fails when an entry becomes unused or resolved
   locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
 - **Safety floor.** The externally modified seed table is reloaded.
-- **Execution-type change (#83).** A snapshot run under `--full-refresh` is
-  submitted as FULL over its SNAPSHOT State history. Hosted rebuilds with
-  rejection codes 2 / 2 (`EXECUTION_TYPE_MISMATCH`) and explains it with the
-  node-query-unchanged tree. The server rebuilds with the same class and
-  description but codes 6 / 6, records the Decision reason
-  `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
-  The two reasons #40 split out of an identity mismatch
-  (`execution_type_changed`, `copy_logic_mismatch`) keep its wire answer: a
-  reusable older build of the target is still reported as 8 / 7 with its
-  `is_stale` (`offline_regressions.rs::split_identity_reasons_keep_the_older_match_wire_answer`).
-  Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
-  and 60 (`empty_tree`).
-- **Incremental rebuild after a `--full-refresh` run (#90).** Client 2.0.11
-  records the full refresh with `RecordExecutions` as a FULL execution, then
-  resubmits the model as APPEND/MERGE. Both rebuild; hosted reports 6 / 6
-  and "the table was modified after the cached execution" (it judges against
-  the last incremental build). The server takes the recorded FULL row as the
-  latest, records `no_reuse_candidate.execution_type_changed` with the
-  generic rebuild description, reports the older reusable incremental build
-  as 8 / 7 (LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, the wire answer
-  of any identity mismatch, kept from before #40 split the reason out), and
-  renders no Explain tree. Keyed gaps:
-  `explain_incremental_append_merge_history.jsonl` entries 74–75
-  (description and rejection codes) and 78–79 (`empty_tree`).
 - **Speculative SKIP (#103).** Hosted SKIPs an unchanged data test with no
   upstreams on the `SubmitEnrichedSQLSpeculative` call, so the client sends
   no ordinary submit; the server answers every speculative call `undecided`,

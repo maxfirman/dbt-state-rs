@@ -504,7 +504,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        53,
+        54,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

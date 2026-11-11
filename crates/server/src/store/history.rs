@@ -82,7 +82,9 @@ impl Store {
     /// Every confirmed build of a target in its physical scope, newest first
     /// (the first row is [`Store::current_target_state`]). Older rows never
     /// describe the target's current contents; they are read only to report
-    /// which earlier build would have qualified (rejection codes).
+    /// which earlier build would have qualified (rejection codes), and to find
+    /// the build of the workload's own execution type that an execution type
+    /// change is judged against (never reused).
     pub async fn target_history(
         &self,
         org_id: &str,

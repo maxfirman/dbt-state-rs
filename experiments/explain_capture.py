@@ -23,6 +23,7 @@ stops itself:
 
 Usage:
   explain_capture.py SCENARIO --port PORT [--work-dir DIR] [--dry-run] [--keep-project]
+                     [--run-id ID]
   explain_capture.py --list
 
 Build the proxy first: `cargo build -p dbt-state-harness --bin record-proxy`.
@@ -687,6 +688,8 @@ def main(argv=None):
     ap.add_argument("--profiles", default=os.path.expanduser("~/.dbt/profiles.yml"))
     ap.add_argument("--dry-run", action="store_true", help="check and print the plan, run nothing")
     ap.add_argument("--keep-project", action="store_true", help="keep the project copy afterwards")
+    ap.add_argument("--run-id", help="reuse an earlier run's id, so a follow-up scenario extends "
+                    "that run's nodes and their State history (default: a new id)")
     a = ap.parse_args(argv)
     if a.list:
         for n in scenario_names():
@@ -695,7 +698,9 @@ def main(argv=None):
     if not a.scenario or not a.port:
         ap.error("SCENARIO and --port are required")
 
-    bound = bind(load_scenario(a.scenario), new_run_id())
+    if a.run_id and not re.fullmatch(r"\d{6}[0-9a-f]{6}", a.run_id):
+        ap.error(f"--run-id {a.run_id!r} is not a run id (HHMMSS + 6 hex digits)")
+    bound = bind(load_scenario(a.scenario), a.run_id or new_run_id())
     p = plan(bound)
     print(f"scenario {bound.scenario.name}: {bound.scenario.summary}")
     print(f"run id {bound.run}; nodes: {', '.join(bound.names.values())}")

@@ -4,7 +4,9 @@
 
 Accepted (2026-11-10). Supersedes the earlier own-build freshness anchor (see
 [correctness-handoff.md](../correctness-handoff.md)), which was characterized
-only with External modifications of dbt-managed upstreams.
+only with External modifications of dbt-managed upstreams. Amended by
+#83/#90 (2026-11-11): which build a submit is judged against when the node's
+execution type changed ([below](#execution-type-change)).
 
 ## Decision
 
@@ -75,3 +77,56 @@ reused within tolerance.
   the rebuild reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH as
   hosted does; a dropped target whose latest build would qualify reports
   TARGET_TABLE_DOES_NOT_EXIST / TARGET_TABLE_MATCH.
+
+## Execution type change
+
+Amendment (#83, #90; approved by the maintainer 2026-11-11).
+
+**Rule.** The SQL identity a submit is compared on excludes its execution
+type. When the latest build in scope has the submit's identity but another
+execution type, the submit is judged against the latest build in scope with
+its identity *and* execution type:
+
+- if there is one, it is judged as the reuse candidate would be for its own
+  target: a Target relation modified after it rebuilds with "the table was
+  modified after the cached execution" (6 / 6), a dropped one as a first
+  build;
+- if there is none, the rebuild is EXECUTION_TYPE_MISMATCH (2 / 2) with the
+  generic rebuild description, against the latest build.
+
+A RecordExecutions row is a build like any other: a `--full-refresh` run of an
+incremental is recorded as FULL, so the next APPEND/MERGE submit is judged
+against the last incremental build, and a later FULL submit with the same
+identity reuses the recorded row.
+
+**Evidence** (live, client 2.0.11): `explain_snapshot_history.jsonl`
+entries 58–60 (FULL over SNAPSHOT history: 2 / 2);
+`explain_incremental_append_merge_history.jsonl` entries 69–79 (APPEND and
+MERGE after a recorded full refresh: 6 / 6, "modified after");
+`explain_execution_type_change.jsonl` (`experiments/explain_capture.py
+execution_type_change` then `execution_type_change_append --run-id`): FULL →
+APPEND and MERGE → DELETE_INSERT give 2 / 2; switching back gives 6 / 6
+"modified after"; FULL → VIEW is an identity change (a view sends other
+semantic extras), so switching back to FULL reports the older FULL build as
+LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH (8 / 7), the existing
+older-match rule; a FULL submit over a recorded FULL full refresh of an
+APPEND model SKIPs; APPEND over FULL, VIEW, FULL history gives 2 / 2.
+
+**What stays.** Only the latest build in scope is ever reused. The older
+build of the submit's type is a reference for the rebuild's reason, codes and
+Explain anchor ([ADR 0005](0005-re-derive-explain-tree-on-demand.md)). When
+nothing is against it (its Target relation unchanged since, which a newer
+build of the same relation should make impossible), the submit is still
+rebuilt, as the execution type change against the latest build: a local,
+conservative choice no capture contradicts. The lookup reads the target's 50
+newest builds (`Store::target_history`); a build of the submit's type older
+than that is not found, and the rebuild is the execution type change. The
+identity comparison is
+unchanged: on DuckDB the schema-abstracted logic identity includes the
+execution type, so a DuckDB execution type change stays an identity
+mismatch.
+
+**Considered.** Leaving RecordExecutions rows out of decisions also explains
+#90, but not the SKIP after a recorded FULL full refresh. Preferring the
+latest build of the submit's type whatever the newer builds' identity does
+not explain FULL → VIEW → FULL, where hosted judged the latest (view) build.

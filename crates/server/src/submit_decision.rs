@@ -223,13 +223,19 @@ pub async fn submit_sql(
         }
     };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
-    let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
+    let (record, candidate) = anchor_rejected(
+        record,
+        candidate,
+        selection.rejected.or(selection.type_changed),
+    );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
     settle(store, &evidence, record, candidate).await
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own
-/// target was missing or modified keeps that build as its Explain anchor.
+/// target was missing or modified keeps that build as its Explain anchor; so
+/// does a rebuild whose latest build had the identity under another
+/// execution type (#83).
 fn anchor_rejected(
     mut record: DecisionRecord,
     candidate: Option<ExecutionRow>,
@@ -322,9 +328,7 @@ async fn report_older_match(
             R::UpstreamOutdated
                 | R::UpstreamQueryChanged
                 | R::DependencySetChanged
-                | R::NoReuseCandidate(
-                    N::IdentityMismatch | N::ExecutionTypeChanged | N::CopyLogicMismatch
-                )
+                | R::NoReuseCandidate(N::IdentityMismatch | N::CopyLogicMismatch)
         );
     if !applies {
         return Ok(record);
@@ -473,6 +477,30 @@ async fn select_sql(
                 &req.dialect,
             )
             .await?;
+        // A node kind change with unchanged identity is judged against the
+        // target's latest build of the workload's own type, when there is one
+        // (#83, #90).
+        if let Some(latest) = current
+            .as_ref()
+            .filter(|latest| reuse_candidate::execution_type_changed(req, evidence, latest))
+        {
+            let history = store
+                .target_history(
+                    org_id,
+                    req.target_table.as_deref().unwrap_or_default(),
+                    table_namespace,
+                    &req.dialect,
+                )
+                .await?;
+            if let Some(build) = reuse_candidate::latest_build_of_type(req, evidence, history) {
+                return reuse_candidate::for_model_over_build_of_type(
+                    req,
+                    evidence,
+                    latest.clone(),
+                    build,
+                );
+            }
+        }
         reuse_candidate::for_model(req, evidence, current)
     }
 }

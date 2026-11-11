@@ -157,56 +157,6 @@
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
-    "fixture": "explain_snapshot_history.jsonl",
-    "entry": 58,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#83): a snapshot run under --full-refresh is submitted as FULL over its SNAPSHOT State history. Hosted rejects with EXECUTION_TYPE_MISMATCH (2/2); this server rebuilds with the same class and description but reports 6/6 (Decision reason no_reuse_candidate.execution_type_changed).",
-    "ignore_fields": [
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_snapshot_history.jsonl",
-    "entry": 60,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 58 (#83): hosted renders its node-query-unchanged tree for the execution-type change; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
-  },
-  {
-    "fixture": "explain_incremental_append_merge_history.jsonl",
-    "entry": 74,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#90): the merge incremental `m73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as MERGE with unchanged SQL. Both rebuild, but hosted judges the submit against the last merge build (6/6, 'model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description). Like any identity mismatch, that rebuild reports the older reusable merge build as LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH (8/7), the wire answer the server gave before #40 split the reason out.",
-    "ignore_fields": [
-      "explained_decision.decision_description",
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_incremental_append_merge_history.jsonl",
-    "entry": 75,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#90): the append incremental `a73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as APPEND with unchanged SQL. Both rebuild, but hosted judges the submit against the last append build (6/6, 'model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description). Like any identity mismatch, that rebuild reports the older reusable append build as LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH (8/7), the wire answer the server gave before #40 split the reason out.",
-    "ignore_fields": [
-      "explained_decision.decision_description",
-      "explained_decision.skip_rejection_reason",
-      "explained_decision.clone_rejection_reason"
-    ]
-  },
-  {
-    "fixture": "explain_incremental_append_merge_history.jsonl",
-    "entry": 78,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 75 (#90): hosted renders the SKIP-shaped own-target-modified tree; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
-  },
-  {
-    "fixture": "explain_incremental_append_merge_history.jsonl",
-    "entry": 79,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 74 (#90): hosted renders the SKIP-shaped own-target-modified tree; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.execution_type_changed."
-  },
-  {
     "fixture": "explain_incremental_copy_history.jsonl",
     "entry": 12,
     "local_variant": "ready_to_execute",
