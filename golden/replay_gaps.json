@@ -212,7 +212,7 @@
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 171,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_cz`, no upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_cz`, no upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -228,19 +228,19 @@
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 187,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_c`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_c`, upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 225,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 187: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 187 (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 231,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 171: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 171 (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -264,19 +264,19 @@
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 297,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 311,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_ez`, no upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_ez`, no upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 313,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_e`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_e`, upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -293,25 +293,25 @@
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 323,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#115): hosted reuses a custom node whose Target relation was modified externally (`vc`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+    "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a custom node whose Target relation was modified externally (`vc`, upstream); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 369,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 313: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 313 (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 375,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 311: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 311 (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 376,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 323: DECISION DIVERGENCE (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 323 (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
@@ -329,7 +329,7 @@
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 379,
     "local_variant": "empty_tree",
-    "reason": "explain of entry 297: DECISION DIVERGENCE (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 297 (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_unknown_epoch.jsonl",
@@ -383,84 +383,84 @@
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4): a model (FULL) whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4): a model (FULL) whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 3,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 2 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 2 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 6,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-2): an append incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-2): an append incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 7,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 6 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 10,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-4): an insert_overwrite incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-4): an insert_overwrite incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 11,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 10 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 10 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 14,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-7): a snapshot whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-7): a snapshot whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 15,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 14 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 14 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 19,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-10): a view whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-10): a view whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 20,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 19 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 19 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 23,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-11): a custom node whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-11): a custom node whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 24,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 23 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 23 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 27,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#114, probe e4-8): a data test whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#114, probe e4-8): a data test whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_malformed_requests.jsonl",
     "entry": 28,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   }
 ]

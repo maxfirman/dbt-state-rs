@@ -48,7 +48,7 @@ Open questions and deliberate divergences live in
 | Upstream reported with an unknown epoch (`null`; crafted, the client never sends it) | 1 | skip within `lag_tolerance` (`explain_unknown_epoch.jsonl`) | ❌ deliberate: the server rebuilds, unknown epochs never prove freshness (accepted divergence #113) |
 | Upstream externally modified after the build the model consumed | — | build ("an upstream model query has changed") under any policy or tolerance | ✅ |
 | Target relation modified after its build | — | build ("the table was modified after the cached execution"; for a view, "the view definition is newer than the cached execution") | ✅ |
-| Snapshot or custom node whose Target relation was modified after its build (External modification, a later `--full-refresh`, or another materialization's build in between) | 7, 11 | skip (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`, `sn_e`, `sn_ez`, `vc`, `cv0`) | ❌ the server rebuilds (reuse invariant 3, #115) |
+| Snapshot or custom node whose Target relation was modified after its build (External modification, a later `--full-refresh`, or another materialization's build in between) | 7, 11 | skip (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`, `sn_e`, `sn_ez`, `vc`, `cv0`) | ❌ deliberate: the server rebuilds (reuse invariant 3, accepted divergence #115) |
 | Seed's own table externally modified, values unchanged | VALUES | skip | ❌ deliberate: the server reloads (keyed safety floor, `lag_seed_upstream.jsonl`) |
 
 The Lag tolerance rule is recorded in
@@ -141,10 +141,10 @@ reproducible skip.
   `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
-- **Malformed requests** (crafted only, #114): hosted rejects empty SQL, or a
-  query dependency with an empty name or query, with `INVALID_ARGUMENT`, and
-  SKIPs a resubmit whose query dependency is listed twice. The server builds
-  each of them and rebuilds every resubmit
+- **Malformed requests** (crafted only, accepted divergence #114): hosted
+  rejects empty SQL, or a query dependency with an empty name or query, with
+  `INVALID_ARGUMENT`, and SKIPs a resubmit whose query dependency is listed
+  twice. The server builds each of them and rebuilds every resubmit
   (`no_reuse_candidate.failed_reuse_qualification`), keyed in
   `golden/replay_gaps.json` (`explain_malformed_requests.jsonl`).
 - **Unit test reuse** is not characterized.
