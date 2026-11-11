@@ -189,6 +189,12 @@ returns, and a `reason`. Kinds:
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.
+- **Speculative gap** (`local_variant: "undecided"`, on a
+  `SubmitEnrichedSQLSpeculative` entry): hosted decides on the speculative
+  call where this server answers `undecided` (#103). The replay then drives
+  the ordinary submit the client sends after `undecided` and asserts it
+  answers as hosted's speculative call did; its decision id stands in for
+  hosted's in the Explain that follows.
 
 The replay fails if any gap is unused, if a whole-response gap now matches
 hosted ("gap is resolved; remove its exemption"), or if a field-scoped gap's

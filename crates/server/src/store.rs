@@ -684,7 +684,7 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_upstreams_unchanged
+                   unmatched_execution_id
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -696,10 +696,15 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
 
-        // The matched `executions` anchors (ADR 0005 / ticket #30): the
-        // freshness-subtree anchor the explain generator re-derives against,
-        // read as complete rows. Org-scoped like the decisions (AGENTS.md).
-        let matched: Vec<i64> = rows.iter().filter_map(|r| r.matched_execution_id).collect();
+        // The matched `executions` anchors (ADR 0005 / ticket #30) and the
+        // unmatched latest builds (migration 0017): the builds the explain
+        // generator re-derives freshness against, read as complete rows.
+        // Org-scoped like the decisions (AGENTS.md).
+        let matched: Vec<i64> = rows
+            .iter()
+            .flat_map(|r| [r.matched_execution_id, r.unmatched_execution_id])
+            .flatten()
+            .collect();
         if matched.is_empty() {
             return Ok(rows);
         }
@@ -716,6 +721,9 @@ impl Store {
         for row in &mut rows {
             row.matched_execution = row
                 .matched_execution_id
+                .and_then(|id| anchors.get(&id).cloned());
+            row.unmatched_execution = row
+                .unmatched_execution_id
                 .and_then(|id| anchors.get(&id).cloned());
         }
         Ok(rows)
@@ -746,13 +754,16 @@ pub struct ExplainDecisionRow {
     pub build_age_ms: Option<i64>,
     /// The decision's wire skip rejection code (migration 0016).
     pub skip_rejection_reason: Option<i32>,
-    /// Migration 0017: a rebuild's upstreams unchanged since the latest build
-    /// in scope that did not have its identity.
-    pub unmatched_upstreams_unchanged: Option<bool>,
+    /// Migration 0017: for a rebuild without a matched build, the latest
+    /// build in scope, whose identity did not match.
+    pub unmatched_execution_id: Option<i64>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
     pub matched_execution: Option<ExecutionRow>,
+    /// The complete `executions` row `unmatched_execution_id` names.
+    #[sqlx(skip)]
+    pub unmatched_execution: Option<ExecutionRow>,
 }
 
 impl ExplainDecisionRow {
@@ -782,6 +793,12 @@ impl ExplainDecisionRow {
         crate::reuse_candidate::adopt_current_inputs(&mut anchor, &self.input_tables());
         Some(anchor)
     }
+
+    /// The unmatched latest build (migration 0017), as recorded: the decision
+    /// adopted none of its inputs.
+    pub fn unmatched(&self) -> Option<ExecutionRow> {
+        self.unmatched_execution.clone()
+    }
 }
 
 #[cfg(test)]
@@ -803,7 +820,7 @@ mod tests {
             freshness_tolerance_ms: None,
             build_age_ms: None,
             skip_rejection_reason: None,
-            unmatched_upstreams_unchanged: None,
+            unmatched_execution_id: None,
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),
@@ -816,6 +833,7 @@ mod tests {
                 clone_source_table: Some("PROD.T".into()),
                 ..ExecutionRow::default()
             }),
+            unmatched_execution: None,
         }
     }
 

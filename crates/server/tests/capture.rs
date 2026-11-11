@@ -82,7 +82,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         build_age_ms: None,
         skip_rejection_reason: None,
         clone_rejection_reason: None,
-        unmatched_upstreams_unchanged: None,
+        unmatched_execution_id: None,
     }
 }
 

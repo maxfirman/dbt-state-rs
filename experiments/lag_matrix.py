@@ -57,6 +57,12 @@ def probe(op, body, shift_ms=0):
     return json.loads(out.stdout)
 
 
+def submit_request(request, shift_ms=0):
+    """Send a crafted SubmitEnrichedSQL; (variant, payload) of the answer."""
+    ((variant, body),) = probe("submit", request, shift_ms)["response"].items()
+    return variant, body
+
+
 def h(s):
     return hashlib.md5(s.encode()).hexdigest()
 
@@ -134,9 +140,7 @@ class Node:
         }
 
     def submit(self, shift_ms=0, **kw):
-        resp = probe("submit", self.request(**kw), shift_ms)["response"]
-        (variant, body), = resp.items()
-        return variant, body
+        return submit_request(self.request(**kw), shift_ms)
 
     def confirm(self, request_id, epoch):
         r = probe(

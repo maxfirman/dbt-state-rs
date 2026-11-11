@@ -54,6 +54,14 @@ def register_clone(edid, execution_type):
     }
 
 
+def speculative(edid, execution_type):
+    return {
+        "service": "SQL", "method": "SubmitEnrichedSQLSpeculative",
+        "request": {"execution_type": execution_type, "labels": {"dbt_node_name": "t"}},
+        "response": {"response": {"skip_execution": {"execution_decision_id": edid}}},
+    }
+
+
 def line(text, marker=None, badge=None, children=None):
     return {"text": text, "marker": marker, "badge": badge, "children": children or []}
 
@@ -119,6 +127,8 @@ minted = write("minted.jsonl", [
     submit("e-view", 10, "skip_execution"),
     values("e-seed"),
     register_clone("e-copy", 3),
+    speculative("e-spec", 8),
+    explain("e-spec", 0, [line("query analysis")]),
     explain("e-seed", 0, [line("table analysis")]),
     explain("e-view", 0, [line("query analysis")]),
     explain("e-copy", 3, [line("table analysis")]),
@@ -130,13 +140,15 @@ c = ec.census([minted, other])
 check("MINT: SubmitValues mints a VALUES (seed) decision", c.cells[("VALUES", "SKIP")].trees == 1)
 check("MINT: SubmitEnrichedSQL mints its request execution_type", c.cells[("VIEW", "SKIP")].trees == 1)
 check("MINT: RegisterClone mints its request execution_type", c.cells[("MERGE", "CLONE")].trees == 1)
+check("MINT: a speculative SKIP mints its request execution_type (#103)",
+      c.cells.get(("DBT_DATA_TEST", "SKIP")) is not None and c.cells[("DBT_DATA_TEST", "SKIP")].trees == 1)
 check("MINT: an id minted in another input file still maps", c.cells[("APPEND", "SKIP")].trees == 1)
 check("MINT: an empty tree is counted as empty", c.cells[("APPEND", "SKIP")].empty == 1)
 check("MINT: an id no submit minted lands in the unmapped cell", c.cells[(ec.UNMAPPED, "EXECUTE")].trees == 1)
 check("MINT: the unmapped tree is a finding",
-      [(os.path.basename(f.fixture), f.entry, f.field) for f in c.findings] == [("minted.jsonl", 6, "node_kind")],
+      [(os.path.basename(f.fixture), f.entry, f.field) for f in c.findings] == [("minted.jsonl", 8, "node_kind")],
       repr(c.findings))
-check("MINT: total tree count", c.trees == 5, str(c.trees))
+check("MINT: total tree count", c.trees == 6, str(c.trees))
 
 # --- origin: real client (by version) vs crafted state-probe ----------------
 CLIENT_META = [["x-request-id", "r"], ["x-system-user-id", ""], ["x-os-name", "linux"]]

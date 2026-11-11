@@ -36,9 +36,10 @@ pub enum NoCandidate {
     /// The latest row does not have the workload's identity.
     IdentityMismatch,
     /// The latest row has the workload's identity but was built as another
-    /// execution type (a snapshot run under `--full-refresh` is sent as
-    /// FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH; this server
-    /// still reports NO_SUITABLE_MATCH_FOUND (#83).
+    /// node kind (a snapshot run under `--full-refresh` is sent with the wire
+    /// `execution_type` FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH;
+    /// this server gives the same wire answer as
+    /// [`NoCandidate::IdentityMismatch`] (#83).
     ExecutionTypeChanged,
     /// The latest row is a client-requested copy (RegisterClone) that this
     /// workload cannot adopt: its inherited schema-abstracted logic is absent
@@ -269,13 +270,12 @@ pub struct DecisionRecord {
     pub tolerance_ms: i64,
     pub build_age_ms: Option<i64>,
     pub input_tables: Vec<InputTable>,
-    /// For a rebuild without a matched build whose latest build in scope did
-    /// not have the workload's identity: whether every genuine upstream's
-    /// current epoch equals the epoch recorded for it at that build. Explain
-    /// renders the SHAPE 7 `upstream data is up to date` summary from it
-    /// (VERIFIED LIVE 2026-11-10, explain_incremental_append_merge_history).
-    /// `None` otherwise.
-    pub unmatched_upstreams_unchanged: Option<bool>,
+    /// For a rebuild without a matched build: `executions.id` of the latest
+    /// build in scope, which did not have the workload's identity. Explain
+    /// judges the SHAPE 7 freshness listing against it (VERIFIED LIVE
+    /// 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40q`). `None`
+    /// otherwise.
+    pub unmatched_execution_id: Option<i64>,
     sealed: (),
 }
 
@@ -304,7 +304,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
-                unmatched_upstreams_unchanged: None,
+                unmatched_execution_id: None,
                 sealed: (),
             },
             Verdict::Execute {
@@ -324,7 +324,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
-                unmatched_upstreams_unchanged: None,
+                unmatched_execution_id: None,
                 sealed: (),
             },
         }
@@ -360,17 +360,12 @@ impl DecisionRecord {
         self
     }
 
-    /// A rebuild with no matched build, judged against the latest build in
-    /// scope that did not have the workload's identity (`unmatched`): records
-    /// whether every genuine upstream's epoch is unchanged since that build.
-    pub(crate) fn with_unmatched_build(
-        mut self,
-        inputs: FreshnessInputs<'_>,
-        unmatched: Option<&ExecutionRow>,
-    ) -> Self {
+    /// A rebuild with no matched build records the latest build in scope
+    /// that did not have the workload's identity (`unmatched`), which Explain
+    /// judges its freshness listing against.
+    pub(crate) fn with_unmatched_build(mut self, unmatched: Option<&ExecutionRow>) -> Self {
         if self.class == DecisionKind::Build && self.matched_execution_id.is_none() {
-            self.unmatched_upstreams_unchanged =
-                unmatched.map(|build| upstream_freshness(inputs, build).unchanged());
+            self.unmatched_execution_id = unmatched.map(|build| build.id);
         }
         self
     }
@@ -413,7 +408,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
-            unmatched_upstreams_unchanged: None,
+            unmatched_execution_id: None,
             sealed: (),
         }
     }
@@ -434,7 +429,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
-            unmatched_upstreams_unchanged: None,
+            unmatched_execution_id: None,
             sealed: (),
         }
     }
@@ -784,7 +779,7 @@ pub(crate) fn upstream_freshness<'a>(
     // the hosted service renders no dependency-set-diff subtree (it surfaces a
     // node/upstream-query change by physical FQN and never lists the
     // added/removed/ambiguous names), so the diff itself has no faithful reader.
-    // See docs/explain-catalog.md § "Unobserved" (Dependency-set change).
+    // See docs/explain-catalog.md § "Not rendered" (Dependency-set change).
     let added = !current_names.is_subset(&recorded_names);
     let removed = !recorded_names.is_subset(&current_names);
     // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
@@ -1492,44 +1487,60 @@ mod tests {
         assert_eq!(desc(&one_drifted, 20, 25, all), (ATLEAST1.into(), true));
     }
 
+    /// The SKIP description of a snapshot judged against `prev` (two
+    /// upstreams at 1 000).
+    fn snapshot_skip_desc(
+        current: &[InputTable],
+        tol: i64,
+        age: i64,
+        policy: StaleUpstreamPolicy,
+    ) -> (String, bool) {
+        let prev = confirmed("h", vec![tbl("a", 1_000), tbl("b", 1_000)], Some(1_000));
+        let mut c = tolerant(current, tol, age);
+        c.execution_type = ModelExecutionType::Snapshot as i32;
+        c.stale_upstream_policy = policy;
+        match decide(&c, Some(&prev)) {
+            Verdict::Skip {
+                description,
+                is_stale,
+                ..
+            } => (description, is_stale),
+            other => panic!("expected skip, got {other:?}"),
+        }
+    }
+
+    const SNAPSHOT_BOTH: &str =
+        "snapshot was a no-op because both its query and its upstream data are up to date";
+
     /// VERIFIED LIVE (2026-11-10, explain_snapshot_history.jsonl entries
-    /// 29-31, 40, 43): a snapshot SKIP always reads "both … up to date", for
-    /// an epoch that moved back and for drift within its Lag tolerance, where
-    /// a model says "within lag tolerance". The snapshot ALL-policy reuse past
-    /// its tolerance is unobserved and keeps the same wording.
+    /// 29-31, 40, 43): a snapshot SKIP reads "both … up to date" for an epoch
+    /// that moved back and for drift within its Lag tolerance, where a model
+    /// says "within lag tolerance".
     #[test]
     fn snapshot_skip_description_does_not_vary_with_freshness() {
-        let prev = confirmed("h", vec![tbl("a", 1_000), tbl("b", 1_000)], Some(1_000));
-        let snapshot_desc = |current: &[InputTable], tol, age, policy| {
-            let mut c = tolerant(current, tol, age);
-            c.execution_type = ModelExecutionType::Snapshot as i32;
-            c.stale_upstream_policy = policy;
-            match decide(&c, Some(&prev)) {
-                Verdict::Skip {
-                    description,
-                    is_stale,
-                    ..
-                } => (description, is_stale),
-                other => panic!("expected skip, got {other:?}"),
-            }
-        };
-        let both =
-            "snapshot was a no-op because both its query and its upstream data are up to date";
         let decreased = [tbl("a", 700), tbl("b", 1_000)];
         let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
         let any = StaleUpstreamPolicy::Any;
-        let all = StaleUpstreamPolicy::All;
         assert_eq!(
-            snapshot_desc(&decreased, 2_700, 9, any),
-            (both.into(), false)
+            snapshot_skip_desc(&decreased, 2_700, 9, any),
+            (SNAPSHOT_BOTH.into(), false)
         );
         assert_eq!(
-            snapshot_desc(&one_drifted, 2_700, 26, any),
-            (both.into(), true)
+            snapshot_skip_desc(&one_drifted, 2_700, 26, any),
+            (SNAPSHOT_BOTH.into(), true)
         );
+    }
+
+    /// LOCAL CHOICE, not hosted evidence: the ALL-policy snapshot reuse past
+    /// its Lag tolerance was never observed. The server keeps the observed
+    /// snapshot wording for it; docs/correctness-handoff.md "Snapshot SKIP
+    /// wording past the Lag tolerance" holds the open question.
+    #[test]
+    fn unobserved_all_policy_snapshot_skip_past_tolerance_keeps_the_observed_wording() {
+        let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
         assert_eq!(
-            snapshot_desc(&one_drifted, 20, 25, all),
-            (both.into(), true)
+            snapshot_skip_desc(&one_drifted, 20, 25, StaleUpstreamPolicy::All),
+            (SNAPSHOT_BOTH.into(), true)
         );
     }
 

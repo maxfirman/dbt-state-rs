@@ -31,6 +31,7 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lag_matrix as lm  # noqa: E402
 from lag_matrix import DB, NAMESPACE, fqn, h, now_ms, probe  # noqa: E402
+from lag_matrix import submit_request as submit  # noqa: E402
 
 RUN = f"{time.strftime('%H%M%S')}{uuid.uuid4().hex[:6]}"
 
@@ -91,11 +92,6 @@ def request(test, source, source_epoch):
         "is_defer_to_profile": False,
         "defer_enabled": True,
     }
-
-
-def submit(req):
-    ((variant, body),) = probe("submit", req)["response"].items()
-    return variant, body
 
 
 def row(probe_id, step, test, variant, body, **facts):

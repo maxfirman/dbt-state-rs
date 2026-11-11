@@ -293,7 +293,7 @@ fn submit_capture(
         build_age_ms: record.build_age_ms,
         skip_rejection_reason: record.skip_rejection_reason,
         clone_rejection_reason: record.clone_rejection_reason,
-        unmatched_upstreams_unchanged: record.unmatched_upstreams_unchanged,
+        unmatched_execution_id: record.unmatched_execution_id,
     }
 }
 
@@ -652,7 +652,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     build_age_ms: None,
                     skip_rejection_reason: None,
                     clone_rejection_reason: None,
-                    unmatched_upstreams_unchanged: None,
+                    unmatched_execution_id: None,
                 },
             );
         }
@@ -764,7 +764,10 @@ impl Explain for ExplainService {
                 tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
                 build_age_ms: row.build_age_ms,
                 skip_rejection_reason: row.skip_rejection_reason,
-                unmatched_upstreams_unchanged: row.unmatched_upstreams_unchanged,
+                // The latest build in scope a rebuild without a matched build
+                // did not have the identity of (migration 0017): the SHAPE 7
+                // freshness listing is judged against it.
+                unmatched: row.unmatched(),
                 // The matched prior `executions` row (ADR 0005 / ticket #30),
                 // loaded via `node_decisions.matched_execution_id`. Present for a
                 // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
@@ -800,7 +803,7 @@ impl Explain for ExplainService {
         // through the recording proxy, so the hosted narrative is UNCAPTURABLE
         // with this harness. Do not invent the line tree before a real capture.
         // See docs/protocol.md § "Explain.GetUpstreamDependencyChanges is
-        // CLIENT-UNREACHABLE" and docs/explain-catalog.md § "Unobserved".
+        // CLIENT-UNREACHABLE" and docs/explain-catalog.md § "Not rendered".
         Ok(Response::new(qc::GetUpstreamDependencyChangesResponse {
             dependency_changes: Vec::new(),
         }))

@@ -39,7 +39,7 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 
 | Service | RPCs | Server status |
 |---|---|---|
-| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | Submits decided; speculative always returns `Undecided` |
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | Submits decided; speculative always returns `Undecided` (hosted SKIPs an unchanged data test with no upstreams there, divergence #103) |
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | Implemented |
 | `Clone` | `RegisterClone` | Implemented; non-Snowflake DDL unverified |
 | `ClientValidation` | `ValidateClientVersion` | Returns `is_supported=true` for every version |

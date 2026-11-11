@@ -176,18 +176,22 @@
     "fixture": "explain_incremental_append_merge_history.jsonl",
     "entry": 74,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#90): the merge incremental `m73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as MERGE with unchanged SQL. Both rebuild with 6/6, but hosted judges the submit against the last merge build ('model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description).",
+    "reason": "DECISION DIVERGENCE (#90): the merge incremental `m73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as MERGE with unchanged SQL. Both rebuild, but hosted judges the submit against the last merge build (6/6, 'model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description). Like any identity mismatch, that rebuild reports the older reusable merge build as LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH (8/7), the wire answer the server gave before #40 split the reason out.",
     "ignore_fields": [
-      "explained_decision.decision_description"
+      "explained_decision.decision_description",
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
     ]
   },
   {
     "fixture": "explain_incremental_append_merge_history.jsonl",
     "entry": 75,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#90): the append incremental `a73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as APPEND with unchanged SQL. Both rebuild with 6/6, but hosted judges the submit against the last append build ('model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description).",
+    "reason": "DECISION DIVERGENCE (#90): the append incremental `a73b` was run under --full-refresh, which client 2.0.11 records with RecordExecutions as a FULL execution (entries 69-70), then resubmitted as APPEND with unchanged SQL. Both rebuild, but hosted judges the submit against the last append build (6/6, 'model was executed because the table was modified after the cached execution'); this server takes the recorded FULL execution as the latest row and rebuilds with no_reuse_candidate.execution_type_changed (the generic rebuild description). Like any identity mismatch, that rebuild reports the older reusable append build as LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH (8/7), the wire answer the server gave before #40 split the reason out.",
     "ignore_fields": [
-      "explained_decision.decision_description"
+      "explained_decision.decision_description",
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
     ]
   },
   {
@@ -407,5 +411,11 @@
     "entry": 51,
     "local_variant": "empty_tree",
     "reason": "DECISION DIVERGENCE explain of entry 41 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kb73`; the local server's MICROBATCH Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_rebuild_reason_gaps.jsonl",
+    "entry": 39,
+    "local_variant": "undecided",
+    "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
   }
 ]

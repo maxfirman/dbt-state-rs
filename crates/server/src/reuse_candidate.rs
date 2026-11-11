@@ -43,9 +43,8 @@ pub(crate) struct Selection {
     /// reused.
     pub rejected: Option<ExecutionRow>,
     /// The latest row when it does not have the workload's identity (models
-    /// only). Never reused; Explain's SHAPE 7 freshness summary is judged
-    /// against its recorded upstream epochs (VERIFIED LIVE 2026-11-10,
-    /// explain_incremental_append_merge_history.jsonl).
+    /// only). Never reused; Explain judges the SHAPE 7 freshness listing
+    /// against it (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
     pub unmatched: Option<ExecutionRow>,
 }
 
@@ -73,12 +72,14 @@ impl Selection {
     /// The outcome for a latest row in scope: the reuse candidate when the
     /// row's identity matched (`identified`) and `rejection` found nothing
     /// against it, otherwise why it is not one.
-    /// `unidentified` says why when the row's identity did not match.
+    /// `unidentified` says why when the row's identity did not match, and
+    /// `unmatched` is that row (models only).
     fn of(
         identified: Option<ExecutionRow>,
         unidentified: NoCandidate,
         rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
         target_has_prior_build: bool,
+        unmatched: Option<ExecutionRow>,
     ) -> Selection {
         let why_no_candidate = match &identified {
             None => Some(unidentified),
@@ -98,7 +99,7 @@ impl Selection {
             target_has_prior_build,
             why_no_candidate,
             rejected,
-            unmatched: None,
+            unmatched,
         }
     }
 }
@@ -116,7 +117,7 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
-    // Same identity, other execution type: a distinct reason so Explain can
+    // Same identity, other node kind: a distinct reason so Explain can
     // render nothing for it (#40 divergence rule, #83). Likewise a
     // RegisterClone copy this submit cannot adopt (#93).
     let unidentified =
@@ -146,7 +147,7 @@ pub(crate) fn for_model(
         unmatched = Some(current);
         None
     };
-    let selection = Selection::of(
+    Ok(Selection::of(
         identified,
         unidentified,
         |prev| {
@@ -162,11 +163,8 @@ pub(crate) fn for_model(
             }
         },
         true,
-    );
-    Ok(Selection {
         unmatched,
-        ..selection
-    })
+    ))
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome
@@ -199,6 +197,7 @@ pub(crate) fn for_data_test(
             }
         },
         false,
+        None,
     ))
 }
 
@@ -239,6 +238,7 @@ pub(crate) fn for_seed(
             }
         },
         true,
+        None,
     ))
 }
 

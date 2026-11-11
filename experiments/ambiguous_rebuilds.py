@@ -33,7 +33,8 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lag_matrix as lm  # noqa: E402
-from lag_matrix import Node, Source, now_ms, probe, report  # noqa: E402
+from lag_matrix import Node, Source, now_ms, report  # noqa: E402
+from lag_matrix import submit_request as submit  # noqa: E402
 
 RUN = f"{time.strftime('%H%M%S')}{uuid.uuid4().hex[:6]}"
 
@@ -44,12 +45,6 @@ def model(probe_id):
     m = Node(probe_id, "m", [s], tol=0)
     m.name = f"amb{RUN}_{probe_id}_m"
     return s, m
-
-
-def submit(request):
-    resp = probe("submit", request)["response"]
-    ((variant, body),) = resp.items()
-    return variant, body
 
 
 def built(probe_id, epoch=True):
