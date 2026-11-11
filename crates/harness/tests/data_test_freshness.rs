@@ -318,7 +318,6 @@ async fn a_same_named_relation_the_test_reads_stays_an_input() {
 async fn explain_never_lists_the_audit_relation_of_a_test_without_upstreams() {
     use dbt_state_proto::query_cache as qc;
     use qc::explain_client::ExplainClient;
-    use qc::submit_sql_response::Response;
 
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
@@ -342,11 +341,7 @@ async fn explain_never_lists_the_audit_relation_of_a_test_without_upstreams() {
             .extra("store_failures_as", "\"table\"");
         sc.build_with(test.clone(), outcome().results(test_results(0)))
             .await;
-        let Some(Response::SkipExecution(skip)) =
-            sc.submit(test.upstream(audit, 150)).await.response
-        else {
-            panic!("{audit}: the unchanged rerun SKIPs");
-        };
+        let skip = sc.expect_skip(test.upstream(audit, 150)).await;
         let edid = skip.execution_decision_id.expect("execution decision id");
         let mut lines = None;
         for _ in 0..100 {
