@@ -70,7 +70,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      alone never justifies SKIP.
   5. Data tests require scoped UID identity and complete cached results. Under
      `compare_unrendered_code`, models and data tests both use the dual
-     rendered/template identity.
+     rendered/template identity. A Snowflake `store_failures` test's audit
+     relation is not an input: named exactly (#88), or as the only reported
+     table in its schema its SQL and query dependencies never mention (#123,
+     ADR 0008).
 - **Org isolation.** Every store query is scoped by `org_id` (from the
   `x-organization-id` metadata header, default `local`). Never weaken this.
 - **Replay clock is test-only.** `Clock::Replay` lets a request's

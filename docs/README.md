@@ -46,6 +46,7 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [0005](adr/0005-re-derive-explain-tree-on-demand.md) | Re-derive `dbt state explain` trees on demand; record the matched execution. |
 | [0006](adr/0006-persist-the-decision-reason.md) | Persist the Decision reason; it selects the Explain tree shape. |
 | [0007](adr/0007-lag-tolerance-and-upstream-producers.md) | Freshness against recorded upstream epochs and producers, gated by Lag tolerance. |
+| [0008](adr/0008-store-failures-audit-relation-by-elimination.md) | Recognize an aliased `store_failures` audit relation as the one unnamed table in the test's schema. |
 
 ## Other
 

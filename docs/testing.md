@@ -132,7 +132,11 @@ Postgres.
   `data_test_freshness.rs` checks offline that only the test's own audit
   relation is dropped from its inputs: a new upstream next to it, or a
   table that only resembles it, still rebuilds; an audit relation in a
-  separate audit schema is dropped, and an aliased one is not (#123).
+  separate audit schema is dropped, and so is an aliased one as the only
+  table in the test's schema its SQL never mentions, while a new upstream
+  next to it (named by the SQL, or a second unnamed table) still rebuilds
+  (#123). It also checks that the Explain tree of a test without upstreams
+  never lists its audit relation.
 
 ## DuckDB acceptance gate
 
