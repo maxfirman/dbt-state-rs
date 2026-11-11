@@ -162,6 +162,25 @@ impl Warehouse {
         }
     }
 
+    /// Whether a SQL submit of this execution type may be answered with a
+    /// submit-time Result copy (`ready_to_clone`). Hosted 2.0.11 copies only
+    /// FULL on submit (maintainer decision 2026-11-11, #86, #92, #101): it
+    /// rebuilds views, snapshots, custom nodes and incrementals whose
+    /// equivalent exists under another name, so every warehouse but DuckDB
+    /// copies FULL only. DuckDB keeps its own checked subset, which hosted
+    /// does not engage: FULL, or delete+insert under the pinned incremental
+    /// contract (docs/duckdb-identity-and-copy.md).
+    pub(crate) fn submit_copy_admits(
+        self,
+        execution_type: i32,
+        semantic_extras: &std::collections::HashMap<String, String>,
+    ) -> bool {
+        match self {
+            Self::DuckDb => duckdb::copy_admits(execution_type, semantic_extras),
+            _ => execution_type == crate::query_cache::ModelExecutionType::Full as i32,
+        }
+    }
+
     /// The statements that copy `source` into `target`, or why no copy can be
     /// produced. `source_table_type` is the warehouse-reported kind of the
     /// source. Requested retention options and view sources are refused for
@@ -290,6 +309,23 @@ impl Warehouse {
         match self {
             Self::DuckDb => duckdb::incremental_copy_contract(req),
             _ => IncrementalCopyContract::NotRequired,
+        }
+    }
+
+    /// Whether the reported relation `name` is the relation
+    /// `database`.`schema`.`identifier`, each part as dbt spells it in the
+    /// request. Only Snowflake's identifier rules are characterized; on other
+    /// warehouses nothing matches, so the relation stays distinct.
+    pub fn names_relation(
+        self,
+        name: &str,
+        database: &str,
+        schema: &str,
+        identifier: &str,
+    ) -> bool {
+        match self {
+            Self::Snowflake => snowflake::names_relation(name, [database, schema, identifier]),
+            _ => false,
         }
     }
 }

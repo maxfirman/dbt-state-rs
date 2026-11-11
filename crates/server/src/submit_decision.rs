@@ -7,7 +7,9 @@
 //! 2. selects a reuse candidate from State history (one scoped read, then the
 //!    pure [`reuse_candidate`] selection);
 //! 3. SQL only: tries the Result copy fallback, which is considered only when
-//!    there is NO reuse candidate and, when it applies, overrides the verdict;
+//!    there is NO reuse candidate and, when it applies, overrides the verdict
+//!    (a submit whose execution type is not copied keeps the verdict and
+//!    reports the equivalent in its rejection codes);
 //! 4. otherwise builds the decision context and calls the pure
 //!    [`decide`](crate::decision::decide);
 //! 5. mints the request and execution decision ids and writes the pending row
@@ -165,8 +167,9 @@ pub async fn submit_sql(
             .as_deref()
             .is_some_and(|t| !req.tables.iter().any(|x| x.name == t)),
     };
+    let mut refused_copy = None;
     if copy_considered {
-        if let Some(outcome) = result_copy_fallback(
+        match result_copy_fallback(
             store,
             org_id,
             req,
@@ -177,7 +180,11 @@ pub async fn submit_sql(
         )
         .await?
         {
-            return Ok(outcome);
+            CopyFallback::Decided(outcome) => return Ok(*outcome),
+            CopyFallback::Refused {
+                clone_rejection_reason,
+            } => refused_copy = Some(clone_rejection_reason),
+            CopyFallback::Ordinary => {}
         }
     }
     let (record, candidate) = decide(&evidence, &selection, &freshness);
@@ -185,9 +192,11 @@ pub async fn submit_sql(
     // The target's own reuse candidate must rebuild for freshness, but an
     // equivalent under another name may still be reusable for this submit
     // (VERIFIED LIVE 2026-11-10, lag_copy_candidates `fe`, `st`, `wba`; not
-    // when the equivalent is itself stale, `esb`).
+    // when the equivalent is itself stale, `esb`). A submit the Warehouse
+    // rules do not copy keeps the ordinary codes here: hosted's codes for it
+    // over a stale own build are not captured.
     if let (Some(own), true) = (&candidate, rebuilds_for_freshness(&record)) {
-        if let Some(outcome) = result_copy_fallback(
+        if let CopyFallback::Decided(outcome) = result_copy_fallback(
             store,
             org_id,
             req,
@@ -199,13 +208,20 @@ pub async fn submit_sql(
         .await?
         {
             log_decision(&evidence, outcome.record(), true, &req.labels);
-            return Ok(outcome);
+            return Ok(*outcome);
         }
     }
-    let record = report_older_match(store, &evidence, &freshness, record, |row| {
-        reuse_candidate::older_build_matches(req, &evidence, row)
-    })
-    .await?;
+    // A refused copy reports its equivalent where a copy would have been
+    // answered, ahead of an older match of the target.
+    let record = match refused_copy {
+        Some(clone_rejection_reason) => record.with_refused_copy(clone_rejection_reason),
+        None => {
+            report_older_match(store, &evidence, &freshness, record, |row| {
+                reuse_candidate::older_build_matches(req, &evidence, row)
+            })
+            .await?
+        }
+    };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
         record,
@@ -489,12 +505,28 @@ async fn select_sql(
     }
 }
 
+/// What the Result copy fallback decided ([`result_copy_fallback`]).
+enum CopyFallback {
+    /// The submit is answered by the fallback (a copy, or the chain-limit
+    /// build).
+    Decided(Box<SubmitOutcome>),
+    /// An equivalent exists, but this submit's execution type is not copied
+    /// (see [`SubmitCopyPlan::Refused`]): the ordinary decision applies, with
+    /// TARGET_TABLE_MISMATCH and this clone rejection.
+    Refused { clone_rejection_reason: i32 },
+    /// The ordinary decision applies unchanged.
+    Ordinary,
+}
+
 /// The Result copy fallback (see [`result_copy`]): an equivalent model already
 /// built under another name is copied in. `own` is the target's reuse
 /// candidate when it had one but must rebuild for freshness (the copy then
-/// goes over the existing target). `None` means the ordinary decision
-/// applies: no lookup was warranted, no equivalent exists, the equivalent is
-/// not fresh enough for this submit, or no copy can be produced for it.
+/// goes over the existing target). [`CopyFallback::Ordinary`] means the
+/// ordinary decision applies: no lookup was warranted, no equivalent exists,
+/// the equivalent is not fresh enough for this submit, or no copy can be
+/// produced for it. An equivalent of a submit the Warehouse rules do not copy
+/// is chosen the same way (of any execution type) and reported as
+/// [`CopyFallback::Refused`].
 ///
 /// An equivalent that read the same upstream relations as this submit is
 /// judged exactly as if it were the reuse candidate, for an existing or a
@@ -511,9 +543,9 @@ async fn result_copy_fallback(
     freshness: &Freshness<'_>,
     own: Option<&ExecutionRow>,
     anchor: Option<&ExecutionRow>,
-) -> sqlx::Result<Option<SubmitOutcome>> {
+) -> sqlx::Result<CopyFallback> {
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
-        return Ok(None);
+        return Ok(CopyFallback::Ordinary);
     };
     // The first equivalent, in preference order, that the warehouse rules
     // accept and that qualifies for this submit. Only a same-upstream
@@ -561,7 +593,7 @@ async fn result_copy_fallback(
         break;
     }
     let Some((equivalent, judged)) = chosen else {
-        return Ok(None);
+        return Ok(CopyFallback::Ordinary);
     };
     match result_copy::plan_submit(req, equivalent) {
         SubmitCopyPlan::ChainLimitExecute if own.is_none() => {
@@ -569,10 +601,12 @@ async fn result_copy_fallback(
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
             write_pending(store, evidence, &ids).await?;
-            Ok(Some(SubmitOutcome::ChainLimitExecute {
-                ids,
-                record: DecisionRecord::copy_chain_limit(),
-            }))
+            Ok(CopyFallback::Decided(Box::new(
+                SubmitOutcome::ChainLimitExecute {
+                    ids,
+                    record: DecisionRecord::copy_chain_limit(),
+                },
+            )))
         }
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
@@ -589,16 +623,25 @@ async fn result_copy_fallback(
                 ),
                 None => DecisionRecord::result_copy(),
             };
-            Ok(Some(SubmitOutcome::Copy { ids, copy, record }))
+            Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
+                ids,
+                copy,
+                record,
+            })))
         }
-        SubmitCopyPlan::ChainLimitExecute => Ok(None),
+        SubmitCopyPlan::ChainLimitExecute => Ok(CopyFallback::Ordinary),
+        SubmitCopyPlan::Refused {
+            clone_rejection_reason,
+        } => Ok(CopyFallback::Refused {
+            clone_rejection_reason,
+        }),
         SubmitCopyPlan::Unavailable { reason } => {
             tracing::warn!(
                 target = %req.target_table.as_deref().unwrap_or_default(),
                 reason,
                 "equivalent found but no result copy is available; using the ordinary decision"
             );
-            Ok(None)
+            Ok(CopyFallback::Ordinary)
         }
     }
 }

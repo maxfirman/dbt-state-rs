@@ -41,7 +41,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
-| `result_copy.rs` | Pure Result copy planning for the submit fallback and RegisterClone. Asks the Warehouse rules for chain limits, relation checks, source evidence, the incremental contract and DDL. |
+| `result_copy.rs` | Pure Result copy planning for the submit fallback and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
 | `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
@@ -83,6 +83,10 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    row alone whether it is a Reuse candidate.
 4. With no Reuse candidate (and no External modification of the Target
    relation), try the Result copy fallback. A copy overrides the verdict.
+   Only the execution types the Warehouse rules copy are copied (FULL; DuckDB
+   also delete+insert under its contract). Another kind with an equivalent
+   keeps the ordinary verdict and reports the equivalent in its rejection
+   codes (`with_refused_copy`).
 5. Otherwise call `decide()`, with the build age measured on `AppState::clock`.
 6. If the Reuse candidate must rebuild for upstream freshness, try a Result
    copy of a same-upstream equivalent over the existing Target relation.
