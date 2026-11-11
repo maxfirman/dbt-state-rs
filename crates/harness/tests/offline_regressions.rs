@@ -172,6 +172,56 @@ async fn seeds_match_configuration_current_object_and_latest_build() {
     assert_eq!(sc.values_verdict(reverted).await, "ready_to_execute");
 }
 
+/// #81 (crafted d3 / d3e): a model resubmitted without a target, after an
+/// equivalent build under its own name, must not get a Result copy of that
+/// build into an empty relation name. Hosted fails `""` with InvalidArgument
+/// (and unset with Internal); this server answers InvalidArgument for both.
+/// Data tests, which carry no target, are unaffected.
+#[tokio::test]
+async fn model_submit_without_target_is_invalid_argument_not_a_result_copy() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.M")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .namespace("ns")
+        .sql("select * from DB.RAW.SRC")
+        .upstream("DB.RAW.SRC", 50);
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    for (case, target) in [("unset", None), ("empty", Some(String::new()))] {
+        for execution_type in [ExecutionType::Full, ExecutionType::View] {
+            let mut bad: qc::SubmitEnrichedSqlRequest =
+                req.clone().execution_type(execution_type).into();
+            bad.target_table = target.clone();
+            let status = sc
+                .try_submit(bad)
+                .await
+                .expect_err("a non-test submit without a target must be rejected");
+            assert_eq!(
+                status.code(),
+                tonic::Code::InvalidArgument,
+                "{case} target, {execution_type:?}: {status:?}"
+            );
+        }
+    }
+    // The rejected submits recorded nothing: the model still skips.
+    assert_eq!(sc.verdict(req).await, "skip_execution");
+    // A data test's target is legitimately unset or empty.
+    let test = data_test("test.p.no_target")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 0 as failures");
+    sc.build_with(test.clone(), outcome().results(test_results(0)))
+        .await;
+    assert_eq!(sc.verdict(test.clone()).await, "skip_execution");
+    let mut empty: qc::SubmitEnrichedSqlRequest = test.into();
+    empty.target_table = Some(String::new());
+    assert_eq!(sc.verdict(empty).await, "skip_execution");
+}
+
 #[tokio::test]
 async fn unsupported_history_queries_are_errors_not_empty_successes() {
     let server = start_server().await;
@@ -374,10 +424,94 @@ async fn ordering_is_irrelevant_but_incomplete_view_definitions_cannot_reuse() {
     assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
 
-/// The two reasons #40 split out of an identity mismatch so Explain could
-/// render nothing for them (#83, #93) keep the wire answer the server gave
-/// before the split: a rebuild while an OLDER build of the target would still
-/// be reusable reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, and
+/// A node kind change with unchanged identity (#83, #90; VERIFIED LIVE
+/// 2026-11-10/11, explain_execution_type_change.jsonl,
+/// explain_snapshot_history.jsonl entry 58,
+/// explain_incremental_append_merge_history.jsonl entries 74-75):
+/// - with no build of the submit's type, the rebuild is EXECUTION_TYPE_MISMATCH
+///   (2 / 2) with the generic rebuild description;
+/// - with one, under a newer build of another type (here a RecordExecutions
+///   full refresh, as client 2.0.11 sends one), the submit is judged against
+///   it: its Target relation was modified after it (6 / 6), even though an
+///   older matching build exists;
+/// - and the older build is never reused, even when its Target relation is
+///   unchanged since.
+#[tokio::test]
+async fn execution_type_change_is_judged_against_the_latest_build_of_that_type() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let decision = |r: qc::ReadyToExecuteResponse| {
+        let d = r.explained_decision.expect("explained decision");
+        (
+            d.skip_rejection_reason,
+            d.clone_rejection_reason,
+            d.decision_description,
+        )
+    };
+    let rebuild = "model was executed because either its query didn't match or its upstream data is out of date";
+    let modified = "model was executed because the table was modified after the cached execution";
+
+    let merge = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 1")
+        .execution_type(ExecutionType::Merge)
+        .upstream("DB.S.A", 50);
+    sc.build_with(merge.clone().own_epoch(Some(100)), outcome().epoch(100))
+        .await;
+    // `--full-refresh`: recorded as FULL, with no submit.
+    let full = merge.clone().execution_type(ExecutionType::Full);
+    let refreshed = full.clone().own_epoch(Some(100));
+    assert_eq!(
+        sc.record([refreshed.record(outcome().epoch(300))])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        decision(sc.expect_execute(merge.clone().own_epoch(Some(250))).await),
+        (Some(6), Some(6), modified.to_string()),
+        "MERGE after a recorded full refresh"
+    );
+
+    // No DELETE_INSERT build exists: the execution type change itself.
+    let delete_insert = merge.clone().execution_type(ExecutionType::DeleteInsert);
+    assert_eq!(
+        decision(sc.expect_execute(delete_insert.own_epoch(Some(300))).await),
+        (Some(2), Some(2), rebuild.to_string()),
+        "DELETE_INSERT over FULL and MERGE builds"
+    );
+
+    // The MERGE build of the first submit would be reusable as recorded at
+    // epoch 100, but only the latest row is ever reused.
+    let other = model("DB.S.U")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 2")
+        .execution_type(ExecutionType::Merge)
+        .upstream("DB.S.A", 50);
+    sc.build_with(other.clone().own_epoch(Some(100)), outcome().epoch(100))
+        .await;
+    let other_full = other.clone().execution_type(ExecutionType::Full);
+    assert_eq!(
+        sc.record([other_full.own_epoch(Some(100)).record(outcome().epoch(100))])
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        decision(sc.expect_execute(other.own_epoch(Some(100))).await),
+        (Some(2), Some(2), rebuild.to_string()),
+        "an older build of the submit's type is not reused"
+    );
+}
+
+/// The reason #40 split out of an identity mismatch so Explain could render
+/// nothing for it (#93) keeps the wire answer the server gave before the
+/// split: a rebuild while an OLDER build of the target would still be
+/// reusable reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, and
 /// `is_stale` as that build would be reused (VERIFIED LIVE 2026-11-10,
 /// lag_copy_candidates `ob*`, pinned in `lag_tolerance.rs`). #40 changes
 /// Explain only.
@@ -395,29 +529,6 @@ async fn split_identity_reasons_keep_the_older_match_wire_answer() {
             d.is_stale,
         )
     };
-
-    // Execution type changed: the latest build has the workload's identity
-    // but was built as a view. The older FULL build is reusable with
-    // tolerated drift (ALL policy, one of two upstreams changed).
-    let full = model("DB.S.T")
-        .catalog("DB")
-        .schema("S")
-        .project("p")
-        .sql("select 1")
-        .policy(Policy::All)
-        .upstream("DB.S.A", 50)
-        .upstream("DB.S.B", 50);
-    sc.build_with(full.clone().own_epoch(Some(100)), outcome().epoch(100))
-        .await;
-    let view = full.clone().execution_type(ExecutionType::View);
-    sc.build_with(view.own_epoch(Some(200)), outcome().epoch(200))
-        .await;
-    let resubmit = full.own_epoch(Some(200)).upstream("DB.S.A", 150);
-    assert_eq!(
-        codes(sc.expect_execute(resubmit).await),
-        (Some(8), Some(7), true),
-        "execution type changed over a reusable older build"
-    );
 
     // A RegisterClone copy the workload cannot adopt (other logic) is the
     // latest row; the older ordinary build of the same logic is fresh.

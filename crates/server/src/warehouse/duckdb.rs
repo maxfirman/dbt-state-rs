@@ -62,16 +62,21 @@ impl CopyRelations {
     }
 }
 
-/// A checked copy graph for a full table model, or a delete+insert model
-/// declaring the pinned incremental contract, that declares the copy contract,
-/// builds into its declared environment and has complete input evidence.
-pub(super) fn copy_identity(req: &qc::SqlExecution) -> Option<CopyIdentity> {
-    let copyable = match ModelExecutionType::try_from(req.execution_type) {
+/// The execution types DuckDB copies: a full table model, or a delete+insert
+/// model declaring the pinned incremental contract.
+pub(super) fn copy_admits(execution_type: i32, semantic_extras: &HashMap<String, String>) -> bool {
+    match ModelExecutionType::try_from(execution_type) {
         Ok(ModelExecutionType::Full) => true,
-        Ok(ModelExecutionType::DeleteInsert) => declares_incremental_contract(&req.semantic_extras),
+        Ok(ModelExecutionType::DeleteInsert) => declares_incremental_contract(semantic_extras),
         _ => false,
-    };
-    if !copyable
+    }
+}
+
+/// A checked copy graph for a submission DuckDB copies ([`copy_admits`]) that
+/// declares the copy contract, builds into its declared environment and has
+/// complete input evidence.
+pub(super) fn copy_identity(req: &qc::SqlExecution) -> Option<CopyIdentity> {
+    if !copy_admits(req.execution_type, &req.semantic_extras)
         || !req
             .default_schema
             .as_deref()

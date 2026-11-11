@@ -37,9 +37,10 @@ pub enum NoCandidate {
     IdentityMismatch,
     /// The latest row has the workload's identity but was built as another
     /// node kind (a snapshot run under `--full-refresh` is sent with the wire
-    /// `execution_type` FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH;
-    /// this server gives the same wire answer as
-    /// [`NoCandidate::IdentityMismatch`] (#83).
+    /// `execution_type` FULL; a model whose materialization or incremental
+    /// strategy changed), and no build of the workload's type stands in for
+    /// it. Hosted rejects it with EXECUTION_TYPE_MISMATCH (2 / 2) and explains
+    /// it against that row (#83).
     ExecutionTypeChanged,
     /// The latest row is a client-requested copy (RegisterClone) that this
     /// workload cannot adopt: its inherited schema-abstracted logic is absent
@@ -359,6 +360,19 @@ impl DecisionRecord {
         self
     }
 
+    /// A rebuild of a submit whose equivalent under another name is not
+    /// copied, because the Warehouse rules copy only FULL on submit: VERIFIED
+    /// LIVE (client 2.0.11, `result_copy::plan_submit`) hosted keeps the
+    /// ordinary description and tree and reports TARGET_TABLE_MISMATCH with
+    /// `clone_rejection_reason`.
+    pub fn with_refused_copy(mut self, clone_rejection_reason: i32) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_MISMATCH);
+            self.clone_rejection_reason = Some(clone_rejection_reason);
+        }
+        self
+    }
+
     /// A rebuild with no matched build records the latest build in scope
     /// that did not have the workload's identity (`unmatched`), which Explain
     /// judges its freshness listing against.
@@ -446,6 +460,16 @@ const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
 
 // The wire rejection codes (`RejectionReason`, shared.proto) the service sends.
 pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = qc::RejectionReason::TargetTableMismatch as i32;
+/// An execution type change: the workload's identity was last built under
+/// another execution type (`NoCandidate::ExecutionTypeChanged`, see
+/// `execute`); and a submit not copied although an equivalent exists, whose
+/// newest equivalent has another execution type (see
+/// `result_copy::plan_submit`).
+pub const REJECTION_EXECUTION_TYPE_MISMATCH: i32 =
+    qc::RejectionReason::ExecutionTypeMismatch as i32;
+/// A view, snapshot or custom node not copied although an equivalent exists:
+/// hosted copies only FULL on submit (see `result_copy::plan_submit`).
+pub const REJECTION_EXECUTION_TYPE_NOT_FULL: i32 = qc::RejectionReason::ExecutionTypeNotFull as i32;
 /// A client-requested copy the service cannot prove eligible (RegisterClone
 /// `unable_to_clone`), and the skip rejection on every `ready_to_clone`.
 pub const REJECTION_FORCED_NOT_ELIGIBLE: i32 = qc::RejectionReason::ForcedNotEligible as i32;
@@ -623,10 +647,19 @@ struct Freshness {
 }
 
 fn execute(execution_type: i32, had_prior: bool, reason: DecisionReason) -> Verdict {
+    // VERIFIED LIVE (2026-11-10/11, explain_snapshot_history.jsonl entry 58,
+    // explain_execution_type_change.jsonl): a build of the workload's identity
+    // under another execution type is rejected as EXECUTION_TYPE_MISMATCH.
+    let rejection = match reason {
+        DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
+            REJECTION_EXECUTION_TYPE_MISMATCH
+        }
+        _ => REJECTION_NO_SUITABLE_MATCH_FOUND,
+    };
     Verdict::Execute {
         description: execute_description(execution_type, had_prior, reason),
-        skip_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
-        clone_rejection_reason: REJECTION_NO_SUITABLE_MATCH_FOUND,
+        skip_rejection_reason: rejection,
+        clone_rejection_reason: rejection,
         // VERIFIED LIVE: the hosted service reports is_stale=FALSE on every
         // EXECUTE, including an upstream-drift-driven rebuild (lag fixture entry
         // 5, and the multi-upstream ANY captures). is_stale is only ever true on

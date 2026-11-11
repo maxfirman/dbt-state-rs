@@ -15,7 +15,7 @@ Open questions and deliberate divergences live in
 | SQL model (view, table, incremental) | yes | Logic identity: normalized rendered SQL, all `semantic_extras` the client sends, and dependency definitions |
 | Snapshot (et=7) | yes | Same as models (`snapshot_reuse.jsonl`) |
 | Seed (`SubmitValues`) | yes | `values_hash` plus seed config (`seed_values_hash.jsonl`) |
-| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) (`c1_test_node_identity.jsonl`). A failing test is reused like a passing one. Hosted also reuses a test confirmed with incomplete or no cached results and echoes them (crafted, `explain_incomplete_test_results.jsonl`); this server requires complete results (divergence #87) |
+| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) (`c1_test_node_identity.jsonl`). A failing test is reused like a passing one. Hosted also reuses a test confirmed with incomplete or no cached results and echoes them (crafted, `explain_incomplete_test_results.jsonl`); this server requires complete results (accepted divergence #87, see [correctness-handoff.md](correctness-handoff.md#accepted-divergences)) |
 | Custom materialization (et=11) | yes | Same as models; the public docs say it is never reused, but hosted skips an unchanged one (`custom_materialization_reuse.jsonl`) |
 | Python model | no | Always builds |
 
@@ -29,9 +29,14 @@ Open questions and deliberate divergences live in
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
 | Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
-| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution") | ❌ builds with the generic rebuild description (#90) |
+| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution", judged against the last incremental build) | ✅ |
+| Same SQL, other execution type (snapshot under `--full-refresh`, table ↔ append, merge ↔ delete+insert), no build of the new type | — | build, 2 / 2 (`EXECUTION_TYPE_MISMATCH`), the node-query-unchanged Explain tree against the latest build (`explain_snapshot_history.jsonl`, `explain_execution_type_change.jsonl`) | ✅ |
+| Same, back to an execution type with an older build | — | build ("the table was modified after the cached execution", judged against that older build) | ✅ |
+| Same SQL, table → view → table | 1 | build, 8 / 7 (a view sends other `semantic_extras`, so its build has another identity; the older table build matches) | ✅ |
+| Incremental fully refreshed (recorded FULL), then materialized as a table with the same SQL and extras | 1 | skip (the recorded row is a build) | ✅ |
 | Seed content change | VALUES | build (new `values_hash`) | ✅ |
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
+| `store_failures` data test unchanged, its audit relation (table or view, passing or failing) now in `tables` | 8 | skip; the tree lists only the tested source (`explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`) | ✅ when the request names the audit relation as `default_catalog`.`default_schema`.`dbt_node_name` on Snowflake (#88); otherwise builds |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |
 | `require_fresh_data_from: all`, some parents unchanged | — | skip, `is_stale=true` | ✅ |
 | `require_fresh_data_from: all`, all parents changed | — | build | ✅ |
@@ -84,18 +89,20 @@ reproducible skip.
 | Scenario | Hosted | Reproduced |
 |---|---|---|
 | Incremental | copy via `RegisterClone` | ✅ |
+| Incremental, equivalent under another name, on submit (client 2.0.11, `explain_incremental_copy_over.jsonl`, `explain_incremental_submit_copy.jsonl`) | build, srr=1 / crr=6, or crr=2 when the newest equivalent has another execution type | ✅ (FULL-only submit copy, #101); into an absent dev relation srr=6 ❌ (the server finds no equivalent, #107) |
+| Incremental (MERGE) over an existing target, on submit (client 2.0.6, `clone_failed_fallback.jsonl`, `clone_submit_equivalent_fallback.jsonl`) | `ready_to_clone` | ❌ deliberate: the server follows 2.0.11 and builds (#101 question 3) |
 | Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy and the post-copy SKIP (#93) |
 | Post-copy submit after the dev-clone pre-step: the source build's SQL over a fixed prod source, a ref'd table or a ref'd view resolved per target (client 2.0.11, `explain_post_copy_identity.jsonl`) | skip, with the source build's `execution_runtime_ms` | ✅ (the submit is read in the copy source's schema, #93) |
 | Table or view whose SQL reads a fixed prod-schema source, dev target missing, prod equivalent exists (client 2.0.11, `explain_post_copy_identity.jsonl` entries 18–19) | table: `ready_to_clone` (srr=1); view: build 1 / 3 | ❌ no equivalent found: build 6 / 6 (#107) |
-| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅, codes 6 / 6 ❌ (#92) |
-| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅, codes 6 / 6 ❌ (#92) |
+| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅; codes 1 / 3 when the server finds the equivalent (#92), 6 / 6 here ❌ (it finds none, #107) |
+| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅; codes 1 / 3 when the server finds the equivalent (#92), 6 / 6 here ❌ (it finds none, #107) |
 | Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
-| Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ❌ the server copies it (#86) |
+| Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ✅ (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
 | Resubmit the copy with changed logic | build | ✅ |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |
-| SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |
+| FULL SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |
 | Same, with `clone_chain_depth_limit=0` | build (srr=1, crr=10) | ✅ |
 | Same, source older than the current upstream, any tolerance | copy | ✅ |
 | Same, volatile SQL with `tolerate_nondeterminism=false` | build | ✅ conservative gate only (see below) |
@@ -128,8 +135,9 @@ reproducible skip.
   Not the #93 cause: that submit's schema already matched the copy, but it
   adds an `is_incremental()` predicate and its Target relation's epoch is
   newer than the copy's confirmation.
-- **Copies seen by the #76 probes** (seed copy, non-FULL rejection codes):
-  #91, #92, keyed in `golden/replay_gaps.json`.
+- **Copies seen by the #76 probes** (seed copy, and the view and snapshot
+  codes where the server finds no equivalent): #91, #107, keyed in
+  `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
 - **Unit test reuse** is not characterized.

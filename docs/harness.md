@@ -182,6 +182,15 @@ SCENARIO = Scenario(
   hosted decides.
 - Use `target="dev_clone"` for steps against the dev target; it is checked
   like `prod_demo`.
+- `dbt state explain` explains the decisions of the latest invocation: an
+  `Explain` step must follow the `Build` that decided its node, with no other
+  `Build` between (otherwise the client explains nothing for it).
+- **Follow-up runs.** `--run-id <id>` binds a scenario to an earlier run's id,
+  so it extends that run's nodes and their hosted State history (for example
+  after the earlier run's explain steps captured nothing). The follow-up's
+  explained decisions have their history in the earlier window: mark those
+  steps `history=False` and promote the two `fixture_candidate.jsonl` files
+  concatenated, earlier first (`execution_type_change_append.py`).
 
 `experiments/explain_capture_test.py` binds and plans every bundled scenario,
 so a malformed one fails offline. Modules in `capture_scenarios/` whose name

@@ -6,7 +6,9 @@ Decided (wayfinder ticket #21, map #19 — faithful warehouse-general
 `dbt state explain` support). Amended by
 [ADR 0006](0006-persist-the-decision-reason.md): the decision reason is also
 persisted, and selects the tree shape. Amended by #73: the unmatched latest
-build's id is also persisted ([below](#decision)).
+build's id is also persisted ([below](#decision)). Amended by #83/#90: an
+execution type change keeps the build it was judged against as
+`matched_execution_id` ([below](#decision)).
 
 ## Decision
 
@@ -32,6 +34,28 @@ caller already holds this id). Everything else is re-derived.
 > persisted, never a verdict. NULL for every other decision and for a rebuild
 > recorded before the migration; Explain then omits the summary line, because
 > unknown evidence never proves freshness.
+
+> **Amended by #83/#90** (approved by the maintainer, 2026-11-11). Anchor
+> selection gains two cases, both decided at submit time and persisted as
+> `matched_execution_id`; Explain still loads only the row that id names
+> (org-scoped) and never looks up a newer build:
+>
+> - the latest build in scope has the workload's identity but another
+>   execution type, and no build of the workload's type stands in for it:
+>   the rebuild (`no_reuse_candidate.execution_type_changed`, codes 2 / 2) is
+>   anchored on that latest build, and Explain renders the node-query-unchanged
+>   tree against it;
+> - the latest build has the identity under another type and an older build
+>   has the identity and the workload's type: the submit is judged against
+>   that older build ([ADR 0007](0007-lag-tolerance-and-upstream-producers.md)),
+>   and when its own target was modified or dropped since, the rebuild is
+>   anchored on it, like any build rejected for its own target.
+>
+> Hosted explains both against those builds (VERIFIED LIVE 2026-11-10/11:
+> `explain_snapshot_history.jsonl` entries 58–60,
+> `explain_incremental_append_merge_history.jsonl` entries 74–79,
+> `explain_execution_type_change.jsonl`). `unmatched_execution_id` stays NULL
+> for both, since the anchored build has the workload's identity.
 
 > **Amended by #93:** a client-requested copy (RegisterClone) keeps, on its
 > own `executions` row, the names of the upstreams its source build recorded
@@ -104,6 +128,10 @@ matched no prior row:
   > `matched_execution_id` (`DecisionRecord::result_copy_judged`). A rebuild of
   > a missing or modified Target relation whose latest build had the
   > workload's identity also keeps that build (`submit_decision::anchor_rejected`).
+  > **Amended by #83/#90:** so does a rebuild whose latest build had the
+  > identity under another execution type, anchored on that build or on the
+  > older build of the workload's type it was judged against (see the
+  > amendment under [Decision](#decision)).
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
 

@@ -82,7 +82,9 @@ impl Store {
     /// Every confirmed build of a target in its physical scope, newest first
     /// (the first row is [`Store::current_target_state`]). Older rows never
     /// describe the target's current contents; they are read only to report
-    /// which earlier build would have qualified (rejection codes).
+    /// which earlier build would have qualified (rejection codes), and to find
+    /// the build of the workload's own execution type that an execution type
+    /// change is judged against (never reused).
     pub async fn target_history(
         &self,
         org_id: &str,
@@ -196,12 +198,19 @@ impl Store {
         // PHYSICAL-STATE INVARIANT: a candidate source may only be cloned if its
         // CURRENT physical contents match the requested logic. We reduce to the
         // latest confirmed row PER target in this physical warehouse scope
-        // (DISTINCT ON), then filter the current states by logic and execution
-        // type. Another connection's same-named target is a different object.
+        // (DISTINCT ON), then filter the current states by logic and (when asked)
+        // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, table_type, last_modified_epoch, execution_runtime_ms FROM current_state WHERE node_namespace_logic_hash = ")
-            .push_bind(q.node_namespace_logic_hash).push(" AND execution_type = ").push_bind(q.execution_type)
-            .push(" AND target_table <> ").push_bind(q.exclude_target)
+        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms FROM current_state WHERE node_namespace_logic_hash = ")
+            .push_bind(q.node_namespace_logic_hash);
+        if let Some(execution_type) = q.execution_type {
+            query
+                .push(" AND execution_type = ")
+                .push_bind(execution_type);
+        }
+        query
+            .push(" AND target_table <> ")
+            .push_bind(q.exclude_target)
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
             .push_bind(q.limit);
         query

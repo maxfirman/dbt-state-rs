@@ -170,3 +170,138 @@ fn hosted_data_test_freshness_shape_is_pinned() {
         "an unchanged (same-epoch, re-confirmed) submit SKIPS (control)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// store_failures audit relation (#88)
+// ---------------------------------------------------------------------------
+
+/// The `store_failures` test's tested source and its own audit relation, as
+/// client 2.0.11 names them (explain_data_test_history.jsonl `t75s`): the
+/// audit relation is the test's database, schema and name.
+const SF_SOURCE: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_SRC\"";
+const SF_AUDIT: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"";
+
+/// Hosted SKIPs an unchanged `store_failures` test although its audit
+/// relation now appears in `tables`: it is the test's own write. The audit
+/// relation is excluded, not every unrecorded table: a genuinely new upstream
+/// next to it changes the dependency set and rebuilds.
+#[tokio::test]
+async fn store_failures_audit_relation_is_ignored_but_a_new_upstream_rebuilds() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    // A `store_failures: true` singular test over SF_SOURCE. Its first
+    // execution reports only the source (the audit relation does not exist).
+    let test = data_test("test.jaffle_shop.sf_test")
+        .catalog("CDO_DEMO_DB")
+        .schema("prod_state_demo")
+        .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
+        .namespace(NS)
+        .project(PROJECT)
+        .target_name("prod_demo")
+        .label("dbt_node_name", "sf_test")
+        .extra("store_failures", "true")
+        .extra("store_failures_as", "\"table\"")
+        .upstream(SF_SOURCE, 100);
+    sc.build_with(test.clone(), outcome().results(test_results(0)))
+        .await;
+    let rerun = test.clone().upstream(SF_AUDIT, 150);
+    assert_eq!(sc.verdict(rerun.clone()).await, "skip_execution");
+
+    let decision = sc
+        .expect_execute(rerun.upstream("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_NEW\"", 100))
+        .await
+        .explained_decision
+        .expect("explained decision");
+    assert_eq!(
+        (
+            decision.skip_rejection_reason,
+            decision.clone_rejection_reason
+        ),
+        (Some(6), Some(6)),
+        "a dependency-set change rebuilds as a changed query (6/6)"
+    );
+}
+
+/// A table that resembles the audit relation but is not the test's own
+/// relation still counts as a new input: the same name in another schema or
+/// database, a longer name, a case-sensitive quoted name, or the exact name
+/// for a test that does not store its failures.
+#[tokio::test]
+async fn tables_resembling_the_audit_relation_still_count() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    // One test (own unique id, so its own State history) per case.
+    let test = |case: usize, store_failures: &str| {
+        data_test(&format!("test.jaffle_shop.sf_test.{case}"))
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "sf_test")
+            .extra("store_failures", store_failures)
+            .upstream(SF_SOURCE, 100)
+    };
+    let cases = [
+        ("\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"SF_TEST\"", "true"),
+        ("\"OTHER_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"", "true"),
+        (
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUDIT\"",
+            "true",
+        ),
+        ("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"sf_test\"", "true"),
+        // A test that does not store failures reads a table of its own name.
+        (SF_AUDIT, "false"),
+    ];
+    for (case, (name, store_failures)) in cases.into_iter().enumerate() {
+        sc.build_with(
+            test(case, store_failures),
+            outcome().results(test_results(0)),
+        )
+        .await;
+        assert_eq!(
+            sc.verdict(test(case, store_failures).upstream(name, 150))
+                .await,
+            "ready_to_execute",
+            "{name} (store_failures {store_failures}) is a new input"
+        );
+    }
+}
+
+/// A `store_failures` test whose name matches a relation it reads (Codex
+/// review on #109: test `orders` with alias `orders_audit` reading `orders`).
+/// The request does not carry the alias, so the reported `orders` cannot be
+/// told apart from an unaliased audit relation by name; because the test's SQL
+/// reads it, it stays an input and its drift rebuilds the test.
+#[tokio::test]
+async fn a_same_named_relation_the_test_reads_stays_an_input() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let orders = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ORDERS\"";
+    let test = |epoch: i64| {
+        data_test("test.jaffle_shop.orders")
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql("select id from CDO_DEMO_DB.prod_state_demo.orders where id < 0")
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "orders")
+            .extra("store_failures", "true")
+            .extra("store_failures_as", "\"table\"")
+            .upstream(orders, epoch)
+    };
+    sc.build_with(test(100), outcome().results(test_results(0)))
+        .await;
+    assert_eq!(
+        sc.verdict(test(100)).await,
+        "skip_execution",
+        "unchanged (control)"
+    );
+    assert_eq!(
+        sc.verdict(test(200)).await,
+        "ready_to_execute",
+        "the read relation changed, so the cached result is stale"
+    );
+}

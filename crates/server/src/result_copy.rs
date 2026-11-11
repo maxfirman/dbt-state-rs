@@ -7,6 +7,9 @@
 //!   but an equivalent model (same namespace + schema-abstracted logic) is
 //!   already built under another physical name. [`submit_lookup`] says whether
 //!   to look for one; [`plan_submit`] turns the equivalent found into a plan.
+//!   Only the execution types the Warehouse rules admit are copied (FULL, and
+//!   DuckDB's checked subset); any other submit builds and reports the
+//!   equivalent in its rejection codes, as hosted 2.0.11 does.
 //! * **Client-requested copy** (`RegisterClone`): the client names the source.
 //!   [`register_lookup`] rejects ineligible requests or says what to look up;
 //!   [`plan_register`] turns the lookup result into a plan.
@@ -32,7 +35,11 @@ use crate::warehouse::{IncrementalCopyContract, Warehouse};
 pub(crate) struct EquivalentLookup<'a> {
     pub table_namespace: &'a str,
     pub node_namespace_logic_hash: &'a str,
-    pub execution_type: i32,
+    /// The equivalent's execution type: the submit's own for a submit the
+    /// Warehouse rules let copy; `None` (any) for one they do not, which
+    /// builds with the codes of whichever equivalent hosted would have found
+    /// ([`plan_submit`]).
+    pub execution_type: Option<i32>,
     pub exclude_target: &'a str,
 }
 
@@ -42,6 +49,11 @@ pub(crate) struct EquivalentLookup<'a> {
 /// reuse candidate, excluding seeds and data tests. VERIFIED LIVE
 /// (experiments/clone_experiment.sh table materialization;
 /// golden/fixtures/clone_submit_equivalent_fallback.jsonl).
+///
+/// Only the execution types [`Warehouse::submit_copy_admits`] are copied; the
+/// others still look for an equivalent, of any execution type, because
+/// hosted reports it in the rejection codes of the build (see
+/// [`SubmitCopyPlan::Refused`]).
 ///
 /// Volatility: when volatile evaluation is requested
 /// (`tolerate_nondeterminism = false`) AND the root SQL or any supplied
@@ -74,10 +86,11 @@ pub(crate) fn submit_lookup<'a>(
     {
         return None;
     }
+    let copies = warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras);
     Some(EquivalentLookup {
         table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
         node_namespace_logic_hash: ns_logic_hash?,
-        execution_type: req.execution_type,
+        execution_type: copies.then_some(req.execution_type),
         exclude_target: req.target_table.as_deref().unwrap_or_default(),
     })
 }
@@ -86,6 +99,7 @@ pub(crate) fn submit_lookup<'a>(
 #[derive(Debug, Clone)]
 pub(crate) struct CloneEquivalent {
     pub source_table: String,
+    pub execution_type: i32,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
@@ -98,6 +112,7 @@ impl CloneEquivalent {
     pub(crate) fn new(candidate: CopyCandidate, copy_depth: usize) -> Self {
         Self {
             source_table: candidate.target_table,
+            execution_type: candidate.execution_type,
             table_type: candidate.table_type,
             last_modified_epoch: candidate.last_modified_epoch,
             execution_runtime_ms: candidate.execution_runtime_ms,
@@ -128,12 +143,55 @@ pub(crate) enum SubmitCopyPlan {
     /// description (VERIFIED LIVE, experiments/clone_experiment.sh table
     /// --no-clones; fixture clone_submit_allow_clones_false.jsonl).
     ChainLimitExecute,
+    /// An equivalent exists, but the Warehouse rules do not copy this
+    /// submit's execution type ([`Warehouse::submit_copy_admits`]). Hosted
+    /// 2.0.11 builds it with its ordinary description and tree, and reports
+    /// TARGET_TABLE_MISMATCH with this clone rejection (VERIFIED LIVE, see
+    /// [`refused_copy_rejection`]).
+    Refused { clone_rejection_reason: i32 },
     /// No copy can be produced for this equivalent. The submit falls back to
     /// the ordinary decision.
     Unavailable { reason: &'static str },
 }
 
+/// The clone rejection hosted 2.0.11 reports when it builds a submit it does
+/// not copy although `equivalent_type`'s equivalent exists under another
+/// name. VERIFIED LIVE: EXECUTION_TYPE_NOT_FULL for a view or snapshot
+/// (explain_copy_probes.jsonl entries 13-14) and a custom node
+/// (explain_custom_copy.jsonl entry 9); for an incremental,
+/// NO_SUITABLE_MATCH_FOUND when the newest equivalent has the submit's
+/// execution type and EXECUTION_TYPE_MISMATCH when it has another
+/// (explain_incremental_copy_over.jsonl entries 37-41: the append and
+/// delete+insert submits' newest equivalents were the insert_overwrite and
+/// merge prod builds with the same SQL and extras). A view, snapshot or
+/// custom node whose equivalent has another execution type is not captured;
+/// it is given the incremental rule's EXECUTION_TYPE_MISMATCH.
+fn refused_copy_rejection(submit_type: i32, equivalent_type: i32) -> i32 {
+    use crate::decision::{
+        REJECTION_EXECUTION_TYPE_MISMATCH, REJECTION_EXECUTION_TYPE_NOT_FULL,
+        REJECTION_NO_SUITABLE_MATCH_FOUND,
+    };
+    let incremental = matches!(
+        ModelExecutionType::try_from(submit_type),
+        Ok(ModelExecutionType::Append
+            | ModelExecutionType::Merge
+            | ModelExecutionType::InsertOverwrite
+            | ModelExecutionType::DeleteInsert
+            | ModelExecutionType::Microbatch)
+    );
+    if equivalent_type != submit_type {
+        REJECTION_EXECUTION_TYPE_MISMATCH
+    } else if incremental {
+        REJECTION_NO_SUITABLE_MATCH_FOUND
+    } else {
+        REJECTION_EXECUTION_TYPE_NOT_FULL
+    }
+}
+
 /// Plan the submit fallback for an equivalent found by [`submit_lookup`].
+///
+/// A submit whose execution type the Warehouse rules do not copy is refused
+/// first: it is never copied, whatever the target allows.
 ///
 /// The forbidden/chain-limit check runs only once an equivalent EXISTS:
 /// without one, hosted answers the ordinary execute, not the chain-limit
@@ -145,6 +203,14 @@ pub(crate) fn plan_submit(
     equivalent: CloneEquivalent,
 ) -> SubmitCopyPlan {
     let warehouse = Warehouse::from_dialect(&req.dialect);
+    if !warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras) {
+        return SubmitCopyPlan::Refused {
+            clone_rejection_reason: refused_copy_rejection(
+                req.execution_type,
+                equivalent.execution_type,
+            ),
+        };
+    }
     let forbidden = req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
     let chain_limit_reached = warehouse
         .copy_chain_depth_limit(req.clone_chain_depth_limit)
@@ -360,6 +426,7 @@ mod tests {
     fn equivalent(source: &str, depth: usize, epoch: Option<i64>) -> CloneEquivalent {
         CloneEquivalent {
             source_table: source.into(),
+            execution_type: 1,
             table_type: Some("TABLE".into()),
             last_modified_epoch: epoch,
             execution_runtime_ms: Some(9),
@@ -393,7 +460,7 @@ mod tests {
             Some(EquivalentLookup {
                 table_namespace: "ns",
                 node_namespace_logic_hash: "logic",
-                execution_type: 1,
+                execution_type: Some(1),
                 exclude_target: DEV,
             })
         );
@@ -480,7 +547,96 @@ mod tests {
         assert!(submit_lookup(&req, &no_logic, false).is_none());
     }
 
+    #[test]
+    fn only_a_full_submit_looks_for_an_equivalent_of_its_own_type() {
+        // A copy-eligible submit looks for an equivalent of its own execution
+        // type; any other kind looks for the equivalent hosted reports, of any
+        // execution type (explain_incremental_copy_over.jsonl).
+        for (execution_type, wanted) in [
+            (1, Some(1)),
+            (2, None),
+            (3, None),
+            (4, None),
+            (5, None),
+            (6, None),
+            (7, None),
+            (10, None),
+            (11, None),
+        ] {
+            let mut req = submit("snowflake", "select id from DB.DEV.UP");
+            req.execution_type = execution_type;
+            let ev = evidence(&req);
+            assert_eq!(
+                submit_lookup(&req, &ev, false).map(|l| l.execution_type),
+                Some(wanted),
+                "execution type {execution_type}"
+            );
+        }
+    }
+
     // ---- plan_submit --------------------------------------------------------
+
+    fn typed_equivalent(execution_type: i32) -> CloneEquivalent {
+        CloneEquivalent {
+            execution_type,
+            ..equivalent(PROD, 0, Some(5))
+        }
+    }
+
+    #[test]
+    fn non_full_submits_build_with_the_hosted_rejection_codes() {
+        // (submit type, equivalent type, clone rejection). VERIFIED LIVE,
+        // client 2.0.11: view 10 and snapshot 7 (explain_copy_probes.jsonl
+        // entries 13-14) and custom 11 (explain_custom_copy.jsonl entry 9) get
+        // EXECUTION_TYPE_NOT_FULL; an incremental whose equivalent has its own
+        // type gets NO_SUITABLE_MATCH_FOUND, and one whose equivalent has
+        // another type EXECUTION_TYPE_MISMATCH
+        // (explain_incremental_copy_over.jsonl entries 37-41).
+        let cases = [
+            (10, 10, 3),
+            (7, 7, 3),
+            (11, 11, 3),
+            (3, 3, 6),
+            (4, 4, 6),
+            (6, 6, 6),
+            (2, 4, 2),
+            (5, 3, 2),
+        ];
+        for (submit_type, equivalent_type, clone_rejection_reason) in cases {
+            let mut req = submit("snowflake", "select id from DB.DEV.UP");
+            req.execution_type = submit_type;
+            assert_eq!(
+                plan_submit(&req, typed_equivalent(equivalent_type)),
+                SubmitCopyPlan::Refused {
+                    clone_rejection_reason
+                },
+                "submit {submit_type}, equivalent {equivalent_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn duckdb_keeps_its_checked_delete_insert_copy() {
+        let mut req = duck_submit(None);
+        req.execution_type = ModelExecutionType::DeleteInsert as i32;
+        req.semantic_extras.insert(
+            "duckdb_incremental_contract".into(),
+            "delete-insert-fixed-v1".into(),
+        );
+        let ev = evidence(&req);
+        assert_eq!(
+            submit_lookup(&req, &ev, false).map(|l| l.execution_type),
+            Some(Some(ModelExecutionType::DeleteInsert as i32))
+        );
+        let equivalent = CloneEquivalent {
+            execution_type: req.execution_type,
+            ..duck_equivalent(0, Some(5))
+        };
+        assert!(matches!(
+            plan_submit(&req, equivalent),
+            SubmitCopyPlan::Copy(_)
+        ));
+    }
 
     #[test]
     fn snowflake_equivalent_is_copied_into_the_submit_target() {

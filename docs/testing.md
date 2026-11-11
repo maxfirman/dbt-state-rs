@@ -124,8 +124,12 @@ Postgres.
 - `data_test_explain.rs`: pins what the data-test Explain captures show by
   fixture inspection: passing and failing tests render the same tree, the
   EXECUTE tree does not depend on the rebuild reason, a `store_failures` test
-  reports its audit relation (#88), and hosted serves incomplete cached
-  results (#87). Both fixtures also replay in `conformance.rs`.
+  reports its audit relation (a table or a view, passing or failing) and
+  hosted does not list it (#88), and hosted serves incomplete cached results
+  (#87). All three fixtures also replay in `conformance.rs`.
+  `data_test_freshness.rs` checks offline that only the test's own audit
+  relation is dropped from its inputs: a new upstream next to it, or a
+  table that only resembles it, still rebuilds.
 
 ## DuckDB acceptance gate
 

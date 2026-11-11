@@ -48,8 +48,11 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
   (→ [docs/correctness-handoff.md](docs/correctness-handoff.md), ADR 0007):
   1. Physical State history is scoped by organization, warehouse family,
      connection namespace (`table_namespace`) and Target relation. Only the
-     latest row in that scope is considered, and its versioned
-     SQL/dependency/context/config fingerprints must match.
+     latest row in that scope can be reused, and its versioned
+     SQL/dependency/context/config fingerprints must match. When the latest
+     row has the submit's identity under another execution type, the rebuild
+     is judged against the latest row of the submit's type, never reused
+     (ADR 0007 "Execution type change").
   2. Upstream drift is measured against the epoch recorded for each upstream at
      the build, by exact physical name; unknown epochs never prove freshness. A
      changed Upstream producer always rebuilds. Lag tolerance only turns a
@@ -57,7 +60,8 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
   3. The Target relation's existence and External modifications are checked
      separately from upstream freshness.
   4. Cross-target Result copy: Snowflake matches by `table_namespace` +
-     schema-abstracted logic + execution type, and that logic identity binds
+     schema-abstracted logic + execution type, copies only FULL on submit
+     (`Warehouse::submit_copy_admits`, #101), and that logic identity binds
      each dependency's schema-abstracted name to its definition (swapping two
      dependency definitions between references is not equivalent). DuckDB has
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other

@@ -377,6 +377,17 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
+        // Only data tests have no Target relation. Deciding any other node
+        // without one could answer a Result copy into an empty relation name
+        // (#81). Hosted fails `""` with InvalidArgument and an unset target
+        // with Internal; both are InvalidArgument here.
+        if req.execution_type != ModelExecutionType::DbtDataTest as i32
+            && req.target_table.as_deref().is_none_or(str::is_empty)
+        {
+            return Err(Status::invalid_argument(
+                "target_table is required for a non-test node",
+            ));
+        }
 
         let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req, now_ms)
             .await

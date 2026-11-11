@@ -74,6 +74,13 @@ node_configs_hash?, node_contract_hash?, project_id?, …}`,
 `compare_unrendered_code`, `table_namespace?`, `ignore_external_modifications`,
 `allow_clones?`, `is_defer_to_profile`, `defer_enabled`.
 
+Only a data test (`DBT_DATA_TEST`) may leave `target_table` unset or `""`;
+client 2.0.11 always sets it for other nodes. The server rejects any other
+submit without a target with `INVALID_ARGUMENT` before deciding or recording
+anything (#81). Hosted answers `INVALID_ARGUMENT` "Failed to process SQL" for
+`""` and `INTERNAL` for unset (crafted d3 / d3e); the unset case is an
+[accepted divergence](correctness-handoff.md#accepted-divergences).
+
 DuckDB note: for the optional local DuckDB extension, `last_modified_epoch` is
 a durable file/generation-wide ordinal, not Unix milliseconds, and freshness
 compares ordering only. See the
@@ -102,8 +109,10 @@ history match and the decision. The client derives:
     `Execution.RecordExecutions` with the request built for a full refresh,
     so `execution_type` is `FULL` (1), and the rebuilt Target relation's
     epoch. Hosted answers `records_stored: 1`. The next ordinary run submits
-    the model as APPEND/MERGE again; hosted rebuilds it with "the table was
-    modified after the cached execution" (divergence #90).
+    the model as APPEND/MERGE again; hosted and this server rebuild it with
+    "the table was modified after the cached execution", judged against the
+    last APPEND/MERGE build (rule 1 of
+    [Current decision semantics](#current-decision-semantics)).
 - `semantic_extras`, from these node config keys only (client 2.0.11 also
   sends `unique_key` and `lookback` for incrementals,
   `explain_incremental_append_merge_history.jsonl`). SQL nodes:
@@ -113,9 +122,11 @@ history match and the decision. The client derives:
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
 - `tables` for a data test: the relations it reads, with no target. With
-  `store_failures: true` it also holds the test's audit relation (a table
-  named after the test) once a run has written it (client 2.0.11,
-  `explain_data_test_history.jsonl`).
+  `store_failures: true` it also holds the test's audit relation (named after
+  the test, in the test's database and schema) once a run has written it,
+  whether a table or a `store_failures_as: view` view (client 2.0.11,
+  `explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`).
+  The server drops it from the test's inputs (#88).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - For a microbatch model, the run's resolved event-time window, added to the
   `semantic_extras` as `__microbatch_event_time_start` and
@@ -164,18 +175,13 @@ wire and in captured JSON.
   `EXECUTION_TYPE_NOT_FULL=3`, `TARGET_TABLE_DOES_NOT_EXIST=4`,
   `FORCED_NOT_ELIGIBLE=5`, `NO_SUITABLE_MATCH_FOUND=6`, `TARGET_TABLE_MATCH=7`,
   `LATEST_QUERY_HASH_NOT_MATCH=8`, `OUTSIDE_TIME_TRAVEL_WINDOW=9`,
-  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 2, 3 or 9. Hosted
-  sends 2 / 2 for a rebuild after an execution-type change (a snapshot under
-  `--full-refresh`), where this server sends 6 / 6 (#83). Hosted sends 1 / 3
-  when a view or snapshot has an equivalent under another name that it will
-  not copy on submit because the execution type is not FULL, where this
-  server sends 6 / 6 (#92). It also sends 1 / 3 when it rebuilds a custom
-  materialization (`DBT_CUSTOM`) that has an equivalent under another name,
-  where this server answers a Result copy (`explain_custom_copy.jsonl` entry
-  9, #86). It sends 1 / 6 or 1 / 2 when it rebuilds an incremental (any
-  strategy) that has an equivalent under another name, where this server
-  answers a Result copy (`explain_incremental_copy_over.jsonl` entries 37–41,
-  #101; see [Result copy on submit](#result-copy-on-submit)).
+  `CLONE_CHAIN_LIMIT_EXCEEDED=10`. The server never sends 9. It sends 2 / 2,
+  as hosted does, for a rebuild after an execution type change (#83, #90; see
+  [Rejection codes](#rejection-codes)). The server sends
+  1 / 3, 1 / 6 or 1 / 2 when it builds a submit that it will not copy because
+  its execution type is not FULL although an equivalent exists under another
+  name, as hosted 2.0.11 does (#86, #92, #101; see
+  [Result copy on submit](#result-copy-on-submit)).
 
 ### Decision descriptions
 
@@ -218,16 +224,22 @@ and keeps the same string.
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
 | EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit. Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_chain_limit` |
+| EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
+| EXECUTE | 1 / 6 (`TARGET_TABLE_MISMATCH` / `NO_SUITABLE_MATCH_FOUND`) | As 1 / 3, for an incremental whose newest equivalent has its own execution type | same |
+| EXECUTE | 1 / 2 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_MISMATCH`) | As 1 / 3, when the newest equivalent has another execution type | same |
 | CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit | `DecisionRecord::result_copy` |
 | CLONE (`RegisterClone`) | 5 / - (`FORCED_NOT_ELIGIBLE`) | Every `ready_to_clone` from `RegisterClone` | `services.rs::ready_to_clone_response` |
 | `unable_to_clone` | - / 10 | `clone_chain_depth_limit = 0` | `services.rs::unable_to_clone_response` |
 | `unable_to_clone` | - / 5 | DuckDB only: the pinned incremental contract or a current eligible source is missing | `result_copy::register_lookup`, `plan_register` |
 
 Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`,
+`explain_execution_type_change.jsonl`, `explain_snapshot_history.jsonl` entry 58,
 `lag_seed_upstream.jsonl` (arms G, H), `clone_submit_allow_clones_false.jsonl`,
-`clone_rejected_allow_clones_false.jsonl`.
+`clone_rejected_allow_clones_false.jsonl`, `explain_custom_copy.jsonl`,
+`explain_copy_probes.jsonl`, `explain_incremental_copy_over.jsonl`.
 
 ### Current decision semantics
 
@@ -240,7 +252,15 @@ and fingerprints.
    target relation in its scope (organization, warehouse family,
    `table_namespace`, target relation) before comparing identity. An older
    matching build never resurrects a relation overwritten since; it only
-   changes the rejection codes (8 / 7).
+   changes the rejection codes (8 / 7). The identity excludes the execution
+   type. When the latest build has the workload's identity under another
+   execution type (a snapshot or incremental full refresh, a changed
+   materialization or incremental strategy), the submit is judged against the
+   latest build of its own type: a target relation modified since rebuilds
+   with "the table was modified after the cached execution" (6 / 6), and with
+   no such build the rebuild is 2 / 2 with the generic rebuild description.
+   That build is never reused; only the latest build is
+   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)).
 2. **Identity.** The fingerprint covers the root SQL, semantic extras,
    dialect/catalog/schema and every supplied dependency definition with its
    resolution context. Snowflake SQL is canonicalized
@@ -288,11 +308,15 @@ and fingerprints.
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
    upstream epochs. Data tests never get a Result copy. A failing test is
-   reused like a passing one and the SKIP echoes the cached failure.
-   Hosted differs in two captured cases, both keyed divergences: it reuses a
-   test confirmed with incomplete results and echoes them (#87, crafted), and
-   it ignores a `store_failures` test's own audit relation, which the client
-   reports in `tables` once it exists (#88).
+   reused like a passing one and the SKIP echoes the cached failure. A
+   `store_failures` test's own audit relation, which the client reports in
+   `tables` once it exists, is not an input: the server recognizes it from
+   the request (`store_failures: true`, Snowflake, exactly
+   `default_catalog`.`default_schema`.`dbt_node_name`, and not mentioned by
+   the test's SQL or its query dependencies) and hosted ignores it
+   too (#88). Hosted differs in one captured case, a keyed divergence: it
+   reuses a test confirmed with incomplete results and echoes them (#87,
+   crafted, an [accepted divergence](correctness-handoff.md#accepted-divergences)).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy
@@ -304,7 +328,7 @@ A passing replay establishes only its captured cases.
 
 ### Result copy on submit
 
-A submit can answer `ready_to_clone` with an equivalent model built under
+A FULL submit can answer `ready_to_clone` with an equivalent model built under
 another physical name. The equivalent must share `table_namespace`, the copy
 logic identity and `execution_type`. On Snowflake that identity abstracts
 physical schemas and binds each dependency's schema-abstracted name to its
@@ -319,6 +343,31 @@ Response: `decision=3`, codes 1 / -, the result-copy description,
 `execution_runtime_ms` = the equivalent's runtime, and `clone_sqls`. Once
 confirmed, the copy is the target relation's current build and later matching
 submits SKIP.
+
+**FULL only.** Following hosted 2.0.11 (maintainer decision 2026-11-11, #86,
+#92, #101), only a FULL submit is copied (`Warehouse::submit_copy_admits`).
+DuckDB keeps its own checked subset, which hosted does not engage: FULL, or
+delete+insert under the pinned incremental contract. Seeds and data tests
+never take this path. Any other submit with an equivalent builds, with its
+ordinary description and Explain tree, and reports the equivalent in its codes
+(`result_copy::plan_submit`):
+
+| Submit | Newest equivalent | Codes | Hosted evidence (client 2.0.11) |
+|---|---|---|---|
+| view, snapshot, custom | same execution type | 1 / 3 | `explain_copy_probes.jsonl` entries 13–14, `explain_custom_copy.jsonl` entry 9 |
+| incremental (any strategy) | same execution type | 1 / 6 | `explain_incremental_copy_over.jsonl` entries 38, 39, 41 |
+| any of these | another execution type | 1 / 2 | `explain_incremental_copy_over.jsonl` entries 37, 40 |
+
+The equivalent is chosen the way a FULL submit chooses the one it copies,
+except that its execution type may differ: newest build first, judged for
+freshness when it reads the same upstream relations. In the captured run,
+append and insert_overwrite (and merge and delete+insert) had identical SQL
+and semantic extras in prod. The append and delete+insert submits' newest
+equivalents were the insert_overwrite and merge prod builds, so they got
+1 / 2. A view, snapshot or custom node whose newest equivalent has another
+type is not captured; it gets 1 / 2 as well. Only submits without a reuse
+candidate report these codes; a non-FULL rebuild for freshness keeps the
+ordinary codes (uncaptured).
 
 When the fallback applies:
 
@@ -342,22 +391,20 @@ When the fallback applies:
   not when volatile SQL blocks it (rule 8 above).
 - When the submit forbids copies (`clone_chain_depth_limit = 0` or
   `allow_clones = false`) and the target relation has no reuse candidate, the
-  server returns the chain-limit EXECUTE instead.
+  server returns the chain-limit EXECUTE instead. A non-FULL submit reports
+  its 1 / 3, 1 / 6 or 1 / 2 codes instead (uncaptured).
 
-Hosted 2.0.11 does not copy an incremental on submit (decision divergence,
-#101). Every strategy was tried once over an existing dev relation whose
-own build has other logic, with a prod build of the same SQL, semantic
-extras and upstream epoch (`explain_incremental_copy_over.jsonl`, entries
-37–41). Hosted rebuilds each one with "model was executed because either its
-query didn't match or its upstream data is out of date". Merge,
-insert_overwrite and microbatch get codes 1 / 6. Append and delete+insert
-get 1 / 2, because hosted's equivalent was the prod build of another
-strategy with identical SQL and extras in the same run. Into an absent dev
-relation, append and merge get 1 / 6 (`explain_incremental_submit_copy.jsonl`
-entries 9–10). Client 2.0.6 did get a submit copy of a MERGE incremental over
-an existing target (`clone_failed_fallback.jsonl` entry 2). On 2.0.11,
-hosted copies incrementals only through `RegisterClone` (below). This server
-copies them on submit like any other kind except seeds and data tests.
+On 2.0.11, hosted copies incrementals and snapshots only through
+`RegisterClone` (below). Hosted 2.0.11 rebuilt every incremental strategy over
+an existing dev relation whose own build has other logic, with a prod build of
+the same SQL, semantic extras and upstream epoch
+(`explain_incremental_copy_over.jsonl`), and append and merge into an absent
+dev relation (`explain_incremental_submit_copy.jsonl` entries 9–10). Client
+2.0.6 did get submit copies of a MERGE incremental over an existing target
+(`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`
+entry 1); this server builds there (keyed divergence). Whether 2.0.11 copies an
+incremental over a relation with no State history of its own is not captured
+(#101 question 3).
 
 ## State writes: `Execution`
 

@@ -26,7 +26,10 @@ async fn server_owner_stops_requests_and_removes_its_schema() {
     let schema = server.schema.clone();
     let mut sql = qc::sql_client::SqlClient::new(support::channel(addr).await);
     let response = sql
-        .submit_enriched_sql(qc::SubmitEnrichedSqlRequest::default())
+        .submit_enriched_sql(qc::SubmitEnrichedSqlRequest {
+            target_table: Some("DB.S.T".into()),
+            ..Default::default()
+        })
         .await
         .unwrap()
         .into_inner();

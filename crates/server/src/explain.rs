@@ -200,11 +200,13 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
 ///   - seed (VALUES=9): Skip | Build (Clone fenced until #91).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
-///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone is
-///     local-only: hosted never copies one, #86).
+///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone unreachable on
+///     2.0.11: hosted never copies one on submit, nor does this server, #86).
 ///   - incrementals (APPEND=2, MERGE=3, INSERT_OVERWRITE=4, DELETE_INSERT=5,
-///     MICROBATCH=6): Skip | Build (Clone is local-only: hosted 2.0.11 never
-///     copies one on submit, #101).
+///     MICROBATCH=6): Skip | Build (Clone unreachable on 2.0.11: hosted copies
+///     one only through RegisterClone, which has no Explain message, and this
+///     server copies only FULL on submit, #101; DuckDB's checked delete+insert
+///     copy is local-only).
 ///   - everything else (any other
 ///     execution_type): NONE.
 ///
@@ -247,8 +249,9 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         // VERIFIED LIVE 2026-11-10 (explain_custom_history.jsonl, client
-        // 2.0.11). Hosted never copies a custom node (explain_custom_copy.jsonl,
-        // #86), so CLONE stays fenced: our copy of one is local-only.
+        // 2.0.11). CLONE is unreachable on 2.0.11: hosted never copies a
+        // custom node (explain_custom_copy.jsonl, #86), and this server copies
+        // only FULL on submit.
         Ok(ModelExecutionType::DbtCustom) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
@@ -256,12 +259,13 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         // renders the MODEL trees (explain_incremental_append_merge_history.jsonl,
         // explain_incremental_insert_overwrite.jsonl,
         // explain_incremental_delete_insert.jsonl,
-        // explain_incremental_microbatch.jsonl). CLONE stays fenced: hosted
-        // 2.0.11 rebuilds an incremental this server copies on submit, into an
-        // absent dev relation (explain_incremental_submit_copy.jsonl) and over
-        // an existing one (explain_incremental_copy_over.jsonl, #101), and its
-        // RegisterClone copy mints no execution_decision_id. Our copy is
-        // local-only.
+        // explain_incremental_microbatch.jsonl). CLONE is unreachable on
+        // 2.0.11: hosted rebuilds an incremental on submit, into an absent dev
+        // relation (explain_incremental_submit_copy.jsonl) and over an
+        // existing one (explain_incremental_copy_over.jsonl, #101), and its
+        // RegisterClone copy mints no execution_decision_id. This server
+        // copies only FULL on submit; DuckDB's checked delete+insert copy is
+        // local-only and stays fenced.
         Ok(
             ModelExecutionType::Append
             | ModelExecutionType::Merge
@@ -284,8 +288,9 @@ enum Shape {
     QueryChanged,
     /// Upstream-drift rebuild (catalog SHAPE 9), rendered against the anchor.
     UpstreamOutdated,
-    /// Own target modified after the build, for a node with no upstreams
-    /// (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`).
+    /// The SKIP-shaped rebuild against the anchor: own target modified after
+    /// the build (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`,
+    /// lag_copy_candidates `ome`), or an execution type change (#83).
     OwnTargetModified,
     /// A seed whose table exists: its data changed (`true`) or not.
     Seed { changed: bool },
@@ -334,10 +339,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // upstream whose logic changed, whether the test passed or failed; a
         // test without upstreams says `no upstream dependencies` instead of
         // listing them. Hosted SKIPs a test whose cached results are
-        // incomplete (#87) and one whose store_failures audit relation newly
-        // appears in its inputs (#88), so our rebuilds for those reasons
-        // render nothing, as does every other data-test rebuild reason
-        // (docs/explain-catalog.md "Decision reason coverage"). A data test's
+        // incomplete (#87), so our rebuild for that reason renders nothing,
+        // as does every other data-test rebuild reason, including a
+        // dependency-set change, which no capture shows (a store_failures
+        // test's own audit relation is not an input, #88, unless the request
+        // does not identify it, #106;
+        // docs/explain-catalog.md "Decision reason coverage"). A data test's
         // Lag tolerance is 0 and it rebuilds on any drift, so its only reuse
         // is a fresh one.
         return Some(match (node.decision, reason) {
@@ -403,11 +410,32 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         {
             Shape::UpstreamOutdated
         }
-        // Captured for FULL only (lag_copy_candidates `ome`, lag_tolerance_matrix
-        // `lfs_u0`). Hosted's APPEND/MERGE trees for it (#90) explain a
-        // decision this server does not make.
+        // Captured for FULL (lag_copy_candidates `ome`, lag_tolerance_matrix
+        // `lfs_u0`) and, judged against the latest build of the submit's
+        // type under a newer build of another type, for FULL, APPEND and
+        // MERGE (explain_execution_type_change.jsonl `ta`, `mi`;
+        // explain_incremental_append_merge_history.jsonl entries 78-79).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
-            if full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()) =>
+            if (full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()))
+                || (matches!(
+                    kind,
+                    Some(ModelExecutionType::Append | ModelExecutionType::Merge)
+                ) && node.anchor.is_some()
+                    && listing) =>
+        {
+            Shape::OwnTargetModified
+        }
+        // An execution type change, explained against the latest row: the
+        // same SKIP-shaped tree, captured for FULL and APPEND with an upstream
+        // (explain_snapshot_history.jsonl entry 60,
+        // explain_execution_type_change.jsonl `tv`).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged))
+            if node.anchor.is_some()
+                && !node.genuine_upstreams().is_empty()
+                && matches!(
+                    kind,
+                    Some(ModelExecutionType::Full | ModelExecutionType::Append)
+                ) =>
         {
             Shape::OwnTargetModified
         }
@@ -438,10 +466,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         // Everything else renders nothing:
-        // - DECISION DIVERGENCES (#40 rule): a node kind change (#83,
-        //   #90), which hosted decides differently;
         // - a rebuild over a RegisterClone copy whose logic differs from its
-        //   source build's (`copy_logic_mismatch`): no capture (#104);
+        //   source build's, even read in the copy source's schema
+        //   (`copy_logic_mismatch`): no capture (#104);
         // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
         //   `own_target_changed_or_missing` (#80), `no_build_anchor` (#82),
         //   and `own_target_modified` with upstreams but no matched build (the
@@ -748,6 +775,17 @@ fn upstream_dependencies_freshness(
             let verdict = verdicts
                 .as_ref()
                 .and_then(|v| v.iter().find(|u| u.name == up.name));
+            // VERIFIED LIVE 2026-11-11 (explain_execution_type_change.jsonl
+            // `tv`): an upstream the judged build did not record (a view
+            // reports none) has no verdict: no badge, no anchor line.
+            if verdict.is_none() && !anchor_records(node, &up.name) {
+                return qc::ExplainLine {
+                    text: quote(&up.name),
+                    marker: None,
+                    badge: None,
+                    children: vec![line(rel_time_line(up))],
+                };
+            }
             let drifted = verdict.map(|u| u.drifted);
             let badge = match drifted {
                 Some(true) => Some(BADGE_OUTDATED),
@@ -795,6 +833,14 @@ fn verdict_unrecorded_by_copy_source(node: &ExplainNode, up: &InputTable) -> boo
         && !recorded.iter().any(|name| {
             decision::physical_relation_key(name) == decision::physical_relation_key(&up.name)
         })
+}
+
+/// Whether the node's freshness anchor is absent or recorded `name` as an
+/// input. Without an anchor the listing keeps its structural default.
+fn anchor_records(node: &ExplainNode, name: &str) -> bool {
+    node.anchor
+        .as_ref()
+        .is_none_or(|prev| prev.input_tables.iter().any(|t| t.name == name))
 }
 
 /// The FRESH first child: `no updates since «FQN» last executed` (model anchor)
@@ -1429,10 +1475,12 @@ mod tests {
 
     #[test]
     fn data_test_execute_renders_nothing_for_uncaptured_or_divergent_reasons() {
-        // Hosted SKIPs a data test whose cached results are incomplete and one
-        // whose store_failures audit relation newly appears in its inputs
-        // (#75 captures), so our rebuilds for those reasons have no hosted
-        // tree. Failing reuse qualification has no data-test capture.
+        // Hosted SKIPs a data test whose cached results are incomplete (#75
+        // captures, divergence #87), so our rebuild for that reason has no
+        // hosted tree. No capture shows a data test whose dependency set
+        // changed (a store_failures test's own audit relation is not an
+        // input, #88; one the request does not identify is, #106) or that
+        // failed reuse qualification.
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,
@@ -1640,8 +1688,8 @@ mod tests {
 
     #[test]
     fn custom_clone_emits_nothing() {
-        // DBT_CUSTOM=11 CLONE: hosted rebuilds where this server copies
-        // (explain_custom_copy.jsonl entry 9, #86) → local-only, no tree.
+        // DBT_CUSTOM=11 CLONE is unreachable on 2.0.11: hosted rebuilds
+        // (explain_custom_copy.jsonl entry 9, #86) → fenced, no tree.
         let mut n = node(
             DecisionKind::Clone,
             ModelExecutionType::DbtCustom as i32,
@@ -1650,17 +1698,18 @@ mod tests {
         n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
         assert!(
             explain_lines(&n).is_empty(),
-            "a custom CLONE is local-only → must emit no invented lines, got {:?}",
+            "a custom CLONE is unreachable on 2.0.11 → must emit no invented lines, got {:?}",
             render(&n)
         );
     }
 
     #[test]
     fn incremental_clone_emits_nothing() {
-        // Every incremental strategy's CLONE: hosted 2.0.11 rebuilds where
-        // this server copies on submit (explain_incremental_copy_over.jsonl
-        // entries 37–41, #101) → local-only, no tree, over an existing
-        // Target relation or an absent one.
+        // Every incremental strategy's CLONE is unreachable on 2.0.11:
+        // hosted rebuilds on submit (explain_incremental_copy_over.jsonl
+        // entries 37–41, #101); only DuckDB's checked delete+insert copy
+        // reaches here, local-only → no tree, over an existing Target relation
+        // or an absent one.
         for et in [
             ModelExecutionType::Append,
             ModelExecutionType::Merge,
@@ -1738,17 +1787,17 @@ mod tests {
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
-                    | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
+                    | (11, DecisionKind::Build) // custom EXECUTE (CLONE unreachable on 2.0.11, #86)
                     | (2, DecisionKind::Skip) // append SKIP (explain_incremental_append_merge_history)
-                    | (2, DecisionKind::Build) // append EXECUTE (CLONE local-only, #101)
+                    | (2, DecisionKind::Build) // append EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (3, DecisionKind::Skip) // merge SKIP
-                    | (3, DecisionKind::Build) // merge EXECUTE (CLONE local-only, #101)
+                    | (3, DecisionKind::Build) // merge EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (4, DecisionKind::Skip) // insert_overwrite SKIP (explain_incremental_insert_overwrite)
-                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE local-only, #101)
+                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (5, DecisionKind::Skip) // delete+insert SKIP (explain_incremental_delete_insert)
-                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE local-only, #101)
+                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (6, DecisionKind::Skip) // microbatch SKIP (explain_incremental_microbatch)
-                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE local-only, #101)
+                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE unreachable on 2.0.11, #101)
             )
         };
 
@@ -1953,23 +2002,95 @@ mod tests {
         assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
     }
 
-    /// A rebuild because the latest build was another node kind (a snapshot
-    /// under `--full-refresh`, sent with the wire `execution_type` FULL) is a decision hosted
-    /// makes differently (#83, explain_snapshot_history.jsonl entry 58), so
-    /// it renders nothing, whether or not the Target relation is reported.
+    /// A rebuild because the latest build had the identity under another
+    /// node kind renders the SKIP-shaped tree against that build (VERIFIED
+    /// LIVE: a FULL submit over SNAPSHOT history, explain_snapshot_history.jsonl
+    /// entry 60; an APPEND submit over FULL history,
+    /// explain_execution_type_change.jsonl `tv`), only for those kinds and
+    /// with the build and an upstream. Otherwise it renders nothing.
     #[test]
-    fn execution_type_change_renders_nothing() {
-        let mut n = node(
-            DecisionKind::Build,
-            ModelExecutionType::Full as i32,
-            decision::DESC_EXECUTE,
+    fn execution_type_change_renders_the_unchanged_tree_against_the_latest_build() {
+        let changed = DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged);
+        let mut skip = anchored(
+            DecisionKind::Skip,
+            DecisionReason::Reused(Reuse::Fresh),
+            900,
+            900,
         );
-        n.reason = Some(DecisionReason::NoReuseCandidate(
-            NoCandidate::ExecutionTypeChanged,
-        ));
-        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
-        n.input_tables.clear();
-        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+        let mut n = anchored(DecisionKind::Build, changed, 900, 900);
+        for et in [ModelExecutionType::Full, ModelExecutionType::Append] {
+            n.execution_type = et as i32;
+            skip.execution_type = et as i32;
+            assert_eq!(render(&n), render(&skip), "{et:?}");
+            assert_eq!(n.anchor.as_ref().map(|a| a.id), Some(7));
+        }
+        for et in [
+            ModelExecutionType::Merge,
+            ModelExecutionType::DeleteInsert,
+            ModelExecutionType::View,
+            ModelExecutionType::Snapshot,
+        ] {
+            n.execution_type = et as i32;
+            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
+        }
+        n.execution_type = ModelExecutionType::Full as i32;
+        let mut unanchored = n.clone();
+        unanchored.anchor = None;
+        assert!(explain_lines(&unanchored).is_empty());
+        let mut no_upstream = n.clone();
+        no_upstream.input_tables.truncate(1);
+        assert!(explain_lines(&no_upstream).is_empty());
+    }
+
+    /// Own target modified, judged against an older build of the submit's
+    /// type: the SKIP-shaped tree for APPEND and MERGE too (VERIFIED LIVE
+    /// 2026-11-10/11, explain_incremental_append_merge_history.jsonl entries
+    /// 78-79, explain_execution_type_change.jsonl `mi`), with the build.
+    #[test]
+    fn own_target_modified_renders_the_unchanged_tree_for_append_and_merge() {
+        let modified = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified);
+        let mut skip = anchored(
+            DecisionKind::Skip,
+            DecisionReason::Reused(Reuse::Fresh),
+            900,
+            900,
+        );
+        let mut n = anchored(DecisionKind::Build, modified, 900, 900);
+        for et in [ModelExecutionType::Append, ModelExecutionType::Merge] {
+            n.execution_type = et as i32;
+            skip.execution_type = et as i32;
+            assert_eq!(render(&n), render(&skip), "{et:?}");
+            let mut unanchored = n.clone();
+            unanchored.anchor = None;
+            assert!(explain_lines(&unanchored).is_empty(), "{et:?}");
+        }
+        n.execution_type = ModelExecutionType::DeleteInsert as i32;
+        assert!(explain_lines(&n).is_empty());
+    }
+
+    /// An upstream the judged build did not record has no verdict: no badge
+    /// and no anchor line (VERIFIED LIVE 2026-11-11,
+    /// explain_execution_type_change.jsonl `tv`, SHAPE 7 judged against a
+    /// view build, which reports no upstreams). A recorded upstream keeps
+    /// its verdict.
+    #[test]
+    fn an_upstream_the_judged_build_did_not_record_has_no_verdict() {
+        let identity = DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch);
+        let mut n = anchored(DecisionKind::Build, identity, 900, 900);
+        let mut unmatched = n.anchor.take().expect("anchored");
+        unmatched.input_tables.clear();
+        n.unmatched = Some(unmatched);
+        let lines = explain_lines(&n);
+        let up = &lines[2].children[0].children[0];
+        assert_eq!(up.badge, None);
+        assert_eq!(up.children.len(), 1, "{:?}", render(&n));
+        assert!(up.children[0].text.starts_with("last updated"));
+        assert_eq!(freshness_texts(&lines), ["upstream dependencies"]);
+
+        let mut recorded = anchored(DecisionKind::Build, identity, 900, 900);
+        recorded.unmatched = recorded.anchor.take();
+        let lines = explain_lines(&recorded);
+        assert_eq!(lines[2].children[0].children[0].badge, Some(BADGE_FRESH));
     }
 
     /// A rebuild over a RegisterClone copy the submit could not adopt, even

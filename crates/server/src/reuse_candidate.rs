@@ -13,10 +13,13 @@
 //! Freshness is NOT assessed here: a reuse candidate goes to
 //! [`decision::decide`](crate::decision::decide), which may still rebuild.
 //!
-//! Only the latest row is ever considered (physical-state invariant, review
-//! issue #1 P0#2): an older execution cannot describe a target overwritten by a
+//! Only the latest row is ever reused (physical-state invariant, review issue
+//! #1 P0#2): an older execution cannot describe a target overwritten by a
 //! later build, so nothing older is resurrected when the latest row does not
-//! match.
+//! match. One exception to which row a rebuild is *judged* against: when the
+//! latest row has the workload's identity under another execution type, the
+//! latest build of the workload's own type is (hosted, #83/#90;
+//! [`for_model_over_build_of_type`]). It is never reused.
 
 use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
@@ -46,6 +49,12 @@ pub(crate) struct Selection {
     /// only). Never reused; Explain judges the SHAPE 7 freshness listing
     /// against it (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
     pub unmatched: Option<ExecutionRow>,
+    /// The latest row when it has the workload's identity under another
+    /// execution type and no build of the workload's type stands in for it:
+    /// the EXECUTION_TYPE_MISMATCH rebuild is explained against it (VERIFIED
+    /// LIVE 2026-11-10/11, explain_snapshot_history.jsonl entry 58,
+    /// explain_execution_type_change.jsonl). Never reused.
+    pub type_changed: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -57,6 +66,7 @@ impl Selection {
             why_no_candidate: None,
             rejected: None,
             unmatched: None,
+            type_changed: None,
         }
     }
 
@@ -67,6 +77,7 @@ impl Selection {
         why_no_candidate: None,
         rejected: None,
         unmatched: None,
+        type_changed: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -94,12 +105,18 @@ impl Selection {
             Some(row) if own_target => (None, Some(row)),
             _ => (None, None),
         };
+        // A row with the identity under another type is no unmatched build.
+        let (unmatched, type_changed) = match why_no_candidate {
+            Some(NoCandidate::ExecutionTypeChanged) => (None, unmatched),
+            _ => (unmatched, None),
+        };
         Selection {
             candidate,
             target_has_prior_build,
             why_no_candidate,
             rejected,
             unmatched,
+            type_changed,
         }
     }
 }
@@ -117,9 +134,10 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
-    // Same identity, other node kind: a distinct reason so Explain can
-    // render nothing for it (#40 divergence rule, #83). Likewise a
-    // RegisterClone copy this submit cannot adopt (#93; no capture, #104).
+    // Same identity, other node kind (#83): hosted's EXECUTION_TYPE_MISMATCH,
+    // explained against this row. The caller routes a target that also has
+    // a build of the workload's type to `for_model_over_build_of_type`.
+    // Likewise a RegisterClone copy this submit cannot adopt (#93; no capture, #104).
     let unidentified =
         if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
             NoCandidate::ExecutionTypeChanged
@@ -150,21 +168,87 @@ pub(crate) fn for_model(
     Ok(Selection::of(
         identified,
         unidentified,
-        |prev| {
-            if !sql_qualifies(req, evidence) {
-                Some(NoCandidate::FailedReuseQualification)
-            } else {
-                match own_target(req, prev) {
-                    OwnTarget::AsBuilt => None,
-                    OwnTarget::Modified => Some(NoCandidate::OwnTargetModified),
-                    OwnTarget::Missing => Some(NoCandidate::OwnTargetMissing),
-                    OwnTarget::Ambiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
-                }
-            }
-        },
+        |prev| model_rejection(req, evidence, prev),
         true,
         unmatched,
     ))
+}
+
+/// Why a model's build with the workload's identity is not a reuse
+/// candidate, if anything is against it: reuse qualification, then its own
+/// target's existence and External modifications.
+fn model_rejection(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    prev: &ExecutionRow,
+) -> Option<NoCandidate> {
+    if !sql_qualifies(req, evidence) {
+        Some(NoCandidate::FailedReuseQualification)
+    } else {
+        match own_target(req, prev) {
+            OwnTarget::AsBuilt => None,
+            OwnTarget::Modified => Some(NoCandidate::OwnTargetModified),
+            OwnTarget::Missing => Some(NoCandidate::OwnTargetMissing),
+            OwnTarget::Ambiguous => Some(NoCandidate::OwnTargetChangedOrMissing),
+        }
+    }
+}
+
+/// Whether the target's latest row `latest` has the workload's identity but
+/// was built as another execution type (a node kind change with unchanged
+/// SQL, or a full refresh recorded as FULL). Selection then also needs the
+/// target's latest build of the workload's own type
+/// ([`latest_build_of_type`]).
+pub(crate) fn execution_type_changed(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    latest: &ExecutionRow,
+) -> bool {
+    latest.execution_type != req.execution_type && same_identity(req, evidence, latest)
+}
+
+/// The newest build in `history` (the target's builds in scope, newest
+/// first) with the workload's identity and execution type.
+pub(crate) fn latest_build_of_type(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    history: Vec<ExecutionRow>,
+) -> Option<ExecutionRow> {
+    history
+        .into_iter()
+        .find(|row| strict_match(req, evidence, row))
+}
+
+/// Selection when the latest row `latest` has the workload's identity under
+/// another execution type and `build` is the target's latest build with the
+/// workload's identity and type. VERIFIED LIVE 2026-11-10/11
+/// (explain_execution_type_change.jsonl `ta`, `mi`;
+/// explain_incremental_append_merge_history.jsonl entries 74-75, after a
+/// RecordExecutions full refresh): hosted judges the submit against `build`,
+/// whose Target relation the newer build modified. That build is then the
+/// Explain anchor, as for any build rejected for its own target.
+///
+/// Only the latest row is ever reused. When nothing is against `build` it
+/// would qualify but is not the latest, so the rebuild is the execution
+/// type change against `latest` (conservative; uncharacterized).
+pub(crate) fn for_model_over_build_of_type(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    latest: ExecutionRow,
+    build: ExecutionRow,
+) -> sqlx::Result<Selection> {
+    debug_assert!(execution_type_changed(req, evidence, &latest));
+    let build = build.into_checked(false)?;
+    Ok(match model_rejection(req, evidence, &build) {
+        Some(why) => Selection::of(Some(build), why, |_| Some(why), true, None),
+        None => Selection::of(
+            None,
+            NoCandidate::ExecutionTypeChanged,
+            |_| None,
+            true,
+            Some(latest),
+        ),
+    })
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome
@@ -1125,6 +1209,112 @@ mod tests {
             for_seed(&empty, &eev, Some(row)).unwrap().why_no_candidate,
             Some(NoCandidate::FailedReuseQualification)
         );
+    }
+
+    // ---- models: execution type change (#83, #90) ---------------------------
+
+    /// `row` as built with another execution type (`et`), at `built`.
+    fn built_as(row: &ExecutionRow, id: i64, et: i32, built: i64) -> ExecutionRow {
+        ExecutionRow {
+            id,
+            execution_type: et,
+            last_modified_epoch: Some(built),
+            ..row.clone()
+        }
+    }
+
+    /// VERIFIED LIVE 2026-11-10/11 (explain_snapshot_history.jsonl entry 58,
+    /// explain_execution_type_change.jsonl `ta`, `mi`, `tv`): the latest row
+    /// has the workload's identity under another execution type, and no
+    /// build of the workload's type stands in for it. Hosted rejects with
+    /// EXECUTION_TYPE_MISMATCH and explains against that latest row.
+    #[test]
+    fn execution_type_change_without_a_build_of_that_type_anchors_on_the_latest_row() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let snapshot = built_as(&recorded(&ev), 7, 7, BUILT);
+        assert!(execution_type_changed(&req, &ev, &snapshot));
+        assert!(latest_build_of_type(&req, &ev, vec![snapshot.clone()]).is_none());
+        let s = model(&req, Some(snapshot));
+        assert!(s.candidate.is_none());
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::ExecutionTypeChanged));
+        assert_eq!(s.type_changed.map(|r| r.id), Some(7));
+        assert!(s.unmatched.is_none(), "the latest row has the identity");
+        assert!(s.rejected.is_none());
+    }
+
+    #[test]
+    fn another_identity_is_not_an_execution_type_change() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let mut view = built_as(&recorded(&ev), 8, 10, BUILT);
+        view.node_sql_hash = Some("other extras".into());
+        assert!(!execution_type_changed(&req, &ev, &view));
+        assert!(!execution_type_changed(&req, &ev, &recorded(&ev)));
+        let s = model(&req, Some(view));
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::IdentityMismatch));
+        assert!(s.type_changed.is_none());
+        assert_eq!(s.unmatched.map(|r| r.id), Some(8));
+    }
+
+    /// VERIFIED LIVE 2026-11-11 (explain_execution_type_change.jsonl `ta`,
+    /// `mi`; explain_incremental_append_merge_history.jsonl entries 74-75,
+    /// where the newer row is a RecordExecutions full refresh): the submit is
+    /// judged against the latest build with its identity AND execution type,
+    /// whose Target relation the newer build modified.
+    #[test]
+    fn execution_type_change_is_judged_against_the_latest_build_of_that_type() {
+        let mut req = model_req("select id from DB.DEV.UP");
+        req.tables[0].last_modified_epoch = Some(3 * BUILT);
+        let ev = evidence(&req);
+        let older = built_as(&recorded(&ev), 5, 1, BUILT);
+        let mut other_identity = built_as(&older, 6, 1, 2 * BUILT);
+        other_identity.node_sql_hash = Some("other".into());
+        let latest = built_as(&older, 9, 2, 3 * BUILT);
+        let history = vec![latest.clone(), other_identity, older];
+        let build = latest_build_of_type(&req, &ev, history).expect("a FULL build");
+        assert_eq!(build.id, 5, "the newest row with the identity and type");
+
+        let s = for_model_over_build_of_type(&req, &ev, latest.clone(), build.clone()).unwrap();
+        assert!(s.candidate.is_none());
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::OwnTargetModified));
+        assert_eq!(s.rejected.map(|r| r.id), Some(5), "the Explain anchor");
+        assert!(s.type_changed.is_none() && s.unmatched.is_none());
+        assert!(s.target_has_prior_build);
+
+        let mut dropped = req.clone();
+        dropped.tables.retain(|t| t.name != TARGET);
+        let s = for_model_over_build_of_type(&dropped, &ev, latest, build).unwrap();
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::OwnTargetMissing));
+        assert_eq!(s.rejected.map(|r| r.id), Some(5));
+    }
+
+    /// Only the latest row is ever reused. An older build of the workload's
+    /// type that would otherwise qualify (its Target relation unchanged
+    /// since) is not: the rebuild is the execution type change against the
+    /// latest row (local, conservative; hosted is uncharacterized).
+    #[test]
+    fn an_older_build_of_that_type_is_never_reused() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let older = built_as(&recorded(&ev), 5, 1, BUILT);
+        let latest = built_as(&older, 9, 2, BUILT);
+        let s = for_model_over_build_of_type(&req, &ev, latest, older).unwrap();
+        assert!(s.candidate.is_none());
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::ExecutionTypeChanged));
+        assert_eq!(s.type_changed.map(|r| r.id), Some(9));
+        assert!(s.rejected.is_none());
+
+        let mut volatile = req.clone();
+        volatile.tolerate_nondeterminism = false;
+        let older = built_as(&recorded(&ev), 5, 1, BUILT);
+        let latest = built_as(&older, 9, 2, BUILT);
+        let s = for_model_over_build_of_type(&volatile, &ev, latest, older).unwrap();
+        assert_eq!(
+            s.why_no_candidate,
+            Some(NoCandidate::FailedReuseQualification)
+        );
+        assert!(s.rejected.is_none() && s.type_changed.is_none());
     }
 
     // ---- properties ---------------------------------------------------------

@@ -40,7 +40,7 @@ The protocol is internally called the **"query cache"** (proto package
 Snowflake SQL fingerprints use a restricted `sqlparser` AST pass; unsupported
 syntax is kept exactly ([sql-normalization.md](sql-normalization.md)).
 Snowflake cross-target Result copy uses the captured schema-abstracted matching
-contract. DuckDB has its own validated formatting subset and checked copy
+contract, and a submit is copied only when it is FULL, as hosted 2.0.11 does. DuckDB has its own validated formatting subset and checked copy
 subset ([duckdb.md](duckdb.md)). Other dialects keep exact rendered SQL for
 same-target reuse and do no automatic cross-target copy. BigQuery and
 Databricks copy DDL follows published syntax but has not been run against
