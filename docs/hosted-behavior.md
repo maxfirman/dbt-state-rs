@@ -40,10 +40,12 @@ Open questions and deliberate divergences live in
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
 | `store_failures` data test unchanged, its audit relation (table or view, passing or failing) now in `tables` | 8 | skip; the tree lists only the tested source (`explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`) | ✅ when the request names the audit relation as `default_catalog`.`default_schema`.`dbt_node_name` on Snowflake (#88); otherwise builds |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |
-| `require_fresh_data_from: all`, some parents unchanged | — | skip, `is_stale=true` | ✅ |
+| `require_fresh_data_from: all`, some parents unchanged | — | skip, `is_stale=true` (also for the five incrementals and a custom node, "within lag tolerance", `explain_freshness_cells.jsonl`; a snapshot cannot set the policy) | ✅ |
 | `require_fresh_data_from: all`, all parents changed | — | build | ✅ |
 | Upstream rebuilt by dbt with the same logic, or source changed, Build age under `lag_tolerance` | — | skip "within lag tolerance", `is_stale=true` | ✅ |
-| Same, Build age over `lag_tolerance` | — | build | ✅ |
+| Same, Build age over `lag_tolerance` | — | build (also insert_overwrite, delete+insert, microbatch at `0s` and a snapshot past the 45 minute default, `explain_freshness_cells.jsonl`); a non-FULL node with a current equivalent elsewhere reports it (1 / 3, 1 / 6) and its tree ends with the equivalent's Lag tolerance line (`fd_sn`; crafted, `explain_rebuild_tolerance_line.jsonl`) | ✅ |
+| Back to an older build's logic while an upstream drifted, older build within `lag_tolerance` | — | build, 8 / 7, `is_stale=true`, SHAPE 7 with the Lag tolerance line of the older build's age; 8 / 7 also when an equivalent exists under another name (`explain_freshness_cells.jsonl` `fr_*`, every kind but view) | ✅ |
+| Upstream reported with an unknown epoch (`null`; crafted, the client never sends it) | 1 | skip within `lag_tolerance` (`explain_unknown_epoch.jsonl`) | ❌ deliberate: the server rebuilds, unknown epochs never prove freshness (accepted divergence #113) |
 | Upstream externally modified after the build the model consumed | — | build ("an upstream model query has changed") under any policy or tolerance | ✅ |
 | Target relation modified after its build | — | build ("the table was modified after the cached execution"; for a view, "the view definition is newer than the cached execution") | ✅ |
 | Snapshot or custom node whose Target relation was modified after its build (External modification, a later `--full-refresh`, or another materialization's build in between) | 7, 11 | skip (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`, `sn_e`, `sn_ez`, `vc`, `cv0`) | ❌ the server rebuilds (reuse invariant 3, #115) |

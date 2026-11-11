@@ -122,11 +122,20 @@ server keeps the conservative behavior described.
   ([protocol.md](protocol.md#result-copy-on-submit)). Not captured: a view,
   snapshot or custom node whose newest equivalent has another execution type
   (the server sends 1 / 2); a non-FULL submit whose own reuse candidate must
-  rebuild for freshness (the server keeps the ordinary codes); a non-FULL
+  rebuild for an Upstream producer change (the server keeps the ordinary
+  codes; for upstream data drift hosted reports the equivalent, 1 / 3 or
+  1 / 6, captured since in `explain_freshness_cells.jsonl` `fd_sn` and
+  `explain_rebuild_tolerance_line.jsonl`, and so does the server); a non-FULL
   submit that forbids copies (the server sends its non-FULL codes, not
   1 / 10; a FULL one is `copy_disabled`, 1 / 10, "cloning is disabled",
-  captured, `explain_copy_logic_mismatch.jsonl` `cf4`); and a view or snapshot rebuild over an existing Target relation
-  that has an equivalent elsewhere (#92 question 2).
+  captured, `explain_copy_logic_mismatch.jsonl` `cf4`); and a view or
+  snapshot rebuild over an existing Target relation that has an equivalent
+  elsewhere (#92 question 2). Captured since (#104,
+  `explain_freshness_cells.jsonl` `fr_*`): when the target's own older build
+  matches and would be reused, hosted reports that older match (8 / 7,
+  `is_stale` as it would be reused) and not the equivalent elsewhere, for
+  the five incrementals and a snapshot. The server does the same
+  (`submit_decision::older_match` goes ahead of a refused copy).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
   as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
@@ -221,7 +230,13 @@ server keeps the conservative behavior described.
 - **Reason × node kind cells without a capture (#104).** Every Decision
   reason × node kind that renders a tree is backed by a tracked capture; the
   reachable cells without one render nothing until #104 captures them
-  ([explain-catalog.md](explain-catalog.md#decision-reason-coverage)).
+  ([explain-catalog.md](explain-catalog.md#decision-reason-coverage)). The
+  freshness cells are captured (`explain_freshness_cells.jsonl`): the
+  ALL-policy reuse with partial drift for the incrementals and DBT_CUSTOM,
+  drift past the Lag tolerance for insert_overwrite, delete+insert,
+  microbatch and a snapshot, and the stale SHAPE 7 rebuild with its Lag
+  tolerance line, whose age is the older matching build's (the decision now
+  records it).
 - **A view that reads no relation (#117).** Client 2.0.11 reports no upstreams
   for any view, yet hosted's VIEW tree says `no upstream dependencies` when
   the view's SQL reads no relation (`explain_reason_kind_cells.jsonl` `vc0`,
@@ -234,7 +249,10 @@ server keeps the conservative behavior described.
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
   tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy
-  reuse past the tolerance is unobserved for snapshots; the server keeps the
+  reuse past the tolerance is unreachable for snapshots on 2.0.11: the
+  client reads `state` config (`require_fresh_data_from`, `lag_tolerance`)
+  from models only (dbt-fusion `run_cache_service.rs::model_state_for_node`),
+  so a snapshot always gets the ANY policy. The server keeps the
   same string ([protocol.md](protocol.md#decision-descriptions)), a local
   choice pinned by
   `decision.rs::unobserved_all_policy_snapshot_skip_past_tolerance_keeps_the_observed_wording`.
@@ -392,6 +410,18 @@ Each rebuild below is local-only and renders no Explain tree.
   `should_error`), and AGENTS.md invariant 5 requires complete cached
   results. Keyed gaps: `explain_incomplete_test_results.jsonl` entries 2, 6
   (decision) and 3, 7 (`empty_tree`).
+- **Upstream with an unknown epoch (#113, crafted,
+  `experiments/unknown_epoch_probes.py`).** A FULL model built and
+  resubmitted with an upstream whose `last_modified_epoch` is `null` at the
+  build, at the resubmit, or both: hosted SKIPs within the Lag tolerance
+  (`is_stale` unless only the build's epoch was unknown) and explains it with
+  the ordinary SKIP tree, reading an unknown current epoch as `now`. The
+  server rebuilds with `upstream_outdated` (6 / 6) and renders no tree,
+  because SHAPE 9 needs a proven drift. Rationale: crafted-only (client
+  2.0.11 leaves a table of unknown epoch out of `tables` and skips the State
+  submit), and AGENTS.md invariant 2 says unknown epochs never prove
+  freshness. Keyed gaps: `explain_unknown_epoch.jsonl` entries 2, 6, 10, 14
+  (decision) and 3, 7, 11, 15 (`empty_tree`).
 - **Unset target on a model submit (#81, crafted d3).** Hosted answers
   `Internal` "Internal server error"; the server answers `InvalidArgument`,
   the code hosted gives for `""` (d3e). Rationale: copying hosted's internal

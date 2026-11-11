@@ -186,20 +186,23 @@ pub async fn submit_sql(
             CopyFallback::Decided(outcome) => return Ok(*outcome),
             CopyFallback::Refused {
                 clone_rejection_reason,
+                ..
             } => refused_copy = Some(clone_rejection_reason),
             CopyFallback::Ordinary => {}
         }
     }
-    let (record, candidate) = decide(&evidence, &selection, &freshness);
+    let (mut record, candidate) = decide(&evidence, &selection, &freshness);
     let candidate = candidate.cloned();
     // The target's own reuse candidate must rebuild for freshness, but an
     // equivalent under another name may still be reusable for this submit
     // (VERIFIED LIVE 2026-11-10, lag_copy_candidates `fe`, `st`, `wba`; not
     // when the equivalent is itself stale, `esb`). A submit the Warehouse
-    // rules do not copy keeps the ordinary codes here: hosted's codes for it
-    // over a stale own build are not captured.
+    // rules do not copy reports the equivalent in its codes and records the
+    // equivalent's build age, which its Explain tree's Lag tolerance line
+    // reports (VERIFIED LIVE 2026-11-11, explain_freshness_cells.jsonl
+    // `fd_sn`; crafted, explain_rebuild_tolerance_line.jsonl `s2`, `i2`).
     if let (Some(own), true) = (&candidate, rebuilds_for_freshness(&record)) {
-        if let CopyFallback::Decided(outcome) = result_copy_fallback(
+        match result_copy_fallback(
             store,
             org_id,
             req,
@@ -210,20 +213,37 @@ pub async fn submit_sql(
         )
         .await?
         {
-            log_decision(&evidence, outcome.record(), true, &req.labels);
-            return Ok(*outcome);
+            CopyFallback::Decided(outcome) => {
+                log_decision(&evidence, outcome.record(), true, &req.labels);
+                return Ok(*outcome);
+            }
+            // Captured for a data-only rebuild; an Upstream producer change
+            // keeps the ordinary codes (uncaptured).
+            CopyFallback::Refused {
+                clone_rejection_reason,
+                equivalent_build_age_ms,
+            } if record.reason == decision::DecisionReason::UpstreamOutdated => {
+                refused_copy = Some(clone_rejection_reason);
+                record.build_age_ms = equivalent_build_age_ms;
+            }
+            CopyFallback::Refused { .. } | CopyFallback::Ordinary => {}
         }
     }
-    // A refused copy reports its equivalent where a copy would have been
-    // answered, ahead of an older match of the target.
-    let record = match refused_copy {
-        Some(clone_rejection_reason) => record.with_refused_copy(clone_rejection_reason),
-        None => {
-            report_older_match(store, &evidence, &freshness, record, |row| {
-                reuse_candidate::older_build_matches(req, &evidence, row)
-            })
-            .await?
-        }
+    // An older match of the target is reported ahead of a refused copy's
+    // equivalent under another name (VERIFIED LIVE 2026-11-11,
+    // explain_freshness_cells.jsonl `fr_*`: incrementals and a snapshot
+    // reverted to an older build's logic, with same-logic nodes elsewhere,
+    // are answered LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH). A
+    // refused copy otherwise reports its equivalent where a copy would have
+    // been answered.
+    let older = older_match(store, &evidence, &freshness, &record, |row| {
+        reuse_candidate::older_build_matches(req, &evidence, row)
+    })
+    .await?;
+    let record = match (older, refused_copy) {
+        (Some((reuse, build_age_ms)), _) => record.with_older_match(reuse, build_age_ms),
+        (None, Some(clone_rejection_reason)) => record.with_refused_copy(clone_rejection_reason),
+        (None, None) => record,
     };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
@@ -312,17 +332,19 @@ fn decide<'s>(
 }
 
 /// When a rebuild's target had an OLDER build (overwritten since) with the
-/// workload's identity that would still be reusable for this submit, report
-/// it the way hosted does (LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH,
-/// `is_stale` as that build would be reused). Only the newest such build is
-/// judged. First builds, absent targets and own-target edits are left as is.
-async fn report_older_match(
+/// workload's identity that would still be reusable for this submit: how
+/// that build would be reused, and its age. Hosted reports it
+/// (LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, `is_stale` as that
+/// build would be reused, [`DecisionRecord::with_older_match`]). Only the
+/// newest such build is judged. First builds, absent targets and own-target
+/// edits have none.
+async fn older_match(
     store: &Store,
     evidence: &ExecutionEvidence,
     freshness: &Freshness<'_>,
-    record: DecisionRecord,
+    record: &DecisionRecord,
     matches: impl Fn(&ExecutionRow) -> bool,
-) -> sqlx::Result<DecisionRecord> {
+) -> sqlx::Result<Option<(decision::Reuse, Option<i64>)>> {
     use decision::{DecisionReason as R, NoCandidate as N};
     let applies = record.class == DecisionKind::Build
         && !freshness.own_target_absent
@@ -334,7 +356,7 @@ async fn report_older_match(
                 | R::NoReuseCandidate(N::IdentityMismatch | N::CopyLogicMismatch)
         );
     if !applies {
-        return Ok(record);
+        return Ok(None);
     }
     let history = store
         .target_history(
@@ -345,17 +367,14 @@ async fn report_older_match(
         )
         .await?;
     let Some(older) = history.into_iter().skip(1).find(|row| matches(row)) else {
-        return Ok(record);
+        return Ok(None);
     };
     let Ok(older) = older.into_checked(false) else {
-        return Ok(record);
+        return Ok(None);
     };
     let selection = Selection::of_candidate(older.clone());
     let ctx = context(evidence, &selection, freshness, Some(&older));
-    Ok(match decision::reusable(&ctx, &older) {
-        Some(reuse) => record.with_older_match(reuse),
-        None => record,
-    })
+    Ok(decision::reusable(&ctx, &older).map(|reuse| (reuse, ctx.build_age_ms)))
 }
 
 /// Record, on each input the evidence read, which build in State history
@@ -437,10 +456,14 @@ pub async fn submit_values(
     };
     let (record, candidate) = decide(&evidence, &selection, &freshness);
     let candidate = candidate.cloned();
-    let record = report_older_match(store, &evidence, &freshness, record, |row| {
+    let record = match older_match(store, &evidence, &freshness, &record, |row| {
         reuse_candidate::older_seed_matches(req, &evidence, row)
     })
-    .await?;
+    .await?
+    {
+        Some((reuse, build_age_ms)) => record.with_older_match(reuse, build_age_ms),
+        None => record,
+    };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
     settle(store, &evidence, record, candidate).await
@@ -516,7 +539,12 @@ enum CopyFallback {
     /// An equivalent exists, but this submit's execution type is not copied
     /// (see [`SubmitCopyPlan::Refused`]): the ordinary decision applies, with
     /// TARGET_TABLE_MISMATCH and this clone rejection.
-    Refused { clone_rejection_reason: i32 },
+    /// `equivalent_build_age_ms` is the equivalent's build age when it was
+    /// judged for freshness (it read the same upstream relations).
+    Refused {
+        clone_rejection_reason: i32,
+        equivalent_build_age_ms: Option<i64>,
+    },
     /// The ordinary decision applies unchanged.
     Ordinary,
 }
@@ -647,6 +675,7 @@ async fn result_copy_fallback(
             clone_rejection_reason,
         } => Ok(CopyFallback::Refused {
             clone_rejection_reason,
+            equivalent_build_age_ms: judged.and_then(|(_, build_age_ms)| build_age_ms),
         }),
         SubmitCopyPlan::Unavailable { reason } => {
             tracing::warn!(
