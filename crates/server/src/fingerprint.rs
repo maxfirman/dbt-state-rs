@@ -248,7 +248,18 @@ pub fn rehomed_copy_logic_hashes(req: &qc::SqlExecution, from: &str) -> Vec<Reho
         .filter_map(|schema| {
             let hash =
                 schema_abstracted_hash(req, version, &schemas, Some((from, &quoted(&schema))));
-            (hash != own).then_some(RehomedLogic { schema, hash })
+            let mut named: Vec<String> = schemas
+                .iter()
+                .map(|s| canonical_schema_key(s))
+                .map(|key| if key == from_key { schema.clone() } else { key })
+                .collect();
+            named.sort();
+            named.dedup();
+            (hash != own).then_some(RehomedLogic {
+                schema,
+                hash,
+                named,
+            })
         })
         .collect()
 }
@@ -261,6 +272,11 @@ pub struct RehomedLogic {
     /// (`sql_norm::canonical_schema_key`).
     pub schema: String,
     pub hash: String,
+    /// The canonical key of every schema the submit so read names, sorted:
+    /// the schemas a build with this identity resolved its references in.
+    /// The identity abstracts them, so only the build's recorded upstream
+    /// reads can show which they were (PR #127 review).
+    pub named: Vec<String>,
 }
 
 /// `key`, a canonical schema key, spelled so that it canonicalizes to itself.
@@ -1513,6 +1529,7 @@ mod tests {
             vec![RehomedLogic {
                 schema: "PROD".into(),
                 hash: namespace_logic_hash(&prod),
+                named: vec!["PROD".into()],
             }]
         );
         let own = in_schema("dev", "select id from DB.dev.src", vec![]);

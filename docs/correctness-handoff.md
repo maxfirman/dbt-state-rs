@@ -71,7 +71,15 @@ Do not weaken these without new evidence.
   that logic with the submit's Target relation schema read as another schema
   the request names (the #93 rule, `fingerprint::rehomed_copy_logic_hashes`,
   Snowflake only, #107). A candidate found the second way must have its
-  Target relation in that schema: one elsewhere read other relations. Each
+  Target relation in that schema: one elsewhere read other relations. That
+  schema does not show where the build resolved its references (a build into
+  the prod schema may have used another default schema), so a candidate that
+  may be copied must also have recorded exactly the upstream reads of the
+  submit so read, and those reads must name each schema the reading names;
+  otherwise it is not an equivalent (PR #127 review,
+  `clone_submit_fallback.rs::a_build_into_the_prod_schema_that_read_another_schema_is_not_copied`).
+  Kinds that only report the equivalent in their codes (views record no
+  reads) admit on the Target relation's schema. Each
   dependency's name stays bound to its definition, so a dev dependency whose
   definition differs from the prod build's is not an equivalent
   (`clone_submit_fallback.rs::a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build`).

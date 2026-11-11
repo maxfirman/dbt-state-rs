@@ -203,7 +203,7 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and (when asked)
         // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash FROM current_state WHERE node_namespace_logic_hash = ANY(")
+        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE node_namespace_logic_hash = ANY(")
             .push_bind(
                 q.node_namespace_logic_hashes
                     .iter()

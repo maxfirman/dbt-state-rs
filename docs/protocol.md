@@ -369,7 +369,10 @@ example a dev model reading a prod source with byte-identical SQL, also
 matches a build in that schema when the submit, with its Target relation's
 schema read as that schema, has the build's logic (the RegisterClone
 adoption rule of #93; `explain_post_copy_identity.jsonl` entries 18–19,
-`explain_incremental_submit_copy.jsonl` entries 9–10, #107).
+`explain_incremental_submit_copy.jsonl` entries 9–10, #107). Before such a
+build is copied, its recorded upstream reads must be exactly the submit's,
+read in that schema: its Target relation's schema alone does not show where
+it resolved its references.
 DuckDB computes it only for its checked copy subset
 ([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md)). Other dialects
 have no copy identity and never take this path.
