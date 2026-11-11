@@ -348,9 +348,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // listing them. Hosted SKIPs a test whose cached results are
         // incomplete (#87), so our rebuild for that reason renders nothing,
         // as does every other data-test rebuild reason, including a
-        // dependency-set change, which no capture shows (a store_failures
-        // test's own audit relation is not an input, #88, unless the request
-        // does not identify it, #106;
+        // dependency-set change (a store_failures test's own audit relation
+        // is not an input, #88, unless the request does not name it: under a
+        // configured alias hosted SKIPs, divergence #123;
         // docs/explain-catalog.md "Decision reason coverage"). A data test's
         // Lag tolerance is 0 and it rebuilds on any drift, so its only reuse
         // is a fresh one.
@@ -1699,9 +1699,10 @@ mod tests {
     fn data_test_execute_renders_nothing_for_uncaptured_or_divergent_reasons() {
         // Hosted SKIPs a data test whose cached results are incomplete (#75
         // captures, divergence #87), so our rebuild for that reason has no
-        // hosted tree. No capture shows a data test whose dependency set
-        // changed (a store_failures test's own audit relation is not an
-        // input, #88; one the request does not identify is, #106) or that
+        // hosted tree. A data test rebuilds for a dependency-set change only
+        // when its store_failures audit relation is not named by the request
+        // (a configured alias), where hosted SKIPs (divergence #123; one the
+        // request names is not an input, #88). No capture shows a test that
         // failed reuse qualification.
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),

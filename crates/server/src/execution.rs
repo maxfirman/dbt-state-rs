@@ -48,8 +48,12 @@ fn node_unique_id(
 /// `store_failures: true`, and a relation that is exactly
 /// `default_catalog`.`default_schema`.`dbt_node_name` under the warehouse's
 /// identifier rules (Snowflake only). Any other table still counts, so a
-/// changed dependency set still rebuilds. A test with a configured alias is not
-/// recognized and keeps rebuilding.
+/// changed dependency set still rebuilds. `default_schema` is the test's own
+/// schema, also when a schema macro puts it outside the target schema
+/// (VERIFIED LIVE 2026-11-11, explain_store_failures_audit_schema.jsonl, #106).
+/// A test with a configured alias is not recognized and keeps rebuilding: no
+/// request field carries the alias, although hosted SKIPs it
+/// (explain_store_failures_audit_alias.jsonl, divergence #123).
 ///
 /// The request does not carry the alias, so a relation the test reads can
 /// have exactly that name (a test `orders` aliased `orders_audit` that reads
@@ -815,6 +819,72 @@ mod tests {
         assert_eq!(
             input_names(&ExecutionEvidence::sql_submit("org", &req)),
             vec![SOURCE]
+        );
+    }
+
+    /// The test's schema when a schema macro puts its audit relation outside
+    /// the target schema (dbt's default `<target>_dbt_test__audit`).
+    const AUDIT_SCHEMA: &str = "prod_state_demo_dbt_test__audit";
+    const SEPARATE_AUDIT: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"T75S\"";
+
+    /// Client 2.0.11 sends the test's own schema as `default_schema`, also when
+    /// that is a separate audit schema (#106,
+    /// explain_store_failures_audit_schema.jsonl entries 10 and 11), so the
+    /// audit relation there is named exactly by the request.
+    #[test]
+    fn audit_relation_in_a_separate_audit_schema_is_not_an_input() {
+        let mut req = store_failures_test(&[SOURCE, SEPARATE_AUDIT]);
+        req.default_schema = Some(AUDIT_SCHEMA.into());
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE]
+        );
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_record("org", &sql_execution(&req))),
+            vec![SOURCE]
+        );
+    }
+
+    /// With the audit schema as `default_schema`, the test's name in any other
+    /// schema (the target schema included) is not its audit relation, and a
+    /// relation of its name in the audit schema that its SQL reads stays an
+    /// input.
+    #[test]
+    fn with_a_separate_audit_schema_lookalikes_and_reads_still_count() {
+        for name in [
+            AUDIT,
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"T75S_X\"",
+        ] {
+            let mut req = store_failures_test(&[SOURCE, name]);
+            req.default_schema = Some(AUDIT_SCHEMA.into());
+            assert_eq!(
+                input_names(&ExecutionEvidence::sql_submit("org", &req)),
+                vec![SOURCE, name],
+                "{name}"
+            );
+        }
+
+        let mut req = store_failures_test(&[SOURCE, SEPARATE_AUDIT]);
+        req.default_schema = Some(AUDIT_SCHEMA.into());
+        req.sql = "select id from CDO_DEMO_DB.prod_state_demo_dbt_test__audit.t75s".into();
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE, SEPARATE_AUDIT]
+        );
+    }
+
+    /// A configured `alias` names the audit relation, and no request field
+    /// carries it (#106, explain_store_failures_audit_alias.jsonl). The
+    /// aliased relation is therefore not recognized and stays an input, so the
+    /// test rebuilds where hosted SKIPs (the conservative side, #40 divergence
+    /// rule).
+    #[test]
+    fn an_aliased_audit_relation_is_not_recognized() {
+        let aliased = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"";
+        let req = store_failures_test(&[SOURCE, aliased]);
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE, aliased]
         );
     }
 
