@@ -5,7 +5,8 @@
 //! hosted service and records the exchange in the golden log. The request is
 //! read from stdin as the JSON form the golden log uses.
 //!
-//! Usage: `state-probe <submit|confirm|explain|values> < request.json`
+//! Usage: `state-probe <submit|confirm|clone|explain|values> < request.json`
+//! (`clone` sends `Clone.RegisterClone`, the dev-clone pre-step's copy request.)
 //!
 //! Env:
 //!   PROBE_URL          default http://127.0.0.1:50099
@@ -45,9 +46,9 @@ fn with_client_metadata<T>(msg: T) -> anyhow::Result<Request<T>> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let op = std::env::args()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("usage: state-probe <submit|confirm|explain|values>"))?;
+    let op = std::env::args().nth(1).ok_or_else(|| {
+        anyhow::anyhow!("usage: state-probe <submit|confirm|clone|explain|values>")
+    })?;
     let mut body = String::new();
     std::io::stdin().read_to_string(&mut body)?;
     let url = std::env::var("PROBE_URL").unwrap_or_else(|_| "http://127.0.0.1:50099".into());
@@ -74,6 +75,14 @@ async fn main() -> anyhow::Result<()> {
             let msg: qc::ConfirmExecutionRequest = serde_json::from_str(&body)?;
             let resp = qc::execution_client::ExecutionClient::new(channel)
                 .confirm_execution(with_client_metadata(msg)?)
+                .await?
+                .into_inner();
+            serde_json::to_value(resp)?
+        }
+        "clone" => {
+            let msg: qc::CloneRequest = serde_json::from_str(&body)?;
+            let resp = qc::clone_client::CloneClient::new(channel)
+                .register_clone(with_client_metadata(msg)?)
                 .await?
                 .into_inner();
             serde_json::to_value(resp)?
