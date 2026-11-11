@@ -423,7 +423,7 @@ pub(crate) fn canonical_identifier(raw: &str) -> String {
 
 /// Canonical key for a schema component. Thin wrapper over
 /// [`canonical_identifier`] retained for the schema-token map call sites.
-fn canonical_schema_key(raw: &str) -> String {
+pub(crate) fn canonical_schema_key(raw: &str) -> String {
     canonical_identifier(raw)
 }
 

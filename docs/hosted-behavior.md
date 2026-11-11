@@ -26,6 +26,7 @@ Open questions and deliberate divergences live in
 | Table, view, incremental, snapshot, seed or test unchanged | — | skip | ✅ |
 | No prior execution | — | build | ✅ |
 | View, logic unchanged, upstream advanced | 10 | skip (the client omits upstreams from `tables[]`) | ✅ |
+| View whose SQL reads no relation (no FROM, a CTE without FROM, VALUES, a table function), unchanged or logic changed | 10 | skip / build; its Explain tree says `no upstream dependencies` with no `upstream model queries` line, where a view over a `ref` says `upstream data is up to date` (`explain_view_reads_no_relation.jsonl`) | ✅ (the decision records whether the view's SQL reads a relation, #117) |
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
 | Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
@@ -94,13 +95,13 @@ reproducible skip.
 | Scenario | Hosted | Reproduced |
 |---|---|---|
 | Incremental | copy via `RegisterClone` | ✅ |
-| Incremental, equivalent under another name, on submit (client 2.0.11, `explain_incremental_copy_over.jsonl`, `explain_incremental_submit_copy.jsonl`) | build, srr=1 / crr=6, or crr=2 when the newest equivalent has another execution type | ✅ (FULL-only submit copy, #101); into an absent dev relation srr=6 ❌ (the server finds no equivalent, #107) |
+| Incremental, equivalent under another name, on submit (client 2.0.11, `explain_incremental_copy_over.jsonl`, `explain_incremental_submit_copy.jsonl`) | build, srr=1 / crr=6, or crr=2 when the newest equivalent has another execution type | ✅ (FULL-only submit copy, #101), also into an absent dev relation (the submit is read in the fixed prod schema it reads, #107) |
 | Incremental (MERGE) over an existing target, on submit (client 2.0.6, `clone_failed_fallback.jsonl`, `clone_submit_equivalent_fallback.jsonl`) | `ready_to_clone` | ❌ deliberate: the server follows 2.0.11 and builds (#101 question 3) |
 | Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy and the post-copy SKIP (#93) |
 | Post-copy submit after the dev-clone pre-step: the source build's SQL over a fixed prod source, a ref'd table or a ref'd view resolved per target (client 2.0.11, `explain_post_copy_identity.jsonl`) | skip, with the source build's `execution_runtime_ms` | ✅ (the submit is read in the copy source's schema, #93) |
-| Table or view whose SQL reads a fixed prod-schema source, dev target missing, prod equivalent exists (client 2.0.11, `explain_post_copy_identity.jsonl` entries 18–19) | table: `ready_to_clone` (srr=1); view: build 1 / 3 | ❌ no equivalent found: build 6 / 6 (#107) |
-| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅; codes 1 / 3 when the server finds the equivalent (#92), 6 / 6 here ❌ (it finds none, #107) |
-| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅; codes 1 / 3 when the server finds the equivalent (#92), 6 / 6 here ❌ (it finds none, #107) |
+| Table or view whose SQL reads a fixed prod-schema source, dev target missing, prod equivalent exists (client 2.0.11, `explain_post_copy_identity.jsonl` entries 18–19) | table: `ready_to_clone` (srr=1); view: build 1 / 3 | ✅ (the submit is read in the fixed prod schema it reads, #107) |
+| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | ✅ build with codes 1 / 3 (#92, #107) |
+| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | ✅ build with codes 1 / 3 (#92, #107) |
 | Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
 | Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ✅ (#86) |
@@ -131,21 +132,13 @@ reproducible skip.
   it with `is_stale=true`; the server copies on the first submit. This
   interaction is open (see the `CHARACTERIZATION_ONLY` comments in
   `crates/harness/tests/conformance.rs`).
-- **Submit-time equivalent of a model over a fixed prod-schema source**
-  (#107): the Result copy fallback looks equivalents up by the submit's
-  request-relative schema-abstracted logic, which differs from the prod
-  build's when the fixed schema is the prod default schema. Hosted finds the
-  equivalent (`explain_post_copy_identity.jsonl` entries 18–19,
-  `explain_incremental_submit_copy.jsonl` entries 9–10). RegisterClone
-  adoption does not have this gap (#93).
 - **Incremental self-reference after a copy**: hosted skips the final resubmit
   in `clone_chain_source_age.jsonl`; the server rebuilds (pinned by
   `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`).
   Not the #93 cause: that submit's schema already matched the copy, but it
   adds an `is_incremental()` predicate and its Target relation's epoch is
   newer than the copy's confirmation.
-- **Copies seen by the #76 probes** (seed copy, and the view and snapshot
-  codes where the server finds no equivalent): #91, #107, keyed in
+- **Seed copy seen by the #76 probes**: #91, keyed in
   `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
