@@ -100,18 +100,26 @@ async fn org_isolation_state_does_not_leak() {
     assert_eq!(ed.decision, DECISION_SKIP_EXECUTION);
 }
 
-/// Item 2a — INVALID INPUT: a near-empty SubmitEnrichedSQL (only dialect set,
-/// no target_table, no dbt_node_state) must NOT panic. It must return Ok with a
-/// ready_to_execute (empty-state execute), because there is no confirmed match.
+/// Item 2a — INVALID INPUT: a near-empty SubmitEnrichedSQL must NOT panic.
+/// With only `dialect` set it has no target, so it is rejected with
+/// INVALID_ARGUMENT (#81: only data tests may omit the target). With a target
+/// and nothing else it returns Ok with a ready_to_execute (empty-state
+/// execute), because there is no confirmed match.
 #[tokio::test]
 async fn near_empty_submit_executes_without_panic() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
 
-    let resp = sc
+    let status = sc
         .try_submit(empty_submission("snowflake"))
         .await
-        .expect("near-empty submit must return Ok, not error");
+        .expect_err("a near-empty submit without a target must be rejected");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument, "{status:?}");
+
+    let resp = sc
+        .try_submit(empty_submission("snowflake").target("\"DB\".\"S\".\"EMPTY\""))
+        .await
+        .expect("near-empty submit with a target must return Ok, not error");
     assert_eq!(
         variant(&resp),
         "ready_to_execute",

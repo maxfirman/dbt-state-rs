@@ -25,7 +25,7 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use support::demo::{self, transient_at, CLONE_PROBE, DEV_SCHEMA, NS, PROD_SCHEMA};
-use support::scenario::Scenario;
+use support::scenario::{outcome, ExecutionType, Scenario};
 use support::{legacy, rows, start_server};
 
 /// The captured probe's SQL in `schema` (the base most tests below override).
@@ -116,6 +116,46 @@ async fn server_emits_ready_to_clone_for_equivalent_under_another_name() {
     // covered by clone_lifecycle.rs (which supplies realistic own-target
     // freshness evidence); here we assert the confirm succeeds.
     assert!(sc.confirm(&c.request_id, transient_at(a_epoch + 1)).await);
+}
+
+/// Submit-time Result copy is FULL only (maintainer decision 2026-11-11,
+/// #92): a view whose equivalent was built under another name builds as a
+/// first build, reporting the equivalent with TARGET_TABLE_MISMATCH /
+/// EXECUTION_TYPE_NOT_FULL, as hosted 2.0.11 did for a view and a snapshot
+/// (explain_copy_probes.jsonl entries 13-14) and a custom node
+/// (explain_custom_copy.jsonl entry 9). The equivalent is a view, so this
+/// also shows the refusal does not depend on copy DDL for its source.
+#[tokio::test]
+async fn a_view_with_an_equivalent_builds_with_execution_type_not_full() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let a = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
+    let b = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
+    let probe = |target: &str, schema: &str| {
+        demo::model(target, schema, CLONE_PROBE)
+            .sql(&probe_sql(schema))
+            .namespace(NS)
+            .execution_type(ExecutionType::View)
+    };
+    sc.build_with(
+        probe(a, PROD_SCHEMA),
+        outcome().epoch(1_791_747_221_679).table_type("VIEW"),
+    )
+    .await;
+
+    let x = sc.expect_execute(probe(b, DEV_SCHEMA)).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(ed.skip_rejection_reason, Some(1), "TARGET_TABLE_MISMATCH");
+    assert_eq!(
+        ed.clone_rejection_reason,
+        Some(3),
+        "EXECUTION_TYPE_NOT_FULL"
+    );
+    assert!(!ed.is_stale);
+    assert_eq!(
+        ed.decision_description,
+        "model was executed because its table did not exist"
+    );
 }
 
 /// SAFETY: with NO equivalent recorded, a submit for an absent target executes

@@ -257,6 +257,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CopyCandidate {
     pub target_table: String,
+    pub execution_type: i32,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
@@ -270,7 +271,8 @@ pub struct CopyCandidate {
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
     pub node_namespace_logic_hash: &'a str,
-    pub execution_type: i32,
+    /// `None`: an equivalent of any execution type.
+    pub execution_type: Option<i32>,
     pub exclude_target: &'a str,
     pub dialect: &'a str,
     pub limit: i64,

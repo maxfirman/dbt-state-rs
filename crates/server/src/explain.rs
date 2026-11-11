@@ -200,11 +200,13 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
 ///   - seed (VALUES=9): Skip | Build (Clone fenced until #91).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
-///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone is
-///     local-only: hosted never copies one, #86).
+///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone unreachable on
+///     2.0.11: hosted never copies one on submit, nor does this server, #86).
 ///   - incrementals (APPEND=2, MERGE=3, INSERT_OVERWRITE=4, DELETE_INSERT=5,
-///     MICROBATCH=6): Skip | Build (Clone is local-only: hosted 2.0.11 never
-///     copies one on submit, #101).
+///     MICROBATCH=6): Skip | Build (Clone unreachable on 2.0.11: hosted copies
+///     one only through RegisterClone, which has no Explain message, and this
+///     server copies only FULL on submit, #101; DuckDB's checked delete+insert
+///     copy is local-only).
 ///   - everything else (any other
 ///     execution_type): NONE.
 ///
@@ -247,8 +249,9 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         // VERIFIED LIVE 2026-11-10 (explain_custom_history.jsonl, client
-        // 2.0.11). Hosted never copies a custom node (explain_custom_copy.jsonl,
-        // #86), so CLONE stays fenced: our copy of one is local-only.
+        // 2.0.11). CLONE is unreachable on 2.0.11: hosted never copies a
+        // custom node (explain_custom_copy.jsonl, #86), and this server copies
+        // only FULL on submit.
         Ok(ModelExecutionType::DbtCustom) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
@@ -256,12 +259,13 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         // renders the MODEL trees (explain_incremental_append_merge_history.jsonl,
         // explain_incremental_insert_overwrite.jsonl,
         // explain_incremental_delete_insert.jsonl,
-        // explain_incremental_microbatch.jsonl). CLONE stays fenced: hosted
-        // 2.0.11 rebuilds an incremental this server copies on submit, into an
-        // absent dev relation (explain_incremental_submit_copy.jsonl) and over
-        // an existing one (explain_incremental_copy_over.jsonl, #101), and its
-        // RegisterClone copy mints no execution_decision_id. Our copy is
-        // local-only.
+        // explain_incremental_microbatch.jsonl). CLONE is unreachable on
+        // 2.0.11: hosted rebuilds an incremental on submit, into an absent dev
+        // relation (explain_incremental_submit_copy.jsonl) and over an
+        // existing one (explain_incremental_copy_over.jsonl, #101), and its
+        // RegisterClone copy mints no execution_decision_id. This server
+        // copies only FULL on submit; DuckDB's checked delete+insert copy is
+        // local-only and stays fenced.
         Ok(
             ModelExecutionType::Append
             | ModelExecutionType::Merge
@@ -1617,8 +1621,8 @@ mod tests {
 
     #[test]
     fn custom_clone_emits_nothing() {
-        // DBT_CUSTOM=11 CLONE: hosted rebuilds where this server copies
-        // (explain_custom_copy.jsonl entry 9, #86) → local-only, no tree.
+        // DBT_CUSTOM=11 CLONE is unreachable on 2.0.11: hosted rebuilds
+        // (explain_custom_copy.jsonl entry 9, #86) → fenced, no tree.
         let mut n = node(
             DecisionKind::Clone,
             ModelExecutionType::DbtCustom as i32,
@@ -1627,17 +1631,18 @@ mod tests {
         n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
         assert!(
             explain_lines(&n).is_empty(),
-            "a custom CLONE is local-only → must emit no invented lines, got {:?}",
+            "a custom CLONE is unreachable on 2.0.11 → must emit no invented lines, got {:?}",
             render(&n)
         );
     }
 
     #[test]
     fn incremental_clone_emits_nothing() {
-        // Every incremental strategy's CLONE: hosted 2.0.11 rebuilds where
-        // this server copies on submit (explain_incremental_copy_over.jsonl
-        // entries 37–41, #101) → local-only, no tree, over an existing
-        // Target relation or an absent one.
+        // Every incremental strategy's CLONE is unreachable on 2.0.11:
+        // hosted rebuilds on submit (explain_incremental_copy_over.jsonl
+        // entries 37–41, #101); only DuckDB's checked delete+insert copy
+        // reaches here, local-only → no tree, over an existing Target relation
+        // or an absent one.
         for et in [
             ModelExecutionType::Append,
             ModelExecutionType::Merge,
@@ -1715,17 +1720,17 @@ mod tests {
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
-                    | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
+                    | (11, DecisionKind::Build) // custom EXECUTE (CLONE unreachable on 2.0.11, #86)
                     | (2, DecisionKind::Skip) // append SKIP (explain_incremental_append_merge_history)
-                    | (2, DecisionKind::Build) // append EXECUTE (CLONE local-only, #101)
+                    | (2, DecisionKind::Build) // append EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (3, DecisionKind::Skip) // merge SKIP
-                    | (3, DecisionKind::Build) // merge EXECUTE (CLONE local-only, #101)
+                    | (3, DecisionKind::Build) // merge EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (4, DecisionKind::Skip) // insert_overwrite SKIP (explain_incremental_insert_overwrite)
-                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE local-only, #101)
+                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (5, DecisionKind::Skip) // delete+insert SKIP (explain_incremental_delete_insert)
-                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE local-only, #101)
+                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE unreachable on 2.0.11, #101)
                     | (6, DecisionKind::Skip) // microbatch SKIP (explain_incremental_microbatch)
-                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE local-only, #101)
+                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE unreachable on 2.0.11, #101)
             )
         };
 

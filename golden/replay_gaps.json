@@ -57,7 +57,7 @@
     "fixture": "clone_failed_fallback.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
-    "reason": "MISSING SOURCE HISTORY: hosted clones from ANALYTICS_DB.DEV_CLONE.ORDERS_INCREMENTAL (an incremental source not built in this capture); the empty local store executes. The failed_to_clone handling characterized elsewhere is unaffected."
+    "reason": "2.0.6 SUBMIT COPY OF A MERGE INCREMENTAL, now a deliberate divergence: hosted client 2.0.6 copied ANALYTICS_DB.DEV_CLONE.ORDERS_INCREMENTAL (execution type MERGE) into an existing target on submit. Following hosted 2.0.11 (explain_incremental_copy_over.jsonl, explain_incremental_submit_copy.jsonl), this server copies only FULL on submit (maintainer decision 2026-11-11, #101), so it builds. Whether 2.0.11 copies an incremental over a relation with no State history of its own is #101 question 3, not captured. The source's history is not in this capture either. The failed_to_clone handling characterized elsewhere is unaffected."
   },
   {
     "fixture": "clone_fallback_dep_binding_swap.jsonl",
@@ -69,7 +69,7 @@
     "fixture": "clone_submit_equivalent_fallback.jsonl",
     "entry": 1,
     "local_variant": "ready_to_execute",
-    "reason": "MISSING SOURCE HISTORY: hosted clones from DEV_CLONE_DEMO.CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."
+    "reason": "2.0.6 SUBMIT COPY OF A MERGE INCREMENTAL, now a deliberate divergence: hosted client 2.0.6 copied DEV_CLONE_DEMO.CLONE_PROBE into the prod target on submit for a MERGE incremental. Following hosted 2.0.11 (explain_incremental_copy_over.jsonl, explain_incremental_submit_copy.jsonl), this server copies only FULL on submit (maintainer decision 2026-11-11, #101), so it builds. Whether 2.0.11 copies an incremental over a relation with no State history of its own is #101 question 3, not captured. The source, built in a prior live session, is not in this capture either. The FULL submit copy is pinned by clone_submit_fallback.rs."
   },
   {
     "fixture": "clone_submit_equivalent_fallback.jsonl",
@@ -131,19 +131,19 @@
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#80, probe d1): the Target relation is reported twice in `tables` with the build's epoch. Hosted reuses it (SKIP); the local server cannot tell which entry describes the table and rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6). Client 2.0.11 never sends a repeated entry."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#80, probe d1): the Target relation is reported twice in `tables` with the build's epoch. Hosted reuses it (SKIP); the local server cannot tell which entry describes the table and rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6). Client 2.0.11 never sends a repeated entry. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 3,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 2 (#80): hosted explains its SKIP; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 2 (#80): hosted explains its SKIP; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 6,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#80, probe d2): the Target relation is reported with no epoch. Both rebuild, but hosted treats the table as missing (skip=4 TARGET_TABLE_DOES_NOT_EXIST / clone=7 TARGET_TABLE_MATCH, 'model was executed because its table did not exist'); the local server rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6, the generic rebuild description). Client 2.0.11 drops a Target relation of unknown epoch instead.",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#80, probe d2): the Target relation is reported with no epoch. Both rebuild, but hosted treats the table as missing (skip=4 TARGET_TABLE_DOES_NOT_EXIST / clone=7 TARGET_TABLE_MATCH, 'model was executed because its table did not exist'); the local server rebuilds with no_reuse_candidate.own_target_changed_or_missing (6/6, the generic rebuild description). Client 2.0.11 drops a Target relation of unknown epoch instead. See docs/correctness-handoff.md \"Accepted divergences\".",
     "ignore_fields": [
       "explained_decision.decision_description",
       "explained_decision.skip_rejection_reason",
@@ -154,7 +154,7 @@
     "fixture": "explain_ambiguous_rebuilds.jsonl",
     "entry": 7,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#80): hosted renders the first-build tree with its 'did not exist' description; the local server's own_target_changed_or_missing rebuild is local-only and renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_snapshot_history.jsonl",
@@ -258,7 +258,7 @@
     "fixture": "explain_copy_probes.jsonl",
     "entry": 13,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#92): the dev_clone first build of a view whose equivalent exists in prod_demo. Both build with 'model was executed because its table did not exist'; hosted reports TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL (1/3), this server 6/6.",
+    "reason": "IDENTITY GAP (#93), not the copy rule: the dev_clone first build of a view whose equivalent exists in prod_demo. Both build with 'model was executed because its table did not exist' and the same tree. Hosted reports TARGET_TABLE_MISMATCH / EXECUTION_TYPE_NOT_FULL (1/3), which this server now sends for a view whose equivalent it finds (FULL-only submit copy, #92). It finds none here: the dev SQL reads the prod source through deferral under default schema dev_clone_demo, so its schema-abstracted logic differs from the prod build's (as explain_incremental_submit_copy.jsonl entries 9-10), and it reports 6/6.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason",
       "explained_decision.clone_rejection_reason"
@@ -268,7 +268,7 @@
     "fixture": "explain_copy_probes.jsonl",
     "entry": 14,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#92): the dev_clone first build of a snapshot whose equivalent exists in prod_demo (no RegisterClone: its target_schema=target.schema makes the deferred relation the dev one). Both build with 'snapshot was executed because its table did not exist'; hosted reports 1/3, this server 6/6.",
+    "reason": "IDENTITY GAP (#93), not the copy rule: the dev_clone first build of a snapshot whose equivalent exists in prod_demo (no RegisterClone: its target_schema=target.schema makes the deferred relation the dev one). Both build with 'snapshot was executed because its table did not exist'. Hosted reports 1/3, which this server now sends for a snapshot whose equivalent it finds (FULL-only submit copy, #92). It finds none here: the dev SQL reads the prod source under default schema dev_clone_demo, so its schema-abstracted logic differs from the prod build's, and it reports 6/6.",
     "ignore_fields": [
       "explained_decision.skip_rejection_reason",
       "explained_decision.clone_rejection_reason"
@@ -296,97 +296,25 @@
     "fixture": "explain_incomplete_test_results.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#87, probe none): the data test was confirmed with `execution_results: null`. Hosted SKIPs and serves empty results; the local server rebuilds with no_reuse_candidate.incomplete_cached_test_results (6/6), because reuse needs complete cached results (AGENTS.md invariant 5). Client 2.0.11 always confirms failures, should_warn and should_error."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#87, probe none): the data test was confirmed with `execution_results: null`. Hosted SKIPs and serves empty results; the local server rebuilds with no_reuse_candidate.incomplete_cached_test_results (6/6), because reuse needs complete cached results (AGENTS.md invariant 5). Client 2.0.11 always confirms failures, should_warn and should_error. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_incomplete_test_results.jsonl",
     "entry": 3,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 2 (#87): hosted explains its data-test SKIP; the local server's incomplete_cached_test_results rebuild renders no tree."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 2 (#87): hosted explains its data-test SKIP; the local server's incomplete_cached_test_results rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_incomplete_test_results.jsonl",
     "entry": 6,
     "local_variant": "ready_to_execute",
-    "reason": "CRAFTED DIVERGENCE (#87, probe partial): the data test was confirmed with only `failures`. Hosted SKIPs and serves that partial result; the local server rebuilds with no_reuse_candidate.incomplete_cached_test_results (6/6)."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#87, probe partial): the data test was confirmed with only `failures`. Hosted SKIPs and serves that partial result; the local server rebuilds with no_reuse_candidate.incomplete_cached_test_results (6/6). See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_incomplete_test_results.jsonl",
     "entry": 7,
     "local_variant": "empty_tree",
-    "reason": "CRAFTED DIVERGENCE explain of entry 6 (#87): hosted explains its data-test SKIP; the local server's incomplete_cached_test_results rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_custom_copy.jsonl",
-    "entry": 9,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#86): a custom materialization (DBT_CUSTOM) built in dev_clone over an equivalent prod build. Hosted rebuilds it as a first build with codes 1/3 (EXECUTION_TYPE_NOT_FULL); this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_custom_copy.jsonl",
-    "entry": 12,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 9 (#86): hosted renders the first-build tree; the local server's DBT_CUSTOM Result copy is local-only and renders no tree (the DBT_CUSTOM CLONE cell stays fenced)."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 37,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#101): the DELETE_INSERT incremental `kd73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/2 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_MISMATCH) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 38,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#101): the MERGE incremental `km73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 39,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#101): the INSERT_OVERWRITE incremental `ki73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 40,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#101): the APPEND incremental `ka73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/2 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_MISMATCH) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 41,
-    "local_variant": "ready_to_clone",
-    "reason": "DECISION DIVERGENCE (#101): the MICROBATCH incremental `kb73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 47,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 40 (#101): hosted renders the SHAPE 7 tree for its rebuild of `ka73`; the local server's APPEND Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 48,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 38 (#101): hosted renders the SHAPE 7 tree for its rebuild of `km73`; the local server's MERGE Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 49,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 39 (#101): hosted renders the SHAPE 7 tree for its rebuild of `ki73`; the local server's INSERT_OVERWRITE Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 50,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 37 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kd73`; the local server's DELETE_INSERT Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
-  },
-  {
-    "fixture": "explain_incremental_copy_over.jsonl",
-    "entry": 51,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 41 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kb73`; the local server's MICROBATCH Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#87): hosted explains its data-test SKIP; the local server's incomplete_cached_test_results rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_rebuild_reason_gaps.jsonl",

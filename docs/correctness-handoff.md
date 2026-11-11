@@ -51,7 +51,7 @@ Do not weaken these without new evidence.
   age only ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md)).
 - **No cross-target SKIP.** A `table_namespace` match alone never justifies a
   SKIP. Cross-target reuse is a Result copy on Snowflake (and the DuckDB copy
-  subset) only.
+  subset) only, and a submit-time Result copy is FULL only (#101).
 
 ## Open hosted questions
 
@@ -84,12 +84,21 @@ server keeps the conservative behavior described.
   submit.
 - **Incremental CLONE (#97, resolved by #73).** Hosted 2.0.11 has no
   explainable incremental CLONE decision: its `RegisterClone` copy has an
-  empty `execution_decision_id`, and it rebuilds incrementals this server
-  copies on submit (#101, under "Known divergences"). Still open: whether
-  hosted 2.0.11 copies an incremental over an existing relation that has no
-  State history of its own, the situation of the 2.0.6 copies
+  empty `execution_decision_id`, and it rebuilds incrementals on submit. This
+  server now copies only FULL on submit (#101). Still open (#101 question 3):
+  whether hosted 2.0.11 copies an incremental over an existing relation that
+  has no State history of its own, the situation of the 2.0.6 copies
   (`clone_failed_fallback.jsonl`, `clone_submit_equivalent_fallback.jsonl`,
-  whose target histories are not captured).
+  whose target histories are not captured; keyed divergences below).
+- **Non-FULL submits with an equivalent, uncaptured cases (#86, #92, #101).**
+  The server reports 1 / 3, 1 / 6 or 1 / 2 only where the captures show them
+  ([protocol.md](protocol.md#result-copy-on-submit)). Not captured: a view,
+  snapshot or custom node whose newest equivalent has another execution type
+  (the server sends 1 / 2); a non-FULL submit whose own reuse candidate must
+  rebuild for freshness (the server keeps the ordinary codes); a non-FULL
+  submit that forbids copies (the server sends its non-FULL codes, not
+  1 / 10); and a view or snapshot rebuild over an existing Target relation
+  that has an equivalent elsewhere (#92 question 2).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
   as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
@@ -254,11 +263,16 @@ replay fails when an entry becomes unused or resolved
     exists under another name so we cloned that one`); the server never copies
     seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
     (submit) and 18 (Explain: the server explains the load it decided).
-  - Non-FULL copy candidate (#92). For a view or a snapshot whose equivalent
-    exists under another name, hosted builds with codes 1 / 3
-    (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`); the server sends
-    6 / 6. The class, description and Explain tree match. Keyed field-scoped
-    gaps: `explain_copy_probes.jsonl` entries 13 and 14.
+  - Non-FULL copy candidate (#92, codes implemented; identity gap → #93).
+    For a view or a snapshot whose equivalent exists under another name,
+    hosted builds with codes 1 / 3 (`TARGET_TABLE_MISMATCH` /
+    `EXECUTION_TYPE_NOT_FULL`). The server sends 1 / 3 when it finds the
+    equivalent (`clone_submit_fallback.rs::a_view_with_an_equivalent_builds_with_execution_type_not_full`).
+    In this capture it finds none and sends 6 / 6: the dev SQL reads the
+    source in the prod schema while its default schema is the dev one, so its
+    schema-abstracted logic differs from the prod build's (the root cause of
+    the #93 entries below). The class, description and Explain tree match.
+    Keyed field-scoped gaps: `explain_copy_probes.jsonl` entries 13 and 14.
   - Post-RegisterClone submit (#93). After the client's dev-clone pre-step
     copies a snapshot, hosted SKIPs the snapshot's own submit, which has the
     prod build's SQL text. The server cannot adopt the copy's inherited
@@ -281,61 +295,74 @@ replay fails when an entry becomes unused or resolved
     and 14–15 (`empty_tree`). The same root cause gives
     `explain_incremental_submit_copy.jsonl` entries 9–10 skip code 6 where
     hosted, which recognizes the prod equivalent, reports 1 (field-scoped).
-- **Custom materialization copy (#86).** A custom node (`DBT_CUSTOM`) built in
-  `dev_clone` over an equivalent prod build: hosted rebuilds it as a first
-  build with codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`), while it copies a FULL
-  control in the same run. The server answers a submit-time Result copy
-  (`result_copy::submit_lookup` excludes only data tests and seeds), and
-  renders no Explain tree for it (DBT_CUSTOM × CLONE stays fenced). Keyed
-  gaps: `explain_custom_copy.jsonl` entries 9 (whole response, local
-  `ready_to_clone`) and 12 (`empty_tree`).
-- **Incremental submit-time copy (#101).** Five incrementals, one per
-  strategy, read `CDO_DEMO_DB.RAW.RAW_ORDERS` (outside both default schemas,
-  so the prod and dev SQL is byte-identical). Each was built in `prod_demo`,
-  then in `dev_clone` with other logic, then in `dev_clone` with the prod
-  logic again. Hosted rebuilds that last submit with the SHAPE 7 tree and
-  codes 1 / 6 (merge, insert_overwrite, microbatch) or 1 / 2 (append,
-  delete+insert: its equivalent was another strategy's prod build with the
-  same SQL and extras). The server answers a submit-time Result copy of the
-  prod build (`result_copy::submit_lookup` excludes only data tests and
-  seeds) and renders no Explain tree for it (the incremental CLONE cells stay
-  fenced). Keyed gaps: `explain_incremental_copy_over.jsonl` entries 37–41
-  (whole response, local `ready_to_clone`) and 47–51 (`empty_tree`). Same
-  question as #86: whether a submit-time copy should require FULL.
+- **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
+  2.0.6 got `ready_to_clone` for a MERGE incremental over an existing target
+  (`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`
+  entry 1). The server follows hosted 2.0.11, which rebuilt every incremental
+  strategy on submit (`explain_incremental_copy_over.jsonl`,
+  `explain_incremental_submit_copy.jsonl`), and copies only FULL on submit
+  (maintainer decision 2026-11-11), so it builds there. Whether 2.0.11 would
+  copy over a relation with no State history of its own is open (#101
+  question 3, above). The copy sources' histories are not in those captures
+  either. Keyed gaps: those two entries (local `ready_to_execute`).
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
-  Each rebuild below is local-only and its Explain tree is empty.
-  - A Target relation listed twice with the build's epoch: hosted reuses it,
-    the server rebuilds with `own_target_changed_or_missing` (#80). Keyed gaps:
-    `explain_ambiguous_rebuilds.jsonl` entries 2 and 3 (`empty_tree`).
-  - A Target relation with no epoch: hosted rebuilds it as missing (codes
-    4 / 7, "did not exist"), the server as ambiguous (6 / 6, generic
-    description) (#80). Keyed gaps: entries 6 and 7 (`empty_tree`).
-  - A model submit with no target: hosted fails it (`Internal` when unset,
-    `InvalidArgument` "Failed to process SQL" when `""`), the server answers a
-    Result copy of the node's own build (#81).
-  - A ConfirmExecution without an epoch for a target-bearing build: hosted
-    fails it (`Internal`, "Database operation failed"), the server records it
-    and later rebuilds with `no_build_anchor` (#82).
+  The Target relation listed twice or with no epoch (#80) and the
+  ConfirmExecution without an epoch (#82) are accepted divergences (see
+  [below](#accepted-divergences)). A model submit with no target (#81) is
+  rejected with `InvalidArgument` before it is decided; hosted fails it too
+  (`Internal` when unset, `InvalidArgument` "Failed to process SQL" when
+  `""`). Pinned by
+  `offline_regressions.rs::model_submit_without_target_is_invalid_argument_not_a_result_copy`.
 
-  The proxy does not record failed calls (see "Proxy fidelity"), so the last
-  two have no fixture rows and no keyed gap. The driver's stdout is their only
-  record.
-- **Data test with incomplete cached results (#87, crafted,
-  `experiments/incomplete_test_results.py`).** A data test confirmed with
-  `execution_results: null`, or with only `failures`, then resubmitted
-  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
-  or `failures` alone). The server keeps its safety floor (reuse needs
-  complete cached results, AGENTS.md invariant 5) and rebuilds with
-  `no_reuse_candidate.incomplete_cached_test_results`, rendering no Explain
-  tree. Client 2.0.11 always confirms all three result fields. Keyed gaps:
-  `explain_incomplete_test_results.jsonl` entries 2, 6 (decision) and 3, 7
-  (`empty_tree`).
+  The proxy does not record failed calls (see "Proxy fidelity"), so the
+  no-target submits and the no-epoch confirm have no fixture rows and no keyed
+  gap. The driver's stdout is their only record.
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
 test that pins each.
+
+### Accepted divergences
+
+Settled differences from hosted: each needs a request client 2.0.11 never
+sends, and the server's rule is the conservative one, so it stays. Their
+keyed gaps stay in `golden/replay_gaps.json`, with reasons that point here.
+Each rebuild below is local-only and renders no Explain tree.
+
+- **Ambiguous Target relation evidence (#80, crafted d1 / d2).** A Target
+  relation listed twice in `tables` with the build's epoch (hosted SKIPs), or
+  listed with no epoch (hosted rebuilds it as missing, codes 4 / 7, "did not
+  exist"): the server rebuilds with `own_target_changed_or_missing` (6 / 6,
+  generic description). Rationale: crafted-only (client 2.0.11 sends one
+  entry per relation and drops a Target relation of unknown epoch), and the
+  "Target relation as built" invariant above, which needs exactly one known
+  epoch, is the conservative rule. Keyed gaps:
+  `explain_ambiguous_rebuilds.jsonl` entries 2, 3, 6 and 7 (`empty_tree`).
+- **ConfirmExecution without an epoch for a target-bearing build (#82,
+  crafted d4).** Hosted fails it (`Internal`, "Database operation failed");
+  the server records it and a later submit rebuilds with `no_build_anchor`.
+  Rationale: crafted-only (client 2.0.11 never sends that confirm for a
+  non-test node), and a build with no epoch never proves the Target relation
+  is as built, so rebuilding is the conservative rule. No keyed gap: the
+  failed hosted call was not recorded.
+- **Data test with incomplete cached results (#87, crafted,
+  `experiments/incomplete_test_results.py`).** A data test confirmed with
+  `execution_results: null`, or with only `failures`, then resubmitted
+  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
+  or `failures` alone); the server rebuilds with
+  `no_reuse_candidate.incomplete_cached_test_results`. Rationale:
+  crafted-only (client 2.0.11 always confirms `failures`, `should_warn` and
+  `should_error`), and AGENTS.md invariant 5 requires complete cached
+  results. Keyed gaps: `explain_incomplete_test_results.jsonl` entries 2, 6
+  (decision) and 3, 7 (`empty_tree`).
+- **Unset target on a model submit (#81, crafted d3).** Hosted answers
+  `Internal` "Internal server error"; the server answers `InvalidArgument`,
+  the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
+  error is not worth it; the request is the caller's error and is rejected
+  before anything is decided or recorded. No keyed gap: failed calls are not
+  recorded.
 
 ## Deployment gaps
 
