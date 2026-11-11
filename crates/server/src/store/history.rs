@@ -180,7 +180,9 @@ impl Store {
     }
 
     /// Find confirmed "equivalent models under another name" to clone FROM, in
-    /// preference order (newest build first).
+    /// preference order (newest build first), with any of the query's logic
+    /// identities. Which logic identity admits which candidate is for the
+    /// caller (`result_copy::EquivalentLookup::admits`).
     ///
     /// VERIFIED LIVE: a SQL submit for a target that does not yet exist, when an
     /// equivalent model (same `table_namespace` + schema-abstracted logic) was
@@ -201,8 +203,14 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and (when asked)
         // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms FROM current_state WHERE node_namespace_logic_hash = ")
-            .push_bind(q.node_namespace_logic_hash);
+        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash FROM current_state WHERE node_namespace_logic_hash = ANY(")
+            .push_bind(
+                q.node_namespace_logic_hashes
+                    .iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<String>>(),
+            )
+            .push(")");
         if let Some(execution_type) = q.execution_type {
             query
                 .push(" AND execution_type = ")

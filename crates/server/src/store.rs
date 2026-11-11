@@ -270,6 +270,8 @@ pub struct CopyCandidate {
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
+    /// The logic identity the candidate matched, one of the query's.
+    pub node_namespace_logic_hash: Option<String>,
 }
 
 /// What [`Store::find_copy_candidates`] selects: up to `limit` current
@@ -279,7 +281,8 @@ pub struct CopyCandidate {
 #[derive(Debug, Clone, Copy)]
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
-    pub node_namespace_logic_hash: &'a str,
+    /// A candidate has any of these logic identities.
+    pub node_namespace_logic_hashes: &'a [&'a str],
     /// `None`: an equivalent of any execution type.
     pub execution_type: Option<i32>,
     pub exclude_target: &'a str,

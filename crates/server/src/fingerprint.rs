@@ -187,7 +187,7 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
             return hex::encode(h.finalize());
         }
     };
-    schema_abstracted_hash(req, version, None)
+    schema_abstracted_hash(req, version, &request_schemas(req), None)
 }
 
 /// The copy logic identity of `req` read as if it ran where its copy source
@@ -207,35 +207,85 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
 /// `None` unless the Warehouse rules give the dialect a schema-abstracted
 /// namespace logic copy identity (Snowflake): other dialects keep exact SQL.
 pub fn rehomed_copy_logic_hash(req: &qc::SqlExecution, from: &str, to: &str) -> Option<String> {
+    let version = rehomable_version(req)?;
+    Some(schema_abstracted_hash(
+        req,
+        version,
+        &request_schemas(req),
+        Some((from, to)),
+    ))
+}
+
+/// The copy logic identity of `req` rehomed ([`rehomed_copy_logic_hash`])
+/// from schema `from` (the submit's Target relation schema) into each other
+/// schema the request names, where that differs from its own copy logic
+/// identity. The submit-time equivalent search looks these up, and admits a
+/// candidate matched by one only when the candidate's Target relation is in
+/// that schema (#107). Empty unless the dialect has a schema-abstracted
+/// namespace logic copy identity (Snowflake).
+///
+/// VERIFIED LIVE 2026-11-11: hosted finds the prod build as the equivalent
+/// of a dev submit whose byte-identical SQL reads a fixed prod-schema source
+/// (explain_post_copy_identity.jsonl entries 18-19, explain_copy_probes.jsonl
+/// entries 13-14, explain_incremental_submit_copy.jsonl entries 9-10).
+pub fn rehomed_copy_logic_hashes(req: &qc::SqlExecution, from: &str) -> Vec<RehomedLogic> {
+    use crate::sql_norm::canonical_schema_key;
+    let Some(version) = rehomable_version(req) else {
+        return Vec::new();
+    };
+    let schemas = request_schemas(req);
+    let own = schema_abstracted_hash(req, version, &schemas, None);
+    let from_key = canonical_schema_key(from);
+    let mut targets: Vec<String> = schemas
+        .iter()
+        .map(|s| canonical_schema_key(s))
+        .filter(|key| *key != from_key)
+        .collect();
+    targets.sort();
+    targets.dedup();
+    targets
+        .into_iter()
+        .filter_map(|schema| {
+            let hash =
+                schema_abstracted_hash(req, version, &schemas, Some((from, &quoted(&schema))));
+            (hash != own).then_some(RehomedLogic { schema, hash })
+        })
+        .collect()
+}
+
+/// A copy logic identity of a submit read as if it ran in `schema`
+/// ([`rehomed_copy_logic_hashes`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RehomedLogic {
+    /// The canonical key of the schema the submit is read in
+    /// (`sql_norm::canonical_schema_key`).
+    pub schema: String,
+    pub hash: String,
+}
+
+/// `key`, a canonical schema key, spelled so that it canonicalizes to itself.
+fn quoted(key: &str) -> String {
+    format!("\"{}\"", key.replace('"', "\"\""))
+}
+
+/// The schema-abstracted version tag when the Warehouse rules give `req` a
+/// namespace logic copy identity that rehoming applies to.
+fn rehomable_version(req: &qc::SqlExecution) -> Option<&'static [u8]> {
     let warehouse = Warehouse::from_dialect(&req.dialect);
     let CopyIdentity::NamespaceLogic = warehouse.copy_identity(req)? else {
         return None;
     };
     match warehouse.namespace_identity() {
-        NamespaceIdentity::SchemaAbstracted { version } => {
-            Some(schema_abstracted_hash(req, version, Some((from, to))))
-        }
+        NamespaceIdentity::SchemaAbstracted { version } => Some(version),
         NamespaceIdentity::Exact { .. } => None,
     }
 }
 
-/// The schema-abstracted body of [`namespace_logic_hash`], optionally
-/// rehomed ([`rehomed_copy_logic_hash`]).
-fn schema_abstracted_hash(
-    req: &qc::SqlExecution,
-    version: &[u8],
-    rehome: Option<(&str, &str)>,
-) -> String {
-    use crate::sql_norm::{
-        abstract_object_name_components_with, schema_of_object_name, schemas_in_sql, SchemaMap,
-    };
-    // Build ONE request-wide relative schema→token map covering every schema
-    // that appears in the root SQL, in each dependency NAME, and in each
-    // dependency DEFINITION, PLUS the request's default_schema (so an UNQUALIFIED
-    // root reference resolved via default_schema participates in the mapping).
-    // Distinct schemas get distinct tokens (sorted order); a single environment
-    // schema collapses to token 0, preserving cross-env equivalence while
-    // keeping genuinely-different schemas distinct (review #2 2nd follow-up, P0).
+/// Every schema the request names: in the root SQL, in each dependency NAME
+/// and DEFINITION, PLUS the request's default_schema (so an UNQUALIFIED root
+/// reference resolved via default_schema participates in the mapping).
+fn request_schemas(req: &qc::SqlExecution) -> Vec<String> {
+    use crate::sql_norm::{schema_of_object_name, schemas_in_sql};
     let mut all_schemas: Vec<String> = Vec::new();
     all_schemas.extend(schemas_in_sql(&req.sql));
     if let Some(ds) = req.default_schema.as_deref().filter(|s| !s.is_empty()) {
@@ -247,6 +297,25 @@ fn schema_abstracted_hash(
         }
         all_schemas.extend(schemas_in_sql(&d.query));
     }
+    all_schemas
+}
+
+/// The schema-abstracted body of [`namespace_logic_hash`] over the request's
+/// schemas ([`request_schemas`]), optionally rehomed
+/// ([`rehomed_copy_logic_hash`]).
+fn schema_abstracted_hash(
+    req: &qc::SqlExecution,
+    version: &[u8],
+    all_schemas: &[String],
+    rehome: Option<(&str, &str)>,
+) -> String {
+    use crate::sql_norm::{abstract_object_name_components_with, SchemaMap};
+    // ONE request-wide relative schema→token map covering every schema the
+    // request names. Distinct schemas get distinct tokens (sorted order); a
+    // single environment schema collapses to token 0, preserving cross-env
+    // equivalence while keeping genuinely-different schemas distinct (review
+    // #2 2nd follow-up, P0).
+    let all_schemas = all_schemas.iter().cloned();
     let schemas = match rehome {
         Some((from, to)) => SchemaMap::rehomed(all_schemas, from, to),
         None => SchemaMap::from_schemas(all_schemas),
@@ -1427,6 +1496,69 @@ mod tests {
                 None,
                 "{dialect}"
             );
+        }
+    }
+
+    /// The submit-time equivalent search (#107) reads the submit in each
+    /// other schema it names. VERIFIED LIVE 2026-11-11
+    /// (explain_post_copy_identity.jsonl entries 18-19): read in the fixed
+    /// prod schema it reads, the dev submit is the prod build. A submit that
+    /// names only its own schema has no other reading.
+    #[test]
+    fn rehomed_identities_read_the_submit_in_each_other_schema_it_names() {
+        let prod = in_schema("prod", "select id from DB.prod.src", vec![]);
+        let dev = in_schema("dev", "select id from DB.prod.src", vec![]);
+        assert_eq!(
+            rehomed_copy_logic_hashes(&dev, "\"DEV\""),
+            vec![RehomedLogic {
+                schema: "PROD".into(),
+                hash: namespace_logic_hash(&prod),
+            }]
+        );
+        let own = in_schema("dev", "select id from DB.dev.src", vec![]);
+        assert!(rehomed_copy_logic_hashes(&own, "dev").is_empty());
+        let duckdb = qc::SqlExecution {
+            dialect: "duckdb".into(),
+            ..dev
+        };
+        assert!(rehomed_copy_logic_hashes(&duckdb, "dev").is_empty());
+    }
+
+    /// A dependency in the dev schema whose definition differs from the prod
+    /// build's is not made equivalent by reading the submit in the prod
+    /// schema: the rehomed identity keeps each dependency name bound to its
+    /// definition (AGENTS.md invariant 4). The same definition is.
+    #[test]
+    fn rehomed_identities_keep_a_different_dev_dependency_definition_apart() {
+        let build = |env: &str, upper: &str, definition: &str| {
+            in_schema(
+                env,
+                &format!("select s.id from DB.prod.src s join DB.{env}.v v on s.id = v.id"),
+                vec![dep(
+                    &format!("\"DB\".\"{upper}\".\"V\""),
+                    definition,
+                    "DB",
+                    upper,
+                )],
+            )
+        };
+        let prod = namespace_logic_hash(&build("prod", "PROD", "select id from DB.prod.src"));
+        let readings = |e: &qc::SqlExecution| -> Vec<String> {
+            rehomed_copy_logic_hashes(e, "DEV")
+                .into_iter()
+                .map(|r| r.hash)
+                .collect()
+        };
+        let same = build("dev", "DEV", "select id from DB.prod.src");
+        assert!(readings(&same).contains(&prod), "same definition");
+        for changed in [
+            "select id from DB.prod.src where id > 0",
+            "select id + 1 as id from DB.prod.src",
+            "select id from DB.prod.other",
+        ] {
+            let dev = build("dev", "DEV", changed);
+            assert_ne!(namespace_logic_hash(&dev), prod, "{changed}");
+            assert!(!readings(&dev).contains(&prod), "{changed}");
         }
     }
 }

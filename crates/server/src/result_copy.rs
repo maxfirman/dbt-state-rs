@@ -22,6 +22,7 @@
 //! dialect string here.
 
 use crate::execution::ExecutionEvidence;
+use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::store::CopyCandidate;
@@ -31,16 +32,53 @@ use crate::warehouse::{IncrementalCopyContract, Warehouse};
 
 /// What to look up for the submit fallback: a current equivalent of this
 /// logic in this namespace under any other physical target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EquivalentLookup<'a> {
     pub table_namespace: &'a str,
     pub node_namespace_logic_hash: &'a str,
+    /// The submit's logic read in each other schema it names, with its Target
+    /// relation's schema read as that schema
+    /// (`fingerprint::rehomed_copy_logic_hashes`, #107). Each admits only a
+    /// candidate whose Target relation is in its schema ([`Self::admits`]).
+    pub rehomed: Vec<RehomedLogic>,
     /// The equivalent's execution type: the submit's own for a submit the
     /// Warehouse rules let copy; `None` (any) for one they do not, which
     /// builds with the codes of whichever equivalent hosted would have found
     /// ([`plan_submit`]).
     pub execution_type: Option<i32>,
     pub exclude_target: &'a str,
+}
+
+impl EquivalentLookup<'_> {
+    /// Every logic identity a candidate may have.
+    pub(crate) fn logic_hashes(&self) -> Vec<&str> {
+        std::iter::once(self.node_namespace_logic_hash)
+            .chain(self.rehomed.iter().map(|r| r.hash.as_str()))
+            .collect()
+    }
+
+    /// Whether `candidate` is an equivalent: it has the submit's logic, or
+    /// the submit's logic read in the schema of the candidate's Target
+    /// relation. The submit so read is the candidate's build request with one
+    /// schema substituted, each dependency name still bound to its definition
+    /// (AGENTS.md invariant 4). A rehomed identity matched by a candidate in
+    /// another schema is not one: that candidate read other relations.
+    pub(crate) fn admits(&self, candidate: &CopyCandidate) -> bool {
+        use crate::sql_norm::{canonical_schema_key, schema_of_object_name};
+        let Some(hash) = candidate.node_namespace_logic_hash.as_deref() else {
+            return false;
+        };
+        if hash == self.node_namespace_logic_hash {
+            return true;
+        }
+        let Some(schema) = schema_of_object_name(&candidate.target_table) else {
+            return false;
+        };
+        let schema = canonical_schema_key(&schema);
+        self.rehomed
+            .iter()
+            .any(|r| r.hash == hash && r.schema == schema)
+    }
 }
 
 /// Whether the submit fallback applies, and if so what to look up.
@@ -87,11 +125,23 @@ pub(crate) fn submit_lookup<'a>(
         return None;
     }
     let copies = warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras);
+    let exclude_target = req.target_table.as_deref().unwrap_or_default();
+    let table_namespace = crate::execution::non_blank_namespace(req.table_namespace.as_deref())?;
+    let node_namespace_logic_hash = ns_logic_hash?;
+    let rehomed = crate::sql_norm::schema_of_object_name(exclude_target)
+        .map(|from| {
+            crate::fingerprint::rehomed_copy_logic_hashes(
+                &crate::execution::sql_execution(req),
+                &from,
+            )
+        })
+        .unwrap_or_default();
     Some(EquivalentLookup {
-        table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
-        node_namespace_logic_hash: ns_logic_hash?,
+        table_namespace,
+        node_namespace_logic_hash,
+        rehomed,
         execution_type: copies.then_some(req.execution_type),
-        exclude_target: req.target_table.as_deref().unwrap_or_default(),
+        exclude_target,
     })
 }
 
@@ -470,10 +520,79 @@ mod tests {
             Some(EquivalentLookup {
                 table_namespace: "ns",
                 node_namespace_logic_hash: "logic",
+                rehomed: vec![],
                 execution_type: Some(1),
                 exclude_target: DEV,
             })
         );
+    }
+
+    /// A submit that reads a fixed schema other than its Target relation's
+    /// also looks for its logic read in that schema (#107,
+    /// explain_post_copy_identity.jsonl entries 18-19).
+    #[test]
+    fn lookup_reads_the_submit_in_each_other_schema_it_names() {
+        let req = qc::SubmitEnrichedSqlRequest {
+            default_schema: Some("DEV".into()),
+            ..submit("snowflake", "select id from DB.PROD.UP")
+        };
+        let ev = evidence(&req);
+        let lookup = submit_lookup(&req, &ev, false).expect("lookup");
+        let prod = qc::SqlExecution {
+            target_table: Some(PROD.into()),
+            default_schema: Some("PROD".into()),
+            ..crate::execution::sql_execution(&req)
+        };
+        assert_eq!(
+            lookup.rehomed,
+            vec![RehomedLogic {
+                schema: "PROD".into(),
+                hash: crate::fingerprint::namespace_logic_hash(&prod),
+            }]
+        );
+        assert_eq!(
+            lookup.logic_hashes(),
+            vec!["logic", lookup.rehomed[0].hash.as_str()]
+        );
+    }
+
+    fn candidate(target: &str, logic: Option<&str>) -> CopyCandidate {
+        CopyCandidate {
+            target_table: target.into(),
+            execution_type: 1,
+            table_type: None,
+            last_modified_epoch: None,
+            execution_runtime_ms: None,
+            node_namespace_logic_hash: logic.map(Into::into),
+        }
+    }
+
+    /// The submit's own logic admits a candidate in any schema; the logic
+    /// read in a schema admits only a candidate whose Target relation is in
+    /// that schema (spelled either way). One elsewhere read other relations.
+    #[test]
+    fn a_rehomed_identity_admits_only_a_candidate_in_its_schema() {
+        let lookup = EquivalentLookup {
+            table_namespace: "ns",
+            node_namespace_logic_hash: "own",
+            rehomed: vec![RehomedLogic {
+                schema: "PROD".into(),
+                hash: "in-prod".into(),
+            }],
+            execution_type: Some(1),
+            exclude_target: DEV,
+        };
+        const CI: &str = "\"DB\".\"CI\".\"M\"";
+        assert!(lookup.admits(&candidate(CI, Some("own"))));
+        assert!(lookup.admits(&candidate(PROD, Some("in-prod"))));
+        assert!(lookup.admits(&candidate("DB.prod.M", Some("in-prod"))));
+        assert!(!lookup.admits(&candidate(CI, Some("in-prod"))), "elsewhere");
+        assert!(
+            !lookup.admits(&candidate("\"DB\".\"prod\".\"M\"", Some("in-prod"))),
+            "a quoted lowercase schema is another schema"
+        );
+        assert!(!lookup.admits(&candidate(PROD, Some("other"))));
+        assert!(!lookup.admits(&candidate(PROD, None)));
     }
 
     #[test]

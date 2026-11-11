@@ -158,6 +158,104 @@ async fn a_view_with_an_equivalent_builds_with_execution_type_not_full() {
     );
 }
 
+/// #107, VERIFIED LIVE 2026-11-11 (explain_post_copy_identity.jsonl entry
+/// 19): a dev FULL submit whose SQL reads a source in the fixed prod schema
+/// copies the prod build, which hosted finds as its equivalent although the
+/// fixed schema is the prod default schema and not the dev one. A dev view
+/// definition that differs from the prod one is still not equivalent
+/// (AGENTS.md invariant 4): that submit builds as a first build.
+#[tokio::test]
+async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    // The target `name` in `env`: SQL over a source in the fixed prod schema
+    // and a view `V` of its own environment, defined by `definition`.
+    let fixed_schema_reader = |env: &str, name: &str, definition: &str| {
+        let upper = env.to_uppercase();
+        demo::model(
+            &format!("\"CDO_DEMO_DB\".\"{upper}\".\"{name}\""),
+            env,
+            CLONE_PROBE,
+        )
+        .sql(&format!(
+            "select s.id from CDO_DEMO_DB.{PROD_SCHEMA}.src s join CDO_DEMO_DB.{env}.v v on s.id = v.id"
+        ))
+        .namespace(NS)
+        .dependency_in(
+            &format!("\"CDO_DEMO_DB\".\"{upper}\".\"V\""),
+            definition,
+            demo::CATALOG,
+            env,
+        )
+    };
+    let definition = format!("select id from CDO_DEMO_DB.{PROD_SCHEMA}.src");
+    let prod = fixed_schema_reader(PROD_SCHEMA, "M", &definition);
+    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"";
+    sc.build_with(prod, transient_at(1_791_747_221_679).runtime(15))
+        .await;
+
+    let changed = fixed_schema_reader(
+        DEV_SCHEMA,
+        "M_CHANGED",
+        &format!("select id from CDO_DEMO_DB.{PROD_SCHEMA}.src where id > 0"),
+    );
+    let x = sc.expect_execute(changed).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "a different dev dependency definition has no equivalent"
+    );
+
+    let c = sc
+        .expect_clone(fixed_schema_reader(DEV_SCHEMA, "M", &definition))
+        .await;
+    assert_eq!(c.clone_source, source, "copies the prod build");
+}
+
+/// #107: the submit read in the fixed prod schema it names is only matched
+/// by a build in that schema. A build in a third schema `ci` that read its
+/// own `ci` relations has that reading's logic, but not the relations the
+/// dev submit reads, and is not copied: a namespace alone never justifies a
+/// copy.
+#[tokio::test]
+async fn a_submit_read_in_another_schema_is_not_matched_by_a_build_elsewhere() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let ci = |name: &str| {
+        demo::model(
+            &format!("\"CDO_DEMO_DB\".\"CI\".\"{name}\""),
+            "ci",
+            CLONE_PROBE,
+        )
+        .sql("select id from CDO_DEMO_DB.ci.src")
+        .namespace(NS)
+    };
+    sc.build_with(ci("M"), transient_at(1_791_747_221_679).runtime(15))
+        .await;
+
+    let dev = |name: &str, schema: &str| {
+        demo::model(
+            &format!("\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"{name}\""),
+            DEV_SCHEMA,
+            CLONE_PROBE,
+        )
+        .sql(&format!("select id from CDO_DEMO_DB.{schema}.src"))
+        .namespace(NS)
+    };
+    let x = sc.expect_execute(dev("M", PROD_SCHEMA)).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "the ci build read other relations"
+    );
+    // Control: the dev submit reading its own schema is the ci build's
+    // environment-relative equivalent.
+    let c = sc.expect_clone(dev("M_OWN", DEV_SCHEMA)).await;
+    assert_eq!(c.clone_source, "\"CDO_DEMO_DB\".\"CI\".\"M\"");
+}
+
 /// SAFETY: with NO equivalent recorded, a submit for an absent target executes
 /// normally (no spurious clone).
 #[tokio::test]

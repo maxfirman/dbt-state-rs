@@ -737,26 +737,32 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
 const COPY_CANDIDATE_LIMIT: i64 = 16;
 
 /// Every current equivalent of the submit, up to [`COPY_CANDIDATE_LIMIT`], in
-/// the store's preference order (newest build first).
+/// the store's preference order (newest build first). A candidate the lookup
+/// does not admit (a rehomed identity matched in another schema) is dropped
+/// after the read, so it can only cost an equivalent past the cap.
 async fn copy_candidates(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     lookup: &EquivalentLookup<'_>,
 ) -> sqlx::Result<Vec<CopyCandidate>> {
-    store
+    let candidates = store
         .find_copy_candidates(
             org_id,
             &CopyCandidateQuery {
                 table_namespace: lookup.table_namespace,
-                node_namespace_logic_hash: lookup.node_namespace_logic_hash,
+                node_namespace_logic_hashes: &lookup.logic_hashes(),
                 execution_type: lookup.execution_type,
                 exclude_target: lookup.exclude_target,
                 dialect: &req.dialect,
                 limit: COPY_CANDIDATE_LIMIT,
             },
         )
-        .await
+        .await?;
+    Ok(candidates
+        .into_iter()
+        .filter(|candidate| lookup.admits(candidate))
+        .collect())
 }
 
 /// `candidate` as a copy source, if the warehouse rules accept it for the
