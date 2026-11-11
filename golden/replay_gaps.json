@@ -347,5 +347,65 @@
     "entry": 12,
     "local_variant": "empty_tree",
     "reason": "DECISION DIVERGENCE explain of entry 9 (#86): hosted renders the first-build tree; the local server's DBT_CUSTOM Result copy is local-only and renders no tree (the DBT_CUSTOM CLONE cell stays fenced)."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 37,
+    "local_variant": "ready_to_clone",
+    "reason": "DECISION DIVERGENCE (#101): the DELETE_INSERT incremental `kd73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/2 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_MISMATCH) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 38,
+    "local_variant": "ready_to_clone",
+    "reason": "DECISION DIVERGENCE (#101): the MERGE incremental `km73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 39,
+    "local_variant": "ready_to_clone",
+    "reason": "DECISION DIVERGENCE (#101): the INSERT_OVERWRITE incremental `ki73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 40,
+    "local_variant": "ready_to_clone",
+    "reason": "DECISION DIVERGENCE (#101): the APPEND incremental `ka73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/2 (TARGET_TABLE_MISMATCH / EXECUTION_TYPE_MISMATCH) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 41,
+    "local_variant": "ready_to_clone",
+    "reason": "DECISION DIVERGENCE (#101): the MICROBATCH incremental `kb73` (state.pre_clone never) is submitted in dev_clone with its prod logic over an existing dev relation whose own build has other logic, while its prod build (same SQL, same upstream epoch) exists. Hosted rebuilds it with codes 1/6 (TARGET_TABLE_MISMATCH / NO_SUITABLE_MATCH_FOUND) and the SHAPE 7 tree; this server answers a submit-time Result copy of the prod build."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 47,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 40 (#101): hosted renders the SHAPE 7 tree for its rebuild of `ka73`; the local server's APPEND Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 48,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 38 (#101): hosted renders the SHAPE 7 tree for its rebuild of `km73`; the local server's MERGE Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 49,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 39 (#101): hosted renders the SHAPE 7 tree for its rebuild of `ki73`; the local server's INSERT_OVERWRITE Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 50,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 37 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kd73`; the local server's DELETE_INSERT Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_incremental_copy_over.jsonl",
+    "entry": 51,
+    "local_variant": "empty_tree",
+    "reason": "DECISION DIVERGENCE explain of entry 41 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kb73`; the local server's MICROBATCH Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
   }
 ]
