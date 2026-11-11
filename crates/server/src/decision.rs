@@ -42,6 +42,16 @@ pub enum NoCandidate {
     /// it. Hosted rejects it with EXECUTION_TYPE_MISMATCH (2 / 2) and explains
     /// it against that row (#83).
     ExecutionTypeChanged,
+    /// The latest row has the workload's identity under another execution
+    /// type, but recorded other genuine upstream names than the workload
+    /// reports (client 2.0.11 reports none for a view, so the same SQL as a
+    /// view and as a custom node over an upstream). Hosted treats the changed
+    /// upstream set as another identity: the wire answer of
+    /// [`NoCandidate::IdentityMismatch`], with the older-match codes when an
+    /// older build of the workload's type would qualify (VERIFIED LIVE
+    /// 2026-11-11, explain_reason_kind_cells.jsonl `cv`, `vc`, #116). Unlike
+    /// an identity mismatch, Explain says the node query has not changed.
+    UpstreamNamesChanged,
     /// The latest row is a client-requested copy (RegisterClone) that this
     /// workload cannot adopt: its inherited schema-abstracted logic is absent
     /// or differs, also with the submit read in the copy source's schema
@@ -112,10 +122,11 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 19] = [
+    const ALL: [DecisionReason; 20] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
+        Self::NoReuseCandidate(NoCandidate::UpstreamNamesChanged),
         Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
@@ -144,6 +155,9 @@ impl DecisionReason {
             }
             Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
                 "no_reuse_candidate.execution_type_changed"
+            }
+            Self::NoReuseCandidate(NoCandidate::UpstreamNamesChanged) => {
+                "no_reuse_candidate.upstream_names_changed"
             }
             Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch) => {
                 "no_reuse_candidate.copy_logic_mismatch"
@@ -2225,6 +2239,10 @@ mod tests {
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
                 "no_reuse_candidate.execution_type_changed",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::UpstreamNamesChanged),
+                "no_reuse_candidate.upstream_names_changed",
             ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
