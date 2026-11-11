@@ -283,33 +283,17 @@ replay fails when an entry becomes unused or resolved
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
-  Each rebuild below is local-only and its Explain tree is empty.
-  - A Target relation listed twice with the build's epoch: hosted reuses it,
-    the server rebuilds with `own_target_changed_or_missing` (#80). Keyed gaps:
-    `explain_ambiguous_rebuilds.jsonl` entries 2 and 3 (`empty_tree`).
-  - A Target relation with no epoch: hosted rebuilds it as missing (codes
-    4 / 7, "did not exist"), the server as ambiguous (6 / 6, generic
-    description) (#80). Keyed gaps: entries 6 and 7 (`empty_tree`).
-  - A model submit with no target: hosted fails it (`Internal` when unset,
-    `InvalidArgument` "Failed to process SQL" when `""`), the server answers a
-    Result copy of the node's own build (#81).
-  - A ConfirmExecution without an epoch for a target-bearing build: hosted
-    fails it (`Internal`, "Database operation failed"), the server records it
-    and later rebuilds with `no_build_anchor` (#82).
+  The Target relation listed twice or with no epoch (#80) and the
+  ConfirmExecution without an epoch (#82) are accepted divergences (see
+  [below](#accepted-divergences)). A model submit with no target (#81) is
+  rejected with `InvalidArgument` before it is decided; hosted fails it too
+  (`Internal` when unset, `InvalidArgument` "Failed to process SQL" when
+  `""`). Pinned by
+  `offline_regressions.rs::model_submit_without_target_is_invalid_argument_not_a_result_copy`.
 
-  The proxy does not record failed calls (see "Proxy fidelity"), so the last
-  two have no fixture rows and no keyed gap. The driver's stdout is their only
-  record.
-- **Data test with incomplete cached results (#87, crafted,
-  `experiments/incomplete_test_results.py`).** A data test confirmed with
-  `execution_results: null`, or with only `failures`, then resubmitted
-  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
-  or `failures` alone). The server keeps its safety floor (reuse needs
-  complete cached results, AGENTS.md invariant 5) and rebuilds with
-  `no_reuse_candidate.incomplete_cached_test_results`, rendering no Explain
-  tree. Client 2.0.11 always confirms all three result fields. Keyed gaps:
-  `explain_incomplete_test_results.jsonl` entries 2, 6 (decision) and 3, 7
-  (`empty_tree`).
+  The proxy does not record failed calls (see "Proxy fidelity"), so the
+  no-target submits and the no-epoch confirm have no fixture rows and no keyed
+  gap. The driver's stdout is their only record.
 - **`store_failures` data test audit relation (#88).** Once a
   `store_failures: true` test has written its audit relation, the client
   reports that relation in the test's `tables`. Hosted ignores it: the
@@ -323,6 +307,46 @@ replay fails when an entry becomes unused or resolved
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
 test that pins each.
+
+### Accepted divergences
+
+Settled differences from hosted: each needs a request client 2.0.11 never
+sends, and the server's rule is the conservative one, so it stays. Their
+keyed gaps stay in `golden/replay_gaps.json`, with reasons that point here.
+Each rebuild below is local-only and renders no Explain tree.
+
+- **Ambiguous Target relation evidence (#80, crafted d1 / d2).** A Target
+  relation listed twice in `tables` with the build's epoch (hosted SKIPs), or
+  listed with no epoch (hosted rebuilds it as missing, codes 4 / 7, "did not
+  exist"): the server rebuilds with `own_target_changed_or_missing` (6 / 6,
+  generic description). Rationale: crafted-only (client 2.0.11 sends one
+  entry per relation and drops a Target relation of unknown epoch), and the
+  "Target relation as built" invariant above, which needs exactly one known
+  epoch, is the conservative rule. Keyed gaps:
+  `explain_ambiguous_rebuilds.jsonl` entries 2, 3, 6 and 7 (`empty_tree`).
+- **ConfirmExecution without an epoch for a target-bearing build (#82,
+  crafted d4).** Hosted fails it (`Internal`, "Database operation failed");
+  the server records it and a later submit rebuilds with `no_build_anchor`.
+  Rationale: crafted-only (client 2.0.11 never sends that confirm for a
+  non-test node), and a build with no epoch never proves the Target relation
+  is as built, so rebuilding is the conservative rule. No keyed gap: the
+  failed hosted call was not recorded.
+- **Data test with incomplete cached results (#87, crafted,
+  `experiments/incomplete_test_results.py`).** A data test confirmed with
+  `execution_results: null`, or with only `failures`, then resubmitted
+  unchanged: hosted SKIPs and echoes the confirmed results (`{"fields": {}}`
+  or `failures` alone); the server rebuilds with
+  `no_reuse_candidate.incomplete_cached_test_results`. Rationale:
+  crafted-only (client 2.0.11 always confirms `failures`, `should_warn` and
+  `should_error`), and AGENTS.md invariant 5 requires complete cached
+  results. Keyed gaps: `explain_incomplete_test_results.jsonl` entries 2, 6
+  (decision) and 3, 7 (`empty_tree`).
+- **Unset target on a model submit (#81, crafted d3).** Hosted answers
+  `Internal` "Internal server error"; the server answers `InvalidArgument`,
+  the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
+  error is not worth it; the request is the caller's error and is rejected
+  before anything is decided or recorded. No keyed gap: failed calls are not
+  recorded.
 
 ## Deployment gaps
 

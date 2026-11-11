@@ -172,6 +172,56 @@ async fn seeds_match_configuration_current_object_and_latest_build() {
     assert_eq!(sc.values_verdict(reverted).await, "ready_to_execute");
 }
 
+/// #81 (crafted d3 / d3e): a model resubmitted without a target, after an
+/// equivalent build under its own name, must not get a Result copy of that
+/// build into an empty relation name. Hosted fails `""` with InvalidArgument
+/// (and unset with Internal); this server answers InvalidArgument for both.
+/// Data tests, which carry no target, are unaffected.
+#[tokio::test]
+async fn model_submit_without_target_is_invalid_argument_not_a_result_copy() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let req = model("DB.S.M")
+        .catalog("DB")
+        .schema("S")
+        .own_epoch(Some(100))
+        .project("p")
+        .namespace("ns")
+        .sql("select * from DB.RAW.SRC")
+        .upstream("DB.RAW.SRC", 50);
+    sc.build_with(req.clone(), outcome().epoch(100)).await;
+    for (case, target) in [("unset", None), ("empty", Some(String::new()))] {
+        for execution_type in [ExecutionType::Full, ExecutionType::View] {
+            let mut bad: qc::SubmitEnrichedSqlRequest =
+                req.clone().execution_type(execution_type).into();
+            bad.target_table = target.clone();
+            let status = sc
+                .try_submit(bad)
+                .await
+                .expect_err("a non-test submit without a target must be rejected");
+            assert_eq!(
+                status.code(),
+                tonic::Code::InvalidArgument,
+                "{case} target, {execution_type:?}: {status:?}"
+            );
+        }
+    }
+    // The rejected submits recorded nothing: the model still skips.
+    assert_eq!(sc.verdict(req).await, "skip_execution");
+    // A data test's target is legitimately unset or empty.
+    let test = data_test("test.p.no_target")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 0 as failures");
+    sc.build_with(test.clone(), outcome().results(test_results(0)))
+        .await;
+    assert_eq!(sc.verdict(test.clone()).await, "skip_execution");
+    let mut empty: qc::SubmitEnrichedSqlRequest = test.into();
+    empty.target_table = Some(String::new());
+    assert_eq!(sc.verdict(empty).await, "skip_execution");
+}
+
 #[tokio::test]
 async fn unsupported_history_queries_are_errors_not_empty_successes() {
     let server = start_server().await;
