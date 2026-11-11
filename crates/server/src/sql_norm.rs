@@ -59,6 +59,9 @@ pub struct SchemaMap {
     /// When true, every schema collapses to token 0 (legacy single-placeholder
     /// behavior) — used when no explicit map is supplied.
     collapse_all: bool,
+    /// Canonical `(from, to)` keys: `from` reads as `to` everywhere
+    /// ([`SchemaMap::rehomed`]).
+    rehome: Option<(String, String)>,
 }
 
 impl SchemaMap {
@@ -67,6 +70,7 @@ impl SchemaMap {
         Self {
             tokens: Default::default(),
             collapse_all: true,
+            rehome: None,
         }
     }
 
@@ -75,9 +79,28 @@ impl SchemaMap {
     /// ([`canonical_schema_key`]): a quoted schema is case-sensitive, an unquoted
     /// one folds. Distinct canonical keys get distinct tokens by sorted order.
     pub fn from_schemas<I: IntoIterator<Item = String>>(schemas: I) -> Self {
+        Self::build(schemas, None)
+    }
+
+    /// [`SchemaMap::from_schemas`] for the request as if it ran in another
+    /// environment: schema `from` reads as schema `to` everywhere (token
+    /// assignment included), every other schema as itself. The result equals
+    /// the map of the textually substituted request.
+    pub fn rehomed<I: IntoIterator<Item = String>>(schemas: I, from: &str, to: &str) -> Self {
+        Self::build(
+            schemas,
+            Some((canonical_schema_key(from), canonical_schema_key(to))),
+        )
+    }
+
+    fn build<I: IntoIterator<Item = String>>(schemas: I, rehome: Option<(String, String)>) -> Self {
+        let read_as = |key: String| match &rehome {
+            Some((from, to)) if key == *from => to.clone(),
+            _ => key,
+        };
         let mut distinct: Vec<String> = schemas
             .into_iter()
-            .map(|s| canonical_schema_key(&s))
+            .map(|s| read_as(canonical_schema_key(&s)))
             .collect();
         distinct.sort();
         distinct.dedup();
@@ -89,6 +112,7 @@ impl SchemaMap {
         Self {
             tokens,
             collapse_all: false,
+            rehome,
         }
     }
 
@@ -102,7 +126,12 @@ impl SchemaMap {
         if self.collapse_all {
             return format!("{SCHEMA_PLACEHOLDER}0");
         }
-        let key = canonical_schema_key(schema);
+        let mut key = canonical_schema_key(schema);
+        if let Some((from, to)) = &self.rehome {
+            if key == *from {
+                key = to.clone();
+            }
+        }
         let token = self.tokens.get(&key).copied().unwrap_or(0);
         format!("{SCHEMA_PLACEHOLDER}{token}")
     }

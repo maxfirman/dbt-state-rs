@@ -439,8 +439,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         // Everything else renders nothing:
         // - DECISION DIVERGENCES (#40 rule): a node kind change (#83,
-        //   #90) and a RegisterClone copy this server cannot adopt (#93),
-        //   which hosted decides differently;
+        //   #90), which hosted decides differently;
+        // - a rebuild over a RegisterClone copy whose logic differs from its
+        //   source build's (`copy_logic_mismatch`): no capture (#104);
         // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
         //   `own_target_changed_or_missing` (#80), `no_build_anchor` (#82),
         //   and `own_target_modified` with upstreams but no matched build (the
@@ -741,6 +742,9 @@ fn upstream_dependencies_freshness(
     let children = upstreams
         .iter()
         .map(|up| {
+            if verdict_unrecorded_by_copy_source(node, up) {
+                return clone_upstream_line(up);
+            }
             let verdict = verdicts
                 .as_ref()
                 .and_then(|v| v.iter().find(|u| u.name == up.name));
@@ -770,6 +774,27 @@ fn upstream_dependencies_freshness(
         })
         .collect();
     section("upstream dependencies", children)
+}
+
+/// A SKIP that reused a client-requested copy (RegisterClone) has no verdict
+/// for an upstream the copy's source build did not record: hosted lists it
+/// with its `last updated` line only, while an upstream the source recorded
+/// is FRESH (VERIFIED LIVE 2026-11-11, explain_post_copy_identity.jsonl `c93st`
+/// vs `c93sa`/`c93sv`, #93). Unknown for a copy registered before its
+/// source's inputs were kept, which renders as before.
+fn verdict_unrecorded_by_copy_source(node: &ExplainNode, up: &InputTable) -> bool {
+    let Some(anchor) = node.anchor.as_ref() else {
+        return false;
+    };
+    let Some(recorded) = anchor.clone_source_inputs.as_ref() else {
+        return false;
+    };
+    node.decision == DecisionKind::Skip
+        && anchor.clone_source_table.is_some()
+        && anchor.node_sql_hash.is_none()
+        && !recorded.iter().any(|name| {
+            decision::physical_relation_key(name) == decision::physical_relation_key(&up.name)
+        })
 }
 
 /// The FRESH first child: `no updates since «FQN» last executed` (model anchor)
@@ -1124,16 +1149,18 @@ fn copied_freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// even when it has a matched build (VERIFIED LIVE 2026-11-10,
 /// explain_data_test_history.jsonl).
 fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
-    let children = upstreams
-        .iter()
-        .map(|up| qc::ExplainLine {
-            text: quote(&up.name),
-            marker: None,
-            badge: None,
-            children: vec![line(rel_time_line(up))],
-        })
-        .collect();
+    let children = upstreams.iter().map(|up| clone_upstream_line(up)).collect();
     section("upstream dependencies", children)
+}
+
+/// One upstream without a verdict: its name and `last updated` line only.
+fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
+    qc::ExplainLine {
+        text: quote(&up.name),
+        marker: None,
+        badge: None,
+        children: vec![line(rel_time_line(up))],
+    }
 }
 
 // ── FQN / quoting helpers (the single dialect-specific seam) ────────────────
@@ -1945,12 +1972,10 @@ mod tests {
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
-    /// A rebuild over a RegisterClone copy the submit could not adopt is a
-    /// decision hosted makes differently: hosted reused the copy (#93,
-    /// explain_snapshot_register_clone.jsonl entry 7 and
-    /// explain_incremental_copy_history.jsonl entries 12-15), so it renders
-    /// nothing, never a "query has changed" tree, for a model, a snapshot and
-    /// an incremental alike.
+    /// A rebuild over a RegisterClone copy the submit could not adopt, even
+    /// read in the copy source's schema (#93), has no capture (#104), so it
+    /// renders nothing, never a "query has changed" tree, for a model, a
+    /// snapshot and an incremental alike.
     #[test]
     fn copy_logic_mismatch_renders_nothing() {
         for et in [
@@ -1965,6 +1990,66 @@ mod tests {
             ));
             assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
         }
+    }
+
+    /// A SKIP that reused a RegisterClone copy (VERIFIED LIVE 2026-11-11,
+    /// explain_post_copy_identity.jsonl, #93): an upstream the copy's source
+    /// build recorded (a fixed prod source, `c93sa`) is FRESH with the `no
+    /// updates since` line; one resolved per target under another name (the
+    /// dev relation of a ref'd model, `c93st`) is listed with its `last
+    /// updated` line only. Both are up to date.
+    #[test]
+    fn skip_over_a_copy_verdicts_only_upstreams_its_source_recorded() {
+        const TARGET: &str = "\"DB\".\"DEV\".\"SNAP\"";
+        const FIXED: &str = "\"DB\".\"PROD\".\"SRC\"";
+        const PER_TARGET: &str = "\"DB\".\"DEV\".\"UP\"";
+        let mut n = node(
+            DecisionKind::Skip,
+            ModelExecutionType::Snapshot as i32,
+            "snapshot was a no-op because both its query and its upstream data are up to date",
+        );
+        n.target_table = Some(TARGET.into());
+        n.input_tables = vec![tbl(TARGET), tbl(FIXED), tbl(PER_TARGET)];
+        n.anchor = Some(ExecutionRow {
+            target_table: TARGET.into(),
+            execution_type: ModelExecutionType::Snapshot as i32,
+            last_modified_epoch: Some(1_000),
+            clone_source_table: Some("\"DB\".\"PROD\".\"SNAP\"".into()),
+            clone_source_inputs: Some(vec![FIXED.into(), "\"DB\".\"PROD\".\"UP\"".into()]),
+            // Adopted inputs (`reuse_candidate::adopt_current_inputs`).
+            input_tables: vec![tbl(FIXED), tbl(PER_TARGET)],
+            ..ExecutionRow::default()
+        });
+        let freshness: Vec<_> = render(&n)
+            .into_iter()
+            .skip_while(|(_, t, _, _)| t != "upstream dependencies")
+            .collect();
+        assert_eq!(
+            freshness,
+            vec![
+                (1, "upstream dependencies".to_string(), None, None),
+                (2, "«FQN»".to_string(), None, Some(BADGE_FRESH)),
+                (
+                    3,
+                    "no updates since «FQN» last executed".to_string(),
+                    None,
+                    None
+                ),
+                (3, "last updated: «rel_time»".to_string(), None, None),
+                (2, "«FQN»".to_string(), None, None),
+                (3, "last updated: «rel_time»".to_string(), None, None),
+                (1, "upstream data is up to date".to_string(), Some(1), None),
+            ]
+        );
+
+        // A copy registered before its source's inputs were kept: as before.
+        n.anchor.as_mut().unwrap().clone_source_inputs = None;
+        let badges: Vec<_> = render(&n)
+            .into_iter()
+            .filter(|(d, t, _, _)| *d == 2 && t == "«FQN»")
+            .map(|(_, _, _, b)| b)
+            .collect();
+        assert_eq!(badges, vec![Some(BADGE_FRESH), Some(BADGE_FRESH)]);
     }
 
     /// An upstream-outdated rebuild with its anchor renders SHAPE 9: the

@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 
 mod history;
+pub use history::CopySourceBuild;
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.
@@ -141,6 +142,10 @@ pub struct ExecutionRow {
     /// Set only for clone-origin rows: the physical source this target was
     /// copied from. Enables clone adoption on a later submit.
     pub clone_source_table: Option<String>,
+    /// Set only for a client-requested copy (RegisterClone): the upstream
+    /// relations its source build recorded, by physical name
+    /// ([`CopySourceBuild`]). Explain evidence only; never a decision input.
+    pub clone_source_inputs: Option<Vec<String>>,
     /// When the server recorded the confirmation (Unix ms, server clock).
     pub confirmed_at_ms: Option<i64>,
     /// Why recorded inputs or cached results could not be decoded, if they
@@ -172,7 +177,7 @@ impl ExecutionRow {
         node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, \
+        clone_source_table, clone_source_inputs, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -242,6 +247,10 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             status: row.try_get("status")?,
             request_id: row.try_get("request_id")?,
             clone_source_table: row.try_get("clone_source_table")?,
+            // Explain evidence only: an undecodable value reads as unknown.
+            clone_source_inputs: row
+                .try_get::<Option<serde_json::Value>, _>("clone_source_inputs")?
+                .and_then(|v| serde_json::from_value(v).ok()),
             confirmed_at_ms: row.try_get("confirmed_at_ms")?,
             ..ExecutionRow::default()
         };
@@ -400,9 +409,9 @@ impl Store {
                 dialect, input_tables, values_hash, status, request_id,
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
-                execution_runtime_ms, execution_results, confirmed_at
+                execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26)
             "#,
         )
         .bind(&e.org_id)
@@ -427,13 +436,22 @@ impl Store {
         .bind(&e.node_template_hash)
         .bind(outcome.and_then(|o| o.last_modified_epoch))
         .bind(outcome.and_then(|o| o.table_type.as_deref()))
-        .bind(outcome.and_then(|o| o.execution_runtime_ms))
+        .bind(
+            outcome
+                .and_then(|o| o.execution_runtime_ms)
+                .or(e.inherited_runtime_ms),
+        )
         .bind(
             outcome
                 .and_then(|o| o.execution_results.as_ref())
                 .map(Message::encode_to_vec),
         )
         .bind(outcome.is_some())
+        .bind(
+            e.clone_source_inputs
+                .as_ref()
+                .map(|names| serde_json::json!(names)),
+        )
         .execute(executor)
         .await?;
         Ok(())
@@ -471,9 +489,15 @@ impl Store {
             SET status = 'confirmed',
                 last_modified_epoch = $3,
                 table_type = $4,
-                execution_runtime_ms = $5,
+                -- A client-requested copy keeps its source build's runtime
+                -- (inherited when it was registered) unless the confirmation
+                -- reports one (#93).
+                execution_runtime_ms = CASE
+                    WHEN $7 THEN $5
+                    ELSE COALESCE($5, execution_runtime_ms) END,
                 execution_results = $6,
                 clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
+                clone_source_inputs = CASE WHEN $7 THEN NULL ELSE clone_source_inputs END,
                 node_namespace_logic_hash = CASE
                     WHEN $7 AND node_sql_hash IS NULL THEN NULL
                     ELSE node_namespace_logic_hash END,

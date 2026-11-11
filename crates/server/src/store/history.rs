@@ -274,16 +274,17 @@ impl Store {
         Ok(row.map(|r| r.0))
     }
 
-    /// Look up the clone source's confirmed logic identity by its physical
-    /// target name within a namespace. Returns the inherited
-    /// `node_namespace_logic_hash` to stamp on a clone-origin row.
-    pub async fn find_source_ns_logic_hash(
+    /// The clone source's current confirmed build, by its physical target name
+    /// within a namespace: what a client-requested copy of it inherits
+    /// ([`CopySourceBuild`]). `None` when the source has no confirmed build in
+    /// scope.
+    pub async fn find_copy_source_build(
         &self,
         org_id: &str,
         source_table: &str,
         table_namespace: Option<&str>,
         dialect: &str,
-    ) -> sqlx::Result<Option<String>> {
+    ) -> sqlx::Result<Option<CopySourceBuild>> {
         // Select the latest source row within the requested physical warehouse
         // scope. The namespace identifies the warehouse connection; a same-named
         // relation in another namespace cannot overwrite this source. A NULL
@@ -302,6 +303,43 @@ impl Store {
         Ok(row
             .map(|r| r.into_checked(true))
             .transpose()?
-            .and_then(|r| r.node_namespace_logic_hash))
+            .map(CopySourceBuild::of))
+    }
+}
+
+/// What a client-requested copy (RegisterClone) inherits from its source's
+/// current confirmed build (#93, VERIFIED LIVE 2026-11-11,
+/// explain_post_copy_identity.jsonl).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CopySourceBuild {
+    /// Its schema-abstracted logic identity, which a later submit must have to
+    /// adopt the copy.
+    pub node_namespace_logic_hash: Option<String>,
+    /// Its runtime: hosted reports the source build's runtime when it reuses
+    /// the copy, although the copy's confirmation reports none.
+    pub execution_runtime_ms: Option<i64>,
+    /// The upstream relations it recorded, by physical name. `dbt state
+    /// explain` gives a FRESH verdict only to an upstream the source recorded.
+    pub input_names: Vec<String>,
+}
+
+impl CopySourceBuild {
+    /// A source that is itself a client-requested copy passes on what it
+    /// inherited.
+    fn of(source: ExecutionRow) -> Self {
+        let input_names = match &source.clone_source_inputs {
+            Some(inherited) if source.node_sql_hash.is_none() => inherited.clone(),
+            _ => source
+                .input_tables
+                .iter()
+                .filter(|t| t.name != source.target_table)
+                .map(|t| t.name.clone())
+                .collect(),
+        };
+        Self {
+            node_namespace_logic_hash: source.node_namespace_logic_hash,
+            execution_runtime_ms: source.execution_runtime_ms,
+            input_names,
+        }
     }
 }

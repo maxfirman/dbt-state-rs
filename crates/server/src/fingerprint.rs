@@ -187,6 +187,45 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
             return hex::encode(h.finalize());
         }
     };
+    schema_abstracted_hash(req, version, None)
+}
+
+/// The copy logic identity of `req` read as if it ran where its copy source
+/// was built: schema `from` (the submit's Target relation schema) reads as
+/// schema `to` (the copy source's), every other schema as itself. Equal to
+/// the source build's copy logic identity exactly when the submit, so
+/// substituted, has the source's logic, each dependency name still bound to
+/// its definition (AGENTS.md invariant 4).
+///
+/// VERIFIED LIVE 2026-11-11 (explain_post_copy_identity.jsonl, #93): hosted
+/// reuses a dev-clone pre-step copy whose post-copy submit reads a fixed
+/// prod-schema source (byte-identical SQL) or a view resolved per target
+/// whose definition reads that source. The request-relative schema tokens of
+/// [`namespace_logic_hash`] tell both apart from the prod build, because the
+/// fixed schema is the prod default schema but not the dev one.
+///
+/// `None` unless the Warehouse rules give the dialect a schema-abstracted
+/// namespace logic copy identity (Snowflake): other dialects keep exact SQL.
+pub fn rehomed_copy_logic_hash(req: &qc::SqlExecution, from: &str, to: &str) -> Option<String> {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    let CopyIdentity::NamespaceLogic = warehouse.copy_identity(req)? else {
+        return None;
+    };
+    match warehouse.namespace_identity() {
+        NamespaceIdentity::SchemaAbstracted { version } => {
+            Some(schema_abstracted_hash(req, version, Some((from, to))))
+        }
+        NamespaceIdentity::Exact { .. } => None,
+    }
+}
+
+/// The schema-abstracted body of [`namespace_logic_hash`], optionally
+/// rehomed ([`rehomed_copy_logic_hash`]).
+fn schema_abstracted_hash(
+    req: &qc::SqlExecution,
+    version: &[u8],
+    rehome: Option<(&str, &str)>,
+) -> String {
     use crate::sql_norm::{
         abstract_object_name_components_with, schema_of_object_name, schemas_in_sql, SchemaMap,
     };
@@ -208,7 +247,10 @@ pub fn namespace_logic_hash(req: &qc::SqlExecution) -> String {
         }
         all_schemas.extend(schemas_in_sql(&d.query));
     }
-    let schemas = SchemaMap::from_schemas(all_schemas);
+    let schemas = match rehome {
+        Some((from, to)) => SchemaMap::rehomed(all_schemas, from, to),
+        None => SchemaMap::from_schemas(all_schemas),
+    };
 
     let mut h = Sha256::new();
     field(&mut h, version);
@@ -1279,6 +1321,113 @@ mod tests {
             namespace_logic_hash(&padded("select order_id from CDO.prod.t", "prod")),
             namespace_logic_hash(&padded("select order_id from CDO.dev.t", "dev")),
         );
+    }
+
+    // ---- REHOMED identity (adopting a RegisterClone copy, #93) ----------------
+
+    fn in_schema(
+        default_schema: &str,
+        sql: &str,
+        deps: Vec<qc::QueryDependency>,
+    ) -> qc::SqlExecution {
+        qc::SqlExecution {
+            default_schema: Some(default_schema.into()),
+            ..exec(sql, deps)
+        }
+    }
+
+    /// VERIFIED LIVE 2026-11-11 (explain_post_copy_identity.jsonl `c93sa`, #76's
+    /// `c76rsnap`): the prod build and the dev post-copy submit read the same
+    /// fixed `PROD` source with byte-identical SQL; only the default schema
+    /// differs. Hosted reuses the copy. The schema-abstracted identity tells
+    /// them apart (the fixed `PROD` is the prod default schema but not the dev
+    /// one); read in the copy source's schema, the submit IS the source build.
+    #[test]
+    fn rehomed_identity_matches_a_build_that_read_a_fixed_schema() {
+        let prod = in_schema("prod", "select id from DB.prod.src", vec![]);
+        let dev = in_schema("dev", "select id from DB.prod.src", vec![]);
+        assert_ne!(namespace_logic_hash(&prod), namespace_logic_hash(&dev));
+        assert_eq!(
+            rehomed_copy_logic_hash(&dev, "\"DEV\"", "\"PROD\""),
+            Some(namespace_logic_hash(&prod))
+        );
+    }
+
+    /// VERIFIED LIVE 2026-11-11 (explain_post_copy_identity.jsonl `c93sv`): a
+    /// view resolved per target (its name differs by environment) whose
+    /// definition reads the fixed `PROD` source in both. Hosted reuses the copy.
+    #[test]
+    fn rehomed_identity_matches_a_per_target_view_over_a_fixed_schema() {
+        let view = |env: &str, upper: &str| {
+            in_schema(
+                env,
+                &format!("select id from DB.{env}.upv"),
+                vec![dep(
+                    &format!("\"DB\".\"{upper}\".\"UPV\""),
+                    "select id from DB.prod.src",
+                    "DB",
+                    upper,
+                )],
+            )
+        };
+        let (prod, dev) = (view("prod", "PROD"), view("dev", "DEV"));
+        assert_ne!(namespace_logic_hash(&prod), namespace_logic_hash(&dev));
+        assert_eq!(
+            rehomed_copy_logic_hash(&dev, "dev", "prod"),
+            Some(namespace_logic_hash(&prod))
+        );
+    }
+
+    /// Rehoming keeps the logic identity binding each dependency name to its
+    /// definition (AGENTS.md invariant 4): swapping two definitions between
+    /// their references is still a different logic.
+    #[test]
+    fn rehomed_identity_keeps_dependency_bindings() {
+        let bound = |env: &str, upper: &str, a: &str, b: &str| {
+            in_schema(
+                env,
+                &format!("select x.id from DB.{env}.a x cross join DB.{env}.b y"),
+                vec![
+                    dep(&format!("\"DB\".\"{upper}\".\"A\""), a, "DB", upper),
+                    dep(&format!("\"DB\".\"{upper}\".\"B\""), b, "DB", upper),
+                ],
+            )
+        };
+        let prod = bound("prod", "PROD", "select 1 as id", "select 2 as id");
+        let same = bound("dev", "DEV", "select 1 as id", "select 2 as id");
+        let swapped = bound("dev", "DEV", "select 2 as id", "select 1 as id");
+        let source = Some(namespace_logic_hash(&prod));
+        assert_eq!(rehomed_copy_logic_hash(&same, "DEV", "PROD"), source);
+        assert_ne!(rehomed_copy_logic_hash(&swapped, "DEV", "PROD"), source);
+    }
+
+    /// A genuine logic change is not hidden by rehoming, and only the given
+    /// schema is rehomed: another schema keeps its physical name.
+    #[test]
+    fn rehomed_identity_distinguishes_logic_and_other_schemas() {
+        let prod = in_schema("prod", "select id from DB.prod.src", vec![]);
+        let source = Some(namespace_logic_hash(&prod));
+        let changed = in_schema("dev", "select id, 1 as x from DB.prod.src", vec![]);
+        assert_ne!(rehomed_copy_logic_hash(&changed, "dev", "prod"), source);
+        let elsewhere = in_schema("dev", "select id from DB.other.src", vec![]);
+        assert_ne!(rehomed_copy_logic_hash(&elsewhere, "dev", "prod"), source);
+    }
+
+    /// Only a schema-abstracted copy identity (Snowflake) is rehomed: other
+    /// dialects keep exact SQL and do no automatic cross-target reuse.
+    #[test]
+    fn rehomed_identity_is_snowflake_only() {
+        for dialect in ["duckdb", "bigquery", "postgres"] {
+            let e = qc::SqlExecution {
+                dialect: dialect.into(),
+                ..in_schema("dev", "select id from DB.prod.src", vec![])
+            };
+            assert_eq!(
+                rehomed_copy_logic_hash(&e, "dev", "prod"),
+                None,
+                "{dialect}"
+            );
+        }
     }
 }
 

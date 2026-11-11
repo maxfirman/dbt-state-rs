@@ -119,7 +119,7 @@ pub(crate) fn for_model(
     };
     // Same identity, other node kind: a distinct reason so Explain can
     // render nothing for it (#40 divergence rule, #83). Likewise a
-    // RegisterClone copy this submit cannot adopt (#93).
+    // RegisterClone copy this submit cannot adopt (#93; no capture, #104).
     let unidentified =
         if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
             NoCandidate::ExecutionTypeChanged
@@ -353,6 +353,10 @@ fn same_identity(
 /// `default_schema`) skip, which the hosted service rebuilds. Broader
 /// cross-environment reuse without a clone is a separate provenance feature
 /// (see correctness-handoff.md "Open hosted questions").
+///
+/// A client-requested copy is also adopted when the submit, read in the copy
+/// source's schema ([`rehomed_logic_matches`]), has the logic the copy
+/// inherited.
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
@@ -362,7 +366,33 @@ fn adoptable(
         && row.dialect == req.dialect
         && row.clone_source_table.is_some()
         && evidence.node_namespace_logic_hash.is_some()
-        && row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
+        && (row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
+            || is_copy_registration(row) && rehomed_logic_matches(req, row))
+}
+
+/// Whether the submit, with its Target relation's schema read as the copy
+/// source's schema, has the schema-abstracted logic the copy inherited from
+/// its source build (`fingerprint::rehomed_copy_logic_hash`, #93). VERIFIED
+/// LIVE 2026-11-11 (explain_post_copy_identity.jsonl): hosted reuses a
+/// dev-clone pre-step copy whose post-copy submit reads the source build's
+/// fixed prod-schema source, or a view resolved per target over it, which the
+/// request-relative abstraction alone does not match.
+fn rehomed_logic_matches(req: &qc::SubmitEnrichedSqlRequest, row: &ExecutionRow) -> bool {
+    use crate::sql_norm::schema_of_object_name;
+    let (Some(from), Some(to)) = (
+        req.target_table.as_deref().and_then(schema_of_object_name),
+        row.clone_source_table
+            .as_deref()
+            .and_then(schema_of_object_name),
+    ) else {
+        return false;
+    };
+    row.node_namespace_logic_hash.is_some()
+        && crate::fingerprint::rehomed_copy_logic_hash(
+            &crate::execution::sql_execution(req),
+            &from,
+            &to,
+        ) == row.node_namespace_logic_hash
 }
 
 /// Reuse qualification shared by models and data tests. Runtime volatile
@@ -721,7 +751,64 @@ mod tests {
         assert!(model(&req, Some(unknown)).candidate.is_none());
     }
 
-    // ---- models: reuse qualification ---------------------------------------
+    /// The dev-clone pre-step's copy of a build that read a fixed `PROD`
+    /// source (VERIFIED LIVE 2026-11-11, explain_post_copy_identity.jsonl
+    /// `c93sa`): the post-copy submit has the build's SQL text under the dev
+    /// default schema. Read in the copy source's schema it has the copy's
+    /// logic, so the copy is adopted (#93). A genuine SQL change is not.
+    #[test]
+    fn copy_registration_is_adopted_by_a_submit_with_the_source_builds_logic() {
+        let sql = "select id from DB.PROD.SRC";
+        let prod = qc::SubmitEnrichedSqlRequest {
+            target_table: Some("\"DB\".\"PROD\".\"M\"".into()),
+            default_schema: Some("prod".into()),
+            ..model_req(sql)
+        };
+        let dev = |sql: &str| qc::SubmitEnrichedSqlRequest {
+            default_schema: Some("dev".into()),
+            tables: vec![table(TARGET, BUILT), table("\"DB\".\"PROD\".\"SRC\"", 500)],
+            ..model_req(sql)
+        };
+        let copy = ExecutionRow {
+            target_table: TARGET.into(),
+            ..clone_origin(&evidence(&prod))
+        };
+        let same = dev(sql);
+        assert_ne!(
+            evidence(&same).node_namespace_logic_hash,
+            copy.node_namespace_logic_hash,
+            "the request-relative abstraction alone does not match"
+        );
+        let s = model(&same, Some(copy.clone()));
+        assert!(s.candidate.is_some(), "adopted: {:?}", s.why_no_candidate);
+
+        let s = model(&dev("select id, 1 as x from DB.PROD.SRC"), Some(copy));
+        assert!(s.candidate.is_none());
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::CopyLogicMismatch));
+    }
+
+    /// Rehoming applies only to a client-requested copy: a Result copy made on
+    /// submit recorded that submit's own identity.
+    #[test]
+    fn only_a_copy_registration_is_rehomed() {
+        let sql = "select id from DB.PROD.SRC";
+        let prod = qc::SubmitEnrichedSqlRequest {
+            target_table: Some("\"DB\".\"PROD\".\"M\"".into()),
+            default_schema: Some("prod".into()),
+            ..model_req(sql)
+        };
+        let dev = qc::SubmitEnrichedSqlRequest {
+            default_schema: Some("dev".into()),
+            tables: vec![table(TARGET, BUILT), table("\"DB\".\"PROD\".\"SRC\"", 500)],
+            ..model_req(sql)
+        };
+        let mut submit_copy = ExecutionRow {
+            target_table: TARGET.into(),
+            ..clone_origin(&evidence(&prod))
+        };
+        submit_copy.node_sql_hash = Some("rendered-in-another-schema".into());
+        assert!(model(&dev, Some(submit_copy)).candidate.is_none());
+    }
 
     #[test]
     fn qualification_rejects_insufficient_workload_evidence() {

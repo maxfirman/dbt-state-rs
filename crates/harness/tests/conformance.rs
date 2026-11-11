@@ -481,7 +481,8 @@ async fn conformance_replay_all_corpora() {
         // RegisterClone source-age vs clone-age distinguishing interval
         // (source build < upstream < clone creation -> SKIP). The whole chain,
         // including the entry-4 post-copy divergence (hosted SKIP, local
-        // rebuild; see #93), is replayed and pinned by
+        // rebuild; not the #93 cause, see correctness-handoff.md), is
+        // replayed and pinned by
         // clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay.
         "clone_chain_source_age.jsonl",
         // #34: `explain_tolerance.jsonl` is retained ONLY as the programmatic
@@ -504,7 +505,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        52,
+        53,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

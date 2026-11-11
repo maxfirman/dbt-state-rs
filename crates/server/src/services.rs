@@ -538,6 +538,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             ))),
             RegisterRefusal::Unsupported(reason) => Err(Status::unimplemented(reason)),
         };
+        let mut source_build = None;
         let history = match crate::result_copy::register_lookup(&req) {
             Err(refusal) => {
                 if refusal == RegisterRefusal::Reject(RegisterRejection::ChainLimitExceeded) {
@@ -577,13 +578,19 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             Ok(RegisterLookup::SourceLogic {
                 source,
                 table_namespace,
-            }) => RegisterHistory::SourceLogic(
-                self.0
+            }) => {
+                source_build = self
+                    .0
                     .store
-                    .find_source_ns_logic_hash(&org_id, source, table_namespace, &req.dialect)
+                    .find_copy_source_build(&org_id, source, table_namespace, &req.dialect)
                     .await
-                    .map_err(store_status)?,
-            ),
+                    .map_err(store_status)?;
+                RegisterHistory::SourceLogic(
+                    source_build
+                        .as_ref()
+                        .and_then(|s| s.node_namespace_logic_hash.clone()),
+                )
+            }
             Ok(RegisterLookup::Nothing) => RegisterHistory::Nothing,
         };
         let plan = match crate::result_copy::plan_register(&req, history) {
@@ -600,6 +607,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             &org_id,
             &req,
             plan.inherited_ns_logic,
+            source_build.as_ref(),
         );
         self.0
             .store
