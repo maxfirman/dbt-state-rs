@@ -80,12 +80,14 @@ server keeps the conservative behavior described.
   decisions, or prefers the latest row of the submit's execution type, is not
   isolated; #83 shows hosted does consider another execution type for a
   submit.
-- **Incremental CLONE (#97).** No APPEND/MERGE CLONE tree is captured on
-  client 2.0.11. Hosted answers `RegisterClone` with an empty
-  `execution_decision_id`, so the dev-clone copy decision is never explained;
-  one submit-time probe (`explain_incremental_submit_copy.jsonl`) was rebuilt
-  rather than copied, while client 2.0.6 did get an incremental submit copy
-  (`clone_failed_fallback.jsonl`). The cells stay fenced.
+- **Incremental CLONE (#97, resolved by #73).** Hosted 2.0.11 has no
+  explainable incremental CLONE decision: its `RegisterClone` copy has an
+  empty `execution_decision_id`, and it rebuilds incrementals this server
+  copies on submit (#101, under "Known divergences"). Still open: whether
+  hosted 2.0.11 copies an incremental over an existing relation that has no
+  State history of its own, the situation of the 2.0.6 copies
+  (`clone_failed_fallback.jsonl`, `clone_submit_equivalent_fallback.jsonl`,
+  whose target histories are not captured).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
   as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
@@ -239,6 +241,19 @@ replay fails when an entry becomes unused or resolved
   renders no Explain tree for it (DBT_CUSTOM × CLONE stays fenced). Keyed
   gaps: `explain_custom_copy.jsonl` entries 9 (whole response, local
   `ready_to_clone`) and 12 (`empty_tree`).
+- **Incremental submit-time copy (#101).** Five incrementals, one per
+  strategy, read `CDO_DEMO_DB.RAW.RAW_ORDERS` (outside both default schemas,
+  so the prod and dev SQL is byte-identical). Each was built in `prod_demo`,
+  then in `dev_clone` with other logic, then in `dev_clone` with the prod
+  logic again. Hosted rebuilds that last submit with the SHAPE 7 tree and
+  codes 1 / 6 (merge, insert_overwrite, microbatch) or 1 / 2 (append,
+  delete+insert: its equivalent was another strategy's prod build with the
+  same SQL and extras). The server answers a submit-time Result copy of the
+  prod build (`result_copy::submit_lookup` excludes only data tests and
+  seeds) and renders no Explain tree for it (the incremental CLONE cells stay
+  fenced). Keyed gaps: `explain_incremental_copy_over.jsonl` entries 37–41
+  (whole response, local `ready_to_clone`) and 47–51 (`empty_tree`). Same
+  question as #86: whether a submit-time copy should require FULL.
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
