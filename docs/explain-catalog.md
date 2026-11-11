@@ -54,6 +54,11 @@ Source fixtures (`golden/fixtures/`):
   [INCREMENTAL](#incremental) trees, captured by `experiments/explain_capture.py
   incremental_insert_overwrite`, `incremental_delete_insert` and
   `incremental_microbatch`.
+- `explain_incremental_copy_over.jsonl` (client 2.0.11): one model per
+  incremental strategy, built in `dev_clone` with the prod logic over an
+  existing dev relation while the prod build exists. Hosted rebuilds all five;
+  this server's copies are a keyed divergence (#101). Captured by
+  `experiments/explain_capture.py incremental_copy_over`.
 - `explain_ambiguous_rebuilds.jsonl`: crafted probes d1–d4 for the
   [ambiguous rebuild reasons](#ambiguous-rebuild-reasons). Hosted's SKIP and
   first-build trees there are keyed divergences: the server decides
@@ -128,17 +133,18 @@ tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
 and `explain_snapshot_register_clone.jsonl`, the 11 in
 `explain_data_test_history.jsonl`, the 10 in `explain_custom_history.jsonl`
 and `explain_custom_copy.jsonl`, the 21 in the `explain_incremental_*`
-append/merge fixtures and the 20 in the three insert_overwrite,
-delete+insert and microbatch fixtures, which come from 2.0.11.
+append/merge fixtures, the 20 in the three insert_overwrite,
+delete+insert and microbatch fixtures and the 5 in
+`explain_incremental_copy_over.jsonl`, which come from 2.0.11.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-10) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-11) |
 |---|---|---|---|---|---|---|
 | 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 19 (4 client, 15 crafted), EXECUTE 35 (4 client, 31 crafted), CLONE 8 (1 client, 7 crafted) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | out of scope → #97¹³ | S E | SKIP 5, EXECUTE 6, all client 2.0.11 (`explain_incremental_*`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | out of scope → #97¹³ | S E | SKIP 4, EXECUTE 6, all client 2.0.11 (`explain_incremental_*`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | pending → #73¹⁴ | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_incremental_insert_overwrite.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | pending → #73¹⁴ | S E | SKIP 3, EXECUTE 3, all client 2.0.11 (`explain_incremental_delete_insert.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | pending → #73¹⁴ | S E | SKIP 4, EXECUTE 4, all client 2.0.11 (`explain_incremental_microbatch.jsonl`) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | local-only, empty tree¹³ | S E | SKIP 5, EXECUTE 7, all client 2.0.11 (`explain_incremental_*`) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | local-only, empty tree¹³ | S E | SKIP 4, EXECUTE 7, all client 2.0.11 (`explain_incremental_*`) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | local-only, empty tree¹³ | S E | SKIP 3, EXECUTE 4, all client 2.0.11 (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | local-only, empty tree¹³ | S E | SKIP 3, EXECUTE 4, all client 2.0.11 (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | local-only, empty tree¹³ | S E | SKIP 4, EXECUTE 5, all client 2.0.11 (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`) |
 | 7 | SNAPSHOT | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 4, EXECUTE 4, all client 2.0.11 (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 6 (3 client 2.0.11, 1 client 2.0.6, 2 crafted); EXECUTE 8 (client 2.0.11, `explain_data_test_history.jsonl`) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
@@ -207,13 +213,18 @@ delete+insert and microbatch fixtures, which come from 2.0.11.
     rebuilds (divergence → #93): local-only, empty tree.
 12. Except the rebuild after a `--full-refresh` run (divergence → #90) and
     the rebuild over an unadopted copy (#93): both local-only, empty tree.
-13. Hosted answers the dev-clone pre-step's `RegisterClone` with an empty
-    `execution_decision_id`, so the client never explains that copy. The one
-    submit-time copy probe was rebuilt, not copied; client 2.0.6 did get an
-    incremental submit copy (`clone_failed_fallback.jsonl`, no Explain). See
+13. Closed by #73 (73c), live 2026-11-11, one attempt for all five
+    strategies (`explain_incremental_copy_over.jsonl`). Hosted 2.0.11 has no
+    explainable incremental CLONE decision. Its copy through the dev-clone
+    pre-step (`RegisterClone`) has an empty `execution_decision_id`, and on
+    submit it rebuilds instead of copying: over an existing dev relation
+    with codes 1 / 6 (merge, insert_overwrite, microbatch) or 1 / 2 (append,
+    delete+insert), and into an absent one with 1 / 6
+    (`explain_incremental_submit_copy.jsonl`, append and merge). This server
+    copies on submit, a decision divergence (#101), and renders no tree for
+    it. Client 2.0.6 did get a MERGE submit copy over an existing target
+    (`clone_failed_fallback.jsonl`, no Explain). See
     [INCREMENTAL](#incremental).
-14. No copy of an insert_overwrite, delete+insert or microbatch model has been
-    captured. The #73 copy scenarios cover merge and append only.
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -221,29 +232,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 145 trees in the
-tracked fixtures (2026-11-10). A line without a marker or badge is "none"
-(957 lines without a marker, 1057 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 150 trees in the
+tracked fixtures (2026-11-11). A line without a marker or badge is "none"
+(992 lines without a marker, 1097 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 360 lines |
-| ExplainMarker | FAIL (2) | ✅ 140 lines |
-| ExplainMarker | INFO (3) | not observed across 145 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 145 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 109 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 15 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`) |
+| ExplainMarker | SUCCESS (1) | ✅ 375 lines |
+| ExplainMarker | FAIL (2) | ✅ 145 lines |
+| ExplainMarker | INFO (3) | not observed across 150 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 150 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 114 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 20 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`) |
 | ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 101 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 66 lines |
+| ExplainBadge | FRESH (1) | ✅ 71 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 54 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 20 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 145 trees (2026-11-10; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 150 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 145 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 75 from client 2.0.11 and 61 for crafted
+1. The 150 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 80 from client 2.0.11 and 61 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -265,7 +276,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-10 (145 trees, none empty, no findings):
+Tracked fixtures, 2026-11-11 (150 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -273,15 +284,15 @@ Tracked fixtures, 2026-11-10 (145 trees, none empty, no findings):
 | FULL | EXECUTE | 35 | 31 crafted, 2 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | APPEND | SKIP | 5 | client 2.0.11 |
-| APPEND | EXECUTE | 6 | client 2.0.11 |
+| APPEND | EXECUTE | 7 | client 2.0.11 |
 | MERGE | SKIP | 4 | client 2.0.11 |
-| MERGE | EXECUTE | 6 | client 2.0.11 |
+| MERGE | EXECUTE | 7 | client 2.0.11 |
 | INSERT_OVERWRITE | SKIP | 3 | client 2.0.11 |
-| INSERT_OVERWRITE | EXECUTE | 3 | client 2.0.11 |
+| INSERT_OVERWRITE | EXECUTE | 4 | client 2.0.11 |
 | DELETE_INSERT | SKIP | 3 | client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 3 | client 2.0.11 |
+| DELETE_INSERT | EXECUTE | 4 | client 2.0.11 |
 | MICROBATCH | SKIP | 4 | client 2.0.11 |
-| MICROBATCH | EXECUTE | 4 | client 2.0.11 |
+| MICROBATCH | EXECUTE | 5 | client 2.0.11 |
 | SNAPSHOT | SKIP | 4 | client 2.0.11 |
 | SNAPSHOT | EXECUTE | 4 | client 2.0.11 |
 | DBT_DATA_TEST | SKIP | 6 | 3 client 2.0.11, 2 crafted, 1 client 2.0.6 |
@@ -566,8 +577,8 @@ SKIP tree, its listing anchored on the dev relation (`no updates since
 divergence → #93). `explain_incremental_submit_copy.jsonl` (one probe,
 `state.pre_clone: never`): an absent dev relation whose prod build exists is
 built, not copied; hosted reports skip code 1, this server 6 (#93); both
-render the first-build tree. A submit-time incremental CLONE tree is not
-captured (→ #97).
+render the first-build tree. Over an existing dev relation hosted rebuilds
+too (see [Result copy, all strategies](#result-copy-all-strategies)).
 
 ### INSERT_OVERWRITE (4), DELETE_INSERT (5)
 
@@ -587,8 +598,8 @@ above:
 The client's default Lag tolerance for these models was 45 minutes, so the
 source drift was a reuse within tolerance, worded "its query is up to date and
 its data is within lag tolerance". Upstream drift past the tolerance is not
-captured for these strategies (it is for append and merge). CLONE: pending →
-#73 (no copy of these strategies was attempted).
+captured for these strategies (it is for append and merge). CLONE: see
+[Result copy, all strategies](#result-copy-all-strategies).
 
 ### MICROBATCH (6)
 
@@ -625,7 +636,46 @@ ceiling crosses into the next batch; that rollover was not captured.
    decision-time `unmatched_upstreams_unchanged`
    ([SHAPE 7](#execute-node-query-changed-shape-7), #89).
 
-CLONE: pending → #73.
+CLONE: see [Result copy, all strategies](#result-copy-all-strategies).
+
+### Result copy, all strategies
+
+`explain_incremental_copy_over.jsonl` (client 2.0.11, one attempt). One model
+per strategy (`ka73` append, `km73` merge, `ki73` insert_overwrite, `kd73`
+delete+insert, `kb73` microbatch), all with `state.pre_clone: never` and the
+same fixed microbatch window, reads `CDO_DEMO_DB.RAW.RAW_ORDERS`. That
+relation is outside both default schemas, so the prod and dev SQL is
+byte-identical. Each model is built in `prod_demo`, then in `dev_clone` with
+other logic (`where id is not null`), then in `dev_clone` with the prod logic
+again. At that last submit the dev relation exists, its own build has other
+logic, and the prod build has the same SQL, extras and upstream epoch.
+
+The scenario follows the 2.0.6 copies, which were MERGE submits over an
+existing target, and the 2.0.11 probe into an absent dev relation, which was
+rebuilt. Hosted rebuilds every strategy here too:
+
+| Strategy (entry) | Hosted response | Codes | Tree |
+|---|---|---|---|
+| APPEND (40) | `ready_to_execute`, "either its query didn't match …" | 1 / 2 | SHAPE 7, `<FRESH>` listing anchored on the dev relation, `upstream data is up to date` |
+| MERGE (38) | same | 1 / 6 | same |
+| INSERT_OVERWRITE (39) | same | 1 / 6 | same |
+| DELETE_INSERT (37) | same | 1 / 2 | same |
+| MICROBATCH (41) | same | 1 / 6 | same |
+
+Code 2 (EXECUTION_TYPE_MISMATCH) is a confound of this run. Append and
+insert_overwrite had identical SQL and semantic extras in prod, and so had
+merge and delete+insert, so for append and delete+insert hosted's equivalent
+was the other strategy's prod build. The strategies whose equivalent had
+their own execution type got 1 / 6. Hosted sends no 1 / 3
+(EXECUTION_TYPE_NOT_FULL) for incrementals, unlike views, snapshots and
+custom nodes.
+
+This server answers a Result copy of the prod build for all five
+(`result_copy::submit_lookup` excludes only seeds and data tests), so the
+decision diverges (#101) and its CLONE tree renders nothing. Hosted's SHAPE 7
+rebuild trees are not asserted, because the server does not make that
+decision (keyed gaps, entries 37–41 and 47–51). Every incremental CLONE cell
+is local-only, empty tree.
 
 ## DATA TEST
 
@@ -823,10 +873,9 @@ decision's copy-adoption input rule, `reuse_candidate::adopt_current_inputs`).
 
 Not present in any capture; render nothing rather than invent:
 
-- **Node kinds:** INSERT_OVERWRITE, DELETE_INSERT and MICROBATCH CLONE
-  (#73), APPEND and MERGE CLONE (#97). Seed CLONE is captured but
-  fenced until its decision lands (#91); snapshot and view CLONE are
-  unreachable on 2.0.11 (#76).
+- **Node kinds:** seed CLONE is captured but fenced until its decision
+  lands (#91); snapshot and view CLONE are unreachable on 2.0.11 (#76);
+  custom and incremental CLONE are local-only (#86, #101).
 - **Badges:** `EB_UNSPECIFIED` (0); census counts in
   [Observed vocabulary](#observed-vocabulary).
 - **Markers:** `INFO` (3), `EM_UNSPECIFIED` (0); same.

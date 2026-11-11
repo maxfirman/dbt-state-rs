@@ -172,7 +172,10 @@ wire and in captured JSON.
   server sends 6 / 6 (#92). It also sends 1 / 3 when it rebuilds a custom
   materialization (`DBT_CUSTOM`) that has an equivalent under another name,
   where this server answers a Result copy (`explain_custom_copy.jsonl` entry
-  9, #86).
+  9, #86). It sends 1 / 6 or 1 / 2 when it rebuilds an incremental (any
+  strategy) that has an equivalent under another name, where this server
+  answers a Result copy (`explain_incremental_copy_over.jsonl` entries 37–41,
+  #101; see [Result copy on submit](#result-copy-on-submit)).
 
 ### Decision descriptions
 
@@ -340,6 +343,21 @@ When the fallback applies:
 - When the submit forbids copies (`clone_chain_depth_limit = 0` or
   `allow_clones = false`) and the target relation has no reuse candidate, the
   server returns the chain-limit EXECUTE instead.
+
+Hosted 2.0.11 does not copy an incremental on submit (decision divergence,
+#101). Every strategy was tried once over an existing dev relation whose
+own build has other logic, with a prod build of the same SQL, semantic
+extras and upstream epoch (`explain_incremental_copy_over.jsonl`, entries
+37–41). Hosted rebuilds each one with "model was executed because either its
+query didn't match or its upstream data is out of date". Merge,
+insert_overwrite and microbatch get codes 1 / 6. Append and delete+insert
+get 1 / 2, because hosted's equivalent was the prod build of another
+strategy with identical SQL and extras in the same run. Into an absent dev
+relation, append and merge get 1 / 6 (`explain_incremental_submit_copy.jsonl`
+entries 9–10). Client 2.0.6 did get a submit copy of a MERGE incremental over
+an existing target (`clone_failed_fallback.jsonl` entry 2). On 2.0.11,
+hosted copies incrementals only through `RegisterClone` (below). This server
+copies them on submit like any other kind except seeds and data tests.
 
 ## State writes: `Execution`
 

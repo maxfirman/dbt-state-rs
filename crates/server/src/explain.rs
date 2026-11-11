@@ -201,11 +201,9 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
 ///     local-only: hosted never copies one, #86).
-///   - append and merge incrementals (APPEND=2, MERGE=3): Skip | Build
-///     (Clone out of scope → #97).
-///   - insert_overwrite, delete+insert and microbatch incrementals
-///     (INSERT_OVERWRITE=4, DELETE_INSERT=5, MICROBATCH=6): Skip | Build
-///     (Clone pending → #73).
+///   - incrementals (APPEND=2, MERGE=3, INSERT_OVERWRITE=4, DELETE_INSERT=5,
+///     MICROBATCH=6): Skip | Build (Clone is local-only: hosted 2.0.11 never
+///     copies one on submit, #101).
 ///   - everything else (any other
 ///     execution_type): NONE.
 ///
@@ -253,21 +251,20 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         Ok(ModelExecutionType::DbtCustom) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
-        // VERIFIED LIVE 2026-11-10 (explain_incremental_append_merge_history.jsonl,
-        // client 2.0.11): an append or merge incremental renders the MODEL
-        // trees. CLONE stays fenced: see the INCREMENTAL section of
-        // docs/explain-catalog.md for its status.
-        Ok(ModelExecutionType::Append | ModelExecutionType::Merge) => {
-            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
-        }
-        // VERIFIED LIVE 2026-11-10, client 2.0.11: the insert_overwrite,
-        // delete+insert and microbatch incrementals render the model trees
-        // (explain_incremental_insert_overwrite.jsonl,
+        // VERIFIED LIVE 2026-11-10, client 2.0.11: every incremental strategy
+        // renders the MODEL trees (explain_incremental_append_merge_history.jsonl,
+        // explain_incremental_insert_overwrite.jsonl,
         // explain_incremental_delete_insert.jsonl,
-        // explain_incremental_microbatch.jsonl). Their CLONE has no capture
-        // (pending → #73).
+        // explain_incremental_microbatch.jsonl). CLONE stays fenced: hosted
+        // 2.0.11 rebuilds an incremental this server copies on submit, into an
+        // absent dev relation (explain_incremental_submit_copy.jsonl) and over
+        // an existing one (explain_incremental_copy_over.jsonl, #101), and its
+        // RegisterClone copy mints no execution_decision_id. Our copy is
+        // local-only.
         Ok(
-            ModelExecutionType::InsertOverwrite
+            ModelExecutionType::Append
+            | ModelExecutionType::Merge
+            | ModelExecutionType::InsertOverwrite
             | ModelExecutionType::DeleteInsert
             | ModelExecutionType::Microbatch,
         ) => matches!(decision, DecisionKind::Skip | DecisionKind::Build),
@@ -1562,6 +1559,40 @@ mod tests {
     }
 
     #[test]
+    fn incremental_clone_emits_nothing() {
+        // Every incremental strategy's CLONE: hosted 2.0.11 rebuilds where
+        // this server copies on submit (explain_incremental_copy_over.jsonl
+        // entries 37–41, #101) → local-only, no tree, over an existing
+        // Target relation or an absent one.
+        for et in [
+            ModelExecutionType::Append,
+            ModelExecutionType::Merge,
+            ModelExecutionType::InsertOverwrite,
+            ModelExecutionType::DeleteInsert,
+            ModelExecutionType::Microbatch,
+        ] {
+            for target_listed in [false, true] {
+                let mut n = node(
+                    DecisionKind::Clone,
+                    et as i32,
+                    "an equivalent model exists under another name so we cloned that one",
+                );
+                n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
+                if target_listed {
+                    let target = n.target_table.clone().unwrap();
+                    n.input_tables.push(tbl(&target));
+                }
+                assert!(
+                    explain_lines(&n).is_empty(),
+                    "an incremental CLONE ({et:?}) is local-only → must emit no invented \
+                     lines, got {:?}",
+                    render(&n)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_clone_emits_nothing() {
         // SNAPSHOT=7 CLONE: unreachable on 2.0.11 (#76) → no invented tree.
         let mut n = node(
@@ -1612,15 +1643,15 @@ mod tests {
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
                     | (11, DecisionKind::Build) // custom EXECUTE (CLONE local-only, #86)
                     | (2, DecisionKind::Skip) // append SKIP (explain_incremental_append_merge_history)
-                    | (2, DecisionKind::Build) // append EXECUTE
+                    | (2, DecisionKind::Build) // append EXECUTE (CLONE local-only, #101)
                     | (3, DecisionKind::Skip) // merge SKIP
-                    | (3, DecisionKind::Build) // merge EXECUTE
+                    | (3, DecisionKind::Build) // merge EXECUTE (CLONE local-only, #101)
                     | (4, DecisionKind::Skip) // insert_overwrite SKIP (explain_incremental_insert_overwrite)
-                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE pending)
+                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE local-only, #101)
                     | (5, DecisionKind::Skip) // delete+insert SKIP (explain_incremental_delete_insert)
-                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE pending)
+                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE local-only, #101)
                     | (6, DecisionKind::Skip) // microbatch SKIP (explain_incremental_microbatch)
-                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE pending)
+                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE local-only, #101)
             )
         };
 
