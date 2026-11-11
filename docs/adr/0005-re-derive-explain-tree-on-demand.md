@@ -70,7 +70,8 @@ caller already holds this id). Everything else is re-derived.
 
 > **Amended by #117:** a view decision also records whether the view's SQL
 > reads a relation (`node_decisions.reads_relation BOOLEAN`, migration 0019):
-> a table or view it names in a FROM or JOIN, other than a CTE of the query,
+> a table or view it names in a FROM or JOIN, other than a CTE in scope
+> where it is named,
 > judged once at submit time by parsing the request's SQL in the
 > warehouse's dialect (`Warehouse::sql_reads_relation`). Client 2.0.11
 > reports no upstreams for a view, and hosted words the view's tree from its

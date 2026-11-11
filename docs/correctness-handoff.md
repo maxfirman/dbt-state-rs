@@ -250,10 +250,10 @@ server keeps the conservative behavior described.
   `explain_reason_kind_cells.jsonl` `vc0`, `cv0`). The decision now records
   whether a view's SQL reads a relation (`node_decisions.reads_relation`,
   migration 0019, ADR 0005 amendment), and Explain words the tree from it.
-  Still open: views whose SQL hosted parses differently from this server
-  (a single-part name shared by a CTE and a table in another scope counts as
-  the CTE here); a view whose SQL does not parse as one query renders
-  nothing.
+  Still open: views whose SQL hosted parses differently from this server.
+  A CTE hides a table of the same name only within its own query (#125
+  review); a view whose SQL does not parse as one query, or whose CTE names
+  itself or a later sibling without RECURSIVE, renders nothing.
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
   tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy

@@ -460,8 +460,9 @@ Freshness body (`explain.rs::data_freshness_analysis_fresh`):
   without FROM, VALUES, a table function such as FLATTEN;
   `explain_view_reads_no_relation.jsonl`), a view over a `ref` renders
   `- upstream data is up to date [SUCCESS]` (`explain_happy_history.jsonl`,
-  `vrr`). A view whose SQL was not judged (it does not parse as one query)
-  renders nothing. The other kinds were captured only with an upstream
+  `vrr`). A view whose SQL was not judged (it does not parse as one query,
+  or a CTE names itself or a later sibling without RECURSIVE) renders
+  nothing. The other kinds were captured only with an upstream
   ([Decision reason coverage](#decision-reason-coverage)).
 - **Genuine upstreams:** one child per upstream, then a summary:
   ```
@@ -1430,8 +1431,9 @@ last ones were settled.
   `ref` also `explain_happy_history.jsonl`, `explain_snapshot_history.jsonl`
   `s72vl`). `own_target_modified` and `execution_type_changed`: live for a
   view that reads no relation only (`vc0`, `cv0`); for a view over a `ref`
-  they are not captured and render nothing. A view whose SQL does not parse
-  as one query renders nothing for all four.
+  they are not captured and render nothing. A view whose SQL was not judged
+  (it does not parse as one query, or a CTE names itself or a later sibling
+  without RECURSIVE) renders nothing for all four.
 - ᵐ An equivalent exists for an absent Target relation, but the submit
   forbids copies (1 / 10). Client 2.0.11 sends `allow_clones: false` with
   `clone_chain_depth_limit: 0`, which is `copy_disabled` (`cf4`,
