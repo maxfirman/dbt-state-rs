@@ -587,7 +587,10 @@ Lifecycle:
   table over an incremental's copy, after a materialization change) is an
   execution type change instead: 2 / 2, the SKIP-shaped tree against the
   copy (`kf4`). The semantic extras are part of the logic, so a view or
-  custom node over an incremental's copy differs (6 / 6).
+  custom node over an incremental's copy differs (6 / 6). When the copy's
+  Target relation was dropped as well, every model kind rebuilds with
+  6 / 6, "its table did not exist", and the first-build tree (crafted
+  `x11`–`x19`, VERIFIED LIVE 2026-11-11).
 
 Client 2.0.11 (VERIFIED LIVE 2026-11-10, `explain_snapshot_register_clone.jsonl`):
 the pre-step needs a deferred node whose relation differs from the dev one,

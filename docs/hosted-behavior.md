@@ -108,6 +108,7 @@ reproducible skip.
 | Resubmit the copy with changed logic | build | ✅ |
 | Post-copy submit after the dev-clone pre-step with other logic: the five strategies and a snapshot (client 2.0.11, `explain_copy_logic_mismatch.jsonl`) | build, 6 / 6, SHAPE 7 against the copy | ✅ (#104) |
 | A later table, view or custom node over an incremental's RegisterClone copy (materialization changed; client 2.0.11, `explain_copy_logic_mismatch.jsonl` `kf4`, `kv4`, `kc4`) | build: 2 / 2 and the SKIP-shaped tree when the logic and semantic extras match (the table); otherwise 6 / 6 and SHAPE 7 against the copy | ✅ (#104) |
+| A submit with other logic over a RegisterClone copy whose Target relation was dropped, every model kind (crafted, `explain_copy_logic_crafted.jsonl` `x11`–`x19`) | build, 6 / 6, "its table did not exist", first-build tree | ✅ (#104) |
 | `allow_clones: false` on a table submit, Target relation absent, equivalent exists (client 2.0.11 sends `allow_clones: false` and `clone_chain_depth_limit: 0`; `explain_copy_logic_mismatch.jsonl` `cf4`) | build, 1 / 10, "model was executed because cloning is disabled", tree names the equivalent | ✅ (#104) |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |
 | FULL SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |

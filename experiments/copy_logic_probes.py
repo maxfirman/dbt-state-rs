@@ -32,6 +32,12 @@ wall-clock based), sent to whatever `PROBE_URL` points at:
   x11  D as an append incremental with other logic, its Target relation
        not reported (dropped after the copy)
   x12  as x11, D as a table (FULL)
+  x13-x16  as x11 for merge, insert_overwrite, delete+insert and microbatch
+       (P and D of that strategy)
+  x17  as x11, P a snapshot and D the snapshot
+  x18  D as a view (VIEW) with other logic over a dropped copy, P without
+       upstreams (a view reports none)
+  x19  as x18, D as a custom node (DBT_CUSTOM)
 
 Usage: copy_logic_probes.py PROBE [PROBE ...]   (or `all`)
 Prints one JSON line per step; a failed RPC prints an `error` row and the
@@ -203,9 +209,9 @@ def probe_x10():
     explain_rebuild("x10", "DBT_CUSTOM over the APPEND copy, same SQL, no upstreams", p, dev)
 
 
-def dropped_probe(probe_id, kind):
+def dropped_probe(probe_id, kind, copy_kind=APPEND, upstream=True):
     def run():
-        p, dev = copied(probe_id)
+        p, dev = copied(probe_id, upstream=upstream, kind=copy_kind)
         shaped(dev, kind)
         other_logic(dev)
         dev["tables"] = [t for t in dev["tables"] if t["name"] != dev["target_table"]]
@@ -216,6 +222,11 @@ def dropped_probe(probe_id, kind):
 
 PROBES = {k[6:]: v for k, v in globals().items() if k.startswith("probe_")}
 PROBES.update({"x11": dropped_probe("x11", APPEND), "x12": dropped_probe("x12", FULL)})
+PROBES.update({f"x{i}": dropped_probe(f"x{i}", kind, copy_kind=kind)
+               for i, kind in ((13, MERGE), (14, INSERT_OVERWRITE), (15, DELETE_INSERT),
+                               (16, MICROBATCH), (17, SNAPSHOT))})
+PROBES.update({"x18": dropped_probe("x18", VIEW, upstream=False),
+               "x19": dropped_probe("x19", CUSTOM, upstream=False)})
 PROBES.update({f"x{i}": strategy_probe(f"x{i}", kind)
                for i, kind in ((6, MERGE), (7, INSERT_OVERWRITE), (8, DELETE_INSERT),
                                (9, MICROBATCH))})

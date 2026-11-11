@@ -140,7 +140,9 @@ Source fixtures (`golden/fixtures/`):
   `experiments/explain_capture.py copy_logic_mismatch`.
 - `explain_copy_logic_crafted.jsonl` (#104): crafted probe `x1`, a table
   whose kind and logic both changed over an append incremental's
-  RegisterClone copy (`experiments/copy_logic_probes.py`).
+  RegisterClone copy, then every model kind over a copy whose source build
+  read no upstream (`x2`–`x10`) and over a copy whose Target relation was
+  dropped (`x11`–`x19`) (`experiments/copy_logic_probes.py`).
 - `explain_malformed_requests.jsonl` (#104): crafted probe `e4`, a model
   whose query dependency is listed twice (`experiments/malformed_requests.py`).
   Hosted SKIPs the resubmit; keyed divergence #114.
@@ -214,15 +216,15 @@ which come from 2.0.11.
 |---|---|---|---|---|---|---|
 | 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 25 (5 client, 20 crafted), EXECUTE 48 (13 client, 35 crafted), CLONE 8 (1 client, 7 crafted) |
 | 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 18 (16 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 19 (18 client 2.0.11, 1 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6 (5 client 2.0.11, 1 crafted), EXECUTE 19 (16 client 2.0.11, 3 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 18 (17 client 2.0.11, 1 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 18 (17 client 2.0.11, 1 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 13 (12 client 2.0.11, 1 crafted), EXECUTE 14 (11 client 2.0.11, 3 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 20 (18 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6 (5 client 2.0.11, 1 crafted), EXECUTE 20 (16 client 2.0.11, 4 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 13 (12 client 2.0.11, 1 crafted), EXECUTE 15 (11 client 2.0.11, 4 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 11 (7 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit.jsonl`, `explain_malformed_requests.jsonl`) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
-| 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 2 (1 client 2.0.6, 1 crafted); EXECUTE 8 (7 client 2.0.11, 1 crafted); CLONE 0 |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 14 (13 client 2.0.11, 1 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells*.jsonl`) |
+| 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 2 (1 client 2.0.6, 1 crafted); EXECUTE 9 (7 client 2.0.11, 2 crafted) (`explain_copy_logic_crafted.jsonl` for the crafted ones); CLONE 0 |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 15 (13 client 2.0.11, 2 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells*.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -328,17 +330,17 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 295 trees in the
+Line counts from the [census](#explain-tree-census) over the 302 trees in the
 tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1763 lines without a marker, 2011 without a badge). Only an explicit `0` is
+(1770 lines without a marker, 2032 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
 | ExplainMarker | SUCCESS (1) | ✅ 781 lines |
-| ExplainMarker | FAIL (2) | ✅ 245 lines |
-| ExplainMarker | INFO (3) | not observed across 295 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 295 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | FAIL (2) | ✅ 259 lines |
+| ExplainMarker | INFO (3) | not observed across 302 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 302 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 238 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 57 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`) |
 | ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 193 lines |
@@ -347,10 +349,10 @@ counted as unspecified.
 | ExplainBadge | FRESH (1) | ✅ 124 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 87 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 295 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 302 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 295 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 197 from client 2.0.11 and 89 for crafted
+1. The 302 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 197 from client 2.0.11 and 96 for crafted
    `state-probe` requests. 69 of the client 2.0.11 trees explain a
    real-client decision but were requested with `state-probe`
    (`explain_reason_kind_cells*.jsonl`, `via="probe"` in
@@ -376,7 +378,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-11 (295 trees, none empty, no findings):
+Tracked fixtures, 2026-11-11 (302 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -386,24 +388,24 @@ Tracked fixtures, 2026-11-11 (295 trees, none empty, no findings):
 | APPEND | SKIP | 9 | 8 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 18 | 16 client 2.0.11, 2 crafted |
 | MERGE | SKIP | 6 | client 2.0.11 |
-| MERGE | EXECUTE | 19 | 18 client 2.0.11, 1 crafted |
+| MERGE | EXECUTE | 20 | 18 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 6 | 5 client 2.0.11, 1 crafted |
-| INSERT_OVERWRITE | EXECUTE | 19 | 16 client 2.0.11, 3 crafted |
+| INSERT_OVERWRITE | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 5 | client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 18 | 17 client 2.0.11, 1 crafted |
+| DELETE_INSERT | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | MICROBATCH | SKIP | 6 | client 2.0.11 |
-| MICROBATCH | EXECUTE | 18 | 17 client 2.0.11, 1 crafted |
+| MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 14 | 11 client 2.0.11, 3 crafted |
+| SNAPSHOT | EXECUTE | 15 | 11 client 2.0.11, 4 crafted |
 | DBT_DATA_TEST | SKIP | 11 | 7 client 2.0.11, 3 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
 | VALUES | SKIP | 1 | crafted |
 | VALUES | EXECUTE | 5 | crafted |
 | VALUES | CLONE | 1 | client 2.0.11 (fenced, #91) |
 | VIEW | SKIP | 2 | 1 client 2.0.6, 1 crafted |
-| VIEW | EXECUTE | 8 | 7 client 2.0.11, 1 crafted |
+| VIEW | EXECUTE | 9 | 7 client 2.0.11, 2 crafted |
 | DBT_CUSTOM | SKIP | 9 | 8 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | EXECUTE | 14 | 13 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | EXECUTE | 15 | 13 client 2.0.11, 2 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -654,7 +656,7 @@ inputs stand in, each at the copy's epoch or earlier
 (`reuse_candidate::adopt_current_inputs`, applied to the unmatched build in
 `ExplainDecisionRow::unmatched`).
 
-Crafted probes (`explain_copy_logic_crafted.jsonl`, `x2`–`x12`) cover the
+Crafted probes (`explain_copy_logic_crafted.jsonl`, `x2`–`x19`) cover the
 cells the client run did not:
 
 - **No genuine upstreams.** For FULL, all five strategies, a snapshot, a view
@@ -672,13 +674,19 @@ cells the client run did not:
   read an upstream, a view keeps `upstream model queries have not changed`
   and an empty freshness section (`kv4`). The copy's source build decides,
   not the node kind (`explain.rs::copy_logic_changed_tree`).
-- **The copy's Target relation dropped** (`x11` append, `x12` table): 6 / 6,
-  "its table did not exist", and the [first-build](#first-build) tree.
+- **The copy's Target relation dropped**: 6 / 6, "its table did not
+  exist" ("snapshot was executed …" for a snapshot), and the
+  [first-build](#first-build) tree, for every model kind: an append (`x11`)
+  and a table (`x12`) over an append copy, merge, insert_overwrite,
+  delete+insert and microbatch over a copy of their own strategy
+  (`x13`–`x16`), a snapshot over a snapshot copy (`x17`), and a view and a
+  custom node over an append copy whose source build read no upstream
+  (`x18`, `x19`). Each copy's source build and the dropped-copy submit had
+  other logic. Hosted decides as this server does (2026-11-11).
 
 This server renders these trees for every model kind except a view with an
-upstream, which client 2.0.11 never reports
-([Decision reason coverage](#decision-reason-coverage) ᵇ), and, over a
-dropped copy, for FULL and APPEND only.
+upstream over a copy that exists, which client 2.0.11 never reports
+([Decision reason coverage](#decision-reason-coverage) ᵇ).
 
 ### EXECUTE: copy disabled (`allow_clones: false`)
 
@@ -1311,7 +1319,8 @@ there is no cell.
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | → #91 |
 
 Evidence for each L and C cell is in the per-kind sections above and the
-conformance replay; the cells marked → #104 are listed in #104.
+conformance replay. No cell is marked → #104 any more; #104 records how the
+last ones were settled.
 
 - ᵃ With an upstream. Without one there is no drift to tolerate, so the reuse is
   `reused.fresh` and there is no cell.
@@ -1386,9 +1395,9 @@ conformance replay; the cells marked → #104 are listed in #104.
   differs. Same logic is an execution type change (`kf4`). Live: the five
   strategies and SNAPSHOT (logic change, `la4`–`ls4`), VIEW and DBT_CUSTOM
   (kind change, their semantic extras differ, `kv4`, `kc4`). FULL is crafted
-  only (`x1`, `x2`). Each kind without an upstream, and FULL and APPEND over a
-  dropped copy, are crafted (`x2`–`x12`). A view with an upstream: U ᵇ.
-  Another kind over a dropped copy: no capture, renders nothing (→ #104).
+  only (`x1`, `x2`). Each kind without an upstream (`x2`–`x10`), and each
+  kind over a dropped copy (the first-build tree, `x11`–`x19`), are crafted.
+  A view with an upstream over a copy that exists: U ᵇ.
 - ᵐ An equivalent exists for an absent Target relation, but the submit
   forbids copies (1 / 10). Client 2.0.11 sends `allow_clones: false` with
   `clone_chain_depth_limit: 0`, which is `copy_disabled` (`cf4`,
@@ -1427,12 +1436,12 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `no_reuse_candidate.execution_type_changed` with an anchor that recorded the node's genuine upstream names: FULL, the incrementals and SNAPSHOT; DBT_CUSTOM without upstreams (not VIEW, #117) | SKIP-shaped tree, against the latest build |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` when the decision-time inputs lack the Target relation | first build (`lag_copy_candidates` `dt_m`, `explain_reason_kind_cells.jsonl` `*_d`) |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, with the Lag tolerance line when stale with a non-zero tolerance and drift against the unmatched build, unless the decision recorded no build age for it (a row written before #104) | SHAPE 7, judged against the unmatched latest build |
-| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` when the decision-time inputs lack the Target relation | first build for FULL and APPEND; empty tree otherwise |
+| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` when the decision-time inputs lack the Target relation | first build, every model kind (crafted `x11`–`x19`) |
 | EXECUTE | `no_reuse_candidate.copy_logic_mismatch` for every model kind but a view with an upstream, unless stale with a non-zero tolerance and drift against the copy (uncaptured, even with a recorded build age) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
-| any | every other reason (local-only reasons, `copy_chain_limit`, cells → #104), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
+| any | every other reason (local-only reasons, `copy_chain_limit`, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
 1. Every model kind with or without upstreams, VIEW without
    (`explain.rs::freshness_listing_captured`).
