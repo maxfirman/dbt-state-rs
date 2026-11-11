@@ -373,3 +373,87 @@ async fn ordering_is_irrelevant_but_incomplete_view_definitions_cannot_reuse() {
     sc.build_with(req.clone(), outcome().epoch(100)).await;
     assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }
+
+/// The two reasons #40 split out of an identity mismatch so Explain could
+/// render nothing for them (#83, #93) keep the wire answer the server gave
+/// before the split: a rebuild while an OLDER build of the target would still
+/// be reusable reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, and
+/// `is_stale` as that build would be reused (VERIFIED LIVE 2026-11-10,
+/// lag_copy_candidates `ob*`, pinned in `lag_tolerance.rs`). #40 changes
+/// Explain only.
+#[tokio::test]
+async fn split_identity_reasons_keep_the_older_match_wire_answer() {
+    use support::demo::{self, clone_probe, clone_probe_sql, transient_at, DEV_SCHEMA};
+    use support::demo::{PROD_SCHEMA, RAW_ORDERS};
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let codes = |r: qc::ReadyToExecuteResponse| {
+        let d = r.explained_decision.expect("explained decision");
+        (
+            d.skip_rejection_reason,
+            d.clone_rejection_reason,
+            d.is_stale,
+        )
+    };
+
+    // Execution type changed: the latest build has the workload's identity
+    // but was built as a view. The older FULL build is reusable with
+    // tolerated drift (ALL policy, one of two upstreams changed).
+    let full = model("DB.S.T")
+        .catalog("DB")
+        .schema("S")
+        .project("p")
+        .sql("select 1")
+        .policy(Policy::All)
+        .upstream("DB.S.A", 50)
+        .upstream("DB.S.B", 50);
+    sc.build_with(full.clone().own_epoch(Some(100)), outcome().epoch(100))
+        .await;
+    let view = full.clone().execution_type(ExecutionType::View);
+    sc.build_with(view.own_epoch(Some(200)), outcome().epoch(200))
+        .await;
+    let resubmit = full.own_epoch(Some(200)).upstream("DB.S.A", 150);
+    assert_eq!(
+        codes(sc.expect_execute(resubmit).await),
+        (Some(8), Some(7), true),
+        "execution type changed over a reusable older build"
+    );
+
+    // A RegisterClone copy the workload cannot adopt (other logic) is the
+    // latest row; the older ordinary build of the same logic is fresh.
+    let prod = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
+    let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CLONE_PROBE\"";
+    let (raw, prod_epoch, dev_epoch, copy_epoch) = (1_000, 2_000, 3_000, 4_000);
+    sc.build_with(
+        clone_probe(prod, PROD_SCHEMA)
+            .sql(&clone_probe_sql(PROD_SCHEMA, ", upper(customer_id) as c"))
+            .own_epoch(Some(prod_epoch))
+            .upstream(RAW_ORDERS, raw),
+        transient_at(prod_epoch),
+    )
+    .await;
+    let dev_model = clone_probe(dev, DEV_SCHEMA).upstream(RAW_ORDERS, raw);
+    sc.build_with(
+        dev_model.clone().own_epoch(Some(dev_epoch)),
+        transient_at(dev_epoch),
+    )
+    .await;
+    let copied = sc
+        .register_clone(demo::copy(prod, dev).source_epoch(prod_epoch))
+        .await
+        .unwrap()
+        .ready_to_clone
+        .expect("ready_to_clone");
+    assert!(
+        sc.confirm(&copied.request_id, transient_at(copy_epoch))
+            .await
+    );
+    assert_eq!(
+        codes(
+            sc.expect_execute(dev_model.own_epoch(Some(copy_epoch)))
+                .await
+        ),
+        (Some(8), Some(7), false),
+        "unadoptable copy over a reusable older build"
+    );
+}

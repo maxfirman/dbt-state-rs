@@ -313,7 +313,9 @@ async fn report_older_match(
             R::UpstreamOutdated
                 | R::UpstreamQueryChanged
                 | R::DependencySetChanged
-                | R::NoReuseCandidate(N::IdentityMismatch)
+                | R::NoReuseCandidate(
+                    N::IdentityMismatch | N::ExecutionTypeChanged | N::CopyLogicMismatch
+                )
         );
     if !applies {
         return Ok(record);

@@ -189,17 +189,24 @@ replay fails when an entry becomes unused or resolved
   node-query-unchanged tree. The server rebuilds with the same class and
   description but codes 6 / 6, records the Decision reason
   `no_reuse_candidate.execution_type_changed`, and renders no Explain tree.
+  The two reasons #40 split out of an identity mismatch
+  (`execution_type_changed`, `copy_logic_mismatch`) keep its wire answer: a
+  reusable older build of the target is still reported as 8 / 7 with its
+  `is_stale` (`offline_regressions.rs::split_identity_reasons_keep_the_older_match_wire_answer`).
   Keyed gaps: `explain_snapshot_history.jsonl` entries 58 (rejection codes)
   and 60 (`empty_tree`).
 - **Incremental rebuild after a `--full-refresh` run (#90).** Client 2.0.11
   records the full refresh with `RecordExecutions` as a FULL execution, then
-  resubmits the model as APPEND/MERGE. Both rebuild with 6 / 6; hosted says
-  "the table was modified after the cached execution" (it judges against the
-  last incremental build), the server takes the recorded FULL row as the
+  resubmits the model as APPEND/MERGE. Both rebuild; hosted reports 6 / 6
+  and "the table was modified after the cached execution" (it judges against
+  the last incremental build). The server takes the recorded FULL row as the
   latest, records `no_reuse_candidate.execution_type_changed` with the
-  generic rebuild description, and renders no Explain tree. Keyed gaps:
+  generic rebuild description, reports the older reusable incremental build
+  as 8 / 7 (LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, the wire answer
+  of any identity mismatch, kept from before #40 split the reason out), and
+  renders no Explain tree. Keyed gaps:
   `explain_incremental_append_merge_history.jsonl` entries 74–75
-  (description) and 78–79 (`empty_tree`).
+  (description and rejection codes) and 78–79 (`empty_tree`).
 - **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
   - Seed copy (#91). Hosted copies a seed loaded with the same values under
     another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
