@@ -504,17 +504,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             Shape::QueryChanged
         }
         // Over a copy whose Target relation is gone, a first build, as for an
-        // identity mismatch: captured for FULL and APPEND
-        // (explain_copy_logic_crafted.jsonl `x11`, `x12`).
+        // identity mismatch: captured for every model kind
+        // (explain_copy_logic_crafted.jsonl `x11`–`x19`).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch))
             if node.own_target_absent() =>
         {
-            if !matches!(
-                kind,
-                Some(ModelExecutionType::Full | ModelExecutionType::Append)
-            ) {
-                return None;
-            }
             Shape::FirstBuild
         }
         // SHAPE 7 over a RegisterClone copy whose logic differs from its
@@ -2392,8 +2386,9 @@ mod tests {
     /// upstream dependencies` when it recorded none (crafted `x2`–`x10`), an
     /// empty freshness section after `upstream model queries have not
     /// changed` when it recorded some (`kv4`, a view). A view with an upstream
-    /// (never reported by client 2.0.11) and an absent Target relation render
-    /// nothing.
+    /// (never reported by client 2.0.11) renders nothing. Over an absent
+    /// Target relation every model kind renders the first-build tree
+    /// (crafted `x11`–`x19`).
     #[test]
     fn copy_logic_mismatch_renders_shape7_against_the_copy() {
         use ModelExecutionType as K;
@@ -2503,18 +2498,36 @@ mod tests {
             ]
         );
         assert!(explain_lines(&rebuild(K::View, true, true)).is_empty());
-        // Over a dropped copy: the first-build tree for FULL and APPEND
-        // (crafted `x11`, `x12`), nothing for the other kinds.
-        for et in kinds {
-            let mut absent = rebuild(et, true, true);
+        // Over a dropped copy: the first-build tree for every model kind
+        // (crafted `x11`–`x19`), `snapshot` as the noun for a snapshot.
+        for et in kinds.into_iter().chain([K::View]) {
+            let mut absent = rebuild(et, et != K::View, true);
             absent.input_tables.retain(|t| t.name == UP);
             let lines = render(&absent);
-            if matches!(et, K::Full | K::Append) {
-                assert_eq!(lines[1].1, "the model table does not exist", "{et:?}");
-                assert_eq!(lines.len(), 3, "{et:?}");
+            let noun = if et == K::Snapshot {
+                "snapshot"
             } else {
-                assert!(lines.is_empty(), "{et:?}: {lines:?}");
-            }
+                "model"
+            };
+            assert_eq!(
+                lines,
+                vec![
+                    (0, "table analysis («FQN»)".to_string(), None, None),
+                    (
+                        1,
+                        format!("the {noun} table does not exist"),
+                        Some(MARKER_FAIL),
+                        None
+                    ),
+                    (
+                        1,
+                        format!("there is no other table that the {noun} could be cloned from"),
+                        Some(MARKER_FAIL),
+                        None
+                    ),
+                ],
+                "{et:?}"
+            );
         }
     }
 

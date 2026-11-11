@@ -227,16 +227,20 @@ server keeps the conservative behavior described.
   default `<FRESH>` badges and omits the summary, since unknown evidence
   never proves freshness
   ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
-- **Reason × node kind cells without a capture (#104).** Every Decision
-  reason × node kind that renders a tree is backed by a tracked capture; the
-  reachable cells without one render nothing until #104 captures them
-  ([explain-catalog.md](explain-catalog.md#decision-reason-coverage)). The
-  freshness cells are captured (`explain_freshness_cells.jsonl`): the
+- **Reason × node kind cells without a capture (#104, settled).** Every
+  Decision reason × node kind that renders a tree is backed by a tracked
+  capture; the cells without one render nothing, and each has a status in
+  [explain-catalog.md](explain-catalog.md#decision-reason-coverage) (no cell
+  is left → #104). The freshness cells are captured
+  (`explain_freshness_cells.jsonl`): the
   ALL-policy reuse with partial drift for the incrementals and DBT_CUSTOM,
   drift past the Lag tolerance for insert_overwrite, delete+insert,
   microbatch and a snapshot, and the stale SHAPE 7 rebuild with its Lag
   tolerance line, whose age is the older matching build's (the decision now
-  records it).
+  records it). The last cell, `copy_logic_mismatch` over a dropped
+  RegisterClone copy, is captured for every model kind (crafted
+  `explain_copy_logic_crafted.jsonl` `x11`–`x19`): hosted rebuilds with
+  6 / 6 and the first-build tree, as this server does.
 - **A view that reads no relation (#117).** Client 2.0.11 reports no upstreams
   for any view, yet hosted's VIEW tree says `no upstream dependencies` when
   the view's SQL reads no relation (`explain_reason_kind_cells.jsonl` `vc0`,
