@@ -131,11 +131,16 @@ history match and the decision. The client derives:
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
 - `tables` for a data test: the relations it reads, with no target. With
-  `store_failures: true` it also holds the test's audit relation (named after
-  the test, in the test's database and schema) once a run has written it,
-  whether a table or a `store_failures_as: view` view (client 2.0.11,
-  `explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`).
-  The server drops it from the test's inputs (#88).
+  `store_failures: true` it also holds the test's audit relation (in the
+  test's database and schema, named after the test or its configured alias)
+  once a run has written it, whether a table or a `store_failures_as: view`
+  view (client 2.0.11, `explain_data_test_history.jsonl`,
+  `explain_store_failures_audit.jsonl`). `default_schema` is the test's own
+  schema, also when that is a separate audit schema
+  (`explain_store_failures_audit_schema.jsonl`); no request field carries
+  the alias (`explain_store_failures_audit_alias.jsonl`). The server drops
+  the audit relation from the test's inputs when the request names it
+  (#88, #106).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - For a microbatch model, the run's resolved event-time window, added to the
   `semantic_extras` as `__microbatch_event_time_start` and
@@ -344,7 +349,9 @@ and fingerprints.
    the request (`store_failures: true`, Snowflake, exactly
    `default_catalog`.`default_schema`.`dbt_node_name`, and not mentioned by
    the test's SQL or its query dependencies) and hosted ignores it
-   too (#88). Hosted differs in one captured case, a keyed divergence: it
+   too (#88). Hosted differs in two captured cases, keyed divergences: it
+   reuses a `store_failures` test with a configured alias, whose audit
+   relation the request does not name, where the server rebuilds (#123), and it
    reuses a test confirmed with incomplete results and echoes them (#87,
    crafted, an [accepted divergence](correctness-handoff.md#accepted-divergences)).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
