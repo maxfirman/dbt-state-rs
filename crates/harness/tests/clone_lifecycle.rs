@@ -33,7 +33,7 @@ use support::demo::{
     self, clone_probe, clone_probe_sql, transient_at, CLONE_PROBE, DEV_SCHEMA, PROD_SCHEMA,
     RAW_ORDERS as RAW,
 };
-use support::scenario::{outcome, ready_id, variant, ExecutionType, Scenario};
+use support::scenario::{into_execute, outcome, ready_id, variant, ExecutionType, Scenario};
 use support::{captured_org, start_server};
 
 const PROD: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CLONE_PROBE\"";
@@ -227,10 +227,24 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
                 .upstream(RAW, 10),
         )
         .await;
+    // Not a SKIP of the uncertified build. Nor a submit-time Result copy of
+    // the prod MERGE build: submit copies are FULL only (#101), so it builds
+    // and reports the same-type equivalent (1 / 6, as hosted 2.0.11 in
+    // explain_incremental_copy_over.jsonl).
     assert_eq!(
         variant(&result),
-        "ready_to_clone",
+        "ready_to_execute",
         "ordinary fallback is not certified as the source model"
+    );
+    let decision = into_execute(result)
+        .explained_decision
+        .expect("explained decision");
+    assert_eq!(
+        (
+            decision.skip_rejection_reason,
+            decision.clone_rejection_reason
+        ),
+        (Some(1), Some(6))
     );
 }
 
