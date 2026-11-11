@@ -158,11 +158,14 @@ SCENARIO = Scenario(
   through; write a literal `$` as `$$`.
 - `Write(path, text)` / `Remove(path)`: the path must stay inside the project
   and contain the run id, so tracked jaffle-shop files are never edited.
-- `Build(*select, target="prod_demo", full_refresh=False, test_failures=False)`:
+- `Build(*select, target="prod_demo", full_refresh=False, test_failures=False, args=())`:
   every selector must name a per-run node and must not start with `+`, so
   shared nodes are never rebuilt. Set `test_failures=True` when a selected
   data test is meant to fail: dbt then exits 1, which the step accepts (any
-  other non-zero exit still stops the run; see `data_test_execute.py`).
+  other non-zero exit still stops the run; see `data_test_execute.py`). `args`
+  adds flag/value pairs from `BUILD_FLAGS` only (`--event-time-start`,
+  `--event-time-end`: the microbatch window); anything else is refused at bind
+  time.
 - `Sql(*statements, target="prod_demo")`: one `dbt run-operation` of a
   temporary macro that refuses a target database other than `CDO_DEMO_DB`.
   Every statement must name only three-part per-run objects in
@@ -181,7 +184,9 @@ SCENARIO = Scenario(
   like `prod_demo`.
 
 `experiments/explain_capture_test.py` binds and plans every bundled scenario,
-so a malformed one fails offline. Promote a capture by copying
+so a malformed one fails offline. Modules in `capture_scenarios/` whose name
+starts with `_` are shared helpers, not scenarios (`_incremental.py` holds the
+per-strategy incremental step list). Promote a capture by copying
 `fixture_candidate.jsonl` into `golden/fixtures/` (see
 [testing.md](testing.md#captured-traffic-replay)).
 

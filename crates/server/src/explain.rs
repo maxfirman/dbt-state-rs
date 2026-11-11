@@ -203,7 +203,10 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///     local-only: hosted never copies one, #86).
 ///   - append and merge incrementals (APPEND=2, MERGE=3): Skip | Build
 ///     (Clone out of scope → #97).
-///   - everything else (other incremental strategies, any other
+///   - insert_overwrite, delete+insert and microbatch incrementals
+///     (INSERT_OVERWRITE=4, DELETE_INSERT=5, MICROBATCH=6): Skip | Build
+///     (Clone pending → #73).
+///   - everything else (any other
 ///     execution_type): NONE.
 ///
 /// Anything outside this set is "Unobserved — do not implement until captured"
@@ -257,6 +260,17 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         Ok(ModelExecutionType::Append | ModelExecutionType::Merge) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
+        // VERIFIED LIVE 2026-11-10, client 2.0.11: the insert_overwrite,
+        // delete+insert and microbatch incrementals render the model trees
+        // (explain_incremental_insert_overwrite.jsonl,
+        // explain_incremental_delete_insert.jsonl,
+        // explain_incremental_microbatch.jsonl). Their CLONE has no capture
+        // (pending → #73).
+        Ok(
+            ModelExecutionType::InsertOverwrite
+            | ModelExecutionType::DeleteInsert
+            | ModelExecutionType::Microbatch,
+        ) => matches!(decision, DecisionKind::Skip | DecisionKind::Build),
         _ => false,
     }
 }
@@ -1432,7 +1446,8 @@ mod tests {
     // CLONE) render model-shaped trees that the hosted service was never
     // observed to produce (docs/explain-catalog.md "Unobserved — do not
     // implement until captured"; spec #27 Out-of-Scope). They must emit
-    // nothing. Seeds, and snapshot and custom SKIP/EXECUTE, were
+    // nothing. Seeds, snapshot and custom SKIP/EXECUTE, and the append, merge,
+    // insert_overwrite, delete+insert and microbatch SKIP/EXECUTE were
     // characterized on 2026-11-10.
 
     // ── Seeds (VERIFIED LIVE 2026-11-10, lag_seed_upstream.jsonl) ───────────
@@ -1600,6 +1615,12 @@ mod tests {
                     | (2, DecisionKind::Build) // append EXECUTE
                     | (3, DecisionKind::Skip) // merge SKIP
                     | (3, DecisionKind::Build) // merge EXECUTE
+                    | (4, DecisionKind::Skip) // insert_overwrite SKIP (explain_incremental_insert_overwrite)
+                    | (4, DecisionKind::Build) // insert_overwrite EXECUTE (CLONE pending)
+                    | (5, DecisionKind::Skip) // delete+insert SKIP (explain_incremental_delete_insert)
+                    | (5, DecisionKind::Build) // delete+insert EXECUTE (CLONE pending)
+                    | (6, DecisionKind::Skip) // microbatch SKIP (explain_incremental_microbatch)
+                    | (6, DecisionKind::Build) // microbatch EXECUTE (CLONE pending)
             )
         };
 

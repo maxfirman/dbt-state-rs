@@ -135,7 +135,7 @@ class Sql:
 
 @dataclass(init=False)
 class Build:
-    """One `dbt build --select ...` (optionally `--full-refresh`).
+    """One `dbt build --select ...` (optionally `--full-refresh` and `BUILD_FLAGS`).
 
     `test_failures=True` when a selected data test is meant to fail: dbt then
     exits 1, which this step accepts (any other non-zero exit still stops the
@@ -145,20 +145,36 @@ class Build:
     target: str = "prod_demo"
     full_refresh: bool = False
     test_failures: bool = False
+    args: tuple = ()
 
-    def __init__(self, *select, target="prod_demo", full_refresh=False, test_failures=False):
+    def __init__(self, *select, target="prod_demo", full_refresh=False, test_failures=False,
+                 args=()):
         self.select = tuple(select)
         self.target = target
         self.full_refresh = full_refresh
         self.test_failures = test_failures
+        self.args = tuple(args)
 
     def bind(self, m, run):
         sel = tuple(_sub(s, m, "Build select") for s in self.select)
         for s in sel:
             if run not in s or s.startswith("+"):
                 raise CaptureError(f"Build selects outside the run's nodes: {s}")
+        args = tuple(_sub(a, m, "Build args") for a in self.args)
+        flags, values = args[0::2], args[1::2]
+        if len(flags) != len(values):
+            raise CaptureError(f"Build flag without a value: {args}")
+        for f, v in zip(flags, values):
+            if f not in BUILD_FLAGS or v.startswith("-"):
+                raise CaptureError(f"Build flag {f} {v!r} is not one of {sorted(BUILD_FLAGS)} "
+                                   "with a value")
         return Build(*sel, target=self.target, full_refresh=self.full_refresh,
-                     test_failures=self.test_failures)
+                     test_failures=self.test_failures, args=args)
+
+
+# Extra `dbt build` flags a scenario may pass, each followed by one value: the
+# microbatch event-time window (#73). They select which batches run, nothing else.
+BUILD_FLAGS = {"--event-time-start", "--event-time-end"}
 
 
 @dataclass
@@ -623,6 +639,7 @@ class Run:
             args = ["build", "--target", step.target, "--select", *step.select]
             if step.full_refresh:
                 args.append("--full-refresh")
+            args.extend(step.args)
             rc, log = self.dbt(k, "build", args)
             if rc and not (rc == 1 and step.test_failures):
                 raise CaptureError(f"dbt build exited {rc}; see {log}")

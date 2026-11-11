@@ -146,7 +146,8 @@ server keeps the conservative behavior described.
   `upstream data is up to date` summary follows the epochs recorded at the
   latest build in scope, persisted with the decision
   (`node_decisions.unmatched_upstreams_unchanged`, migration 0017): present
-  when they are unchanged (`explain_incremental_append_merge_history.jsonl`),
+  when they are unchanged (`explain_incremental_append_merge_history.jsonl`,
+  `explain_incremental_microbatch.jsonl` entry 40, #89),
   absent when one moved back (`explain_snapshot_history.jsonl`). Hosted's tree
   for a query change whose upstream also drifted is unobserved
   ([explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7)).
