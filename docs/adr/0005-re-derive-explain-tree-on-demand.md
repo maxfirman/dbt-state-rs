@@ -57,6 +57,16 @@ caller already holds this id). Everything else is re-derived.
 > `explain_execution_type_change.jsonl`). `unmatched_execution_id` stays NULL
 > for both, since the anchored build has the workload's identity.
 
+> **Amended by #93:** a client-requested copy (RegisterClone) keeps, on its
+> own `executions` row, the names of the upstreams its source build recorded
+> (`executions.clone_source_inputs JSONB`, migration 0018). In the SKIP tree
+> over such a copy hosted gives a verdict only to those upstreams and lists
+> any other with its `last updated` line only
+> (`explain_post_copy_identity.jsonl`). The column is evidence written once,
+> when the copy is registered; no verdict or tree is persisted, and the
+> anchor selection is unchanged. NULL on every other row and on a copy
+> registered before the migration, which renders as before.
+
 ## Why re-derive (not persist the tree)
 
 Characterization capture (ticket #20,

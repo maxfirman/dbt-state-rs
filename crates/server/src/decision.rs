@@ -44,11 +44,10 @@ pub enum NoCandidate {
     ExecutionTypeChanged,
     /// The latest row is a client-requested copy (RegisterClone) that this
     /// workload cannot adopt: its inherited schema-abstracted logic is absent
-    /// or differs. Hosted reused such a copy when the submit had the source
-    /// build's SQL text (#93: a snapshot, explain_snapshot_register_clone, and
-    /// append/merge incrementals, explain_incremental_copy_history); this
-    /// server rebuilds with the same wire answer as
-    /// [`NoCandidate::IdentityMismatch`].
+    /// or differs, also with the submit read in the copy source's schema
+    /// (#93). This server rebuilds with the same wire answer as
+    /// [`NoCandidate::IdentityMismatch`]; no capture backs an Explain tree
+    /// for it (#104).
     CopyLogicMismatch,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,

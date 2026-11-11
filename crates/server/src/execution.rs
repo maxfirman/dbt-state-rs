@@ -9,7 +9,7 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::{logic_identity, InputTable, Producer, Store};
+use crate::store::{logic_identity, CopySourceBuild, InputTable, Producer, Store};
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -125,6 +125,11 @@ pub(crate) struct ExecutionEvidence {
     /// Set only for copy-origin rows: the physical source this target is
     /// copied from. NULL for ordinary SQL/seed executions.
     pub(crate) clone_source_table: Option<String>,
+    /// A client-requested copy's inherited source build runtime, written on
+    /// its pending row ([`ExecutionEvidence::copy_registration`]).
+    pub(crate) inherited_runtime_ms: Option<i64>,
+    /// A client-requested copy's inherited source build upstream names.
+    pub(crate) clone_source_inputs: Option<Vec<String>>,
     sealed: (),
 }
 
@@ -233,6 +238,8 @@ impl ExecutionEvidence {
             input_tables: Vec::new(),
             values_hash: None,
             clone_source_table: None,
+            inherited_runtime_ms: None,
+            clone_source_inputs: None,
             sealed: (),
         }
     }
@@ -279,14 +286,21 @@ impl ExecutionEvidence {
     /// A client-requested copy (RegisterClone) of `req.clone_source_table` into
     /// `req.target_table`. It inherits the source's schema-abstracted logic
     /// identity, when the source has one, so later submits reuse the copy once
-    /// confirmed. A copy has no rendered SQL, node state or recorded inputs.
+    /// confirmed. From the source's current build, when it was read
+    /// ([`CopySourceBuild`]), it also inherits the runtime, which hosted
+    /// reports when it reuses the copy, and the names of the upstreams the
+    /// build recorded, for Explain (#93). A copy has no rendered SQL, node
+    /// state or recorded inputs of its own.
     pub(crate) fn copy_registration(
         org_id: &str,
         req: &qc::CloneRequest,
         inherited_ns_logic: Option<String>,
+        source: Option<&CopySourceBuild>,
     ) -> Self {
         Self {
             node_namespace_logic_hash: inherited_ns_logic,
+            inherited_runtime_ms: source.and_then(|s| s.execution_runtime_ms),
+            clone_source_inputs: source.map(|s| s.input_names.clone()),
             node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
             clone_source_table: Some(req.clone_source_table.clone()),
             ..Self::node(
@@ -961,9 +975,18 @@ mod tests {
 
     #[test]
     fn copy_registration_pending_row_inherits_the_logic_identity_and_records_the_source() {
-        let row =
-            ExecutionEvidence::copy_registration("org", &clone_request(), Some("logic".into()))
-                .pending("req-1", "dec-1");
+        let source = CopySourceBuild {
+            node_namespace_logic_hash: Some("logic".into()),
+            execution_runtime_ms: Some(3826),
+            input_names: vec!["\"DB\".\"PROD\".\"UP\"".into()],
+        };
+        let row = ExecutionEvidence::copy_registration(
+            "org",
+            &clone_request(),
+            Some("logic".into()),
+            Some(&source),
+        )
+        .pending("req-1", "dec-1");
 
         assert_eq!(row.request_id, "req-1");
         assert_eq!(row.execution_decision_id, "dec-1");
@@ -978,6 +1001,12 @@ mod tests {
         assert_eq!(
             e.clone_source_table.as_deref(),
             Some("\"DB\".\"PROD\".\"M\"")
+        );
+        // Hosted reports the source build's runtime when it reuses the copy (#93).
+        assert_eq!(e.inherited_runtime_ms, Some(3826));
+        assert_eq!(
+            e.clone_source_inputs.as_deref(),
+            Some(&["\"DB\".\"PROD\".\"UP\"".to_string()][..])
         );
         assert_eq!(e.node_unique_id.as_deref(), Some("model.p.m"));
         // A copy has no rendered SQL, node state, recorded inputs or values.
@@ -994,9 +1023,11 @@ mod tests {
 
     #[test]
     fn copy_registration_without_source_logic_inherits_nothing() {
-        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None);
+        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None);
 
         assert_eq!(e.node_namespace_logic_hash, None);
+        assert_eq!(e.inherited_runtime_ms, None);
+        assert_eq!(e.clone_source_inputs, None);
         assert_eq!(
             e.clone_source_table.as_deref(),
             Some("\"DB\".\"PROD\".\"M\"")

@@ -55,6 +55,14 @@ Do not weaken these without new evidence.
 - **No cross-target SKIP.** A `table_namespace` match alone never justifies a
   SKIP. Cross-target reuse is a Result copy on Snowflake (and the DuckDB copy
   subset) only, and a submit-time Result copy is FULL only (#101).
+- **Copy adoption needs the copy's logic.** A later submit reuses a
+  RegisterClone copy only when its schema-abstracted logic equals the logic
+  the copy inherited from its source build, directly or with the submit's
+  Target relation schema read as the copy source's schema (Snowflake only,
+  `fingerprint::rehomed_copy_logic_hash`, #93). Either way each dependency's
+  name stays bound to its definition
+  (`fingerprint.rs::rehomed_identity_keeps_dependency_bindings`). No
+  persisted fingerprint changed.
 
 ## Open hosted questions
 
@@ -76,8 +84,19 @@ server keeps the conservative behavior described.
   predicate and epochs at once; the local server does not. The cause is not
   isolated
   (`clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`,
-  fixture `clone_chain_source_age.jsonl`). #93 is a cleaner post-copy SKIP
-  this server rebuilds (same SQL text, only the schemas differ).
+  fixture `clone_chain_source_age.jsonl`). It is not the #93 cause: its
+  schema difference is one the copy adoption already matched before #93
+  (the upstream resolved per target). What remains is the added
+  `is_incremental()` self-reference predicate, the Target relation's epoch
+  being newer than the copy's confirmation, and a runtime (4074 ms) that is
+  not the source build's (2600 ms).
+- **Explain verdicts over a copy (#93).** In the post-copy SKIP tree hosted
+  gives a FRESH verdict only to an upstream the copy's source build recorded,
+  and lists a per-target upstream with its `last updated` line only
+  (`explain_post_copy_identity.jsonl` `c93st`, `c93it`). The server keeps the
+  source build's upstream names on the copy and renders the same. Not
+  isolated: in that capture the per-target upstream was itself a submit-time
+  copy, so "the upstream is a copy" fits the capture too.
 - **An older build of the submit's type that would qualify (#83, #90).**
   Hosted judges a submit whose latest build has its identity under another
   execution type against the latest build of its own type, RecordExecutions
@@ -244,38 +263,27 @@ replay fails when an entry becomes unused or resolved
     exists under another name so we cloned that one`); the server never copies
     seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
     (submit) and 18 (Explain: the server explains the load it decided).
-  - Non-FULL copy candidate (#92, codes implemented; identity gap → #93).
+  - Non-FULL copy candidate (#92, codes implemented; identity gap → #107).
     For a view or a snapshot whose equivalent exists under another name,
     hosted builds with codes 1 / 3 (`TARGET_TABLE_MISMATCH` /
     `EXECUTION_TYPE_NOT_FULL`). The server sends 1 / 3 when it finds the
     equivalent (`clone_submit_fallback.rs::a_view_with_an_equivalent_builds_with_execution_type_not_full`).
     In this capture it finds none and sends 6 / 6: the dev SQL reads the
     source in the prod schema while its default schema is the dev one, so its
-    schema-abstracted logic differs from the prod build's (the root cause of
-    the #93 entries below). The class, description and Explain tree match.
+    schema-abstracted logic differs from the prod build's (the #107 cause
+    below). The class, description and Explain tree match.
     Keyed field-scoped gaps: `explain_copy_probes.jsonl` entries 13 and 14.
-  - Post-RegisterClone submit (#93). After the client's dev-clone pre-step
-    copies a snapshot, hosted SKIPs the snapshot's own submit, which has the
-    prod build's SQL text. The server cannot adopt the copy's inherited
-    schema-abstracted logic (the upstream is in the prod build's default
-    schema but not in the dev submit's). It rebuilds with codes 6 / 6, records
-    `no_reuse_candidate.copy_logic_mismatch`, and renders no Explain tree.
-    Keyed gaps: `explain_snapshot_register_clone.jsonl` entries 7 and 8
-    (`empty_tree`). The open "RegisterClone source-age chain, entry 4"
-    question above may have the same cause.
-  - Post-copy incremental submit (#93, the APPEND/MERGE form, found by #73).
-    After the dev-clone pre-step copies an append or merge incremental
-    (`RegisterClone`, confirmed with the copy's epoch), the client submits it
-    with byte-identical SQL. Hosted skips it. The server does not adopt the
-    copy: the copy inherits the prod build's schema-abstracted logic, computed
-    under the prod default schema, where the submit's explicit prod-schema
-    source reference was abstracted; under the dev default schema it is not.
-    It rebuilds with `no_reuse_candidate.copy_logic_mismatch` (wire unchanged,
-    6 / 6) and renders no Explain tree. Keyed gaps:
-    `explain_incremental_copy_history.jsonl` entries 12–13 (whole response)
-    and 14–15 (`empty_tree`). The same root cause gives
-    `explain_incremental_submit_copy.jsonl` entries 9–10 skip code 6 where
-    hosted, which recognizes the prod equivalent, reports 1 (field-scoped).
+  - Submit-time equivalent over a fixed prod-schema source (#107). A model
+    whose SQL reads a source in the prod default schema has byte-identical
+    SQL in both targets, but the request-relative schema-abstracted logic
+    differs, so the Result copy fallback finds no equivalent where hosted
+    does. A FULL table is built instead of copied
+    (`explain_post_copy_identity.jsonl` entry 19, whole response); a view
+    and the append/merge incrementals are built with codes 6 / 6 where hosted
+    reports 1 / 3 and 1 / 6 (entry 18; `explain_incremental_submit_copy.jsonl`
+    entries 9–10; field-scoped). #93 resolved the same gap for RegisterClone
+    adoption, where the copy names its source; the equivalent search has no
+    source to read the submit against.
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
   2.0.6 got `ready_to_clone` for a MERGE incremental over an existing target
   (`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`
