@@ -415,6 +415,17 @@ if res[1].ok or not any("no message" in p for p in res[1].problems):
     fail("a hosted reply without the message fails the oracle", res[1])
 ok("a hosted reply without the message fails the oracle")
 
+# A decision hosted makes on the speculative call (#103) is the node's current
+# decision: the client sends no ordinary submit after it.
+spec = [list(c) for c in per_step]
+spec_skip = submit(view, "skip_execution", "e4", et=10)
+spec_skip["method"] = "SubmitEnrichedSQLSpeculative"
+spec[4] = [submit(up, "skip_execution", "e3"), spec_skip]
+res = run_oracle(spec)
+if not res[1].ok or res[1].decision != "SKIP":
+    fail("a speculative SKIP is the node's current decision", res[1])
+ok("a speculative SKIP is the node's current decision")
+
 empty_tree = [list(c) for c in per_step]
 empty_tree[6] = [explain("e4", 0, lines=[])]
 res = run_oracle(empty_tree)

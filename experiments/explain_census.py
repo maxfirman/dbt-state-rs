@@ -32,20 +32,14 @@ from dataclasses import dataclass, field
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
+sys.path.insert(0, HERE)
+from decision_rows import DECISION, KIND, minted  # noqa: E402
 FIXTURES = os.path.join(REPO, "golden", "fixtures")
 
 NONE = "none"
 UNMAPPED = "UNMAPPED"
 CRAFTED = "crafted"
 
-# shared.proto ModelExecutionType
-KIND = {
-    0: "UNSPECIFIED", 1: "FULL", 2: "APPEND", 3: "MERGE", 4: "INSERT_OVERWRITE",
-    5: "DELETE_INSERT", 6: "MICROBATCH", 7: "SNAPSHOT", 8: "DBT_DATA_TEST",
-    9: "VALUES", 10: "VIEW", 11: "DBT_CUSTOM",
-}
-# shared.proto SubmitSQLResultType, named as in docs/explain-catalog.md
-DECISION = {0: "SKIP", 1: "EXECUTE", 3: "CLONE", 4: "UNKNOWN"}
 # explain_service.proto
 MARKER = {0: "EM_UNSPECIFIED", 1: "SUCCESS", 2: "FAIL", 3: "INFO"}
 BADGE = {
@@ -120,23 +114,6 @@ def _name(value, table):
     return table.get(value, f"?{value}")
 
 
-def _minted(row):
-    """(execution_decision_id, execution_type) for a row that mints a decision."""
-    method = row.get("method")
-    req = row.get("request") or {}
-    resp = row.get("response") or {}
-    if method in ("SubmitEnrichedSQL", "SubmitValues"):
-        inner = next(iter(((resp.get("response") or {}).values())), None) or {}
-        et = 9 if method == "SubmitValues" else req.get("execution_type")
-        return inner.get("execution_decision_id"), et
-    if method == "RegisterClone":
-        for key in ("ready_to_clone", "unable_to_clone"):
-            inner = resp.get(key) or {}
-            if inner.get("execution_decision_id"):
-                return inner["execution_decision_id"], req.get("execution_type")
-    return None, None
-
-
 def _origin(row, version):
     """Real-client rows carry `x-system-user-id`; `state-probe` rows do not."""
     if not any(k == "x-system-user-id" for k, _ in row.get("metadata") or []):
@@ -158,7 +135,7 @@ def census(paths):
         for row in rows:
             if row.get("method") == "ValidateClientVersion":
                 version = (row.get("request") or {}).get("dbt_run_cache_version") or version
-            edid, et = _minted(row)
+            edid, et = minted(row)
             if edid:
                 kind_of[edid] = _name(et, KIND)
                 origin_of[edid] = _origin(row, version)

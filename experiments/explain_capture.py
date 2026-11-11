@@ -49,6 +49,8 @@ from dataclasses import dataclass, field, replace
 
 # Scenario modules import this module by name; run as a script, make that the same module.
 sys.modules.setdefault("explain_capture", sys.modules[__name__])
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from decision_rows import DECISION, KIND, minted, variant  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -64,12 +66,6 @@ REPLAYED_METHODS = {
     "SubmitEnrichedSQL", "SubmitValues", "ConfirmExecution", "ValidateClientVersion",
     "SubmitEnrichedSQLSpeculative", "GetExplainMessages", "RegisterClone",
     "ResolveDeferredRelations", "RecordExecutions",
-}
-DECISION = {0: "SKIP", 1: "EXECUTE", 3: "CLONE", 4: "UNKNOWN"}
-EXECUTION_TYPE = {
-    0: "UNSPECIFIED", 1: "FULL", 2: "APPEND", 3: "MERGE", 4: "INSERT_OVERWRITE",
-    5: "DELETE_INSERT", 6: "MICROBATCH", 7: "SNAPSHOT", 8: "DBT_DATA_TEST",
-    9: "VALUES", 10: "VIEW", 11: "DBT_CUSTOM",
 }
 
 
@@ -421,33 +417,16 @@ class OracleResult:
     edid: str = None
 
 
-def _variant(row):
-    resp = (row.get("response") or {})
-    if row.get("method") == "RegisterClone":
-        for v in ("ready_to_clone", "unable_to_clone"):
-            if resp.get(v):
-                return v, resp[v]
-        return None, {}
-    inner = resp.get("response") or {}
-    v = next(iter(inner), None)
-    return v, (inner.get(v) or {})
-
-
 def _mints(rows):
     """edid -> (row index, node name, execution type, variant, request_id) for every minting row."""
     out = {}
     for i, r in enumerate(rows):
-        m = r.get("method")
-        if m not in ("SubmitEnrichedSQL", "SubmitValues", "RegisterClone"):
-            continue
-        req = r.get("request") or {}
-        variant, inner = _variant(r)
-        edid = inner.get("execution_decision_id")
+        edid, et = minted(r)
         if not edid:
             continue
-        et = 9 if m == "SubmitValues" else req.get("execution_type")
-        node = (req.get("labels") or {}).get("dbt_node_name", "")
-        out[edid] = (i, node, et, variant, inner.get("request_id"))
+        v, inner = variant(r)
+        node = ((r.get("request") or {}).get("labels") or {}).get("dbt_node_name", "")
+        out[edid] = (i, node, et, v, inner.get("request_id"))
     return out
 
 
@@ -686,7 +665,7 @@ def report(bound, rows, marks, work):
     results = oracle(bound, rows, marks)
     print("## ORACLE (each Explain step explained the node's current decision over State history)")
     for r in results:
-        kind = EXECUTION_TYPE.get(r.execution_type, r.execution_type)
+        kind = KIND.get(r.execution_type, r.execution_type)
         print(f"  [{'PASS' if r.ok else 'FAIL'}] step {r.step} {r.node} — {r.intent}: "
               f"{r.decision} {kind} {r.description!r}")
         for p in r.problems:
