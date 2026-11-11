@@ -171,8 +171,8 @@ SCENARIO = Scenario(
   Every statement must name only three-part per-run objects in
   `CDO_DEMO_DB.PROD_STATE_DEMO` or `CDO_DEMO_DB.DEV_CLONE_DEMO`. A statement
   must be `create [or replace] table`, `insert into`, `update`, `delete from`,
-  `truncate table` or `drop table [if exists]` followed by the per-run
-  relation it writes. Unqualified names are allowed; two- or four-part names,
+  `truncate table`, `drop table [if exists]` or `drop view [if exists]`
+  followed by the per-run relation it writes. Unqualified names are allowed; two- or four-part names,
   `IDENTIFIER(...)`, Jinja braces, comments and `;` are refused.
 - `Explain(select, intent, node=None, decision=None, execution_type=None,
   history=True, target="prod_demo")`: one `dbt state explain --verbose` per
@@ -180,6 +180,15 @@ SCENARIO = Scenario(
   (data tests: `test.jaffle_shop.<test>.*` for a generic test,
   `test.jaffle_shop.<test>*` for a singular one, whose unique id has no hash). `decision=None` records whatever
   hosted decides.
+- `Explain(..., via="probe")` sends the same `GetExplainMessages` call (one
+  `execution_decision_id`: the node's latest decision in the window so far)
+  with `target/debug/state-probe` through the run's proxy. It is not a dbt
+  invocation and is not limited to the latest invocation, so one build can be
+  followed by explains of many nodes (`reason_kind_cells.py`). The decision
+  is still the real client's; the census counts its tree under the client
+  version. Build the probe with `cargo build -p dbt-state-harness --bin
+  state-probe`. Send it right after the build that decided the node, as the
+  client would.
 - Use `target="dev_clone"` for steps against the dev target; it is checked
   like `prod_demo`.
 - `dbt state explain` explains the decisions of the latest invocation: an
@@ -190,7 +199,10 @@ SCENARIO = Scenario(
   after the earlier run's explain steps captured nothing). The follow-up's
   explained decisions have their history in the earlier window: mark those
   steps `history=False` and promote the two `fixture_candidate.jsonl` files
-  concatenated, earlier first (`execution_type_change_append.py`).
+  concatenated, earlier first (`execution_type_change_append.py`). Add
+  `--prior-window <earlier run>/window.jsonl` to let probe explains and the
+  oracle see the earlier run's decisions and builds; the fixture candidate
+  still holds only the new window (`reason_kind_cells_more.py`).
 
 `experiments/explain_capture_test.py` binds and plans every bundled scenario,
 so a malformed one fails offline. Modules in `capture_scenarios/` whose name

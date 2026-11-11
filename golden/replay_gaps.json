@@ -253,6 +253,139 @@
     "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
   },
   {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 163,
+    "local_variant": "ready_to_execute",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ],
+    "reason": "DECISION DIVERGENCE (#116): a VIEW submit over DBT_CUSTOM history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (6/6); the local server answers the execution type change 2/2 (`cv`)."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 171,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_cz`, no upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 182,
+    "local_variant": "ready_to_execute",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason"
+    ],
+    "reason": "DECISION DIVERGENCE (#116): a DBT_CUSTOM submit over VIEW history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (6/6); the local server answers the execution type change 2/2 (`vc`)."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 187,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation a later --full-refresh (FULL) build rewrote (`sn_c`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 225,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 187: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 231,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 171: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 243,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 182: DECISION DIVERGENCE (#116): hosted's 6/6 tree (query unchanged, the upstream listed with only its last-updated line); the local execution type change over a row with other upstream names renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 245,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 163: DECISION DIVERGENCE (#116): hosted's 6/6 tree (query unchanged, `view ignored`, an upstream model query has changed); the local VIEW execution type change renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 246,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 181: NOT RENDERED (#117): same decision (execution_type_changed, 2/2); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 297,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 311,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_ez`, no upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 313,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a snapshot whose Target relation was modified externally (`sn_e`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 322,
+    "local_variant": "ready_to_execute",
+    "ignore_fields": [
+      "explained_decision.skip_rejection_reason",
+      "explained_decision.clone_rejection_reason",
+      "explained_decision.decision_description"
+    ],
+    "reason": "DECISION DIVERGENCE (#116): a DBT_CUSTOM submit over VIEW, DBT_CUSTOM history with the same SQL, but the view reports no upstreams and the custom node does: hosted treats the changed upstream set as another identity (8/7 against the older custom build, 'either its query didn't match'); the local server judges it against the older custom build as own_target_modified (6/6, 'modified after the cached execution') (`cv`)."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 323,
+    "local_variant": "ready_to_execute",
+    "reason": "DECISION DIVERGENCE (#115): hosted reuses a custom node whose Target relation was modified externally (`vc`, upstream); the local server rebuilds it with own_target_modified (6/6), AGENTS.md reuse invariant 3."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 369,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 313: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 375,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 311: DECISION DIVERGENCE (#115): hosted explains its snapshot SKIP; the local own_target_modified rebuild of a snapshot renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 376,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 323: DECISION DIVERGENCE (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 377,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 305: NOT RENDERED (#117): same decision (own_target_modified, 'the view definition is newer'); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 378,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 322: DECISION DIVERGENCE (#116): hosted's 8/7 tree (query unchanged, the upstream listed with only its last-updated line); the local own_target_modified rebuild of a custom node renders nothing."
+  },
+  {
+    "fixture": "explain_reason_kind_cells.jsonl",
+    "entry": 379,
+    "local_variant": "empty_tree",
+    "reason": "explain of entry 297: DECISION DIVERGENCE (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing."
+  },
+  {
     "fixture": "explain_unknown_epoch.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",

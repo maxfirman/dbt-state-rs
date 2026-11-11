@@ -216,6 +216,7 @@ Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 | EXECUTE | `{noun} was executed because its table did not exist` | No prior build of the target relation, or the target relation is absent |
 | EXECUTE | `{noun} was executed because either its query didn't match or its upstream data is out of date` | Rebuild of an existing target relation (identity or freshness) |
 | EXECUTE | `{noun} was executed because the table was modified after the cached execution` | The target relation's epoch is later than its build (External modification) |
+| EXECUTE | `model was executed because the view definition is newer than the cached execution` | The same, for a VIEW (`explain_reason_kind_cells.jsonl` `vc0`) |
 | EXECUTE | `data test was executed because it has no prior execution or its query changed` | Every data-test execute |
 | EXECUTE | `seed was loaded because it did not exist` | Seed first load, or its table is absent |
 | EXECUTE | `seed was loaded because its data changed` | Seed reload |
@@ -284,6 +285,9 @@ and fingerprints.
    no such build the rebuild is 2 / 2 with the generic rebuild description.
    That build is never reused; only the latest build is
    ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)).
+   Hosted treats a view ↔ custom node switch over an upstream (the view
+   reports none, the custom node does) as another identity (6 / 6, then
+   8 / 7); this server answers it as an execution type change (#116).
 2. **Identity.** The fingerprint covers the root SQL, semantic extras,
    dialect/catalog/schema and every supplied dependency definition with its
    resolution context. Snowflake SQL is canonicalized
@@ -301,9 +305,12 @@ and fingerprints.
    tests `template_comparison.rs`, `data_test_template.rs`.
 4. **Target relation.** Reuse needs exactly one entry for the target relation
    in `tables` with a known epoch no later than the recorded build. A later
-   epoch executes with "the table was modified after the cached execution".
-   `ignore_external_modifications=true` accepts a later epoch but still needs
-   the entry. Data tests have no target relation and skip this check.
+   epoch executes with "the table was modified after the cached execution"
+   (for a VIEW, "the view definition is newer than the cached execution").
+   Hosted reuses a snapshot or custom node there; this server does not
+   (#115). `ignore_external_modifications=true` accepts a later epoch but
+   still needs the entry. Data tests have no target relation and skip this
+   check.
 5. **Freshness**, per [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md):
    - An upstream drifted when its current epoch is later than the epoch recorded
      for it at the node's last confirmed build.

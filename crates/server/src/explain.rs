@@ -374,7 +374,18 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
     // coverage", which gives each such cell its final status).
     let kind = ModelExecutionType::try_from(node.execution_type).ok();
     let full = kind == Some(ModelExecutionType::Full);
-    let listing = freshness_listing_captured(kind, !node.genuine_upstreams().is_empty());
+    let upstreams = !node.genuine_upstreams().is_empty();
+    let listing = freshness_listing_captured(kind, upstreams);
+    let incremental = matches!(
+        kind,
+        Some(
+            ModelExecutionType::Append
+                | ModelExecutionType::Merge
+                | ModelExecutionType::InsertOverwrite
+                | ModelExecutionType::DeleteInsert
+                | ModelExecutionType::Microbatch
+        )
+    );
     Some(match (node.decision, reason) {
         (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
             Shape::Skip
@@ -397,9 +408,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // re-derives at least one upstream that provably drifted (data-only:
         // FULL, the five incrementals, SNAPSHOT, DBT_CUSTOM;
         // explain_freshness_cells.jsonl `fz_*`, `fd_sn`) or an Upstream
-        // producer change (FULL, SNAPSHOT, DBT_CUSTOM). A rebuild for an
-        // unknown upstream epoch is local-only: hosted reuses it
-        // (explain_unknown_epoch.jsonl, crafted).
+        // producer change (FULL, SNAPSHOT, DBT_CUSTOM, and the five
+        // incremental strategies: explain_reason_kind_cells.jsonl `*_q`). A
+        // rebuild for an unknown upstream epoch is local-only: hosted reuses
+        // it (explain_unknown_epoch.jsonl, crafted).
         (DecisionKind::Build, R::UpstreamOutdated)
             if has_provably_outdated_upstream(node)
                 // The equivalent's age words the Lag tolerance line; an
@@ -423,55 +435,61 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         }
         (DecisionKind::Build, R::UpstreamQueryChanged)
             if node.anchor.is_some()
-                && matches!(
-                    kind,
-                    Some(
-                        ModelExecutionType::Full
-                            | ModelExecutionType::Snapshot
-                            | ModelExecutionType::DbtCustom
-                    )
-                ) =>
+                && (incremental
+                    || matches!(
+                        kind,
+                        Some(
+                            ModelExecutionType::Full
+                                | ModelExecutionType::Snapshot
+                                | ModelExecutionType::DbtCustom
+                        )
+                    )) =>
         {
             Shape::UpstreamOutdated
         }
         // Captured for FULL (lag_copy_candidates `ome`, lag_tolerance_matrix
-        // `lfs_u0`) and, judged against the latest build of the submit's
-        // type under a newer build of another type, for FULL, APPEND and
-        // MERGE (explain_execution_type_change.jsonl `ta`, `mi`;
-        // explain_incremental_append_merge_history.jsonl entries 78-79).
+        // `lfs_u0`), for the five incremental strategies with and without an
+        // upstream after an External modification or a later FULL full
+        // refresh (explain_reason_kind_cells.jsonl `*_e`, `*_ez`, `*_c`,
+        // `*_cz`; explain_incremental_append_merge_history.jsonl entries
+        // 78-79). Hosted never makes it for a SNAPSHOT or a DBT_CUSTOM node:
+        // it reuses them over a modified Target relation (#115), so ours
+        // renders nothing. A VIEW's (`vc0`) needs to know whether the view
+        // reads a relation (#117).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
-            if (full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()))
-                || (matches!(
-                    kind,
-                    Some(ModelExecutionType::Append | ModelExecutionType::Merge)
-                ) && node.anchor.is_some()
-                    && listing) =>
+            if (full && (node.anchor.is_some() || !upstreams))
+                || (incremental && node.anchor.is_some()) =>
         {
             Shape::OwnTargetModified
         }
         // An execution type change, explained against the latest row: the
-        // same SKIP-shaped tree, captured for FULL and APPEND with an upstream
-        // (explain_snapshot_history.jsonl entry 60,
-        // explain_execution_type_change.jsonl `tv`).
+        // same SKIP-shaped tree (explain_snapshot_history.jsonl entry 60,
+        // explain_execution_type_change.jsonl `tv`, explain_reason_kind_cells.jsonl
+        // `*_e`, `*_ez`, `sn_c`, `sn_cz`, `vc0`): FULL, the incrementals and
+        // SNAPSHOT with and without an upstream, DBT_CUSTOM without one. Only
+        // over a latest row with the node's genuine upstream names: hosted
+        // treats a VIEW <-> DBT_CUSTOM switch over an upstream (the view
+        // reports none) as another identity (#116). A VIEW's (`cv0`) needs
+        // to know whether the view reads a relation (#117).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged))
-            if node.anchor.is_some()
-                && !node.genuine_upstreams().is_empty()
-                && matches!(
-                    kind,
-                    Some(ModelExecutionType::Full | ModelExecutionType::Append)
-                ) =>
+            if node
+                .anchor
+                .as_ref()
+                .is_some_and(|a| same_upstream_names(node, a))
+                && (full
+                    || incremental
+                    || kind == Some(ModelExecutionType::Snapshot)
+                    || (kind == Some(ModelExecutionType::DbtCustom) && !upstreams)) =>
         {
             Shape::OwnTargetModified
         }
-        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a FULL
-        // model whose logic changed while its Target relation was dropped
-        // reads like a first build.
+        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`; 2026-11-11,
+        // explain_reason_kind_cells.jsonl `*_d`, every model kind): a model
+        // whose logic changed while its Target relation was dropped reads
+        // like a first build.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
             if node.own_target_absent() =>
         {
-            if !full {
-                return None;
-            }
             Shape::FirstBuild
         }
         // SHAPE 7, captured for every model kind (explain_snapshot_history,
@@ -539,25 +557,41 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
 }
 
 /// Whether a tracked capture backs the freshness listing of `kind` with
-/// (`upstreams`) or without genuine upstreams. A FULL model and a custom node
-/// were captured both ways; a view only without (client 2.0.11 reports none
-/// for a view, explain_snapshot_history.jsonl `s72vl`); the incrementals and
-/// snapshots only with an upstream.
+/// (`upstreams`) or without genuine upstreams. A FULL model, a custom node,
+/// the incrementals and snapshots were captured both ways (without upstreams:
+/// explain_reason_kind_cells.jsonl `*_z`, `*_cz`, `*_ez`); a view only
+/// without (client 2.0.11 reports none for a view,
+/// explain_snapshot_history.jsonl `s72vl`).
 fn freshness_listing_captured(kind: Option<ModelExecutionType>, upstreams: bool) -> bool {
     use ModelExecutionType as K;
     match kind {
-        Some(K::Full | K::DbtCustom) => true,
-        Some(K::View) => !upstreams,
         Some(
-            K::Append
+            K::Full
+            | K::DbtCustom
+            | K::Append
             | K::Merge
             | K::InsertOverwrite
             | K::DeleteInsert
             | K::Microbatch
             | K::Snapshot,
-        ) => upstreams,
+        ) => true,
+        Some(K::View) => !upstreams,
         _ => false,
     }
+}
+
+/// Whether `row` recorded the node's genuine upstream names (its own target
+/// excluded).
+fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
+    let target = node.target_table.as_deref();
+    let names = |tables: &[InputTable]| -> std::collections::BTreeSet<String> {
+        tables
+            .iter()
+            .map(|t| t.name.clone())
+            .filter(|n| Some(n.as_str()) != target)
+            .collect()
+    };
+    names(&node.input_tables) == names(&row.input_tables)
 }
 
 /// Build the structured tree: fenced by node kind, then shaped by the
@@ -644,24 +678,36 @@ fn query_analysis_unchanged(node: &ExplainNode) -> qc::ExplainLine {
 }
 
 /// Whether the `upstream model queries have not changed [SUCCESS]` line is
-/// present. VERIFIED (catalog): a FULL model, custom node or data test with
-/// zero genuine upstreams omits it (SHAPE 0); a VIEW, a snapshot or any node
-/// with ≥1 genuine upstream carries it (SHAPEs 1/2/4…).
+/// present. VERIFIED (catalog): a node with zero genuine upstreams omits it
+/// (SHAPE 0) unless it is a VIEW; a VIEW or any node with ≥1 genuine upstream
+/// carries it (SHAPEs 1/2/4…).
 fn has_upstream_query_line(node: &ExplainNode) -> bool {
     !node.genuine_upstreams().is_empty() || !says_no_upstream_dependencies(node)
 }
 
 /// The node kinds whose tree says `no upstream dependencies` (SHAPE 0) when
 /// they have no genuine upstreams: a FULL model, a custom node (VERIFIED LIVE
-/// 2026-11-10, explain_custom_history.jsonl `c74c0`) and a data test (VERIFIED
-/// LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40t0`). A view says
-/// `upstream data is up to date` instead.
+/// 2026-11-10, explain_custom_history.jsonl `c74c0`), a data test (VERIFIED
+/// LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40t0`), the five
+/// incremental strategies and a snapshot (VERIFIED LIVE 2026-11-11,
+/// explain_reason_kind_cells.jsonl `*_z`, `*_cz`, `*_ez`). A view over a
+/// `ref` (which client 2.0.11 does not report) says `upstream data is up to
+/// date` instead (explain_snapshot_history.jsonl `s72vl`); a view that reads
+/// no relation says `no upstream dependencies` (`vc0`, `cv0`), which this
+/// server cannot tell apart, so those VIEW cells render nothing (#117).
 fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
+    use ModelExecutionType as K;
     matches!(
-        ModelExecutionType::try_from(node.execution_type),
-        Ok(ModelExecutionType::Full
-            | ModelExecutionType::DbtCustom
-            | ModelExecutionType::DbtDataTest)
+        K::try_from(node.execution_type),
+        Ok(K::Full
+            | K::DbtCustom
+            | K::DbtDataTest
+            | K::Append
+            | K::Merge
+            | K::InsertOverwrite
+            | K::DeleteInsert
+            | K::Microbatch
+            | K::Snapshot)
     )
 }
 
@@ -1270,21 +1316,21 @@ fn copy_disabled_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
 
 /// `query analysis` with the node-query-CHANGED body (SHAPE 7).
 fn query_analysis_changed(node: &ExplainNode) -> qc::ExplainLine {
-    section(
-        "query analysis",
-        vec![
-            leaf(
-                format!("the {} query has changed", node.noun()),
-                Some(MARKER_FAIL),
-                Some(BADGE_NODE_QUERY_CHANGED),
-            ),
-            leaf(
-                "upstream model queries have not changed",
-                Some(MARKER_SUCCESS),
-                None,
-            ),
-        ],
-    )
+    let mut lines = vec![leaf(
+        format!("the {} query has changed", node.noun()),
+        Some(MARKER_FAIL),
+        Some(BADGE_NODE_QUERY_CHANGED),
+    )];
+    // A node without upstreams lists no upstream query verdict (VERIFIED LIVE
+    // 2026-11-11, explain_reason_kind_cells.jsonl `*_z`), as for a SKIP.
+    if has_upstream_query_line(node) {
+        lines.push(leaf(
+            "upstream model queries have not changed",
+            Some(MARKER_SUCCESS),
+            None,
+        ));
+    }
+    section("query analysis", lines)
 }
 
 // ── CLONE ────────────────────────────────────────────────────────────────────
@@ -2187,12 +2233,35 @@ mod tests {
         assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
     }
 
+    /// The incremental strategies, by name for loops.
+    const INCREMENTALS: [ModelExecutionType; 5] = [
+        ModelExecutionType::Append,
+        ModelExecutionType::Merge,
+        ModelExecutionType::InsertOverwrite,
+        ModelExecutionType::DeleteInsert,
+        ModelExecutionType::Microbatch,
+    ];
+
+    /// `n` without genuine upstreams: its own target only, and an anchor
+    /// that recorded none.
+    fn without_upstreams(mut n: ExplainNode) -> ExplainNode {
+        n.input_tables.truncate(1);
+        if let Some(a) = n.anchor.as_mut() {
+            a.input_tables.clear();
+        }
+        n
+    }
+
     /// A rebuild because the latest build had the identity under another
     /// node kind renders the SKIP-shaped tree against that build (VERIFIED
     /// LIVE: a FULL submit over SNAPSHOT history, explain_snapshot_history.jsonl
-    /// entry 60; an APPEND submit over FULL history,
-    /// explain_execution_type_change.jsonl `tv`), only for those kinds and
-    /// with the build and an upstream. Otherwise it renders nothing.
+    /// entry 60 and explain_reason_kind_cells.jsonl `sn_cz`; an APPEND submit
+    /// over FULL history, explain_execution_type_change.jsonl `tv`; every
+    /// incremental strategy and a snapshot over a FULL full refresh, with and
+    /// without an upstream, explain_reason_kind_cells.jsonl `*_e`, `*_ez`; a
+    /// custom node without one over a view build, `vc0`). Nothing for a VIEW
+    /// (#117), a custom node with an upstream (unreachable), without the
+    /// build, or over a build with other upstream names (#116).
     #[test]
     fn execution_type_change_renders_the_unchanged_tree_against_the_latest_build() {
         let changed = DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged);
@@ -2203,36 +2272,57 @@ mod tests {
             900,
         );
         let mut n = anchored(DecisionKind::Build, changed, 900, 900);
-        for et in [ModelExecutionType::Full, ModelExecutionType::Append] {
+        let rendered = [ModelExecutionType::Full, ModelExecutionType::Snapshot];
+        for et in rendered.into_iter().chain(INCREMENTALS) {
             n.execution_type = et as i32;
             skip.execution_type = et as i32;
             assert_eq!(render(&n), render(&skip), "{et:?}");
             assert_eq!(n.anchor.as_ref().map(|a| a.id), Some(7));
+            let (bare, bare_skip) = (
+                without_upstreams(n.clone()),
+                without_upstreams(skip.clone()),
+            );
+            assert_eq!(
+                render(&bare),
+                render(&bare_skip),
+                "{et:?} without upstreams"
+            );
         }
-        for et in [
-            ModelExecutionType::Merge,
-            ModelExecutionType::DeleteInsert,
-            ModelExecutionType::View,
-            ModelExecutionType::Snapshot,
-        ] {
-            n.execution_type = et as i32;
-            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
-        }
+        n.execution_type = ModelExecutionType::DbtCustom as i32;
+        skip.execution_type = ModelExecutionType::DbtCustom as i32;
+        assert!(explain_lines(&n).is_empty(), "custom with an upstream");
+        assert_eq!(
+            render(&without_upstreams(n.clone())),
+            render(&without_upstreams(skip.clone()))
+        );
+        n.execution_type = ModelExecutionType::View as i32;
+        assert!(
+            explain_lines(&without_upstreams(n.clone())).is_empty(),
+            "view"
+        );
         n.execution_type = ModelExecutionType::Full as i32;
         let mut unanchored = n.clone();
         unanchored.anchor = None;
         assert!(explain_lines(&unanchored).is_empty());
-        let mut no_upstream = n.clone();
-        no_upstream.input_tables.truncate(1);
-        assert!(explain_lines(&no_upstream).is_empty());
+        let mut other_upstreams = n.clone();
+        other_upstreams
+            .anchor
+            .as_mut()
+            .unwrap()
+            .input_tables
+            .clear();
+        assert!(explain_lines(&other_upstreams).is_empty());
     }
 
-    /// Own target modified, judged against an older build of the submit's
-    /// type: the SKIP-shaped tree for APPEND and MERGE too (VERIFIED LIVE
-    /// 2026-11-10/11, explain_incremental_append_merge_history.jsonl entries
-    /// 78-79, explain_execution_type_change.jsonl `mi`), with the build.
+    /// Own target modified: the SKIP-shaped tree against the matched build
+    /// for every incremental strategy, with and without an upstream
+    /// (VERIFIED LIVE 2026-11-10/11, explain_incremental_append_merge_history.jsonl
+    /// entries 78-79, explain_execution_type_change.jsonl `mi`,
+    /// explain_reason_kind_cells.jsonl `*_c`, `*_cz`, `*_e`, `*_ez`), with
+    /// the build. Nothing for a snapshot or a custom node, which hosted
+    /// reuses (#115), nor for a VIEW (#117).
     #[test]
-    fn own_target_modified_renders_the_unchanged_tree_for_append_and_merge() {
+    fn own_target_modified_renders_the_unchanged_tree_for_the_incrementals() {
         let modified = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified);
         let mut skip = anchored(
             DecisionKind::Skip,
@@ -2241,16 +2331,31 @@ mod tests {
             900,
         );
         let mut n = anchored(DecisionKind::Build, modified, 900, 900);
-        for et in [ModelExecutionType::Append, ModelExecutionType::Merge] {
+        for et in INCREMENTALS {
             n.execution_type = et as i32;
             skip.execution_type = et as i32;
             assert_eq!(render(&n), render(&skip), "{et:?}");
+            assert_eq!(
+                render(&without_upstreams(n.clone())),
+                render(&without_upstreams(skip.clone())),
+                "{et:?} without upstreams"
+            );
             let mut unanchored = n.clone();
             unanchored.anchor = None;
             assert!(explain_lines(&unanchored).is_empty(), "{et:?}");
         }
-        n.execution_type = ModelExecutionType::DeleteInsert as i32;
-        assert!(explain_lines(&n).is_empty());
+        for et in [
+            ModelExecutionType::Snapshot,
+            ModelExecutionType::DbtCustom,
+            ModelExecutionType::View,
+        ] {
+            n.execution_type = et as i32;
+            assert!(explain_lines(&n).is_empty(), "{et:?}");
+            assert!(
+                explain_lines(&without_upstreams(n.clone())).is_empty(),
+                "{et:?}"
+            );
+        }
     }
 
     /// An upstream the judged build did not record has no verdict: no badge
@@ -2828,21 +2933,34 @@ mod tests {
         );
     }
 
-    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt`, `dt_m`): a FULL
-    /// rebuild of an absent own target reads like a first build, for a
-    /// dropped Target relation and for one dropped while the logic changed.
-    /// No other reason was captured over an absent target.
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt`, `dt_m`; 2026-11-11,
+    /// explain_reason_kind_cells.jsonl `*_d`): a rebuild of an absent own
+    /// target reads like a first build, for a dropped Target relation and for
+    /// one dropped while the logic changed, for every model kind (the noun
+    /// follows the kind). No other reason was captured over an absent target.
     #[test]
     fn rebuild_of_an_absent_target_is_a_first_build() {
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
         ] {
-            let mut n = anchored(DecisionKind::Build, reason, 900, 900);
-            n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
-            let lines = explain_lines(&n);
-            assert_eq!(lines.len(), 1, "{reason:?}: {:?}", render(&n));
-            assert_eq!(lines[0].children[0].text, "the model table does not exist");
+            let kinds = [
+                ModelExecutionType::Full,
+                ModelExecutionType::Snapshot,
+                ModelExecutionType::View,
+                ModelExecutionType::DbtCustom,
+            ];
+            for et in kinds.into_iter().chain(INCREMENTALS) {
+                let mut n = anchored(DecisionKind::Build, reason, 900, 900);
+                n.execution_type = et as i32;
+                n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
+                let lines = explain_lines(&n);
+                assert_eq!(lines.len(), 1, "{reason:?} {et:?}: {:?}", render(&n));
+                assert_eq!(
+                    lines[0].children[0].text,
+                    format!("the {} table does not exist", n.noun())
+                );
+            }
         }
         let mut n = anchored(
             DecisionKind::Build,
@@ -2852,6 +2970,64 @@ mod tests {
         );
         n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+    }
+
+    /// The incremental strategies and a snapshot without genuine upstreams
+    /// render SHAPE 0 like a FULL model: `no upstream dependencies`, and no
+    /// upstream query line, for a reuse and for a logic change (VERIFIED LIVE
+    /// 2026-11-11, explain_reason_kind_cells.jsonl `*_z`).
+    #[test]
+    fn incrementals_and_snapshots_without_upstreams_say_no_upstream_dependencies() {
+        let kinds = [ModelExecutionType::Snapshot];
+        for et in kinds.into_iter().chain(INCREMENTALS) {
+            for reason in [
+                DecisionReason::Reused(Reuse::Fresh),
+                DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            ] {
+                let class = if reason == DecisionReason::Reused(Reuse::Fresh) {
+                    DecisionKind::Skip
+                } else {
+                    DecisionKind::Build
+                };
+                let mut n = without_upstreams(anchored(class, reason, 900, 900));
+                if class == DecisionKind::Build {
+                    n.unmatched = n.anchor.take();
+                }
+                n.execution_type = et as i32;
+                let lines = explain_lines(&n);
+                assert_eq!(lines.len(), 3, "{et:?} {reason:?}: {:?}", render(&n));
+                assert_eq!(
+                    lines[1].children.len(),
+                    1,
+                    "{et:?} {reason:?}: {:?}",
+                    render(&n)
+                );
+                assert_eq!(
+                    freshness_texts(&lines),
+                    ["no upstream dependencies"],
+                    "{et:?} {reason:?}"
+                );
+            }
+        }
+    }
+
+    /// An Upstream producer change renders SHAPE 9 with the per-upstream query
+    /// listing for every incremental strategy, as for FULL (VERIFIED LIVE
+    /// 2026-11-11, explain_reason_kind_cells.jsonl `*_q`), with the build.
+    #[test]
+    fn incremental_upstream_query_change_is_shape9() {
+        let changed = DecisionReason::UpstreamQueryChanged;
+        let mut full = anchored(DecisionKind::Build, changed, 5_000, 900);
+        full.input_tables[1].producer = Producer::Build("b".into());
+        let expected = render(&full);
+        assert!(!expected.is_empty());
+        for et in INCREMENTALS {
+            let mut n = full.clone();
+            n.execution_type = et as i32;
+            assert_eq!(render(&n), expected, "{et:?}");
+            n.anchor = None;
+            assert!(explain_lines(&n).is_empty(), "{et:?}");
+        }
     }
 
     /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `fe`, `st`, `wba`): a

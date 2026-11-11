@@ -557,6 +557,12 @@ fn within_lag_tolerance(ctx: &SubmitContext) -> bool {
 /// existing node ("query didn't match or upstream out of date").
 fn execute_description(execution_type: i32, had_prior: bool, reason: DecisionReason) -> String {
     if reason == DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified) {
+        // VERIFIED LIVE 2026-11-11 (explain_reason_kind_cells.jsonl `vc0`):
+        // hosted words a view's own-target modification by its definition.
+        if execution_type == ModelExecutionType::View as i32 {
+            return "model was executed because the view definition is newer than the cached execution"
+                .to_string();
+        }
         // VERIFIED LIVE (2026-11-10, lag_tolerance_matrix `ot*_u`).
         return format!(
             "{} was executed because the table was modified after the cached execution",
@@ -1141,6 +1147,22 @@ mod tests {
             "snapshot was a no-op because both its query and its upstream data are up to date"
         );
         assert_eq!(skip(9), "seed was a no-op because its data has not changed");
+
+        // Own target modified after the build: a view's wording names its
+        // definition (VERIFIED LIVE 2026-11-11, explain_reason_kind_cells.jsonl `vc0`).
+        let modified = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified);
+        assert_eq!(
+            execute_description(1, true, modified),
+            "model was executed because the table was modified after the cached execution"
+        );
+        assert_eq!(
+            execute_description(7, true, modified),
+            "snapshot was executed because the table was modified after the cached execution"
+        );
+        assert_eq!(
+            execute_description(10, true, modified),
+            "model was executed because the view definition is newer than the cached execution"
+        );
     }
 
     #[test]
