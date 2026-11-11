@@ -8,7 +8,8 @@ Decided (wayfinder ticket #21, map #19 — faithful warehouse-general
 persisted, and selects the tree shape. Amended by #73: the unmatched latest
 build's id is also persisted ([below](#decision)). Amended by #83/#90: an
 execution type change keeps the build it was judged against as
-`matched_execution_id` ([below](#decision)).
+`matched_execution_id` ([below](#decision)). Amended by #117: a view decision
+records whether its SQL reads a relation ([below](#decision)).
 
 ## Decision
 
@@ -66,6 +67,23 @@ caller already holds this id). Everything else is re-derived.
 > when the copy is registered; no verdict or tree is persisted, and the
 > anchor selection is unchanged. NULL on every other row and on a copy
 > registered before the migration, which renders as before.
+
+> **Amended by #117:** a view decision also records whether the view's SQL
+> reads a relation (`node_decisions.reads_relation BOOLEAN`, migration 0019):
+> a table or view it names in a FROM or JOIN, other than a CTE of the query,
+> judged once at submit time by parsing the request's SQL in the
+> warehouse's dialect (`Warehouse::sql_reads_relation`). Client 2.0.11
+> reports no upstreams for a view, and hosted words the view's tree from its
+> SQL: `no upstream dependencies` for a view that reads no relation (no FROM,
+> a CTE without FROM, VALUES, a table function), `upstream model queries have
+> not changed` and `upstream data is up to date` for a view over a `ref`
+> (`explain_view_reads_no_relation.jsonl`, `explain_reason_kind_cells.jsonl`
+> `vc0`, `cv0`). Explain reads the flag with the decision, org-scoped, and
+> never parses SQL or reads the warehouse itself; no verdict or tree is
+> persisted, and decisions never read the flag. NULL for every other node
+> kind, for a view whose SQL does not parse as one query, and for a view
+> decided before the migration: such a view without reported upstreams
+> renders nothing, because unknown evidence does not choose a wording.
 
 ## Why re-derive (not persist the tree)
 

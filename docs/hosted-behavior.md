@@ -26,6 +26,7 @@ Open questions and deliberate divergences live in
 | Table, view, incremental, snapshot, seed or test unchanged | — | skip | ✅ |
 | No prior execution | — | build | ✅ |
 | View, logic unchanged, upstream advanced | 10 | skip (the client omits upstreams from `tables[]`) | ✅ |
+| View whose SQL reads no relation (no FROM, a CTE without FROM, VALUES, a table function), unchanged or logic changed | 10 | skip / build; its Explain tree says `no upstream dependencies` with no `upstream model queries` line, where a view over a `ref` says `upstream data is up to date` (`explain_view_reads_no_relation.jsonl`) | ✅ (the decision records whether the view's SQL reads a relation, #117) |
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
 | Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |

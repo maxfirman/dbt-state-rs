@@ -241,15 +241,19 @@ server keeps the conservative behavior described.
   RegisterClone copy, is captured for every model kind (crafted
   `explain_copy_logic_crafted.jsonl` `x11`–`x19`): hosted rebuilds with
   6 / 6 and the first-build tree, as this server does.
-- **A view that reads no relation (#117).** Client 2.0.11 reports no upstreams
-  for any view, yet hosted's VIEW tree says `no upstream dependencies` when
-  the view's SQL reads no relation (`explain_reason_kind_cells.jsonl` `vc0`,
-  `cv0`) and `upstream data is up to date` when it reads a `ref`
-  (`explain_snapshot_history.jsonl` `s72vl`). Neither the decision nor its
-  matched build records which, so the server renders nothing for the two
-  captured VIEW cells (`own_target_modified`, `execution_type_changed`; keyed
-  `empty_tree` gaps, entries 246 and 377) and its VIEW SKIP arm would use the
-  second wording for a view reading no relation (no capture of that SKIP).
+- **A view that reads no relation (#117), resolved.** Client 2.0.11 reports
+  no upstreams for any view, yet hosted's VIEW tree says `no upstream
+  dependencies` (and omits `upstream model queries have not changed`) when
+  the view's SQL reads no relation, and `upstream data is up to date` when it
+  reads one (`explain_view_reads_no_relation.jsonl`: no FROM, a CTE without
+  FROM, VALUES and FLATTEN read none, a `ref` reads one; SKIP and SHAPE 7;
+  `explain_reason_kind_cells.jsonl` `vc0`, `cv0`). The decision now records
+  whether a view's SQL reads a relation (`node_decisions.reads_relation`,
+  migration 0019, ADR 0005 amendment), and Explain words the tree from it.
+  Still open: views whose SQL hosted parses differently from this server
+  (a single-part name shared by a CTE and a table in another scope counts as
+  the CTE here); a view whose SQL does not parse as one query renders
+  nothing.
 - **Snapshot SKIP wording past the Lag tolerance.** Hosted words every
   observed snapshot SKIP "both … up to date", including drift within the
   tolerance (`explain_snapshot_history.jsonl` entry 40). The `ALL`-policy
