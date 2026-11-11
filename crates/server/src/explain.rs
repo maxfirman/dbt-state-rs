@@ -286,6 +286,9 @@ enum Shape {
     FirstBuild,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
+    /// SHAPE 7 over a RegisterClone copy the submit could not adopt
+    /// ([`copy_logic_changed_tree`]).
+    CopyLogicChanged,
     /// Upstream-drift rebuild (catalog SHAPE 9), rendered against the anchor.
     UpstreamOutdated,
     /// The SKIP-shaped rebuild against the anchor: own target modified after
@@ -300,6 +303,10 @@ enum Shape {
     CopyOver,
     /// CLONE (`vs clone` sections).
     Clone,
+    /// A build whose copy of an equivalent the submit disallowed
+    /// (`allow_clones: false`): `table analysis` names the equivalent
+    /// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`).
+    CopyDisabled,
     /// A data test that executes: its tested upstreams, without verdicts
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
@@ -478,16 +485,48 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         {
             Shape::QueryChanged
         }
+        // Over a copy whose Target relation is gone, a first build, as for an
+        // identity mismatch: captured for FULL and APPEND
+        // (explain_copy_logic_crafted.jsonl `x11`, `x12`).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch))
+            if node.own_target_absent() =>
+        {
+            if !matches!(
+                kind,
+                Some(ModelExecutionType::Full | ModelExecutionType::Append)
+            ) {
+                return None;
+            }
+            Shape::FirstBuild
+        }
+        // SHAPE 7 over a RegisterClone copy whose logic differs from its
+        // source build's, even read in the copy source's schema, judged
+        // against the copy: captured for every model kind that can follow a
+        // copy, with and without upstreams, except a view with one, which
+        // client 2.0.11 never reports (explain_copy_logic_mismatch.jsonl,
+        // explain_copy_logic_crafted.jsonl). A stale one whose summary would
+        // carry a Lag tolerance line is not captured (unlike an identity
+        // mismatch, `fr_*`), so it renders nothing, even with a recorded age.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch))
+            if copy_logic_mismatch_captured(kind, !node.genuine_upstreams().is_empty())
+                && !node.own_target_absent()
+                && !query_changed_needs_tolerance_line(node) =>
+        {
+            Shape::CopyLogicChanged
+        }
         (DecisionKind::Clone, R::ResultCopy)
             if node.anchor.is_some() && !node.own_target_absent() =>
         {
             Shape::CopyOver
         }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
+        // Captured for FULL only, the one kind a submit copies (#101).
+        (DecisionKind::Build, R::CopyDisabled)
+            if full && node.own_target_absent() && node.clone_source.is_some() =>
+        {
+            Shape::CopyDisabled
+        }
         // Everything else renders nothing:
-        // - a rebuild over a RegisterClone copy whose logic differs from its
-        //   source build's, even read in the copy source's schema
-        //   (`copy_logic_mismatch`): no capture (#104);
         // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
         //   `own_target_changed_or_missing` (#80), `no_build_anchor` (#82),
         //   and `own_target_modified` with upstreams but no matched build (the
@@ -534,11 +573,13 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Skip) => skip_tree(node),
         Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
         Some(Shape::QueryChanged) => query_changed_tree(node),
+        Some(Shape::CopyLogicChanged) => copy_logic_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
         Some(Shape::OwnTargetModified) => skip_tree(node),
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
+        Some(Shape::CopyDisabled) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
     }
 }
@@ -646,6 +687,18 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     let mut children = vec![upstream_dependencies_freshness(node, &upstreams)];
     children.extend(freshness_summary(node));
     section("data freshness analysis", children)
+}
+
+/// Whether the anchor is a client-requested copy (RegisterClone) whose source
+/// build recorded at least one input (`clone_source_inputs`, migration 0018).
+fn copy_source_read_upstreams(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|a| {
+        a.clone_source_table.is_some()
+            && a.node_sql_hash.is_none()
+            && a.clone_source_inputs
+                .as_ref()
+                .is_some_and(|i| !i.is_empty())
+    })
 }
 
 /// Every genuine upstream's current epoch equals the epoch recorded for it at
@@ -960,6 +1013,61 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     ]
 }
 
+/// Whether a capture backs the SHAPE 7 tree over a RegisterClone copy for
+/// `kind` with (`upstreams`) or without genuine upstreams.
+fn copy_logic_mismatch_captured(kind: Option<ModelExecutionType>, upstreams: bool) -> bool {
+    use ModelExecutionType as K;
+    match kind {
+        Some(K::View) => !upstreams,
+        Some(
+            K::Full
+            | K::Append
+            | K::Merge
+            | K::InsertOverwrite
+            | K::DeleteInsert
+            | K::Microbatch
+            | K::Snapshot
+            | K::DbtCustom,
+        ) => true,
+        _ => false,
+    }
+}
+
+/// SHAPE 7 judged against a RegisterClone copy (VERIFIED LIVE 2026-11-11,
+/// explain_copy_logic_mismatch.jsonl, explain_copy_logic_crafted.jsonl). With
+/// genuine upstreams it is the ordinary SHAPE 7 listing. Without any, the
+/// upstreams the copy's source build recorded decide, whatever the node kind:
+/// with none, `no upstream dependencies` and no `upstream model queries`
+/// line (crafted `x2`–`x10`); with some (a view over an incremental's copy,
+/// `kv4`), the `upstream model queries have not changed` line and an empty
+/// `data freshness analysis` section.
+fn copy_logic_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    if !node.genuine_upstreams().is_empty() {
+        return query_changed_tree(node);
+    }
+    let source_read = copy_source_read_upstreams(&judged_against_unmatched(node));
+    let mut query = vec![leaf(
+        format!("the {} query has changed", node.noun()),
+        Some(MARKER_FAIL),
+        Some(BADGE_NODE_QUERY_CHANGED),
+    )];
+    let mut freshness = Vec::new();
+    if source_read {
+        query.push(leaf(
+            "upstream model queries have not changed",
+            Some(MARKER_SUCCESS),
+            None,
+        ));
+    } else {
+        freshness.push(leaf("no upstream dependencies", Some(MARKER_SUCCESS), None));
+    }
+    vec![
+        table_analysis_exists(node),
+        section("query analysis", query),
+        section("data freshness analysis", freshness),
+    ]
+}
+
 /// The node with its freshness anchor replaced by the unmatched latest build,
 /// which SHAPE 7 judges its listing against.
 fn judged_against_unmatched(node: &ExplainNode) -> ExplainNode {
@@ -969,16 +1077,20 @@ fn judged_against_unmatched(node: &ExplainNode) -> ExplainNode {
     }
 }
 
-/// Whether SHAPE 7's summary needs a Lag tolerance line it cannot word: the
-/// rebuild is stale (an older matching build would have been reused stale,
+/// Whether SHAPE 7's summary would carry a Lag tolerance line: the rebuild
+/// is stale (an older matching build would have been reused stale,
 /// `submit_decision::older_match`), the tolerance is non-zero and an upstream
-/// drifted against the unmatched build, but the decision recorded no build
-/// age for that older build (a row written before #104 recorded it).
+/// drifted against the unmatched build. Captured for an identity mismatch
+/// (explain_freshness_cells.jsonl `fr_*`), not over a RegisterClone copy.
+fn query_changed_needs_tolerance_line(node: &ExplainNode) -> bool {
+    node.is_stale && node.tolerance_ms > 0 && has_outdated_upstream(&judged_against_unmatched(node))
+}
+
+/// Whether SHAPE 7's summary needs a Lag tolerance line it cannot word: it
+/// needs one ([`query_changed_needs_tolerance_line`]), but the decision
+/// recorded no build age for that older build (a row written before #104).
 fn query_changed_lacks_build_age(node: &ExplainNode) -> bool {
-    node.is_stale
-        && node.tolerance_ms > 0
-        && node.build_age_ms.is_none()
-        && has_outdated_upstream(&judged_against_unmatched(node))
+    query_changed_needs_tolerance_line(node) && node.build_age_ms.is_none()
 }
 
 /// Whether the anchored decision has an upstream whose drift is proven: its
@@ -1122,6 +1234,32 @@ fn first_build_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
                 format!(
                     "there is no other table that the {} could be cloned from",
                     node.noun()
+                ),
+                Some(MARKER_FAIL),
+                None,
+            ),
+        ],
+    )
+}
+
+/// `table analysis` for a build whose copy the submit disallowed: the table
+/// does not exist, and the equivalent it could have been copied from
+/// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`).
+fn copy_disabled_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
+    let source = node.clone_source.clone().unwrap_or_default();
+    section(
+        format!("table analysis ({})", fqn(node)),
+        vec![
+            leaf(
+                format!("the {} table does not exist", node.noun()),
+                Some(MARKER_FAIL),
+                None,
+            ),
+            leaf(
+                format!(
+                    "the {} table could have been cloned from {}, but cloning is disabled",
+                    node.noun(),
+                    quote(&source)
                 ),
                 Some(MARKER_FAIL),
                 None,
@@ -1966,6 +2104,8 @@ mod tests {
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,
             DecisionReason::CopyChainLimit,
+            // Without the equivalent it could have been copied from.
+            DecisionReason::CopyDisabled,
             // Without an anchor neither SHAPE 9 tree can render.
             DecisionReason::UpstreamOutdated,
             DecisionReason::UpstreamQueryChanged,
@@ -2026,6 +2166,7 @@ mod tests {
             (DecisionKind::Build, DecisionReason::ResultCopy),
             (DecisionKind::Clone, DecisionReason::Reused(Reuse::Fresh)),
             (DecisionKind::Clone, DecisionReason::CopyChainLimit),
+            (DecisionKind::Clone, DecisionReason::CopyDisabled),
         ] {
             let mut n = node(d, ModelExecutionType::Full as i32, decision::DESC_EXECUTE);
             n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
@@ -2138,23 +2279,182 @@ mod tests {
     }
 
     /// A rebuild over a RegisterClone copy the submit could not adopt, even
-    /// read in the copy source's schema (#93), has no capture (#104), so it
-    /// renders nothing, never a "query has changed" tree, for a model, a
-    /// snapshot and an incremental alike.
+    /// read in the copy source's schema (#93), renders SHAPE 7 judged against
+    /// the copy (VERIFIED LIVE 2026-11-11): with an upstream, the ordinary
+    /// SHAPE 7 listing (explain_copy_logic_mismatch.jsonl, the five
+    /// incrementals, a snapshot and a custom node; crafted `x1`, a table).
+    /// Without one, what the copy's source build recorded decides: `no
+    /// upstream dependencies` when it recorded none (crafted `x2`–`x10`), an
+    /// empty freshness section after `upstream model queries have not
+    /// changed` when it recorded some (`kv4`, a view). A view with an upstream
+    /// (never reported by client 2.0.11) and an absent Target relation render
+    /// nothing.
     #[test]
-    fn copy_logic_mismatch_renders_nothing() {
-        for et in [
-            ModelExecutionType::Full,
-            ModelExecutionType::Snapshot,
-            ModelExecutionType::Append,
-            ModelExecutionType::Merge,
-        ] {
+    fn copy_logic_mismatch_renders_shape7_against_the_copy() {
+        use ModelExecutionType as K;
+        const UP: &str = "\"DB\".\"RAW\".\"UP\"";
+        let rebuild = |et: K, upstream: bool, source_read: bool| {
             let mut n = node(DecisionKind::Build, et as i32, decision::DESC_EXECUTE);
             n.reason = Some(DecisionReason::NoReuseCandidate(
                 NoCandidate::CopyLogicMismatch,
             ));
-            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
+            if upstream {
+                n.input_tables.push(tbl(UP));
+            }
+            n.unmatched = Some(ExecutionRow {
+                target_table: "\"DB\".\"S\".\"T\"".into(),
+                execution_type: K::Append as i32,
+                last_modified_epoch: Some(1_000),
+                clone_source_table: Some("\"DB\".\"PROD\".\"T\"".into()),
+                input_tables: if upstream { vec![tbl(UP)] } else { Vec::new() },
+                clone_source_inputs: Some(if source_read {
+                    vec![UP.into()]
+                } else {
+                    Vec::new()
+                }),
+                ..ExecutionRow::default()
+            });
+            n
+        };
+        let kinds = [
+            K::Full,
+            K::Append,
+            K::Merge,
+            K::InsertOverwrite,
+            K::DeleteInsert,
+            K::Microbatch,
+            K::Snapshot,
+            K::DbtCustom,
+        ];
+        for et in kinds {
+            let n = rebuild(et, true, true);
+            let mut shape7 = n.clone();
+            shape7.reason = Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::IdentityMismatch,
+            ));
+            assert!(!explain_lines(&n).is_empty(), "{et:?}");
+            assert_eq!(render(&n), render(&shape7), "{et:?}");
         }
+        let noun = |et| {
+            if et == K::Snapshot {
+                "snapshot"
+            } else {
+                "model"
+            }
+        };
+        for et in kinds.into_iter().chain([K::View]) {
+            assert_eq!(
+                render(&rebuild(et, false, false)),
+                vec![
+                    (0, "table analysis («FQN»)".to_string(), None, None),
+                    (
+                        1,
+                        format!("the {} table exists already", noun(et)),
+                        Some(MARKER_SUCCESS),
+                        Some(BADGE_TARGET_TABLE_EXISTS)
+                    ),
+                    (0, "query analysis".to_string(), None, None),
+                    (
+                        1,
+                        format!("the {} query has changed", noun(et)),
+                        Some(MARKER_FAIL),
+                        Some(BADGE_NODE_QUERY_CHANGED)
+                    ),
+                    (0, "data freshness analysis".to_string(), None, None),
+                    (
+                        1,
+                        "no upstream dependencies".to_string(),
+                        Some(MARKER_SUCCESS),
+                        None
+                    ),
+                ],
+                "{et:?}"
+            );
+        }
+        assert_eq!(
+            render(&rebuild(K::View, false, true)),
+            vec![
+                (0, "table analysis («FQN»)".to_string(), None, None),
+                (
+                    1,
+                    "the model table exists already".to_string(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS)
+                ),
+                (0, "query analysis".to_string(), None, None),
+                (
+                    1,
+                    "the model query has changed".to_string(),
+                    Some(MARKER_FAIL),
+                    Some(BADGE_NODE_QUERY_CHANGED)
+                ),
+                (
+                    1,
+                    "upstream model queries have not changed".to_string(),
+                    Some(MARKER_SUCCESS),
+                    None
+                ),
+                (0, "data freshness analysis".to_string(), None, None),
+            ]
+        );
+        assert!(explain_lines(&rebuild(K::View, true, true)).is_empty());
+        // Over a dropped copy: the first-build tree for FULL and APPEND
+        // (crafted `x11`, `x12`), nothing for the other kinds.
+        for et in kinds {
+            let mut absent = rebuild(et, true, true);
+            absent.input_tables.retain(|t| t.name == UP);
+            let lines = render(&absent);
+            if matches!(et, K::Full | K::Append) {
+                assert_eq!(lines[1].1, "the model table does not exist", "{et:?}");
+                assert_eq!(lines.len(), 3, "{et:?}");
+            } else {
+                assert!(lines.is_empty(), "{et:?}: {lines:?}");
+            }
+        }
+    }
+
+    /// A FULL build whose copy of an equivalent the submit disallowed
+    /// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`)
+    /// names the equivalent; the chain-limit build, which no 2.0.11 capture
+    /// shows, renders nothing, as does a disallowed copy without its source.
+    #[test]
+    fn copy_disabled_names_the_equivalent() {
+        let mut n = node(
+            DecisionKind::Build,
+            ModelExecutionType::Full as i32,
+            "model was executed because cloning is disabled",
+        );
+        n.reason = Some(DecisionReason::CopyDisabled);
+        n.input_tables = vec![tbl("\"DB\".\"RAW\".\"UP\"")];
+        n.clone_source = Some("\"DB\".\"PROD\".\"T\"".into());
+        let lines = explain_lines(&n);
+        assert_eq!(lines.len(), 1);
+        let texts: Vec<_> = lines[0]
+            .children
+            .iter()
+            .map(|l| (l.text.as_str(), l.marker, l.badge))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("the model table does not exist", Some(MARKER_FAIL), None),
+                (
+                    "the model table could have been cloned from \"DB\".\"PROD\".\"T\", but cloning is disabled",
+                    Some(MARKER_FAIL),
+                    None
+                ),
+            ]
+        );
+
+        let mut chain = n.clone();
+        chain.reason = Some(DecisionReason::CopyChainLimit);
+        assert!(explain_lines(&chain).is_empty());
+        let mut unnamed = n.clone();
+        unnamed.clone_source = None;
+        assert!(explain_lines(&unnamed).is_empty());
+        let mut snapshot = n;
+        snapshot.execution_type = ModelExecutionType::Snapshot as i32;
+        assert!(explain_lines(&snapshot).is_empty());
     }
 
     /// A SKIP that reused a RegisterClone copy (VERIFIED LIVE 2026-11-11,
@@ -2430,6 +2730,30 @@ mod tests {
         );
         let unrecorded = shape7(5_000, None);
         assert_eq!(freshness_texts(&unrecorded), ["upstream dependencies"]);
+    }
+
+    /// The same stale rebuild over a RegisterClone copy it could not adopt
+    /// (`copy_logic_mismatch`) is not captured with a Lag tolerance line, so
+    /// it renders nothing even with the older build's recorded age (#104).
+    #[test]
+    fn stale_copy_logic_mismatch_under_drift_renders_nothing() {
+        let mut n = anchored(
+            DecisionKind::Build,
+            DecisionReason::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
+            5_000,
+            900,
+        );
+        n.unmatched = n.anchor.take().map(|mut copy| {
+            copy.clone_source_table = Some("\"DB\".\"PROD\".\"T\"".into());
+            copy.clone_source_inputs =
+                Some(copy.input_tables.iter().map(|t| t.name.clone()).collect());
+            copy
+        });
+        n.tolerance_ms = 2_700_000;
+        assert!(!explain_lines(&n).is_empty(), "fresh copy logic mismatch");
+        n.is_stale = true;
+        n.build_age_ms = Some(32_000);
+        assert!(explain_lines(&n).is_empty());
     }
 
     /// VERIFIED LIVE (2026-11-11, explain_freshness_cells.jsonl `fr_*`): an

@@ -116,6 +116,18 @@ Source fixtures (`golden/fixtures/`):
   and INSERT_OVERWRITE (`i1`, `i2`), the `2` probes with a current
   equivalent elsewhere (`experiments/rebuild_tolerance_line_probes.py`).
   Only those two end with a Lag tolerance line.
+- `explain_copy_logic_mismatch.jsonl` (client 2.0.11, #104): rebuilds over
+  a dev-clone pre-step copy. Five incrementals and a snapshot change their
+  logic before the copy. Three append incrementals are copied unchanged,
+  then become a table, a view and a custom node. A table with a prod
+  equivalent is built under `allow_clones: false`. Captured by
+  `experiments/explain_capture.py copy_logic_mismatch`.
+- `explain_copy_logic_crafted.jsonl` (#104): crafted probe `x1`, a table
+  whose kind and logic both changed over an append incremental's
+  RegisterClone copy (`experiments/copy_logic_probes.py`).
+- `explain_malformed_requests.jsonl` (#104): crafted probe `e4`, a model
+  whose query dependency is listed twice (`experiments/malformed_requests.py`).
+  Hosted SKIPs the resubmit; keyed divergence #114.
 
 ## How to read this catalog
 
@@ -138,7 +150,7 @@ original characterization capture; their meaning:
 |---|---|
 | 0 | FULL model, custom node or data test SKIP with no genuine upstreams: no "upstream model queries" line; freshness body `no upstream dependencies`. |
 | 1, 2, 4 | SKIPs that carry `upstream model queries have not changed` (a view, a data test, or any node with a genuine upstream). |
-| 7 | Node-query-changed EXECUTE, for `no_reuse_candidate.identity_mismatch` only ([Shape selection](#shape-selection)). |
+| 7 | Node-query-changed EXECUTE, for `no_reuse_candidate.identity_mismatch` and `no_reuse_candidate.copy_logic_mismatch` only ([Shape selection](#shape-selection)). |
 | 8 | SKIP with the anchored per-upstream `<FRESH>` listing (`explain_tolerance.jsonl` entry 1). |
 | 9 | Upstream EXECUTE rendered against the matched build: per-upstream query and freshness listings. |
 
@@ -176,22 +188,23 @@ append/merge fixtures, the 20 in the three insert_overwrite,
 delete+insert and microbatch fixtures, the 5 in
 `explain_incremental_copy_over.jsonl`, the 5 in
 `explain_execution_type_change.jsonl`, the 4 in
-`explain_post_copy_identity.jsonl` and the 18 in
-`explain_freshness_cells.jsonl`, which come from 2.0.11.
+`explain_post_copy_identity.jsonl`, the 18 in
+`explain_freshness_cells.jsonl` and the 10 in
+`explain_copy_logic_mismatch.jsonl`, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-11) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 24 (5 client, 19 crafted), EXECUTE 40 (8 client, 32 crafted), CLONE 8 (1 client, 7 crafted) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 7, EXECUTE 9, all client 2.0.11 (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 9, all client 2.0.11 (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4 (client 2.0.11), EXECUTE 8 (6 client 2.0.11, 2 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4, EXECUTE 6, all client 2.0.11 (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 7, all client 2.0.11 (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 7 (client 2.0.11), EXECUTE 8 (6 client 2.0.11, 2 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 10 (7 client 2.0.11, 1 client 2.0.6, 2 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit.jsonl`) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 25 (5 client, 20 crafted), EXECUTE 45 (10 client, 35 crafted), CLONE 8 (1 client, 7 crafted) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 8 (7 client 2.0.11, 1 crafted), EXECUTE 12 (10 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 11 (10 client 2.0.11, 1 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5 (4 client 2.0.11, 1 crafted), EXECUTE 10 (7 client 2.0.11, 3 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4, EXECUTE 8 (7 client 2.0.11, 1 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 9 (8 client 2.0.11, 1 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 8 (7 client 2.0.11, 1 crafted), EXECUTE 10 (7 client 2.0.11, 3 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 11 (7 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit.jsonl`, `explain_malformed_requests.jsonl`) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
-| 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 1 (client 2.0.6); EXECUTE 2 (client 2.0.11); CLONE 0 |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 6, EXECUTE 6, all client 2.0.11 (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`) |
+| 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 2 (1 client 2.0.6, 1 crafted); EXECUTE 4 (3 client 2.0.11, 1 crafted); CLONE 0 |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 7 (6 client 2.0.11, 1 crafted), EXECUTE 8 (7 client 2.0.11, 1 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -199,9 +212,11 @@ delete+insert and microbatch fixtures, the 5 in
    ([Ambiguous rebuild reasons](#ambiguous-rebuild-reasons)). The rebuild
    over a RegisterClone copy whose logic differs from the copy's source
    build, even read in the source's schema
-   (`no_reuse_candidate.copy_logic_mismatch`), has no capture: out of scope
-   → #104, for any kind. The rebuild after a node kind change renders the
-   [execution type change](#execute-execution-type-change) tree.
+   (`no_reuse_candidate.copy_logic_mismatch`), renders SHAPE 7 judged
+   against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)).
+   The rebuild after a node kind change renders the
+   [execution type change](#execute-execution-type-change) tree, also over a
+   copy.
 2. Except the reload of an externally modified seed table, which is
    local-only, empty tree: hosted SKIPs it
    ([correctness-handoff.md](correctness-handoff.md), "Seed table externally
@@ -227,11 +242,12 @@ delete+insert and microbatch fixtures, the 5 in
 5. The client's `execution_type_from_input` always yields a concrete kind
    ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
    these values fenced regardless.
-6. Except a rebuild over a RegisterClone copy that the submit cannot adopt
-   (`no_reuse_candidate.copy_logic_mismatch`, no capture, → #104): the
-   server renders nothing for it. Hosted reuses a copy whose post-copy submit
-   has the source build's logic read in the source's schema (#93,
-   `explain_snapshot_register_clone.jsonl`,
+6. Including the rebuild over a RegisterClone copy that the submit cannot
+   adopt (`no_reuse_candidate.copy_logic_mismatch`, live 2026-11-11, #104,
+   `explain_copy_logic_mismatch.jsonl`): SHAPE 7 judged against the copy
+   ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)).
+   Hosted reuses a copy whose post-copy submit has the source build's logic
+   read in the source's schema (#93, `explain_snapshot_register_clone.jsonl`,
    `explain_post_copy_identity.jsonl`), and so does this server.
 7. Live, 2026-11-10 (#76). On submit, hosted answers a dev snapshot whose
    equivalent exists in prod with 1 / 3, as for a view
@@ -268,9 +284,10 @@ delete+insert and microbatch fixtures, the 5 in
     only to an upstream the copy's source build recorded; an upstream
     resolved per target under another name is listed with its `last updated`
     line only ([SNAPSHOT](#snapshot)).
-12. Except the rebuild over an unadopted copy (no capture, → #104):
-    local-only, empty tree. The rebuild after a `--full-refresh` run and other
-    execution type changes: [EXECUTE: execution type change](#execute-execution-type-change).
+12. Including the rebuild over an unadopted copy (live 2026-11-11, #104):
+    [Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy).
+    The rebuild after a `--full-refresh` run and other execution type changes:
+    [EXECUTE: execution type change](#execute-execution-type-change).
 13. Live 2026-11-11 (#73 73c, #101), one attempt for all five strategies
     (`explain_incremental_copy_over.jsonl`). Hosted 2.0.11 has no
     explainable incremental CLONE decision. Its copy through the dev-clone
@@ -293,29 +310,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 195 trees in the
+Line counts from the [census](#explain-tree-census) over the 224 trees in the
 tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1304 lines without a marker, 1445 without a badge). Only an explicit `0` is
+(1448 lines without a marker, 1621 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 516 lines |
-| ExplainMarker | FAIL (2) | ✅ 183 lines |
-| ExplainMarker | INFO (3) | not observed across 195 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 195 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 151 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 30 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 132 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 591 lines |
+| ExplainMarker | FAIL (2) | ✅ 207 lines |
+| ExplainMarker | INFO (3) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 176 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 48 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 140 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 89 lines |
+| ExplainBadge | FRESH (1) | ✅ 105 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 82 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 195 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 195 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 116 from client 2.0.11 and 70 for crafted
+1. The 224 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 126 from client 2.0.11 and 89 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -338,34 +355,34 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-11 (195 trees, none empty, no findings):
+Tracked fixtures, 2026-11-11 (224 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 24 | 19 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
-| FULL | EXECUTE | 40 | 32 crafted, 6 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | SKIP | 25 | 20 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
+| FULL | EXECUTE | 45 | 35 crafted, 8 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
-| APPEND | SKIP | 7 | client 2.0.11 |
-| APPEND | EXECUTE | 9 | client 2.0.11 |
+| APPEND | SKIP | 8 | 7 client 2.0.11, 1 crafted |
+| APPEND | EXECUTE | 12 | 10 client 2.0.11, 2 crafted |
 | MERGE | SKIP | 5 | client 2.0.11 |
-| MERGE | EXECUTE | 9 | client 2.0.11 |
-| INSERT_OVERWRITE | SKIP | 4 | client 2.0.11 |
-| INSERT_OVERWRITE | EXECUTE | 8 | 6 client 2.0.11, 2 crafted |
+| MERGE | EXECUTE | 11 | 10 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | SKIP | 5 | 4 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | EXECUTE | 10 | 7 client 2.0.11, 3 crafted |
 | DELETE_INSERT | SKIP | 4 | client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 6 | client 2.0.11 |
+| DELETE_INSERT | EXECUTE | 8 | 7 client 2.0.11, 1 crafted |
 | MICROBATCH | SKIP | 5 | client 2.0.11 |
-| MICROBATCH | EXECUTE | 7 | client 2.0.11 |
-| SNAPSHOT | SKIP | 7 | client 2.0.11 |
-| SNAPSHOT | EXECUTE | 8 | 6 client 2.0.11, 2 crafted |
-| DBT_DATA_TEST | SKIP | 10 | 7 client 2.0.11, 2 crafted, 1 client 2.0.6 |
+| MICROBATCH | EXECUTE | 9 | 8 client 2.0.11, 1 crafted |
+| SNAPSHOT | SKIP | 8 | 7 client 2.0.11, 1 crafted |
+| SNAPSHOT | EXECUTE | 10 | 7 client 2.0.11, 3 crafted |
+| DBT_DATA_TEST | SKIP | 11 | 7 client 2.0.11, 3 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
 | VALUES | SKIP | 1 | crafted |
 | VALUES | EXECUTE | 5 | crafted |
 | VALUES | CLONE | 1 | client 2.0.11 (fenced, #91) |
-| VIEW | SKIP | 1 | client 2.0.6 |
-| VIEW | EXECUTE | 2 | client 2.0.11 |
-| DBT_CUSTOM | SKIP | 6 | client 2.0.11 |
-| DBT_CUSTOM | EXECUTE | 6 | client 2.0.11 |
+| VIEW | SKIP | 2 | 1 client 2.0.6, 1 crafted |
+| VIEW | EXECUTE | 4 | 3 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | SKIP | 7 | 6 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | EXECUTE | 8 | 7 client 2.0.11, 1 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -420,7 +437,9 @@ Freshness body (`explain.rs::data_freshness_analysis_fresh`):
 
 ### EXECUTE: node query changed (SHAPE 7)
 
-Decision reason `no_reuse_candidate.identity_mismatch` only.
+Decision reasons `no_reuse_candidate.identity_mismatch` and, over a
+RegisterClone copy, `no_reuse_candidate.copy_logic_mismatch`
+([below](#execute-rebuild-over-a-registerclone-copy)).
 `explain_snapshot_history.jsonl` (`s72fl`, `s72vl`, `s72sl`),
 `explain_incremental_append_merge_history.jsonl` (`a73b`, `m73b`, `a73t`,
 `m73t`), `explain_rebuild_reason_gaps.jsonl` (`r40q`).
@@ -548,15 +567,89 @@ type ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type
 | FULL (RecordExecutions full refresh), APPEND/MERGE (`a73b`, `m73b`) | APPEND, MERGE | same | same |
 | FULL (RecordExecutions full refresh), APPEND (`rf`) | FULL | SKIP | SKIP tree |
 | VIEW, FULL (`tv`) | FULL | EXECUTE, 8 / 7 (a view sends other semantic extras, so its build has another identity) | SHAPE 7, its upstream not recorded by the view build |
+| an APPEND RegisterClone copy (`explain_copy_logic_mismatch.jsonl` `kf4`) | FULL, same SQL and semantic extras | EXECUTE, 2 / 2, "either its query didn't match …" | SKIP tree against the copy, `upstream data is up to date` |
 
 The tree for 2 / 2 is the SKIP tree (`the model table exists already`, `the
 model query has not changed`, `upstream model queries have not changed`, the
 listing and summary) judged against the latest build, whose id the decision
-persists as its matched build (ADR 0005). It renders for FULL and APPEND with
-an upstream, the captured cells; other kinds render nothing (→ #104).
+persists as its matched build (ADR 0005). A RegisterClone copy has the
+submit's identity when the submit has the logic the copy inherited from its
+source build (the [post-copy identity](#snapshot), #93), whatever their
+execution types: a FULL submit over an append copy is this rebuild. It
+renders for FULL and APPEND with an upstream, the captured cells; other kinds
+render nothing (→ #104).
 
 2. The scenario explained those nodes after a later build of another node,
    and `dbt state explain` explained nothing for them.
+
+### EXECUTE: rebuild over a RegisterClone copy
+
+`explain_copy_logic_mismatch.jsonl` (client 2.0.11, #104),
+`explain_copy_logic_crafted.jsonl` (crafted `x1`). The client copies a node
+with `RegisterClone` only in its dev-clone pre-step, which handles incremental
+models and snapshots only
+(`run_cache_dev_clone.rs::dev_clone_candidate_for_node`). The post-copy
+submit of the same run has the copy's execution type. A submit of another
+kind lands on the copy only in a later run, after the node's materialization
+changed.
+
+| Submit over the copy | Decision, codes | Reason | Tree |
+|---|---|---|---|
+| same kind, other logic: the five strategies (`la4`–`lb4`), a snapshot (`ls4`) | EXECUTE, 6 / 6, "either its query didn't match …" | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 against the copy: upstream `<FRESH>`, `no updates since "«FQN»" last executed` (the copy), `upstream data is up to date` |
+| a table (FULL) over an append copy, same SQL and semantic extras (`kf4`) | EXECUTE, 2 / 2 | `no_reuse_candidate.execution_type_changed` | [execution type change](#execute-execution-type-change) |
+| a table (FULL) over an append copy, other logic (crafted `x1`) | EXECUTE, 6 / 6 | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 against the copy, as above |
+| a custom node over an append copy, same SQL (`kc4`) | EXECUTE, 6 / 6 (a custom node sends other semantic extras) | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 against the copy, as above |
+| a view over an append copy, same SQL (`kv4`) | EXECUTE, 6 / 6 (a view sends other semantic extras) | `no_reuse_candidate.copy_logic_mismatch` | SHAPE 7 with an empty `data freshness analysis` section: the view reports no upstreams, but the copy's source build read one |
+
+The copy records no inputs of its own. As for a reused copy, the submit's
+inputs stand in, each at the copy's epoch or earlier
+(`reuse_candidate::adopt_current_inputs`, applied to the unmatched build in
+`ExplainDecisionRow::unmatched`).
+
+Crafted probes (`explain_copy_logic_crafted.jsonl`, `x2`–`x12`) cover the
+cells the client run did not:
+
+- **No genuine upstreams.** For FULL, all five strategies, a snapshot, a view
+  and a custom node over a copy whose source build read none (`x2`–`x10`):
+  6 / 6 and
+  ```
+  - table analysis ("«FQN»")
+    - the model table exists already                  [SUCCESS] <TARGET_TABLE_EXISTS>
+  - query analysis
+    - the model query has changed                     [FAIL]    <NODE_QUERY_CHANGED>
+  - data freshness analysis
+    - no upstream dependencies                        [SUCCESS]
+  ```
+  (`snapshot` as the noun for a snapshot). Over a copy whose source build
+  read an upstream, a view keeps `upstream model queries have not changed`
+  and an empty freshness section (`kv4`). The copy's source build decides,
+  not the node kind (`explain.rs::copy_logic_changed_tree`).
+- **The copy's Target relation dropped** (`x11` append, `x12` table): 6 / 6,
+  "its table did not exist", and the [first-build](#first-build) tree.
+
+This server renders these trees for every model kind except a view with an
+upstream, which client 2.0.11 never reports
+([Decision reason coverage](#decision-reason-coverage) ᵇ), and, over a
+dropped copy, for FULL and APPEND only.
+
+### EXECUTE: copy disabled (`allow_clones: false`)
+
+`explain_copy_logic_mismatch.jsonl` `cf4` (client 2.0.11). A table whose
+Target relation is absent and whose equivalent exists in prod, built under a
+profile with `allow_clones: false`. Client 2.0.11 sends `allow_clones: false`
+with `clone_chain_depth_limit: 0`. Hosted builds it with codes 1 / 10
+(TARGET_TABLE_MISMATCH / CLONE_CHAIN_LIMIT_EXCEEDED) and "model was executed
+because cloning is disabled" (Decision reason `copy_disabled`):
+```
+- table analysis ("«FQN»")
+  - the model table does not exist                    [FAIL]
+  - the model table could have been cloned from "«FQN»", but cloning is disabled  [FAIL]
+```
+The second `«FQN»` is the equivalent, persisted as the decision's copy
+source. Client 2.0.6 sent `clone_chain_depth_limit: 0` alone, and hosted
+answered the same codes with "model was executed because the maximum number
+of nested clones has been reached" (`clone_submit_allow_clones_false.jsonl`,
+no Explain; Decision reason `copy_chain_limit`). That reason renders nothing.
 
 ### First build
 
@@ -593,6 +686,7 @@ and `an upstream model query has changed` keep `model`.
 | post-copy submit after the RegisterClone pre-step, over a fixed prod source (`c76rsnap`, `explain_snapshot_register_clone.jsonl`; `c93sa`, `explain_post_copy_identity.jsonl`) | SKIP | SKIP, `<FRESH>` listing with `no updates since "«dev FQN»" last executed`, `upstream data is up to date` |
 | post-copy submit over a ref'd view resolved per target, whose definition reads the fixed prod source (`c93sv`) | SKIP | as above: the listing names the view's base source |
 | post-copy submit over a ref'd table resolved per target (`c93st`; the append `c93it` alike) | SKIP | SKIP; the dev upstream is listed with its `last updated` line only (no badge, no `no updates since` line), then `upstream data is up to date` |
+| post-copy submit with other logic (`ls4`, `explain_copy_logic_mismatch.jsonl`) | EXECUTE (6 / 6) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 
 The client's default Lag tolerance for these snapshots was 45 minutes, so the
 source drift was a reuse within tolerance. A snapshot cannot set its own
@@ -634,8 +728,9 @@ build's runtime. In the SKIP tree only an upstream the source build recorded
 (by physical name) is FRESH with the `no updates since` line; the copy keeps
 those names (`executions.clone_source_inputs`, migration 0018) and Explain
 lists any other upstream with its `last updated` line only. A rebuild over a
-copy whose logic differs even so (`no_reuse_candidate.copy_logic_mismatch`)
-has no capture and renders nothing (→ #104).
+copy whose logic differs even so (`no_reuse_candidate.copy_logic_mismatch`,
+`ls4`, crafted `x5`) renders SHAPE 7 judged against the copy
+([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)).
 
 ## DBT_CUSTOM (custom materialization)
 
@@ -926,8 +1021,11 @@ upstream). Nothing else:
   `no_reuse_candidate.incomplete_cached_test_results`, which renders nothing
   (accepted divergence #87, keyed gaps `explain_incomplete_test_results.jsonl`
   2, 3, 6, 7). Client 2.0.11 always confirms all three result fields.
-- `no_reuse_candidate.failed_reuse_qualification`: out of scope → #67 (the
-  client sends it for `evaluate_volatile_sql: true`).
+- `no_reuse_candidate.failed_reuse_qualification`: out of scope → #67 for
+  the cause the client sends (`evaluate_volatile_sql: true`). From a
+  malformed request, local-only, empty tree (crafted, divergence #114): hosted
+  rejects empty SQL and SKIPs a test whose query dependency is listed twice
+  (`explain_malformed_requests.jsonl` `e4-8`).
 
 ### CLONE
 
@@ -1121,12 +1219,13 @@ there is no cell.
 | `upstream_query_changed` (SHAPE 9, query listing) ᶠ | L | → #104 | → #104 | L | U ᵇ | L | L | — |
 | `no_reuse_candidate.own_target_modified` ᵍ | L | L ᵃ | → #104 | → #104 | → #104 | → #104 | — | — |
 | `no_reuse_candidate.execution_type_changed` ᵏ | L ᵃ | L ᵃ ᵏ | → #104 | → #104 | → #104 | → #104 | — | — |
-| `no_reuse_candidate.copy_logic_mismatch` | → #104 | → #104 | → #104 | → #104 | → #104 | → #104 | — | — |
+| `no_reuse_candidate.copy_logic_mismatch` ˡ | C | L | L | L | L | L | — | — |
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ |
-| `no_reuse_candidate.failed_reuse_qualification` | → #67 ⁱ | → #67 | → #67 | → #67 | → #67 | → #67 | → #67 | U ʲ |
+| `no_reuse_candidate.failed_reuse_qualification` ⁱ | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
 | `dependency_set_changed` | U | U | U | U | U | U | → #106 | — |
-| `copy_chain_limit` | → #104 | — | — ᵏ | — | — | — | — | — |
+| `copy_chain_limit` ᵐ | U | — | — ᵏ | — | — | — | — | — |
+| `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | — |
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | → #91 |
 
 Evidence for each L and C cell is in the per-kind sections above and the
@@ -1172,11 +1271,39 @@ conformance replay; the cells marked → #104 are listed in #104.
   (`explain_execution_type_change.jsonl` `tv`) are captured; a MERGE submit:
   → #104.
 - ⁱ The client sends it for `evaluate_volatile_sql: true`
-  (`tolerate_nondeterminism = false`). A malformed request (empty SQL, an
-  empty or duplicated query dependency) needs a crafted probe: listed in #104.
+  (`tolerate_nondeterminism = false`): → #67. From a malformed request it is
+  local-only, empty tree (crafted `experiments/malformed_requests.py`,
+  divergence #114). For a model of every kind and a data test, hosted
+  rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
+  also a model with an empty dependency name or query. A query dependency
+  listed twice is built, then SKIPped with the ordinary SKIP tree
+  (`explain_malformed_requests.jsonl`, keyed gaps).
 - ʲ The client always sends a `values_hash` (the md5 of the seed file).
 - ᵏ This server copies only FULL on submit (#86, #92, #101), so it never
-  records these reasons for another kind on Snowflake. DuckDB, which hosted
+  records these reasons for another kind on Snowflake.
+- ˡ [Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy).
+  Client 2.0.11 copies with RegisterClone only incrementals and snapshots
+  (the dev-clone pre-step). A table (FULL), view or custom node lands on such
+  a copy only after its materialization changed, in a later run. That rebuild
+  is this reason only when the logic, including the semantic extras, also
+  differs. Same logic is an execution type change (`kf4`). Live: the five
+  strategies and SNAPSHOT (logic change, `la4`–`ls4`), VIEW and DBT_CUSTOM
+  (kind change, their semantic extras differ, `kv4`, `kc4`). FULL is crafted
+  only (`x1`, `x2`). Each kind without an upstream, and FULL and APPEND over a
+  dropped copy, are crafted (`x2`–`x12`). A view with an upstream: U ᵇ.
+  Another kind over a dropped copy: no capture, renders nothing (→ #104).
+- ᵐ An equivalent exists for an absent Target relation, but the submit
+  forbids copies (1 / 10). Client 2.0.11 sends `allow_clones: false` with
+  `clone_chain_depth_limit: 0`, which is `copy_disabled` (`cf4`,
+  [copy disabled](#execute-copy-disabled-allow_clones-false)). `copy_chain_limit`
+  is the limit alone: client 2.0.6 sent `clone_chain_depth_limit: 0` without
+  `allow_clones` (`clone_submit_allow_clones_false.jsonl`, no Explain). On
+  Snowflake this server tracks no copy chain depth, and the only setting
+  found in the 2.0.11 binary that forbids copies is the profile's
+  `allow_clones`, which sends both fields (the local client source predates
+  them). So no 2.0.11 path to `copy_chain_limit` is known. Its tree is
+  uncaptured and it renders nothing. DuckDB can record it at its copy depth
+  limit (local-only). DuckDB, which hosted
   does not engage, still copies delete+insert under its pinned contract and
   can record both reasons for it; they render nothing (local-only).
 
@@ -1203,9 +1330,12 @@ Explain selects a shape from the persisted decision class, Decision reason
 | EXECUTE | `no_reuse_candidate.execution_type_changed` for FULL and APPEND, with an anchor and an upstream | SKIP-shaped tree, against the latest build |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` when the decision-time inputs lack the Target relation | first build for FULL (`lag_copy_candidates` `dt_m`); empty tree otherwise |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, with the Lag tolerance line when stale with a non-zero tolerance and drift against the unmatched build, unless the decision recorded no build age for it (a row written before #104) | SHAPE 7, judged against the unmatched latest build |
+| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` when the decision-time inputs lack the Target relation | first build for FULL and APPEND; empty tree otherwise |
+| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` for every model kind but a view with an upstream, unless stale with a non-zero tolerance and drift against the copy (uncaptured, even with a recorded build age) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
-| any | every other reason (local-only reasons; cells → #104, including `copy_logic_mismatch`), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
+| EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
+| any | every other reason (local-only reasons, `copy_chain_limit`, cells → #104), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
 1. FULL and DBT_CUSTOM with or without upstreams, VIEW without, the
    incrementals and SNAPSHOT with an upstream

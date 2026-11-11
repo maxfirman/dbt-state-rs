@@ -81,6 +81,15 @@ anything (#81). Hosted answers `INVALID_ARGUMENT` "Failed to process SQL" for
 `""` and `INTERNAL` for unset (crafted d3 / d3e); the unset case is an
 [accepted divergence](correctness-handoff.md#accepted-divergences).
 
+Hosted also answers `INVALID_ARGUMENT` "Failed to process SQL" for empty SQL,
+for every node kind, and for a query dependency with an empty name or query
+(crafted `experiments/malformed_requests.py`, #104). This server accepts these
+requests and builds them, then fails reuse qualification on every resubmit
+(`no_reuse_candidate.failed_reuse_qualification`). It also rebuilds a request
+whose query dependency is listed twice, which hosted SKIPs
+(`explain_malformed_requests.jsonl`). Both are crafted-only divergences
+(#114).
+
 DuckDB note: for the optional local DuckDB extension, `last_modified_epoch` is
 a durable file/generation-wide ordinal, not Unix milliseconds, and freshness
 compares ordering only. See the
@@ -210,7 +219,8 @@ Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 | EXECUTE | `data test was executed because it has no prior execution or its query changed` | Every data-test execute |
 | EXECUTE | `seed was loaded because it did not exist` | Seed first load, or its table is absent |
 | EXECUTE | `seed was loaded because its data changed` | Seed reload |
-| EXECUTE | `model was executed because the maximum number of nested clones has been reached` | An equivalent exists but the submit forbids copies |
+| EXECUTE | `model was executed because cloning is disabled` | An equivalent exists but the submit disallows copies (`allow_clones: false`; client 2.0.11 also sends `clone_chain_depth_limit: 0`) |
+| EXECUTE | `model was executed because the maximum number of nested clones has been reached` | An equivalent exists but the submit forbids copies with `clone_chain_depth_limit = 0` alone (client 2.0.6), or the copy chain is at its limit (DuckDB) |
 | CLONE | `an equivalent model exists under another name so we cloned that one` | Result copy on submit |
 
 `RegisterClone` responses carry an empty `decision_description`.
@@ -234,9 +244,9 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
 | EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
-| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
+| EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
-| EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_chain_limit` |
+| EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise) |
 | EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate, or whose reuse candidate must rebuild for upstream data drift, whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
 | EXECUTE | 1 / 6 (`TARGET_TABLE_MISMATCH` / `NO_SUITABLE_MATCH_FOUND`) | As 1 / 3, for an incremental whose newest equivalent has its own execution type | same |
 | EXECUTE | 1 / 2 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_MISMATCH`) | As 1 / 3, when the newest equivalent has another execution type | same |
@@ -250,6 +260,7 @@ Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`
 `lag_seed_upstream.jsonl` (arms G, H), `clone_submit_allow_clones_false.jsonl`,
 `clone_rejected_allow_clones_false.jsonl`, `explain_custom_copy.jsonl`,
 `explain_copy_probes.jsonl`, `explain_incremental_copy_over.jsonl`,
+`explain_copy_logic_mismatch.jsonl`, `explain_copy_logic_crafted.jsonl`,
 `explain_freshness_cells.jsonl` (8 / 7 ahead of an equivalent elsewhere;
 1 / 3 on a data-only rebuild), `explain_rebuild_tolerance_line.jsonl`.
 
@@ -562,8 +573,14 @@ Lifecycle:
 - A later submit that cannot adopt the copy (its logic differs from the
   inherited one even read in the source's schema, or none was inherited)
   rebuilds with the same wire answer as an identity mismatch (6 / 6) and the
-  Decision reason `no_reuse_candidate.copy_logic_mismatch`, which renders no
-  Explain tree (no capture, #104).
+  Decision reason `no_reuse_candidate.copy_logic_mismatch`, which renders
+  SHAPE 7 judged against the copy (VERIFIED LIVE 2026-11-11,
+  `explain_copy_logic_mismatch.jsonl`, `explain_copy_logic_crafted.jsonl`,
+  #104). A submit of another execution type with the inherited logic (a
+  table over an incremental's copy, after a materialization change) is an
+  execution type change instead: 2 / 2, the SKIP-shaped tree against the
+  copy (`kf4`). The semantic extras are part of the logic, so a view or
+  custom node over an incremental's copy differs (6 / 6).
 
 Client 2.0.11 (VERIFIED LIVE 2026-11-10, `explain_snapshot_register_clone.jsonl`):
 the pre-step needs a deferred node whose relation differs from the dev one,

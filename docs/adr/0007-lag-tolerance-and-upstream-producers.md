@@ -99,6 +99,15 @@ incremental is recorded as FULL, so the next APPEND/MERGE submit is judged
 against the last incremental build, and a later FULL submit with the same
 identity reuses the recorded row.
 
+A RegisterClone copy has the submit's identity when the submit has the logic
+the copy inherited from its source build, as for its adoption (#93). So a
+table submitted over an incremental's copy, after a materialization change,
+with the same SQL and semantic extras is EXECUTION_TYPE_MISMATCH (2 / 2)
+against the copy (clarification, #104, live:
+`explain_copy_logic_mismatch.jsonl` `kf4`). Other logic, including other
+semantic extras (a view, a custom node), is
+`no_reuse_candidate.copy_logic_mismatch` (6 / 6).
+
 **Evidence** (live, client 2.0.11): `explain_snapshot_history.jsonl`
 entries 58–60 (FULL over SNAPSHOT history: 2 / 2);
 `explain_incremental_append_merge_history.jsonl` entries 69–79 (APPEND and

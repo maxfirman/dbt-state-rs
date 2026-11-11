@@ -471,6 +471,12 @@ fn hosted_wire(
             Some(1),
             Some(10),
         ),
+        DecisionReason::CopyDisabled => (
+            DecisionKind::Build,
+            "model was executed because cloning is disabled",
+            Some(1),
+            Some(10),
+        ),
     }
 }
 
@@ -581,6 +587,7 @@ fn copy_records_agree_with_their_reason() {
     for record in [
         DecisionRecord::result_copy(),
         DecisionRecord::copy_chain_limit(),
+        DecisionRecord::copy_disabled(),
     ] {
         assert_record_agrees(ModelExecutionType::Full as i32, &record).unwrap();
         assert_eq!(record.matched_execution_id, None, "a copy matches nothing");
@@ -592,6 +599,10 @@ fn copy_records_agree_with_their_reason() {
     assert_eq!(
         DecisionRecord::copy_chain_limit().reason,
         DecisionReason::CopyChainLimit
+    );
+    assert_eq!(
+        DecisionRecord::copy_disabled().reason,
+        DecisionReason::CopyDisabled
     );
 }
 
