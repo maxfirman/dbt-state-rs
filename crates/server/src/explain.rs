@@ -284,8 +284,9 @@ enum Shape {
     QueryChanged,
     /// Upstream-drift rebuild (catalog SHAPE 9), rendered against the anchor.
     UpstreamOutdated,
-    /// Own target modified after the build, for a node with no upstreams
-    /// (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`).
+    /// The SKIP-shaped rebuild against the anchor: own target modified after
+    /// the build (VERIFIED LIVE 2026-11-10, lag_tolerance_matrix `lfs_u0`,
+    /// lag_copy_candidates `ome`), or an execution type change (#83).
     OwnTargetModified,
     /// A seed whose table exists: its data changed (`true`) or not.
     Seed { changed: bool },
@@ -403,11 +404,32 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         {
             Shape::UpstreamOutdated
         }
-        // Captured for FULL only (lag_copy_candidates `ome`, lag_tolerance_matrix
-        // `lfs_u0`). Hosted's APPEND/MERGE trees for it (#90) explain a
-        // decision this server does not make.
+        // Captured for FULL (lag_copy_candidates `ome`, lag_tolerance_matrix
+        // `lfs_u0`) and, judged against the latest build of the submit's
+        // type under a newer build of another type, for FULL, APPEND and
+        // MERGE (explain_execution_type_change.jsonl `ta`, `mi`;
+        // explain_incremental_append_merge_history.jsonl entries 78-79).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
-            if full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()) =>
+            if (full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()))
+                || (matches!(
+                    kind,
+                    Some(ModelExecutionType::Append | ModelExecutionType::Merge)
+                ) && node.anchor.is_some()
+                    && listing) =>
+        {
+            Shape::OwnTargetModified
+        }
+        // An execution type change, explained against the latest row: the
+        // same SKIP-shaped tree, captured for FULL and APPEND with an upstream
+        // (explain_snapshot_history.jsonl entry 60,
+        // explain_execution_type_change.jsonl `tv`).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged))
+            if node.anchor.is_some()
+                && !node.genuine_upstreams().is_empty()
+                && matches!(
+                    kind,
+                    Some(ModelExecutionType::Full | ModelExecutionType::Append)
+                ) =>
         {
             Shape::OwnTargetModified
         }
@@ -438,9 +460,8 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         // Everything else renders nothing:
-        // - DECISION DIVERGENCES (#40 rule): a node kind change (#83,
-        //   #90) and a RegisterClone copy this server cannot adopt (#93),
-        //   which hosted decides differently;
+        // - DECISION DIVERGENCES (#40 rule): a RegisterClone copy this server
+        //   cannot adopt (#93), which hosted decides differently;
         // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
         //   `own_target_changed_or_missing` (#80), `no_build_anchor` (#82),
         //   and `own_target_modified` with upstreams but no matched build (the
@@ -744,6 +765,17 @@ fn upstream_dependencies_freshness(
             let verdict = verdicts
                 .as_ref()
                 .and_then(|v| v.iter().find(|u| u.name == up.name));
+            // VERIFIED LIVE 2026-11-11 (explain_execution_type_change.jsonl
+            // `tv`): an upstream the judged build did not record (a view
+            // reports none) has no verdict: no badge, no anchor line.
+            if verdict.is_none() && !anchor_records(node, &up.name) {
+                return qc::ExplainLine {
+                    text: quote(&up.name),
+                    marker: None,
+                    badge: None,
+                    children: vec![line(rel_time_line(up))],
+                };
+            }
             let drifted = verdict.map(|u| u.drifted);
             let badge = match drifted {
                 Some(true) => Some(BADGE_OUTDATED),
@@ -770,6 +802,14 @@ fn upstream_dependencies_freshness(
         })
         .collect();
     section("upstream dependencies", children)
+}
+
+/// Whether the node's freshness anchor is absent or recorded `name` as an
+/// input. Without an anchor the listing keeps its structural default.
+fn anchor_records(node: &ExplainNode, name: &str) -> bool {
+    node.anchor
+        .as_ref()
+        .is_none_or(|prev| prev.input_tables.iter().any(|t| t.name == name))
 }
 
 /// The FRESH first child: `no updates since «FQN» last executed` (model anchor)
@@ -1926,23 +1966,95 @@ mod tests {
         assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
     }
 
-    /// A rebuild because the latest build was another node kind (a snapshot
-    /// under `--full-refresh`, sent with the wire `execution_type` FULL) is a decision hosted
-    /// makes differently (#83, explain_snapshot_history.jsonl entry 58), so
-    /// it renders nothing, whether or not the Target relation is reported.
+    /// A rebuild because the latest build had the identity under another
+    /// node kind renders the SKIP-shaped tree against that build (VERIFIED
+    /// LIVE: a FULL submit over SNAPSHOT history, explain_snapshot_history.jsonl
+    /// entry 60; an APPEND submit over FULL history,
+    /// explain_execution_type_change.jsonl `tv`), only for those kinds and
+    /// with the build and an upstream. Otherwise it renders nothing.
     #[test]
-    fn execution_type_change_renders_nothing() {
-        let mut n = node(
-            DecisionKind::Build,
-            ModelExecutionType::Full as i32,
-            decision::DESC_EXECUTE,
+    fn execution_type_change_renders_the_unchanged_tree_against_the_latest_build() {
+        let changed = DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged);
+        let mut skip = anchored(
+            DecisionKind::Skip,
+            DecisionReason::Reused(Reuse::Fresh),
+            900,
+            900,
         );
-        n.reason = Some(DecisionReason::NoReuseCandidate(
-            NoCandidate::ExecutionTypeChanged,
-        ));
-        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
-        n.input_tables.clear();
-        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
+        let mut n = anchored(DecisionKind::Build, changed, 900, 900);
+        for et in [ModelExecutionType::Full, ModelExecutionType::Append] {
+            n.execution_type = et as i32;
+            skip.execution_type = et as i32;
+            assert_eq!(render(&n), render(&skip), "{et:?}");
+            assert_eq!(n.anchor.as_ref().map(|a| a.id), Some(7));
+        }
+        for et in [
+            ModelExecutionType::Merge,
+            ModelExecutionType::DeleteInsert,
+            ModelExecutionType::View,
+            ModelExecutionType::Snapshot,
+        ] {
+            n.execution_type = et as i32;
+            assert!(explain_lines(&n).is_empty(), "{et:?}: {:?}", render(&n));
+        }
+        n.execution_type = ModelExecutionType::Full as i32;
+        let mut unanchored = n.clone();
+        unanchored.anchor = None;
+        assert!(explain_lines(&unanchored).is_empty());
+        let mut no_upstream = n.clone();
+        no_upstream.input_tables.truncate(1);
+        assert!(explain_lines(&no_upstream).is_empty());
+    }
+
+    /// Own target modified, judged against an older build of the submit's
+    /// type: the SKIP-shaped tree for APPEND and MERGE too (VERIFIED LIVE
+    /// 2026-11-10/11, explain_incremental_append_merge_history.jsonl entries
+    /// 78-79, explain_execution_type_change.jsonl `mi`), with the build.
+    #[test]
+    fn own_target_modified_renders_the_unchanged_tree_for_append_and_merge() {
+        let modified = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified);
+        let mut skip = anchored(
+            DecisionKind::Skip,
+            DecisionReason::Reused(Reuse::Fresh),
+            900,
+            900,
+        );
+        let mut n = anchored(DecisionKind::Build, modified, 900, 900);
+        for et in [ModelExecutionType::Append, ModelExecutionType::Merge] {
+            n.execution_type = et as i32;
+            skip.execution_type = et as i32;
+            assert_eq!(render(&n), render(&skip), "{et:?}");
+            let mut unanchored = n.clone();
+            unanchored.anchor = None;
+            assert!(explain_lines(&unanchored).is_empty(), "{et:?}");
+        }
+        n.execution_type = ModelExecutionType::DeleteInsert as i32;
+        assert!(explain_lines(&n).is_empty());
+    }
+
+    /// An upstream the judged build did not record has no verdict: no badge
+    /// and no anchor line (VERIFIED LIVE 2026-11-11,
+    /// explain_execution_type_change.jsonl `tv`, SHAPE 7 judged against a
+    /// view build, which reports no upstreams). A recorded upstream keeps
+    /// its verdict.
+    #[test]
+    fn an_upstream_the_judged_build_did_not_record_has_no_verdict() {
+        let identity = DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch);
+        let mut n = anchored(DecisionKind::Build, identity, 900, 900);
+        let mut unmatched = n.anchor.take().expect("anchored");
+        unmatched.input_tables.clear();
+        n.unmatched = Some(unmatched);
+        let lines = explain_lines(&n);
+        let up = &lines[2].children[0].children[0];
+        assert_eq!(up.badge, None);
+        assert_eq!(up.children.len(), 1, "{:?}", render(&n));
+        assert!(up.children[0].text.starts_with("last updated"));
+        assert_eq!(freshness_texts(&lines), ["upstream dependencies"]);
+
+        let mut recorded = anchored(DecisionKind::Build, identity, 900, 900);
+        recorded.unmatched = recorded.anchor.take();
+        let lines = explain_lines(&recorded);
+        assert_eq!(lines[2].children[0].children[0].badge, Some(BADGE_FRESH));
     }
 
     /// A rebuild over a RegisterClone copy the submit could not adopt is a

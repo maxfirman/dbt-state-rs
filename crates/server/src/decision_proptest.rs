@@ -449,6 +449,11 @@ fn hosted_wire(
         DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified) => {
             (DecisionKind::Build, modified, Some(6), Some(6))
         }
+        // VERIFIED LIVE (2026-11-10/11, explain_snapshot_history.jsonl entry
+        // 58, explain_execution_type_change.jsonl `ta`, `mi`, `tv`).
+        DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
+            (DecisionKind::Build, rebuild, Some(2), Some(2))
+        }
         DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
         | DecisionReason::NoBuildAnchor
