@@ -87,8 +87,8 @@ for every node kind, and for a query dependency with an empty name or query
 requests and builds them, then fails reuse qualification on every resubmit
 (`no_reuse_candidate.failed_reuse_qualification`). It also rebuilds a request
 whose query dependency is listed twice, which hosted SKIPs
-(`explain_malformed_requests.jsonl`). Both are crafted-only divergences
-(#114).
+(`explain_malformed_requests.jsonl`). Both are crafted-only
+[accepted divergences](correctness-handoff.md#accepted-divergences) (#114).
 
 DuckDB note: for the optional local DuckDB extension, `last_modified_epoch` is
 a durable file/generation-wide ordinal, not Unix milliseconds, and freshness
@@ -313,9 +313,9 @@ and fingerprints.
    epoch executes with "the table was modified after the cached execution"
    (for a VIEW, "the view definition is newer than the cached execution").
    Hosted reuses a snapshot or custom node there; this server does not
-   (#115). `ignore_external_modifications=true` accepts a later epoch but
-   still needs the entry. Data tests have no target relation and skip this
-   check.
+   (accepted divergence #115). `ignore_external_modifications=true` accepts
+   a later epoch but still needs the entry. Data tests have no target
+   relation and skip this check.
 5. **Freshness**, per [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md):
    - An upstream drifted when its current epoch is later than the epoch recorded
      for it at the node's last confirmed build.
