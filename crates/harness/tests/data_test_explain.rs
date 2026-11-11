@@ -11,6 +11,10 @@
 //! - `explain_incomplete_test_results.jsonl` (crafted,
 //!   `experiments/incomplete_test_results.py`): a data test confirmed with
 //!   `execution_results: null` or only `failures`, then resubmitted.
+//! - `explain_store_failures_audit.jsonl` (client 2.0.11,
+//!   `experiments/explain_capture.py store_failures_audit`): a failing
+//!   `store_failures` test and a `store_failures_as: view` test, first
+//!   execution and unchanged rerun (#88).
 
 use std::collections::HashMap;
 
@@ -24,6 +28,10 @@ const HISTORY: &str = concat!(
 const INCOMPLETE: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../golden/fixtures/explain_incomplete_test_results.jsonl"
+);
+const AUDIT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../golden/fixtures/explain_store_failures_audit.jsonl"
 );
 
 fn variant(e: &GoldenEntry) -> (&str, &Value) {
@@ -180,7 +188,9 @@ fn data_test_execute_tree_does_not_depend_on_the_rebuild_reason() {
 
 /// The `store_failures` test's audit relation (a table named after the test)
 /// is reported in `tables` once it exists, but hosted neither rebuilds for it
-/// nor lists it in the tree (divergence #88).
+/// nor lists it in the tree. The server treats it as the test's own write
+/// (#88, `execution.rs::is_own_audit_relation`); the conformance replay
+/// asserts the same decisions and trees.
 #[test]
 fn store_failures_audit_relation_is_reported_but_not_listed() {
     let entries = diff::load_golden(HISTORY).expect("load fixture");
@@ -245,6 +255,108 @@ fn store_failures_audit_relation_is_reported_but_not_listed() {
         assert!(
             !text.contains("\\\"T75S_"),
             "the audit relation is not listed: {text}"
+        );
+    }
+}
+
+/// The two `store_failures` cases `explain_data_test_history.jsonl` lacks
+/// (`explain_store_failures_audit.jsonl`): a failing test, whose audit table
+/// holds its failing row, and a `store_failures_as: view` test, whose audit
+/// relation is a view. On the unchanged rerun each reports its audit relation
+/// in `tables` (not as a query dependency), and hosted SKIPs both, serving the
+/// failing test its cached failure, with trees that list only the source.
+#[test]
+fn failing_and_view_store_failures_tests_skip_without_listing_the_audit_relation() {
+    let entries = diff::load_golden(AUDIT).expect("load fixture");
+    let submits: Vec<(String, &str, Vec<&str>, Value)> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .map(|e| {
+            let name = e.request["labels"]["dbt_node_name"].as_str().unwrap();
+            let audit = format!(
+                "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"{}\"",
+                name.to_uppercase()
+            );
+            assert_eq!(e.request["query_dependencies"], serde_json::json!([]));
+            let tables = e.request["tables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap())
+                .map(|t| {
+                    if t == audit {
+                        "audit"
+                    } else if t.contains("\"T88SRC_") {
+                        "source"
+                    } else {
+                        "other"
+                    }
+                })
+                .collect();
+            let (v, body) = variant(e);
+            let kind = e.request["semantic_extras"]["store_failures_as"]
+                .as_str()
+                .unwrap();
+            (
+                format!("{}:{kind}", &name[..4]),
+                v,
+                tables,
+                body["execution_results"]["fields"]["failures"].clone(),
+            )
+        })
+        .collect();
+    let failures = |n: i64| serde_json::json!({"kind": {"int_value": n}});
+    let row = |node: &str, v, tables: &[&'static str], f| (node.to_string(), v, tables.to_vec(), f);
+    assert_eq!(
+        submits,
+        vec![
+            row(
+                "t88f:\"table\"",
+                "ready_to_execute",
+                &["source"],
+                Value::Null
+            ),
+            row(
+                "t88v:\"view\"",
+                "ready_to_execute",
+                &["source"],
+                Value::Null
+            ),
+            row(
+                "t88v:\"view\"",
+                "skip_execution",
+                &["source", "audit"],
+                failures(0)
+            ),
+            row(
+                "t88f:\"table\"",
+                "skip_execution",
+                &["audit", "source"],
+                failures(1)
+            ),
+        ]
+    );
+
+    let trees = explained(&entries);
+    assert_eq!(trees.len(), 2, "both unchanged reruns explained");
+    for (i, node, decision, tree) in trees {
+        assert_eq!(decision, 0, "entry {i} ({node}) explained as a SKIP");
+        assert_eq!(
+            tree[1]["children"][0]["children"].as_array().unwrap().len(),
+            1,
+            "entry {i} ({node}): only the source is listed"
+        );
+    }
+    let raw: Vec<String> = entries
+        .iter()
+        .filter(|e| e.method == "GetExplainMessages")
+        .map(|e| e.response.to_string())
+        .collect();
+    for text in raw {
+        assert!(text.contains("T88SRC_"), "the source is listed");
+        assert!(
+            !text.contains("\\\"T88F_") && !text.contains("\\\"T88V_"),
+            "no audit relation is listed: {text}"
         );
     }
 }

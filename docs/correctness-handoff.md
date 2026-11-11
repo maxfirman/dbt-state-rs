@@ -38,7 +38,9 @@ Do not weaken these without new evidence.
   object lineage.
 - **Unknown evidence builds.** Unknown or duplicated upstream epochs, a changed
   set of physical input names, empty or duplicated dependency definitions and
-  corrupt stored evidence (`INTERNAL`) never become a reuse.
+  corrupt stored evidence (`INTERNAL`) never become a reuse. A node's own
+  relation is not an input: a model's own target, and a `store_failures`
+  data test's audit relation when the request identifies it exactly (#88).
 - **Versioned fingerprints.** Each fingerprint starts with a version tag
   (`crates/server/src/warehouse.rs`, `fingerprint.rs`). A change to identity
   semantics takes a new tag, so older State history cold-misses and rebuilds
@@ -141,11 +143,31 @@ server keeps the conservative behavior described.
   drift and an upstream whose logic changed, for passing and failing tests,
   over one or two upstreams; a test without upstreams says `no upstream
   dependencies` (`explain_rebuild_reason_gaps.jsonl`, #40 code review). A
-  test that fails reuse qualification (`evaluate_volatile_sql`, #67) and a
-  failing or `store_failures_as: view` store-failures test were not
-  captured; the server renders nothing for the first
-  ([explain-catalog.md](explain-catalog.md#data-test)). How hosted recognizes
-  a `store_failures` audit relation is open (#88).
+  test that fails reuse qualification (`evaluate_volatile_sql`, #67) was not
+  captured; the server renders nothing for it
+  ([explain-catalog.md](explain-catalog.md#data-test)).
+- **`store_failures` audit relation recognition (#88).** Hosted's own rule is
+  not observable: every capture is also explained by "compare only the
+  inputs recorded at the build". The server recognizes the audit relation
+  from the request alone and drops it from the test's inputs
+  (`execution.rs::is_own_audit_relation`): a Snowflake data test whose
+  semantic extras set `store_failures: true`, and a relation exactly
+  `default_catalog`.`default_schema`.`dbt_node_name`. Every other unrecorded
+  table still changes the dependency set and rebuilds. The request does not
+  carry the test's alias, so a relation the test reads can have exactly that
+  name (test `orders` aliased `orders_audit`, reading `orders`; Codex review
+  on #109): a name that the test's SQL or one of its query dependencies
+  mentions as a word is never the audit relation and stays an input. Assumed, not
+  captured: that client 2.0.11's `default_schema` is the test's own schema
+  (dbt-fusion builds `default_catalog` from `node.database()` and parses
+  unqualified names against `node.database()`/`node.schema()`; the 2.0.11
+  request builder is not in the local dbt-fusion checkout, and jaffle-shop's
+  `prod_demo` target puts the audit schema in the target schema, so the
+  captures cannot tell the two apart). When it is not (the usual
+  `<target>_dbt_test__audit` schema), or the test has a configured `alias`
+  (a long generic test name), the relation is not recognized and the test
+  keeps rebuilding with `dependency_set_changed`, the conservative side.
+  Other warehouses recognize nothing.
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
 - **Explain evidence gaps (#78).** Resolved by #76: VIEW × CLONE is fenced as
@@ -297,15 +319,6 @@ replay fails when an entry becomes unused or resolved
   The proxy does not record failed calls (see "Proxy fidelity"), so the
   no-target submits and the no-epoch confirm have no fixture rows and no keyed
   gap. The driver's stdout is their only record.
-- **`store_failures` data test audit relation (#88).** Once a
-  `store_failures: true` test has written its audit relation, the client
-  reports that relation in the test's `tables`. Hosted ignores it: the
-  unchanged test SKIPs and its trees list only the tested source. The server
-  sees a name the build did not record and rebuilds with
-  `dependency_set_changed`, rendering no Explain tree. Keyed gaps:
-  `explain_data_test_history.jsonl` entries 18, 27 (decision) and 21, 45
-  (`empty_tree`; at entry 45 both rebuild after upstream drift, for different
-  reasons).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the

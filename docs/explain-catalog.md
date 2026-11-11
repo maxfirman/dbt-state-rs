@@ -77,6 +77,10 @@ Source fixtures (`golden/fixtures/`):
   execution, unchanged rerun, logic change and upstream data drift for a
   passing, a failing and a `store_failures` test. Captured by
   `experiments/explain_capture.py data_test_execute`.
+- `explain_store_failures_audit.jsonl` (client 2.0.11, #88): a failing
+  `store_failures` test (audit table) and a `store_failures_as: view` test,
+  first execution and unchanged rerun. Captured by
+  `experiments/explain_capture.py store_failures_audit`.
 - `explain_rebuild_reason_gaps.jsonl` (client 2.0.11, #40 code review): a
   FULL model whose logic changed while its upstream drifted (SHAPE 7 with an
   OUTDATED listing), and data tests over a model whose logic changed, with
@@ -210,11 +214,12 @@ delete+insert and microbatch fixtures and the 5 in
    cell stays fenced until #91 lands. The captured tree is in [SEED](#seed).
 9. For a first execution, a logic change, upstream data drift and an
    upstream whose logic changed, with or without upstreams
-   ([DATA TEST](#data-test)). Two rebuilds are local-only, empty tree,
+   ([DATA TEST](#data-test)). One rebuild is local-only, empty tree,
    because hosted SKIPs the test instead: cached results that are
    incomplete (`no_reuse_candidate.incomplete_cached_test_results`, crafted
-   only, accepted divergence #87) and a `store_failures` test whose audit relation
-   newly appears in its inputs (`dependency_set_changed`, divergence #88).
+   only, accepted divergence #87). A `store_failures` test whose audit relation the
+   request does not identify rebuilds for `dependency_set_changed` (not
+   captured → #106).
    A test failing reuse qualification is out of scope → #67
    ([Decision reason coverage](#decision-reason-coverage)).
 10. Live, 2026-11-10 (#74, #86). Hosted does not copy a custom node: built
@@ -250,29 +255,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 157 trees in the
+Line counts from the [census](#explain-tree-census) over the 159 trees in the
 tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1022 lines without a marker, 1131 without a badge). Only an explicit `0` is
+(1034 lines without a marker, 1145 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 384 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 390 lines |
 | ExplainMarker | FAIL (2) | ✅ 147 lines |
-| ExplainMarker | INFO (3) | not observed across 157 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 157 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | INFO (3) | not observed across 159 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 159 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 115 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 21 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 103 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 105 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 73 lines |
+| ExplainBadge | FRESH (1) | ✅ 75 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 55 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 20 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 157 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 159 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 157 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 87 from client 2.0.11 and 61 for crafted
+1. The 159 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 89 from client 2.0.11 and 61 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -295,7 +300,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-11 (157 trees, none empty, no findings):
+Tracked fixtures, 2026-11-11 (159 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -314,7 +319,7 @@ Tracked fixtures, 2026-11-11 (157 trees, none empty, no findings):
 | MICROBATCH | EXECUTE | 5 | client 2.0.11 |
 | SNAPSHOT | SKIP | 4 | client 2.0.11 |
 | SNAPSHOT | EXECUTE | 4 | client 2.0.11 |
-| DBT_DATA_TEST | SKIP | 8 | 5 client 2.0.11, 2 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | SKIP | 10 | 7 client 2.0.11, 2 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
 | VALUES | SKIP | 1 | crafted |
 | VALUES | EXECUTE | 5 | crafted |
@@ -763,17 +768,26 @@ test render the same tree in every round, and the outcome (`failures`,
 `should_warn`, `should_error`) only arrives later in the ConfirmExecution of
 that execution (`crates/harness/tests/data_test_explain.rs`).
 
+**`store_failures: true`.** Once the test has written its audit relation
+(named after the test, in its database and schema), the client reports that
+relation in `tables` too, whether it is a table or a `store_failures_as:
+view` view and whether the test passed or failed. Hosted neither rebuilds for
+it nor lists it: an unchanged rerun SKIPs with the SKIP tree above, serving a
+failing test its cached failure, and after drift the EXECUTE tree lists only
+the source (`explain_data_test_history.jsonl` `t75s`,
+`explain_store_failures_audit.jsonl`). This server drops the audit relation
+from the test's inputs, so it decides and renders the same (#88,
+`execution.rs::is_own_audit_relation`). It recognizes the relation only as
+`default_catalog`.`default_schema`.`dbt_node_name` on Snowflake, and never
+when the test's SQL or a query dependency mentions that name (then it is a
+read, not the test's output); in another
+audit schema or under an alias the test rebuilds for
+`dependency_set_changed`, which renders nothing (not captured → #106).
+
 Rendered for `first_build` and `no_reuse_candidate.identity_mismatch`, and
 for `upstream_outdated` and `upstream_query_changed` (which need an
 upstream). Nothing else:
 
-- **`store_failures: true`.** Once the test has written its audit relation (a
-  table named after the test in the target schema), the client reports that
-  relation in `tables` too. Hosted neither rebuilds for it nor lists it: an
-  unchanged rerun SKIPs with the tree above, and after drift the EXECUTE tree
-  lists only the source. This server sees a name the build did not record and
-  rebuilds for `dependency_set_changed`, which renders nothing (divergence
-  #88, keyed gaps `explain_data_test_history.jsonl` 18, 21, 27, 45).
 - **Incomplete cached results** (crafted only). A test confirmed with
   `execution_results: null`, or with only `failures`, is SKIPped by hosted,
   which serves what was confirmed (`{"fields": {}}` or `failures` alone) with
@@ -939,8 +953,9 @@ What this server never renders, each with its final status:
   rebuild is an identity mismatch (SHAPE 7). Drivers:
   `experiments/explain_dependency_set_changed.sh`,
   `experiments/explain_dep_set_variants.sh`,
-  `experiments/explain_dep_set_comment_ref.sh`. For a data test it is
-  local-only (#88, [DATA TEST](#data-test)).
+  `experiments/explain_dep_set_comment_ref.sh`. For a data test it arises
+  only for a `store_failures` audit relation the request does not identify:
+  local-only, not captured (→ #106, [DATA TEST](#data-test)).
 - **Every other Decision reason × node kind without a capture:**
   [Decision reason coverage](#decision-reason-coverage).
 
@@ -970,7 +985,7 @@ there is no cell.
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ |
 | `no_reuse_candidate.failed_reuse_qualification` | → #67 ⁱ | → #67 | → #67 | → #67 | → #67 | → #67 | → #67 | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
-| `dependency_set_changed` | U | U | U | U | U | U | LO (#88) | — |
+| `dependency_set_changed` | U | U | U | U | U | U | → #106 | — |
 | `copy_chain_limit` | → #104 | — | — ᵏ | — | — | — | — | — |
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | → #91 |
 
@@ -1023,7 +1038,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | seed, other | any other reason | empty tree |
 | data test SKIP | `reused.fresh` | data-test SKIP |
 | data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream | data-test EXECUTE |
-| data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, #88) | empty tree |
+| data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, #106) | empty tree |
 | SKIP | `reused.fresh`, `reused.within_lag_tolerance` where the kind's listing is captured¹; `reused.tolerated_stale` for FULL | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream (FULL, APPEND, MERGE, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |

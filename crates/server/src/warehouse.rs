@@ -311,6 +311,23 @@ impl Warehouse {
             _ => IncrementalCopyContract::NotRequired,
         }
     }
+
+    /// Whether the reported relation `name` is the relation
+    /// `database`.`schema`.`identifier`, each part as dbt spells it in the
+    /// request. Only Snowflake's identifier rules are characterized; on other
+    /// warehouses nothing matches, so the relation stays distinct.
+    pub fn names_relation(
+        self,
+        name: &str,
+        database: &str,
+        schema: &str,
+        identifier: &str,
+    ) -> bool {
+        match self {
+            Self::Snowflake => snowflake::names_relation(name, [database, schema, identifier]),
+            _ => false,
+        }
+    }
 }
 
 /// A submission's copy logic identity ([`Warehouse::copy_identity`]), which
