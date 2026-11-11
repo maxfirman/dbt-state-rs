@@ -72,6 +72,13 @@ pub struct ExplainNode {
     /// freshness listing is judged against it. `None` otherwise, and for a
     /// rebuild recorded before the migration.
     pub unmatched: Option<ExecutionRow>,
+    /// For a view: whether its SQL reads a relation (migration 0019). Client
+    /// 2.0.11 reports no upstreams for a view, so this alone tells a view
+    /// that reads no relation (`no upstream dependencies`) from one over a
+    /// `ref` (`upstream data is up to date`). `None` for every other kind,
+    /// for unparseable SQL and for a view decided before the migration: such
+    /// a view without reported upstreams renders nothing (#117).
+    pub reads_relation: Option<bool>,
     /// The matched prior `executions` row (freshness anchor). ADR 0005: present
     /// only when the SKIP/reuse decision matched a prior build; `None` for
     /// first-build EXECUTE / clone. The per-upstream freshness SUBTREE
@@ -375,7 +382,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
     let kind = ModelExecutionType::try_from(node.execution_type).ok();
     let full = kind == Some(ModelExecutionType::Full);
     let upstreams = !node.genuine_upstreams().is_empty();
-    let listing = freshness_listing_captured(kind, upstreams);
+    let listing = freshness_listing_captured(kind, upstreams, node.reads_relation);
     let incremental = matches!(
         kind,
         Some(
@@ -452,25 +459,27 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // upstream after an External modification or a later FULL full
         // refresh (explain_reason_kind_cells.jsonl `*_e`, `*_ez`, `*_c`,
         // `*_cz`; explain_incremental_append_merge_history.jsonl entries
-        // 78-79). Hosted never makes it for a SNAPSHOT or a DBT_CUSTOM node:
-        // it reuses them over a modified Target relation (#115), so ours
-        // renders nothing. A VIEW's (`vc0`) needs to know whether the view
-        // reads a relation (#117).
+        // 78-79), and for a VIEW that reads no relation (`vc0`, over its own
+        // build, which a custom node's build replaced). Hosted never makes it
+        // for a SNAPSHOT or a DBT_CUSTOM node: it reuses them over a modified
+        // Target relation (#115), so ours renders nothing; nor is one
+        // captured for a view over a `ref`.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
             if (full && (node.anchor.is_some() || !upstreams))
-                || (incremental && node.anchor.is_some()) =>
+                || (incremental && node.anchor.is_some())
+                || view_reads_no_relation(node) =>
         {
             Shape::OwnTargetModified
         }
         // An execution type change, explained against the latest row: the
         // same SKIP-shaped tree (explain_snapshot_history.jsonl entry 60,
         // explain_execution_type_change.jsonl `tv`, explain_reason_kind_cells.jsonl
-        // `*_e`, `*_ez`, `sn_c`, `sn_cz`, `vc0`): FULL, the incrementals and
-        // SNAPSHOT with and without an upstream, DBT_CUSTOM without one. Only
-        // over a latest row with the node's genuine upstream names: hosted
-        // treats a VIEW <-> DBT_CUSTOM switch over an upstream (the view
-        // reports none) as another identity (#116). A VIEW's (`cv0`) needs
-        // to know whether the view reads a relation (#117).
+        // `*_e`, `*_ez`, `sn_c`, `sn_cz`, `vc0`, `cv0`): FULL, the incrementals
+        // and SNAPSHOT with and without an upstream, DBT_CUSTOM without one,
+        // and a VIEW that reads no relation. Only over a latest row with the
+        // node's genuine upstream names: hosted treats a VIEW <-> DBT_CUSTOM
+        // switch over an upstream (the view reports none) as another identity
+        // (#116).
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged))
             if node
                 .anchor
@@ -479,7 +488,8 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                 && (full
                     || incremental
                     || kind == Some(ModelExecutionType::Snapshot)
-                    || (kind == Some(ModelExecutionType::DbtCustom) && !upstreams)) =>
+                    || (kind == Some(ModelExecutionType::DbtCustom) && !upstreams)
+                    || view_reads_no_relation(node)) =>
         {
             Shape::OwnTargetModified
         }
@@ -554,9 +564,15 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
 /// (`upstreams`) or without genuine upstreams. A FULL model, a custom node,
 /// the incrementals and snapshots were captured both ways (without upstreams:
 /// explain_reason_kind_cells.jsonl `*_z`, `*_cz`, `*_ez`); a view only
-/// without (client 2.0.11 reports none for a view,
-/// explain_snapshot_history.jsonl `s72vl`).
-fn freshness_listing_captured(kind: Option<ModelExecutionType>, upstreams: bool) -> bool {
+/// without (client 2.0.11 reports none for a view), and only when the
+/// decision recorded whether its SQL reads a relation: one over a `ref`
+/// (explain_snapshot_history.jsonl `s72vl`) and one that reads none
+/// (explain_view_reads_no_relation.jsonl) are worded differently.
+fn freshness_listing_captured(
+    kind: Option<ModelExecutionType>,
+    upstreams: bool,
+    reads_relation: Option<bool>,
+) -> bool {
     use ModelExecutionType as K;
     match kind {
         Some(
@@ -569,9 +585,19 @@ fn freshness_listing_captured(kind: Option<ModelExecutionType>, upstreams: bool)
             | K::Microbatch
             | K::Snapshot,
         ) => true,
-        Some(K::View) => !upstreams,
+        Some(K::View) => !upstreams && reads_relation.is_some(),
         _ => false,
     }
+}
+
+/// A view without reported upstreams whose SQL reads no relation: its tree
+/// says `no upstream dependencies` (VERIFIED LIVE 2026-11-11,
+/// explain_view_reads_no_relation.jsonl; explain_reason_kind_cells.jsonl
+/// `vc0`, `cv0`).
+fn view_reads_no_relation(node: &ExplainNode) -> bool {
+    node.execution_type == ModelExecutionType::View as i32
+        && node.genuine_upstreams().is_empty()
+        && node.reads_relation == Some(false)
 }
 
 /// Whether `row` recorded the node's genuine upstream names (its own target
@@ -673,8 +699,8 @@ fn query_analysis_unchanged(node: &ExplainNode) -> qc::ExplainLine {
 
 /// Whether the `upstream model queries have not changed [SUCCESS]` line is
 /// present. VERIFIED (catalog): a node with zero genuine upstreams omits it
-/// (SHAPE 0) unless it is a VIEW; a VIEW or any node with ≥1 genuine upstream
-/// carries it (SHAPEs 1/2/4…).
+/// (SHAPE 0) unless it is a view over a `ref`; such a view or any node with
+/// ≥1 genuine upstream carries it (SHAPEs 1/2/4…).
 fn has_upstream_query_line(node: &ExplainNode) -> bool {
     !node.genuine_upstreams().is_empty() || !says_no_upstream_dependencies(node)
 }
@@ -684,34 +710,37 @@ fn has_upstream_query_line(node: &ExplainNode) -> bool {
 /// 2026-11-10, explain_custom_history.jsonl `c74c0`), a data test (VERIFIED
 /// LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40t0`), the five
 /// incremental strategies and a snapshot (VERIFIED LIVE 2026-11-11,
-/// explain_reason_kind_cells.jsonl `*_z`, `*_cz`, `*_ez`). A view over a
-/// `ref` (which client 2.0.11 does not report) says `upstream data is up to
-/// date` instead (explain_snapshot_history.jsonl `s72vl`); a view that reads
-/// no relation says `no upstream dependencies` (`vc0`, `cv0`), which this
-/// server cannot tell apart, so those VIEW cells render nothing (#117).
+/// explain_reason_kind_cells.jsonl `*_z`, `*_cz`, `*_ez`), and a view that
+/// reads no relation (VERIFIED LIVE 2026-11-11,
+/// explain_view_reads_no_relation.jsonl, `vc0`, `cv0`). A view over a `ref`
+/// (which client 2.0.11 does not report) says `upstream data is up to date`
+/// instead (explain_snapshot_history.jsonl `s72vl`); the decision records
+/// which it is (migration 0019, #117).
 fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
     use ModelExecutionType as K;
-    matches!(
-        K::try_from(node.execution_type),
-        Ok(K::Full
-            | K::DbtCustom
-            | K::DbtDataTest
-            | K::Append
-            | K::Merge
-            | K::InsertOverwrite
-            | K::DeleteInsert
-            | K::Microbatch
-            | K::Snapshot)
-    )
+    view_reads_no_relation(node)
+        || matches!(
+            K::try_from(node.execution_type),
+            Ok(K::Full
+                | K::DbtCustom
+                | K::DbtDataTest
+                | K::Append
+                | K::Merge
+                | K::InsertOverwrite
+                | K::DeleteInsert
+                | K::Microbatch
+                | K::Snapshot)
+        )
 }
 
 /// `data freshness analysis` body for a SKIP, by upstream situation.
 fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     if upstreams.is_empty() {
-        // No genuine upstreams. A FULL model, custom node or data test renders
-        // `no upstream dependencies`; a VIEW (which selects from an untracked
-        // source) renders `upstream data is up to date` (catalog SHAPE 0 vs 1).
+        // No genuine upstreams. A FULL model, custom node, data test or a
+        // view that reads no relation renders `no upstream dependencies`; a
+        // view over a `ref` (which client 2.0.11 does not report) renders
+        // `upstream data is up to date` (catalog SHAPE 0 vs 1).
         let body = if says_no_upstream_dependencies(node) {
             leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)
         } else {
@@ -1484,6 +1513,8 @@ mod tests {
             build_age_ms: None,
             skip_rejection_reason: None,
             unmatched: None,
+            // A view over a `ref` unless a test says otherwise.
+            reads_relation: (et == ModelExecutionType::View as i32).then_some(true),
             anchor: None,
         }
     }
@@ -1633,6 +1664,71 @@ mod tests {
             (1, "upstream data is up to date".to_string(), Some(1), None),
         ];
         assert_eq!(got, expected);
+    }
+
+    /// A view that reads no relation (no FROM, a CTE without FROM, VALUES,
+    /// a table function) says `no upstream dependencies` and lists no
+    /// upstream query verdict, in its SKIP and its SHAPE 7 rebuild (VERIFIED
+    /// LIVE 2026-11-11, explain_view_reads_no_relation.jsonl). A view whose
+    /// SQL was not judged renders nothing for either, but its first build
+    /// does not depend on it (#117).
+    #[test]
+    fn a_view_that_reads_no_relation_says_no_upstream_dependencies() {
+        let view = |d: DecisionKind, desc: &str, reads: Option<bool>| {
+            let mut n = node(d, ModelExecutionType::View as i32, desc);
+            n.reads_relation = reads;
+            n
+        };
+        let table = (0, "table analysis («FQN»)".to_string(), None, None);
+        let exists = (
+            1,
+            "the model table exists already".to_string(),
+            Some(1),
+            Some(8),
+        );
+        let freshness = [
+            (0, "data freshness analysis".to_string(), None, None),
+            (1, "no upstream dependencies".to_string(), Some(1), None),
+        ];
+        let skip = view(DecisionKind::Skip, decision::DESC_SKIP, Some(false));
+        let mut expected = vec![
+            table.clone(),
+            exists.clone(),
+            (0, "query analysis".to_string(), None, None),
+            (
+                1,
+                "the model query has not changed".to_string(),
+                Some(1),
+                Some(5),
+            ),
+        ];
+        expected.extend(freshness.clone());
+        assert_eq!(render(&skip), expected);
+
+        let rebuild = view(DecisionKind::Build, decision::DESC_EXECUTE, Some(false));
+        let mut expected = vec![
+            table,
+            exists,
+            (0, "query analysis".to_string(), None, None),
+            (
+                1,
+                "the model query has changed".to_string(),
+                Some(2),
+                Some(4),
+            ),
+        ];
+        expected.extend(freshness);
+        assert_eq!(render(&rebuild), expected);
+
+        for (d, desc) in [
+            (DecisionKind::Skip, decision::DESC_SKIP),
+            (DecisionKind::Build, decision::DESC_EXECUTE),
+        ] {
+            assert!(explain_lines(&view(d, desc, None)).is_empty(), "{d:?}");
+        }
+        let mut first = view(DecisionKind::Build, decision::DESC_EXECUTE, None);
+        first.reason = Some(DecisionReason::FirstBuild);
+        assert_eq!(render(&first)[1].1, "the model table does not exist");
     }
 
     #[test]
@@ -2290,10 +2386,25 @@ mod tests {
             render(&without_upstreams(skip.clone()))
         );
         n.execution_type = ModelExecutionType::View as i32;
-        assert!(
-            explain_lines(&without_upstreams(n.clone())).is_empty(),
-            "view"
+        skip.execution_type = ModelExecutionType::View as i32;
+        for reads in [Some(true), None] {
+            n.reads_relation = reads;
+            assert!(
+                explain_lines(&without_upstreams(n.clone())).is_empty(),
+                "view, reads a relation: {reads:?}"
+            );
+        }
+        // A view that reads no relation (`cv0`).
+        n.reads_relation = Some(false);
+        skip.reads_relation = Some(false);
+        assert_eq!(
+            render(&without_upstreams(n.clone())),
+            render(&without_upstreams(skip.clone()))
         );
+        assert!(render(&without_upstreams(n.clone()))
+            .iter()
+            .any(|l| l.1 == "no upstream dependencies"));
+        n.reads_relation = None;
         n.execution_type = ModelExecutionType::Full as i32;
         let mut unanchored = n.clone();
         unanchored.anchor = None;
@@ -2313,8 +2424,9 @@ mod tests {
     /// (VERIFIED LIVE 2026-11-10/11, explain_incremental_append_merge_history.jsonl
     /// entries 78-79, explain_execution_type_change.jsonl `mi`,
     /// explain_reason_kind_cells.jsonl `*_c`, `*_cz`, `*_e`, `*_ez`), with
-    /// the build. Nothing for a snapshot or a custom node, which hosted
-    /// reuses (#115), nor for a VIEW (#117).
+    /// the build, and for a view that reads no relation (`vc0`). Nothing for
+    /// a snapshot or a custom node, which hosted reuses (#115), nor for a
+    /// view over a `ref` or one whose SQL was not judged (#117).
     #[test]
     fn own_target_modified_renders_the_unchanged_tree_for_the_incrementals() {
         let modified = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetModified);
@@ -2344,12 +2456,24 @@ mod tests {
             ModelExecutionType::View,
         ] {
             n.execution_type = et as i32;
-            assert!(explain_lines(&n).is_empty(), "{et:?}");
-            assert!(
-                explain_lines(&without_upstreams(n.clone())).is_empty(),
-                "{et:?}"
-            );
+            for reads in [Some(true), None] {
+                n.reads_relation = reads;
+                assert!(explain_lines(&n).is_empty(), "{et:?}");
+                assert!(
+                    explain_lines(&without_upstreams(n.clone())).is_empty(),
+                    "{et:?} {reads:?}"
+                );
+            }
         }
+        // A view that reads no relation (`vc0`), with or without the build.
+        n.reads_relation = Some(false);
+        skip.execution_type = ModelExecutionType::View as i32;
+        skip.reads_relation = Some(false);
+        let bare = without_upstreams(n.clone());
+        assert_eq!(render(&bare), render(&without_upstreams(skip.clone())));
+        let mut unanchored = bare.clone();
+        unanchored.anchor = None;
+        assert_eq!(render(&unanchored), render(&bare));
     }
 
     /// An upstream the judged build did not record has no verdict: no badge

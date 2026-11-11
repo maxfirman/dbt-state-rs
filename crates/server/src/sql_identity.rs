@@ -452,3 +452,138 @@ pub(crate) fn duckdb_copy_graph(req: &crate::query_cache::SqlExecution) -> Optio
     graph.queries.sort();
     Some(graph)
 }
+
+/// Whether a model's SQL reads a relation: a table or view it names in a
+/// FROM or JOIN, other than a CTE of the query. A CTE, a VALUES list and a
+/// table function are not relations; a CTE reads one only through its own
+/// FROM. `None` when the SQL is not one parseable query in `dialect`.
+///
+/// Explain evidence for a view, whose upstreams client 2.0.11 does not
+/// report: hosted says `no upstream dependencies` for a view that reads no
+/// relation, and `upstream data is up to date` for one that does (VERIFIED
+/// LIVE 2026-11-11, explain_view_reads_no_relation.jsonl: no FROM, a CTE
+/// without FROM, VALUES and FLATTEN read none; a `ref` reads one; #117).
+pub fn reads_relation(sql: &str, dialect: &dyn Dialect) -> Option<bool> {
+    use sqlparser::ast::{Ident, Visit, Visitor};
+
+    // Snowflake identifier rules: unquoted folds to upper case, quoted is exact.
+    fn key(ident: &Ident) -> String {
+        match ident.quote_style {
+            Some(_) => ident.value.clone(),
+            None => ident.value.to_ascii_uppercase(),
+        }
+    }
+    struct Ctes(std::collections::HashSet<String>);
+    impl Visitor for Ctes {
+        type Break = ();
+        fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<()> {
+            if let Some(with) = &query.with {
+                self.0
+                    .extend(with.cte_tables.iter().map(|c| key(&c.alias.name)));
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    struct Relations<'a> {
+        ctes: &'a std::collections::HashSet<String>,
+    }
+    impl Visitor for Relations<'_> {
+        type Break = ();
+        fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<()> {
+            let TableFactor::Table {
+                name, args: None, ..
+            } = factor
+            else {
+                return ControlFlow::Continue(());
+            };
+            let cte = match name.0.as_slice() {
+                [ObjectNamePart::Identifier(ident)] => self.ctes.contains(&key(ident)),
+                _ => false,
+            };
+            if cte {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+    }
+
+    let statements = Parser::parse_sql(dialect, sql).ok()?;
+    let [statement @ Statement::Query(_)] = statements.as_slice() else {
+        return None;
+    };
+    let mut ctes = Ctes(Default::default());
+    let _ = statement.visit(&mut ctes);
+    Some(statement.visit(&mut Relations { ctes: &ctes.0 }).is_break())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reads_relation;
+    use sqlparser::dialect::SnowflakeDialect;
+
+    fn reads(sql: &str) -> Option<bool> {
+        reads_relation(sql, &SnowflakeDialect {})
+    }
+
+    /// The SQL of explain_view_reads_no_relation.jsonl's views, and of the
+    /// views over a `ref` in explain_happy_history.jsonl and
+    /// explain_snapshot_history.jsonl (`s72vl`).
+    #[test]
+    fn captured_views_read_a_relation_only_through_a_named_table() {
+        for sql in [
+            "\nselect 1 as id, 'vr0_0_x' as v",
+            "\nwith a as (select 1 as id, 'vrc_0_x' as v)\nselect id, v from a",
+            "\nselect column1 as id, column2 as v from (values (1, 'vrv_0_x'))",
+            "\nselect f.value::int as id, 'vrf_0_x' as v\nfrom table(flatten(input => array_construct(1, 2))) f",
+        ] {
+            assert_eq!(reads(sql), Some(false), "{sql}");
+        }
+        for sql in [
+            "\nselect id, v, 'vrr_0_x' as r from CDO_DEMO_DB.prod_state_demo.vrt_x",
+            "\nselect id, v from CDO_DEMO_DB.prod_state_demo.s72st_193451c25ab4 where id >= 1",
+            "\nselect id from CDO_DEMO_DB.prod_state_demo.hh_mid_000317",
+        ] {
+            assert_eq!(reads(sql), Some(true), "{sql}");
+        }
+    }
+
+    /// A relation read anywhere counts: through a CTE, a join, a subquery in
+    /// an expression or a set operation. A one-part name is a CTE only when
+    /// the query defines one by that name.
+    #[test]
+    fn a_relation_read_anywhere_in_the_query_counts() {
+        for sql in [
+            "with a as (select id from DB.S.T) select id from a",
+            "select 1 as id from (select 1) x join DB.S.T t on true",
+            "select (select max(id) from DB.S.T) as id",
+            "select 1 as id where exists (select 1 from T)",
+            "select 1 as id union all select id from DB.S.T",
+            "with a as (select 1 as id) select id from b",
+            "with a as (select 1 as id) select id from S.A",
+            "with \"a\" as (select 1 as id) select id from a",
+        ] {
+            assert_eq!(reads(sql), Some(true), "{sql}");
+        }
+        for sql in [
+            "with a as (select 1 as id) select id from A",
+            "with a as (select 1 as id), b as (select id from a) select id from b",
+            "select 1 as id union all select 2",
+        ] {
+            assert_eq!(reads(sql), Some(false), "{sql}");
+        }
+    }
+
+    /// Anything but one parseable query is unknown evidence.
+    #[test]
+    fn sql_that_is_not_one_query_is_unknown() {
+        for sql in [
+            "",
+            "select from from",
+            "select 1; select 2",
+            "create table DB.S.T as select 1",
+        ] {
+            assert_eq!(reads(sql), None, "{sql:?}");
+        }
+    }
+}

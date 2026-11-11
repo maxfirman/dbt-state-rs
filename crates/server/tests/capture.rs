@@ -83,6 +83,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         skip_rejection_reason: None,
         clone_rejection_reason: None,
         unmatched_execution_id: None,
+        reads_relation: None,
     }
 }
 
@@ -223,5 +224,51 @@ async fn capture_records_the_decision_reason() {
                 Some("reused.tolerated_stale".to_string())
             ),
         ]
+    );
+}
+
+/// Migration 0019 (#117): a view decision records whether its SQL reads a
+/// relation, and Explain reads it back with the decision, org-scoped. Unknown
+/// stays NULL.
+#[tokio::test]
+async fn capture_records_whether_a_view_reads_a_relation() {
+    let (pool, _schema) = schema_pool().await;
+    for (edid, reads) in [
+        ("v-none", Some(false)),
+        ("v-ref", Some(true)),
+        ("v-?", None),
+    ] {
+        let mut view = sample(DecisionKind::Skip, "inv-1", edid);
+        view.execution_type = 10;
+        view.execution_decision_id = Some(edid.into());
+        view.reads_relation = reads;
+        capture_decision(&pool, view).await;
+    }
+
+    let store = dbt_state_server::store::Store::new(pool);
+    let ids = ["v-none", "v-ref", "v-?"].map(String::from);
+    let mut rows: Vec<(String, Option<bool>)> = store
+        .fetch_explain_decisions("local", &ids)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|r| (r.execution_decision_id.unwrap(), r.reads_relation))
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        [
+            ("v-?".to_string(), None),
+            ("v-none".to_string(), Some(false)),
+            ("v-ref".to_string(), Some(true)),
+        ]
+    );
+    assert!(
+        store
+            .fetch_explain_decisions("other-org", &ids)
+            .await
+            .unwrap()
+            .is_empty(),
+        "another organization reads none of them"
     );
 }

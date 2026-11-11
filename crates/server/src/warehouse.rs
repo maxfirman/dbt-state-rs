@@ -312,6 +312,26 @@ impl Warehouse {
         }
     }
 
+    /// Whether `sql` reads a relation ([`crate::sql_identity::reads_relation`]),
+    /// parsed in this warehouse's dialect. Explain evidence only: it chooses a
+    /// view's freshness wording (#117), never a decision. `None` when the SQL
+    /// does not parse as one query.
+    pub fn sql_reads_relation(self, sql: &str) -> Option<bool> {
+        use sqlparser::dialect::{
+            BigQueryDialect, DatabricksDialect, DuckDbDialect, GenericDialect, RedshiftSqlDialect,
+            SnowflakeDialect,
+        };
+        let dialect: &dyn sqlparser::dialect::Dialect = match self {
+            Self::Snowflake => &SnowflakeDialect {},
+            Self::DuckDb => &DuckDbDialect {},
+            Self::BigQuery => &BigQueryDialect {},
+            Self::Databricks => &DatabricksDialect {},
+            Self::Redshift => &RedshiftSqlDialect {},
+            Self::Other => &GenericDialect {},
+        };
+        crate::sql_identity::reads_relation(sql, dialect)
+    }
+
     /// Whether the reported relation `name` is the relation
     /// `database`.`schema`.`identifier`, each part as dbt spells it in the
     /// request. Only Snowflake's identifier rules are characterized; on other
