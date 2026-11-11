@@ -32,6 +32,7 @@ Open questions and deliberate divergences live in
 | Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution") | ❌ builds with the generic rebuild description (#90) |
 | Seed content change | VALUES | build (new `values_hash`) | ✅ |
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
+| `store_failures` data test unchanged, its audit relation (table or view, passing or failing) now in `tables` | 8 | skip; the tree lists only the tested source (`explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`) | ✅ when the request names the audit relation as `default_catalog`.`default_schema`.`dbt_node_name` on Snowflake (#88); otherwise builds |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |
 | `require_fresh_data_from: all`, some parents unchanged | — | skip, `is_stale=true` | ✅ |
 | `require_fresh_data_from: all`, all parents changed | — | build | ✅ |

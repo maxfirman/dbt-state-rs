@@ -113,9 +113,11 @@ history match and the decision. The client derives:
   `auto_liquid_cluster`, `databricks_tags`. Seeds: `column_types`,
   `quote_columns`, `delimiter`.
 - `tables` for a data test: the relations it reads, with no target. With
-  `store_failures: true` it also holds the test's audit relation (a table
-  named after the test) once a run has written it (client 2.0.11,
-  `explain_data_test_history.jsonl`).
+  `store_failures: true` it also holds the test's audit relation (named after
+  the test, in the test's database and schema) once a run has written it,
+  whether a table or a `store_failures_as: view` view (client 2.0.11,
+  `explain_data_test_history.jsonl`, `explain_store_failures_audit.jsonl`).
+  The server drops it from the test's inputs (#88).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - For a microbatch model, the run's resolved event-time window, added to the
   `semantic_extras` as `__microbatch_event_time_start` and
@@ -288,11 +290,14 @@ and fingerprints.
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
    upstream epochs. Data tests never get a Result copy. A failing test is
-   reused like a passing one and the SKIP echoes the cached failure.
-   Hosted differs in two captured cases, both keyed divergences: it reuses a
-   test confirmed with incomplete results and echoes them (#87, crafted), and
-   it ignores a `store_failures` test's own audit relation, which the client
-   reports in `tables` once it exists (#88).
+   reused like a passing one and the SKIP echoes the cached failure. A
+   `store_failures` test's own audit relation, which the client reports in
+   `tables` once it exists, is not an input: the server recognizes it from
+   the request (`store_failures: true`, Snowflake, exactly
+   `default_catalog`.`default_schema`.`dbt_node_name`) and hosted ignores it
+   too (#88). Hosted differs in one captured case, a keyed divergence: it
+   reuses a test confirmed with incomplete results and echoes them (#87,
+   crafted).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy
