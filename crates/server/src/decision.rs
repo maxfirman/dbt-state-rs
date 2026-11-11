@@ -340,12 +340,15 @@ impl DecisionRecord {
     /// for this submit (its contents were overwritten since): VERIFIED LIVE
     /// (2026-11-10, lag_copy_candidates `ob*`, lag_seed_upstream H) hosted
     /// reports LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH, and
-    /// `is_stale` as that build would be reused.
-    pub fn with_older_match(mut self, older: Reuse) -> Self {
+    /// `is_stale` as that build would be reused. `build_age_ms` is that
+    /// build's age, which a stale SHAPE 7 tree's Lag tolerance line reports
+    /// (VERIFIED LIVE 2026-11-11, explain_freshness_cells.jsonl `fr_*`).
+    pub fn with_older_match(mut self, older: Reuse, build_age_ms: Option<i64>) -> Self {
         if self.class == DecisionKind::Build {
             self.skip_rejection_reason = Some(REJECTION_LATEST_QUERY_HASH_NOT_MATCH);
             self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
             self.is_stale = older != Reuse::Fresh;
+            self.build_age_ms = build_age_ms;
         }
         self
     }
@@ -1585,9 +1588,11 @@ mod tests {
     }
 
     /// LOCAL CHOICE, not hosted evidence: the ALL-policy snapshot reuse past
-    /// its Lag tolerance was never observed. The server keeps the observed
-    /// snapshot wording for it; docs/correctness-handoff.md "Snapshot SKIP
-    /// wording past the Lag tolerance" holds the open question.
+    /// its Lag tolerance was never observed, and client 2.0.11 never sends a
+    /// snapshot the ALL policy (it reads `state` config from models only,
+    /// #104). The server keeps the observed snapshot wording for it;
+    /// docs/correctness-handoff.md "Snapshot SKIP wording past the Lag
+    /// tolerance".
     #[test]
     fn unobserved_all_policy_snapshot_skip_past_tolerance_keeps_the_observed_wording() {
         let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
@@ -2349,7 +2354,7 @@ mod tests {
             (Reuse::WithinLagTolerance, true),
             (Reuse::ToleratedStale, true),
         ] {
-            let r = rebuild.clone().with_older_match(older);
+            let r = rebuild.clone().with_older_match(older, Some(32_000));
             assert_eq!(r.class, DecisionKind::Build);
             assert_eq!(r.reason, rebuild.reason, "the reason is the rebuild's");
             assert_eq!(r.description, rebuild.description);
@@ -2359,6 +2364,7 @@ mod tests {
             );
             assert_eq!(r.clone_rejection_reason, Some(REJECTION_TARGET_TABLE_MATCH));
             assert_eq!(r.is_stale, stale, "{older:?}");
+            assert_eq!(r.build_age_ms, Some(32_000), "the older build's age");
         }
 
         let tables = [tbl("a", 100)];
@@ -2366,7 +2372,8 @@ mod tests {
         let skip = DecisionRecord::decided(&ctx(&tables), Some(&prev));
         assert_eq!(skip.class, DecisionKind::Skip);
         assert_eq!(
-            skip.clone().with_older_match(Reuse::WithinLagTolerance),
+            skip.clone()
+                .with_older_match(Reuse::WithinLagTolerance, Some(32_000)),
             skip
         );
     }

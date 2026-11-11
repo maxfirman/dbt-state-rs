@@ -379,25 +379,42 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
             Shape::Skip
         }
-        // An ALL-policy reuse with tolerated drift: captured for FULL only
-        // (lag_tolerance_matrix.jsonl).
-        (DecisionKind::Skip, R::Reused(Reuse::ToleratedStale)) if full => Shape::Skip,
+        // An ALL-policy reuse with tolerated drift: captured for FULL
+        // (lag_tolerance_matrix.jsonl, crafted) and, with an upstream, for
+        // the five incrementals and DBT_CUSTOM (explain_freshness_cells.jsonl
+        // `fa_*`). A snapshot cannot be sent the ALL policy on 2.0.11 (the
+        // client reads `state` from models only), so it has no capture.
+        (DecisionKind::Skip, R::Reused(Reuse::ToleratedStale))
+            if listing && kind != Some(ModelExecutionType::Snapshot) =>
+        {
+            Shape::Skip
+        }
         (
             DecisionKind::Build,
             R::FirstBuild | R::NoReuseCandidate(NoCandidate::OwnTargetMissing),
         ) => Shape::FirstBuild,
         // SHAPE 9 is anchor-relative: it renders only when the matched build
-        // re-derives at least one OUTDATED upstream (data-only: FULL, APPEND,
-        // MERGE, DBT_CUSTOM) or an Upstream producer change (FULL, SNAPSHOT,
-        // DBT_CUSTOM).
+        // re-derives at least one upstream that provably drifted (data-only:
+        // FULL, the five incrementals, SNAPSHOT, DBT_CUSTOM;
+        // explain_freshness_cells.jsonl `fz_*`, `fd_sn`) or an Upstream
+        // producer change (FULL, SNAPSHOT, DBT_CUSTOM). A rebuild for an
+        // unknown upstream epoch is local-only: hosted reuses it
+        // (explain_unknown_epoch.jsonl, crafted).
         (DecisionKind::Build, R::UpstreamOutdated)
-            if has_outdated_upstream(node)
+            if has_provably_outdated_upstream(node)
+                // The equivalent's age words the Lag tolerance line; an
+                // unjudged equivalent (another environment) has none.
+                && !(reports_equivalent(node) && node.build_age_ms.is_none())
                 && matches!(
                     kind,
                     Some(
                         ModelExecutionType::Full
                             | ModelExecutionType::Append
                             | ModelExecutionType::Merge
+                            | ModelExecutionType::InsertOverwrite
+                            | ModelExecutionType::DeleteInsert
+                            | ModelExecutionType::Microbatch
+                            | ModelExecutionType::Snapshot
                             | ModelExecutionType::DbtCustom
                     )
                 ) =>
@@ -459,10 +476,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         }
         // SHAPE 7, captured for every model kind (explain_snapshot_history,
         // explain_custom_history, explain_incremental_*, explain_rebuild_reason_gaps),
-        // but not with a Lag tolerance line: a stale older match under drift
-        // against the unmatched build renders nothing (#104).
+        // also with the Lag tolerance line of a stale older match under drift
+        // (explain_freshness_cells.jsonl `fr_*`, every kind but VIEW, whose
+        // tolerance is 0). Without the older build's recorded age that line
+        // cannot be worded, so the tree renders nothing.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
-            if listing && !query_changed_needs_tolerance_line(node) =>
+            if listing && !query_changed_lacks_build_age(node) =>
         {
             Shape::QueryChanged
         }
@@ -485,7 +504,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // against the copy: captured for every model kind that can follow a
         // copy, with and without upstreams, except a view with one, which
         // client 2.0.11 never reports (explain_copy_logic_mismatch.jsonl,
-        // explain_copy_logic_crafted.jsonl).
+        // explain_copy_logic_crafted.jsonl). A stale one whose summary would
+        // carry a Lag tolerance line is not captured (unlike an identity
+        // mismatch, `fr_*`), so it renders nothing, even with a recorded age.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch))
             if copy_logic_mismatch_captured(kind, !node.genuine_upstreams().is_empty())
                 && !node.own_target_absent()
@@ -1058,11 +1079,40 @@ fn judged_against_unmatched(node: &ExplainNode) -> ExplainNode {
 
 /// Whether SHAPE 7's summary would carry a Lag tolerance line: the rebuild
 /// is stale (an older matching build would have been reused stale,
-/// `report_older_match`), the tolerance is non-zero and an upstream drifted
-/// against the unmatched build. No capture backs that line for SHAPE 7, and
-/// the decision records no build age for it.
+/// `submit_decision::older_match`), the tolerance is non-zero and an upstream
+/// drifted against the unmatched build. Captured for an identity mismatch
+/// (explain_freshness_cells.jsonl `fr_*`), not over a RegisterClone copy.
 fn query_changed_needs_tolerance_line(node: &ExplainNode) -> bool {
     node.is_stale && node.tolerance_ms > 0 && has_outdated_upstream(&judged_against_unmatched(node))
+}
+
+/// Whether SHAPE 7's summary needs a Lag tolerance line it cannot word: it
+/// needs one ([`query_changed_needs_tolerance_line`]), but the decision
+/// recorded no build age for that older build (a row written before #104).
+fn query_changed_lacks_build_age(node: &ExplainNode) -> bool {
+    query_changed_needs_tolerance_line(node) && node.build_age_ms.is_none()
+}
+
+/// Whether the anchored decision has an upstream whose drift is proven: its
+/// current and recorded epochs are both known and the current one is later.
+/// An unknown epoch is OUTDATED for the decision (it never proves freshness)
+/// but proves no drift either.
+fn has_provably_outdated_upstream(node: &ExplainNode) -> bool {
+    anchored_verdicts(node)
+        .map(|v| v.iter().any(|u| u.drifted && !u.unprovable))
+        .unwrap_or(false)
+}
+
+/// A data-only rebuild that reports an equivalent under another name it
+/// did not copy (TARGET_TABLE_MISMATCH, `with_refused_copy`): its SHAPE 9
+/// summary carries the Lag tolerance line of the equivalent's build age
+/// (VERIFIED LIVE 2026-11-11, explain_freshness_cells.jsonl `fd_sn`, "exceeds";
+/// crafted, explain_rebuild_tolerance_line.jsonl `s2`, `i2`, "within").
+/// Without an equivalent there is no line (`s1`, `i1`, `f0`).
+fn reports_equivalent(node: &ExplainNode) -> bool {
+    node.decision == DecisionKind::Build
+        && node.reason == Some(DecisionReason::UpstreamOutdated)
+        && node.skip_rejection_reason == Some(decision::REJECTION_TARGET_TABLE_MISMATCH)
 }
 
 /// The upstream-drift EXECUTE tree (catalog SHAPE 9). The node's own query is
@@ -1093,7 +1143,7 @@ fn freshness_summary(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     if has_outdated_upstream(node) {
         let mut lines = vec![leaf("upstream data is outdated", Some(MARKER_FAIL), None)];
         let reused = node.decision == DecisionKind::Skip;
-        if node.tolerance_ms > 0 && (reused || node.is_stale) {
+        if node.tolerance_ms > 0 && (reused || node.is_stale || reports_equivalent(node)) {
             lines.push(lag_tolerance_line(node));
         }
         lines
@@ -2538,6 +2588,81 @@ mod tests {
         assert_eq!(lines[2].children[1].text, "upstream data is outdated");
     }
 
+    /// VERIFIED LIVE 2026-11-11 (explain_freshness_cells.jsonl `fd_sn`) and
+    /// crafted (explain_rebuild_tolerance_line.jsonl `s2`, `i2` vs `s1`,
+    /// `i1`, `f0`): a data-only rebuild past a non-zero Lag tolerance ends
+    /// with the Lag tolerance line only when it reports an equivalent under
+    /// another name (TARGET_TABLE_MISMATCH), worded with the equivalent's
+    /// build age. Without that age it renders nothing.
+    #[test]
+    fn shape9_reporting_an_equivalent_has_its_tolerance_line() {
+        let rebuild = |srr, build_age_ms| {
+            let mut n = anchored(
+                DecisionKind::Build,
+                DecisionReason::UpstreamOutdated,
+                5_000,
+                900,
+            );
+            n.execution_type = ModelExecutionType::Snapshot as i32;
+            n.tolerance_ms = 20_000;
+            n.skip_rejection_reason = Some(srr);
+            n.build_age_ms = build_age_ms;
+            explain_lines(&n)
+        };
+        let with_equivalent = rebuild(decision::REJECTION_TARGET_TABLE_MISMATCH, Some(1_500));
+        assert_eq!(
+            freshness_texts(&with_equivalent),
+            [
+                "upstream dependencies",
+                "upstream data is outdated",
+                "the snapshot was last built a second ago, within lag tolerance of 20 seconds"
+            ]
+        );
+        let exceeds = rebuild(decision::REJECTION_TARGET_TABLE_MISMATCH, Some(60_000));
+        let line = exceeds[2].children.last().unwrap();
+        assert_eq!(
+            line.text,
+            "the snapshot was last built a minute ago, exceeds lag tolerance of 20 seconds"
+        );
+        assert_eq!(
+            (line.marker, line.badge),
+            (Some(MARKER_FAIL), Some(BADGE_OUTDATED))
+        );
+        assert_eq!(
+            freshness_texts(&rebuild(6, Some(26_000))),
+            ["upstream dependencies", "upstream data is outdated"]
+        );
+        assert!(rebuild(decision::REJECTION_TARGET_TABLE_MISMATCH, None).is_empty());
+    }
+
+    /// Hosted reuses a build whose upstream epoch is unknown (crafted,
+    /// explain_unknown_epoch.jsonl, accepted divergence #113); this server
+    /// rebuilds it, and SHAPE 9 needs a proven drift, so that rebuild renders
+    /// nothing. A proven drift beside it still renders SHAPE 9.
+    #[test]
+    fn upstream_outdated_over_an_unknown_epoch_renders_nothing() {
+        for (current, recorded) in [(None, Some(900)), (Some(5_000), None), (None, None)] {
+            let mut n = anchored(
+                DecisionKind::Build,
+                DecisionReason::UpstreamOutdated,
+                5_000,
+                900,
+            );
+            n.input_tables[1].last_modified_epoch = current;
+            n.anchor.as_mut().unwrap().input_tables[0].last_modified_epoch = recorded;
+            assert!(explain_lines(&n).is_empty(), "{current:?} / {recorded:?}");
+
+            let other = |epoch| InputTable {
+                name: "\"DB\".\"S\".\"UP2\"".into(),
+                last_modified_epoch: Some(epoch),
+                producer: Producer::Build("b".into()),
+            };
+            n.input_tables.push(other(5_000));
+            n.anchor.as_mut().unwrap().input_tables.push(other(900));
+            assert!(!explain_lines(&n).is_empty(), "{current:?} / {recorded:?}");
+        }
+    }
+
     /// A node of `decision`/`reason` that read UP at `current`, anchored on a
     /// build (epoch 1_000) that recorded UP at `recorded`, same producer.
     fn anchored(
@@ -2607,14 +2732,37 @@ mod tests {
         assert_eq!(freshness_texts(&unrecorded), ["upstream dependencies"]);
     }
 
-    /// An identity-mismatch rebuild whose older matching build would have
-    /// been reused stale (`report_older_match` sets `is_stale`) records no
-    /// build age. Under drift against the unmatched build its summary would
-    /// need a Lag tolerance line, which no capture backs for SHAPE 7 (the
-    /// `ob*` captures are SHAPE 9), so it renders nothing (#104) instead of
-    /// an unknown age.
+    /// The same stale rebuild over a RegisterClone copy it could not adopt
+    /// (`copy_logic_mismatch`) is not captured with a Lag tolerance line, so
+    /// it renders nothing even with the older build's recorded age (#104).
     #[test]
-    fn shape7_with_a_stale_older_match_under_drift_renders_nothing() {
+    fn stale_copy_logic_mismatch_under_drift_renders_nothing() {
+        let mut n = anchored(
+            DecisionKind::Build,
+            DecisionReason::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
+            5_000,
+            900,
+        );
+        n.unmatched = n.anchor.take().map(|mut copy| {
+            copy.clone_source_table = Some("\"DB\".\"PROD\".\"T\"".into());
+            copy.clone_source_inputs =
+                Some(copy.input_tables.iter().map(|t| t.name.clone()).collect());
+            copy
+        });
+        n.tolerance_ms = 2_700_000;
+        assert!(!explain_lines(&n).is_empty(), "fresh copy logic mismatch");
+        n.is_stale = true;
+        n.build_age_ms = Some(32_000);
+        assert!(explain_lines(&n).is_empty());
+    }
+
+    /// VERIFIED LIVE (2026-11-11, explain_freshness_cells.jsonl `fr_*`): an
+    /// identity-mismatch rebuild whose older matching build would have been
+    /// reused stale ends SHAPE 7 with the Lag tolerance line of that older
+    /// build's age. A row that recorded no build age for it (written before
+    /// #104) renders nothing instead of an unknown age.
+    #[test]
+    fn shape7_with_a_stale_older_match_under_drift_has_the_tolerance_line() {
         let mut n = anchored(
             DecisionKind::Build,
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
@@ -2623,8 +2771,22 @@ mod tests {
         );
         n.unmatched = n.anchor.take();
         n.tolerance_ms = 2_700_000;
-        n.build_age_ms = None;
         n.is_stale = true;
+        n.build_age_ms = Some(32_000);
+        let lines = explain_lines(&n);
+        assert_eq!(
+            freshness_texts(&lines),
+            [
+                "upstream dependencies",
+                "upstream data is outdated",
+                "the model was last built 32 seconds ago, within lag tolerance of 45 minutes"
+            ]
+        );
+        let tolerance = lines[2].children.last().unwrap();
+        assert_eq!(tolerance.marker, Some(MARKER_SUCCESS));
+        assert_eq!(tolerance.badge, Some(BADGE_WITHIN_TOLERANCE));
+
+        n.build_age_ms = None;
         assert!(explain_lines(&n).is_empty());
         n.is_stale = false;
         assert_eq!(

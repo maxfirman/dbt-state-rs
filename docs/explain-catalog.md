@@ -100,6 +100,22 @@ Source fixtures (`golden/fixtures/`):
   confirmed without complete cached results, then resubmitted
   (`experiments/incomplete_test_results.py`). Hosted SKIPs; keyed
   accepted divergence #87.
+- `explain_freshness_cells.jsonl` (client 2.0.11, #104): two windows
+  concatenated. Run 1 (`experiments/explain_capture.py freshness_cells`)
+  covers three groups. `fa_*`: ALL-policy reuse with one of two upstreams
+  drifted. `fz_*`: drift past a `0s` Lag tolerance. `fr_*`: logic A, then
+  B, then back to A while the upstream drifts within the tolerance (a stale
+  older match). Run 2 (`freshness_cells_snapshot --run-id` of run 1, after
+  the 45 minute default tolerance) rebuilds the snapshot `fd_sn` past it.
+- `explain_unknown_epoch.jsonl`: crafted probes, a FULL model whose
+  upstream epoch is unknown (`null`) at the build, at the resubmit or both
+  (`experiments/unknown_epoch_probes.py`). Hosted SKIPs within the Lag
+  tolerance; keyed accepted divergence #113.
+- `explain_rebuild_tolerance_line.jsonl`: crafted probes, data-only
+  rebuilds past a 20 s Lag tolerance for FULL (`f0`), SNAPSHOT (`s1`, `s2`)
+  and INSERT_OVERWRITE (`i1`, `i2`), the `2` probes with a current
+  equivalent elsewhere (`experiments/rebuild_tolerance_line_probes.py`).
+  Only those two end with a Lag tolerance line.
 - `explain_copy_logic_mismatch.jsonl` (client 2.0.11, #104): rebuilds over
   a dev-clone pre-step copy. Five incrementals and a snapshot change their
   logic before the copy. Three append incrementals are copied unchanged,
@@ -172,22 +188,23 @@ append/merge fixtures, the 20 in the three insert_overwrite,
 delete+insert and microbatch fixtures, the 5 in
 `explain_incremental_copy_over.jsonl`, the 5 in
 `explain_execution_type_change.jsonl`, the 4 in
-`explain_post_copy_identity.jsonl` and the 10 in
+`explain_post_copy_identity.jsonl`, the 18 in
+`explain_freshness_cells.jsonl` and the 10 in
 `explain_copy_logic_mismatch.jsonl`, which come from 2.0.11.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-11) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 21 (5 client, 16 crafted), EXECUTE 43 (9 client, 34 crafted), CLONE 8 (1 client, 7 crafted) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 7 (6 client 2.0.11, 1 crafted), EXECUTE 11 (9 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 4, EXECUTE 10 (9 client 2.0.11, 1 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_copy_logic_*.jsonl`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4 (3 client 2.0.11, 1 crafted), EXECUTE 6 (5 client 2.0.11, 1 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 3, EXECUTE 6 (5 client 2.0.11, 1 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_copy_logic_*.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4, EXECUTE 7 (6 client 2.0.11, 1 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_copy_logic_*.jsonl`) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 8 (7 client 2.0.11, 1 crafted), EXECUTE 6 (5 client 2.0.11, 1 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 25 (5 client, 20 crafted), EXECUTE 45 (10 client, 35 crafted), CLONE 8 (1 client, 7 crafted) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 8 (7 client 2.0.11, 1 crafted), EXECUTE 12 (10 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 11 (10 client 2.0.11, 1 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5 (4 client 2.0.11, 1 crafted), EXECUTE 10 (7 client 2.0.11, 3 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 4, EXECUTE 8 (7 client 2.0.11, 1 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 9 (8 client 2.0.11, 1 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 8 (7 client 2.0.11, 1 crafted), EXECUTE 10 (7 client 2.0.11, 3 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 11 (7 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit.jsonl`, `explain_malformed_requests.jsonl`) |
 | 9 | VALUES (seed) | characterized (crafted only) | characterized (crafted only)² | out of scope → #91⁸ | S E | SKIP 1, EXECUTE 5, all crafted (`lag_seed_upstream.jsonl`); CLONE 1 (client 2.0.11, `explain_copy_probes.jsonl`, fenced) |
 | 10 | VIEW | characterized (live) | characterized (live)³ | unreachable on 2.0.11⁴ | S E | SKIP 2 (1 client 2.0.6, 1 crafted); EXECUTE 4 (3 client 2.0.11, 1 crafted); CLONE 0 |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 6 (5 client 2.0.11, 1 crafted), EXECUTE 7 (6 client 2.0.11, 1 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 7 (6 client 2.0.11, 1 crafted), EXECUTE 8 (7 client 2.0.11, 1 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -293,29 +310,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 197 trees in the
+Line counts from the [census](#explain-tree-census) over the 224 trees in the
 tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1238 lines without a marker, 1392 without a badge). Only an explicit `0` is
+(1448 lines without a marker, 1621 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 499 lines |
-| ExplainMarker | FAIL (2) | ✅ 172 lines |
-| ExplainMarker | INFO (3) | not observed across 197 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 197 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 149 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 40 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_copy_logic_*.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 121 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 591 lines |
+| ExplainMarker | FAIL (2) | ✅ 207 lines |
+| ExplainMarker | INFO (3) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 176 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 48 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 140 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 25 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 97 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 55 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 20 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 197 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | FRESH (1) | ✅ 105 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 82 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 224 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 197 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 108 from client 2.0.11 and 80 for crafted
+1. The 224 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 126 from client 2.0.11 and 89 for crafted
    `state-probe` requests. The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -338,25 +355,25 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-11 (197 trees, none empty, no findings):
+Tracked fixtures, 2026-11-11 (224 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 21 | 16 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
-| FULL | EXECUTE | 43 | 34 crafted, 7 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | SKIP | 25 | 20 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
+| FULL | EXECUTE | 45 | 35 crafted, 8 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
-| APPEND | SKIP | 7 | 6 client 2.0.11, 1 crafted |
-| APPEND | EXECUTE | 11 | 9 client 2.0.11, 2 crafted |
-| MERGE | SKIP | 4 | client 2.0.11 |
-| MERGE | EXECUTE | 10 | 9 client 2.0.11, 1 crafted |
-| INSERT_OVERWRITE | SKIP | 4 | 3 client 2.0.11, 1 crafted |
-| INSERT_OVERWRITE | EXECUTE | 6 | 5 client 2.0.11, 1 crafted |
-| DELETE_INSERT | SKIP | 3 | client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 6 | 5 client 2.0.11, 1 crafted |
-| MICROBATCH | SKIP | 4 | client 2.0.11 |
-| MICROBATCH | EXECUTE | 7 | 6 client 2.0.11, 1 crafted |
+| APPEND | SKIP | 8 | 7 client 2.0.11, 1 crafted |
+| APPEND | EXECUTE | 12 | 10 client 2.0.11, 2 crafted |
+| MERGE | SKIP | 5 | client 2.0.11 |
+| MERGE | EXECUTE | 11 | 10 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | SKIP | 5 | 4 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | EXECUTE | 10 | 7 client 2.0.11, 3 crafted |
+| DELETE_INSERT | SKIP | 4 | client 2.0.11 |
+| DELETE_INSERT | EXECUTE | 8 | 7 client 2.0.11, 1 crafted |
+| MICROBATCH | SKIP | 5 | client 2.0.11 |
+| MICROBATCH | EXECUTE | 9 | 8 client 2.0.11, 1 crafted |
 | SNAPSHOT | SKIP | 8 | 7 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 6 | 5 client 2.0.11, 1 crafted |
+| SNAPSHOT | EXECUTE | 10 | 7 client 2.0.11, 3 crafted |
 | DBT_DATA_TEST | SKIP | 11 | 7 client 2.0.11, 3 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
 | VALUES | SKIP | 1 | crafted |
@@ -364,8 +381,8 @@ Tracked fixtures, 2026-11-11 (197 trees, none empty, no findings):
 | VALUES | CLONE | 1 | client 2.0.11 (fenced, #91) |
 | VIEW | SKIP | 2 | 1 client 2.0.6, 1 crafted |
 | VIEW | EXECUTE | 4 | 3 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | SKIP | 6 | 5 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | EXECUTE | 7 | 6 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | SKIP | 7 | 6 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | EXECUTE | 8 | 7 client 2.0.11, 1 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -455,15 +472,31 @@ freshness helper, as for a matched build. A rebuild recorded before migration
 0017 has no such build: its listing keeps the default `<FRESH>` badges and
 the summary line is omitted, because unknown evidence never proves freshness
 (ADR 0007). A stale rebuild (an older matching build would have been reused
-stale, so `is_stale` is set) with a non-zero Lag tolerance and an upstream
-drifted against that build renders nothing: its summary would need a Lag
-tolerance line, which no capture backs for SHAPE 7 and for which the
-decision records no build age (→ #104).
+stale, so `is_stale` is set, codes 8 / 7) with a non-zero Lag tolerance and
+an upstream drifted against that build ends with the Lag tolerance line
+after `upstream data is outdated`:
+`the model was last built «age» ago, within lag tolerance of «T»` [SUCCESS]
+<WITHIN_TOLERANCE>. Captured for FULL, the five incrementals, SNAPSHOT
+(`snapshot` noun) and DBT_CUSTOM (`explain_freshness_cells.jsonl` `fr_*`,
+entries 114–121). The age is the older matching build's: in the
+capture, the FULL decision came 32 seconds after the older build's
+confirmation and 13 seconds after the latest one's, and hosted said "32
+seconds". The decision records that age (`DecisionRecord::with_older_match`).
+A rebuild recorded before #104 has none and renders nothing rather than an
+unknown age. In this capture the upstream's epoch recorded by both builds
+was the same, so the listing reads the same against either one.
 
 ### EXECUTE: upstream, against the matched build (SHAPE 9)
 
 Rendered by `explain.rs::execute_outdated_tree`, from per-upstream verdicts
-re-derived against the matched build.
+re-derived against the matched build. A data-only rebuild
+(`upstream_outdated`) selects it only when an upstream's drift is proven
+(`explain.rs::has_provably_outdated_upstream`: both epochs known and the
+current one later). A rebuild for an upstream with an unknown epoch is
+local-only and renders nothing: hosted reuses it within the Lag tolerance
+(`explain_unknown_epoch.jsonl`, crafted, accepted divergence #113). Captured
+for FULL, the five incrementals, SNAPSHOT and DBT_CUSTOM
+([Decision reason coverage](#decision-reason-coverage)).
 
 ```
 - table analysis ("«FQN»")
@@ -493,7 +526,14 @@ re-derived against the matched build.
 - **Freshness summary.** If an upstream drifted:
   `- upstream data is outdated [FAIL]`, followed by the Lag tolerance line when
   the tolerance is non-zero and the decision is stale (a rebuild reported
-  against an older qualifying build). If every upstream epoch equals its
+  against an older qualifying build), or the rebuild reports an equivalent
+  under another name that it did not copy (codes 1 / 3, 1 / 6 or 1 / 2). The
+  line then carries the equivalent's build age: "within" for a young one
+  (`explain_rebuild_tolerance_line.jsonl` `s2`, `i2`), and
+  `the snapshot was last built «age» ago, exceeds lag tolerance of «T»`
+  [FAIL] <OUTDATED> for one older than the tolerance (`fd_sn`). A rebuild
+  past the tolerance with no equivalent has no line (`f0`, `s1`, `i1`;
+  `lag_tolerance_matrix.jsonl`). If every upstream epoch equals its
   recorded epoch: `- upstream data is up to date [SUCCESS]`. Otherwise none.
 
 ### EXECUTE: Target relation modified after the build
@@ -639,6 +679,8 @@ and `an upstream model query has changed` keep `model`.
 | its source gained rows (`s72sd`) | SKIP (`is_stale`) | SKIP, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | upstream query change (`s72su`) | EXECUTE | SHAPE 9 with the per-upstream query listing |
 | its own logic changed (`s72sl`) | EXECUTE | SHAPE 7 |
+| back to an older build's logic while its source gained a row (`fr_sn`, `explain_freshness_cells.jsonl`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
+| its source gained a row, build older than the 45 minute default tolerance (`fd_sn`, run 2) | EXECUTE (1 / 3: `fr_sn` has the same logic and is current) | SHAPE 9, data only: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated`, then `the snapshot was last built «age» ago, exceeds lag tolerance of «T»` [FAIL] <OUTDATED>, the age being `fr_sn`'s ([SHAPE 9](#execute-upstream-against-the-matched-build-shape-9)) |
 | run under `--full-refresh` (`s72sf`) | EXECUTE (2 / 2) | SKIP-shaped, `model` noun (see below) |
 | `dev_clone` build, target missing, prod equivalent (`c76snap`, `explain_copy_probes.jsonl`) | EXECUTE (codes 1 / 3 hosted; 6 / 6 here, because this server finds no equivalent, #107) | [First build](#first-build) |
 | post-copy submit after the RegisterClone pre-step, over a fixed prod source (`c76rsnap`, `explain_snapshot_register_clone.jsonl`; `c93sa`, `explain_post_copy_identity.jsonl`) | SKIP | SKIP, `<FRESH>` listing with `no updates since "«dev FQN»" last executed`, `upstream data is up to date` |
@@ -647,7 +689,13 @@ and `an upstream model query has changed` keep `model`.
 | post-copy submit with other logic (`ls4`, `explain_copy_logic_mismatch.jsonl`) | EXECUTE (6 / 6) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 
 The client's default Lag tolerance for these snapshots was 45 minutes, so the
-source drift was a reuse within tolerance. A snapshot SKIP's
+source drift was a reuse within tolerance. A snapshot cannot set its own
+`lag_tolerance` or `require_fresh_data_from`: client 2.0.11 reads the `state`
+config from models only (`model_state_for_node` downcasts to `DbtModel`,
+dbt-fusion `run_cache_service.rs`), so a snapshot always gets the default
+tolerance (`RUN_CACHE_FRESHNESS_TOLERANCE`, 45 minutes) and the ANY policy.
+Its drift rebuilds only once its build is older than that (`fd_sn`), and an
+ALL-policy reuse (`reused.tolerated_stale`) is unreachable for it. A snapshot SKIP's
 `decision_description` is always the "both … up to date" one
 ([protocol.md](protocol.md#decision-descriptions)).
 
@@ -705,6 +753,8 @@ with no genuine upstreams it renders SHAPE 0 like a FULL model
 | its source gained rows, `lag_tolerance: 0s` (`c74cz`) | EXECUTE | SHAPE 9, data only: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated` |
 | upstream query change (`c74cu`) | EXECUTE | SHAPE 9 with the per-upstream query listing |
 | its own logic changed (`c74cl`) | EXECUTE | SHAPE 7 |
+| ALL policy, one of its two sources gained a row (`fa_cu`, `explain_freshness_cells.jsonl`) | SKIP (`is_stale`) | SKIP, one `<OUTDATED>` and one `<FRESH>` upstream, `upstream data is outdated`, Lag tolerance line |
+| back to an older build's logic while its source gained a row (`fr_cu`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | unchanged, run under `--full-refresh` (`c74cf`) | SKIP | SKIP, `<FRESH>` listing, no summary |
 | built in `dev_clone` over an equivalent prod build (`c74k`) | EXECUTE, codes 1 / 3 | [First build](#first-build) (#86) |
 
@@ -731,6 +781,8 @@ Every node reads a source table created by the run.
 | its own logic changed (`a73b` / `m73b`) | EXECUTE | [SHAPE 7](#execute-node-query-changed-shape-7), with `upstream data is up to date` |
 | source gained a row, default Lag tolerance 45 minutes (`a73d` / `m73d`) | SKIP (`is_stale`) | SKIP, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | source gained a row, `lag_tolerance: 0s` (`a73z` / `m73z`) | EXECUTE | SHAPE 9 data-only rebuild: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated` |
+| ALL policy, one of two sources gained a row (`fa_ap` / `fa_mg`, `explain_freshness_cells.jsonl`) | SKIP (`is_stale`) | SKIP, one `<OUTDATED>` and one `<FRESH>` upstream, `upstream data is outdated`, Lag tolerance line |
+| back to an older build's logic while its source gained a row (`fr_ap` / `fr_mg`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | first incremental run, reading `{{ this }}` (`a73t` / `m73t`) | EXECUTE | SHAPE 7: the compiled SQL gained the `is_incremental()` filter |
 | second incremental run, reading `{{ this }}` (`a73t` / `m73t`) | SKIP | SKIP, `<FRESH>` listing of the source only |
 | ordinary run after a `--full-refresh` run (`a73b` / `m73b`) | EXECUTE | SKIP-shaped, against the last incremental build (see below) |
@@ -786,12 +838,15 @@ above:
 | its own logic changed (`iol`, `dil`) | EXECUTE | SHAPE 7, no summary (epoch moved back) |
 | `{{ this }}` self-read, first incremental run (`ios`, `dis`) | EXECUTE | SHAPE 7, no summary (epoch moved back) |
 | `{{ this }}` self-read, unchanged rerun (`ios`, `dis`) | SKIP | SKIP, `<FRESH>` listing of its one genuine upstream, `upstream data is up to date` |
+| ALL policy, one of two sources gained a row (`fa_io`, `fa_di`, `explain_freshness_cells.jsonl`) | SKIP (`is_stale`) | SKIP, one `<OUTDATED>` and one `<FRESH>` upstream, `upstream data is outdated`, Lag tolerance line |
+| its source gained a row, `lag_tolerance: 0s` (`fz_io`, `fz_di`) | EXECUTE | SHAPE 9, data only |
+| back to an older build's logic while its source gained a row (`fr_io`, `fr_di`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 
 The client's default Lag tolerance for these models was 45 minutes, so the
 source drift was a reuse within tolerance, worded "its query is up to date and
-its data is within lag tolerance". Upstream drift past the tolerance is not
-captured for these strategies (it is for append and merge), so that rebuild
-renders nothing (→ #104, [Decision reason coverage](#decision-reason-coverage)). CLONE: see
+its data is within lag tolerance". With `lag_tolerance: 0s` the drift
+rebuilds (`explain_freshness_cells.jsonl` `fz_io`, `fz_di`, `fz_mb`, entries
+111–113): SHAPE 9 data only, as for append and merge. CLONE: see
 [Result copy, all strategies](#result-copy-all-strategies).
 
 ### MICROBATCH (6)
@@ -799,7 +854,8 @@ renders nothing (→ #104, [Decision reason coverage](#decision-reason-coverage)
 `explain_incremental_microbatch.jsonl` (client 2.0.11). Built with a fixed
 `--event-time-start 2026-11-01 --event-time-end 2026-11-03` window, the six
 scenarios above (`mbd`, `mbl`, `mbs`) render the same trees as
-insert_overwrite and delete+insert.
+insert_overwrite and delete+insert, and so do the #104 cells with the same
+window (`fa_mb`, `fz_mb`, `fr_mb`, `explain_freshness_cells.jsonl`).
 
 **Batch window.** The client submits once per model per run, not once per
 batch (10 batches, one submit). It folds the run's resolved window into the
@@ -870,6 +926,16 @@ same codes, and the replay asserts the five SHAPE 7 trees (entries 47–51).
 Every incremental CLONE cell is unreachable on 2.0.11. On DuckDB, which
 hosted does not engage, this server still copies delete+insert under its
 pinned contract; that CLONE is local-only and renders nothing.
+
+**An older match first.** When the target's own older build matches the
+submit and would be reused, hosted reports that build (8 / 7, `is_stale` as
+it would be reused) even though an equivalent under another name exists
+(`explain_freshness_cells.jsonl` `fr_*`, entries 80–95). There, append,
+merge, insert_overwrite, delete+insert, microbatch and snapshot nodes went
+back to an older build's logic. Other nodes in the run had the same SQL,
+and this server took them as equivalents (1 / 2, 1 / 6, 1 / 3) before #104.
+This server now reports the older match ahead of a refused copy
+(`submit_decision::older_match`).
 
 ## DATA TEST
 
@@ -1075,6 +1141,15 @@ the tolerance and Build age persisted with the decision
   `… exceeds lag tolerance of «T»` [FAIL] <OUTDATED>. With tolerance 0 only
   `upstream data is outdated` appears. Durations read like "a moment",
   "7 seconds", "a minute", "10 minutes" (`explain.rs::humanize_duration`).
+  An ALL-policy reuse with one of two upstreams drifted
+  (`reused.tolerated_stale`) reads exactly like a reuse within the Lag
+  tolerance: the drifted upstream `<OUTDATED>`, the other `<FRESH>`, then
+  both lines above, with `is_stale` and the "within lag tolerance"
+  description (`explain_freshness_cells.jsonl` `fa_*`: append, merge,
+  insert_overwrite, delete+insert, microbatch, custom; entries 105–110).
+- **A stale SHAPE 7 rebuild** ends with the same two lines, the age being
+  the older matching build's
+  ([SHAPE 7](#execute-node-query-changed-shape-7)).
 - The `«gap»` line `updated N seconds after «FQN» last executed` is the
   upstream's current epoch minus the epoch recorded for it at the build.
 
@@ -1137,10 +1212,10 @@ there is no cell.
 |---|---|---|---|---|---|---|---|---|
 | `reused.fresh` | L | L ᵃ | L ᵃ | L ᵃ | L ᵇ | L | L | C |
 | `reused.within_lag_tolerance` | L | L ᵃ | L ᵃ | L ᵃ | U ᵇ | L | U ᶜ | — |
-| `reused.tolerated_stale` | C | → #104 | → #104 | → #104 | U ᵇ | → #104 | U ᶜ | — |
+| `reused.tolerated_stale` | C | L ᵃ | L ᵃ | U ᵐ | U ᵇ | L | U ᶜ | — |
 | `first_build`, `no_reuse_candidate.own_target_missing` ᵈ | C | L | L | L | L | L | L | C |
 | `no_reuse_candidate.identity_mismatch` (SHAPE 7) | L ᵉ | L ᵃ ᵉ | L ᵃ ᵉ | L ᵃ ᵉ | L | L ᵉ | L | C |
-| `upstream_outdated` (SHAPE 9, data only) ᶠ | C | L | → #104 | → #104 | U ᵇ | L | L | — |
+| `upstream_outdated` (SHAPE 9, data only) ᶠ | C | L | L | L ᵐ | U ᵇ | L | L | — |
 | `upstream_query_changed` (SHAPE 9, query listing) ᶠ | L | → #104 | → #104 | L | U ᵇ | L | L | — |
 | `no_reuse_candidate.own_target_modified` ᵍ | L | L ᵃ | → #104 | → #104 | → #104 | → #104 | — | — |
 | `no_reuse_candidate.execution_type_changed` ᵏ | L ᵃ | L ᵃ ᵏ | → #104 | → #104 | → #104 | → #104 | — | — |
@@ -1168,10 +1243,15 @@ conformance replay; the cells marked → #104 are listed in #104.
   `first_build` applies.
 - ᵉ Over an absent Target relation the FULL rebuild renders the first-build
   tree (lag_copy_candidates `dt_m`, crafted); other kinds: → #104. A stale
-  rebuild (older match) under drift with a non-zero Lag tolerance: → #104.
+  rebuild (older match) under drift with a non-zero Lag tolerance: L, with
+  the Lag tolerance line, for every kind but VIEW, whose tolerance is 0
+  (`explain_freshness_cells.jsonl` `fr_*`).
 - ᶠ Needs the matched build. Without it (its execution row disappeared): LO.
-  An `upstream_outdated` whose matched build re-derives no OUTDATED upstream
-  (an unknown epoch): → #104.
+  An `upstream_outdated` whose matched build re-derives no provably drifted
+  upstream (an unknown epoch): LO for every kind, accepted divergence #113.
+  Hosted reuses it within the Lag tolerance (`explain_unknown_epoch.jsonl`,
+  crafted). Client 2.0.11 never sends an unknown epoch: it leaves the table
+  out of `tables` and skips the State submit.
 - ᵍ With a matched build, or with no genuine upstreams (lag_copy_candidates
   `ome`, lag_tolerance_matrix `lfs_u0`). With upstreams and no matched build
   (the anchor's execution row disappeared): LO. Live for FULL, APPEND and
@@ -1180,6 +1260,11 @@ conformance replay; the cells marked → #104 are listed in #104.
   `explain_incremental_append_merge_history.jsonl` 78–79). APPEND and MERGE
   need the matched build.
 - ʰ The seed safety floor ([SEED](#seed)).
+- ᵐ A snapshot gets the default Lag tolerance (45 minutes) and the ANY
+  policy: client 2.0.11 reads `state` config from models only
+  ([SNAPSHOT](#snapshot)). So its ALL-policy reuse is unreachable, and its
+  drift rebuilds only past the default tolerance (`fd_sn`, run 2 of
+  `explain_freshness_cells.jsonl`).
 - ᵏ Needs the latest build as the matched build
   ([EXECUTE: execution type change](#execute-execution-type-change)). FULL
   (`explain_snapshot_history.jsonl` entry 60) and APPEND
@@ -1238,15 +1323,15 @@ Explain selects a shape from the persisted decision class, Decision reason
 | data test SKIP | `reused.fresh` | data-test SKIP |
 | data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream | data-test EXECUTE |
 | data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, #106) | empty tree |
-| SKIP | `reused.fresh`, `reused.within_lag_tolerance` where the kind's listing is captured¹; `reused.tolerated_stale` for FULL | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
+| SKIP | `reused.fresh`, `reused.within_lag_tolerance` where the kind's listing is captured¹; `reused.tolerated_stale` likewise, except SNAPSHOT | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
-| EXECUTE | `upstream_outdated` when the anchor re-derives an OUTDATED upstream (FULL, APPEND, MERGE, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |
+| EXECUTE | `upstream_outdated` when the anchor re-derives an upstream whose drift is proven (FULL, the five incrementals, SNAPSHOT, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |
 | EXECUTE | `no_reuse_candidate.own_target_modified` for FULL, with an anchor or no genuine upstreams; for APPEND and MERGE, with an anchor and an upstream | SKIP-shaped tree |
 | EXECUTE | `no_reuse_candidate.execution_type_changed` for FULL and APPEND, with an anchor and an upstream | SKIP-shaped tree, against the latest build |
 | EXECUTE | `no_reuse_candidate.identity_mismatch` when the decision-time inputs lack the Target relation | first build for FULL (`lag_copy_candidates` `dt_m`); empty tree otherwise |
-| EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, unless the rebuild is stale with a non-zero tolerance and drift against the unmatched build | SHAPE 7, judged against the unmatched latest build |
+| EXECUTE | `no_reuse_candidate.identity_mismatch` where the kind's listing is captured¹, with the Lag tolerance line when stale with a non-zero tolerance and drift against the unmatched build, unless the decision recorded no build age for it (a row written before #104) | SHAPE 7, judged against the unmatched latest build |
 | EXECUTE | `no_reuse_candidate.copy_logic_mismatch` when the decision-time inputs lack the Target relation | first build for FULL and APPEND; empty tree otherwise |
-| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` for every model kind but a view with an upstream, unless stale as above | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
+| EXECUTE | `no_reuse_candidate.copy_logic_mismatch` for every model kind but a view with an upstream, unless stale with a non-zero tolerance and drift against the copy (uncaptured, even with a recorded build age) | SHAPE 7 against the copy ([Rebuild over a RegisterClone copy](#execute-rebuild-over-a-registerclone-copy)) |
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
