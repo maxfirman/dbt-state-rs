@@ -2047,6 +2047,47 @@ mod tests {
         n
     }
 
+    /// SHAPE 7 judges its listing against the unmatched latest build
+    /// (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40q`:
+    /// drift is OUTDATED with `upstream data is outdated`; the moved-back and
+    /// unchanged cases are pinned by the replay). Without that build, a
+    /// rebuild recorded before migration 0017, nothing proves freshness, so
+    /// the summary line is omitted.
+    #[test]
+    fn shape7_listing_is_judged_against_the_unmatched_build() {
+        let identity = DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch);
+        let shape7 = |current: i64, recorded: Option<i64>| {
+            let mut n = anchored(
+                DecisionKind::Build,
+                identity,
+                current,
+                recorded.unwrap_or(0),
+            );
+            n.unmatched = n.anchor.take().filter(|_| recorded.is_some());
+            explain_lines(&n)
+        };
+        let drifted = shape7(5_000, Some(900));
+        assert_eq!(drifted[1].children[0].text, "the model query has changed");
+        assert_eq!(
+            drifted[2].children[0].children[0].badge,
+            Some(BADGE_OUTDATED)
+        );
+        assert_eq!(
+            freshness_texts(&drifted),
+            ["upstream dependencies", "upstream data is outdated"]
+        );
+        assert_eq!(
+            freshness_texts(&shape7(900, Some(900))),
+            ["upstream dependencies", "upstream data is up to date"]
+        );
+        assert_eq!(
+            freshness_texts(&shape7(800, Some(900))),
+            ["upstream dependencies"]
+        );
+        let unrecorded = shape7(5_000, None);
+        assert_eq!(freshness_texts(&unrecorded), ["upstream dependencies"]);
+    }
+
     fn freshness_texts(lines: &[qc::ExplainLine]) -> Vec<String> {
         let section = lines
             .iter()
