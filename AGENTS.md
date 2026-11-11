@@ -57,7 +57,8 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
   3. The Target relation's existence and External modifications are checked
      separately from upstream freshness.
   4. Cross-target Result copy: Snowflake matches by `table_namespace` +
-     schema-abstracted logic + execution type, and that logic identity binds
+     schema-abstracted logic + execution type, copies only FULL on submit
+     (`Warehouse::submit_copy_admits`, #101), and that logic identity binds
      each dependency's schema-abstracted name to its definition (swapping two
      dependency definitions between references is not equivalent). DuckDB has
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other
