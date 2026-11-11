@@ -101,14 +101,18 @@ pub enum DecisionReason {
     Reused(Reuse),
     /// An equivalent result under another name is copied into the target.
     ResultCopy,
-    /// An equivalent exists, but the target forbids copies or the copy chain
-    /// is at its limit, so the model builds.
+    /// An equivalent exists, but the copy chain is at its limit, or the
+    /// target forbids copies with `clone_chain_depth_limit = 0` alone (client
+    /// 2.0.6), so the model builds.
     CopyChainLimit,
+    /// An equivalent exists, but the submit disallows copies
+    /// (`allow_clones: false`), so the model builds.
+    CopyDisabled,
 }
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 18] = [
+    const ALL: [DecisionReason; 19] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
@@ -127,6 +131,7 @@ impl DecisionReason {
         Self::Reused(Reuse::WithinLagTolerance),
         Self::ResultCopy,
         Self::CopyChainLimit,
+        Self::CopyDisabled,
     ];
 
     /// The stable lowercase string stored in `node_decisions.decision_reason`
@@ -167,6 +172,7 @@ impl DecisionReason {
             Self::Reused(Reuse::WithinLagTolerance) => "reused.within_lag_tolerance",
             Self::ResultCopy => "result_copy",
             Self::CopyChainLimit => "copy_chain_limit",
+            Self::CopyDisabled => "copy_disabled",
         }
     }
 
@@ -426,10 +432,11 @@ impl DecisionRecord {
         }
     }
 
-    /// An equivalent exists but the target forbids copies or the copy chain is
-    /// at its limit. VERIFIED LIVE (experiments/clone_experiment.sh table
-    /// --no-clones): the hosted service executes with this description,
-    /// TARGET_TABLE_MISMATCH and CLONE_CHAIN_LIMIT_EXCEEDED.
+    /// An equivalent exists but the copy chain is at its limit, or the target
+    /// forbids copies with `clone_chain_depth_limit = 0` alone. VERIFIED LIVE
+    /// (client 2.0.6, experiments/clone_experiment.sh table --no-clones): the
+    /// hosted service executes with this description, TARGET_TABLE_MISMATCH
+    /// and CLONE_CHAIN_LIMIT_EXCEEDED.
     pub fn copy_chain_limit() -> Self {
         Self {
             class: DecisionKind::Build,
@@ -446,6 +453,19 @@ impl DecisionRecord {
             sealed: (),
         }
     }
+
+    /// An equivalent exists but the submit disallows copies
+    /// (`allow_clones: false`, sent by client 2.0.11 with
+    /// `clone_chain_depth_limit = 0`). VERIFIED LIVE 2026-11-11
+    /// (explain_copy_logic_mismatch.jsonl `cf4`): the codes of
+    /// [`copy_chain_limit`](Self::copy_chain_limit) with another description.
+    pub fn copy_disabled() -> Self {
+        Self {
+            reason: DecisionReason::CopyDisabled,
+            description: COPY_DISABLED_DESCRIPTION.to_string(),
+            ..Self::copy_chain_limit()
+        }
+    }
 }
 
 pub const DESC_SKIP: &str =
@@ -457,6 +477,7 @@ const RESULT_COPY_DESCRIPTION: &str =
     "an equivalent model exists under another name so we cloned that one";
 const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
     "model was executed because the maximum number of nested clones has been reached";
+const COPY_DISABLED_DESCRIPTION: &str = "model was executed because cloning is disabled";
 
 // The wire rejection codes (`RejectionReason`, shared.proto) the service sends.
 pub const REJECTION_TARGET_TABLE_MISMATCH: i32 = qc::RejectionReason::TargetTableMismatch as i32;
@@ -2223,6 +2244,7 @@ mod tests {
             ),
             (DecisionReason::ResultCopy, "result_copy"),
             (DecisionReason::CopyChainLimit, "copy_chain_limit"),
+            (DecisionReason::CopyDisabled, "copy_disabled"),
         ];
         for (reason, stored) in pinned {
             assert_eq!(reason.as_str(), stored);

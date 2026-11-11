@@ -76,11 +76,14 @@ pub enum SubmitOutcome {
         record: DecisionRecord,
     },
     /// An equivalent exists but the target forbids copies or the copy chain is
-    /// at its limit: build with the chain-limit shape and an ordinary pending
-    /// row (see [`SubmitCopyPlan::ChainLimitExecute`]).
+    /// at its limit: build with the chain-limit or copy-disabled shape and an
+    /// ordinary pending row (see [`SubmitCopyPlan::ChainLimitExecute`],
+    /// [`SubmitCopyPlan::CopiesDisabled`]).
     ChainLimitExecute {
         ids: DecisionIds,
         record: DecisionRecord,
+        /// The equivalent that could have been copied (Explain names it).
+        source_table: String,
     },
 }
 
@@ -595,16 +598,24 @@ async fn result_copy_fallback(
     let Some((equivalent, judged)) = chosen else {
         return Ok(CopyFallback::Ordinary);
     };
+    let source_table = equivalent.source_table.clone();
     match result_copy::plan_submit(req, equivalent) {
-        SubmitCopyPlan::ChainLimitExecute if own.is_none() => {
+        plan @ (SubmitCopyPlan::ChainLimitExecute | SubmitCopyPlan::CopiesDisabled)
+            if own.is_none() =>
+        {
             let ids = DecisionIds::mint();
             // An ordinary (non-copy) pending row: the forthcoming
             // ConfirmExecution records the normal build.
             write_pending(store, evidence, &ids).await?;
+            let record = match plan {
+                SubmitCopyPlan::CopiesDisabled => DecisionRecord::copy_disabled(),
+                _ => DecisionRecord::copy_chain_limit(),
+            };
             Ok(CopyFallback::Decided(Box::new(
                 SubmitOutcome::ChainLimitExecute {
                     ids,
-                    record: DecisionRecord::copy_chain_limit(),
+                    record,
+                    source_table,
                 },
             )))
         }
@@ -629,7 +640,9 @@ async fn result_copy_fallback(
                 record,
             })))
         }
-        SubmitCopyPlan::ChainLimitExecute => Ok(CopyFallback::Ordinary),
+        SubmitCopyPlan::ChainLimitExecute | SubmitCopyPlan::CopiesDisabled => {
+            Ok(CopyFallback::Ordinary)
+        }
         SubmitCopyPlan::Refused {
             clone_rejection_reason,
         } => Ok(CopyFallback::Refused {

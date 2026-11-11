@@ -57,7 +57,7 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
             execution_decision_id: Some(execution_decision_id),
         }),
         SubmitOutcome::Execute { ids, record, .. }
-        | SubmitOutcome::ChainLimitExecute { ids, record } => {
+        | SubmitOutcome::ChainLimitExecute { ids, record, .. } => {
             Response::ReadyToExecute(qc::ReadyToExecuteResponse {
                 request_id: ids.request_id,
                 last_modified_query: String::new(),
@@ -267,10 +267,14 @@ fn submit_capture(
         default_schema: None,
         // The physical relation a Copy is made FROM, so the Explain CLONE
         // renderer (`explain.rs::clone_tree`) can emit `could be cloned from
-        // "<source>"` (F2).
+        // "<source>"` (F2); for a build whose copy the submit disallowed, the
+        // equivalent it could have been copied from.
         clone_source: match outcome {
             SubmitOutcome::Copy { copy, .. } => {
                 Some(copy.source_table.clone()).filter(|s| !s.is_empty())
+            }
+            SubmitOutcome::ChainLimitExecute { source_table, .. } => {
+                Some(source_table.clone()).filter(|s| !s.is_empty())
             }
             _ => None,
         },

@@ -137,15 +137,16 @@ pub(crate) fn for_model(
     // Same identity, other node kind (#83): hosted's EXECUTION_TYPE_MISMATCH,
     // explained against this row. The caller routes a target that also has
     // a build of the workload's type to `for_model_over_build_of_type`.
-    // Likewise a RegisterClone copy this submit cannot adopt (#93; no capture, #104).
-    let unidentified =
-        if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
-            NoCandidate::ExecutionTypeChanged
-        } else if is_copy_registration(&current) && !adoptable(req, evidence, &current) {
-            NoCandidate::CopyLogicMismatch
-        } else {
-            NoCandidate::IdentityMismatch
-        };
+    // Likewise a RegisterClone copy this submit cannot adopt (#93, #104):
+    // another kind with the copy's logic is a node kind change, and other
+    // logic is a copy logic mismatch.
+    let unidentified = if execution_type_changed(req, evidence, &current) {
+        NoCandidate::ExecutionTypeChanged
+    } else if is_copy_registration(&current) && !adoptable(req, evidence, &current) {
+        NoCandidate::CopyLogicMismatch
+    } else {
+        NoCandidate::IdentityMismatch
+    };
     let mut unmatched = None;
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
@@ -196,15 +197,21 @@ fn model_rejection(
 
 /// Whether the target's latest row `latest` has the workload's identity but
 /// was built as another execution type (a node kind change with unchanged
-/// SQL, or a full refresh recorded as FULL). Selection then also needs the
-/// target's latest build of the workload's own type
+/// SQL, or a full refresh recorded as FULL). A client-requested copy has the
+/// workload's identity when the workload has the logic the copy inherited
+/// ([`copy_logic_matches`]; VERIFIED LIVE 2026-11-11,
+/// explain_copy_logic_mismatch.jsonl `kf4`: a table over an append copy with
+/// the same SQL and semantic extras is EXECUTION_TYPE_MISMATCH). Selection
+/// then also needs the target's latest build of the workload's own type
 /// ([`latest_build_of_type`]).
 pub(crate) fn execution_type_changed(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     latest: &ExecutionRow,
 ) -> bool {
-    latest.execution_type != req.execution_type && same_identity(req, evidence, latest)
+    latest.execution_type != req.execution_type
+        && (same_identity(req, evidence, latest)
+            || is_copy_registration(latest) && copy_logic_matches(req, evidence, latest))
 }
 
 /// The newest build in `history` (the target's builds in scope, newest
@@ -446,8 +453,18 @@ fn adoptable(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
-    row.execution_type == req.execution_type
-        && row.dialect == req.dialect
+    row.execution_type == req.execution_type && copy_logic_matches(req, evidence, row)
+}
+
+/// [`adoptable`] without the execution type: a clone-origin row whose logic
+/// identity is the submit's, also read in the copy source's schema for a
+/// client-requested copy.
+fn copy_logic_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    row.dialect == req.dialect
         && row.clone_source_table.is_some()
         && evidence.node_namespace_logic_hash.is_some()
         && (row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
@@ -869,6 +886,36 @@ mod tests {
         let s = model(&dev("select id, 1 as x from DB.PROD.SRC"), Some(copy));
         assert!(s.candidate.is_none());
         assert_eq!(s.why_no_candidate, Some(NoCandidate::CopyLogicMismatch));
+    }
+
+    /// A submit of another node kind over a client-requested copy (VERIFIED
+    /// LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `kf4`, `kv4`,
+    /// `kc4`): with the copy's logic, a node kind change (EXECUTION_TYPE_MISMATCH,
+    /// judged against the copy); with other logic, including other semantic
+    /// extras, a copy logic mismatch. Never reused.
+    #[test]
+    fn another_node_kind_over_a_copy_registration_is_an_execution_type_change() {
+        let req = model_req("select id from DB.DEV.UP");
+        let ev = evidence(&req);
+        let copy = ExecutionRow {
+            execution_type: ModelExecutionType::Append as i32,
+            ..clone_origin(&ev)
+        };
+        assert!(execution_type_changed(&req, &ev, &copy));
+        let s = model(&req, Some(copy.clone()));
+        assert!(s.candidate.is_none());
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::ExecutionTypeChanged));
+        assert_eq!(s.type_changed.map(|r| r.id), Some(copy.id));
+
+        let view = qc::SubmitEnrichedSqlRequest {
+            execution_type: ModelExecutionType::View as i32,
+            semantic_extras: [("lookback".to_string(), "1".to_string())].into(),
+            ..req
+        };
+        let s = model(&view, Some(copy.clone()));
+        assert!(!execution_type_changed(&view, &evidence(&view), &copy));
+        assert_eq!(s.why_no_candidate, Some(NoCandidate::CopyLogicMismatch));
+        assert_eq!(s.unmatched.map(|r| r.id), Some(copy.id));
     }
 
     /// Rehoming applies only to a client-requested copy: a Result copy made on

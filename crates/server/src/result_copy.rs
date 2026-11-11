@@ -137,12 +137,19 @@ pub struct ResultCopy {
 pub(crate) enum SubmitCopyPlan {
     /// Copy the equivalent into the submit target (`ready_to_clone`).
     Copy(ResultCopy),
-    /// An equivalent would be copied, but the target forbids copies or the
-    /// copy chain is already at its limit. Hosted executes with
-    /// TARGET_TABLE_MISMATCH / CLONE_CHAIN_LIMIT_EXCEEDED and a fixed
-    /// description (VERIFIED LIVE, experiments/clone_experiment.sh table
-    /// --no-clones; fixture clone_submit_allow_clones_false.jsonl).
+    /// An equivalent would be copied, but the target forbids copies with
+    /// `clone_chain_depth_limit = 0` alone, or the copy chain is already at
+    /// its limit. Hosted executes with TARGET_TABLE_MISMATCH /
+    /// CLONE_CHAIN_LIMIT_EXCEEDED and a fixed description (VERIFIED LIVE,
+    /// client 2.0.6, experiments/clone_experiment.sh table --no-clones;
+    /// fixture clone_submit_allow_clones_false.jsonl).
     ChainLimitExecute,
+    /// An equivalent would be copied, but the submit disallows copies
+    /// (`allow_clones: false`). Hosted executes with the codes of
+    /// [`SubmitCopyPlan::ChainLimitExecute`] and `cloning is disabled`
+    /// (VERIFIED LIVE 2026-11-11, client 2.0.11, which sends it with
+    /// `clone_chain_depth_limit = 0`: explain_copy_logic_mismatch.jsonl `cf4`).
+    CopiesDisabled,
     /// An equivalent exists, but the Warehouse rules do not copy this
     /// submit's execution type ([`Warehouse::submit_copy_admits`]). Hosted
     /// 2.0.11 builds it with its ordinary description and tree, and reports
@@ -211,7 +218,10 @@ pub(crate) fn plan_submit(
             ),
         };
     }
-    let forbidden = req.allow_clones == Some(false) || req.clone_chain_depth_limit == Some(0);
+    if req.allow_clones == Some(false) {
+        return SubmitCopyPlan::CopiesDisabled;
+    }
+    let forbidden = req.clone_chain_depth_limit == Some(0);
     let chain_limit_reached = warehouse
         .copy_chain_depth_limit(req.clone_chain_depth_limit)
         .is_some_and(|limit| equivalent.copy_depth >= limit);
@@ -666,12 +676,23 @@ mod tests {
             plan_submit(&req, equivalent(PROD, 0, Some(5))),
             SubmitCopyPlan::ChainLimitExecute
         );
-        let mut req = submit("snowflake", "select id from DB.DEV.UP");
-        req.allow_clones = Some(false);
-        assert_eq!(
-            plan_submit(&req, equivalent(PROD, 0, Some(5))),
-            SubmitCopyPlan::ChainLimitExecute
-        );
+    }
+
+    /// `allow_clones: false` (client 2.0.11 sends it with limit 0): the same
+    /// codes, another description (VERIFIED LIVE 2026-11-11,
+    /// explain_copy_logic_mismatch.jsonl `cf4`).
+    #[test]
+    fn disallowed_copies_execute_with_the_copy_disabled_shape() {
+        for limit in [None, Some(0)] {
+            let mut req = submit("snowflake", "select id from DB.DEV.UP");
+            req.allow_clones = Some(false);
+            req.clone_chain_depth_limit = limit;
+            assert_eq!(
+                plan_submit(&req, equivalent(PROD, 0, Some(5))),
+                SubmitCopyPlan::CopiesDisabled,
+                "limit {limit:?}"
+            );
+        }
     }
 
     #[test]
