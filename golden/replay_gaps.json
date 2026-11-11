@@ -293,30 +293,6 @@
     "reason": "DECISION DIVERGENCE explain of entry 7 (#93): hosted renders its snapshot SKIP tree over the copy; under the #40 divergence rule the local server renders nothing for no_reuse_candidate.copy_logic_mismatch."
   },
   {
-    "fixture": "explain_data_test_history.jsonl",
-    "entry": 18,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#88): the unchanged store_failures data test reports its own audit relation in `tables`, a name its first execution did not record. Hosted SKIPs it; the local server rebuilds with dependency_set_changed (6/6)."
-  },
-  {
-    "fixture": "explain_data_test_history.jsonl",
-    "entry": 21,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 18 (#88): hosted explains its data-test SKIP (only the source listed); the local server's data-test dependency_set_changed rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_data_test_history.jsonl",
-    "entry": 27,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#88): as entry 18, the store_failures test unchanged in round 3. Hosted SKIPs; the local server rebuilds with dependency_set_changed (6/6)."
-  },
-  {
-    "fixture": "explain_data_test_history.jsonl",
-    "entry": 45,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE (#88): after its source gained a row both decide EXECUTE for the store_failures test, but the local reason is dependency_set_changed (the audit relation is still a name its build did not record). Hosted renders the data-test EXECUTE listing with only the source; the local server renders no tree for that reason."
-  },
-  {
     "fixture": "explain_incomplete_test_results.jsonl",
     "entry": 2,
     "local_variant": "ready_to_execute",
