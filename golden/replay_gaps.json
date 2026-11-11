@@ -256,12 +256,6 @@
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 246,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 181: NOT RENDERED (#117): same decision (execution_type_changed, 2/2); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 297,
     "local_variant": "ready_to_execute",
     "reason": "ACCEPTED DIVERGENCE (#115): hosted reuses a custom node whose Target relation a view build replaced (`cv0`, no upstream, history VIEW, DBT_CUSTOM); the local server rebuilds it with own_target_modified (6/6), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
@@ -312,12 +306,6 @@
     "entry": 376,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED DIVERGENCE explain of entry 323 (#115): hosted explains its custom-node SKIP; the local own_target_modified rebuild of a custom node renders nothing. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_reason_kind_cells.jsonl",
-    "entry": 377,
-    "local_variant": "empty_tree",
-    "reason": "explain of entry 305: NOT RENDERED (#117): same decision (own_target_modified, 'the view definition is newer'); hosted's VIEW tree says `no upstream dependencies` for a view that reads no relation, which Explain cannot tell from a view over a ref, so the cell renders nothing."
   },
   {
     "fixture": "explain_reason_kind_cells.jsonl",

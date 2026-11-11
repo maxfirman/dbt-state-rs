@@ -60,6 +60,7 @@ fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
         skip_rejection_reason: None,
         clone_rejection_reason: None,
         unmatched_execution_id: None,
+        reads_relation: None,
     }
 }
 

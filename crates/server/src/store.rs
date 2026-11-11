@@ -731,7 +731,7 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id
+                   unmatched_execution_id, reads_relation
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -804,6 +804,8 @@ pub struct ExplainDecisionRow {
     /// Migration 0017: for a rebuild without a matched build, the latest
     /// build in scope, whose identity did not match.
     pub unmatched_execution_id: Option<i64>,
+    /// Migration 0019: for a view, whether its SQL reads a relation.
+    pub reads_relation: Option<bool>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -873,6 +875,7 @@ mod tests {
             build_age_ms: None,
             skip_rejection_reason: None,
             unmatched_execution_id: None,
+            reads_relation: None,
             matched_execution: Some(ExecutionRow {
                 id: 1,
                 org_id: "o".into(),
