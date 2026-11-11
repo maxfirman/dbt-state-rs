@@ -35,3 +35,17 @@ pub(super) fn copy_ddl(source: &str, target: &str, source_table_type: Option<&st
         "\n            CREATE OR REPLACE {kind} {target}\n            CLONE {source}\n            COPY GRANTS"
     )]
 }
+
+/// Whether the reported relation `name` is exactly the three-part relation
+/// `parts` (database, schema, identifier): an unquoted identifier folds to
+/// upper case and a quoted one is exact, on both sides.
+pub(super) fn names_relation(name: &str, parts: [&str; 3]) -> bool {
+    use crate::sql_norm::{canonical_identifier, split_object_name_components};
+    let components = split_object_name_components(name);
+    components.len() == parts.len()
+        && parts.iter().all(|p| !p.trim().is_empty())
+        && components
+            .iter()
+            .zip(parts)
+            .all(|(c, p)| canonical_identifier(c) == canonical_identifier(p))
+}

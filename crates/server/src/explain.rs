@@ -334,10 +334,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // upstream whose logic changed, whether the test passed or failed; a
         // test without upstreams says `no upstream dependencies` instead of
         // listing them. Hosted SKIPs a test whose cached results are
-        // incomplete (#87) and one whose store_failures audit relation newly
-        // appears in its inputs (#88), so our rebuilds for those reasons
-        // render nothing, as does every other data-test rebuild reason
-        // (docs/explain-catalog.md "Decision reason coverage"). A data test's
+        // incomplete (#87), so our rebuild for that reason renders nothing,
+        // as does every other data-test rebuild reason, including a
+        // dependency-set change, which no capture shows (a store_failures
+        // test's own audit relation is not an input, #88, unless the request
+        // does not identify it, #106;
+        // docs/explain-catalog.md "Decision reason coverage"). A data test's
         // Lag tolerance is 0 and it rebuilds on any drift, so its only reuse
         // is a fresh one.
         return Some(match (node.decision, reason) {
@@ -1402,10 +1404,12 @@ mod tests {
 
     #[test]
     fn data_test_execute_renders_nothing_for_uncaptured_or_divergent_reasons() {
-        // Hosted SKIPs a data test whose cached results are incomplete and one
-        // whose store_failures audit relation newly appears in its inputs
-        // (#75 captures), so our rebuilds for those reasons have no hosted
-        // tree. Failing reuse qualification has no data-test capture.
+        // Hosted SKIPs a data test whose cached results are incomplete (#75
+        // captures, divergence #87), so our rebuild for that reason has no
+        // hosted tree. No capture shows a data test whose dependency set
+        // changed (a store_failures test's own audit relation is not an
+        // input, #88; one the request does not identify is, #106) or that
+        // failed reuse qualification.
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,

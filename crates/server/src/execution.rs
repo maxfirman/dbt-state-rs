@@ -35,6 +35,44 @@ fn node_unique_id(
         .map(str::to_owned)
 }
 
+/// Whether `name` is the data test's own audit relation, which a
+/// `store_failures` test writes and the client then reports in `tables`
+/// (#88). Client 2.0.11 (dbt-fusion `collect_table_modified_infos`) always
+/// adds the node's own relation (`node.database()`.`node.schema()`.alias) to
+/// `tables` when it exists; a data test's relation is where it stores its
+/// failures. Like an incremental's read of its own target, that is the test's
+/// own write, not an upstream: hosted neither rebuilds for it nor lists it
+/// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
+///
+/// Recognized only from the request: a data test whose semantic extras set
+/// `store_failures: true`, and a relation that is exactly
+/// `default_catalog`.`default_schema`.`dbt_node_name` under the warehouse's
+/// identifier rules (Snowflake only). Any other table still counts, so a
+/// changed dependency set still rebuilds. A test with a configured alias is not
+/// recognized and keeps rebuilding.
+fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
+    let stores_failures = req
+        .semantic_extras
+        .get("store_failures")
+        .and_then(|v| serde_json::from_str::<bool>(v).ok())
+        == Some(true);
+    if req.execution_type != qc::ModelExecutionType::DbtDataTest as i32 || !stores_failures {
+        return false;
+    }
+    let (Some(schema), Some(test)) = (
+        req.default_schema.as_deref(),
+        req.labels.get("dbt_node_name"),
+    ) else {
+        return false;
+    };
+    crate::warehouse::Warehouse::from_dialect(&req.dialect).names_relation(
+        name,
+        &req.default_catalog,
+        schema,
+        test,
+    )
+}
+
 /// The identity and inputs of one execution, as submitted, recorded or
 /// registered as a copy. Reuse candidate selection and Result copy planning
 /// read it; [`ExecutionEvidence::pending`] and [`ExecutionEvidence::confirmed`]
@@ -128,7 +166,12 @@ impl ExecutionEvidence {
                 .flatten(),
             node_template_hash: template
                 .map(|body| crate::fingerprint::sql_logic_hash(req, Some(body))),
-            input_tables: req.tables.iter().map(InputTable::from).collect(),
+            input_tables: req
+                .tables
+                .iter()
+                .filter(|t| !is_own_audit_relation(req, &t.name))
+                .map(InputTable::from)
+                .collect(),
             ..Self::node(
                 org_id,
                 req.target_table.clone().unwrap_or_default(),
@@ -576,6 +619,113 @@ mod tests {
         assert_eq!(e.node_unique_id.as_deref(), Some("model.p.legacy"));
         assert_eq!(e.project_id, None);
         assert_eq!(e.node_hash, None);
+    }
+
+    const SOURCE: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75SRC\"";
+    const AUDIT: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S\"";
+
+    /// A `store_failures` singular data test as client 2.0.11 submits it once
+    /// its audit relation exists (explain_data_test_history.jsonl entry 18):
+    /// no target, the test's database and schema as the defaults, and the
+    /// audit relation reported next to the tested source.
+    fn store_failures_test(tables: &[&str]) -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            target_table: None,
+            dialect: "snowflake".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            default_schema: Some("prod_state_demo".into()),
+            execution_type: ModelExecutionType::DbtDataTest as i32,
+            sql: "select id from CDO_DEMO_DB.prod_state_demo.t75src where id < 0".into(),
+            tables: tables
+                .iter()
+                .map(|name| qc::TableModifiedInfo {
+                    name: (*name).into(),
+                    last_modified_epoch: Some(500),
+                })
+                .collect(),
+            semantic_extras: [
+                ("store_failures".to_string(), "true".to_string()),
+                ("store_failures_as".to_string(), "\"table\"".to_string()),
+            ]
+            .into(),
+            labels: [("dbt_node_name".to_string(), "t75s".to_string())].into(),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "test.p.t75s".into(),
+                ..node_state()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn input_names(e: &ExecutionEvidence) -> Vec<&str> {
+        e.input_tables.iter().map(|t| t.name.as_str()).collect()
+    }
+
+    /// The audit relation is the test's own write, not something it reads
+    /// (#88): neither the submitted nor the recorded evidence lists it.
+    #[test]
+    fn store_failures_test_audit_relation_is_not_an_input() {
+        let req = store_failures_test(&[SOURCE, AUDIT]);
+        let submitted = ExecutionEvidence::sql_submit("org", &req);
+        assert_eq!(input_names(&submitted), vec![SOURCE]);
+        let recorded = ExecutionEvidence::sql_record("org", &sql_execution(&req));
+        assert_eq!(input_names(&recorded), vec![SOURCE]);
+    }
+
+    /// Unquoted identifiers fold to upper case on Snowflake, so the test's
+    /// lower-case name and schema name the upper-case quoted relation; an
+    /// unquoted reported name folds the same way.
+    #[test]
+    fn audit_relation_matches_under_snowflake_identifier_folding() {
+        let unquoted = "cdo_demo_db.prod_state_demo.t75s";
+        let req = store_failures_test(&[SOURCE, unquoted]);
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE]
+        );
+    }
+
+    /// Only the test's own relation is excluded. A relation that merely
+    /// resembles it, or the same name for a test that does not store its
+    /// failures, a model or another warehouse, still counts as an input.
+    #[test]
+    fn relations_resembling_the_audit_relation_still_count() {
+        let lookalikes = [
+            "\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"T75S\"",
+            "\"OTHER_DB\".\"PROD_STATE_DEMO\".\"T75S\"",
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_X\"",
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"t75s\"",
+            "\"PROD_STATE_DEMO\".\"T75S\"",
+            "\"X\".\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S\"",
+        ];
+        for name in lookalikes {
+            let e = ExecutionEvidence::sql_submit("org", &store_failures_test(&[SOURCE, name]));
+            assert_eq!(input_names(&e), vec![SOURCE, name], "{name}");
+        }
+
+        let variants: [(&str, fn(&mut qc::SubmitEnrichedSqlRequest)); 6] = [
+            ("store_failures false", |r| {
+                r.semantic_extras
+                    .insert("store_failures".into(), "false".into());
+            }),
+            ("store_failures unset", |r| {
+                r.semantic_extras.remove("store_failures");
+            }),
+            ("a model", |r| {
+                r.execution_type = ModelExecutionType::Full as i32;
+            }),
+            ("another warehouse", |r| r.dialect = "databricks".into()),
+            ("no test name", |r| {
+                r.labels.remove("dbt_node_name");
+            }),
+            ("no default schema", |r| r.default_schema = None),
+        ];
+        for (what, edit) in variants {
+            let mut req = store_failures_test(&[SOURCE, AUDIT]);
+            edit(&mut req);
+            let e = ExecutionEvidence::sql_submit("org", &req);
+            assert_eq!(input_names(&e), vec![SOURCE, AUDIT], "{what}");
+        }
     }
 
     fn outcome() -> qc::ExecutionOutcome {
