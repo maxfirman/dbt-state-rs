@@ -251,5 +251,53 @@
     "entry": 39,
     "local_variant": "undecided",
     "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#113, probe u1): the upstream was recorded with its epoch at the build and is resubmitted with `last_modified_epoch: null`. Hosted reuses it within the Lag tolerance (SKIP, is_stale true); the local server rebuilds with upstream_outdated (6/6), because an unknown epoch never proves freshness (AGENTS.md invariant 2). Client 2.0.11 leaves a table of unknown epoch out of `tables` and skips the submit. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 3,
+    "local_variant": "empty_tree",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 2 (#113): hosted explains its SKIP; the local server's upstream_outdated rebuild over an unknown epoch is local-only and renders no tree (SHAPE 9 needs a proven drift). See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 6,
+    "local_variant": "ready_to_execute",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#113, probe u2): the upstream was recorded with no epoch at the build and is resubmitted with a known one. Hosted reuses it (SKIP, is_stale false); the local server rebuilds with upstream_outdated (6/6), because an unknown epoch never proves freshness (AGENTS.md invariant 2). Client 2.0.11 leaves a table of unknown epoch out of `tables` and skips the submit. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 7,
+    "local_variant": "empty_tree",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#113): hosted explains its SKIP; the local server's upstream_outdated rebuild over an unknown epoch is local-only and renders no tree (SHAPE 9 needs a proven drift). See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 10,
+    "local_variant": "ready_to_execute",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#113, probe u3): ALL policy over two upstreams, one resubmitted with `last_modified_epoch: null`, the other unchanged. Hosted reuses it within the Lag tolerance (SKIP, is_stale true); the local server rebuilds with upstream_outdated (6/6), because an unknown epoch never proves freshness (AGENTS.md invariant 2). Client 2.0.11 leaves a table of unknown epoch out of `tables` and skips the submit. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 11,
+    "local_variant": "empty_tree",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 10 (#113): hosted explains its SKIP; the local server's upstream_outdated rebuild over an unknown epoch is local-only and renders no tree (SHAPE 9 needs a proven drift). See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 14,
+    "local_variant": "ready_to_execute",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE (#113, probe u4): the upstream has no epoch at the build nor at the resubmit. Hosted reuses it within the Lag tolerance (SKIP, is_stale true); the local server rebuilds with upstream_outdated (6/6), because an unknown epoch never proves freshness (AGENTS.md invariant 2). Client 2.0.11 leaves a table of unknown epoch out of `tables` and skips the submit. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "explain_unknown_epoch.jsonl",
+    "entry": 15,
+    "local_variant": "empty_tree",
+    "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 14 (#113): hosted explains its SKIP; the local server's upstream_outdated rebuild over an unknown epoch is local-only and renders no tree (SHAPE 9 needs a proven drift). See docs/correctness-handoff.md \"Accepted divergences\"."
   }
 ]

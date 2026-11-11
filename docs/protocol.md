@@ -147,7 +147,13 @@ history match and the decision. The client derives:
 - Node config `lag_tolerance` becomes `freshness_tolerance_seconds`,
   `require_fresh_data_from` becomes `stale_upstream_policy`, and
   `evaluate_volatile_sql: true` becomes `tolerate_nondeterminism = false`. These
-  are set under the nested `state={}` config.
+  are set under the nested `state={}` config, which the client reads from
+  models only (incrementals and custom materializations included): a snapshot
+  always gets the default tolerance (env `RUN_CACHE_FRESHNESS_TOLERANCE`,
+  default 45 minutes) and the `ANY` policy (`model_state_for_node`).
+- A table whose `last_modified_epoch` the client cannot read is left out of
+  `tables`, and the client then skips the State submit (`metadata_complete =
+  false`). So the client never sends an upstream with an unknown epoch.
 
 ### `ModelExecutionType`
 
@@ -212,8 +218,12 @@ Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 Hosted words a snapshot SKIP as "both … up to date" even when an upstream
 epoch moved back or drifted within the Lag tolerance, where a model gets the
 "within lag tolerance" string (`explain_snapshot_history.jsonl` entries 28-31,
-40). A snapshot reuse past its tolerance under the `ALL` policy is unobserved
-and keeps the same string.
+40). A snapshot reuse past its tolerance under the `ALL` policy is
+unreachable on 2.0.11 (the client sends a snapshot the `ANY` policy and the
+default tolerance, [What the client computes](#what-the-client-computes))
+and keeps the same string. An `ALL`-policy reuse with one of two upstreams
+drifted and a build younger than the tolerance gets the "within lag
+tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 
 ### Rejection codes
 
@@ -223,11 +233,11 @@ and keeps the same string.
 |---|---|---|---|
 | SKIP | - / - | Every reuse | `DecisionRecord::decided` |
 | EXECUTE | 6 / 6 (`NO_SUITABLE_MATCH_FOUND`) | Default for every execute | `decision.rs::execute` |
-| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit. Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
+| EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
 | EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type, and the target relation has no build of the workload's type (rule 1 below) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
 | EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_chain_limit` |
-| EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
+| EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate, or whose reuse candidate must rebuild for upstream data drift, whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
 | EXECUTE | 1 / 6 (`TARGET_TABLE_MISMATCH` / `NO_SUITABLE_MATCH_FOUND`) | As 1 / 3, for an incremental whose newest equivalent has its own execution type | same |
 | EXECUTE | 1 / 2 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_MISMATCH`) | As 1 / 3, when the newest equivalent has another execution type | same |
 | CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit | `DecisionRecord::result_copy` |
@@ -239,7 +249,9 @@ Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`
 `explain_execution_type_change.jsonl`, `explain_snapshot_history.jsonl` entry 58,
 `lag_seed_upstream.jsonl` (arms G, H), `clone_submit_allow_clones_false.jsonl`,
 `clone_rejected_allow_clones_false.jsonl`, `explain_custom_copy.jsonl`,
-`explain_copy_probes.jsonl`, `explain_incremental_copy_over.jsonl`.
+`explain_copy_probes.jsonl`, `explain_incremental_copy_over.jsonl`,
+`explain_freshness_cells.jsonl` (8 / 7 ahead of an equivalent elsewhere;
+1 / 3 on a data-only rebuild), `explain_rebuild_tolerance_line.jsonl`.
 
 ### Current decision semantics
 
@@ -366,8 +378,15 @@ and semantic extras in prod. The append and delete+insert submits' newest
 equivalents were the insert_overwrite and merge prod builds, so they got
 1 / 2. A view, snapshot or custom node whose newest equivalent has another
 type is not captured; it gets 1 / 2 as well. Only submits without a reuse
-candidate report these codes; a non-FULL rebuild for freshness keeps the
-ordinary codes (uncaptured).
+candidate, or a data-only rebuild for freshness (`upstream_outdated`),
+report these codes: captured for a snapshot (`explain_freshness_cells.jsonl`
+`fd_sn`, 1 / 3) and crafted for a snapshot and an insert_overwrite model
+(`explain_rebuild_tolerance_line.jsonl` `s2`, `i2`, 1 / 3 and 1 / 6). A
+rebuild for an Upstream producer change keeps the ordinary codes
+(uncaptured). A target whose own older build matches and
+would be reused reports that older match instead (8 / 7), as hosted does for
+the five incrementals and a snapshot (`explain_freshness_cells.jsonl`
+`fr_*`, entries 80–95, #104).
 
 When the fallback applies:
 
