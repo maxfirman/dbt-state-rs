@@ -703,7 +703,8 @@ mod tests {
             assert_eq!(input_names(&e), vec![SOURCE, name], "{name}");
         }
 
-        let variants: [(&str, fn(&mut qc::SubmitEnrichedSqlRequest)); 6] = [
+        type Edit = fn(&mut qc::SubmitEnrichedSqlRequest);
+        let variants: [(&str, Edit); 6] = [
             ("store_failures false", |r| {
                 r.semantic_extras
                     .insert("store_failures".into(), "false".into());

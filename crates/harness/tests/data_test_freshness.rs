@@ -181,11 +181,17 @@ fn hosted_data_test_freshness_shape_is_pinned() {
 const SF_SOURCE: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_SRC\"";
 const SF_AUDIT: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"";
 
-/// A `store_failures: true` singular test over [`SF_SOURCE`] at epoch 100. Its
-/// first execution reports only the source (the audit relation does not exist
-/// yet).
-fn store_failures_test() -> support::scenario::Submit {
-    data_test("test.jaffle_shop.sf_test")
+/// Hosted SKIPs an unchanged `store_failures` test although its audit
+/// relation now appears in `tables`: it is the test's own write. The audit
+/// relation is excluded, not every unrecorded table: a genuinely new upstream
+/// next to it changes the dependency set and rebuilds.
+#[tokio::test]
+async fn store_failures_audit_relation_is_ignored_but_a_new_upstream_rebuilds() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    // A `store_failures: true` singular test over SF_SOURCE. Its first
+    // execution reports only the source (the audit relation does not exist).
+    let test = data_test("test.jaffle_shop.sf_test")
         .catalog("CDO_DEMO_DB")
         .schema("prod_state_demo")
         .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
@@ -195,41 +201,15 @@ fn store_failures_test() -> support::scenario::Submit {
         .label("dbt_node_name", "sf_test")
         .extra("store_failures", "true")
         .extra("store_failures_as", "\"table\"")
-        .upstream(SF_SOURCE, 100)
-}
+        .upstream(SF_SOURCE, 100);
+    sc.build_with(test.clone(), outcome().results(test_results(0)))
+        .await;
+    let rerun = test.clone().upstream(SF_AUDIT, 150);
+    assert_eq!(sc.verdict(rerun.clone()).await, "skip_execution");
 
-/// Hosted SKIPs an unchanged `store_failures` test although its audit
-/// relation now appears in `tables` (#88): it is the test's own write.
-#[tokio::test]
-async fn store_failures_test_skips_with_its_own_audit_relation_reported() {
-    let server = start_server().await;
-    let sc = Scenario::connect(&server).await;
-    sc.build_with(store_failures_test(), outcome().results(test_results(0)))
-        .await;
-    assert_eq!(
-        sc.verdict(store_failures_test().upstream(SF_AUDIT, 150))
-            .await,
-        "skip_execution"
-    );
-}
-
-/// The audit relation is excluded, not every unrecorded table: a genuinely
-/// new upstream next to it changes the dependency set and rebuilds.
-#[tokio::test]
-async fn new_upstream_next_to_a_store_failures_audit_relation_rebuilds() {
-    let server = start_server().await;
-    let sc = Scenario::connect(&server).await;
-    sc.build_with(store_failures_test(), outcome().results(test_results(0)))
-        .await;
-    let resp = sc
-        .submit(
-            store_failures_test()
-                .upstream(SF_AUDIT, 150)
-                .upstream("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_NEW\"", 100),
-        )
-        .await;
-    assert_eq!(support::scenario::variant(&resp), "ready_to_execute");
-    let decision = support::scenario::into_execute(resp)
+    let decision = sc
+        .expect_execute(rerun.upstream("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_NEW\"", 100))
+        .await
         .explained_decision
         .expect("explained decision");
     assert_eq!(
@@ -248,32 +228,43 @@ async fn new_upstream_next_to_a_store_failures_audit_relation_rebuilds() {
 /// for a test that does not store its failures.
 #[tokio::test]
 async fn tables_resembling_the_audit_relation_still_count() {
-    let lookalikes = [
-        "\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"SF_TEST\"",
-        "\"OTHER_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"",
-        "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUDIT\"",
-        "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"sf_test\"",
-    ];
-    for name in lookalikes {
-        let server = start_server().await;
-        let sc = Scenario::connect(&server).await;
-        sc.build_with(store_failures_test(), outcome().results(test_results(0)))
-            .await;
-        assert_eq!(
-            sc.verdict(store_failures_test().upstream(name, 150)).await,
-            "ready_to_execute",
-            "{name} is a new input"
-        );
-    }
-
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
-    let plain = || store_failures_test().extra("store_failures", "false");
-    sc.build_with(plain(), outcome().results(test_results(0)))
+    // One test (own unique id, so its own State history) per case.
+    let test = |case: usize, store_failures: &str| {
+        data_test(&format!("test.jaffle_shop.sf_test.{case}"))
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "sf_test")
+            .extra("store_failures", store_failures)
+            .upstream(SF_SOURCE, 100)
+    };
+    let cases = [
+        ("\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"SF_TEST\"", "true"),
+        ("\"OTHER_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"", "true"),
+        (
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUDIT\"",
+            "true",
+        ),
+        ("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"sf_test\"", "true"),
+        // A test that does not store failures reads a table of its own name.
+        (SF_AUDIT, "false"),
+    ];
+    for (case, (name, store_failures)) in cases.into_iter().enumerate() {
+        sc.build_with(
+            test(case, store_failures),
+            outcome().results(test_results(0)),
+        )
         .await;
-    assert_eq!(
-        sc.verdict(plain().upstream(SF_AUDIT, 150)).await,
-        "ready_to_execute",
-        "a test that does not store failures reads a table of its own name"
-    );
+        assert_eq!(
+            sc.verdict(test(case, store_failures).upstream(name, 150))
+                .await,
+            "ready_to_execute",
+            "{name} (store_failures {store_failures}) is a new input"
+        );
+    }
 }
