@@ -263,13 +263,33 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
 
 /// A current confirmed state with the requested logic under another physical
 /// name: a candidate source for a result copy.
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub struct CopyCandidate {
     pub target_table: String,
     pub execution_type: i32,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
     pub execution_runtime_ms: Option<i64>,
+    /// The logic identity the candidate matched, one of the query's.
+    pub node_namespace_logic_hash: Option<String>,
+    /// The upstream reads its build recorded (empty when undecodable).
+    pub input_tables: Vec<InputTable>,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for CopyCandidate {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> sqlx::Result<Self> {
+        use sqlx::Row;
+        Ok(Self {
+            target_table: row.try_get("target_table")?,
+            execution_type: row.try_get("execution_type")?,
+            table_type: row.try_get("table_type")?,
+            last_modified_epoch: row.try_get("last_modified_epoch")?,
+            execution_runtime_ms: row.try_get("execution_runtime_ms")?,
+            node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
+            // Copy evidence only: an undecodable value proves no read.
+            input_tables: serde_json::from_value(row.try_get("input_tables")?).unwrap_or_default(),
+        })
+    }
 }
 
 /// What [`Store::find_copy_candidates`] selects: up to `limit` current
@@ -279,7 +299,8 @@ pub struct CopyCandidate {
 #[derive(Debug, Clone, Copy)]
 pub struct CopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
-    pub node_namespace_logic_hash: &'a str,
+    /// A candidate has any of these logic identities.
+    pub node_namespace_logic_hashes: &'a [&'a str],
     /// `None`: an equivalent of any execution type.
     pub execution_type: Option<i32>,
     pub exclude_target: &'a str,

@@ -22,25 +22,167 @@
 //! dialect string here.
 
 use crate::execution::ExecutionEvidence;
+use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::store::CopyCandidate;
+use crate::store::{CopyCandidate, InputTable};
 use crate::warehouse::{IncrementalCopyContract, Warehouse};
 
 // ── Submit fallback ─────────────────────────────────────────────────────────
 
 /// What to look up for the submit fallback: a current equivalent of this
 /// logic in this namespace under any other physical target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EquivalentLookup<'a> {
     pub table_namespace: &'a str,
     pub node_namespace_logic_hash: &'a str,
+    /// The submit's logic read in each other schema it names, with its Target
+    /// relation's schema read as that schema
+    /// (`fingerprint::rehomed_copy_logic_hashes`, #107). Each admits only a
+    /// candidate whose Target relation is in its schema and, when the submit
+    /// may be copied, that read what the submit so read reads
+    /// ([`Self::admits`]).
+    pub rehomed: Vec<RehomedReading>,
     /// The equivalent's execution type: the submit's own for a submit the
     /// Warehouse rules let copy; `None` (any) for one they do not, which
     /// builds with the codes of whichever equivalent hosted would have found
     /// ([`plan_submit`]).
     pub execution_type: Option<i32>,
     pub exclude_target: &'a str,
+}
+
+/// The submit read in another schema ([`RehomedLogic`]), with the upstream
+/// relations it reads so read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RehomedReading {
+    pub logic: RehomedLogic,
+    /// The submit's recorded upstream reads with its Target relation's schema
+    /// read as `logic.schema` ([`canonical_reads`]). `None` when they do not
+    /// read a relation in each schema the reading names: they cannot then
+    /// show that a build resolved its references in those schemas.
+    pub reads: Option<Vec<Vec<String>>>,
+}
+
+impl RehomedReading {
+    /// `logic`, read by a submit that recorded `input_tables` and builds
+    /// `own_target`, whose schema `from` is read as `logic.schema`.
+    pub(crate) fn new(
+        logic: RehomedLogic,
+        input_tables: &[InputTable],
+        own_target: &str,
+        from: &str,
+    ) -> Self {
+        let from = crate::sql_norm::canonical_schema_key(from);
+        let reads = canonical_reads(input_tables, own_target, Some((&from, &logic.schema)));
+        let schemas: std::collections::BTreeSet<&str> = reads
+            .iter()
+            .filter(|name| name.len() == 3)
+            .map(|name| name[1].as_str())
+            .collect();
+        let covered = logic.named.iter().all(|s| schemas.contains(s.as_str()));
+        Self {
+            reads: covered.then_some(reads),
+            logic,
+        }
+    }
+}
+
+/// `input_tables` other than `own_target`, each as its canonical name
+/// components (`sql_norm::canonical_identifier`), sorted and deduplicated;
+/// with `rehome = Some((from, to))`, a three-part name in canonical schema
+/// `from` is read in `to`. Two spellings of one relation read the same, so
+/// the submit fallback judges a candidate admitted on its reads as a
+/// same-upstream equivalent (PR #127 review).
+pub(crate) fn canonical_reads(
+    input_tables: &[InputTable],
+    own_target: &str,
+    rehome: Option<(&str, &str)>,
+) -> Vec<Vec<String>> {
+    use crate::sql_norm::{canonical_identifier, split_object_name_components};
+    let canonical = |name: &str| -> Vec<String> {
+        split_object_name_components(name)
+            .iter()
+            .map(|c| canonical_identifier(c))
+            .collect()
+    };
+    let own = canonical(own_target);
+    let mut reads: Vec<Vec<String>> = input_tables
+        .iter()
+        .map(|t| canonical(&t.name))
+        .filter(|name| *name != own)
+        .map(|mut name| {
+            if let (Some((from, to)), 3) = (rehome, name.len()) {
+                if name[1] == from {
+                    name[1] = to.to_owned();
+                }
+            }
+            name
+        })
+        .collect();
+    reads.sort();
+    reads.dedup();
+    reads
+}
+
+impl EquivalentLookup<'_> {
+    /// Every logic identity a candidate may have. A reading that could admit
+    /// no candidate ([`Self::admits`]) is not looked up.
+    pub(crate) fn logic_hashes(&self) -> Vec<&str> {
+        std::iter::once(self.node_namespace_logic_hash)
+            .chain(
+                self.rehomed
+                    .iter()
+                    .filter(|r| self.reading_may_admit(r))
+                    .map(|r| r.logic.hash.as_str()),
+            )
+            .collect()
+    }
+
+    /// Whether a lookup that may copy has the reads to verify `reading`.
+    fn reading_may_admit(&self, reading: &RehomedReading) -> bool {
+        self.execution_type.is_none() || reading.reads.is_some()
+    }
+
+    /// Whether `candidate` is an equivalent: it has the submit's logic, or
+    /// the submit's logic read in the schema of the candidate's Target
+    /// relation. The submit so read is the candidate's build request with one
+    /// schema substituted, each dependency name still bound to its definition
+    /// (AGENTS.md invariant 4). A rehomed identity matched by a candidate in
+    /// another schema is not one: that candidate read other relations.
+    ///
+    /// The identity abstracts the schemas a build resolved its references
+    /// in, and a Target relation's schema does not show them: a build into
+    /// the prod schema may have resolved them in another one. So when the
+    /// submit may be copied, the candidate must also have recorded exactly
+    /// the upstream reads of the submit so read, which name each schema that
+    /// reading names (PR #127 review). A lookup that only reports codes
+    /// builds either way and admits on the Target relation's schema.
+    pub(crate) fn admits(&self, candidate: &CopyCandidate) -> bool {
+        use crate::sql_norm::{canonical_schema_key, schema_of_object_name};
+        let Some(hash) = candidate.node_namespace_logic_hash.as_deref() else {
+            return false;
+        };
+        if hash == self.node_namespace_logic_hash {
+            return true;
+        }
+        let Some(schema) = schema_of_object_name(&candidate.target_table) else {
+            return false;
+        };
+        let schema = canonical_schema_key(&schema);
+        self.rehomed.iter().any(|r| {
+            r.logic.hash == hash
+                && r.logic.schema == schema
+                && (self.execution_type.is_none()
+                    || r.reads.as_ref().is_some_and(|reads| {
+                        *reads
+                            == canonical_reads(
+                                &candidate.input_tables,
+                                &candidate.target_table,
+                                None,
+                            )
+                    }))
+        })
+    }
 }
 
 /// Whether the submit fallback applies, and if so what to look up.
@@ -87,11 +229,26 @@ pub(crate) fn submit_lookup<'a>(
         return None;
     }
     let copies = warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras);
+    let exclude_target = req.target_table.as_deref().unwrap_or_default();
+    let table_namespace = crate::execution::non_blank_namespace(req.table_namespace.as_deref())?;
+    let node_namespace_logic_hash = ns_logic_hash?;
+    let rehomed = crate::sql_norm::schema_of_object_name(exclude_target)
+        .map(|from| {
+            crate::fingerprint::rehomed_copy_logic_hashes(
+                &crate::execution::sql_execution(req),
+                &from,
+            )
+            .into_iter()
+            .map(|logic| RehomedReading::new(logic, &evidence.input_tables, exclude_target, &from))
+            .collect()
+        })
+        .unwrap_or_default();
     Some(EquivalentLookup {
-        table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
-        node_namespace_logic_hash: ns_logic_hash?,
+        table_namespace,
+        node_namespace_logic_hash,
+        rehomed,
         execution_type: copies.then_some(req.execution_type),
-        exclude_target: req.target_table.as_deref().unwrap_or_default(),
+        exclude_target,
     })
 }
 
@@ -470,10 +627,212 @@ mod tests {
             Some(EquivalentLookup {
                 table_namespace: "ns",
                 node_namespace_logic_hash: "logic",
+                rehomed: vec![],
                 execution_type: Some(1),
                 exclude_target: DEV,
             })
         );
+    }
+
+    /// A submit that reads a fixed schema other than its Target relation's
+    /// also looks for its logic read in that schema (#107,
+    /// explain_post_copy_identity.jsonl entries 18-19), with the upstream
+    /// reads of the submit so read.
+    #[test]
+    fn lookup_reads_the_submit_in_each_other_schema_it_names() {
+        let req = qc::SubmitEnrichedSqlRequest {
+            default_schema: Some("DEV".into()),
+            tables: vec![
+                table("\"DB\".\"PROD\".\"UP\""),
+                table("DB.dev.v"),
+                table(DEV),
+            ],
+            ..submit("snowflake", "select id from DB.PROD.UP")
+        };
+        let ev = evidence(&req);
+        let lookup = submit_lookup(&req, &ev, false).expect("lookup");
+        let prod = qc::SqlExecution {
+            target_table: Some(PROD.into()),
+            default_schema: Some("PROD".into()),
+            ..crate::execution::sql_execution(&req)
+        };
+        let reads = |names: &[[&str; 3]]| -> Vec<Vec<String>> {
+            names
+                .iter()
+                .map(|n| n.iter().map(|c| c.to_string()).collect())
+                .collect()
+        };
+        assert_eq!(
+            lookup.rehomed,
+            vec![RehomedReading {
+                logic: RehomedLogic {
+                    schema: "PROD".into(),
+                    hash: crate::fingerprint::namespace_logic_hash(&prod),
+                    named: vec!["PROD".into()],
+                },
+                reads: Some(reads(&[["DB", "PROD", "UP"], ["DB", "PROD", "V"]])),
+            }]
+        );
+        assert_eq!(
+            lookup.logic_hashes(),
+            vec!["logic", lookup.rehomed[0].logic.hash.as_str()]
+        );
+    }
+
+    /// Reads that do not read a relation in each schema the reading names
+    /// cannot verify it: a lookup that may copy does not look it up, and one
+    /// that only reports codes does.
+    #[test]
+    fn reads_that_name_too_few_schemas_verify_no_reading() {
+        let req = qc::SubmitEnrichedSqlRequest {
+            default_schema: Some("DEV".into()),
+            tables: vec![table(DEV)],
+            ..submit("snowflake", "select id from DB.PROD.UP")
+        };
+        let ev = evidence(&req);
+        let copying = submit_lookup(&req, &ev, false).expect("lookup");
+        assert_eq!(copying.rehomed.len(), 1);
+        assert_eq!(copying.rehomed[0].reads, None);
+        assert_eq!(copying.logic_hashes(), vec!["logic"]);
+        let codes_only = EquivalentLookup {
+            execution_type: None,
+            ..copying.clone()
+        };
+        assert_eq!(codes_only.logic_hashes().len(), 2);
+    }
+
+    fn table(name: &str) -> qc::TableModifiedInfo {
+        qc::TableModifiedInfo {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+
+    fn candidate(target: &str, logic: Option<&str>) -> CopyCandidate {
+        CopyCandidate {
+            target_table: target.into(),
+            execution_type: 1,
+            table_type: None,
+            last_modified_epoch: None,
+            execution_runtime_ms: None,
+            node_namespace_logic_hash: logic.map(Into::into),
+            input_tables: vec![],
+        }
+    }
+
+    fn reading_in_prod(reads: Option<Vec<Vec<String>>>) -> RehomedReading {
+        RehomedReading {
+            logic: RehomedLogic {
+                schema: "PROD".into(),
+                hash: "in-prod".into(),
+                named: vec!["PROD".into()],
+            },
+            reads,
+        }
+    }
+
+    const PROD_UP: &str = "\"DB\".\"PROD\".\"UP\"";
+
+    fn read(name: &str) -> InputTable {
+        InputTable::at(name, Some(1))
+    }
+
+    /// The submit's own logic admits a candidate in any schema; the logic
+    /// read in a schema admits only a candidate whose Target relation is in
+    /// that schema (spelled either way). One elsewhere read other relations.
+    #[test]
+    fn a_rehomed_identity_admits_only_a_candidate_in_its_schema() {
+        let lookup = EquivalentLookup {
+            table_namespace: "ns",
+            node_namespace_logic_hash: "own",
+            rehomed: vec![reading_in_prod(Some(canonical_reads(
+                &[read(PROD_UP)],
+                DEV,
+                None,
+            )))],
+            execution_type: Some(1),
+            exclude_target: DEV,
+        };
+        const CI: &str = "\"DB\".\"CI\".\"M\"";
+        let read_up = |target: &str, logic: Option<&str>| CopyCandidate {
+            input_tables: vec![read(PROD_UP), read(target)],
+            ..candidate(target, logic)
+        };
+        assert!(lookup.admits(&candidate(CI, Some("own"))));
+        assert!(lookup.admits(&read_up(PROD, Some("in-prod"))));
+        assert!(lookup.admits(&read_up("DB.prod.M", Some("in-prod"))));
+        assert!(!lookup.admits(&read_up(CI, Some("in-prod"))), "elsewhere");
+        assert!(
+            !lookup.admits(&read_up("\"DB\".\"prod\".\"M\"", Some("in-prod"))),
+            "a quoted lowercase schema is another schema"
+        );
+        assert!(!lookup.admits(&read_up(PROD, Some("other"))));
+        assert!(!lookup.admits(&read_up(PROD, None)));
+    }
+
+    /// PR #127 review: a candidate in the reading's schema that resolved its
+    /// references elsewhere (its build read `CI.UP`) has the reading's logic
+    /// but read other relations, and a submit that may be copied does not
+    /// admit it; nor one that recorded no reads, nor any candidate when the
+    /// submit's reads cannot verify the reading. A lookup that only reports
+    /// codes admits on the Target relation's schema.
+    #[test]
+    fn a_copying_rehomed_identity_admits_only_a_candidate_that_read_the_reading() {
+        let reads = canonical_reads(&[read(PROD_UP)], DEV, None);
+        let lookup = EquivalentLookup {
+            table_namespace: "ns",
+            node_namespace_logic_hash: "own",
+            rehomed: vec![reading_in_prod(Some(reads))],
+            execution_type: Some(1),
+            exclude_target: DEV,
+        };
+        let reading = |names: &[&str]| CopyCandidate {
+            input_tables: names.iter().map(|n| read(n)).collect(),
+            ..candidate(PROD, Some("in-prod"))
+        };
+        assert!(
+            lookup.admits(&reading(&["DB.prod.up"])),
+            "spelled either way"
+        );
+        assert!(
+            !lookup.admits(&reading(&["\"DB\".\"CI\".\"UP\""])),
+            "read ci"
+        );
+        assert!(!lookup.admits(&reading(&[])), "recorded no reads");
+        assert!(
+            !lookup.admits(&reading(&[PROD_UP, "\"DB\".\"PROD\".\"OTHER\""])),
+            "read more"
+        );
+        let unverified = EquivalentLookup {
+            rehomed: vec![reading_in_prod(None)],
+            ..lookup.clone()
+        };
+        assert!(!unverified.admits(&reading(&[PROD_UP])));
+        let codes_only = EquivalentLookup {
+            execution_type: None,
+            ..unverified
+        };
+        assert!(codes_only.admits(&reading(&["\"DB\".\"CI\".\"UP\""])));
+    }
+
+    /// The submit's reads in its Target relation's schema are read in the
+    /// reading's schema; its own Target relation is not a read.
+    #[test]
+    fn a_reading_reads_the_submits_own_schema_relations_in_its_schema() {
+        let logic = RehomedLogic {
+            schema: "PROD".into(),
+            hash: "in-prod".into(),
+            named: vec!["PROD".into(), "RAW".into()],
+        };
+        let tables = [read("db.dev.v"), read("\"DB\".\"RAW\".\"R\""), read(DEV)];
+        let reading = RehomedReading::new(logic.clone(), &tables, DEV, "\"DEV\"");
+        let expected: Vec<Vec<String>> = vec![
+            vec!["DB".into(), "PROD".into(), "V".into()],
+            vec!["DB".into(), "RAW".into(), "R".into()],
+        ];
+        assert_eq!(reading.reads, Some(expected));
+        let uncovered = RehomedReading::new(logic, &tables[..1], DEV, "DEV");
+        assert_eq!(uncovered.reads, None, "no read in RAW");
     }
 
     #[test]

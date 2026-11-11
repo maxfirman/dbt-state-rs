@@ -260,10 +260,9 @@ and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
    client sends RegisterClone only for incrementals and snapshots
    (`run_cache_dev_clone.rs::dev_clone_candidate_for_node`). The cell had been
    open since `bc8d80e` without a capture; it is now fenced. This server
-   sends 1 / 3 too when it finds the equivalent (FULL-only submit copy,
-   #92). In this capture it finds none, because the dev SQL reads the prod
-   source under another default schema, so its codes there are 6 / 6
-   (identity gap → #107).
+   sends 1 / 3 too (FULL-only submit copy, #92). The dev SQL reads the prod
+   source under another default schema; the server finds the prod build by
+   reading the submit in that schema (#107).
 5. The client's `execution_type_from_input` always yields a concrete kind
    ([protocol.md](protocol.md#what-the-client-computes)). The server keeps
    these values fenced regardless.
@@ -765,7 +764,7 @@ and `an upstream model query has changed` keep `model`.
 | back to an older build's logic while its source gained a row (`fr_sn`, `explain_freshness_cells.jsonl`) | EXECUTE (8 / 7, `is_stale`) | SHAPE 7, `<OUTDATED>` listing, `upstream data is outdated`, Lag tolerance line |
 | its source gained a row, build older than the 45 minute default tolerance (`fd_sn`, run 2) | EXECUTE (1 / 3: `fr_sn` has the same logic and is current) | SHAPE 9, data only: `upstream model queries have not changed`, `<OUTDATED>` listing, `upstream data is outdated`, then `the snapshot was last built «age» ago, exceeds lag tolerance of «T»` [FAIL] <OUTDATED>, the age being `fr_sn`'s ([SHAPE 9](#execute-upstream-against-the-matched-build-shape-9)) |
 | run under `--full-refresh` (`s72sf`) | EXECUTE (2 / 2) | SKIP-shaped, `model` noun (see below) |
-| `dev_clone` build, target missing, prod equivalent (`c76snap`, `explain_copy_probes.jsonl`) | EXECUTE (codes 1 / 3 hosted; 6 / 6 here, because this server finds no equivalent, #107) | [First build](#first-build) |
+| `dev_clone` build, target missing, prod equivalent (`c76snap`, `explain_copy_probes.jsonl`) | EXECUTE (1 / 3: the prod build is the equivalent, #92, #107) | [First build](#first-build) |
 | post-copy submit after the RegisterClone pre-step, over a fixed prod source (`c76rsnap`, `explain_snapshot_register_clone.jsonl`; `c93sa`, `explain_post_copy_identity.jsonl`) | SKIP | SKIP, `<FRESH>` listing with `no updates since "«dev FQN»" last executed`, `upstream data is up to date` |
 | post-copy submit over a ref'd view resolved per target, whose definition reads the fixed prod source (`c93sv`) | SKIP | as above: the listing names the view's base source |
 | post-copy submit over a ref'd table resolved per target (`c93st`; the append `c93it` alike) | SKIP | SKIP; the dev upstream is listed with its `last updated` line only (no badge, no `no updates since` line), then `upstream data is up to date` |
@@ -914,9 +913,9 @@ SKIP tree, its listing anchored on the dev relation (`no updates since
 [SNAPSHOT](#snapshot)); `explain_post_copy_identity.jsonl` `c93it` is the
 append over a ref'd table resolved per target. `explain_incremental_submit_copy.jsonl` (one probe,
 `state.pre_clone: never`): an absent dev relation whose prod build exists is
-built, not copied; hosted reports skip code 1, this server 6 (#107: the
-submit-time equivalent search does not read the submit in another schema);
-both render the first-build tree. Over an existing dev relation hosted rebuilds
+built, not copied; hosted and this server report skip code 1 (the submit,
+read in the fixed prod schema it reads, has the prod build's logic, #107) and
+render the first-build tree. Over an existing dev relation hosted rebuilds
 too (see [Result copy, all strategies](#result-copy-all-strategies)).
 
 ### INSERT_OVERWRITE (4), DELETE_INSERT (5)
