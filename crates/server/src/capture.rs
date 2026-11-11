@@ -72,9 +72,9 @@ pub struct CaptureInput {
     /// The decision's wire rejection codes (migration 0016).
     pub skip_rejection_reason: Option<i32>,
     pub clone_rejection_reason: Option<i32>,
-    /// Whether a rebuild's upstream epochs are unchanged since the latest
-    /// build in scope that did not have its identity (migration 0017).
-    pub unmatched_upstreams_unchanged: Option<bool>,
+    /// A rebuild without a matched build: the latest build in scope, whose
+    /// identity did not match (migration 0017).
+    pub unmatched_execution_id: Option<i64>,
 }
 
 /// Record a decision. Best-effort: logs a warning on failure, never panics.
@@ -200,7 +200,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             default_schema, default_catalog, dialect, clone_source, clone_sqls, input_tables,
             execution_runtime_ms, query_dependencies, matched_execution_id,
             decision_reason, freshness_tolerance_ms, build_age_ms,
-            skip_rejection_reason, clone_rejection_reason, unmatched_upstreams_unchanged
+            skip_rejection_reason, clone_rejection_reason, unmatched_execution_id
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
                 $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
@@ -237,7 +237,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(i.build_age_ms)
     .bind(i.skip_rejection_reason)
     .bind(i.clone_rejection_reason)
-    .bind(i.unmatched_upstreams_unchanged)
+    .bind(i.unmatched_execution_id)
     .execute(pool)
     .await?;
 

@@ -411,5 +411,11 @@
     "entry": 51,
     "local_variant": "empty_tree",
     "reason": "DECISION DIVERGENCE explain of entry 41 (#101): hosted renders the SHAPE 7 tree for its rebuild of `kb73`; the local server's MICROBATCH Result copy is local-only and renders no tree (the incremental CLONE cells stay fenced)."
+  },
+  {
+    "fixture": "explain_rebuild_reason_gaps.jsonl",
+    "entry": 39,
+    "local_variant": "undecided",
+    "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
   }
 ]

@@ -67,10 +67,11 @@ pub struct ExplainNode {
     pub build_age_ms: Option<i64>,
     /// The decision's wire skip rejection code, when persisted.
     pub skip_rejection_reason: Option<i32>,
-    /// A rebuild without a matched build: whether every genuine upstream's
-    /// epoch is unchanged since the latest build in scope that did not have
-    /// the workload's identity (migration 0017). Judges the SHAPE 7 summary.
-    pub unmatched_upstreams_unchanged: Option<bool>,
+    /// A rebuild without a matched build: the latest build in scope, which
+    /// did not have the workload's identity (migration 0017). The SHAPE 7
+    /// freshness listing is judged against it. `None` otherwise, and for a
+    /// rebuild recorded before the migration.
+    pub unmatched: Option<ExecutionRow>,
     /// The matched prior `executions` row (freshness anchor). ADR 0005: present
     /// only when the SKIP/reuse decision matched a prior build; `None` for
     /// first-build EXECUTE / clone. The per-upstream freshness SUBTREE
@@ -193,13 +194,13 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// hosted service was observed to render and that we therefore reproduce. This
 /// is a strict positive allowlist; everything else returns an empty tree.
 ///
-/// Characterized matrix (docs/explain-catalog.md "Execution type coverage"):
+/// Characterized matrix (docs/explain-catalog.md "Execution type (node kind) coverage"):
 ///   - model/table (FULL=1): Skip | Build | Clone.
 ///   - view (VIEW=10): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
 ///   - seed (VALUES=9): Skip | Build (Clone fenced until #91).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
-///   - custom materialization (DBT_CUSTOM=11): Skip | Build (Clone is
+///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone is
 ///     local-only: hosted never copies one, #86).
 ///   - incrementals (APPEND=2, MERGE=3, INSERT_OVERWRITE=4, DELETE_INSERT=5,
 ///     MICROBATCH=6): Skip | Build (Clone is local-only: hosted 2.0.11 never
@@ -312,7 +313,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // and its data. A rebuild whose older build still matched reports
         // LATEST_QUERY_HASH_NOT_MATCH and "the seed data has not changed".
         return Some(match (node.decision, reason) {
-            (DecisionKind::Skip, R::Reused(_)) => Shape::Seed { changed: false },
+            (DecisionKind::Skip, R::Reused(Reuse::Fresh)) => Shape::Seed { changed: false },
             (
                 DecisionKind::Build,
                 R::FirstBuild | R::NoReuseCandidate(NoCandidate::OwnTargetMissing),
@@ -327,99 +328,146 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         });
     }
     if node.is_data_test() {
-        // VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl, client
-        // 2.0.11): one EXECUTE tree for a first execution, a logic change and
-        // upstream data drift, whether the test passed or failed. Hosted SKIPs
-        // a test whose cached results are incomplete (#87) and one whose
-        // store_failures audit relation newly appears in its inputs (#88), so
-        // our rebuilds for those reasons render nothing; the other rebuild
-        // reasons, and a test without upstreams, have no data-test capture.
+        // VERIFIED LIVE 2026-11-10 and 2026-11-11 (explain_data_test_history.jsonl,
+        // explain_rebuild_reason_gaps.jsonl, client 2.0.11): one EXECUTE tree
+        // for a first execution, a logic change, upstream data drift and an
+        // upstream whose logic changed, whether the test passed or failed; a
+        // test without upstreams says `no upstream dependencies` instead of
+        // listing them. Hosted SKIPs a test whose cached results are
+        // incomplete (#87) and one whose store_failures audit relation newly
+        // appears in its inputs (#88), so our rebuilds for those reasons
+        // render nothing, as does every other data-test rebuild reason
+        // (docs/explain-catalog.md "Decision reason coverage"). A data test's
+        // Lag tolerance is 0 and it rebuilds on any drift, so its only reuse
+        // is a fresh one.
         return Some(match (node.decision, reason) {
-            (
-                DecisionKind::Skip,
-                R::Reused(Reuse::Fresh | Reuse::ToleratedStale | Reuse::WithinLagTolerance),
-            ) => Shape::Skip,
+            (DecisionKind::Skip, R::Reused(Reuse::Fresh)) => Shape::Skip,
             (
                 DecisionKind::Build,
-                R::FirstBuild
-                | R::NoReuseCandidate(NoCandidate::IdentityMismatch)
-                | R::UpstreamOutdated,
-            ) if !node.genuine_upstreams().is_empty() => Shape::DataTestExecute,
+                R::FirstBuild | R::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            ) => Shape::DataTestExecute,
+            (DecisionKind::Build, R::UpstreamOutdated | R::UpstreamQueryChanged)
+                if !node.genuine_upstreams().is_empty() =>
+            {
+                Shape::DataTestExecute
+            }
             _ => return None,
         });
     }
+    // Every arm below renders only for the node kinds (and upstream
+    // situations) a tracked hosted capture backs; any other Decision reason ×
+    // node kind renders nothing (docs/explain-catalog.md "Decision reason
+    // coverage", which gives each such cell its final status).
+    let kind = ModelExecutionType::try_from(node.execution_type).ok();
+    let full = kind == Some(ModelExecutionType::Full);
+    let listing = freshness_listing_captured(kind, !node.genuine_upstreams().is_empty());
     Some(match (node.decision, reason) {
-        (
-            DecisionKind::Skip,
-            R::Reused(Reuse::Fresh | Reuse::ToleratedStale | Reuse::WithinLagTolerance),
-        ) => Shape::Skip,
+        (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
+            Shape::Skip
+        }
+        // An ALL-policy reuse with tolerated drift: captured for FULL only
+        // (lag_tolerance_matrix.jsonl).
+        (DecisionKind::Skip, R::Reused(Reuse::ToleratedStale)) if full => Shape::Skip,
         (
             DecisionKind::Build,
             R::FirstBuild | R::NoReuseCandidate(NoCandidate::OwnTargetMissing),
         ) => Shape::FirstBuild,
-        // The OUTDATED subtree is anchor-relative: it renders only when the
-        // matched build is present and re-derives at least one OUTDATED
-        // upstream. Without that the rebuild falls back to SHAPE 7.
-        (DecisionKind::Build, R::UpstreamOutdated) if has_outdated_upstream(node) => {
+        // SHAPE 9 is anchor-relative: it renders only when the matched build
+        // re-derives at least one OUTDATED upstream (data-only: FULL, APPEND,
+        // MERGE, DBT_CUSTOM) or an Upstream producer change (FULL, SNAPSHOT,
+        // DBT_CUSTOM).
+        (DecisionKind::Build, R::UpstreamOutdated)
+            if has_outdated_upstream(node)
+                && matches!(
+                    kind,
+                    Some(
+                        ModelExecutionType::Full
+                            | ModelExecutionType::Append
+                            | ModelExecutionType::Merge
+                            | ModelExecutionType::DbtCustom
+                    )
+                ) =>
+        {
             Shape::UpstreamOutdated
         }
-        (DecisionKind::Build, R::UpstreamQueryChanged) if node.anchor.is_some() => {
+        (DecisionKind::Build, R::UpstreamQueryChanged)
+            if node.anchor.is_some()
+                && matches!(
+                    kind,
+                    Some(
+                        ModelExecutionType::Full
+                            | ModelExecutionType::Snapshot
+                            | ModelExecutionType::DbtCustom
+                    )
+                ) =>
+        {
             Shape::UpstreamOutdated
         }
+        // Captured for FULL only (lag_copy_candidates `ome`, lag_tolerance_matrix
+        // `lfs_u0`). Hosted's APPEND/MERGE trees for it (#90) explain a
+        // decision this server does not make.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::OwnTargetModified))
-            if node.anchor.is_some() || node.genuine_upstreams().is_empty() =>
+            if full && (node.anchor.is_some() || node.genuine_upstreams().is_empty()) =>
         {
             Shape::OwnTargetModified
         }
-        // DECISION DIVERGENCE (#83): hosted rejects an execution-type change
-        // with its own code and tree; ours renders nothing (#40 rule).
-        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ExecutionTypeChanged)) => {
-            return None;
+        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a FULL
+        // model whose logic changed while its Target relation was dropped
+        // reads like a first build.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
+            if node.own_target_absent() =>
+        {
+            if !full {
+                return None;
+            }
+            Shape::FirstBuild
         }
-        // DECISION DIVERGENCE (#93): hosted reused a RegisterClone copy this
-        // server could not adopt; ours renders nothing (#40 rule).
-        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::CopyLogicMismatch)) => {
-            return None;
+        // SHAPE 7, captured for every model kind (explain_snapshot_history,
+        // explain_custom_history, explain_incremental_*, explain_rebuild_reason_gaps).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch)) if listing => {
+            Shape::QueryChanged
         }
-        // LOCAL-ONLY (crafted probes d1–d4, 2026-11-10,
-        // explain_ambiguous_rebuilds.jsonl): rebuilds hosted never makes, so
-        // no hosted tree exists and none is rendered. Hosted reuses a
-        // duplicated Target relation entry and treats one of unknown epoch as
-        // missing (#80), and refuses to record a build without an epoch, so
-        // it has no build anchor to lack (#82). An own-target-modified
-        // rebuild with genuine upstreams and no matched build happens only
-        // when the anchor's execution row disappeared. See
-        // docs/explain-catalog.md "Ambiguous rebuild reasons".
-        (
-            DecisionKind::Build,
-            R::NoReuseCandidate(
-                NoCandidate::OwnTargetChangedOrMissing | NoCandidate::OwnTargetModified,
-            )
-            | R::NoBuildAnchor,
-        ) => return None,
-        // VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of
-        // an absent target reads like a first build, whatever the reason.
-        (DecisionKind::Build, _) if node.own_target_absent() => Shape::FirstBuild,
-        (
-            DecisionKind::Build,
-            R::UpstreamOutdated
-            | R::UpstreamQueryChanged
-            | R::NoReuseCandidate(
-                NoCandidate::IdentityMismatch
-                | NoCandidate::FailedReuseQualification
-                | NoCandidate::IncompleteCachedTestResults,
-            )
-            | R::DependencySetChanged
-            | R::CopyChainLimit,
-        ) => Shape::QueryChanged,
         (DecisionKind::Clone, R::ResultCopy)
             if node.anchor.is_some() && !node.own_target_absent() =>
         {
             Shape::CopyOver
         }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
+        // Everything else renders nothing:
+        // - DECISION DIVERGENCES (#40 rule): a node kind change (#83,
+        //   #90) and a RegisterClone copy this server cannot adopt (#93),
+        //   which hosted decides differently;
+        // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
+        //   `own_target_changed_or_missing` (#80), `no_build_anchor` (#82),
+        //   and `own_target_modified` with upstreams but no matched build (the
+        //   anchor's execution row disappeared), rebuilds hosted never makes;
+        //   likewise `upstream_outdated` / `upstream_query_changed` without
+        //   an anchor;
+        // - and every other reason × kind, which no tracked capture backs.
         _ => return None,
     })
+}
+
+/// Whether a tracked capture backs the freshness listing of `kind` with
+/// (`upstreams`) or without genuine upstreams. A FULL model and a custom node
+/// were captured both ways; a view only without (client 2.0.11 reports none
+/// for a view, explain_snapshot_history.jsonl `s72vl`); the incrementals and
+/// snapshots only with an upstream.
+fn freshness_listing_captured(kind: Option<ModelExecutionType>, upstreams: bool) -> bool {
+    use ModelExecutionType as K;
+    match kind {
+        Some(K::Full | K::DbtCustom) => true,
+        Some(K::View) => !upstreams,
+        Some(
+            K::Append
+            | K::Merge
+            | K::InsertOverwrite
+            | K::DeleteInsert
+            | K::Microbatch
+            | K::Snapshot,
+        ) => upstreams,
+        _ => false,
+    }
 }
 
 /// Build the structured tree: fenced by node kind, then shaped by the
@@ -440,11 +488,21 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
-        Some(Shape::DataTestExecute) => vec![section(
-            "data freshness analysis",
-            vec![clone_upstream_dependencies(&node.genuine_upstreams())],
-        )],
+        Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
     }
+}
+
+/// A data test that executes: its tested upstreams from the decision-time
+/// inputs, without verdicts, or `no upstream dependencies` for a test that
+/// reads none (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
+fn data_test_execute_freshness(node: &ExplainNode) -> qc::ExplainLine {
+    let upstreams = node.genuine_upstreams();
+    let body = if upstreams.is_empty() {
+        leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)
+    } else {
+        clone_upstream_dependencies(&upstreams)
+    };
+    section("data freshness analysis", vec![body])
 }
 
 // ── SKIP ────────────────────────────────────────────────────────────────────
@@ -494,21 +552,24 @@ fn query_analysis_unchanged(node: &ExplainNode) -> qc::ExplainLine {
 }
 
 /// Whether the `upstream model queries have not changed [SUCCESS]` line is
-/// present. VERIFIED (catalog): a FULL model or custom materialization with
-/// zero genuine upstreams omits it (SHAPE 0); a VIEW, a data test, or any node
+/// present. VERIFIED (catalog): a FULL model, custom node or data test with
+/// zero genuine upstreams omits it (SHAPE 0); a VIEW, a snapshot or any node
 /// with ≥1 genuine upstream carries it (SHAPEs 1/2/4…).
 fn has_upstream_query_line(node: &ExplainNode) -> bool {
     !node.genuine_upstreams().is_empty() || !says_no_upstream_dependencies(node)
 }
 
 /// The node kinds whose tree says `no upstream dependencies` (SHAPE 0) when
-/// they have no genuine upstreams: a FULL model, and a custom materialization
-/// (VERIFIED LIVE 2026-11-10, explain_custom_history.jsonl `c74c0`). A view,
-/// snapshot or data test says `upstream data is up to date` instead.
+/// they have no genuine upstreams: a FULL model, a custom node (VERIFIED LIVE
+/// 2026-11-10, explain_custom_history.jsonl `c74c0`) and a data test (VERIFIED
+/// LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40t0`). A view says
+/// `upstream data is up to date` instead.
 fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
     matches!(
         ModelExecutionType::try_from(node.execution_type),
-        Ok(ModelExecutionType::Full | ModelExecutionType::DbtCustom)
+        Ok(ModelExecutionType::Full
+            | ModelExecutionType::DbtCustom
+            | ModelExecutionType::DbtDataTest)
     )
 }
 
@@ -516,7 +577,7 @@ fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
 fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     if upstreams.is_empty() {
-        // No genuine upstreams. A FULL model or custom materialization renders
+        // No genuine upstreams. A FULL model, custom node or data test renders
         // `no upstream dependencies`; a VIEW (which selects from an untracked
         // source) renders `upstream data is up to date` (catalog SHAPE 0 vs 1).
         let body = if says_no_upstream_dependencies(node) {
@@ -537,18 +598,11 @@ fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
 }
 
 /// Every genuine upstream's current epoch equals the epoch recorded for it at
-/// the anchored build. Without an anchor, a rebuild is judged against the
-/// latest build in scope whose identity did not match, as recorded at
-/// decision time (VERIFIED LIVE 2026-11-10: hosted ends an incremental's
-/// SHAPE 7 listing with `upstream data is up to date` when the upstream
-/// epoch equals the one recorded at that build,
-/// explain_incremental_append_merge_history.jsonl, and with nothing when it
-/// moved back, explain_snapshot_history.jsonl).
+/// the anchored build. Without an anchor nothing proves it.
 fn upstreams_unchanged(node: &ExplainNode) -> bool {
-    match node.anchor.as_ref() {
-        Some(prev) => decision::upstream_freshness(freshness_inputs(node), prev).unchanged(),
-        None => node.unmatched_upstreams_unchanged == Some(true),
-    }
+    node.anchor
+        .as_ref()
+        .is_some_and(|prev| decision::upstream_freshness(freshness_inputs(node), prev).unchanged())
 }
 
 // ── SEED ────────────────────────────────────────────────────────────────────
@@ -796,16 +850,22 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 // ── EXECUTE ──────────────────────────────────────────────────────────────────
 
 /// The node-query-changed rebuild tree (catalog SHAPE 7): table exists, query
-/// CHANGED, upstream queries unchanged, then the same freshness body as the
-/// SKIP tree (VERIFIED LIVE 2026-11-10, explain_snapshot_history.jsonl: a
-/// FULL model and a snapshot list their upstream, a view without reported
-/// upstreams says `upstream data is up to date`). See [`shape`] for the
-/// reasons that render it, including the two awaiting capture (#40).
+/// CHANGED, upstream queries unchanged, then the SKIP tree's freshness body
+/// judged against the latest build in scope, whose identity did not match
+/// (VERIFIED LIVE: a view without reported upstreams says `upstream data is up
+/// to date`, explain_snapshot_history.jsonl; an upstream is FRESH or OUTDATED
+/// against that build, with the matching summary, explain_incremental_*.jsonl
+/// and explain_rebuild_reason_gaps.jsonl `r40q`). Rendered only for
+/// `no_reuse_candidate.identity_mismatch` (see [`shape`]).
 fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let judged = ExplainNode {
+        anchor: node.unmatched.clone(),
+        ..node.clone()
+    };
     vec![
         table_analysis_exists(node),
         query_analysis_changed(node),
-        data_freshness_analysis_fresh(node),
+        data_freshness_analysis_fresh(&judged),
     ]
 }
 
@@ -1109,7 +1169,7 @@ mod tests {
             tolerance_ms: 0,
             build_age_ms: None,
             skip_rejection_reason: None,
-            unmatched_upstreams_unchanged: None,
+            unmatched: None,
             anchor: None,
         }
     }
@@ -1294,8 +1354,9 @@ mod tests {
         // 2.0.11): a data-test EXECUTE has no table or query analysis; it lists
         // each tested upstream with no badge and only `last updated`. The same
         // tree for a first execution, a logic change and upstream data drift,
-        // and for a passing and a failing test. Not the model-shaped first
-        // build `table analysis` (F4 regression, PR #31).
+        // and for a passing and a failing test; also after an upstream's logic
+        // changed (2026-11-11, explain_rebuild_reason_gaps.jsonl `r40tm`). Not
+        // the model-shaped first build `table analysis` (F4 regression, PR #31).
         let expected = vec![
             (0, "data freshness analysis".to_string(), None, None),
             (1, "upstream dependencies".to_string(), None, None),
@@ -1306,6 +1367,7 @@ mod tests {
             DecisionReason::FirstBuild,
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
             DecisionReason::UpstreamOutdated,
+            DecisionReason::UpstreamQueryChanged,
         ] {
             let mut n = node(
                 DecisionKind::Build,
@@ -1324,12 +1386,10 @@ mod tests {
         // Hosted SKIPs a data test whose cached results are incomplete and one
         // whose store_failures audit relation newly appears in its inputs
         // (#75 captures), so our rebuilds for those reasons have no hosted
-        // tree. The other rebuild reasons have no data-test capture, and a
-        // data test without upstreams was never captured executing.
+        // tree. Failing reuse qualification has no data-test capture.
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,
-            DecisionReason::UpstreamQueryChanged,
             DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         ] {
             let mut n = node(
@@ -1342,15 +1402,6 @@ mod tests {
             n.reason = Some(reason);
             assert!(explain_lines(&n).is_empty(), "{reason:?}: {:?}", render(&n));
         }
-        let mut n = node(
-            DecisionKind::Build,
-            ModelExecutionType::DbtDataTest as i32,
-            "data test was executed because it has no prior execution or its query changed",
-        );
-        n.target_table = None;
-        n.input_tables = Vec::new();
-        n.reason = Some(DecisionReason::FirstBuild);
-        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
     #[test]
@@ -1694,9 +1745,12 @@ mod tests {
                     n.clone_source = Some("\"DB\".\"S\".\"SRC\"".into());
                 }
                 // A data test has no target (hosted and the client send none),
-                // so its one input is a tested upstream.
+                // so its one input is a tested upstream. Other kinds read one
+                // upstream, except a view (client 2.0.11 reports none for it).
                 if et == ModelExecutionType::DbtDataTest as i32 {
                     n.target_table = None;
+                } else if et != ModelExecutionType::View as i32 {
+                    n.input_tables.push(tbl("\"DB\".\"S\".\"UP\""));
                 }
                 let empty = explain_lines(&n).is_empty();
                 assert_eq!(
@@ -1753,10 +1807,12 @@ mod tests {
         }
     }
 
-    /// Every reason a characterized rebuild can carry selects its tree. The
-    /// rebuilds hosted never makes render nothing (crafted probes d1–d4,
-    /// explain_ambiguous_rebuilds.jsonl; #80, #82). A reason that contradicts
-    /// the class renders nothing.
+    /// Every reason a characterized rebuild can carry selects its tree. Only
+    /// an identity mismatch renders SHAPE 7; no other rebuild reason falls
+    /// back to it (#40). The rebuilds hosted never makes render nothing
+    /// (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl; #80, #82),
+    /// and so does every rebuild reason no tracked capture backs. A reason
+    /// that contradicts the class renders nothing.
     #[test]
     fn each_decision_reason_selects_its_shape() {
         let shape7 = render(&node(
@@ -1767,12 +1823,13 @@ mod tests {
         assert_eq!(shape7[2].1, "query analysis");
         assert_eq!(shape7[3].1, "the model query has changed");
         for reason in [
-            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
             DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
+            DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,
             DecisionReason::CopyChainLimit,
-            // Without an anchor the OUTDATED subtree cannot render.
+            // Without an anchor neither SHAPE 9 tree can render.
             DecisionReason::UpstreamOutdated,
+            DecisionReason::UpstreamQueryChanged,
         ] {
             let mut n = node(
                 DecisionKind::Build,
@@ -1780,7 +1837,7 @@ mod tests {
                 decision::DESC_EXECUTE,
             );
             n.reason = Some(reason);
-            assert_eq!(render(&n), shape7, "{reason:?}");
+            assert!(explain_lines(&n).is_empty(), "{reason:?}: {:?}", render(&n));
         }
 
         // Local-only rebuilds: with or without genuine upstreams, and whether
@@ -1850,8 +1907,8 @@ mod tests {
         assert_eq!(skip(Reuse::ToleratedStale), skip(Reuse::Fresh));
     }
 
-    /// A rebuild because the latest build was another execution type (a
-    /// snapshot under `--full-refresh`, sent as FULL) is a decision hosted
+    /// A rebuild because the latest build was another node kind (a snapshot
+    /// under `--full-refresh`, sent with the wire `execution_type` FULL) is a decision hosted
     /// makes differently (#83, explain_snapshot_history.jsonl entry 58), so
     /// it renders nothing, whether or not the Target relation is reported.
     #[test]
@@ -2023,14 +2080,15 @@ mod tests {
         );
     }
 
-    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt_m`): a rebuild of an
-    /// absent own target reads like a first build, whatever the reason.
+    /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `dt`, `dt_m`): a FULL
+    /// rebuild of an absent own target reads like a first build, for a
+    /// dropped Target relation and for one dropped while the logic changed.
+    /// No other reason was captured over an absent target.
     #[test]
     fn rebuild_of_an_absent_target_is_a_first_build() {
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing),
             DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
-            DecisionReason::DependencySetChanged,
         ] {
             let mut n = anchored(DecisionKind::Build, reason, 900, 900);
             n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
@@ -2038,6 +2096,14 @@ mod tests {
             assert_eq!(lines.len(), 1, "{reason:?}: {:?}", render(&n));
             assert_eq!(lines[0].children[0].text, "the model table does not exist");
         }
+        let mut n = anchored(
+            DecisionKind::Build,
+            DecisionReason::DependencySetChanged,
+            900,
+            900,
+        );
+        n.input_tables.retain(|t| t.name != "\"DB\".\"S\".\"T\"");
+        assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
     /// VERIFIED LIVE (2026-11-10, lag_copy_candidates `fe`, `st`, `wba`): a
