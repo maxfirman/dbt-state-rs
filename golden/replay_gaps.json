@@ -401,29 +401,5 @@
     "entry": 28,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_store_failures_audit_alias.jsonl",
-    "entry": 9,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#123): unchanged rerun of the store_failures test t106a (audit table) with a configured alias. Its audit relation <TEST>_AUD is reported in `tables`, but no request field carries the alias, so the request does not name it and it is a table the build did not record. Hosted SKIPs; the local server rebuilds with dependency_set_changed (6/6), the conservative side. See docs/correctness-handoff.md."
-  },
-  {
-    "fixture": "explain_store_failures_audit_alias.jsonl",
-    "entry": 10,
-    "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#123): unchanged rerun of the store_failures test t106b (audit view) with a configured alias. Its audit relation <TEST>_AUD is reported in `tables`, but no request field carries the alias, so the request does not name it and it is a table the build did not record. Hosted SKIPs; the local server rebuilds with dependency_set_changed (6/6), the conservative side. See docs/correctness-handoff.md."
-  },
-  {
-    "fixture": "explain_store_failures_audit_alias.jsonl",
-    "entry": 11,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 9 (#123): hosted explains its data-test SKIP; the local server's dependency_set_changed rebuild of a data test renders no tree."
-  },
-  {
-    "fixture": "explain_store_failures_audit_alias.jsonl",
-    "entry": 12,
-    "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 10 (#123): hosted explains its data-test SKIP; the local server's dependency_set_changed rebuild of a data test renders no tree."
   }
 ]

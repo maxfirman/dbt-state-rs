@@ -224,8 +224,9 @@ async fn store_failures_audit_relation_is_ignored_but_a_new_upstream_rebuilds() 
 
 /// A table that resembles the audit relation but is not the test's own
 /// relation still counts as a new input: the same name in another schema or
-/// database, a longer name, a case-sensitive quoted name, or the exact name
-/// for a test that does not store its failures.
+/// database, a case-sensitive quoted schema, or the exact name for a test
+/// that does not store its failures. (An unnamed table in the test's own
+/// schema is the aliased-audit case, #123, below.)
 #[tokio::test]
 async fn tables_resembling_the_audit_relation_still_count() {
     let server = start_server().await;
@@ -247,12 +248,15 @@ async fn tables_resembling_the_audit_relation_still_count() {
         ("\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"SF_TEST\"", "true"),
         ("\"OTHER_DB\".\"PROD_STATE_DEMO\".\"SF_TEST\"", "true"),
         (
-            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUDIT\"",
+            "\"CDO_DEMO_DB\".\"prod_state_demo\".\"SF_TEST_AUD\"",
             "true",
         ),
-        ("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"sf_test\"", "true"),
         // A test that does not store failures reads a table of its own name.
         (SF_AUDIT, "false"),
+        (
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUD\"",
+            "false",
+        ),
     ];
     for (case, (name, store_failures)) in cases.into_iter().enumerate() {
         sc.build_with(
@@ -384,29 +388,66 @@ async fn audit_relation_in_a_separate_schema_is_ignored_but_lookalikes_rebuild()
 }
 
 /// A configured `alias` names the audit relation and no request field carries
-/// it (explain_store_failures_audit_alias.jsonl), so the aliased relation is
-/// not recognized: the unchanged rerun rebuilds where hosted SKIPs (keyed
-/// replay gaps, #40 divergence rule).
+/// it (explain_store_failures_audit_alias.jsonl). The one reported table in the
+/// test's schema that its SQL never mentions is its audit relation (#123,
+/// ADR 0008): the unchanged rerun SKIPs as hosted does. A genuinely new
+/// upstream next to it still rebuilds: one the SQL reads is an input, and an
+/// unnamed second table makes the request ambiguous, so both stay inputs.
 #[tokio::test]
-async fn an_aliased_audit_relation_still_rebuilds() {
+async fn an_aliased_audit_relation_is_ignored_but_a_new_upstream_rebuilds() {
+    const SF_ALIASED: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUD\"";
+    const SF_NEW: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_NEW\"";
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
-    let test = data_test("test.jaffle_shop.sf_test")
-        .catalog("CDO_DEMO_DB")
-        .schema("prod_state_demo")
-        .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
-        .namespace(NS)
-        .project(PROJECT)
-        .target_name("prod_demo")
-        .label("dbt_node_name", "sf_test")
-        .extra("store_failures", "true")
-        .extra("store_failures_as", "\"table\"")
-        .upstream(SF_SOURCE, 100);
-    sc.build_with(test.clone(), outcome().results(test_results(0)))
+    // A `store_failures: true` test whose SQL reads SF_SOURCE and SF_NEW; its
+    // first execution reports only SF_SOURCE.
+    let test = |uid: &str| {
+        data_test(uid)
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql(
+                "select id from CDO_DEMO_DB.prod_state_demo.sf_src where id not in \
+                 (select id from CDO_DEMO_DB.prod_state_demo.sf_new)",
+            )
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "sf_test")
+            .extra("store_failures", "true")
+            .extra("store_failures_as", "\"table\"")
+            .upstream(SF_SOURCE, 100)
+    };
+    let rebuild_reason = |r: dbt_state_proto::query_cache::ReadyToExecuteResponse| {
+        let d = r.explained_decision.expect("explained decision");
+        (d.skip_rejection_reason, d.clone_rejection_reason)
+    };
+
+    let reads = test("test.jaffle_shop.sf_test");
+    sc.build_with(reads.clone(), outcome().results(test_results(0)))
+        .await;
+    let rerun = reads.upstream(SF_ALIASED, 150);
+    assert_eq!(
+        sc.verdict(rerun.clone()).await,
+        "skip_execution",
+        "the aliased audit relation is the test's own write"
+    );
+    let r = sc.expect_execute(rerun.upstream(SF_NEW, 100)).await;
+    assert_eq!(
+        rebuild_reason(r),
+        (Some(6), Some(6)),
+        "a new upstream the SQL reads is a dependency-set change (6/6)"
+    );
+
+    let unnamed = test("test.jaffle_shop.sf_test.1")
+        .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0");
+    sc.build_with(unnamed.clone(), outcome().results(test_results(0)))
+        .await;
+    let r = sc
+        .expect_execute(unnamed.upstream(SF_ALIASED, 150).upstream(SF_NEW, 100))
         .await;
     assert_eq!(
-        sc.verdict(test.upstream("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUD\"", 150))
-            .await,
-        "ready_to_execute"
+        rebuild_reason(r),
+        (Some(6), Some(6)),
+        "two unnamed tables in the test's schema are ambiguous, so both count"
     );
 }
