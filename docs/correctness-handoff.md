@@ -323,17 +323,8 @@ replay fails when an entry becomes unused or resolved
     entries 9–10; field-scoped). #93 resolved the same gap for RegisterClone
     adoption, where the copy names its source; the equivalent search has no
     source to read the submit against.
-- **Snapshot and custom node over a modified Target relation (#115, client
-  2.0.11).** Hosted reuses a snapshot whose Target relation a later
-  `--full-refresh` (FULL) build rewrote or an External modification changed,
-  and a custom node whose relation was modified externally or replaced by a
-  view build in between (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`,
-  `sn_e`, `sn_ez`, `vc`, `cv0`). The incrementals, FULL and VIEW rebuild in
-  the same situations. The server keeps reuse invariant 3 and rebuilds them
-  with `own_target_modified` (6 / 6); its Explain tree for that rebuild of a
-  snapshot or custom node renders nothing. Keyed gaps: entries 171, 187,
-  297, 311, 313, 323 (submits) and 225, 231, 369, 375, 376, 379 (Explain,
-  `empty_tree`).
+- **Snapshot and custom node over a modified Target relation (#115).** An
+  accepted divergence (see [below](#accepted-divergences)).
 - **View ↔ custom node over an upstream (#116, client 2.0.11).** With the
   same SQL and semantic extras (`lookback`), hosted treats the switch as an
   execution type change only when the SQL reads no relation (`vc0`, `cv0`,
@@ -354,18 +345,8 @@ replay fails when an entry becomes unused or resolved
   copy over a relation with no State history of its own is open (#101
   question 3, above). The copy sources' histories are not in those captures
   either. Keyed gaps: those two entries (local `ready_to_execute`).
-- **Malformed requests (#114, crafted only,** `experiments/malformed_requests.py`).
-  For every node kind, hosted fails a submit with empty SQL with
-  `INVALID_ARGUMENT` "Failed to process SQL". It fails a model whose query
-  dependency has an empty name or query the same way. It builds a request
-  whose query dependency is listed twice, then SKIPs the identical resubmit.
-  The server accepts all of these, builds them, and on every resubmit fails
-  reuse qualification (`no_reuse_candidate.failed_reuse_qualification`,
-  6 / 6, no tree). Keyed gaps: `explain_malformed_requests.jsonl` entries 2,
-  6, 10, 14, 19, 23 and 27 (the resubmits) and the Explain entry after each.
-  The rejected submits have no fixture rows (see "Proxy fidelity"). No
-  captured client request has these shapes; #114 asks whether to keep the
-  safety rule as an accepted divergence.
+- **Malformed requests (#114, crafted only).** An accepted divergence (see
+  [below](#accepted-divergences)).
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
@@ -387,10 +368,12 @@ test that pins each.
 
 ### Accepted divergences
 
-Settled differences from hosted: each needs a request client 2.0.11 never
-sends, and the server's rule is the conservative one, so it stays. Their
-keyed gaps stay in `golden/replay_gaps.json`, with reasons that point here.
-Each rebuild below is local-only and renders no Explain tree.
+Settled differences from hosted, accepted by the maintainer: the server's
+rule is the conservative one, so it stays. Each needs a request client 2.0.11
+never sends, except #115, which the client sends and where the server keeps
+reuse invariant 3. Their keyed gaps stay in `golden/replay_gaps.json`, with
+reasons that start `ACCEPTED` and point here. Each rebuild below is
+local-only and renders no Explain tree.
 
 - **Ambiguous Target relation evidence (#80, crafted d1 / d2).** A Target
   relation listed twice in `tables` with the build's epoch (hosted SKIPs), or
@@ -430,6 +413,32 @@ Each rebuild below is local-only and renders no Explain tree.
   submit), and AGENTS.md invariant 2 says unknown epochs never prove
   freshness. Keyed gaps: `explain_unknown_epoch.jsonl` entries 2, 6, 10, 14
   (decision) and 3, 7, 11, 15 (`empty_tree`).
+- **Malformed requests (#114, crafted,
+  `experiments/malformed_requests.py`).** For every node kind, hosted fails a
+  submit with empty SQL with `INVALID_ARGUMENT` "Failed to process SQL", and
+  a model whose query dependency has an empty name or query the same way. It
+  builds a request whose query dependency is listed twice, then SKIPs the
+  identical resubmit. The server accepts all of these, builds them, and on
+  every resubmit fails reuse qualification
+  (`no_reuse_candidate.failed_reuse_qualification`, 6 / 6). Rationale:
+  crafted-only (no captured client request has these shapes), and refusing
+  to reuse a request whose dependency evidence is empty or ambiguous is the
+  conservative rule. Keyed gaps: `explain_malformed_requests.jsonl` entries
+  2, 6, 10, 14, 19, 23, 27 (decision) and 3, 7, 11, 15, 20, 24, 28
+  (`empty_tree`). The rejected hosted submits have no fixture rows (see
+  "Proxy fidelity").
+- **Snapshot and custom node over a modified Target relation (#115, client
+  2.0.11).** Hosted reuses a snapshot whose Target relation a later
+  `--full-refresh` (FULL) build rewrote or an External modification changed,
+  and a custom node whose relation was modified externally or replaced by a
+  view build in between (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`,
+  `sn_e`, `sn_ez`, `vc`, `cv0`). The incrementals, FULL and VIEW rebuild in
+  the same situations, as the server does for every kind, with
+  `own_target_modified` (6 / 6). Rationale: AGENTS.md reuse invariant 3
+  checks the Target relation's External modifications, and a relation
+  changed after its build no longer holds the cached result. Keyed gaps:
+  `explain_reason_kind_cells.jsonl` entries 171, 187, 297, 311, 313, 323
+  (decision) and 225, 231, 369, 375, 376, 379 (`empty_tree`).
 - **Unset target on a model submit (#81, crafted d3).** Hosted answers
   `Internal` "Internal server error"; the server answers `InvalidArgument`,
   the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
