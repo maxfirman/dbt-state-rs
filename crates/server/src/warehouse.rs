@@ -348,6 +348,18 @@ impl Warehouse {
             _ => false,
         }
     }
+
+    /// The identifier of the reported relation `name` when it is a relation
+    /// in `database`.`schema`, each part as dbt spells it in the request, as
+    /// the warehouse resolves it (an unquoted identifier folded, a quoted one
+    /// exact). Only Snowflake's identifier rules are characterized; on other
+    /// warehouses nothing is in the schema.
+    pub fn relation_in_schema(self, name: &str, database: &str, schema: &str) -> Option<String> {
+        match self {
+            Self::Snowflake => snowflake::relation_in_schema(name, [database, schema]),
+            _ => None,
+        }
+    }
 }
 
 /// A submission's copy logic identity ([`Warehouse::copy_identity`]), which

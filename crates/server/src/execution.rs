@@ -51,9 +51,10 @@ fn node_unique_id(
 /// changed dependency set still rebuilds. `default_schema` is the test's own
 /// schema, also when a schema macro puts it outside the target schema
 /// (VERIFIED LIVE 2026-11-11, explain_store_failures_audit_schema.jsonl, #106).
-/// A test with a configured alias is not recognized and keeps rebuilding: no
-/// request field carries the alias, although hosted SKIPs it
-/// (explain_store_failures_audit_alias.jsonl, divergence #123).
+/// A test with a configured alias is not named by the request: no request
+/// field carries the alias (explain_store_failures_audit_alias.jsonl). Its
+/// audit relation is recognized by elimination instead
+/// ([`unnamed_audit_relation`], #123, ADR 0008).
 ///
 /// The request does not carry the alias, so a relation the test reads can
 /// have exactly that name (a test `orders` aliased `orders_audit` that reads
@@ -61,12 +62,7 @@ fn node_unique_id(
 /// SQL, so a name the test's SQL or one of its query dependencies mentions is
 /// always kept as an input.
 fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
-    let stores_failures = req
-        .semantic_extras
-        .get("store_failures")
-        .and_then(|v| serde_json::from_str::<bool>(v).ok())
-        == Some(true);
-    if req.execution_type != qc::ModelExecutionType::DbtDataTest as i32 || !stores_failures {
+    if !stores_failures(req) {
         return false;
     }
     let (Some(schema), Some(test)) = (
@@ -75,16 +71,76 @@ fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
     ) else {
         return false;
     };
-    let read_by_test = std::iter::once(req.sql.as_str())
-        .chain(req.query_dependencies.iter().map(|d| d.query.as_str()))
-        .any(|sql| mentions_identifier(sql, test));
-    !read_by_test
+    !mentioned_by_test(req, test)
         && crate::warehouse::Warehouse::from_dialect(&req.dialect).names_relation(
             name,
             &req.default_catalog,
             schema,
             test,
         )
+}
+
+/// The audit relation of a `store_failures` test with a configured alias,
+/// recognized by elimination (#123, ADR 0008): the one reported table in the
+/// test's own schema (`default_catalog`.`default_schema`, under the
+/// warehouse's identifier rules, Snowflake only) that neither the test's SQL
+/// nor any of its query dependencies mentions. Client 2.0.11 reports a table
+/// only when the test's SQL or a view definition it sends as a query
+/// dependency names it, or when it is the node's own relation
+/// (dbt-fusion `collect_table_modified_infos`), so that table is the test's
+/// own write. Hosted SKIPs the unchanged rerun
+/// (explain_store_failures_audit_alias.jsonl entries 9, 10).
+///
+/// `None` when two or more reported tables qualify (counting one the
+/// exact-name rule recognizes): the request is then ambiguous and every
+/// table stays an input.
+fn unnamed_audit_relation(req: &qc::SqlExecution) -> Option<&str> {
+    if !stores_failures(req) {
+        return None;
+    }
+    let schema = req.default_schema.as_deref()?;
+    let warehouse = crate::warehouse::Warehouse::from_dialect(&req.dialect);
+    let mut qualifying = req.tables.iter().filter(|t| {
+        warehouse
+            .relation_in_schema(&t.name, &req.default_catalog, schema)
+            // An identifier with an embedded quote is spelled doubled in SQL,
+            // which the mention check does not read; it stays an input.
+            .is_some_and(|id| !id.is_empty() && !id.contains('"') && !mentioned_by_test(req, &id))
+    });
+    match (qualifying.next(), qualifying.next()) {
+        (Some(only), None) => Some(only.name.as_str()),
+        _ => None,
+    }
+}
+
+/// Whether `req` is a data test whose semantic extras set
+/// `store_failures: true`.
+fn stores_failures(req: &qc::SqlExecution) -> bool {
+    req.execution_type == qc::ModelExecutionType::DbtDataTest as i32
+        && req
+            .semantic_extras
+            .get("store_failures")
+            .and_then(|v| serde_json::from_str::<bool>(v).ok())
+            == Some(true)
+}
+
+/// Whether the test's SQL or any of its query dependencies mentions
+/// `identifier` ([`mentions_identifier`]).
+fn mentioned_by_test(req: &qc::SqlExecution, identifier: &str) -> bool {
+    std::iter::once(req.sql.as_str())
+        .chain(req.query_dependencies.iter().map(|d| d.query.as_str()))
+        .any(|sql| mentions_identifier(sql, identifier))
+}
+
+/// The reported tables that are the execution's inputs: all of them but a
+/// `store_failures` test's own audit relation (#88, #123).
+fn sql_inputs(req: &qc::SqlExecution) -> Vec<InputTable> {
+    let unnamed = unnamed_audit_relation(req);
+    req.tables
+        .iter()
+        .filter(|t| !is_own_audit_relation(req, &t.name) && Some(t.name.as_str()) != unnamed)
+        .map(InputTable::from)
+        .collect()
 }
 
 /// Whether `text` contains `identifier` as a whole word, ignoring ASCII case.
@@ -199,12 +255,7 @@ impl ExecutionEvidence {
                 .flatten(),
             node_template_hash: template
                 .map(|body| crate::fingerprint::sql_logic_hash(req, Some(body))),
-            input_tables: req
-                .tables
-                .iter()
-                .filter(|t| !is_own_audit_relation(req, &t.name))
-                .map(InputTable::from)
-                .collect(),
+            input_tables: sql_inputs(req),
             ..Self::node(
                 org_id,
                 req.target_table.clone().unwrap_or_default(),
@@ -727,16 +778,16 @@ mod tests {
         );
     }
 
-    /// Only the test's own relation is excluded. A relation that merely
-    /// resembles it, or the same name for a test that does not store its
-    /// failures, a model or another warehouse, still counts as an input.
+    /// Only the test's own relation is excluded by the exact-name rule (#88).
+    /// The same name in another schema or database, or the same name for a
+    /// test that does not store its failures, a model or another warehouse,
+    /// still counts as an input. A lookalike in the test's own schema is the
+    /// unnamed-table rule's case (#123, tests below).
     #[test]
     fn relations_resembling_the_audit_relation_still_count() {
         let lookalikes = [
             "\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"T75S\"",
             "\"OTHER_DB\".\"PROD_STATE_DEMO\".\"T75S\"",
-            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_X\"",
-            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"t75s\"",
             "\"PROD_STATE_DEMO\".\"T75S\"",
             "\"X\".\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S\"",
         ];
@@ -746,7 +797,7 @@ mod tests {
         }
 
         type Edit = fn(&mut qc::SubmitEnrichedSqlRequest);
-        let variants: [(&str, Edit); 6] = [
+        let variants: [(&str, Edit); 5] = [
             ("store_failures false", |r| {
                 r.semantic_extras
                     .insert("store_failures".into(), "false".into());
@@ -758,9 +809,6 @@ mod tests {
                 r.execution_type = ModelExecutionType::Full as i32;
             }),
             ("another warehouse", |r| r.dialect = "databricks".into()),
-            ("no test name", |r| {
-                r.labels.remove("dbt_node_name");
-            }),
             ("no default schema", |r| r.default_schema = None),
         ];
         for (what, edit) in variants {
@@ -769,6 +817,12 @@ mod tests {
             let e = ExecutionEvidence::sql_submit("org", &req);
             assert_eq!(input_names(&e), vec![SOURCE, AUDIT], "{what}");
         }
+
+        // Without the test's name the exact rule cannot match, so its audit
+        // relation is only an unnamed table in its schema (#123).
+        let mut req = store_failures_test(&[SOURCE, AUDIT]);
+        req.labels.remove("dbt_node_name");
+        assert_eq!(inputs_of(&req), [SOURCE]);
     }
 
     /// The audit relation's name is the test's database, schema and name only
@@ -851,18 +905,12 @@ mod tests {
     /// input.
     #[test]
     fn with_a_separate_audit_schema_lookalikes_and_reads_still_count() {
-        for name in [
-            AUDIT,
-            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"T75S_X\"",
-        ] {
-            let mut req = store_failures_test(&[SOURCE, name]);
-            req.default_schema = Some(AUDIT_SCHEMA.into());
-            assert_eq!(
-                input_names(&ExecutionEvidence::sql_submit("org", &req)),
-                vec![SOURCE, name],
-                "{name}"
-            );
-        }
+        let mut req = store_failures_test(&[SOURCE, AUDIT]);
+        req.default_schema = Some(AUDIT_SCHEMA.into());
+        assert_eq!(
+            input_names(&ExecutionEvidence::sql_submit("org", &req)),
+            vec![SOURCE, AUDIT]
+        );
 
         let mut req = store_failures_test(&[SOURCE, SEPARATE_AUDIT]);
         req.default_schema = Some(AUDIT_SCHEMA.into());
@@ -873,19 +921,159 @@ mod tests {
         );
     }
 
+    /// The audit relation under a configured alias (`<test>_aud`), as client
+    /// 2.0.11 reports it (explain_store_failures_audit_alias.jsonl entry 9).
+    const ALIASED: &str = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"";
+
+    /// Input names of the submitted and the recorded evidence, which must
+    /// agree.
+    fn inputs_of(req: &qc::SubmitEnrichedSqlRequest) -> Vec<String> {
+        let submitted = ExecutionEvidence::sql_submit("org", req);
+        let recorded = ExecutionEvidence::sql_record("org", &sql_execution(req));
+        assert_eq!(input_names(&submitted), input_names(&recorded));
+        input_names(&submitted)
+            .into_iter()
+            .map(Into::into)
+            .collect()
+    }
+
     /// A configured `alias` names the audit relation, and no request field
-    /// carries it (#106, explain_store_failures_audit_alias.jsonl). The
-    /// aliased relation is therefore not recognized and stays an input, so the
-    /// test rebuilds where hosted SKIPs (the conservative side, #40 divergence
-    /// rule).
+    /// carries it (#106, explain_store_failures_audit_alias.jsonl). The one
+    /// reported table in the test's own schema that neither its SQL nor a
+    /// query dependency mentions is its audit relation, and is not an input
+    /// (#123, ADR 0008), so the unchanged rerun SKIPs as hosted does.
     #[test]
-    fn an_aliased_audit_relation_is_not_recognized() {
-        let aliased = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"";
-        let req = store_failures_test(&[SOURCE, aliased]);
+    fn an_aliased_audit_relation_is_not_an_input() {
         assert_eq!(
-            input_names(&ExecutionEvidence::sql_submit("org", &req)),
-            vec![SOURCE, aliased]
+            inputs_of(&store_failures_test(&[SOURCE, ALIASED])),
+            [SOURCE]
         );
+        // Snowflake identifier folding, as for the #88 rule.
+        let unquoted = "cdo_demo_db.prod_state_demo.t75s_aud";
+        assert_eq!(
+            inputs_of(&store_failures_test(&[SOURCE, unquoted])),
+            [SOURCE]
+        );
+        // The audit relation is reported whichever kind it is.
+        let mut view = store_failures_test(&[SOURCE, ALIASED]);
+        view.semantic_extras
+            .insert("store_failures_as".into(), "\"view\"".into());
+        assert_eq!(inputs_of(&view), [SOURCE]);
+    }
+
+    /// Two or more reported tables qualify: the request is ambiguous, so none
+    /// is dropped. That includes a relation named exactly as the #88 audit
+    /// relation, which that rule still drops.
+    #[test]
+    fn two_unnamed_tables_in_the_test_schema_are_both_kept() {
+        let other = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_OTHER\"";
+        assert_eq!(
+            inputs_of(&store_failures_test(&[SOURCE, ALIASED, other])),
+            [SOURCE, ALIASED, other]
+        );
+        assert_eq!(
+            inputs_of(&store_failures_test(&[SOURCE, AUDIT, ALIASED])),
+            [SOURCE, ALIASED],
+            "the exact audit relation is dropped, the other unnamed table kept"
+        );
+        assert_eq!(
+            inputs_of(&store_failures_test(&[SOURCE, ALIASED, ALIASED])),
+            [SOURCE, ALIASED, ALIASED],
+            "a table reported twice is two qualifying entries"
+        );
+    }
+
+    /// Only a table in the test's own schema can be its audit relation.
+    #[test]
+    fn an_unnamed_table_in_another_schema_is_kept() {
+        for name in [
+            "\"CDO_DEMO_DB\".\"OTHER_SCHEMA\".\"T75S_AUD\"",
+            "\"OTHER_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"",
+            "\"PROD_STATE_DEMO\".\"T75S_AUD\"",
+            "\"X\".\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"",
+            "\"CDO_DEMO_DB\".\"prod_state_demo\".\"T75S_AUD\"",
+        ] {
+            assert_eq!(
+                inputs_of(&store_failures_test(&[SOURCE, name])),
+                [SOURCE, name],
+                "{name}"
+            );
+        }
+        let mut no_schema = store_failures_test(&[SOURCE, ALIASED]);
+        no_schema.default_schema = None;
+        assert_eq!(inputs_of(&no_schema), [SOURCE, ALIASED]);
+    }
+
+    /// A table the test's SQL or one of its query dependencies mentions is
+    /// something the test reads, never its audit relation.
+    #[test]
+    fn an_unnamed_table_rule_keeps_a_table_the_test_names() {
+        let named = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"";
+        for sql in [
+            "select id from t75s_aud where id < 0",
+            "select id from \"T75S_AUD\" where id < 0",
+            "select id from prod_state_demo.T75S_Aud where id < 0",
+            "select id from CDO_DEMO_DB.\"PROD_STATE_DEMO\".\"T75S_AUD\" where id < 0",
+        ] {
+            let mut req = store_failures_test(&[named]);
+            req.sql = sql.into();
+            assert_eq!(inputs_of(&req), [named], "{sql}");
+        }
+
+        // Read through a view: the client reports the view's upstream in
+        // `tables` and the view's definition as a query dependency.
+        let mut req = store_failures_test(&[named]);
+        req.sql = "select id from CDO_DEMO_DB.prod_state_demo.t75s_v where id < 0".into();
+        req.query_dependencies = vec![qc::QueryDependency {
+            name: "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_V\"".into(),
+            query: "select * from \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T75S_AUD\"".into(),
+            default_catalog: "CDO_DEMO_DB".into(),
+            default_schema: "prod_state_demo".into(),
+        }];
+        assert_eq!(inputs_of(&req), [named], "read through a view");
+    }
+
+    /// The rule applies only to a Snowflake data test that stores its
+    /// failures.
+    #[test]
+    fn an_unnamed_table_is_kept_outside_a_snowflake_store_failures_test() {
+        type Edit = fn(&mut qc::SubmitEnrichedSqlRequest);
+        let variants: [(&str, Edit); 5] = [
+            ("store_failures false", |r| {
+                r.semantic_extras
+                    .insert("store_failures".into(), "false".into());
+            }),
+            ("store_failures unset", |r| {
+                r.semantic_extras.remove("store_failures");
+            }),
+            ("a model", |r| {
+                r.execution_type = ModelExecutionType::Full as i32;
+                r.target_table = Some("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"".into());
+            }),
+            ("DuckDB", |r| {
+                r.dialect = "duckdb".into();
+                r.default_catalog = "warehouse".into();
+                r.default_schema = Some("main".into());
+                r.tables = [
+                    "\"warehouse\".\"main\".\"src\"",
+                    "\"warehouse\".\"main\".\"t75s_aud\"",
+                ]
+                .iter()
+                .map(|name| qc::TableModifiedInfo {
+                    name: (*name).into(),
+                    last_modified_epoch: Some(500),
+                })
+                .collect();
+                r.sql = "select id from \"warehouse\".\"main\".\"src\" where id < 0".into();
+            }),
+            ("another warehouse", |r| r.dialect = "databricks".into()),
+        ];
+        for (what, edit) in variants {
+            let mut req = store_failures_test(&[SOURCE, ALIASED]);
+            edit(&mut req);
+            let expected: Vec<String> = req.tables.iter().map(|t| t.name.clone()).collect();
+            assert_eq!(inputs_of(&req), expected, "{what}");
+        }
     }
 
     fn outcome() -> qc::ExecutionOutcome {

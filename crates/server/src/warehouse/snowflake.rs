@@ -49,3 +49,18 @@ pub(super) fn names_relation(name: &str, parts: [&str; 3]) -> bool {
             .zip(parts)
             .all(|(c, p)| canonical_identifier(c) == canonical_identifier(p))
 }
+
+/// The resolved identifier of the reported relation `name` when it is a
+/// three-part relation in `parts` (database, schema), under the same folding
+/// rules as [`names_relation`].
+pub(super) fn relation_in_schema(name: &str, parts: [&str; 2]) -> Option<String> {
+    use crate::sql_norm::{canonical_identifier, split_object_name_components};
+    let components = split_object_name_components(name);
+    let [database, schema, identifier] = components.as_slice() else {
+        return None;
+    };
+    (parts.iter().all(|p| !p.trim().is_empty())
+        && canonical_identifier(database) == canonical_identifier(parts[0])
+        && canonical_identifier(schema) == canonical_identifier(parts[1]))
+    .then(|| canonical_identifier(identifier))
+}
