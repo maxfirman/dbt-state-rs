@@ -820,10 +820,15 @@ impl ExplainDecisionRow {
         Some(anchor)
     }
 
-    /// The unmatched latest build (migration 0017), as recorded: the decision
-    /// adopted none of its inputs.
+    /// The unmatched latest build (migration 0017), as recorded. A
+    /// client-requested copy records no inputs of its own: the decision-time
+    /// inputs stand in, as for [`anchor`](Self::anchor) (VERIFIED LIVE
+    /// 2026-11-11, explain_copy_logic_mismatch.jsonl: SHAPE 7 over a copy
+    /// lists each upstream FRESH since the copy).
     pub fn unmatched(&self) -> Option<ExecutionRow> {
-        self.unmatched_execution.clone()
+        let mut unmatched = self.unmatched_execution.clone()?;
+        crate::reuse_candidate::adopt_current_inputs(&mut unmatched, &self.input_tables());
+        Some(unmatched)
     }
 }
 
@@ -874,5 +879,21 @@ mod tests {
 
         let sql_copy = decision_row(Some("h")).anchor().unwrap();
         assert!(sql_copy.input_tables.is_empty());
+    }
+
+    /// The same rule for the unmatched latest build SHAPE 7 is judged
+    /// against: a client-requested copy the submit could not adopt.
+    #[test]
+    fn explain_unmatched_applies_the_decision_input_rule() {
+        let unmatched = |anchor_node_sql_hash| {
+            let mut row = decision_row(anchor_node_sql_hash);
+            row.unmatched_execution = row.matched_execution.take();
+            row.unmatched().unwrap()
+        };
+        let register_clone = unmatched(None);
+        assert_eq!(register_clone.input_tables.len(), 1);
+        assert_eq!(register_clone.input_tables[0].name, "UP");
+        assert_eq!(register_clone.input_tables[0].last_modified_epoch, Some(5));
+        assert!(unmatched(Some("h")).input_tables.is_empty());
     }
 }

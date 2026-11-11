@@ -62,7 +62,10 @@ Do not weaken these without new evidence.
   `fingerprint::rehomed_copy_logic_hash`, #93). Either way each dependency's
   name stays bound to its definition
   (`fingerprint.rs::rehomed_identity_keeps_dependency_bindings`). No
-  persisted fingerprint changed.
+  persisted fingerprint changed. A submit of another execution type with that
+  logic is never reused: it is an execution type change (2 / 2) judged
+  against the copy, as hosted does (`explain_copy_logic_mismatch.jsonl`
+  `kf4`, #104).
 
 ## Open hosted questions
 
@@ -121,7 +124,8 @@ server keeps the conservative behavior described.
   (the server sends 1 / 2); a non-FULL submit whose own reuse candidate must
   rebuild for freshness (the server keeps the ordinary codes); a non-FULL
   submit that forbids copies (the server sends its non-FULL codes, not
-  1 / 10); and a view or snapshot rebuild over an existing Target relation
+  1 / 10; a FULL one is `copy_disabled`, 1 / 10, "cloning is disabled",
+  captured, `explain_copy_logic_mismatch.jsonl` `cf4`); and a view or snapshot rebuild over an existing Target relation
   that has an equivalent elsewhere (#92 question 2).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
@@ -294,6 +298,18 @@ replay fails when an entry becomes unused or resolved
   copy over a relation with no State history of its own is open (#101
   question 3, above). The copy sources' histories are not in those captures
   either. Keyed gaps: those two entries (local `ready_to_execute`).
+- **Malformed requests (#114, crafted only,** `experiments/malformed_requests.py`).
+  For every node kind, hosted fails a submit with empty SQL with
+  `INVALID_ARGUMENT` "Failed to process SQL". It fails a model whose query
+  dependency has an empty name or query the same way. It builds a request
+  whose query dependency is listed twice, then SKIPs the identical resubmit.
+  The server accepts all of these, builds them, and on every resubmit fails
+  reuse qualification (`no_reuse_candidate.failed_reuse_qualification`,
+  6 / 6, no tree). Keyed gaps: `explain_malformed_requests.jsonl` entries 2,
+  6, 10, 14, 19, 23 and 27 (the resubmits) and the Explain entry after each.
+  The rejected submits have no fixture rows (see "Proxy fidelity"). No
+  captured client request has these shapes; #114 asks whether to keep the
+  safety rule as an accepted divergence.
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).

@@ -251,5 +251,89 @@
     "entry": 39,
     "local_variant": "undecided",
     "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 2,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4): a model (FULL) whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 3,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 2 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 6,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-2): an append incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 7,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 6 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 10,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-4): an insert_overwrite incremental whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 11,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 10 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 14,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-7): a snapshot whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 15,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 14 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 19,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-10): a view whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 20,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 19 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 23,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-11): a custom node whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 24,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 23 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 27,
+    "local_variant": "ready_to_execute",
+    "reason": "CRAFTED DIVERGENCE (#114, probe e4-8): a data test whose only query dependency is listed twice, in its build and in this identical resubmit. Hosted SKIPs it; the local server rebuilds with no_reuse_candidate.failed_reuse_qualification (6/6), because a duplicated query dependency fails reuse qualification (reuse_candidate.rs::sql_qualifies). See docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "explain_malformed_requests.jsonl",
+    "entry": 28,
+    "local_variant": "empty_tree",
+    "reason": "CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Known divergences\"."
   }
 ]

@@ -101,6 +101,9 @@ reproducible skip.
 | Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ✅ (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
 | Resubmit the copy with changed logic | build | ✅ |
+| Post-copy submit after the dev-clone pre-step with other logic: the five strategies and a snapshot (client 2.0.11, `explain_copy_logic_mismatch.jsonl`) | build, 6 / 6, SHAPE 7 against the copy | ✅ (#104) |
+| A later table, view or custom node over an incremental's RegisterClone copy (materialization changed; client 2.0.11, `explain_copy_logic_mismatch.jsonl` `kf4`, `kv4`, `kc4`) | build: 2 / 2 and the SKIP-shaped tree when the logic and semantic extras match (the table); otherwise 6 / 6 and SHAPE 7 against the copy | ✅ (#104) |
+| `allow_clones: false` on a table submit, Target relation absent, equivalent exists (client 2.0.11 sends `allow_clones: false` and `clone_chain_depth_limit: 0`; `explain_copy_logic_mismatch.jsonl` `cf4`) | build, 1 / 10, "model was executed because cloning is disabled", tree names the equivalent | ✅ (#104) |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |
 | FULL SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |
 | Same, with `clone_chain_depth_limit=0` | build (srr=1, crr=10) | ✅ |
@@ -140,6 +143,12 @@ reproducible skip.
   `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
+- **Malformed requests** (crafted only, #114): hosted rejects empty SQL, or a
+  query dependency with an empty name or query, with `INVALID_ARGUMENT`, and
+  SKIPs a resubmit whose query dependency is listed twice. The server builds
+  each of them and rebuilds every resubmit
+  (`no_reuse_candidate.failed_reuse_qualification`), keyed in
+  `golden/replay_gaps.json` (`explain_malformed_requests.jsonl`).
 - **Unit test reuse** is not characterized.
 
 Deferral (`ResolveDeferredRelations`) is implemented in
