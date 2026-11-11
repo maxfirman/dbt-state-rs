@@ -434,6 +434,9 @@ fn hosted_wire(
         Some(ModelExecutionType::Snapshot) => {
             "snapshot was executed because the table was modified after the cached execution"
         }
+        Some(ModelExecutionType::View) => {
+            "model was executed because the view definition is newer than the cached execution"
+        }
         _ => "model was executed because the table was modified after the cached execution",
     };
     match reason {
