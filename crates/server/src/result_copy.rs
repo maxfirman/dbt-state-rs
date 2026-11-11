@@ -90,8 +90,10 @@ impl RehomedReading {
 /// `input_tables` other than `own_target`, each as its canonical name
 /// components (`sql_norm::canonical_identifier`), sorted and deduplicated;
 /// with `rehome = Some((from, to))`, a three-part name in canonical schema
-/// `from` is read in `to`.
-fn canonical_reads(
+/// `from` is read in `to`. Two spellings of one relation read the same, so
+/// the submit fallback judges a candidate admitted on its reads as a
+/// same-upstream equivalent (PR #127 review).
+pub(crate) fn canonical_reads(
     input_tables: &[InputTable],
     own_target: &str,
     rehome: Option<(&str, &str)>,

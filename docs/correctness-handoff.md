@@ -79,7 +79,11 @@ Do not weaken these without new evidence.
   otherwise it is not an equivalent (PR #127 review,
   `clone_submit_fallback.rs::a_build_into_the_prod_schema_that_read_another_schema_is_not_copied`).
   Kinds that only report the equivalent in their codes (views record no
-  reads) admit on the Target relation's schema. Each
+  reads) admit on the Target relation's schema. Upstream reads compare by
+  canonical name both here and when the fallback decides whether an
+  equivalent read the submit's upstreams, so a shared relation spelled
+  differently is judged for drift, never copied unjudged
+  (`a_differently_spelled_shared_source_is_judged_before_a_copy`). Each
   dependency's name stays bound to its definition, so a dev dependency whose
   definition differs from the prod build's is not an equivalent
   (`clone_submit_fallback.rs::a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build`).

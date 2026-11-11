@@ -317,6 +317,40 @@ async fn a_build_into_the_prod_schema_that_read_another_schema_is_not_copied() {
     assert_eq!(c.clone_source, "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"");
 }
 
+/// PR #127 review: a prod build and a dev submit that read the same fixed
+/// prod source, spelled differently, read the same relation. A changed
+/// source is then judged as for any same-upstream equivalent, and the prod
+/// build is not copied unjudged as if it read another environment.
+#[tokio::test]
+async fn a_differently_spelled_shared_source_is_judged_before_a_copy() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let reader = |target: &str, env: &str, src: &str, epoch: i64| {
+        demo::model(target, env, CLONE_PROBE)
+            .sql(&format!("select id from CDO_DEMO_DB.{PROD_SCHEMA}.src"))
+            .namespace(NS)
+            .tolerance_seconds(0)
+            .upstream(src, epoch)
+    };
+    sc.build_with(
+        reader(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"",
+            PROD_SCHEMA,
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SRC\"",
+            1_791_747_000_000,
+        ),
+        transient_at(1_791_747_221_679).runtime(15),
+    )
+    .await;
+    sc.expect_execute(reader(
+        "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"M\"",
+        DEV_SCHEMA,
+        "CDO_DEMO_DB.prod_state_demo.src",
+        1_791_747_300_000,
+    ))
+    .await;
+}
+
 /// SAFETY: with NO equivalent recorded, a submit for an absent target executes
 /// normally (no spurious clone).
 #[tokio::test]

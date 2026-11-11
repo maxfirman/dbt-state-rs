@@ -712,21 +712,15 @@ fn judge_equivalent(
 }
 
 /// Whether `source` recorded exactly the genuine upstream relations this
-/// submit reads.
+/// submit reads, however each is spelled
+/// ([`result_copy::canonical_reads`]): a relation it shares with the submit
+/// is then judged for drift, never copied unjudged as if it were another
+/// environment's (PR #127 review).
 fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
-    let names = |tables: &[crate::store::InputTable], own: &str| {
-        let mut n: Vec<String> = tables
-            .iter()
-            .filter(|t| t.name != own)
-            .map(|t| t.name.clone())
-            .collect();
-        n.sort();
-        n
-    };
     // A client-requested copy records none; it reads what its submit reads.
     source.input_tables.is_empty() && source.clone_source_table.is_some()
-        || names(&source.input_tables, &source.target_table)
-            == names(&evidence.input_tables, &evidence.target_table)
+        || result_copy::canonical_reads(&source.input_tables, &source.target_table, None)
+            == result_copy::canonical_reads(&evidence.input_tables, &evidence.target_table, None)
 }
 
 /// How many current equivalents the Result copy fallback considers, newest
