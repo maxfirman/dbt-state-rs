@@ -108,6 +108,16 @@ expect_refusal(
     "a Write that does not name a per-run node is refused",
     lambda: ec.bind(ec.Scenario("bad", "", ("a",), [ec.Write("models/marts/orders.sql", "x")]), "120000abcdef"),
 )
+expect_refusal(
+    "a Remove of an overridable shared file is refused",
+    lambda: ec.bind(ec.Scenario("bad", "", ("a",), [ec.Remove("macros/generate_schema_name.sql")]),
+                    "120000abcdef"),
+)
+_gsn = ec.bind(ec.Scenario("gsn", "", ("a",), [ec.Write("macros/generate_schema_name.sql", "x")]),
+               "120000abcdef")
+if _gsn.steps[0].path != "macros/generate_schema_name.sql":
+    fail("a Write may replace the schema macro in the run's own copy (#106)", _gsn.steps[0])
+ok("a Write may replace the schema macro in the run's own copy (#106)")
 
 # --- profile safety -------------------------------------------------------
 PROFILES = """

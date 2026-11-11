@@ -15,6 +15,11 @@
 //!   `experiments/explain_capture.py store_failures_audit`): a failing
 //!   `store_failures` test and a `store_failures_as: view` test, first
 //!   execution and unchanged rerun (#88).
+//! - `explain_store_failures_audit_schema.jsonl` and
+//!   `explain_store_failures_audit_alias.jsonl` (client 2.0.11,
+//!   `experiments/explain_capture.py store_failures_audit_schema` /
+//!   `store_failures_audit_alias`): `store_failures` tests whose audit relation
+//!   is in a separate audit schema or under a configured alias (#106).
 
 use std::collections::HashMap;
 
@@ -404,4 +409,171 @@ fn hosted_serves_incomplete_cached_test_results() {
             "the ordinary data-test SKIP tree"
         );
     }
+}
+
+/// What the client sends for a `store_failures` test whose audit relation is
+/// not `<target schema>.<test name>` (#106), and what hosted decides on the
+/// unchanged rerun. Per submit: the node (logical prefix), the response
+/// variant, `default_schema`, and `tables` with the source and the audit
+/// relation named.
+fn audit_case(
+    path: &str,
+    audit: impl Fn(&str) -> String,
+) -> Vec<(String, String, String, Vec<String>)> {
+    let entries = diff::load_golden(path).expect("load fixture");
+    entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .map(|e| {
+            let name = e.request["labels"]["dbt_node_name"].as_str().unwrap();
+            assert!(
+                e.request["target_table"].is_null(),
+                "a data test has no target"
+            );
+            assert_eq!(e.request["query_dependencies"], serde_json::json!([]));
+            assert_eq!(e.request["semantic_extras"]["store_failures"], "true");
+            let audit = audit(name);
+            let tables = e.request["tables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|t| t["name"].as_str().unwrap())
+                .map(|t| match t {
+                    t if t == audit => "audit".to_string(),
+                    t if t.starts_with("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"T106")
+                        && t.contains("SRC_") =>
+                    {
+                        "source".to_string()
+                    }
+                    t => t.to_string(),
+                })
+                .collect();
+            (
+                name.split('_').next().unwrap().to_string(),
+                variant(e).0.to_string(),
+                e.request["default_schema"].as_str().unwrap().to_string(),
+                tables,
+            )
+        })
+        .collect()
+}
+
+fn row(
+    node: &str,
+    v: &str,
+    schema: &str,
+    tables: &[&str],
+) -> (String, String, String, Vec<String>) {
+    let tables = tables.iter().map(|t| t.to_string()).collect();
+    (node.into(), v.into(), schema.into(), tables)
+}
+
+/// Every Explain tree in the fixture is a SKIP that lists only the source.
+fn skip_trees_list_only_the_source(path: &str) {
+    let entries = diff::load_golden(path).expect("load fixture");
+    let messages: Vec<&Value> = entries
+        .iter()
+        .filter(|e| e.method == "GetExplainMessages")
+        .flat_map(|e| e.response["messages"].as_array().unwrap())
+        .collect();
+    assert_eq!(messages.len(), 2, "both unchanged reruns explained");
+    for m in messages {
+        assert_eq!(m["decision"], 0, "explained as a SKIP");
+        let upstreams = &masked(&m["explain_lines"])[1]["children"][0]["children"];
+        assert_eq!(
+            upstreams.as_array().unwrap().len(),
+            1,
+            "one upstream listed"
+        );
+        let text = m["explain_lines"].to_string();
+        assert!(text.contains("SRC_"), "the source is listed: {text}");
+    }
+}
+
+/// `explain_store_failures_audit_schema.jsonl`: the run's schema macro puts
+/// the tests in `<target schema>_dbt_test__audit`. The client sends that
+/// schema as `default_schema` and reports the audit relation there, so the
+/// request names it exactly as `default_catalog`.`default_schema`.`dbt_node_name`
+/// (the #88 rule). Hosted SKIPs the unchanged reruns, listing only the source,
+/// which stays in the target schema.
+#[test]
+fn audit_relation_in_a_separate_schema_is_named_by_the_request() {
+    const AUDIT_SCHEMA: &str = "PROD_STATE_DEMO_DBT_TEST__AUDIT";
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/explain_store_failures_audit_schema.jsonl"
+    );
+    let submits = audit_case(path, |name| {
+        format!(
+            "\"CDO_DEMO_DB\".\"{AUDIT_SCHEMA}\".\"{}\"",
+            name.to_uppercase()
+        )
+    });
+    let schema = AUDIT_SCHEMA.to_lowercase();
+    assert_eq!(
+        submits,
+        vec![
+            row("t106s", "ready_to_execute", &schema, &["source"]),
+            row("t106v", "ready_to_execute", &schema, &["source"]),
+            row("t106s", "skip_execution", &schema, &["source", "audit"]),
+            row("t106v", "skip_execution", &schema, &["source", "audit"]),
+        ]
+    );
+    skip_trees_list_only_the_source(path);
+}
+
+/// `explain_store_failures_audit_alias.jsonl`: tests with a configured
+/// `alias` (`<test>_aud`). The audit relation is in the target schema under
+/// the alias, and the alias appears in no other request field (labels,
+/// semantic extras, node state) nor in the ConfirmExecution. Hosted SKIPs the
+/// unchanged reruns anyway and lists only the source. The server cannot name
+/// the aliased relation from the request and rebuilds (keyed replay gaps,
+/// #40 divergence rule).
+#[test]
+fn aliased_audit_relation_is_not_named_by_the_request() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/explain_store_failures_audit_alias.jsonl"
+    );
+    let submits = audit_case(path, |name| {
+        format!(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"{}_AUD\"",
+            name.to_uppercase()
+        )
+    });
+    assert_eq!(
+        submits,
+        vec![
+            row("t106a", "ready_to_execute", "prod_state_demo", &["source"]),
+            row("t106b", "ready_to_execute", "prod_state_demo", &["source"]),
+            row(
+                "t106a",
+                "skip_execution",
+                "prod_state_demo",
+                &["source", "audit"]
+            ),
+            row(
+                "t106b",
+                "skip_execution",
+                "prod_state_demo",
+                &["source", "audit"]
+            ),
+        ]
+    );
+    for e in diff::load_golden(path).expect("load fixture") {
+        if !matches!(
+            e.method.as_str(),
+            "SubmitEnrichedSQL" | "SubmitEnrichedSQLSpeculative" | "ConfirmExecution"
+        ) {
+            continue;
+        }
+        let mut request = e.request.clone();
+        request["tables"] = Value::Null;
+        let text = request.to_string().to_lowercase();
+        assert!(
+            !text.contains("_aud"),
+            "the alias is only in `tables`: {text}"
+        );
+    }
+    skip_trees_list_only_the_source(path);
 }
