@@ -89,9 +89,17 @@ def _sub(text, mapping, where):
         raise CaptureError(f"{where}: undeclared or malformed name {e} in {text!r}") from None
 
 
+# Tracked jaffle-shop files a scenario may replace in its own project copy (the
+# shared checkout is never written). Builds still select only per-run nodes, so
+# the replacement only changes how those nodes are placed (#106: an audit schema
+# other than the target schema).
+COPY_OVERRIDES = frozenset({"macros/generate_schema_name.sql"})
+
+
 @dataclass
 class Write:
-    """Write (or overwrite) a file in the project copy. The path must name a per-run node."""
+    """Write (or overwrite) a file in the project copy. The path must name a per-run node
+    or be one of `COPY_OVERRIDES`."""
     path: str
     text: str
 
@@ -100,7 +108,7 @@ class Write:
         norm = posixpath.normpath(path)
         if norm.startswith("/") or norm.startswith(".."):
             raise CaptureError(f"Write path escapes the project: {path}")
-        if run not in norm:
+        if run not in norm and norm not in COPY_OVERRIDES:
             raise CaptureError(f"Write path does not name a per-run node: {path}")
         return replace(self, path=norm, text=_sub(self.text, m, f"Write {path}"))
 
@@ -112,6 +120,8 @@ class Remove:
 
     def bind(self, m, run):
         w = Write(self.path, "").bind(m, run)
+        if run not in w.path:
+            raise CaptureError(f"Remove path does not name a per-run node: {w.path}")
         return replace(self, path=w.path)
 
 
