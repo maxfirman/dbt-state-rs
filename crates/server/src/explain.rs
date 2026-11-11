@@ -360,8 +360,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // incomplete (#87), so our rebuild for that reason renders nothing,
         // as does every other data-test rebuild reason, including a
         // dependency-set change (a store_failures test's own audit relation
-        // is not an input, #88, unless the request does not name it: under a
-        // configured alias hosted SKIPs, divergence #123;
+        // is not an input: named by the request, #88, or under a configured
+        // alias the one table in its schema its SQL never mentions, #123; a
+        // data test's dependency-set rebuild is uncaptured;
         // docs/explain-catalog.md "Decision reason coverage"). A data test's
         // Lag tolerance is 0 and it rebuilds on any drift, so its only reuse
         // is a fresh one.
@@ -1886,11 +1887,11 @@ mod tests {
     fn data_test_execute_renders_nothing_for_uncaptured_or_divergent_reasons() {
         // Hosted SKIPs a data test whose cached results are incomplete (#75
         // captures, divergence #87), so our rebuild for that reason has no
-        // hosted tree. A data test rebuilds for a dependency-set change only
-        // when its store_failures audit relation is not named by the request
-        // (a configured alias), where hosted SKIPs (divergence #123; one the
-        // request names is not an input, #88). No capture shows a test that
-        // failed reuse qualification.
+        // hosted tree. A store_failures test's own audit relation is not an
+        // input (#88, and by elimination under a configured alias, #123), so a
+        // data test rebuilds for a dependency-set change only when a genuinely
+        // new table is reported, which no capture shows. No capture shows a
+        // test that failed reuse qualification.
         for reason in [
             DecisionReason::NoReuseCandidate(NoCandidate::IncompleteCachedTestResults),
             DecisionReason::DependencySetChanged,

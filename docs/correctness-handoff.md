@@ -44,7 +44,9 @@ Do not weaken these without new evidence.
   set of physical input names, empty or duplicated dependency definitions and
   corrupt stored evidence (`INTERNAL`) never become a reuse. A node's own
   relation is not an input: a model's own target, and a `store_failures`
-  data test's audit relation when the request identifies it exactly (#88).
+  data test's audit relation when the request identifies it exactly (#88)
+  or, under a configured alias, as the only unnamed table in the test's
+  schema (#123, [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
 - **Versioned fingerprints.** Each fingerprint starts with a version tag
   (`crates/server/src/warehouse.rs`, `fingerprint.rs`). A change to identity
   semantics takes a new tag, so older State history cold-misses and rebuilds
@@ -223,14 +225,15 @@ server keeps the conservative behavior described.
   test that fails reuse qualification (`evaluate_volatile_sql`, #67) was not
   captured; the server renders nothing for it
   ([explain-catalog.md](explain-catalog.md#data-test)).
-- **`store_failures` audit relation recognition (#88, #106).** Hosted's own
+- **`store_failures` audit relation recognition (#88, #106, #123).** Hosted's own
   rule is not observable: every capture is also explained by "compare only
   the inputs recorded at the build". The server recognizes the audit relation
   from the request alone and drops it from the test's inputs
   (`execution.rs::is_own_audit_relation`): a Snowflake data test whose
   semantic extras set `store_failures: true`, and a relation exactly
   `default_catalog`.`default_schema`.`dbt_node_name`. Every other unrecorded
-  table still changes the dependency set and rebuilds. The request does not
+  table, except the aliased case below, still changes the dependency set and
+  rebuilds. The request does not
   carry the test's alias, so a relation the test reads can have exactly that
   name (test `orders` aliased `orders_audit`, reading `orders`; Codex review
   on #109): a name that the test's SQL or one of its query dependencies
@@ -238,11 +241,27 @@ server keeps the conservative behavior described.
   `default_schema` is the test's own schema, also in a separate audit schema
   (VERIFIED LIVE 2026-11-11, #106: a schema macro putting tests in
   `<target>_dbt_test__audit`, `explain_store_failures_audit_schema.jsonl`).
-  A configured `alias` is carried by no request field, so that audit relation
-  is not recognized (divergence #123, [below](#known-divergences)). Not
-  captured: a long generic test name, whose alias is dbt's truncated name
-  (presumably the same as a configured alias). Other warehouses recognize
-  nothing.
+  A configured `alias` is carried by no request field
+  (`explain_store_failures_audit_alias.jsonl`), so that audit relation is
+  recognized by elimination instead (#123, maintainer decision 2026-11-11,
+  [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md),
+  `execution.rs::unnamed_audit_relation`): the only reported table in
+  `default_catalog`.`default_schema` that neither the test's SQL nor any query
+  dependency mentions as a word. Two or more such tables (counting one the
+  exact-name rule drops) are ambiguous and all stay inputs. This is an
+  inference, not hosted's observed rule. It rests on the client: 2.0.11
+  reports a table only when the SQL or a view definition it sends as a query
+  dependency names it, or when it is the node's own relation (dbt-fusion
+  `collect_table_modified_infos`), and a relation the query never reads
+  cannot change the test's result. Its limits: a read that names no relation
+  (a function body, a view definition the request omits) would be missed,
+  which 2.0.11 never reports; before the audit relation first exists a lone
+  unnamed table is dropped, and the next run, reporting it next to the audit
+  relation, rebuilds. Both rules apply where the evidence is built, so the
+  decision, the stored rows and Explain agree (the Explain capture's fallback
+  for decisions that record no inputs filters the same way). Not captured: a
+  long generic test name, whose alias is dbt's truncated name (the same
+  mechanism, so the same rule). Other warehouses recognize nothing.
 - **Unit tests.** Hosted reuse of unit tests is not characterized; Explain shows
   "details unavailable" ([hosted-behavior.md](hosted-behavior.md)).
 - **Explain evidence gaps (#78).** Resolved by #76: VIEW × CLONE is fenced as
@@ -342,15 +361,6 @@ replay fails when an entry becomes unused or resolved
     (submit) and 18 (Explain: the server explains the load it decided).
 - **Snapshot and custom node over a modified Target relation (#115).** An
   accepted divergence (see [below](#accepted-divergences)).
-- **`store_failures` test with a configured alias (#123, client 2.0.11).**
-  The audit relation is `<test schema>.<alias>`, reported in `tables` once
-  it exists, and no other request field carries the alias (labels, semantic
-  extras, node state, ConfirmExecution). Hosted SKIPs the unchanged rerun
-  and lists only the source. The request does not name that relation, so
-  the server keeps it as an unrecorded input and rebuilds with
-  `dependency_set_changed` (6 / 6), the conservative side; its tree renders
-  nothing. Keyed gaps: `explain_store_failures_audit_alias.jsonl` entries 9,
-  10 (submits) and 11, 12 (Explain, `empty_tree`).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
   2.0.6 got `ready_to_clone` for a MERGE incremental over an existing target
   (`clone_failed_fallback.jsonl` entry 2, `clone_submit_equivalent_fallback.jsonl`

@@ -297,9 +297,10 @@ and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
    ([DATA TEST](#data-test)). One rebuild is local-only, empty tree,
    because hosted SKIPs the test instead: cached results that are
    incomplete (`no_reuse_candidate.incomplete_cached_test_results`, crafted
-   only, accepted divergence #87). A `store_failures` test whose audit relation the
-   request does not name (a configured alias) rebuilds for
-   `dependency_set_changed` where hosted SKIPs (divergence #123).
+   only, accepted divergence #87). A `store_failures` test's audit relation
+   under a configured alias, which the request does not name, is not an
+   input either, so its unchanged rerun SKIPs as hosted does (#123,
+   [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
    A test failing reuse qualification is out of scope → #67
    ([Decision reason coverage](#decision-reason-coverage)).
 10. Live, 2026-11-10 (#74, #86). Hosted does not copy a custom node: built
@@ -1154,8 +1155,13 @@ read, not the test's output). `default_schema` is the test's own schema, so an
 audit relation in a separate audit schema is recognized too
 (`explain_store_failures_audit_schema.jsonl`, #106). Under a configured alias,
 which no request field carries, hosted still SKIPs
-(`explain_store_failures_audit_alias.jsonl`) but this server rebuilds for
-`dependency_set_changed`, which renders nothing (divergence #123).
+(`explain_store_failures_audit_alias.jsonl`). This server recognizes that
+relation by elimination (`execution.rs::unnamed_audit_relation`, #123,
+[ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)): the
+only reported table in the test's schema that neither its SQL nor a query
+dependency mentions. When two or more tables qualify none is dropped, so a
+new table next to the audit relation still rebuilds. The SKIP and its tree
+replay exactly.
 
 Rendered for `first_build` and `no_reuse_candidate.identity_mismatch`, and
 for `upstream_outdated` and `upstream_query_changed` (which need an
@@ -1346,10 +1352,13 @@ What this server never renders, each with its final status:
   hosted and this server rebuild it as another identity
   (`no_reuse_candidate.upstream_names_changed`, #116,
   [its trees](#execute-same-sql-under-another-execution-type-with-other-upstream-names)),
-  not as a dependency-set change. For a data test it arises
-  only for a `store_failures` audit relation the request does not name (a
-  configured alias): local-only, hosted SKIPs (divergence #123,
-  [DATA TEST](#data-test)).
+  not as a dependency-set change. For a data test it is unreachable on
+  2.0.11 too: a new upstream its SQL names changes the SQL, a changed view
+  definition changes its query dependencies, and its `store_failures` audit
+  relation is not an input, named exactly (#88) or, under a configured alias,
+  as the only unnamed table in its schema (#123,
+  [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)). The
+  client reports no other table ([DATA TEST](#data-test)).
 - **Every other Decision reason × node kind without a capture:**
   [Decision reason coverage](#decision-reason-coverage).
 
@@ -1380,7 +1389,7 @@ there is no cell.
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ |
 | `no_reuse_candidate.failed_reuse_qualification` ⁱ | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
-| `dependency_set_changed` | U | U | U | U | U | U | LO (#123) | — |
+| `dependency_set_changed` | U | U | U | U | U | U | U | — |
 | `copy_chain_limit` ᵐ | U | — | — ᵏ | — | — | — | — | — |
 | `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | — |
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | → #91 |
@@ -1512,7 +1521,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | seed, other | any other reason | empty tree |
 | data test SKIP | `reused.fresh` | data-test SKIP |
 | data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream | data-test EXECUTE |
-| data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, #123) | empty tree |
+| data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, unreachable on 2.0.11) | empty tree |
 | SKIP | `reused.fresh`, `reused.within_lag_tolerance` where the kind's listing is captured¹; `reused.tolerated_stale` likewise, except SNAPSHOT | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
 | EXECUTE | `upstream_outdated` when the anchor re-derives an upstream whose drift is proven (FULL, the five incrementals, SNAPSHOT, DBT_CUSTOM); `upstream_query_changed` with an anchor (FULL, the incrementals, SNAPSHOT, DBT_CUSTOM) | SHAPE 9 |

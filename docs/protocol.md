@@ -140,7 +140,9 @@ history match and the decision. The client derives:
   (`explain_store_failures_audit_schema.jsonl`); no request field carries
   the alias (`explain_store_failures_audit_alias.jsonl`). The server drops
   the audit relation from the test's inputs when the request names it
-  (#88, #106).
+  (#88, #106), and under a configured alias when it is the only reported
+  table in the test's schema that the test's SQL and query dependencies
+  never mention (#123, [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
 - `values_hash` for seeds: the md5 of the seed file bytes.
 - For a microbatch model, the run's resolved event-time window, added to the
   `semantic_extras` as `__microbatch_event_time_start` and
@@ -352,11 +354,14 @@ and fingerprints.
    the request (`store_failures: true`, Snowflake, exactly
    `default_catalog`.`default_schema`.`dbt_node_name`, and not mentioned by
    the test's SQL or its query dependencies) and hosted ignores it
-   too (#88). Hosted differs in two captured cases, keyed divergences: it
-   reuses a `store_failures` test with a configured alias, whose audit
-   relation the request does not name, where the server rebuilds (#123), and it
-   reuses a test confirmed with incomplete results and echoes them (#87,
-   crafted, an [accepted divergence](correctness-handoff.md#accepted-divergences)).
+   too (#88). Under a configured alias, which no request field carries, the
+   server drops the only reported table in the test's schema that the test's
+   SQL and query dependencies never mention; two or more such tables keep
+   them all (#123, [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
+   Hosted SKIPs those reruns too (`explain_store_failures_audit_alias.jsonl`).
+   Hosted differs in one captured case, a keyed divergence: it reuses a test
+   confirmed with incomplete results and echoes them (#87, crafted, an
+   [accepted divergence](correctness-handoff.md#accepted-divergences)).
 8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
    never reuses a model or data test (it does not implement the hosted
    `transformed_nodes_by_query` exchange). On Snowflake the Result copy

@@ -314,9 +314,11 @@ fn capture_submit(
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
         // The decision-time inputs with their resolved producers (ADR 0007);
-        // the submitted tables when the decision recorded none (a copy).
+        // the submitted inputs when the decision recorded none (a copy), less
+        // a store_failures test's own audit relation, as the decision reads
+        // them (#88, #123).
         input_tables: if outcome.record().input_tables.is_empty() {
-            req.tables.iter().map(Into::into).collect()
+            crate::execution::sql_inputs(&crate::execution::sql_execution(req))
         } else {
             outcome.record().input_tables.clone()
         },

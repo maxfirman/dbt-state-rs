@@ -526,9 +526,10 @@ fn audit_relation_in_a_separate_schema_is_named_by_the_request() {
 /// `alias` (`<test>_aud`). The audit relation is in the target schema under
 /// the alias, and the alias appears in no other request field (labels,
 /// semantic extras, node state) nor in the ConfirmExecution. Hosted SKIPs the
-/// unchanged reruns anyway and lists only the source. The server cannot name
-/// the aliased relation from the request and rebuilds (keyed replay gaps,
-/// #40 divergence rule).
+/// unchanged reruns anyway and lists only the source. The server recognizes
+/// the aliased relation by elimination, as the one reported table in the
+/// test's schema its SQL never mentions (#123, ADR 0008), so the conformance
+/// replay matches these entries exactly.
 #[test]
 fn aliased_audit_relation_is_not_named_by_the_request() {
     let path = concat!(
