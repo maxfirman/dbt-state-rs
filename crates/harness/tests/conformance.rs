@@ -34,6 +34,14 @@ fn real_variant(resp: &serde_json::Value) -> Option<String> {
     diff::decision_variant(resp)
 }
 
+/// The keyed gap for entry `entry` of `fixture`, if any. Keys are unique: the
+/// gate requires every gap to be exercised exactly once.
+fn find_gap<'a>(known: &'a [KnownGap], fixture: &str, entry: usize) -> Option<&'a KnownGap> {
+    known
+        .iter()
+        .find(|g| g.fixture == fixture && g.entry == entry)
+}
+
 fn identity(req: &serde_json::Value) -> String {
     if req["execution_type"].as_i64() == Some(8) {
         format!(
@@ -54,6 +62,11 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
     }
     if let serde_json::Value::Object(root) = &mut value {
         remove_ids(root);
+        // A RegisterClone response carries its copy at the top level
+        // (`ready_to_clone`) as well as under the deprecated `response` oneof.
+        if let Some(serde_json::Value::Object(copy)) = root.get_mut("ready_to_clone") {
+            remove_ids(copy);
+        }
         if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
             for payload in variants.values_mut() {
                 if let serde_json::Value::Object(fields) = payload {
@@ -466,9 +479,10 @@ async fn conformance_replay_all_corpora() {
         // cross-session capture; pinned by clone_fallback_xenv.rs.
         "clone_fallback_xenv_fresh.jsonl",
         // RegisterClone source-age vs clone-age distinguishing interval
-        // (source build < upstream < clone creation -> SKIP). Contains a
-        // RegisterClone RPC the generic SKIP/EXECUTE/CLONE replay does not drive
-        // against the server; pinned by clone_chain_provenance.rs.
+        // (source build < upstream < clone creation -> SKIP). The whole chain,
+        // including the entry-4 post-copy divergence (hosted SKIP, local
+        // rebuild; see #93), is replayed and pinned by
+        // clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay.
         "clone_chain_source_age.jsonl",
         // #34: `explain_tolerance.jsonl` is retained ONLY as the programmatic
         // seeded-oracle source for explain_skip_tree_matches_hosted_oracle_* /
@@ -490,7 +504,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        36,
+        52,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -506,6 +520,7 @@ async fn conformance_replay_all_corpora() {
     let mut partial_history: HashSet<(String, usize)> = HashSet::new();
     for path in paths {
         let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+        let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
         let server = support::start_server().await;
         let addr = server.addr;
         let ch = support::channel(addr).await;
@@ -524,7 +539,7 @@ async fn conformance_replay_all_corpora() {
         let mut unknown_baseline = 0;
         let mut gaps = 0;
         for (i, e) in entries.iter().enumerate() {
-            let context = format!("{} entry {i}", path.file_name().unwrap().to_string_lossy());
+            let context = format!("{fixture} entry {i}");
             match e.method.as_str() {
                 "SubmitEnrichedSQL" | "SubmitValues" => {
                     let response = if e.method == "SubmitValues" {
@@ -559,6 +574,30 @@ async fn conformance_replay_all_corpora() {
                         edid_remap.insert(hosted, local);
                     }
                     match real_variant(&e.response).as_deref().unwrap() {
+                        // DECISION DIVERGENCE (spec #40): hosted rebuilds where
+                        // this server decides another class. Allowed only for a
+                        // keyed whole-response gap naming the local variant; the
+                        // hosted confirm then has no local counterpart.
+                        "ready_to_execute"
+                            if support::response_variant(&response) != "ready_to_execute" =>
+                        {
+                            let local_variant = support::response_variant(&response);
+                            let gap = find_gap(&known, &fixture, i)
+                                .filter(|g| g.ignore_fields.is_empty());
+                            let Some(gap) = gap else {
+                                panic!(
+                                    "{context}: hosted rebuild but local {local_variant} \
+                                     (add a keyed replay_gaps entry for a decision divergence)"
+                                );
+                            };
+                            assert!(!gap.reason.trim().is_empty());
+                            assert_eq!(
+                                local_variant, gap.local_variant,
+                                "{context}: characterized local decision changed"
+                            );
+                            seen_gaps.insert((gap.fixture.clone(), i));
+                            gaps += 1;
+                        }
                         "ready_to_execute" => {
                             assert_eq!(
                                 support::response_variant(&response),
@@ -581,11 +620,8 @@ async fn conformance_replay_all_corpora() {
                             let real_full = without_ids(e.response.clone());
                             let mut ours = ours_full.clone();
                             let mut real = real_full.clone();
-                            let gap = known.iter().find(|g| {
-                                g.fixture == path.file_name().unwrap().to_string_lossy()
-                                    && g.entry == i
-                                    && !g.ignore_fields.is_empty()
-                            });
+                            let gap = find_gap(&known, &fixture, i)
+                                .filter(|g| !g.ignore_fields.is_empty());
                             if let Some(gap) = gap {
                                 assert!(!gap.reason.trim().is_empty());
                                 // The EXEMPTED FIELD(S) themselves must differ —
@@ -619,10 +655,7 @@ async fn conformance_replay_all_corpora() {
                                     // exact payload match — account for it
                                     // separately so a NEW silent exemption is
                                     // caught (review #2 7th follow-up P2 #3).
-                                    partial_history.insert((
-                                        path.file_name().unwrap().to_string_lossy().into_owned(),
-                                        i,
-                                    ));
+                                    partial_history.insert((fixture.clone(), i));
                                 } else {
                                     mismatches.push(format!(
                                         "{context} (ready_to_execute, has_history={has_history}): \
@@ -646,10 +679,7 @@ async fn conformance_replay_all_corpora() {
                             let response_json = serde_json::to_value(response).unwrap();
                             let ours = without_ids(response_json);
                             let real = without_ids(e.response.clone());
-                            if let Some(gap) = known.iter().find(|g| {
-                                g.fixture == path.file_name().unwrap().to_string_lossy()
-                                    && g.entry == i
-                            }) {
+                            if let Some(gap) = find_gap(&known, &fixture, i) {
                                 assert!(!gap.reason.trim().is_empty());
                                 assert_eq!(
                                     local_variant, gap.local_variant,
@@ -694,10 +724,7 @@ async fn conformance_replay_all_corpora() {
                             // clone, so it executes) and from a variant/policy
                             // mismatch.
                             let local_variant = support::response_variant(&response);
-                            let known_gap = known.iter().find(|g| {
-                                g.fixture == path.file_name().unwrap().to_string_lossy()
-                                    && g.entry == i
-                            });
+                            let known_gap = find_gap(&known, &fixture, i);
                             if local_variant == "ready_to_clone" {
                                 // Full causal clone match: compare the payload
                                 // (minus opaque IDs) and correlate the confirm.
@@ -782,23 +809,55 @@ async fn conformance_replay_all_corpora() {
                     asserted += 1;
                 }
                 "SubmitEnrichedSQLSpeculative" => {
+                    let req =
+                        serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(e.request.clone())
+                            .unwrap();
                     let response = sql
-                        .submit_enriched_sql_speculative(support::captured_request(
-                            serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(
-                                e.request.clone(),
-                            )
-                            .unwrap(),
-                            e,
-                        ))
+                        .submit_enriched_sql_speculative(support::captured_request(req.clone(), e))
                         .await
                         .unwrap()
                         .into_inner();
-                    assert_eq!(
-                        without_ids(serde_json::to_value(response).unwrap()),
-                        without_ids(e.response.clone()),
-                        "{context}"
-                    );
-                    asserted += 1;
+                    let ours = without_ids(serde_json::to_value(&response).unwrap());
+                    let real = without_ids(e.response.clone());
+                    if let Some(gap) = find_gap(&known, &fixture, i) {
+                        // DECISION DIVERGENCE: hosted decides on the
+                        // speculative call, this server answers `undecided`.
+                        // After `undecided` the client sends the ordinary
+                        // submit (as it does for the same node earlier in the
+                        // capture), so that submit is driven here and must
+                        // answer as hosted did; its decision id stands in for
+                        // hosted's in the Explain that follows.
+                        assert!(!gap.reason.trim().is_empty());
+                        assert_eq!(gap.local_variant, "undecided", "{context}");
+                        assert_eq!(
+                            real_variant(&ours).as_deref(),
+                            Some("undecided"),
+                            "{context}: characterized local speculative answer changed"
+                        );
+                        assert_ne!(ours, real, "{context}: gap is resolved; remove it");
+                        let follow = sql
+                            .submit_enriched_sql(support::captured_request(req, e))
+                            .await
+                            .unwrap()
+                            .into_inner();
+                        if let (Some(hosted), Some(local)) =
+                            (hosted_submit_edid(&e.response), local_submit_edid(&follow))
+                        {
+                            edid_remap.insert(hosted, local);
+                        }
+                        let follow = without_ids(serde_json::to_value(&follow).unwrap());
+                        if follow != real {
+                            mismatches.push(format!(
+                                "{context}: submit after `undecided` differs from hosted's \
+                                 speculative answer ours={follow} real={real}"
+                            ));
+                        }
+                        seen_gaps.insert((gap.fixture.clone(), i));
+                        gaps += 1;
+                    } else {
+                        assert_eq!(ours, real, "{context}");
+                        asserted += 1;
+                    }
                 }
                 "GetExplainMessages" => {
                     explain_entries_asserted += replay_explain_messages(
@@ -814,7 +873,93 @@ async fn conformance_replay_all_corpora() {
                     .await;
                     gaps += 0;
                 }
-                "RegisterClone" | "ResolveDeferredRelations" => {
+                "RecordExecutions" => {
+                    // Write-only history (client 2.0.11 sends it for a
+                    // `--full-refresh` incremental instead of a submit, #73).
+                    // Driven so later decisions see the recorded builds.
+                    let response = exec
+                        .record_executions(support::captured_request(
+                            serde_json::from_value::<qc::RecordExecutionsRequest>(
+                                e.request.clone(),
+                            )
+                            .unwrap(),
+                            e,
+                        ))
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        e.response,
+                        "{context}"
+                    );
+                    for record in e.request["records"].as_array().unwrap() {
+                        let input = &record["input"];
+                        let req = input.get("enriched_sql").unwrap_or(&input["values"]);
+                        confirmed.insert(format!("{}|{}", support::captured_org(e), identity(req)));
+                    }
+                    asserted += 1;
+                }
+                "RegisterClone" => {
+                    // The dev-clone pre-step's copy (client 2.0.11: incrementals
+                    // and snapshots under deferral). Driven like a submit: the
+                    // full response is compared after `without_ids`, and a
+                    // granted copy's confirmation is correlated so the copied
+                    // target carries State history for the submit that follows.
+                    let response = qc::clone_client::CloneClient::new(ch.clone())
+                        .register_clone(support::captured_request(
+                            serde_json::from_value::<qc::CloneRequest>(e.request.clone()).unwrap(),
+                            e,
+                        ))
+                        .await
+                        .unwrap()
+                        .into_inner();
+                    let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
+                    let local_variant = support::clone_response_variant(&response);
+                    let hosted_variant = support::clone_response_variant(
+                        &serde_json::from_value(e.response.clone()).unwrap(),
+                    );
+                    let ours = without_ids(serde_json::to_value(&response).unwrap());
+                    let real = without_ids(e.response.clone());
+                    if let Some(gap) = find_gap(&known, &fixture, i) {
+                        assert!(!gap.reason.trim().is_empty());
+                        assert_eq!(
+                            local_variant, gap.local_variant,
+                            "{context}: characterized local RegisterClone answer changed"
+                        );
+                        assert_ne!(
+                            ours, real,
+                            "{context}: gap is resolved; remove its exemption"
+                        );
+                        seen_gaps.insert((gap.fixture.clone(), i));
+                        gaps += 1;
+                    } else if ours != real {
+                        mismatches.push(format!(
+                            "{context}: RegisterClone response differs ours={ours} real={real}"
+                        ));
+                    } else {
+                        asserted += 1;
+                    }
+                    // A copy carries State history only when its source's
+                    // confirmed build is in this fixture; a copy of a source
+                    // built in an earlier session is an unknown baseline, like a
+                    // SKIP without history.
+                    let source_key = format!(
+                        "{}|target|{}",
+                        support::captured_org(e),
+                        e.request["clone_source_table"]
+                    );
+                    if hosted_variant == "ready_to_clone"
+                        && local_variant == "ready_to_clone"
+                        && confirmed.contains(&source_key)
+                    {
+                        let hosted_id =
+                            e.response["ready_to_clone"]["request_id"].as_str().unwrap();
+                        let local_id = response.ready_to_clone.unwrap().request_id;
+                        pending.insert(hosted_id.into(), (local_id, key));
+                    }
+                }
+                "ResolveDeferredRelations" => {
                     gaps += 1;
                 }
                 other => panic!("{context}: unhandled method {other}"),
@@ -823,7 +968,7 @@ async fn conformance_replay_all_corpora() {
         total_asserted += asserted;
         let partial_here = partial_history
             .iter()
-            .filter(|(f, _)| *f == path.file_name().unwrap().to_string_lossy())
+            .filter(|(f, _)| *f == fixture)
             .count();
         eprintln!(
             "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps} \
@@ -1095,9 +1240,7 @@ async fn replay_explain_messages(
         // SAME artifact the Submit replay documents; the exact freshness-subtree
         // rendering is proven by the seeded-history oracle tests. It is NOT a
         // freshness-subtree fence — the subtree is compared in full above.
-        let gap = known
-            .iter()
-            .find(|g| g.fixture == fixture && g.entry == entry_idx);
+        let gap = find_gap(known, &fixture, entry_idx);
         match gap {
             Some(gap) => {
                 assert!(
@@ -1129,6 +1272,16 @@ async fn replay_explain_messages(
                          match; remove the ignore_fields exemption"
                     );
                 } else {
+                    // A decision divergence (spec #40): our tree for a decision
+                    // hosted makes differently must render nothing, never an
+                    // invented explanation of our own decision.
+                    if gap.local_variant == "empty_tree" {
+                        assert!(
+                            local.explain_lines.is_empty(),
+                            "{context}: an `empty_tree` explain gap requires the local tree to be \
+                             empty (#40 divergence rule); got local={local_tree}"
+                        );
+                    }
                     // Stale-exemption guard: the decision/description/tree must
                     // genuinely differ — otherwise the exemption is stale and
                     // must be removed (e.g. if history becomes seedable in-arm).

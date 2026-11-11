@@ -502,6 +502,8 @@ fn execution_type_strategy() -> impl Strategy<Value = i32> {
 fn no_candidate_strategy() -> impl Strategy<Value = NoCandidate> {
     prop_oneof![
         Just(NoCandidate::IdentityMismatch),
+        Just(NoCandidate::ExecutionTypeChanged),
+        Just(NoCandidate::CopyLogicMismatch),
         Just(NoCandidate::FailedReuseQualification),
         Just(NoCandidate::OwnTargetChangedOrMissing),
         Just(NoCandidate::OwnTargetModified),

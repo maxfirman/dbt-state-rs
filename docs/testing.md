@@ -19,10 +19,34 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 ./scripts/duckdb-ci.sh                                   # CI passes --jobs 4
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
+python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
+python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
 build the `fuzz` feature, so it never contacts the hosted service.
+
+## Explain tree census
+
+`experiments/explain_census.py` counts the Explain trees in the tracked
+fixtures per node kind × decision class: trees by origin (real client and its
+version, or crafted `state-probe`), empty trees, and each marker and badge. It
+names the fixture and entry of any `INFO`, `EM_UNSPECIFIED`, `EB_UNSPECIFIED`
+or unmapped tree. Method and output:
+[explain-catalog.md](explain-catalog.md#explain-tree-census).
+
+```bash
+python3 experiments/explain_census.py                    # tracked fixtures only
+python3 experiments/explain_census.py "$GOLDEN_DIR" more.jsonl   # plus capture files or directories
+python3 experiments/explain_census.py --no-fixtures "$GOLDEN_DIR"  # one campaign alone
+```
+
+Every #40 capture ticket reruns it after promoting its fixtures. It then
+updates, in `docs/explain-catalog.md`, the census table, the vocabulary line
+counts, the "not observed across N trees (date)" entries and the evidence
+column of the coverage table. A finding (an `INFO` line, an explicit
+unspecified value, or a tree no submit minted) needs a catalog entry before the
+fixture is promoted.
 
 ## Evidence rules and release gate
 
@@ -97,6 +121,11 @@ Postgres.
   `copy_candidate_arms` (which build hosted reuses or copies when the latest
   build no longer qualifies). Most of its fixtures also replay in
   `conformance.rs`.
+- `data_test_explain.rs`: pins what the data-test Explain captures show by
+  fixture inspection: passing and failing tests render the same tree, the
+  EXECUTE tree does not depend on the rebuild reason, a `store_failures` test
+  reports its audit relation (#88), and hosted serves incomplete cached
+  results (#87). Both fixtures also replay in `conformance.rs`.
 
 ## DuckDB acceptance gate
 
@@ -126,9 +155,16 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   that workload. Otherwise it depends on unknown hosted history and is counted
   as an unknown baseline, never hydrated with guessed epochs.
 - A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
-  correlated. `RegisterClone` and `ResolveDeferredRelations` entries are
-  counted but not driven here; `clone.rs`, `clone_lifecycle.rs`,
-  `clone_chain_provenance.rs` and `deferral.rs` cover them.
+  correlated. A `RegisterClone` is driven and its full response compared
+  after removing opaque IDs (both the top-level copy and the deprecated
+  `ready_to_clone_v1` mirror). A granted copy's confirm is correlated, so the
+  copy is State history for the next submit, only when the copy's source was
+  confirmed in the same fixture; otherwise the confirm is an unknown baseline.
+  `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
+  incremental run under `--full-refresh`) is driven and its response compared;
+  each record counts as confirmed history for its workload.
+  `ResolveDeferredRelations` entries are counted but not driven here;
+  `deferral.rs` covers them.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too.
 
@@ -144,10 +180,21 @@ returns, and a `reason`. Kinds:
 - **Whole-response gap** (no `ignore_fields`): the local response differs, for
   example missing source history for a hosted clone or a deliberate
   safety-floor divergence. For a submit, the local variant must equal
-  `local_variant`.
+  `local_variant`. A hosted rebuild that the server decides as another class
+  (a decision divergence, spec #40) needs one; its hosted confirm then has no
+  local counterpart.
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.
+- **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
+  decision this server makes differently (spec #40). The local Explain tree
+  for it must be empty, and must differ from hosted's.
+- **Speculative gap** (`local_variant: "undecided"`, on a
+  `SubmitEnrichedSQLSpeculative` entry): hosted decides on the speculative
+  call where this server answers `undecided` (#103). The replay then drives
+  the ordinary submit the client sends after `undecided` and asserts it
+  answers as hosted's speculative call did; its decision id stands in for
+  hosted's in the Explain that follows.
 
 The replay fails if any gap is unused, if a whole-response gap now matches
 hosted ("gap is resolved; remove its exemption"), or if a field-scoped gap's

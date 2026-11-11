@@ -208,6 +208,7 @@ pub async fn submit_sql(
     .await?;
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
+    let record = record.with_unmatched_build(selection.unmatched.as_ref());
     settle(store, &evidence, record, candidate).await
 }
 
@@ -305,7 +306,9 @@ async fn report_older_match(
             R::UpstreamOutdated
                 | R::UpstreamQueryChanged
                 | R::DependencySetChanged
-                | R::NoReuseCandidate(N::IdentityMismatch)
+                | R::NoReuseCandidate(
+                    N::IdentityMismatch | N::ExecutionTypeChanged | N::CopyLogicMismatch
+                )
         );
     if !applies {
         return Ok(record);

@@ -65,6 +65,17 @@ pub fn response_variant(resp: &qc::SubmitSqlResponse) -> &'static str {
     }
 }
 
+/// The answer class of a RegisterClone response: `ready_to_clone`,
+/// `unable_to_clone` or `none` (its top-level fields; the deprecated
+/// `response` oneof mirrors `ready_to_clone`).
+pub fn clone_response_variant(resp: &qc::CloneResponse) -> &'static str {
+    match (&resp.ready_to_clone, &resp.unable_to_clone) {
+        (Some(_), _) => "ready_to_clone",
+        (None, Some(_)) => "unable_to_clone",
+        (None, None) => "none",
+    }
+}
+
 /// Build a tonic::Request wrapping `body` with the `x-organization-id` metadata
 /// header set to `org`. Mirrors how the real dbt client scopes calls per org.
 pub fn request_with_org<T>(body: T, org: &str) -> tonic::Request<T> {

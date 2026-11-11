@@ -15,7 +15,7 @@ Open questions and deliberate divergences live in
 | SQL model (view, table, incremental) | yes | Logic identity: normalized rendered SQL, all `semantic_extras` the client sends, and dependency definitions |
 | Snapshot (et=7) | yes | Same as models (`snapshot_reuse.jsonl`) |
 | Seed (`SubmitValues`) | yes | `values_hash` plus seed config (`seed_values_hash.jsonl`) |
-| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) plus complete cached results (`c1_test_node_identity.jsonl`) |
+| Data test (et=8) | yes | Scoped `node_unique_id` (generic tests share one body hash) (`c1_test_node_identity.jsonl`). A failing test is reused like a passing one. Hosted also reuses a test confirmed with incomplete or no cached results and echoes them (crafted, `explain_incomplete_test_results.jsonl`); this server requires complete results (divergence #87) |
 | Custom materialization (et=11) | yes | Same as models; the public docs say it is never reused, but hosted skips an unchanged one (`custom_materialization_reuse.jsonl`) |
 | Python model | no | Always builds |
 
@@ -28,7 +28,8 @@ Open questions and deliberate divergences live in
 | View, logic unchanged, upstream advanced | 10 | skip (the client omits upstreams from `tables[]`) | ✅ |
 | Model definition change (added column) | — | build | ✅ |
 | Incremental `unique_key` change | 3 | build | ✅ |
-| Incremental `--full-refresh` | — | client bypasses dbt State (no submit) | ✅ |
+| Incremental `--full-refresh` | — | no submit; client 2.0.11 sends `RecordExecutions` as FULL (`explain_incremental_append_merge_history.jsonl`) | ✅ |
+| Incremental resubmitted after a `--full-refresh` run | 2, 3 | build ("the table was modified after the cached execution") | ❌ builds with the generic rebuild description (#90) |
 | Seed content change | VALUES | build (new `values_hash`) | ✅ |
 | Data test added or changed | 8 | build (new `node_unique_id`) | ✅ |
 | Upstream newer than the build (ANY) | — | build, `is_stale=false` | ✅ |
@@ -82,8 +83,13 @@ reproducible skip.
 
 | Scenario | Hosted | Reproduced |
 |---|---|---|
-| Incremental or snapshot | copy via `RegisterClone` | ✅ |
+| Incremental | copy via `RegisterClone` | ✅ |
+| Snapshot, dev target missing, under auto-deferral (client 2.0.11, `explain_snapshot_register_clone.jsonl`) | copy via `RegisterClone` (execution type 7, 5 / -) | ✅ copy; ❌ the post-copy submit: hosted skips, the server rebuilds (#93) |
+| Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | build ✅, codes 6 / 6 ❌ (#92) |
+| View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | build ✅, codes 6 / 6 ❌ (#92) |
+| Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
+| Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ❌ the server copies it (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
 | Resubmit the copy with changed logic | build | ✅ |
 | `allow_clones: false` (`clone_chain_depth_limit=0`) on `RegisterClone` | `unable_to_clone` (crr=10, decision READY_TO_EXECUTE) | ✅ |
@@ -107,9 +113,15 @@ reproducible skip.
   it with `is_stale=true`; the server copies on the first submit. This
   interaction is open (see the `CHARACTERIZATION_ONLY` comments in
   `crates/harness/tests/conformance.rs`).
+- **Post-copy incremental submit** (#93, as for the snapshot below): after the dev-clone pre-step copies
+  an incremental that reads a source in the prod schema, hosted skips the
+  unchanged submit; the server does not adopt the copy and rebuilds
+  (`explain_incremental_copy_history.jsonl`).
 - **Incremental self-reference after a copy**: hosted skips the final resubmit
   in `clone_chain_source_age.jsonl`; the server rebuilds (pinned by
   `clone_chain_provenance.rs::registerclone_source_age_chain_exact_replay`).
+- **Copies seen by the #76 probes** (seed copy, non-FULL rejection codes, the
+  post-copy snapshot SKIP): #91, #92, #93, keyed in `golden/replay_gaps.json`.
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
 - **Unit test reuse** is not characterized.

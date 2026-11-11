@@ -42,6 +42,10 @@ pub(crate) struct Selection {
     /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
     /// reused.
     pub rejected: Option<ExecutionRow>,
+    /// The latest row when it does not have the workload's identity (models
+    /// only). Never reused; Explain judges the SHAPE 7 freshness listing
+    /// against it (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
+    pub unmatched: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -52,6 +56,7 @@ impl Selection {
             target_has_prior_build: true,
             why_no_candidate: None,
             rejected: None,
+            unmatched: None,
         }
     }
 
@@ -61,18 +66,23 @@ impl Selection {
         target_has_prior_build: false,
         why_no_candidate: None,
         rejected: None,
+        unmatched: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
     /// row's identity matched (`identified`) and `rejection` found nothing
     /// against it, otherwise why it is not one.
+    /// `unidentified` says why when the row's identity did not match, and
+    /// `unmatched` is that row (models only).
     fn of(
         identified: Option<ExecutionRow>,
+        unidentified: NoCandidate,
         rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
         target_has_prior_build: bool,
+        unmatched: Option<ExecutionRow>,
     ) -> Selection {
         let why_no_candidate = match &identified {
-            None => Some(NoCandidate::IdentityMismatch),
+            None => Some(unidentified),
             Some(row) => rejection(row),
         };
         let own_target = matches!(
@@ -89,6 +99,7 @@ impl Selection {
             target_has_prior_build,
             why_no_candidate,
             rejected,
+            unmatched,
         }
     }
 }
@@ -106,6 +117,18 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
+    // Same identity, other node kind: a distinct reason so Explain can
+    // render nothing for it (#40 divergence rule, #83). Likewise a
+    // RegisterClone copy this submit cannot adopt (#93).
+    let unidentified =
+        if current.execution_type != req.execution_type && same_identity(req, evidence, &current) {
+            NoCandidate::ExecutionTypeChanged
+        } else if is_copy_registration(&current) && !adoptable(req, evidence, &current) {
+            NoCandidate::CopyLogicMismatch
+        } else {
+            NoCandidate::IdentityMismatch
+        };
+    let mut unmatched = None;
     let identified = if strict_match(req, evidence, &current) {
         // Result-serving path: corrupt cached results surface as an error.
         Some(current.into_checked(true)?)
@@ -121,10 +144,12 @@ pub(crate) fn for_model(
         adopt_current_inputs(&mut row, &evidence.input_tables);
         Some(row)
     } else {
+        unmatched = Some(current);
         None
     };
     Ok(Selection::of(
         identified,
+        unidentified,
         |prev| {
             if !sql_qualifies(req, evidence) {
                 Some(NoCandidate::FailedReuseQualification)
@@ -138,6 +163,7 @@ pub(crate) fn for_model(
             }
         },
         true,
+        unmatched,
     ))
 }
 
@@ -160,6 +186,7 @@ pub(crate) fn for_data_test(
     };
     Ok(Selection::of(
         identified,
+        NoCandidate::IdentityMismatch,
         |prev| {
             if !sql_qualifies(req, evidence) {
                 Some(NoCandidate::FailedReuseQualification)
@@ -170,6 +197,7 @@ pub(crate) fn for_data_test(
             }
         },
         false,
+        None,
     ))
 }
 
@@ -195,6 +223,7 @@ pub(crate) fn for_seed(
     };
     Ok(Selection::of(
         identified,
+        NoCandidate::IdentityMismatch,
         |prev| {
             if req.values_hash.is_empty() {
                 Some(NoCandidate::FailedReuseQualification)
@@ -209,6 +238,7 @@ pub(crate) fn for_seed(
             }
         },
         true,
+        None,
     ))
 }
 
@@ -254,10 +284,7 @@ pub(crate) fn older_seed_matches(
 /// The single rule for both the decision (here) and its explanation
 /// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
 pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if anchor.clone_source_table.is_some()
-        && anchor.node_sql_hash.is_none()
-        && anchor.input_tables.is_empty()
-    {
+    if is_copy_registration(anchor) && anchor.input_tables.is_empty() {
         let built = anchor.last_modified_epoch;
         anchor.input_tables = current
             .iter()
@@ -271,6 +298,13 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
             })
             .collect();
     }
+}
+
+/// A client-requested copy (RegisterClone): clone-origin with no rendered
+/// identity of its own. A Result copy made on submit records the submit's
+/// identity and is not one.
+fn is_copy_registration(row: &ExecutionRow) -> bool {
+    row.clone_source_table.is_some() && row.node_sql_hash.is_none()
 }
 
 /// Rendered identity, or (only in `compare_unrendered_code` mode, when the
@@ -292,6 +326,15 @@ fn strict_match(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
+    row.execution_type == req.execution_type && same_identity(req, evidence, row)
+}
+
+/// [`strict_match`] without the execution type.
+fn same_identity(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
     let logic_compatible = match (
         &row.node_namespace_logic_hash,
         &evidence.node_namespace_logic_hash,
@@ -299,8 +342,7 @@ fn strict_match(
         (Some(recorded), Some(current)) => recorded == current,
         _ => true,
     };
-    row.execution_type == req.execution_type
-        && identity_matches(evidence, row)
+    identity_matches(evidence, row)
         && logic_compatible
         // Exact on purpose: strict same-target identity, not dialect recognition.
         && row.dialect == req.dialect

@@ -35,6 +35,20 @@ impl StaleUpstreamPolicy {
 pub enum NoCandidate {
     /// The latest row does not have the workload's identity.
     IdentityMismatch,
+    /// The latest row has the workload's identity but was built as another
+    /// node kind (a snapshot run under `--full-refresh` is sent with the wire
+    /// `execution_type` FULL). Hosted rejects it with EXECUTION_TYPE_MISMATCH;
+    /// this server gives the same wire answer as
+    /// [`NoCandidate::IdentityMismatch`] (#83).
+    ExecutionTypeChanged,
+    /// The latest row is a client-requested copy (RegisterClone) that this
+    /// workload cannot adopt: its inherited schema-abstracted logic is absent
+    /// or differs. Hosted reused such a copy when the submit had the source
+    /// build's SQL text (#93: a snapshot, explain_snapshot_register_clone, and
+    /// append/merge incrementals, explain_incremental_copy_history); this
+    /// server rebuilds with the same wire answer as
+    /// [`NoCandidate::IdentityMismatch`].
+    CopyLogicMismatch,
     /// The workload or its evidence failed reuse qualification.
     FailedReuseQualification,
     /// The node's own target is reported ambiguously or without an epoch.
@@ -94,9 +108,11 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 16] = [
+    const ALL: [DecisionReason; 18] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
+        Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
         Self::NoReuseCandidate(NoCandidate::FailedReuseQualification),
         Self::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing),
         Self::NoReuseCandidate(NoCandidate::OwnTargetModified),
@@ -120,6 +136,12 @@ impl DecisionReason {
             Self::FirstBuild => "first_build",
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
+                "no_reuse_candidate.execution_type_changed"
+            }
+            Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch) => {
+                "no_reuse_candidate.copy_logic_mismatch"
             }
             Self::NoReuseCandidate(NoCandidate::FailedReuseQualification) => {
                 "no_reuse_candidate.failed_reuse_qualification"
@@ -248,6 +270,12 @@ pub struct DecisionRecord {
     pub tolerance_ms: i64,
     pub build_age_ms: Option<i64>,
     pub input_tables: Vec<InputTable>,
+    /// For a rebuild without a matched build: `executions.id` of the latest
+    /// build in scope, which did not have the workload's identity. Explain
+    /// judges the SHAPE 7 freshness listing against it (VERIFIED LIVE
+    /// 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40q`). `None`
+    /// otherwise.
+    pub unmatched_execution_id: Option<i64>,
     sealed: (),
 }
 
@@ -276,6 +304,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
+                unmatched_execution_id: None,
                 sealed: (),
             },
             Verdict::Execute {
@@ -295,6 +324,7 @@ impl DecisionRecord {
                 tolerance_ms,
                 build_age_ms,
                 input_tables,
+                unmatched_execution_id: None,
                 sealed: (),
             },
         }
@@ -326,6 +356,16 @@ impl DecisionRecord {
         {
             self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_DOES_NOT_EXIST);
             self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+        }
+        self
+    }
+
+    /// A rebuild with no matched build records the latest build in scope
+    /// that did not have the workload's identity (`unmatched`), which Explain
+    /// judges its freshness listing against.
+    pub(crate) fn with_unmatched_build(mut self, unmatched: Option<&ExecutionRow>) -> Self {
+        if self.class == DecisionKind::Build && self.matched_execution_id.is_none() {
+            self.unmatched_execution_id = unmatched.map(|build| build.id);
         }
         self
     }
@@ -368,6 +408,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
+            unmatched_execution_id: None,
             sealed: (),
         }
     }
@@ -388,6 +429,7 @@ impl DecisionRecord {
             tolerance_ms: 0,
             build_age_ms: None,
             input_tables: Vec::new(),
+            unmatched_execution_id: None,
             sealed: (),
         }
     }
@@ -435,13 +477,16 @@ fn node_noun(execution_type: i32) -> &'static str {
 /// api.state.dbt.com, 2026-11-10): "both … up to date" when the node has no
 /// Lag tolerance or no upstream epoch moved since the build; otherwise
 /// "within lag tolerance" while the build is younger than the tolerance;
-/// otherwise "at least one upstream dependency is unchanged".
+/// otherwise "at least one upstream dependency is unchanged". A snapshot
+/// always says "both … up to date" (explain_snapshot_history.jsonl: an epoch
+/// that moved back, and drift within the tolerance).
 fn skip_description(execution_type: i32, f: &Freshness, ctx: &SubmitContext) -> String {
     if execution_type == ModelExecutionType::Values as i32 {
         return "seed was a no-op because its data has not changed".to_string();
     }
     let noun = node_noun(execution_type);
-    if ctx.tolerance_ms == 0 || f.upstreams_unchanged {
+    let snapshot = execution_type == ModelExecutionType::Snapshot as i32;
+    if snapshot || ctx.tolerance_ms == 0 || f.upstreams_unchanged {
         format!("{noun} was a no-op because both its query and its upstream data are up to date")
     } else if within_lag_tolerance(ctx) {
         format!(
@@ -734,7 +779,7 @@ pub(crate) fn upstream_freshness<'a>(
     // the hosted service renders no dependency-set-diff subtree (it surfaces a
     // node/upstream-query change by physical FQN and never lists the
     // added/removed/ambiguous names), so the diff itself has no faithful reader.
-    // See docs/explain-catalog.md § "Unobserved" (Dependency-set change).
+    // See docs/explain-catalog.md § "Not rendered" (Dependency-set change).
     let added = !current_names.is_subset(&recorded_names);
     let removed = !recorded_names.is_subset(&current_names);
     // Fewer distinct current names than genuine inputs ⇒ duplicate/ambiguous.
@@ -812,6 +857,21 @@ pub(crate) fn upstream_freshness<'a>(
         data_test,
         considered,
         drifted,
+    }
+}
+
+impl UpstreamFreshness {
+    /// Every genuine upstream was evaluated and its current epoch equals the
+    /// epoch recorded for it at the build: the condition for the Explain
+    /// `upstream data is up to date` summary under a per-upstream listing.
+    /// `false` with no upstreams or unprovable evidence.
+    pub(crate) fn unchanged(&self) -> bool {
+        self.evidence == FreshnessEvidence::Evaluated
+            && !self.upstreams.is_empty()
+            && self
+                .upstreams
+                .iter()
+                .all(|u| u.current_epoch == Some(u.anchor_epoch) && !u.unprovable)
     }
 }
 
@@ -1427,6 +1487,63 @@ mod tests {
         assert_eq!(desc(&one_drifted, 20, 25, all), (ATLEAST1.into(), true));
     }
 
+    /// The SKIP description of a snapshot judged against `prev` (two
+    /// upstreams at 1 000).
+    fn snapshot_skip_desc(
+        current: &[InputTable],
+        tol: i64,
+        age: i64,
+        policy: StaleUpstreamPolicy,
+    ) -> (String, bool) {
+        let prev = confirmed("h", vec![tbl("a", 1_000), tbl("b", 1_000)], Some(1_000));
+        let mut c = tolerant(current, tol, age);
+        c.execution_type = ModelExecutionType::Snapshot as i32;
+        c.stale_upstream_policy = policy;
+        match decide(&c, Some(&prev)) {
+            Verdict::Skip {
+                description,
+                is_stale,
+                ..
+            } => (description, is_stale),
+            other => panic!("expected skip, got {other:?}"),
+        }
+    }
+
+    const SNAPSHOT_BOTH: &str =
+        "snapshot was a no-op because both its query and its upstream data are up to date";
+
+    /// VERIFIED LIVE (2026-11-10, explain_snapshot_history.jsonl entries
+    /// 29-31, 40, 43): a snapshot SKIP reads "both … up to date" for an epoch
+    /// that moved back and for drift within its Lag tolerance, where a model
+    /// says "within lag tolerance".
+    #[test]
+    fn snapshot_skip_description_does_not_vary_with_freshness() {
+        let decreased = [tbl("a", 700), tbl("b", 1_000)];
+        let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
+        let any = StaleUpstreamPolicy::Any;
+        assert_eq!(
+            snapshot_skip_desc(&decreased, 2_700, 9, any),
+            (SNAPSHOT_BOTH.into(), false)
+        );
+        assert_eq!(
+            snapshot_skip_desc(&one_drifted, 2_700, 26, any),
+            (SNAPSHOT_BOTH.into(), true)
+        );
+    }
+
+    /// LOCAL CHOICE, not hosted evidence: the ALL-policy snapshot reuse past
+    /// its Lag tolerance was never observed. The server keeps the observed
+    /// snapshot wording for it; docs/correctness-handoff.md "Snapshot SKIP
+    /// wording past the Lag tolerance" holds the open question.
+    #[test]
+    fn unobserved_all_policy_snapshot_skip_past_tolerance_keeps_the_observed_wording() {
+        let one_drifted = [tbl("a", 9_000), tbl("b", 1_000)];
+        assert_eq!(
+            snapshot_skip_desc(&one_drifted, 20, 25, StaleUpstreamPolicy::All),
+            (SNAPSHOT_BOTH.into(), true)
+        );
+    }
+
     /// Different schema input cannot match recorded physical evidence.
     #[test]
     fn upstream_schema_change_requires_execution() {
@@ -2024,6 +2141,14 @@ mod tests {
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
                 "no_reuse_candidate.identity_mismatch",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
+                "no_reuse_candidate.execution_type_changed",
+            ),
+            (
+                DecisionReason::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
+                "no_reuse_candidate.copy_logic_mismatch",
             ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification),
