@@ -33,6 +33,11 @@ a table whose dev relation is absent and whose prod build is its equivalent
 
 Nodes (per-run): r104 (source name for raw.raw_orders), m104 (the custom
 materialization macro), the models above.
+
+`dev_noclone` is not in the shared `~/.dbt/profiles.yml`. Run with
+`--profiles` naming a private copy (mode 600, outside the repo) that adds it
+as `dev_clone` with `allow_clones: false`; the driver checks that every
+target resolves to CDO_DEMO_DB.
 """
 from explain_capture import Build, Explain, Scenario, Write
 
