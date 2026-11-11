@@ -134,7 +134,7 @@ fn mentioned_by_test(req: &qc::SqlExecution, identifier: &str) -> bool {
 
 /// The reported tables that are the execution's inputs: all of them but a
 /// `store_failures` test's own audit relation (#88, #123).
-fn sql_inputs(req: &qc::SqlExecution) -> Vec<InputTable> {
+pub(crate) fn sql_inputs(req: &qc::SqlExecution) -> Vec<InputTable> {
     let unnamed = unnamed_audit_relation(req);
     req.tables
         .iter()

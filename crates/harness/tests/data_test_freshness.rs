@@ -310,6 +310,68 @@ async fn a_same_named_relation_the_test_reads_stays_an_input() {
     );
 }
 
+/// A `store_failures` test that reads no relation reports only its own audit
+/// relation on the rerun. Dropping it leaves the test without inputs, and its
+/// Explain tree must not list the audit relation as an upstream either: the
+/// decision, the stored row and Explain read the same inputs (#88, #123).
+#[tokio::test]
+async fn explain_never_lists_the_audit_relation_of_a_test_without_upstreams() {
+    use dbt_state_proto::query_cache as qc;
+    use qc::explain_client::ExplainClient;
+    use qc::submit_sql_response::Response;
+
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let mut explain = ExplainClient::new(sc.channel());
+    for (case, audit) in [
+        SF_AUDIT,
+        "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SF_TEST_AUD\"",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let test = data_test(&format!("test.jaffle_shop.sf_test.{case}"))
+            .catalog("CDO_DEMO_DB")
+            .schema("prod_state_demo")
+            .sql("select 1 as id where false")
+            .namespace(NS)
+            .project(PROJECT)
+            .target_name("prod_demo")
+            .label("dbt_node_name", "sf_test")
+            .extra("store_failures", "true")
+            .extra("store_failures_as", "\"table\"");
+        sc.build_with(test.clone(), outcome().results(test_results(0)))
+            .await;
+        let Some(Response::SkipExecution(skip)) =
+            sc.submit(test.upstream(audit, 150)).await.response
+        else {
+            panic!("{audit}: the unchanged rerun SKIPs");
+        };
+        let edid = skip.execution_decision_id.expect("execution decision id");
+        let mut lines = None;
+        for _ in 0..100 {
+            let resp = explain
+                .get_explain_messages(qc::GetExplainMessagesRequest {
+                    execution_decision_ids: vec![edid.clone()],
+                })
+                .await
+                .unwrap()
+                .into_inner();
+            if let Some(m) = resp.messages.into_iter().next() {
+                lines = Some(m.explain_lines);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let tree = format!("{:?}", lines.expect("the SKIP is explained"));
+        assert!(!tree.is_empty());
+        assert!(
+            !tree.to_uppercase().contains("SF_TEST"),
+            "{audit}: the audit relation is not listed: {tree}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // store_failures audit relation in a separate schema or under an alias (#106)
 // ---------------------------------------------------------------------------
