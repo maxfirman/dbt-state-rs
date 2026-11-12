@@ -266,6 +266,8 @@ class Campaign:
         self.env.update(DBT_ENGINE_MANAGE_STATE='true', RUN_CACHE_API_URL=f'127.0.0.1:{port}', RUN_CACHE_API_SECURE='false')
         self.proxy_log = open(self.work / 'proxy.log', 'w')
         env = dict(self.env, PROXY_LISTEN=f'127.0.0.1:{port}', GOLDEN_DIR=str(self.work / 'golden'), PROXY_UPSTREAM='https://api.state.dbt.com:443', RUST_LOG='warn')
+        # This campaign characterizes hosted State, regardless of shell settings.
+        env.pop('PROXY_LOCAL_UPSTREAM', None)
         self.proxy = subprocess.Popen([self.a.proxy], env=env, stdout=self.proxy_log, stderr=subprocess.STDOUT)
         for _ in range(120):
             if self.proxy.poll() is not None:
@@ -276,7 +278,8 @@ class Campaign:
             time.sleep(.25)
         else:
             raise Refused('owned proxy startup timeout')
-        self.event('proxy', pid=self.proxy.pid, port=port)
+        self.event('proxy', pid=self.proxy.pid, port=port,
+                   upstream={'mode': 'hosted', 'endpoint': env['PROXY_UPSTREAM']})
 
     def stop(self):
         if self.proxy is not None and self.proxy.poll() is None:
