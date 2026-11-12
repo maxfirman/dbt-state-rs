@@ -13,6 +13,12 @@
 //! * **Client-requested copy** (`RegisterClone`): the client names the source.
 //!   [`register_lookup`] rejects ineligible requests or says what to look up;
 //!   [`plan_register`] turns the lookup result into a plan.
+//! * **Seed copy on submit** (`SubmitValues`, Snowflake only, #91): the one
+//!   exception to "FULL only" on submit. [`seed_copy_target`] says whether a
+//!   seed without a reuse candidate may be copied, [`seed_lookup`] what to
+//!   look for (the seed's reuse identity in another schema), and
+//!   [`plan_seed_submit`] turns the load found into a plan under the same
+//!   limits as a FULL copy.
 //!
 //! The Submit decision module (submit fallback) and the gRPC adapter
 //! (client-requested copy) perform the lookup and write the pending row.
@@ -21,11 +27,13 @@
 //! contract) are answered by the [`Warehouse`] rules, never by testing the
 //! dialect string here.
 
+use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
 use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::store::{CopyCandidate, InputTable};
+use crate::reuse_candidate::Selection;
+use crate::store::{CopyCandidate, ExecutionRow, InputTable};
 use crate::warehouse::{IncrementalCopyContract, Warehouse};
 
 // ── Submit fallback ─────────────────────────────────────────────────────────
@@ -366,8 +374,36 @@ pub(crate) fn plan_submit(
     req: &qc::SubmitEnrichedSqlRequest,
     equivalent: CloneEquivalent,
 ) -> SubmitCopyPlan {
-    let warehouse = Warehouse::from_dialect(&req.dialect);
-    if !warehouse.submit_copy_admits(req.execution_type, &req.semantic_extras) {
+    plan_copy(
+        &CopyRequest {
+            dialect: &req.dialect,
+            execution_type: req.execution_type,
+            semantic_extras: &req.semantic_extras,
+            allow_clones: req.allow_clones,
+            clone_chain_depth_limit: req.clone_chain_depth_limit,
+            target_table: req.target_table.as_deref().unwrap_or_default(),
+            clone_table_properties: req.clone_table_properties.as_ref(),
+        },
+        equivalent,
+    )
+}
+
+/// What [`plan_copy`] reads from a submit: the same fields of a SQL submit
+/// and of a seed's `SubmitValues`.
+struct CopyRequest<'a> {
+    dialect: &'a str,
+    execution_type: i32,
+    semantic_extras: &'a std::collections::HashMap<String, String>,
+    allow_clones: Option<bool>,
+    clone_chain_depth_limit: Option<i64>,
+    target_table: &'a str,
+    clone_table_properties: Option<&'a qc::TableProperties>,
+}
+
+/// The one submit copy plan, for SQL submits and seeds alike.
+fn plan_copy(req: &CopyRequest<'_>, equivalent: CloneEquivalent) -> SubmitCopyPlan {
+    let warehouse = Warehouse::from_dialect(req.dialect);
+    if !warehouse.submit_copy_admits(req.execution_type, req.semantic_extras) {
         return SubmitCopyPlan::Refused {
             clone_rejection_reason: refused_copy_rejection(
                 req.execution_type,
@@ -388,9 +424,9 @@ pub(crate) fn plan_submit(
     let ddl = warehouse
         .result_copy_ddl(
             &equivalent.source_table,
-            req.target_table.as_deref().unwrap_or_default(),
+            req.target_table,
             equivalent.table_type.as_deref(),
-            req.clone_table_properties.as_ref(),
+            req.clone_table_properties,
         )
         .and_then(|sqls| {
             warehouse
@@ -406,6 +442,130 @@ pub(crate) fn plan_submit(
         }),
         Err(reason) => SubmitCopyPlan::Unavailable { reason },
     }
+}
+
+// ── Seed copy on submit (#91) ───────────────────────────────────────────────
+
+/// Where a seed submit without a reuse candidate may be copied
+/// ([`seed_copy_target`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum SeedCopyTarget<'a> {
+    /// The seed's table does not exist.
+    Absent,
+    /// The seed's table exists, and its latest load in scope (this row) has
+    /// other values or seed config. The copy replaces it.
+    Over(&'a ExecutionRow),
+}
+
+/// Whether a seed submit may be answered with a copy, and over what. A seed
+/// with a reuse candidate is reused. Otherwise it is copied into its absent
+/// table (VERIFIED LIVE 2026-11-10/11, client 2.0.11:
+/// explain_copy_probes.jsonl entry 12, explain_seed_copy_existing.jsonl entry
+/// 6), or over its existing table when that table's latest load in scope is a
+/// seed load with other values (explain_seed_copy_existing.jsonl entry 14).
+///
+/// It is not copied over a table modified after a load with its values:
+/// hosted SKIPs that seed, serving the modified table (entry 13), and this
+/// server reloads it (AGENTS.md reuse invariant 3, #129). Nor over an
+/// existing table without a seed load in scope, which is uncaptured. `latest`
+/// is the target's current physical state, as selection read it.
+pub(crate) fn seed_copy_target<'a>(
+    req: &qc::SubmitValuesRequest,
+    selection: &Selection,
+    latest: Option<&'a ExecutionRow>,
+) -> Option<SeedCopyTarget<'a>> {
+    if selection.candidate.is_some() {
+        return None;
+    }
+    if req.last_modified_epoch.is_none() {
+        return Some(SeedCopyTarget::Absent);
+    }
+    match (selection.why_no_candidate, latest) {
+        (Some(NoCandidate::IdentityMismatch), Some(row))
+            if row.execution_type == ModelExecutionType::Values as i32 =>
+        {
+            Some(SeedCopyTarget::Over(row))
+        }
+        _ => None,
+    }
+}
+
+/// What a seed copy looks for: the latest load of each other Target relation
+/// in the submit's scope (organization, warehouse family, `table_namespace`)
+/// with the seed's reuse identity, its `values_hash` and its seed logic hash
+/// (dialect, catalog and every `semantic_extras` entry the client sends,
+/// `fingerprint::seed_logic_hash`). Only its schema may differ from the
+/// target ([`SeedCopyLookup::admits`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SeedCopyLookup<'a> {
+    pub table_namespace: &'a str,
+    pub seed_logic_hash: &'a str,
+    pub values_hash: &'a str,
+    pub target_table: &'a str,
+}
+
+/// Whether to look for a seed to copy, and its identity. Only where
+/// [`Warehouse::submit_copy_admits`] admits a seed (Snowflake): DuckDB and
+/// every other dialect reload it. A seed without values or a namespace is
+/// never copied.
+pub(crate) fn seed_lookup<'a>(
+    req: &'a qc::SubmitValuesRequest,
+    evidence: &'a ExecutionEvidence,
+) -> Option<SeedCopyLookup<'a>> {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if !warehouse.submit_copy_admits(ModelExecutionType::Values as i32, &req.semantic_extras)
+        || req.values_hash.is_empty()
+    {
+        return None;
+    }
+    Some(SeedCopyLookup {
+        table_namespace: crate::execution::non_blank_namespace(req.table_namespace.as_deref())?,
+        seed_logic_hash: evidence.node_sql_hash.as_deref()?,
+        values_hash: &req.values_hash,
+        target_table: &req.target_table,
+    })
+}
+
+impl SeedCopyLookup<'_> {
+    /// Whether `source` names the same seed relation in another schema: the
+    /// same database and object, another schema (maintainer decision
+    /// 2026-11-11, #91), each part compared as Snowflake resolves it
+    /// ([`crate::sql_norm::canonical_identifier`]).
+    pub(crate) fn admits(&self, source: &str) -> bool {
+        let parts = |name: &str| -> Vec<String> {
+            crate::sql_norm::split_object_name_components(name)
+                .iter()
+                .map(|p| crate::sql_norm::canonical_identifier(p))
+                .collect()
+        };
+        let (source, target) = (parts(source), parts(self.target_table));
+        source.len() == 3
+            && target.len() == 3
+            && source[0] == target[0]
+            && source[2] == target[2]
+            && source[1] != target[1]
+    }
+}
+
+/// Plan a seed copy from the load [`seed_lookup`] found, under the limits of
+/// a FULL copy: `allow_clones: false` and a copy-forbidding target do not
+/// copy, and the DDL follows the source's recorded table type.
+pub(crate) fn plan_seed_submit(
+    req: &qc::SubmitValuesRequest,
+    equivalent: CloneEquivalent,
+) -> SubmitCopyPlan {
+    plan_copy(
+        &CopyRequest {
+            dialect: &req.dialect,
+            execution_type: ModelExecutionType::Values as i32,
+            semantic_extras: &req.semantic_extras,
+            allow_clones: req.allow_clones,
+            clone_chain_depth_limit: req.clone_chain_depth_limit,
+            target_table: &req.target_table,
+            clone_table_properties: req.clone_table_properties.as_ref(),
+        },
+        equivalent,
+    )
 }
 
 // ── Client-requested copy ───────────────────────────────────────────────────
@@ -1094,6 +1254,243 @@ mod tests {
             plan_submit(&req, equivalent(PROD, 0, Some(5))),
             SubmitCopyPlan::Unavailable { .. }
         ));
+    }
+
+    // ---- seed copy on submit (#91) -----------------------------------------
+
+    const DEV_SEED: &str = "\"DB\".\"DEV\".\"S\"";
+    const PROD_SEED: &str = "\"DB\".\"PROD\".\"S\"";
+
+    fn seed_submit(dialect: &str) -> qc::SubmitValuesRequest {
+        qc::SubmitValuesRequest {
+            target_table: DEV_SEED.into(),
+            dialect: dialect.into(),
+            default_catalog: "DB".into(),
+            values_hash: "v1".into(),
+            table_namespace: Some("ns".into()),
+            ..Default::default()
+        }
+    }
+
+    fn seed_equivalent(table_type: &str) -> CloneEquivalent {
+        CloneEquivalent {
+            execution_type: ModelExecutionType::Values as i32,
+            table_type: Some(table_type.into()),
+            ..equivalent(PROD_SEED, 0, Some(5))
+        }
+    }
+
+    /// Snowflake is the one dialect that copies a seed on submit (maintainer
+    /// decision 2026-11-11, #91); DuckDB and every other dialect reload it.
+    #[test]
+    fn only_snowflake_looks_for_a_seed_to_copy() {
+        for (dialect, looks) in [
+            ("snowflake", true),
+            (" Snowflake ", true),
+            ("duckdb", false),
+            ("bigquery", false),
+            ("databricks", false),
+            ("redshift", false),
+            ("postgres", false),
+        ] {
+            let req = seed_submit(dialect);
+            let ev = ExecutionEvidence::values_submit("o", &req);
+            assert_eq!(seed_lookup(&req, &ev).is_some(), looks, "{dialect}");
+        }
+    }
+
+    #[test]
+    fn seed_lookup_needs_values_and_a_namespace() {
+        type Mutation = fn(&mut qc::SubmitValuesRequest);
+        let cases: Vec<(&str, Mutation)> = vec![
+            ("no values hash", |r| r.values_hash = String::new()),
+            ("no namespace", |r| r.table_namespace = None),
+            ("empty namespace", |r| {
+                r.table_namespace = Some(String::new())
+            }),
+        ];
+        for (why, mutate) in cases {
+            let mut req = seed_submit("snowflake");
+            mutate(&mut req);
+            let ev = ExecutionEvidence::values_submit("o", &req);
+            assert_eq!(seed_lookup(&req, &ev), None, "{why}");
+        }
+    }
+
+    /// The copy identity is the seed's reuse identity: its values and every
+    /// seed config entry the client sends.
+    #[test]
+    fn seed_lookup_matches_values_and_seed_config() {
+        let req = seed_submit("snowflake");
+        let ev = ExecutionEvidence::values_submit("o", &req);
+        let lookup = seed_lookup(&req, &ev).unwrap();
+        assert_eq!(lookup.values_hash, "v1");
+        assert_eq!(lookup.table_namespace, "ns");
+        assert_eq!(Some(lookup.seed_logic_hash), ev.node_sql_hash.as_deref());
+
+        let mut typed = seed_submit("snowflake");
+        typed
+            .semantic_extras
+            .insert("column_types".into(), "{\"id\": \"varchar\"}".into());
+        let typed_ev = ExecutionEvidence::values_submit("o", &typed);
+        assert_ne!(
+            seed_lookup(&typed, &typed_ev).unwrap().seed_logic_hash,
+            lookup.seed_logic_hash,
+            "other column types are another seed identity"
+        );
+    }
+
+    #[test]
+    fn a_seed_copy_source_differs_from_the_target_in_its_schema_only() {
+        let req = seed_submit("snowflake");
+        let ev = ExecutionEvidence::values_submit("o", &req);
+        let lookup = seed_lookup(&req, &ev).unwrap();
+        assert!(lookup.admits(PROD_SEED));
+        for source in [
+            DEV_SEED,
+            "\"DB\".dev.\"S\"",
+            "\"DB\".\"PROD\".\"OTHER\"",
+            "\"DB2\".\"PROD\".\"S\"",
+            "\"PROD\".\"S\"",
+            "",
+        ] {
+            assert!(!lookup.admits(source), "{source}");
+        }
+    }
+
+    /// The copy DDL follows the source's recorded table type, as for a FULL
+    /// copy (VERIFIED LIVE: explain_copy_probes.jsonl entry 12, a TRANSIENT
+    /// prod seed).
+    #[test]
+    fn snowflake_seed_copy_follows_the_source_table_type() {
+        let req = seed_submit("snowflake");
+        for (table_type, kind) in [("TRANSIENT TABLE", "TRANSIENT TABLE"), ("TABLE", "TABLE")] {
+            let SubmitCopyPlan::Copy(copy) = plan_seed_submit(&req, seed_equivalent(table_type))
+            else {
+                panic!("{table_type}: expected a copy");
+            };
+            assert_eq!(
+                copy.clone_sqls,
+                [format!(
+                    "\n            CREATE OR REPLACE {kind} {DEV_SEED}\n            \
+                     CLONE {PROD_SEED}\n            COPY GRANTS"
+                )]
+            );
+            assert_eq!(copy.source_table, PROD_SEED);
+            assert_eq!(copy.source_last_modified_epoch, Some(5));
+            assert_eq!(copy.source_execution_runtime_ms, Some(9));
+        }
+    }
+
+    /// `allow_clones`, the copy chain limit and table properties apply as for
+    /// a FULL copy.
+    #[test]
+    fn seed_copy_limits_apply_as_for_full_copies() {
+        let mut disallowed = seed_submit("snowflake");
+        disallowed.allow_clones = Some(false);
+        disallowed.clone_chain_depth_limit = Some(0);
+        assert_eq!(
+            plan_seed_submit(&disallowed, seed_equivalent("TABLE")),
+            SubmitCopyPlan::CopiesDisabled
+        );
+        let mut forbidden = seed_submit("snowflake");
+        forbidden.clone_chain_depth_limit = Some(0);
+        assert_eq!(
+            plan_seed_submit(&forbidden, seed_equivalent("TABLE")),
+            SubmitCopyPlan::ChainLimitExecute
+        );
+        let mut expiring = seed_submit("snowflake");
+        expiring.clone_table_properties = Some(qc::TableProperties {
+            hours_to_expiration: Some(1),
+            ..Default::default()
+        });
+        assert!(matches!(
+            plan_seed_submit(&expiring, seed_equivalent("TABLE")),
+            SubmitCopyPlan::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn duckdb_never_plans_a_seed_copy() {
+        let req = qc::SubmitValuesRequest {
+            target_table: DUCK_DEV.into(),
+            ..seed_submit("duckdb")
+        };
+        let equivalent = CloneEquivalent {
+            execution_type: ModelExecutionType::Values as i32,
+            ..duck_equivalent(0, Some(5))
+        };
+        assert!(matches!(
+            plan_seed_submit(&req, equivalent),
+            SubmitCopyPlan::Refused { .. }
+        ));
+    }
+
+    fn seed_selection(
+        why_no_candidate: Option<NoCandidate>,
+        candidate: Option<ExecutionRow>,
+    ) -> Selection {
+        Selection {
+            candidate,
+            target_has_prior_build: why_no_candidate.is_some(),
+            why_no_candidate,
+            rejected: None,
+            unmatched: None,
+            type_changed: None,
+        }
+    }
+
+    fn seed_load() -> ExecutionRow {
+        ExecutionRow {
+            id: 7,
+            execution_type: ModelExecutionType::Values as i32,
+            ..Default::default()
+        }
+    }
+
+    /// A seed is copied into its absent table (VERIFIED LIVE:
+    /// explain_copy_probes.jsonl entry 12) and over its table whose latest
+    /// load has other values (explain_seed_copy_existing.jsonl entry 14). It
+    /// is not copied over a table modified after a load with its values:
+    /// hosted SKIPs that one (entry 13, #129).
+    #[test]
+    fn a_seed_is_copied_into_an_absent_table_or_over_other_values() {
+        let absent = seed_submit("snowflake");
+        let mut existing = seed_submit("snowflake");
+        existing.last_modified_epoch = Some(10);
+        let load = seed_load();
+
+        let first = seed_selection(None, None);
+        assert_eq!(
+            seed_copy_target(&absent, &first, None),
+            Some(SeedCopyTarget::Absent)
+        );
+        let dropped = seed_selection(Some(NoCandidate::OwnTargetMissing), None);
+        assert_eq!(
+            seed_copy_target(&absent, &dropped, Some(&load)),
+            Some(SeedCopyTarget::Absent)
+        );
+        let other_values = seed_selection(Some(NoCandidate::IdentityMismatch), None);
+        assert_eq!(
+            seed_copy_target(&existing, &other_values, Some(&load)),
+            Some(SeedCopyTarget::Over(&load))
+        );
+
+        let modified = seed_selection(Some(NoCandidate::OwnTargetChangedOrMissing), None);
+        assert_eq!(seed_copy_target(&existing, &modified, Some(&load)), None);
+        let reusable = seed_selection(None, Some(load.clone()));
+        assert_eq!(seed_copy_target(&existing, &reusable, Some(&load)), None);
+        // An existing table without a load in scope, or whose latest row is
+        // not a seed load: uncaptured, so the seed is reloaded.
+        assert_eq!(seed_copy_target(&existing, &first, None), None);
+        let model = ExecutionRow {
+            execution_type: ModelExecutionType::Full as i32,
+            ..seed_load()
+        };
+        assert_eq!(
+            seed_copy_target(&existing, &other_values, Some(&model)),
+            None
+        );
     }
 
     // ---- client-requested copy ---------------------------------------------
