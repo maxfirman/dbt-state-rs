@@ -191,6 +191,7 @@ pub fn decision_description(node: &ExplainNode) -> String {
         }
         DecisionKind::Skip => decision::DESC_SKIP.to_string(),
         DecisionKind::Build => decision::DESC_EXECUTE.to_string(),
+        DecisionKind::Clone if node.is_seed() => decision::SEED_RESULT_COPY_DESCRIPTION.to_string(),
         DecisionKind::Clone => {
             "an equivalent model exists under another name so we cloned that one".to_string()
         }
@@ -205,7 +206,7 @@ pub fn decision_description(node: &ExplainNode) -> String {
 ///   - model/table (FULL=1): Skip | Build | Clone.
 ///   - view (VIEW=10): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
-///   - seed (VALUES=9): Skip | Build (Clone fenced until #91).
+///   - seed (VALUES=9): Skip | Build | Clone (the Snowflake seed copy, #91).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone unreachable on
 ///     2.0.11: hosted never copies one on submit, nor does this server, #86).
@@ -250,11 +251,14 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         Ok(ModelExecutionType::Snapshot) => {
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
-        // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl). Hosted copies
-        // seeds on submit; VALUES CLONE stays fenced until #91.
-        Ok(ModelExecutionType::Values) => {
-            matches!(decision, DecisionKind::Skip | DecisionKind::Build)
-        }
+        // VERIFIED LIVE 2026-11-10 (lag_seed_upstream.jsonl). CLONE: VERIFIED
+        // LIVE 2026-11-10/11, client 2.0.11 (explain_copy_probes.jsonl entry
+        // 18, explain_seed_copy_existing.jsonl entries 11 and 16): hosted
+        // copies a seed on submit, and so does this server on Snowflake (#91).
+        Ok(ModelExecutionType::Values) => matches!(
+            decision,
+            DecisionKind::Skip | DecisionKind::Build | DecisionKind::Clone
+        ),
         // VERIFIED LIVE 2026-11-10 (explain_custom_history.jsonl, client
         // 2.0.11). CLONE is unreachable on 2.0.11: hosted never copies a
         // custom node (explain_custom_copy.jsonl, #86), and this server copies
@@ -304,6 +308,9 @@ enum Shape {
     OwnTargetModified,
     /// A seed whose table exists: its data changed (`true`) or not.
     Seed { changed: bool },
+    /// A seed copied from its load under another name: into its absent table,
+    /// or `over` its table, whose latest load (the anchor) had other values.
+    SeedCopy { over: bool },
     /// A copy of an equivalent over a target whose own build had to rebuild
     /// ("but it's old, so we will clone from …"), rendered against the
     /// target's own build (VERIFIED LIVE 2026-11-10, lag_copy_candidates).
@@ -347,6 +354,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                         != Some(decision::REJECTION_LATEST_QUERY_HASH_NOT_MATCH),
                 }
             }
+            // A copy over the table keeps the replaced load as its anchor.
+            (DecisionKind::Clone, R::ResultCopy) => Shape::SeedCopy {
+                over: node.anchor.is_some(),
+            },
             _ => return None,
         });
     }
@@ -664,6 +675,7 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
         Some(Shape::OwnTargetModified) => skip_tree(node),
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
+        Some(Shape::SeedCopy { over }) => seed_copy_tree(node, over),
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
@@ -837,6 +849,50 @@ fn seed_tree(node: &ExplainNode, changed: bool) -> Vec<qc::ExplainLine> {
             )],
         ),
         section("query analysis", vec![data]),
+    ]
+}
+
+/// A seed copied from its load under another name (VERIFIED LIVE, client
+/// 2.0.11): into its absent table (`the seed table could be cloned from`,
+/// explain_copy_probes.jsonl entry 18, explain_seed_copy_existing.jsonl
+/// entry 11) or over its table holding other values (`but it's old`,
+/// explain_seed_copy_existing.jsonl entry 16). The copied load has the
+/// seed's data; no freshness section, as a seed has no upstreams.
+fn seed_copy_tree(node: &ExplainNode, over: bool) -> Vec<qc::ExplainLine> {
+    let source = quote(node.clone_source.as_deref().unwrap_or_default());
+    let table = if over {
+        vec![
+            leaf(
+                "the seed file exists already",
+                Some(MARKER_SUCCESS),
+                Some(BADGE_TARGET_TABLE_EXISTS),
+            ),
+            leaf(
+                format!("but it's old, so we will clone from {source} to recreate it"),
+                Some(MARKER_FAIL),
+                None,
+            ),
+        ]
+    } else {
+        vec![
+            leaf("the seed table does not exist", Some(MARKER_FAIL), None),
+            leaf(
+                format!("the seed table could be cloned from {source}"),
+                Some(MARKER_SUCCESS),
+                None,
+            ),
+        ]
+    };
+    vec![
+        section(format!("table analysis ({})", fqn(node)), table),
+        section(
+            "query analysis (vs clone)",
+            vec![leaf(
+                "the seed data has not changed",
+                Some(MARKER_SUCCESS),
+                Some(BADGE_NODE_QUERY_UNCHANGED),
+            )],
+        ),
     ]
 }
 
@@ -1642,7 +1698,9 @@ mod tests {
         } else if s.starts_with("no updates since") {
             s = "no updates since «FQN» last executed".to_string();
         } else if s.contains("table could be cloned from \"") {
-            s = "the model table could be cloned from «FQN»".to_string();
+            // Keep the noun: "the <noun> table could be cloned from «FQN»".
+            let prefix = s.split("cloned from").next().unwrap_or("").to_string();
+            s = format!("{prefix}cloned from «FQN»");
         } else if s.starts_with('"') && s.ends_with('"') {
             s = "«FQN»".to_string();
         }
@@ -2097,6 +2155,94 @@ mod tests {
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
+    /// The load of a seed whose copy the submit disallowed or forbade has no
+    /// captured hosted tree (#91), so none is invented for it.
+    #[test]
+    fn seed_load_with_a_disallowed_copy_emits_nothing() {
+        for reason in [DecisionReason::CopyDisabled, DecisionReason::CopyChainLimit] {
+            let mut n = seed(DecisionKind::Build, reason);
+            n.clone_source = Some("\"DB\".\"PROD\".\"SRC\"".into());
+            assert!(explain_lines(&n).is_empty(), "{reason:?}: {:?}", render(&n));
+        }
+    }
+
+    fn seed_copy(over: bool) -> ExplainNode {
+        let mut n = seed(DecisionKind::Clone, DecisionReason::ResultCopy);
+        n.clone_source = Some("\"DB\".\"PROD\".\"SRC\"".into());
+        if over {
+            n.anchor = Some(ExecutionRow {
+                id: 3,
+                execution_type: ModelExecutionType::Values as i32,
+                ..Default::default()
+            });
+        }
+        n
+    }
+
+    /// VERIFIED LIVE 2026-11-10 (explain_copy_probes.jsonl entry 18, and
+    /// explain_seed_copy_existing.jsonl entry 11): a seed copied into its
+    /// absent table. No freshness section: a seed has no upstreams.
+    #[test]
+    fn seed_copy_into_a_missing_table_names_its_source() {
+        assert_eq!(
+            render(&seed_copy(false)),
+            [
+                (0, "table analysis («FQN»)".into(), None, None),
+                (
+                    1,
+                    "the seed table does not exist".into(),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+                (
+                    1,
+                    "the seed table could be cloned from «FQN»".into(),
+                    Some(MARKER_SUCCESS),
+                    None
+                ),
+                (0, "query analysis (vs clone)".into(), None, None),
+                (
+                    1,
+                    "the seed data has not changed".into(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED)
+                ),
+            ]
+        );
+    }
+
+    /// VERIFIED LIVE 2026-11-11 (explain_seed_copy_existing.jsonl entry 16):
+    /// a seed copied over its table, whose latest load had other values.
+    #[test]
+    fn seed_copy_over_its_table_says_it_is_old() {
+        assert_eq!(
+            render(&seed_copy(true)),
+            [
+                (0, "table analysis («FQN»)".into(), None, None),
+                (
+                    1,
+                    "the seed file exists already".into(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS)
+                ),
+                (
+                    1,
+                    "but it's old, so we will clone from \"DB\".\"PROD\".\"SRC\" to recreate it"
+                        .into(),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+                (0, "query analysis (vs clone)".into(), None, None),
+                (
+                    1,
+                    "the seed data has not changed".into(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED)
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn custom_clone_emits_nothing() {
         // DBT_CUSTOM=11 CLONE is unreachable on 2.0.11: hosted rebuilds
@@ -2194,7 +2340,8 @@ mod tests {
                     | (8, DecisionKind::Skip) // data test SKIP
                     | (8, DecisionKind::Build) // data test EXECUTE (explain_data_test_history; CLONE → #68)
                     | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
-                    | (9, DecisionKind::Build) // seed reload (CLONE fenced until #91)
+                    | (9, DecisionKind::Build) // seed reload
+                    | (9, DecisionKind::Clone) // seed copy on submit (explain_copy_probes, explain_seed_copy_existing; #91)
                     | (7, DecisionKind::Skip) // snapshot SKIP (explain_snapshot_history)
                     | (7, DecisionKind::Build) // snapshot EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (11, DecisionKind::Skip) // custom SKIP (explain_custom_history)
