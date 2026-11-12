@@ -51,7 +51,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 ## Other
 
 - [Databricks table/view acceptance](databricks-baseline.md): isolated hosted
-  replay and real-client Rust runs with independent complete physical results.
+  replay and real-client Rust runs with independent complete physical results;
+  [dated evidence](reports/databricks-baseline-2026-11-12.md).
 - [Databricks auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md):
   pinned-client inventory, exact public replay, real-client hosted/Rust checks.
 - [golden/README.md](../golden/README.md): the golden fixture corpus.

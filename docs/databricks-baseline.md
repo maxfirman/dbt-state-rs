@@ -5,6 +5,8 @@ through the production gRPC router with isolated Postgres history, and the
 pinned real dbt client running against that router and Databricks. It is one
 table/view lifecycle slice; the [capability survey](reports/databricks-capabilities-2026-11-12.md)
 and its copy/snapshot blockers remain separate.
+The [2026-11-12 evidence report](reports/databricks-baseline-2026-11-12.md)
+records the completed hosted/Rust runs, exact capture hashes and validation.
 
 [The runner](../experiments/databricks_baseline.py) extends the survey's guarded
 profiles, schema ownership, SQL Statement Execution, process ownership and
@@ -77,7 +79,7 @@ router with the opt-in integration test:
 
 ```bash
 uv venv /path/to/acceptance-python
-uv pip install --python /path/to/acceptance-python/bin/python pyyaml
+uv pip install --python /path/to/acceptance-python/bin/python pyyaml==6.0.3
 export DBT_STATE_DATABRICKS_PYTHON=/path/to/acceptance-python/bin/python
 export DBT_STATE_DATABRICKS_DBT=/path/to/pinned/dbt-2.0.11
 export DBT_STATE_DATABRICKS_ARTIFACTS=/path/to/new-rust-baseline
