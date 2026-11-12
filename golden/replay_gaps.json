@@ -160,13 +160,13 @@
     "fixture": "explain_seed_copy_existing.jsonl",
     "entry": 13,
     "local_variant": "ready_to_execute",
-    "reason": "DECISION DIVERGENCE (#129, safety floor): seed s91b, copied into dev_clone, then its dev table modified outside dbt (one row inserted), rebuilt with the same values. Hosted SKIPs it ('seed was a no-op because its data has not changed'), serving the modified table; the local server reloads it (own_target_changed_or_missing), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. See docs/correctness-handoff.md \"Known divergences\"."
+    "reason": "ACCEPTED DIVERGENCE (#129): seed s91b, copied into dev_clone, then its dev table modified outside dbt (one row inserted), rebuilt with the same values. Hosted SKIPs it ('seed was a no-op because its data has not changed'), serving the modified table; the local server reloads it (own_target_changed_or_missing), because AGENTS.md reuse invariant 3 checks the Target relation's External modifications. Client 2.0.11 sends this request. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_seed_copy_existing.jsonl",
     "entry": 17,
     "local_variant": "empty_tree",
-    "reason": "DECISION DIVERGENCE explain of entry 13 (#129): hosted explains its seed SKIP; the local safety-floor reload of a modified seed table renders no tree."
+    "reason": "ACCEPTED DIVERGENCE explain of entry 13 (#129): hosted explains its seed SKIP; the local reload of a modified seed table renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
     "fixture": "explain_incomplete_test_results.jsonl",
