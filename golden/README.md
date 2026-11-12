@@ -27,6 +27,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | File | Replay | What it captures; which test pins it |
 |---|---|---|
 | `databricks_client_auxiliary.jsonl` | yes | Pinned 2.0.11 validation, session start/end including exact durations and client failure, plus query-preparation telemetry; `client_auxiliary.rs` and generic conformance. [Provenance](../docs/reports/databricks-client-auxiliary-2026-11-12.md). |
+| `databricks_table_view_baseline.jsonl` | yes | Complete pinned 2.0.11 managed Delta table/view build, unchanged reuse, changed-query rebuild and subsequent reuse, confirmations, speculative submits, telemetry and full Explain including opposite request orders; no history/gap exceptions. [Runner](../docs/databricks-baseline.md). |
 | `golden_20261008T222744.061Z.jsonl` | yes | Build, confirm and skip lifecycle with speculative submits and version checks; `differential.rs`. |
 | `golden_20261009T083754.534Z.jsonl` | yes | Prod build then dev skip through namespace reuse, with cross-target data-test entries keyed in `replay_gaps.json`; `conformance.rs`. |
 | `golden_20261009T100637.316Z.jsonl` | yes | `RegisterClone` to `ready_to_clone` plus an empty `ResolveDeferredRelations`; `clone.rs::register_clone_matches_real_shape`, `deferred_relations_empty_when_nothing_built`. |

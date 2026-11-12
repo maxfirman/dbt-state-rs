@@ -736,6 +736,17 @@ server mints an id there; the replay compares responses without ids.
 `google.protobuf.Struct` with `int64` support, used for `execution_results` and
 telemetry config.
 
+## Explain: `Explain.GetExplainMessages`
+
+The request names execution decision IDs; each tracked ID returns its decision,
+description and complete nested Explain tree. Unknown IDs are omitted.
+Observed hosted batches of distinct tracked IDs return entries in ascending
+decision-ID order, including when the request reverses them (2026-11-12
+Databricks baseline and six forward/reverse probes). The shared handler follows
+that order. Replay compares every entry's complete text, markers, badges and
+children; the new Databricks fixture keeps actual relation names and permits no
+missing-history or known-gap exception. See [table/view acceptance](databricks-baseline.md).
+
 ## Explain: `Explain.GetUpstreamDependencyChanges` is client-unreachable
 
 The Fusion CLI embeds only `GetExplainMessages` from the `Explain` service, and

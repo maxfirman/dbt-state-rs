@@ -184,6 +184,8 @@ class Baseline(Campaign):
                 or len(messages) != len(ids) or any(not value.get('explain_lines') for value in messages)):
             raise Refused('Explain omitted a decision or its complete tree')
         self.save('wire/' + label + '_explain.json', calls)
+        if label == 'unchanged':
+            self.explain(label + '_reverse', list(reversed(submits)))
 
     def physical(self, label, target, revision):
         results = {}

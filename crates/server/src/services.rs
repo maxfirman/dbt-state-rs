@@ -886,13 +886,16 @@ impl Explain for ExplainService {
             by_id.insert(edid, node);
         }
 
-        // Preserve the request order, emitting only tracked ids.
-        let messages = req
+        // Hosted emits tracked decisions in ascending decision-ID order,
+        // independently of request order (Databricks baseline + six reversed
+        // batch probes, 2026-11-12). IDs remain opaque to callers.
+        let mut messages: Vec<_> = req
             .execution_decision_ids
             .iter()
             .filter_map(|id| by_id.get(id))
             .map(crate::explain::explain_entry)
             .collect();
+        messages.sort_by(|a, b| a.execution_decision_id.cmp(&b.execution_decision_id));
 
         Ok(Response::new(qc::GetExplainMessagesResponse { messages }))
     }

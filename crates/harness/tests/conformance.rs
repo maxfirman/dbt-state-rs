@@ -1278,11 +1278,22 @@ async fn replay_explain_messages(
     if fixture.starts_with("databricks_") {
         let hosted_order: Vec<_> = hosted_messages
             .iter()
-            .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
+            .map(|m| m["execution_decision_id"].as_str().unwrap().to_owned())
             .collect();
+        let mut expected_hosted_order = hosted_order.clone();
+        expected_hosted_order.sort();
         assert_eq!(
-            local_order, hosted_order,
-            "{context}: complete response order"
+            hosted_order, expected_hosted_order,
+            "{context}: hosted ID order"
+        );
+        // IDs are freshly minted during replay. Their relative order can
+        // differ from the hosted IDs when concurrent submits were captured in
+        // response order, so compare the ordering contract on each ID domain.
+        let mut expected_local_order = local_ids.clone();
+        expected_local_order.sort();
+        assert_eq!(
+            local_order, expected_local_order,
+            "{context}: complete response must be ordered by decision ID"
         );
     }
 

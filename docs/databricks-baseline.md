@@ -37,6 +37,9 @@ relation names and isolated State history.
 Every step requires the expected node-level decision and successful build
 confirmations, and captures Explain for both actual decision IDs. Always
 building cannot satisfy the unchanged steps.
+The unchanged step also sends the same Explain IDs in reversed order. Hosted
+returns entries in ascending decision-ID order; the shared handler and replay
+assert that contract separately from each entry's complete tree.
 
 Each managed step is checked against a separate project/profile target running
 dbt with State disabled, an independent warehouse SELECT, and literal expected
@@ -73,7 +76,9 @@ After hosted replay passes, run real dbt against a fresh isolated production
 router with the opt-in integration test:
 
 ```bash
-export DBT_STATE_DATABRICKS_PYTHON="$(uv run --with pyyaml python -c 'import sys; print(sys.executable)')"
+uv venv /path/to/acceptance-python
+uv pip install --python /path/to/acceptance-python/bin/python pyyaml
+export DBT_STATE_DATABRICKS_PYTHON=/path/to/acceptance-python/bin/python
 export DBT_STATE_DATABRICKS_DBT=/path/to/pinned/dbt-2.0.11
 export DBT_STATE_DATABRICKS_ARTIFACTS=/path/to/new-rust-baseline
 cargo test -p dbt-state-harness --test databricks_baseline \
