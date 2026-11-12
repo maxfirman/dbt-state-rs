@@ -369,7 +369,18 @@ server keeps the conservative behavior described.
 
 ## Known divergences
 
-Every replay divergence is pinned per fixture entry in
+New Databricks #140 missing-evidence diagnostics remain **blocking**, not
+accepted replay exceptions ([dated evidence](reports/databricks-freshness-2026-11-12.md)).
+Hosted SKIPs a crafted request that omits a source still read by its SQL;
+independent warehouse reads prove the cached target is stale. Missing recorded
+epochs also SKIP hosted, and missing/current epoch Explain differs. The server
+keeps conservative freshness checks. Identical known duplicate entries are a
+separate unresolved safe-normalization opportunity; ambiguous evidence and
+Snowflake audit rules are unchanged. These captures stay in the durable archive
+with exact red replay, without a Databricks gap or golden exclusion. #140 stays
+incomplete and does not unblock its dependents.
+
+Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
 where only part of a response differs, the `ignore_fields` it exempts. The
 replay fails when an entry becomes unused or resolved
