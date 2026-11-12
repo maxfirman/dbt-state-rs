@@ -549,7 +549,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        69,
+        70,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -853,23 +853,10 @@ async fn conformance_replay_all_corpora() {
                         unknown_baseline += 1;
                     }
                 }
-                "ValidateClientVersion" => {
-                    let response =
-                        qc::client_validation_client::ClientValidationClient::new(ch.clone())
-                            .validate_client_version(
-                                serde_json::from_value::<qc::ValidateClientVersionRequest>(
-                                    e.request.clone(),
-                                )
-                                .unwrap(),
-                            )
-                            .await
-                            .unwrap()
-                            .into_captured(e);
-                    assert_eq!(
-                        serde_json::to_value(response).unwrap(),
-                        e.response,
-                        "{context}"
-                    );
+                "ValidateClientVersion" | "SubmitTelemetryBatch" => {
+                    let outcome = diff::replay_rpc(ch.clone(), e).await.unwrap();
+                    e.compare_outcome(&outcome)
+                        .unwrap_or_else(|error| panic!("{context}: {error}"));
                     asserted += 1;
                 }
                 "SubmitEnrichedSQLSpeculative" => {

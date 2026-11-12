@@ -769,6 +769,33 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 #[derive(Clone)]
 pub struct ClientValidationService;
 
+/// Pinned dbt 2.0.11 batches session and query-preparation events. Hosted
+/// acknowledges them without a result payload beyond success; self-hosted
+/// State does not need hosted metering/account persistence.
+pub struct ClientTelemetryService;
+
+#[tonic::async_trait]
+impl qc::client_telemetry_server::ClientTelemetry for ClientTelemetryService {
+    #[allow(deprecated)]
+    async fn register_session_start(
+        &self,
+        _request: Request<qc::SessionStartRequest>,
+    ) -> Result<Response<qc::SessionStartResponse>, Status> {
+        // The pinned client uses session_start inside SubmitTelemetryBatch.
+        // No hosted contract has been characterized for this obsolete RPC.
+        Err(Status::unimplemented(""))
+    }
+
+    async fn submit_telemetry_batch(
+        &self,
+        _request: Request<qc::SubmitTelemetryBatchRequest>,
+    ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
+        Ok(Response::new(qc::SubmitTelemetryBatchResponse {
+            success: true,
+        }))
+    }
+}
+
 #[tonic::async_trait]
 impl ClientValidation for ClientValidationService {
     async fn validate_client_version(
