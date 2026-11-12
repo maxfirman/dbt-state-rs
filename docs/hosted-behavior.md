@@ -50,7 +50,7 @@ Open questions and deliberate divergences live in
 | Upstream externally modified after the build the model consumed | — | build ("an upstream model query has changed") under any policy or tolerance | ✅ |
 | Target relation modified after its build | — | build ("the table was modified after the cached execution"; for a view, "the view definition is newer than the cached execution") | ✅ |
 | Snapshot or custom node whose Target relation was modified after its build (External modification, a later `--full-refresh`, or another materialization's build in between) | 7, 11 | skip (`explain_reason_kind_cells.jsonl` `sn_c`, `sn_cz`, `sn_e`, `sn_ez`, `vc`, `cv0`) | ❌ deliberate: the server rebuilds (reuse invariant 3, accepted divergence #115) |
-| Seed's own table externally modified, values unchanged | VALUES | skip | ❌ deliberate: the server reloads (keyed safety floor, `lag_seed_upstream.jsonl`) |
+| Seed's own table externally modified, values unchanged | VALUES | skip | ❌ deliberate: the server reloads (keyed safety floor, `lag_seed_upstream.jsonl`; live, `explain_seed_copy_existing.jsonl`, #129) |
 
 The Lag tolerance rule is recorded in
 [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) and pinned by
@@ -102,7 +102,9 @@ reproducible skip.
 | Table or view whose SQL reads a fixed prod-schema source, dev target missing, prod equivalent exists (client 2.0.11, `explain_post_copy_identity.jsonl` entries 18–19) | table: `ready_to_clone` (srr=1); view: build 1 / 3 | ✅ (the submit is read in the fixed prod schema it reads, #107) |
 | Snapshot with `target_schema=target.schema` (client 2.0.11, `explain_copy_probes.jsonl`) | no `RegisterClone` (the deferred relation is the dev one); submit answered build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL | ✅ build with codes 1 / 3 (#92, #107) |
 | View, equivalent exists under another name (client 2.0.11, `explain_copy_probes.jsonl`) | build, srr=1 / crr=3 EXECUTION_TYPE_NOT_FULL; never copied | ✅ build with codes 1 / 3 (#92, #107) |
-| Seed, same values under another name (client 2.0.11, `explain_copy_probes.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ❌ the server loads it (#91) |
+| Seed, same values under another name, dev table absent (client 2.0.11, `explain_copy_probes.jsonl`, `explain_seed_copy_existing.jsonl`) | `SubmitValues` → `ready_to_clone` (srr=1), "an equivalent seed exists under another name so we cloned that one" | ✅ on Snowflake (#91); DuckDB and other dialects reload it |
+| Seed, dev table holds a load with other values, prod's load matches (client 2.0.11, `explain_seed_copy_existing.jsonl` entry 14) | `ready_to_clone` over the dev table; Explain "but it's old, so we will clone from …" | ✅ on Snowflake (#91) |
+| Seed copied into dev, its dev table then modified outside dbt, same values (client 2.0.11, `explain_seed_copy_existing.jsonl` entry 13) | skip, serving the modified table | ❌ deliberate: the server reloads it (safety floor, #129) |
 | Table | copy via `SubmitEnrichedSQL` → `ready_to_clone` | ✅ |
 | Custom materialization (et=11), equivalent exists under another name | build, codes 1 / 3 (`EXECUTION_TYPE_NOT_FULL`) (`explain_custom_copy.jsonl`) | ✅ (#86) |
 | Register, confirm, resubmit the copied target relation with the same logic | skip | ✅ |
@@ -138,8 +140,9 @@ reproducible skip.
   Not the #93 cause: that submit's schema already matched the copy, but it
   adds an `is_incremental()` predicate and its Target relation's epoch is
   newer than the copy's confirmation.
-- **Seed copy seen by the #76 probes**: #91, keyed in
-  `golden/replay_gaps.json`.
+- **Seed whose dev table was modified outside dbt** (#129): hosted SKIPs it
+  even with a matching load in prod; the server reloads it, keyed in
+  `golden/replay_gaps.json` (`explain_seed_copy_existing.jsonl`).
 - **Non-Snowflake copy DDL** (BigQuery, Databricks) is this server's own and
   unverified against a warehouse or hosted responses.
 - **Malformed requests** (crafted only, accepted divergence #114): hosted

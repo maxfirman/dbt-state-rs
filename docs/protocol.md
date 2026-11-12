@@ -230,6 +230,7 @@ Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 | EXECUTE | `model was executed because cloning is disabled` | An equivalent exists but the submit disallows copies (`allow_clones: false`; client 2.0.11 also sends `clone_chain_depth_limit: 0`) |
 | EXECUTE | `model was executed because the maximum number of nested clones has been reached` | An equivalent exists but the submit forbids copies with `clone_chain_depth_limit = 0` alone (client 2.0.6), or the copy chain is at its limit (DuckDB) |
 | CLONE | `an equivalent model exists under another name so we cloned that one` | Result copy on submit |
+| CLONE | `an equivalent seed exists under another name so we cloned that one` | Seed copy on submit (Snowflake, [below](#seed-copy-on-submit)) |
 
 `RegisterClone` responses carry an empty `decision_description`.
 
@@ -258,7 +259,7 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 | EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate, or whose reuse candidate must rebuild for upstream data drift, whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
 | EXECUTE | 1 / 6 (`TARGET_TABLE_MISMATCH` / `NO_SUITABLE_MATCH_FOUND`) | As 1 / 3, for an incremental whose newest equivalent has its own execution type | same |
 | EXECUTE | 1 / 2 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_MISMATCH`) | As 1 / 3, when the newest equivalent has another execution type | same |
-| CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit | `DecisionRecord::result_copy` |
+| CLONE (submit) | 1 / - (`TARGET_TABLE_MISMATCH`) | Result copy on submit, and a seed's | `DecisionRecord::result_copy`, `DecisionRecord::seed_result_copy` |
 | CLONE (`RegisterClone`) | 5 / - (`FORCED_NOT_ELIGIBLE`) | Every `ready_to_clone` from `RegisterClone` | `services.rs::ready_to_clone_response` |
 | `unable_to_clone` | - / 10 | `clone_chain_depth_limit = 0` | `services.rs::unable_to_clone_response` |
 | `unable_to_clone` | - / 5 | DuckDB only: the pinned incremental contract or a current eligible source is missing | `result_copy::register_lookup`, `plan_register` |
@@ -401,7 +402,8 @@ submits SKIP.
 **FULL only.** Following hosted 2.0.11 (maintainer decision 2026-11-11, #86,
 #92, #101), only a FULL submit is copied (`Warehouse::submit_copy_admits`).
 DuckDB keeps its own checked subset, which hosted does not engage: FULL, or
-delete+insert under the pinned incremental contract. Seeds and data tests
+delete+insert under the pinned incremental contract. The one exception is a
+seed on Snowflake ([Seed copy on submit](#seed-copy-on-submit)). Data tests
 never take this path. Any other submit with an equivalent builds, with its
 ordinary description and Explain tree, and reports the equivalent in its codes
 (`result_copy::plan_submit`):
@@ -447,9 +449,10 @@ When the fallback applies:
   that judgment (`clone_fallback_stale_source.jsonl`,
   `clone_fallback_zero_tolerance.jsonl`). Fixtures `lag_copy_candidates.jsonl`,
   `lag_dropped_targets.jsonl`.
-- Never for seeds, data tests, empty SQL, submits without `table_namespace`, or
+- Never for data tests, empty SQL, submits without `table_namespace`, or
   `compare_unrendered_code=true` submits (they carry no copy identity), and
-  not when volatile SQL blocks it (rule 8 above).
+  not when volatile SQL blocks it (rule 8 above). Seeds have their own rule
+  (below).
 - When the submit forbids copies (`clone_chain_depth_limit = 0` or
   `allow_clones = false`) and the target relation has no reuse candidate, the
   server returns the chain-limit EXECUTE instead. A non-FULL submit reports
@@ -466,6 +469,45 @@ dev relation (`explain_incremental_submit_copy.jsonl` entries 9–10). Client
 entry 1); this server builds there (keyed divergence). Whether 2.0.11 copies an
 incremental over a relation with no State history of its own is not captured
 (#101 question 3).
+
+### Seed copy on submit
+
+Hosted 2.0.11 answers a `SubmitValues` with `ready_to_clone` when the seed
+was loaded with the same values under another name (live:
+`explain_copy_probes.jsonl` entry 12, `explain_seed_copy_existing.jsonl`
+entries 6 and 14). On Snowflake this server does the same (maintainer
+decision 2026-11-11, #91; `Warehouse::submit_copy_admits`,
+`result_copy::{seed_copy_target, seed_lookup, plan_seed_submit}`). DuckDB and
+every other dialect reload the seed.
+
+- **Identity.** The seed's reuse identity: its `values_hash` and its seed
+  logic hash (dialect, `default_catalog` and every `semantic_extras` entry the
+  client sends, such as column types), in the same organization, warehouse
+  family and `table_namespace`. The source must name the same database and
+  object as the target; only the schema may differ.
+- **Source.** The latest confirmed row in the source's own Target relation
+  history, newest first. A load since replaced with other values is never
+  copied. A seed has no upstreams, so the copy is not judged for freshness.
+  At submit time an External modification of the source after its load is
+  not visible (the same blind spot as a FULL copy).
+- **When.** With no reuse candidate, into an absent table (`last_modified_epoch`
+  unset), or over an existing table whose latest load in scope is a seed load
+  with other values or seed config. Not over a table modified after a load
+  with the seed's values: hosted SKIPs that seed (`explain_seed_copy_existing.jsonl`
+  entry 13) and this server reloads it (the safety floor, #129). Not over an
+  existing table without a seed load in scope (uncaptured).
+- **Limits.** As for a FULL copy: `allow_clones: false` and
+  `clone_chain_depth_limit: 0` do not copy, a requested expiration refuses
+  the copy, and `clone_time_travel_limit` is not applied. Hosted's answer for
+  a seed whose copy is disallowed is uncaptured, so the server sends the
+  ordinary load (`seed was loaded because it did not exist`, 6 / 6) and
+  records `copy_disabled` or `copy_chain_limit`, whose Explain tree is empty.
+- **Response.** As for a FULL copy: codes 1 / -, `an equivalent seed exists
+  under another name so we cloned that one`, the source's build epoch and
+  runtime, and `CREATE OR REPLACE [TRANSIENT] TABLE <target> CLONE <source>
+  COPY GRANTS`, transient exactly when the source's confirmed `table_type`
+  is (`snowflake::copy_ddl`). The pending row keeps the seed's own identity,
+  so the confirmed copy is reused by the next matching submit.
 
 ## State writes: `Execution`
 
@@ -498,9 +540,11 @@ semantic_extras{}, last_modified_epoch?, labels, dbt_node_state?,
 table_namespace?, …}`. The execution type is implicitly `VALUES=9`. Reuse
 matches the seed bytes plus seed configuration and context against the target
 relation's latest build, and needs the table's current epoch. Seeds have no Lag
-tolerance, always use `ANY`, and get no Result copy. An externally modified
-seed table is reloaded (hosted skips it; see
-[correctness-handoff.md](correctness-handoff.md)).
+tolerance and always use `ANY`. On Snowflake a seed without a reuse
+candidate is copied from its load under another name
+([Seed copy on submit](#seed-copy-on-submit), #91); elsewhere it is
+reloaded. An externally modified seed table is reloaded (hosted skips it,
+#129; see [correctness-handoff.md](correctness-handoff.md)).
 
 ## State selectors: `SelectorService.GetStateSelection`
 

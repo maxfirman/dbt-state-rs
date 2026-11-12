@@ -57,7 +57,22 @@ Do not weaken these without new evidence.
   age only ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md)).
 - **No cross-target SKIP.** A `table_namespace` match alone never justifies a
   SKIP. Cross-target reuse is a Result copy on Snowflake (and the DuckDB copy
-  subset) only, and a submit-time Result copy is FULL only (#101).
+  subset) only, and a submit-time Result copy is FULL only (#101), except a
+  seed on Snowflake (#91, below).
+- **Seed copy on submit (#91).** A Snowflake seed without a reuse candidate
+  is copied from the latest load of another Target relation in its scope
+  (organization, warehouse family, `table_namespace`) that has its
+  `values_hash` and seed logic hash (dialect, catalog and every seed
+  `semantic_extras` entry) and differs from it in the schema only
+  (`result_copy::seed_lookup`, `Store::find_seed_copy_candidates`). It is
+  copied into an absent table, or over its table when that table's latest
+  load has other values; never over a table modified after a load with its
+  values (the safety floor, #129). `allow_clones: false` and
+  `clone_chain_depth_limit: 0` do not copy. **Blind spot:** at submit time an
+  External modification of the prod source after its load cannot be seen.
+  The submit reports only its own target's epoch, and a seed has no upstream
+  listing, so the copy serves the source as modified. A FULL copy from
+  another environment has the same blind spot: it is copied unjudged.
 - **Copy adoption needs the copy's logic.** A later submit reuses a
   RegisterClone copy only when its schema-abstracted logic equals the logic
   the copy inherited from its source build, directly or with the submit's
@@ -180,7 +195,10 @@ server keeps the conservative behavior described.
   (`submit_decision::older_match` goes ahead of a refused copy).
 - **Seed table externally modified.** Hosted skips an unchanged-values seed
   whose own table was edited, serving the edited table; the server reloads it
-  as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23.
+  as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23
+  (crafted), and `explain_seed_copy_existing.jsonl` entries 13 and 17 (live,
+  client 2.0.11, #129: a dev seed copied from prod, then modified outside
+  dbt; hosted SKIPs it rather than copy it again).
 - **External modification of the target relation in older captures.** In
   `lag_multi_upstream_policy.jsonl` (client 2.0.6) hosted skipped a target
   relation modified after its build; current hosted rebuilds it
@@ -198,6 +216,14 @@ server keeps the conservative behavior described.
   own copies. `clone_chain_upstream_history.jsonl` is characterization-only
   because every copy source predates the capture
   (`lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`).
+- **Seed copy, uncaptured cases (#91).** Hosted's answer for a seed whose
+  copy is disallowed (`allow_clones: false`) or forbidden
+  (`clone_chain_depth_limit: 0`): the server sends the ordinary load (6 / 6)
+  and records `copy_disabled` / `copy_chain_limit`, which renders no tree. A
+  seed whose existing table has no load in scope, or whose latest row is not
+  a seed load: the server reloads it. A source in another database or under
+  another object name (an alias): never copied. A source modified after its
+  load (above).
 - **Copy limits.** `clone_time_travel_limit` and `OUTSIDE_TIME_TRAVEL_WINDOW`
   (code 9) are never applied. Outside DuckDB, a `clone_chain_depth_limit`
   above 0 is ignored.
@@ -345,7 +371,10 @@ replay fails when an entry becomes unused or resolved
   and as view DDL in another, and data-test reuse across targets, rebuild
   locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
-- **Safety floor.** The externally modified seed table is reloaded.
+- **Safety floor.** The externally modified seed table is reloaded
+  (AGENTS.md reuse invariant 3). Live since 2026-11-11 (#129):
+  `explain_seed_copy_existing.jsonl` entries 13 (submit, local
+  `ready_to_execute`) and 17 (Explain, local `empty_tree`).
 - **Speculative SKIP (#103).** Hosted SKIPs an unchanged data test with no
   upstreams on the `SubmitEnrichedSQLSpeculative` call, so the client sends
   no ordinary submit; the server answers every speculative call `undecided`,
@@ -353,12 +382,6 @@ replay fails when an entry becomes unused or resolved
   hosted's payload. The final class and the Explain tree match. Keyed gap:
   `explain_rebuild_reason_gaps.jsonl` entry 39 (`local_variant: "undecided"`;
   the replay drives the follow-up submit and asserts it).
-- **Copies from `prod_demo` into `dev_clone` (#76 probes, client 2.0.11).**
-  - Seed copy (#91). Hosted copies a seed loaded with the same values under
-    another name on submit (`ready_to_clone`, 1 / -, `an equivalent seed
-    exists under another name so we cloned that one`); the server never copies
-    seeds and loads it. Keyed gaps: `explain_copy_probes.jsonl` entries 12
-    (submit) and 18 (Explain: the server explains the load it decided).
 - **Snapshot and custom node over a modified Target relation (#115).** An
   accepted divergence (see [below](#accepted-divergences)).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client

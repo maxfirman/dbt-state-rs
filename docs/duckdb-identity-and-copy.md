@@ -64,8 +64,9 @@ copy identity only when all of these hold:
 - execution type FULL, or DELETE_INSERT with `delete-insert-fixed-v1`
   (`copy_admits`, which is also DuckDB's answer to
   `Warehouse::submit_copy_admits`: every other warehouse copies only FULL on
-  submit, following hosted 2.0.11, #101; hosted does not engage DuckDB, so
-  this subset keeps its delete+insert copy);
+  submit, following hosted 2.0.11, #101, and Snowflake also a seed, #91;
+  hosted does not engage DuckDB, so this subset keeps its delete+insert copy
+  and reloads seeds);
 - `default_schema` is `prod` or `dev`, and the target relation is in the
   request's default catalog and schema;
 - `duckdb_copy_contract = rows-schema-v1`;
