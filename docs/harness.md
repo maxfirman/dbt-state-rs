@@ -282,3 +282,17 @@ call returns `INVALID_ARGUMENT: project_id must be provided`. Neither call
 uses a warehouse or creates State execution history. Both replay through the
 production router without exceptions. This is protocol evidence, not a claim
 of Databricks decision conformance.
+
+## Databricks capability campaign
+
+`experiments/databricks_survey.py` drives the pinned official client through an
+owned recording proxy and live Databricks. It is opt-in and never part of an
+offline PR cloud gate. It checks the pinned executable digest and guarded
+`cdo_demo_db` profile, uses run-owned schemas/project copies/ports, retains
+complete typed physical results and failed artifacts, and requires clean
+capture certification. The Snowflake runner's guards are unchanged.
+
+Commands, evidence and the copy/snapshot blockers are recorded in the
+[2026-11-12 capability report](reports/databricks-capabilities-2026-11-12.md).
+The runner's credential-free guard/comparison tests run under ordinary
+`cargo test --workspace`. This survey makes no Rust support claim.

@@ -21,6 +21,7 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
+python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
