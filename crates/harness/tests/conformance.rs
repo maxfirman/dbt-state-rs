@@ -81,10 +81,15 @@ fn identity(req: &serde_json::Value) -> String {
     }
 }
 
-fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
+fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
     fn remove_ids(m: &mut serde_json::Map<String, serde_json::Value>) {
-        m.remove("request_id");
-        m.remove("execution_decision_id");
+        for key in ["request_id", "execution_decision_id"] {
+            if let Some(value) = m.get_mut(key) {
+                if value.is_string() {
+                    *value = serde_json::Value::String("<opaque>".into());
+                }
+            }
+        }
     }
     if let serde_json::Value::Object(root) = &mut value {
         remove_ids(root);
@@ -104,7 +109,7 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// After `without_ids` (and any `ignore_fields`) stripping, decide whether the
+/// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
 /// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
 /// target had NO confirmed history in the replay (`has_history == false`). This
@@ -216,7 +221,7 @@ fn execute_diff_is_only_rebuild_rationale(
 /// payload key (`transformed_nodes_by_query`) OR a one-level dotted path into a
 /// nested object (`explained_decision.skip_rejection_reason`). Returns whether
 /// ANY named field was actually present/removed, so a comparison can assert the
-/// gap is real. Operates on the `without_ids`-normalized shape.
+/// gap is real. Operates on the `normalize_ids`-normalized shape.
 fn strip_named_fields(value: &mut serde_json::Value, fields: &[String]) -> bool {
     let mut removed = false;
     if let serde_json::Value::Object(root) = value {
@@ -277,7 +282,7 @@ fn retain_named_fields(value: &mut serde_json::Value, fields: &[String]) {
     }
 }
 
-/// Assert a FIELD-SCOPED known gap: the two `without_ids`-normalized responses
+/// Assert a FIELD-SCOPED known gap: the two `normalize_ids`-normalized responses
 /// must match EXACTLY outside `fields`, and the exempted `fields` THEMSELVES must
 /// genuinely differ (else the exemption is stale — something else differs, or the
 /// gap is resolved). Shared by the execute / skip submit arms and (structurally)
@@ -309,13 +314,26 @@ fn assert_field_scoped_gap(
 }
 
 #[test]
+fn replay_normalization_preserves_optional_id_presence() {
+    let absent = serde_json::json!({"ready_to_clone": {"execution_decision_id": null}});
+    let present = serde_json::json!({"ready_to_clone": {"execution_decision_id": ""}});
+    assert_ne!(normalize_ids(absent), normalize_ids(present));
+    let first = serde_json::json!({"ready_to_clone": {"execution_decision_id": "hosted"}});
+    let second = serde_json::json!({"ready_to_clone": {"execution_decision_id": "local"}});
+    assert_eq!(normalize_ids(first), normalize_ids(second));
+}
+
+#[test]
 fn comparison_preserves_result_fields_named_like_ids() {
     let response = serde_json::json!({"response": {"skip_execution": {
         "execution_decision_id": "opaque",
         "execution_results": {"fields": {"request_id": {"kind": {"string_value": "result"}}}}
     }}});
-    let normalized = without_ids(response);
-    assert!(normalized["response"]["skip_execution"]["execution_decision_id"].is_null());
+    let normalized = normalize_ids(response);
+    assert_eq!(
+        normalized["response"]["skip_execution"]["execution_decision_id"],
+        "<opaque>"
+    );
     assert_eq!(
         normalized["response"]["skip_execution"]["execution_results"]["fields"]["request_id"]
             ["kind"]["string_value"],
@@ -662,8 +680,8 @@ async fn conformance_replay_all_corpora() {
                             // the local wording). Anything else is a mismatch.
                             let has_history = confirmed.contains(&key);
                             let response_json = serde_json::to_value(&response).unwrap();
-                            let ours_full = without_ids(response_json);
-                            let real_full = without_ids(e.response.clone());
+                            let ours_full = normalize_ids(response_json);
+                            let real_full = normalize_ids(e.response.clone());
                             let mut ours = ours_full.clone();
                             let mut real = real_full.clone();
                             let gap = find_gap(&known, &fixture, i)
@@ -723,8 +741,8 @@ async fn conformance_replay_all_corpora() {
                         "skip_execution" if confirmed.contains(&key) => {
                             let local_variant = support::response_variant(&response);
                             let response_json = serde_json::to_value(response).unwrap();
-                            let ours = without_ids(response_json);
-                            let real = without_ids(e.response.clone());
+                            let ours = normalize_ids(response_json);
+                            let real = normalize_ids(e.response.clone());
                             if let Some(gap) = find_gap(&known, &fixture, i) {
                                 assert!(!gap.reason.trim().is_empty());
                                 assert_eq!(
@@ -779,8 +797,8 @@ async fn conformance_replay_all_corpora() {
                                 else {
                                     unreachable!()
                                 };
-                                let ours = without_ids(serde_json::to_value(&response).unwrap());
-                                let real = without_ids(e.response.clone());
+                                let ours = normalize_ids(serde_json::to_value(&response).unwrap());
+                                let real = normalize_ids(e.response.clone());
                                 if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
@@ -825,8 +843,8 @@ async fn conformance_replay_all_corpora() {
                             .into_captured(e);
                         assert_eq!(response.request_id, id, "{context}: confirmation ID echo");
                         assert_eq!(
-                            without_ids(serde_json::to_value(response).unwrap()),
-                            without_ids(e.response.clone()),
+                            normalize_ids(serde_json::to_value(response).unwrap()),
+                            normalize_ids(e.response.clone()),
                             "{context}"
                         );
                         confirmed.insert(key);
@@ -873,8 +891,8 @@ async fn conformance_replay_all_corpora() {
                         edid_remap.insert(hosted, local);
                     }
                     assert_eq!(
-                        without_ids(serde_json::to_value(&response).unwrap()),
-                        without_ids(e.response.clone()),
+                        normalize_ids(serde_json::to_value(&response).unwrap()),
+                        normalize_ids(e.response.clone()),
                         "{context}"
                     );
                     asserted += 1;
@@ -923,7 +941,7 @@ async fn conformance_replay_all_corpora() {
                 "RegisterClone" => {
                     // The dev-clone pre-step's copy (client 2.0.11: incrementals
                     // and snapshots under deferral). Driven like a submit: the
-                    // full response is compared after `without_ids`, and a
+                    // full response is compared after `normalize_ids`, and a
                     // granted copy's confirmation is correlated so the copied
                     // target carries State history for the submit that follows.
                     let response = qc::clone_client::CloneClient::new(ch.clone())
@@ -939,8 +957,8 @@ async fn conformance_replay_all_corpora() {
                     let hosted_variant = support::clone_response_variant(
                         &serde_json::from_value(e.response.clone()).unwrap(),
                     );
-                    let ours = without_ids(serde_json::to_value(&response).unwrap());
-                    let real = without_ids(e.response.clone());
+                    let ours = normalize_ids(serde_json::to_value(&response).unwrap());
+                    let real = normalize_ids(e.response.clone());
                     if let Some(gap) = find_gap(&known, &fixture, i) {
                         assert!(!gap.reason.trim().is_empty());
                         assert_eq!(
@@ -1189,7 +1207,7 @@ async fn replay_explain_messages(
             })
             .await
             .unwrap()
-            .into_inner();
+            .into_captured(e);
         assert!(
             resp.messages.is_empty(),
             "{context}: untracked ids must be omitted"
@@ -1213,7 +1231,7 @@ async fn replay_explain_messages(
             })
             .await
             .unwrap()
-            .into_inner();
+            .into_captured(e);
         local_by_id = resp
             .messages
             .into_iter()
@@ -1337,6 +1355,36 @@ async fn replay_explain_messages(
         }
     }
     asserted
+}
+
+#[tokio::test]
+async fn explain_replay_checks_success_response_metadata() {
+    let server = support::start_server().await;
+    let channel = support::channel(server.addr).await;
+    let entry: diff::GoldenEntry = serde_json::from_value(serde_json::json!({
+        "service": "Explain", "method": "GetExplainMessages",
+        "request": {"execution_decision_ids": []}, "response": {"messages": []},
+        "response_metadata": {"ascii": [["x-evidence", "required"]], "binary": []}
+    }))
+    .unwrap();
+    let result = tokio::spawn(async move {
+        replay_explain_messages(
+            channel,
+            &entry,
+            0,
+            std::path::Path::new("metadata.jsonl"),
+            &HashMap::new(),
+            &[],
+            &mut HashSet::new(),
+            &mut Vec::new(),
+        )
+        .await;
+    })
+    .await;
+    assert!(
+        result.is_err_and(|error| error.is_panic()),
+        "Explain replay must reject missing application response metadata"
+    );
 }
 
 /// HOSTED-ORACLE CROSS-CHECK for the re-derived SKIP explain tree.
