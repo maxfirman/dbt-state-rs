@@ -77,10 +77,19 @@ Source fixtures (`golden/fixtures/`):
 - `explain_seed_copy_existing.jsonl` (client 2.0.11, #91): two seeds loaded
   in `prod_demo`, then built in `dev_clone`. One is copied into its absent
   dev table, then rebuilt after its dev table was modified outside dbt
-  (hosted SKIPs it, #129); the other is first loaded in dev with other
-  values, then built with prod's values and copied over its dev table.
-  Captured by `experiments/explain_capture.py seed_copy_existing`; three
-  explains sent by `state-probe`, one by `dbt state explain`.
+  (hosted SKIPs it, accepted divergence #129); the other is first loaded in
+  dev with other values, then built with prod's values and copied over its
+  dev table. Captured by `experiments/explain_capture.py
+  seed_copy_existing`; three explains sent by `state-probe`, one by
+  `dbt state explain`.
+- `explain_seed_copy_disabled.jsonl` (client 2.0.11): two seeds loaded in
+  `prod_demo`, then built with the same values under `allow_clones: false`
+  (a private `dev_noclone` copy of `dev_clone`): one into its absent dev
+  table, one over its dev table loaded with other values. Hosted loads both
+  with codes 1 / 10 and its ordinary seed descriptions
+  ([SEED](#seed), copy disallowed). Captured by
+  `experiments/explain_capture.py seed_copy_disabled`; one explain sent by
+  `state-probe`, one by `dbt state explain`.
 - `explain_snapshot_register_clone.jsonl` (client 2.0.11): a snapshot copied
   into `dev_clone` by the client's RegisterClone pre-step, then its post-copy
   SKIP. Captured by `experiments/explain_capture.py
@@ -243,7 +252,7 @@ and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 13 (12 client 2.0.11, 1 crafted), EXECUTE 15 (11 client 2.0.11, 4 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
 | 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 15 (11 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit*.jsonl`, `explain_malformed_requests.jsonl`) |
-| 9 | VALUES (seed) | characterized (crafted only)² | characterized (live)² | characterized (live)⁸ | S E C | SKIP 2 (1 crafted, 1 client 2.0.11), EXECUTE 6 (5 crafted, 1 client 2.0.11) (`lag_seed_upstream.jsonl`, `explain_seed_copy_existing.jsonl`); CLONE 3 (client 2.0.11, `explain_copy_probes.jsonl`, `explain_seed_copy_existing.jsonl`) |
+| 9 | VALUES (seed) | characterized (crafted only)² | characterized (live)² | characterized (live)⁸ | S E C | SKIP 2 (1 crafted, 1 client 2.0.11), EXECUTE 8 (5 crafted, 3 client 2.0.11) (`lag_seed_upstream.jsonl`, `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`); CLONE 3 (client 2.0.11, `explain_copy_probes.jsonl`, `explain_seed_copy_existing.jsonl`) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | SKIP 7 (5 client 2.0.11, 1 client 2.0.6, 1 crafted); EXECUTE 14 (12 client 2.0.11, 2 crafted) (`explain_view_reads_no_relation.jsonl`, `explain_reason_kind_cells.jsonl`, `explain_snapshot_history.jsonl`; `explain_copy_logic_crafted.jsonl` for the crafted ones); CLONE 0 |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 15 (13 client 2.0.11, 2 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells*.jsonl`) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
@@ -259,10 +268,10 @@ and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
    [execution type change](#execute-execution-type-change) tree, also over a
    copy.
 2. Except the reload of an externally modified seed table, which is
-   local-only, empty tree: hosted SKIPs it
-   ([correctness-handoff.md](correctness-handoff.md), "Seed table externally
-   modified"; live since 2026-11-11, `explain_seed_copy_existing.jsonl`
-   entries 13 and 17, #129). The live SKIP tree is the crafted one.
+   local-only, empty tree: hosted SKIPs it (accepted divergence #129,
+   [correctness-handoff.md](correctness-handoff.md#accepted-divergences);
+   live since 2026-11-11, `explain_seed_copy_existing.jsonl` entries 13 and
+   17). The live SKIP tree is the crafted one.
 3. The SHAPE 7 tree (`the model query has changed` <NODE_QUERY_CHANGED>) is
    captured over State history for a FULL model and a view in
    `explain_snapshot_history.jsonl` (client 2.0.11) and asserted by the
@@ -363,33 +372,34 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 320 trees in the
-tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1831 lines without a marker, 2114 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 322 trees in the
+tracked fixtures (2026-11-12). A line without a marker or badge is "none"
+(1834 lines without a marker, 2120 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 826 lines |
-| ExplainMarker | FAIL (2) | ✅ 268 lines |
-| ExplainMarker | INFO (3) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 250 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 828 lines |
+| ExplainMarker | FAIL (2) | ✅ 271 lines |
+| ExplainMarker | INFO (3) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 251 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 62 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 205 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 206 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 30 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
 | ExplainBadge | FRESH (1) | ✅ 128 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 87 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 320 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 215 from client 2.0.11 and 96 for crafted
-   `state-probe` requests. 80 of the client 2.0.11 trees explain a
+1. The 322 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 217 from client 2.0.11 and 96 for crafted
+   `state-probe` requests. 85 of the client 2.0.11 trees explain a
    real-client decision but were requested with `state-probe`
    (`explain_reason_kind_cells*.jsonl`, `explain_store_failures_audit_schema.jsonl`,
-   `explain_store_failures_audit_alias.jsonl`, `explain_view_reads_no_relation.jsonl`, `via="probe"` in
+   `explain_store_failures_audit_alias.jsonl`, `explain_view_reads_no_relation.jsonl`,
+   `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`, `via="probe"` in
    [harness.md](harness.md#shared-live-capture-driver-experimentsexplain_capturepy)). The removed `explain_snowflake_happy.jsonl` and
    `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
    either.
@@ -412,7 +422,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-11 (320 trees, none empty, no findings):
+Tracked fixtures, 2026-11-12 (322 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -434,7 +444,7 @@ Tracked fixtures, 2026-11-11 (320 trees, none empty, no findings):
 | DBT_DATA_TEST | SKIP | 15 | 11 client 2.0.11, 3 crafted, 1 client 2.0.6 |
 | DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
 | VALUES | SKIP | 2 | 1 crafted, 1 client 2.0.11 |
-| VALUES | EXECUTE | 6 | 5 crafted, 1 client 2.0.11 |
+| VALUES | EXECUTE | 8 | 5 crafted, 3 client 2.0.11 |
 | VALUES | CLONE | 3 | client 2.0.11 |
 | VIEW | SKIP | 7 | 5 client 2.0.11, 1 client 2.0.6, 1 crafted |
 | VIEW | EXECUTE | 14 | 12 client 2.0.11, 2 crafted |
@@ -777,6 +787,9 @@ source. Client 2.0.6 sent `clone_chain_depth_limit: 0` alone, and hosted
 answered the same codes with "model was executed because the maximum number
 of nested clones has been reached" (`clone_submit_allow_clones_false.jsonl`,
 no Explain; Decision reason `copy_chain_limit`). That reason renders nothing.
+A seed gets the same codes with its ordinary description, and the same tree
+with the seed noun, or another one over its existing table
+([SEED](#seed), copy disallowed).
 
 ### First build
 
@@ -1268,12 +1281,13 @@ rejection codes 8/7):
   - the seed table does not exist                     [FAIL]
   - there is no other table that the seed could be cloned from  [FAIL]
 ```
-The engine's reload of a seed whose table was modified externally is a known
-divergence (hosted skips it; see [correctness-handoff.md](correctness-handoff.md)).
+The engine's reload of a seed whose table was modified externally is an
+accepted divergence (#129; hosted skips it, see
+[correctness-handoff.md](correctness-handoff.md#accepted-divergences)).
 Its status is local-only, empty tree. Live since 2026-11-11
-(`explain_seed_copy_existing.jsonl` entries 13 and 17, #129): a dev seed
-copied from prod, its dev table then modified outside dbt and rebuilt with
-the same values, is SKIPped by hosted with the SKIP tree above, not copied
+(`explain_seed_copy_existing.jsonl` entries 13 and 17): a dev seed copied
+from prod, its dev table then modified outside dbt and rebuilt with the
+same values, is SKIPped by hosted with the SKIP tree above, not copied
 again.
 
 **Copy (CLONE)** (client 2.0.11, #91). A seed loaded in `prod_demo` and then
@@ -1300,11 +1314,36 @@ decision's anchor:
 - query analysis (vs clone)
   - the seed data has not changed                     [SUCCESS] <NODE_QUERY_UNCHANGED>
 ```
-No freshness section: a seed has no upstreams. Uncaptured, so not copied:
-a seed whose copy is disallowed (`allow_clones: false`) or forbidden
-(`clone_chain_depth_limit: 0`) gets the ordinary load answer and renders
-nothing (its reason is `copy_disabled` or `copy_chain_limit`); a seed whose
-existing table has no load in scope is loaded as before.
+No freshness section: a seed has no upstreams.
+
+**Copy disallowed** (`explain_seed_copy_disabled.jsonl`, client 2.0.11,
+2026-11-12). The same seeds built under `allow_clones: false`, which client
+2.0.11 sends with `clone_chain_depth_limit: 0`: hosted loads them with codes
+1 / 10 (TARGET_TABLE_MISMATCH / CLONE_CHAIN_LIMIT_EXCEEDED), the FULL
+[copy disabled](#execute-copy-disabled-allow_clones-false) codes, but keeps
+the ordinary seed descriptions (Decision reason `copy_disabled`). Into its
+absent table (entry 10, "seed was loaded because it did not exist"), the
+FULL tree with the seed noun:
+```
+- table analysis ("«FQN»")
+  - the seed table does not exist                     [FAIL]
+  - the seed table could have been cloned from "«FQN»", but cloning is disabled  [FAIL]
+```
+Over its table, whose latest load had other values (entry 14, "seed was
+loaded because its data changed"). The replaced load is the decision's
+anchor, and the query section is not `(vs clone)`:
+```
+- table analysis ("«FQN»")
+  - the seed file exists already                      [SUCCESS] <TARGET_TABLE_EXISTS>
+  - but it's old. We would have cloned from "«FQN»", but cloning is disabled  [FAIL]
+- query analysis
+  - the seed data has not changed                     [SUCCESS] <NODE_QUERY_UNCHANGED>
+```
+The second `«FQN»` is the load it could have copied. Uncaptured: a seed
+whose target forbids copies with `clone_chain_depth_limit: 0` alone gets the
+ordinary load answer and renders nothing (its reason is
+`copy_chain_limit`); a seed whose existing table has no load in scope is
+loaded as before.
 
 ## UNKNOWN (untracked kinds, e.g. unit tests)
 
@@ -1423,7 +1462,7 @@ there is no cell.
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
 | `dependency_set_changed` | U | U | U | U | U | U | U | — |
 | `copy_chain_limit` ᵐ | U | — | — ᵏ | — | — | — | — | LO ˢ |
-| `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | LO ˢ |
+| `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | L ˢ |
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | L ˢ |
 
 Evidence for each L and C cell is in the per-kind sections above and the
@@ -1467,14 +1506,16 @@ last ones were settled.
   build. Hosted reuses a snapshot or a custom node over a modified Target
   relation (accepted divergence #115), so this server's rebuild is
   local-only. VIEW: a view that reads no relation (`vc0`, entry 377) ᵒ.
-- ʰ The seed safety floor ([SEED](#seed)).
+- ʰ The seed safety floor, accepted divergence #129 ([SEED](#seed)).
 - ˢ Snowflake only (#91): into an absent table, or over a table whose
   latest load had other values (the replaced load is the anchor, `but it's
   old`). Not over a table modified after a load with the seed's values,
   which is the safety floor ʰ ([SEED](#seed)). A seed whose copy is
-  disallowed or forbidden keeps the ordinary load answer (hosted's is
-  uncaptured) and records `copy_disabled` or `copy_chain_limit`, which
-  renders nothing.
+  disallowed (`copy_disabled`) is loaded with codes 1 / 10, into its absent
+  table or over its table holding other values, and its tree names the load
+  it could have copied (`explain_seed_copy_disabled.jsonl`). One forbidden by
+  `clone_chain_depth_limit: 0` alone (`copy_chain_limit`) keeps the ordinary
+  load answer (hosted's is uncaptured) and renders nothing.
 - ᵐ A snapshot gets the default Lag tolerance (45 minutes) and the ANY
   policy: client 2.0.11 reads `state` config from models only
   ([SNAPSHOT](#snapshot)). So its ALL-policy reuse is unreachable, and its
@@ -1561,6 +1602,8 @@ Explain selects a shape from the persisted decision class, Decision reason
 | seed EXECUTE | `no_reuse_candidate.identity_mismatch` | SEED, data changed (unchanged when the skip rejection code is 8) |
 | seed CLONE | `result_copy` with an anchor (the replaced load) | SEED copy over its table ("but it's old") |
 | seed CLONE | `result_copy` otherwise | SEED copy into its absent table |
+| seed EXECUTE | `copy_disabled` with the equivalent persisted, and an anchor (the replaced load) | SEED copy disallowed over its table ("but it's old. We would have cloned") |
+| seed EXECUTE | `copy_disabled` with the equivalent persisted, without an anchor | [copy disabled](#execute-copy-disabled-allow_clones-false), seed noun |
 | seed, other | any other reason | empty tree |
 | data test SKIP | `reused.fresh` | data-test SKIP |
 | data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream | data-test EXECUTE |

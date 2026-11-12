@@ -67,8 +67,12 @@ Do not weaken these without new evidence.
   (`result_copy::seed_lookup`, `Store::find_seed_copy_candidates`). It is
   copied into an absent table, or over its table when that table's latest
   load has other values; never over a table modified after a load with its
-  values (the safety floor, #129). `allow_clones: false` and
-  `clone_chain_depth_limit: 0` do not copy. **Blind spot:** at submit time an
+  values (an accepted divergence, #129, below). A submit with
+  `allow_clones: false` is loaded with the FULL `copy_disabled` codes
+  (1 / 10) and its ordinary description, and Explain names the load it
+  could have copied (`explain_seed_copy_disabled.jsonl`); one with
+  `clone_chain_depth_limit: 0` alone is not copied either (uncaptured,
+  below). **Blind spot:** at submit time an
   External modification of the prod source after its load cannot be seen.
   The submit reports only its own target's epoch, and a seed has no upstream
   listing, so the copy serves the source as modified. A FULL copy from
@@ -203,12 +207,6 @@ server keeps the conservative behavior described.
   `is_stale` as it would be reused) and not the equivalent elsewhere, for
   the five incrementals and a snapshot. The server does the same
   (`submit_decision::older_match` goes ahead of a refused copy).
-- **Seed table externally modified.** Hosted skips an unchanged-values seed
-  whose own table was edited, serving the edited table; the server reloads it
-  as a safety floor. Keyed gaps: `lag_seed_upstream.jsonl` entries 22–23
-  (crafted), and `explain_seed_copy_existing.jsonl` entries 13 and 17 (live,
-  client 2.0.11, #129: a dev seed copied from prod, then modified outside
-  dbt; hosted SKIPs it rather than copy it again).
 - **External modification of the target relation in older captures.** In
   `lag_multi_upstream_policy.jsonl` (client 2.0.6) hosted skipped a target
   relation modified after its build; current hosted rebuilds it
@@ -226,10 +224,12 @@ server keeps the conservative behavior described.
   own copies. `clone_chain_upstream_history.jsonl` is characterization-only
   because every copy source predates the capture
   (`lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`).
-- **Seed copy, uncaptured cases (#91).** Hosted's answer for a seed whose
-  copy is disallowed (`allow_clones: false`) or forbidden
-  (`clone_chain_depth_limit: 0`): the server sends the ordinary load (6 / 6)
-  and records `copy_disabled` / `copy_chain_limit`, which renders no tree. A
+- **Seed copy, uncaptured cases (#91).** A seed whose target forbids copies
+  with `clone_chain_depth_limit: 0` alone (client 2.0.11 sends it only with
+  `allow_clones: false`, which is captured: 1 / 10, the ordinary load
+  description, and a tree naming the equivalent,
+  `explain_seed_copy_disabled.jsonl`): the server sends the ordinary load
+  (6 / 6) and records `copy_chain_limit`, which renders no tree. A
   seed whose existing table has no load in scope, or whose latest row is not
   a seed load: the server reloads it. A source in another database or under
   another object name (an alias): never copied. A source modified after its
@@ -382,9 +382,10 @@ replay fails when an entry becomes unused or resolved
   locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
 - **Safety floor.** The externally modified seed table is reloaded
-  (AGENTS.md reuse invariant 3). Live since 2026-11-11 (#129):
-  `explain_seed_copy_existing.jsonl` entries 13 (submit, local
-  `ready_to_execute`) and 17 (Explain, local `empty_tree`).
+  (AGENTS.md reuse invariant 3) where hosted skips it, serving the edited
+  table: crafted, `lag_seed_upstream.jsonl` entries 22–23. Seen live
+  through client 2.0.11 (#129), an accepted divergence (see
+  [below](#accepted-divergences)).
 - **Snapshot and custom node over a modified Target relation (#115).** An
   accepted divergence (see [below](#accepted-divergences)).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
@@ -422,8 +423,8 @@ test that pins each.
 
 Settled differences from hosted, accepted by the maintainer: the server's
 rule is the conservative one, so it stays. Each needs a request client 2.0.11
-never sends, except #115, which the client sends and where the server keeps
-reuse invariant 3. Their keyed gaps stay in `golden/replay_gaps.json`, with
+never sends, except #115 and #129, which the client sends and where the
+server keeps reuse invariant 3. Their keyed gaps stay in `golden/replay_gaps.json`, with
 reasons that start `ACCEPTED` and point here. Each rebuild below is
 local-only and renders no Explain tree.
 
@@ -491,6 +492,14 @@ local-only and renders no Explain tree.
   changed after its build no longer holds the cached result. Keyed gaps:
   `explain_reason_kind_cells.jsonl` entries 171, 187, 297, 311, 313, 323
   (decision) and 225, 231, 369, 375, 376, 379 (`empty_tree`).
+- **Seed over a modified Target relation (#129, client 2.0.11).** Hosted
+  skips an unchanged-values seed whose table was modified outside dbt after
+  its load, serving the modified table, here a dev seed copied from prod
+  (`explain_seed_copy_existing.jsonl` `s91b`); it neither reloads nor copies
+  it again. The server reloads it with `own_target_changed_or_missing`
+  (6 / 6). Rationale: AGENTS.md reuse invariant 3, the same choice as #115.
+  Keyed gaps: `explain_seed_copy_existing.jsonl` entries 13 (decision) and
+  17 (`empty_tree`).
 - **Unset target on a model submit (#81, crafted d3).** Hosted answers
   `Internal` "Internal server error"; the server answers `InvalidArgument`,
   the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
