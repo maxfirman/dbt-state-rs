@@ -814,51 +814,25 @@ async fn conformance_replay_all_corpora() {
                         serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(e.request.clone())
                             .unwrap();
                     let response = sql
-                        .submit_enriched_sql_speculative(support::captured_request(req.clone(), e))
+                        .submit_enriched_sql_speculative(support::captured_request(req, e))
                         .await
                         .unwrap()
                         .into_inner();
-                    let ours = without_ids(serde_json::to_value(&response).unwrap());
-                    let real = without_ids(e.response.clone());
-                    if let Some(gap) = find_gap(&known, &fixture, i) {
-                        // DECISION DIVERGENCE: hosted decides on the
-                        // speculative call, this server answers `undecided`.
-                        // After `undecided` the client sends the ordinary
-                        // submit (as it does for the same node earlier in the
-                        // capture), so that submit is driven here and must
-                        // answer as hosted did; its decision id stands in for
-                        // hosted's in the Explain that follows.
-                        assert!(!gap.reason.trim().is_empty());
-                        assert_eq!(gap.local_variant, "undecided", "{context}");
-                        assert_eq!(
-                            real_variant(&ours).as_deref(),
-                            Some("undecided"),
-                            "{context}: characterized local speculative answer changed"
-                        );
-                        assert_ne!(ours, real, "{context}: gap is resolved; remove it");
-                        let follow = sql
-                            .submit_enriched_sql(support::captured_request(req, e))
-                            .await
-                            .unwrap()
-                            .into_inner();
-                        if let (Some(hosted), Some(local)) =
-                            (hosted_submit_edid(&e.response), local_submit_edid(&follow))
-                        {
-                            edid_remap.insert(hosted, local);
-                        }
-                        let follow = without_ids(serde_json::to_value(&follow).unwrap());
-                        if follow != real {
-                            mismatches.push(format!(
-                                "{context}: submit after `undecided` differs from hosted's \
-                                 speculative answer ours={follow} real={real}"
-                            ));
-                        }
-                        seen_gaps.insert((gap.fixture.clone(), i));
-                        gaps += 1;
-                    } else {
-                        assert_eq!(ours, real, "{context}");
-                        asserted += 1;
+                    // A speculative SKIP is a decision the client explains
+                    // and never resubmits (#103), so its decision id keys the
+                    // Explain that follows, like a submit's.
+                    if let (Some(hosted), Some(local)) = (
+                        hosted_submit_edid(&e.response),
+                        local_speculative_edid(&response),
+                    ) {
+                        edid_remap.insert(hosted, local);
                     }
+                    assert_eq!(
+                        without_ids(serde_json::to_value(&response).unwrap()),
+                        without_ids(e.response.clone()),
+                        "{context}"
+                    );
+                    asserted += 1;
                 }
                 "GetExplainMessages" => {
                     explain_entries_asserted += replay_explain_messages(
@@ -1048,6 +1022,17 @@ fn local_submit_edid(resp: &qc::SubmitSqlResponse) -> Option<String> {
         }
         Some(qc::submit_sql_response::Response::ReadyToClone(c)) => c.execution_decision_id.clone(),
         None => None,
+    }
+}
+
+/// Extract the locally minted `execution_decision_id` from the server's
+/// speculative response (only a decided one carries it).
+fn local_speculative_edid(resp: &qc::SubmitSqlSpeculativeResponse) -> Option<String> {
+    use qc::submit_sql_speculative_response::Response;
+    match &resp.response {
+        Some(Response::SkipExecution(s)) => s.execution_decision_id.clone(),
+        Some(Response::ReadyToClone(c)) => c.execution_decision_id.clone(),
+        Some(Response::ReadyToExecuteUntracked(_) | Response::Undecided(_)) | None => None,
     }
 }
 
