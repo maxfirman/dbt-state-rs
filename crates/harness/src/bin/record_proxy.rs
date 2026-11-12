@@ -19,7 +19,7 @@ use tonic::transport::{Channel, ClientTlsConfig, Server};
 use tonic::{Request, Response, Status};
 
 use dbt_state_harness::auth::{DbtCloudCredential, TokenMinter};
-use dbt_state_harness::golden::{GoldenEntry, GoldenLog};
+use dbt_state_harness::golden::{GoldenEntry, GoldenLog, RecordedMetadata, RpcStatus};
 
 use dbt_state_proto::query_cache as qc;
 
@@ -56,6 +56,8 @@ struct Proxy {
     channel: Channel,
     minter: Arc<TokenMinter>,
     golden: Arc<GoldenLog>,
+    #[cfg(test)]
+    bypass_auth: bool,
 }
 
 /// Local newtype wrapper so we can implement the (foreign) generated service
@@ -94,11 +96,15 @@ impl Proxy {
         inbound: &[(String, String)],
         msg: T,
     ) -> Result<Request<T>, Status> {
+        #[cfg(test)]
+        if self.bypass_auth {
+            return Ok(Request::new(msg));
+        }
         let token = self
             .minter
             .token()
             .await
-            .map_err(|e| Status::unauthenticated(format!("token exchange failed: {e}")))?;
+            .map_err(|_| Status::unauthenticated("token exchange failed"))?;
         let mut req = Request::new(msg);
         let md = req.metadata_mut();
         for (key, value) in inbound {
@@ -134,8 +140,9 @@ impl Proxy {
         method: &str,
         meta: Vec<(String, String)>,
         req: &Req,
-        resp: &Resp,
-    ) where
+        outcome: Result<Response<Resp>, Status>,
+    ) -> Result<Response<Resp>, Status>
+    where
         Req: serde::Serialize,
         Resp: serde::Serialize,
     {
@@ -143,11 +150,23 @@ impl Proxy {
             service: service.to_string(),
             method: method.to_string(),
             recorded_at: chrono::Utc::now().to_rfc3339(),
-            metadata: meta,
+            metadata: meta
+                .into_iter()
+                .filter(|(key, _)| dbt_state_harness::golden::record_header(key))
+                .collect(),
             request: req,
-            response: resp,
+            response: outcome.as_ref().ok().map(|response| response.get_ref()),
+            status: RpcStatus::capture(&outcome),
+            response_metadata: outcome
+                .as_ref()
+                .ok()
+                .map(|response| RecordedMetadata::capture(response.metadata()))
+                .unwrap_or_default(),
         };
-        self.golden.append(&entry);
+        self.golden
+            .append(&entry)
+            .map_err(|_| Status::internal("capture failed to record RPC outcome"))?;
+        outcome
     }
 }
 
@@ -158,45 +177,55 @@ impl Sql for ProxyService {
         &self,
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = SqlClient::new(self.channel.clone())
-            .submit_enriched_sql(up)
-            .await?
-            .into_inner();
-        self.log("SQL", "SubmitEnrichedSQL", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            SqlClient::new(self.channel.clone())
+                .submit_enriched_sql(up)
+                .await
+        }
+        .await;
+        self.log("SQL", "SubmitEnrichedSQL", meta, &msg, resp)
     }
 
     async fn submit_values(
         &self,
         request: Request<qc::SubmitValuesRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = SqlClient::new(self.channel.clone())
-            .submit_values(up)
-            .await?
-            .into_inner();
-        self.log("SQL", "SubmitValues", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            SqlClient::new(self.channel.clone()).submit_values(up).await
+        }
+        .await;
+        self.log("SQL", "SubmitValues", meta, &msg, resp)
     }
 
     async fn submit_enriched_sql_speculative(
         &self,
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlSpeculativeResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = SqlClient::new(self.channel.clone())
-            .submit_enriched_sql_speculative(up)
-            .await?
-            .into_inner();
-        self.log("SQL", "SubmitEnrichedSQLSpeculative", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            SqlClient::new(self.channel.clone())
+                .submit_enriched_sql_speculative(up)
+                .await
+        }
+        .await;
+        self.log("SQL", "SubmitEnrichedSQLSpeculative", meta, &msg, resp)
     }
 }
 
@@ -207,45 +236,57 @@ impl Execution for ProxyService {
         &self,
         request: Request<qc::ConfirmExecutionRequest>,
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ExecutionClient::new(self.channel.clone())
-            .confirm_execution(up)
-            .await?
-            .into_inner();
-        self.log("Execution", "ConfirmExecution", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ExecutionClient::new(self.channel.clone())
+                .confirm_execution(up)
+                .await
+        }
+        .await;
+        self.log("Execution", "ConfirmExecution", meta, &msg, resp)
     }
 
     async fn record_executions(
         &self,
         request: Request<qc::RecordExecutionsRequest>,
     ) -> Result<Response<qc::RecordExecutionsResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ExecutionClient::new(self.channel.clone())
-            .record_executions(up)
-            .await?
-            .into_inner();
-        self.log("Execution", "RecordExecutions", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ExecutionClient::new(self.channel.clone())
+                .record_executions(up)
+                .await
+        }
+        .await;
+        self.log("Execution", "RecordExecutions", meta, &msg, resp)
     }
 
     async fn resolve_deferred_relations(
         &self,
         request: Request<qc::ResolveDeferredRelationsRequest>,
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ExecutionClient::new(self.channel.clone())
-            .resolve_deferred_relations(up)
-            .await?
-            .into_inner();
-        self.log("Execution", "ResolveDeferredRelations", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ExecutionClient::new(self.channel.clone())
+                .resolve_deferred_relations(up)
+                .await
+        }
+        .await;
+        self.log("Execution", "ResolveDeferredRelations", meta, &msg, resp)
     }
 }
 
@@ -256,15 +297,19 @@ impl CloneSvc for ProxyService {
         &self,
         request: Request<qc::CloneRequest>,
     ) -> Result<Response<qc::CloneResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = CloneClient::new(self.channel.clone())
-            .register_clone(up)
-            .await?
-            .into_inner();
-        self.log("Clone", "RegisterClone", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            CloneClient::new(self.channel.clone())
+                .register_clone(up)
+                .await
+        }
+        .await;
+        self.log("Clone", "RegisterClone", meta, &msg, resp)
     }
 }
 
@@ -275,21 +320,25 @@ impl ClientValidation for ProxyService {
         &self,
         request: Request<qc::ValidateClientVersionRequest>,
     ) -> Result<Response<qc::ValidateClientVersionResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ClientValidationClient::new(self.channel.clone())
-            .validate_client_version(up)
-            .await?
-            .into_inner();
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ClientValidationClient::new(self.channel.clone())
+                .validate_client_version(up)
+                .await
+        }
+        .await;
         self.log(
             "ClientValidation",
             "ValidateClientVersion",
             meta,
             &msg,
-            &resp,
-        );
-        Ok(Response::new(resp))
+            resp,
+        )
     }
 }
 
@@ -300,30 +349,38 @@ impl Explain for ProxyService {
         &self,
         request: Request<qc::GetExplainMessagesRequest>,
     ) -> Result<Response<qc::GetExplainMessagesResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ExplainClient::new(self.channel.clone())
-            .get_explain_messages(up)
-            .await?
-            .into_inner();
-        self.log("Explain", "GetExplainMessages", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ExplainClient::new(self.channel.clone())
+                .get_explain_messages(up)
+                .await
+        }
+        .await;
+        self.log("Explain", "GetExplainMessages", meta, &msg, resp)
     }
 
     async fn get_upstream_dependency_changes(
         &self,
         request: Request<qc::GetUpstreamDependencyChangesRequest>,
     ) -> Result<Response<qc::GetUpstreamDependencyChangesResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ExplainClient::new(self.channel.clone())
-            .get_upstream_dependency_changes(up)
-            .await?
-            .into_inner();
-        self.log("Explain", "GetUpstreamDependencyChanges", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ExplainClient::new(self.channel.clone())
+                .get_upstream_dependency_changes(up)
+                .await
+        }
+        .await;
+        self.log("Explain", "GetUpstreamDependencyChanges", meta, &msg, resp)
     }
 }
 
@@ -334,15 +391,19 @@ impl SelectorService for ProxyService {
         &self,
         request: Request<qc::SelectorRequest>,
     ) -> Result<Response<qc::SelectorResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = SelectorServiceClient::new(self.channel.clone())
-            .get_state_selection(up)
-            .await?
-            .into_inner();
-        self.log("SelectorService", "GetStateSelection", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            SelectorServiceClient::new(self.channel.clone())
+                .get_state_selection(up)
+                .await
+        }
+        .await;
+        self.log("SelectorService", "GetStateSelection", meta, &msg, resp)
     }
 }
 
@@ -356,30 +417,38 @@ impl ClientTelemetry for ProxyService {
         &self,
         request: Request<qc::SessionStartRequest>,
     ) -> Result<Response<qc::SessionStartResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ClientTelemetryClient::new(self.channel.clone())
-            .register_session_start(up)
-            .await?
-            .into_inner();
-        self.log("ClientTelemetry", "RegisterSessionStart", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ClientTelemetryClient::new(self.channel.clone())
+                .register_session_start(up)
+                .await
+        }
+        .await;
+        self.log("ClientTelemetry", "RegisterSessionStart", meta, &msg, resp)
     }
 
     async fn submit_telemetry_batch(
         &self,
         request: Request<qc::SubmitTelemetryBatchRequest>,
     ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
+        self.golden
+            .begin()
+            .map_err(|_| Status::internal("capture failed before forwarding"))?;
         let meta = Proxy::capture_metadata(&request);
         let msg = request.into_inner();
-        let up = self.upstream_request(&meta, msg.clone()).await?;
-        let resp = ClientTelemetryClient::new(self.channel.clone())
-            .submit_telemetry_batch(up)
-            .await?
-            .into_inner();
-        self.log("ClientTelemetry", "SubmitTelemetryBatch", meta, &msg, &resp);
-        Ok(Response::new(resp))
+        let resp = async {
+            let up = self.upstream_request(&meta, msg.clone()).await?;
+            ClientTelemetryClient::new(self.channel.clone())
+                .submit_telemetry_batch(up)
+                .await
+        }
+        .await;
+        self.log("ClientTelemetry", "SubmitTelemetryBatch", meta, &msg, resp)
     }
 }
 
@@ -405,7 +474,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Pre-mint once to fail fast if auth is broken.
     let minter = Arc::new(TokenMinter::new(credential));
-    let tok = minter.token().await?;
+    let tok = minter
+        .token()
+        .await
+        .map_err(|_| anyhow::anyhow!("token exchange failed"))?;
     tracing::info!(org_id = %tok.org_id, "token exchange OK");
 
     let channel = Channel::from_shared(upstream.clone())?
@@ -420,14 +492,16 @@ async fn main() -> anyhow::Result<()> {
     let proxy = Arc::new(Proxy {
         channel,
         minter,
-        golden,
+        golden: golden.clone(),
+        #[cfg(test)]
+        bypass_auth: false,
     });
     let svc = ProxyService(proxy);
 
     let addr = listen.parse()?;
     tracing::info!(%listen, "recording proxy listening (insecure h2c)");
 
-    Server::builder()
+    let serving = Server::builder()
         .add_service(SqlServer::new(svc.clone()))
         .add_service(ExecutionServer::new(svc.clone()))
         .add_service(CloneServer::new(svc.clone()))
@@ -435,8 +509,31 @@ async fn main() -> anyhow::Result<()> {
         .add_service(ExplainServer::new(svc.clone()))
         .add_service(SelectorServiceServer::new(svc.clone()))
         .add_service(ClientTelemetryServer::new(svc))
-        .serve(addr)
-        .await?;
+        .serve_with_shutdown(addr, shutdown_signal())
+        .await;
+    golden.finish()?;
+    serving?;
 
     Ok(())
 }
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+#[path = "../proxy_tests.rs"]
+mod tests;

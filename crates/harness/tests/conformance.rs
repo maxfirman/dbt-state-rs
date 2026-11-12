@@ -12,6 +12,32 @@ use qc::execution_client::ExecutionClient;
 use qc::sql_client::SqlClient;
 use std::collections::{HashMap, HashSet};
 
+/// Successful calls retain new capture metadata; old fixtures omit it.
+trait CapturedResponse<T> {
+    fn into_captured(self, entry: &diff::GoldenEntry) -> T;
+}
+
+impl<T> CapturedResponse<T> for tonic::Response<T> {
+    fn into_captured(self, entry: &diff::GoldenEntry) -> T {
+        use dbt_state_harness::golden::{RecordedMetadata, RpcStatus};
+        if let Some(expected) = &entry.status {
+            let success = RpcStatus::capture(&Ok::<_, tonic::Status>(tonic::Response::new(())));
+            assert!(
+                expected.equivalent(&success),
+                "successful RPC status mismatch"
+            );
+        }
+        if let Some(expected) = &entry.response_metadata {
+            assert_eq!(
+                expected.protocol(),
+                RecordedMetadata::capture(self.metadata()).protocol(),
+                "successful RPC response metadata mismatch"
+            );
+        }
+        self.into_inner()
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct KnownGap {
     fixture: String,
@@ -505,7 +531,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        67,
+        68,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -541,6 +567,25 @@ async fn conformance_replay_all_corpora() {
         let mut gaps = 0;
         for (i, e) in entries.iter().enumerate() {
             let context = format!("{fixture} entry {i}");
+            if e.status.as_ref().is_some_and(|status| status.code != 0) {
+                // Errors have no response oneof or minted IDs to correlate.
+                // Compare the complete code/message/details/metadata instead
+                // of dropping them or coercing them into empty responses.
+                let mut entry = e.clone();
+                if let Some(hosted_id) = entry.request["request_id"].as_str() {
+                    if let Some((local_id, _)) = pending.get(hosted_id) {
+                        entry.request["request_id"] = local_id.clone().into();
+                    }
+                }
+                let outcome = diff::replay_rpc(ch.clone(), &entry)
+                    .await
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                entry
+                    .compare_outcome(&outcome)
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                asserted += 1;
+                continue;
+            }
             match e.method.as_str() {
                 "SubmitEnrichedSQL" | "SubmitValues" => {
                     let response = if e.method == "SubmitValues" {
@@ -551,7 +596,7 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner()
+                        .into_captured(e)
                     } else {
                         sql.submit_enriched_sql(support::captured_request(
                             serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(
@@ -562,7 +607,7 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner()
+                        .into_captured(e)
                     };
                     let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
                     // Record the hosted->local execution_decision_id mapping for
@@ -777,7 +822,7 @@ async fn conformance_replay_all_corpora() {
                             .confirm_execution(support::captured_request(req, e))
                             .await
                             .unwrap()
-                            .into_inner();
+                            .into_captured(e);
                         assert_eq!(response.request_id, id, "{context}: confirmation ID echo");
                         assert_eq!(
                             without_ids(serde_json::to_value(response).unwrap()),
@@ -801,7 +846,7 @@ async fn conformance_replay_all_corpora() {
                             )
                             .await
                             .unwrap()
-                            .into_inner();
+                            .into_captured(e);
                     assert_eq!(
                         serde_json::to_value(response).unwrap(),
                         e.response,
@@ -817,7 +862,7 @@ async fn conformance_replay_all_corpora() {
                         .submit_enriched_sql_speculative(support::captured_request(req, e))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     // A speculative SKIP is a decision the client explains
                     // and never resubmits (#103), so its decision id keys the
                     // Explain that follows, like a submit's.
@@ -862,7 +907,7 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     assert_eq!(
                         serde_json::to_value(response).unwrap(),
                         e.response,
@@ -888,7 +933,7 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
                     let local_variant = support::clone_response_variant(&response);
                     let hosted_variant = support::clone_response_variant(

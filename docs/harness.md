@@ -11,7 +11,7 @@ this server against it. Wire semantics and the captured protocol facts live in
 | Binary (`crates/harness/Cargo.toml`) | Source | Purpose |
 |---|---|---|
 | `record-proxy` | `src/bin/record_proxy.rs` | Recording proxy (below). |
-| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `clone` for `Clone.RegisterClone`, `explain`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py`, `seed_upstream.py`, `ambiguous_rebuilds.py`, `incomplete_test_results.py`, `copy_logic_probes.py`, `malformed_requests.py`, `unknown_epoch_probes.py` and `rebuild_tolerance_line_probes.py` for synthetic-epoch sequences that need no warehouse. |
+| `state-probe` | `src/bin/state_probe.rs` | Sends one crafted RPC (`submit`, `values`, `confirm`, `clone` for `Clone.RegisterClone`, `explain`, `validate`, `select`) read as golden-format JSON from stdin, through the proxy, and prints the response. Used by `experiments/lag_matrix.py`, `seed_upstream.py`, `ambiguous_rebuilds.py`, `incomplete_test_results.py`, `copy_logic_probes.py`, `malformed_requests.py`, `unknown_epoch_probes.py` and `rebuild_tolerance_line_probes.py` for synthetic-epoch sequences that need no warehouse. |
 | `diff-fuzz` | `src/bin/diff_fuzz.rs` | Opt-in differential discovery against the hosted service; needs `--features fuzz` ([testing.md](testing.md#hosted-discovery-differential-fuzz)). |
 
 ### Recording proxy
@@ -22,14 +22,14 @@ dbt client points at it. Each call is forwarded over TLS to the hosted service
 with the client's own metadata (`x-submitted-at-epoch`, `x-dbt-invocation-id`,
 and so on; transport and auth headers excluded) plus a minted Bearer token. The
 proxy returns the hosted response unchanged and appends one JSON line per call
-to `golden_<timestamp>.jsonl`.
+to `golden_<timestamp>_<session>.jsonl`.
 
 - `src/auth.rs` reads the active host and token from `~/.dbt/dbt_cloud.yml`,
   performs the dbt platform token exchange, caches the token with 60s expiry
   slack, and extracts the organization ID from the
   `runcache:scope:org:<ORG_ID>:...` scope.
 - `src/golden.rs` defines `GoldenEntry` {`service`, `method`, `recorded_at`,
-  `metadata`, `request`, `response`} and the append-only writer.
+  `metadata`, `request`, `response`, `status`, `response_metadata`} and the append-only writer.
 - Environment: `PROXY_LISTEN` (default `127.0.0.1:50099`), `PROXY_UPSTREAM`
   (default `https://api.state.dbt.com:443`), `GOLDEN_DIR` (default `./golden`).
 
@@ -239,3 +239,46 @@ Forcing the dbt client to take a result copy against this server live depends
 on warehouse state (the client only asks to clone when the target relation is
 absent). Replay of captured traffic is evidence for the captured cases only;
 see [testing.md](testing.md#captured-traffic-replay).
+
+## Successful and rejected RPC captures (#133)
+
+Every forwarded RPC now records `status` (`code`, `message`, opaque `details`
+bytes and ASCII/binary metadata). Successful records retain their existing
+`response` body; rejected records use `response: null`. `response_metadata`
+retains successful response headers. Old fixtures without these fields still
+mean a successful RPC. Replay compares protobuf field presence, including
+optional empty values and the deprecated clone response mirror, and compares
+rejected RPC statuses without turning errors into empty successful responses.
+
+Captures retain hosted ingress headers, but replay excludes only the observed
+HTTP ingress fields `server`, `strict-transport-security`,
+`x-content-type-options`, `x-envoy-upstream-service-time` and `x-frame-options`.
+Status codes, messages, details, application metadata and response bodies are
+compared. Transport headers such as `date`, `content-type` and `grpc-*` are not
+recorded; gRPC status details are retained separately as bytes.
+
+A session also writes `<golden file>.capture.json`, tracking started and
+recorded calls and clean completion. Stop the owned proxy with SIGTERM or
+Ctrl-C so it drains in-flight calls and certifies the capture. A kill, pending
+RPC, write failure, missing line, malformed JSON or missing sidecar fails live
+campaign validation. The Explain driver checks this before declaring success.
+Other campaign runners must call `capture_integrity.verify_capture(path)`
+from `experiments/capture_integrity.py` after stopping their proxy. Keep the
+sidecar with run evidence; promote only the focused JSONL into fixtures.
+Historical fixtures remain replayable without a sidecar, but cannot certify a
+new live campaign's completeness.
+
+Authorization, cookies and headers containing credential/token/secret/password
+or API-key names are excluded from request and response captures, including
+error metadata. Token-exchange failure bodies are not printed by the proxy.
+Captures are decoded protocol records, not token-bearing transport dumps.
+Review SQL, labels and telemetry payloads before publishing evidence: application
+payloads are preserved for replay rather than redacted speculatively.
+
+`rpc_success_and_rejection.jsonl` was captured from hosted State on
+2026-11-12 with `state-probe validate` (`dbt_run_cache_version: "2.0.11"`) and
+`state-probe select` (`selector_criteria: 2`, empty `project_id`). The second
+call returns `INVALID_ARGUMENT: project_id must be provided`. Neither call
+uses a warehouse or creates State execution history. Both replay through the
+production router without exceptions. This is protocol evidence, not a claim
+of Databricks decision conformance.

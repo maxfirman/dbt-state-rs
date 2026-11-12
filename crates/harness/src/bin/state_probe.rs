@@ -5,7 +5,7 @@
 //! hosted service and records the exchange in the golden log. The request is
 //! read from stdin as the JSON form the golden log uses.
 //!
-//! Usage: `state-probe <submit|confirm|clone|explain|values> < request.json`
+//! Usage: `state-probe <submit|confirm|clone|explain|values|validate|select> < request.json`
 //! (`clone` sends `Clone.RegisterClone`, the dev-clone pre-step's copy request.)
 //!
 //! Env:
@@ -47,7 +47,7 @@ fn with_client_metadata<T>(msg: T) -> anyhow::Result<Request<T>> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let op = std::env::args().nth(1).ok_or_else(|| {
-        anyhow::anyhow!("usage: state-probe <submit|confirm|clone|explain|values>")
+        anyhow::anyhow!("usage: state-probe <submit|confirm|clone|explain|values|validate|select>")
     })?;
     let mut body = String::new();
     std::io::stdin().read_to_string(&mut body)?;
@@ -55,6 +55,22 @@ async fn main() -> anyhow::Result<()> {
     let channel = Channel::from_shared(url)?.connect().await?;
 
     let out = match op.as_str() {
+        "validate" => {
+            let msg: qc::ValidateClientVersionRequest = serde_json::from_str(&body)?;
+            let resp = qc::client_validation_client::ClientValidationClient::new(channel)
+                .validate_client_version(with_client_metadata(msg)?)
+                .await?
+                .into_inner();
+            serde_json::to_value(resp)?
+        }
+        "select" => {
+            let msg: qc::SelectorRequest = serde_json::from_str(&body)?;
+            let resp = qc::selector_service_client::SelectorServiceClient::new(channel)
+                .get_state_selection(with_client_metadata(msg)?)
+                .await?
+                .into_inner();
+            serde_json::to_value(resp)?
+        }
         "submit" => {
             let msg: qc::SubmitEnrichedSqlRequest = serde_json::from_str(&body)?;
             let resp = qc::sql_client::SqlClient::new(channel)

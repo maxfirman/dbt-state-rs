@@ -11,7 +11,7 @@ pass proves is in [docs/testing.md](../docs/testing.md#captured-traffic-replay).
   ([semantics](../docs/testing.md#goldenreplay_gapsjson)).
 - `upgrade/`: frozen rows from an old server revision (below).
 - Top level: the recording proxy's output directory. `record-proxy` writes
-  `golden_<timestamp>.jsonl` here each session. These files are gitignored
+  `golden_<timestamp>_<session>.jsonl` and a `.capture.json` integrity sidecar here each session. These files are gitignored
   (`/golden/golden_*.jsonl`) and ephemeral. Promote a useful capture by copying
   it into `fixtures/`; do not leave session files at the top level.
 
@@ -86,6 +86,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `explain_unknown_epoch.jsonl` | yes | Crafted `state-probe` requests only (`experiments/unknown_epoch_probes.py`, #104): a FULL model whose upstream epoch is unknown at the build, the resubmit or both; hosted SKIPs within the Lag tolerance, keyed as accepted divergences (#113); `conformance.rs`. |
 | `explain_copy_logic_mismatch.jsonl` | yes | Client 2.0.11, `experiments/explain_capture.py copy_logic_mismatch` (#104): rebuilds over a `RegisterClone` pre-step copy after a logic change (five incrementals, a snapshot) or a materialization change (a table: 2 / 2; a view and a custom node: 6 / 6), and a table with a prod equivalent under `allow_clones: false` (1 / 10, "cloning is disabled"); `conformance.rs` RegisterClone and Explain arms. |
 | `explain_copy_logic_crafted.jsonl` | yes | Crafted `state-probe` requests only (`experiments/copy_logic_probes.py`, #104), including `RegisterClone`: a table over an append copy with other logic, every model kind over a copy without upstreams, and every model kind over a dropped copy (`x11`–`x19`); `conformance.rs`. |
+| `rpc_success_and_rejection.jsonl` | yes | Warehouse-free hosted calls (2026-11-12, #133): version validation succeeds; a selector without `project_id` returns `INVALID_ARGUMENT: project_id must be provided`. Status/response metadata and field presence replay in `rpc_capture_replay.rs` and `conformance.rs`; no history exemption. |
 | `explain_malformed_requests.jsonl` | yes | Crafted `state-probe` requests only (`experiments/malformed_requests.py`, #104): a node of each kind whose query dependency is listed twice, built then resubmitted; hosted SKIPs, keyed as accepted divergences (#114). The empty-SQL and empty-dependency probes failed with `INVALID_ARGUMENT` and were not recorded; `conformance.rs`. |
 | `clone_chain_upstream_history.jsonl` | char-only | A copy chain whose consumed upstream copy is externally modified, which rebuilds within tolerance; `lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`. |
 | `clone_chain_upstream_drift.jsonl` | yes | A copied target rebuilds once its upstream advances past the copy's build epoch; `clone_chain_provenance.rs::hosted_clone_rebuilds_when_upstream_advances_past_clone`. |

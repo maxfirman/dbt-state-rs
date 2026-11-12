@@ -913,7 +913,7 @@ impl SelectorService for SelectorServiceImpl {
 
         // project_id scopes the comparison state (required by the client).
         if req.project_id.is_empty() {
-            return Err(Status::invalid_argument("project_id is required"));
+            return Err(Status::invalid_argument("project_id must be provided"));
         }
 
         // Fetch the recorded comparison state for exactly the submitted nodes,
