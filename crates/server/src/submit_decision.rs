@@ -83,7 +83,9 @@ pub enum SubmitOutcome {
     /// An equivalent exists but the target forbids copies or the copy chain is
     /// at its limit: build with the chain-limit or copy-disabled shape and an
     /// ordinary pending row (see [`SubmitCopyPlan::ChainLimitExecute`],
-    /// [`SubmitCopyPlan::CopiesDisabled`]).
+    /// [`SubmitCopyPlan::CopiesDisabled`]). Also a seed load whose copy the
+    /// submit disallowed, with the seed's own description
+    /// ([`DecisionRecord::with_seed_copy_refused`]).
     ChainLimitExecute {
         ids: DecisionIds,
         record: DecisionRecord,
@@ -529,7 +531,10 @@ pub async fn submit_values(
                 log_decision(&evidence, outcome.record(), false, &req.labels);
                 return Ok(*outcome);
             }
-            SeedCopy::Refused(reason) => refused_copy = Some(reason),
+            SeedCopy::Refused {
+                reason,
+                source_table,
+            } => refused_copy = Some((reason, source_table, target)),
             SeedCopy::Ordinary => {}
         }
     }
@@ -543,29 +548,52 @@ pub async fn submit_values(
     };
     let (record, candidate) = decide(&evidence, &selection, &freshness);
     let candidate = candidate.cloned();
-    let record = match older_match(store, &evidence, &freshness, &record, |row| {
+    let older = older_match(store, &evidence, &freshness, &record, |row| {
         reuse_candidate::older_seed_matches(req, &evidence, row)
     })
-    .await?
-    {
-        Some((reuse, build_age_ms)) => record.with_older_match(reuse, build_age_ms),
-        None => match refused_copy {
-            Some(reason) => record.with_seed_copy_refused(reason),
-            None => record,
-        },
+    .await?;
+    // An older match of the table is reported ahead of a refused copy, as
+    // for a SQL submit.
+    let (record, refused_copy) = match older {
+        Some((reuse, build_age_ms)) => (record.with_older_match(reuse, build_age_ms), None),
+        None => (record, refused_copy),
     };
-    log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
-    settle(store, &evidence, record, candidate).await
+    let Some((reason, source_table, target)) = refused_copy else {
+        log_decision(&evidence, &record, candidate.is_some(), &req.labels);
+        return settle(store, &evidence, record, candidate).await;
+    };
+    let over = match target {
+        SeedCopyTarget::Absent => None,
+        SeedCopyTarget::Over(row) => Some(row),
+    };
+    let record = record.with_seed_copy_refused(reason, over);
+    log_decision(&evidence, &record, candidate.is_some(), &req.labels);
+    if record.reason != decision::DecisionReason::CopyDisabled {
+        return settle(store, &evidence, record, candidate).await;
+    }
+    // The FULL `copy_disabled` outcome: an ordinary pending row, and the
+    // equivalent Explain names.
+    let ids = DecisionIds::mint();
+    write_pending(store, &evidence, &ids).await?;
+    Ok(SubmitOutcome::ChainLimitExecute {
+        ids,
+        record,
+        source_table,
+    })
 }
 
 /// What the seed copy on submit decided ([`seed_copy_fallback`]).
 enum SeedCopy {
     /// The seed is copied (`ready_to_clone`).
     Copied(Box<SubmitOutcome>),
-    /// A load to copy exists, but the submit disallows or forbids copies:
-    /// the ordinary decision applies, recording this reason.
-    Refused(decision::DecisionReason),
+    /// A load to copy exists, `source_table`, but the submit disallows or
+    /// forbids copies: the seed is loaded, recording this reason
+    /// ([`DecisionRecord::with_seed_copy_refused`]).
+    Refused {
+        reason: decision::DecisionReason,
+        source_table: String,
+    },
     /// The ordinary decision applies unchanged.
     Ordinary,
 }
@@ -574,10 +602,10 @@ enum SeedCopy {
 /// [`result_copy::seed_lookup`]): the newest current load of the seed's
 /// reuse identity in another schema of its namespace is copied into the
 /// target, under the limits of a FULL copy. Otherwise the ordinary decision
-/// applies: no copy is admitted, no such load exists, or the submit
-/// disallows copies. Hosted's wording for a seed whose copy is disallowed is
-/// uncaptured, so such a seed keeps the ordinary load answer
-/// ([`SeedCopy::Refused`]).
+/// applies: no copy is admitted or no such load exists. A submit that
+/// disallows copies is loaded with the FULL `copy_disabled` codes and Explain
+/// names the load it could have copied (VERIFIED LIVE 2026-11-12,
+/// explain_seed_copy_disabled.jsonl; [`SeedCopy::Refused`]).
 ///
 /// A seed has no upstreams, so the copy is not judged for freshness. An
 /// External modification of the source after its load is not visible at
@@ -597,6 +625,7 @@ async fn seed_copy_fallback(
     };
     // Snowflake tracks no copy depth: the source counts as a build, as for a
     // FULL copy.
+    let source_table = candidate.target_table.clone();
     match result_copy::plan_seed_submit(req, CloneEquivalent::new(candidate, 0)) {
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
@@ -621,12 +650,14 @@ async fn seed_copy_fallback(
             );
             Ok(SeedCopy::Ordinary)
         }
-        SubmitCopyPlan::CopiesDisabled => {
-            Ok(SeedCopy::Refused(decision::DecisionReason::CopyDisabled))
-        }
-        SubmitCopyPlan::ChainLimitExecute => {
-            Ok(SeedCopy::Refused(decision::DecisionReason::CopyChainLimit))
-        }
+        SubmitCopyPlan::CopiesDisabled => Ok(SeedCopy::Refused {
+            reason: decision::DecisionReason::CopyDisabled,
+            source_table,
+        }),
+        SubmitCopyPlan::ChainLimitExecute => Ok(SeedCopy::Refused {
+            reason: decision::DecisionReason::CopyChainLimit,
+            source_table,
+        }),
         SubmitCopyPlan::Refused { .. } => Ok(SeedCopy::Ordinary),
     }
 }

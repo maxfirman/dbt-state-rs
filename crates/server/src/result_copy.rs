@@ -314,6 +314,8 @@ pub(crate) enum SubmitCopyPlan {
     /// [`SubmitCopyPlan::ChainLimitExecute`] and `cloning is disabled`
     /// (VERIFIED LIVE 2026-11-11, client 2.0.11, which sends it with
     /// `clone_chain_depth_limit = 0`: explain_copy_logic_mismatch.jsonl `cf4`).
+    /// A seed keeps its ordinary load description with these codes
+    /// (2026-11-12, explain_seed_copy_disabled.jsonl).
     CopiesDisabled,
     /// An equivalent exists, but the Warehouse rules do not copy this
     /// submit's execution type ([`Warehouse::submit_copy_admits`]). Hosted
