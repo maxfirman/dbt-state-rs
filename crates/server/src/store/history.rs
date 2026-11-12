@@ -200,7 +200,9 @@ impl Store {
             .push(" AND target_table <> ")
             .push_bind(q.exclude_target)
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
-            .push_bind(q.limit);
+            .push_bind(q.limit)
+            .push(" OFFSET ")
+            .push_bind(q.offset);
         query
             .build_query_as::<CopyCandidate>()
             .fetch_all(&self.pool)

@@ -294,7 +294,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for CopyCandidate {
 
 /// What [`Store::find_seed_copy_candidates`] selects: up to `limit` current
 /// seed loads with this reuse identity under other names in the namespace,
-/// newest first (#91).
+/// newest first, after skipping the first `offset` (#91).
 #[derive(Debug, Clone, Copy)]
 pub struct SeedCopyCandidateQuery<'a> {
     pub table_namespace: &'a str,
@@ -304,6 +304,7 @@ pub struct SeedCopyCandidateQuery<'a> {
     pub exclude_target: &'a str,
     pub dialect: &'a str,
     pub limit: i64,
+    pub offset: i64,
 }
 
 /// What [`Store::find_copy_candidates`] selects: up to `limit` current

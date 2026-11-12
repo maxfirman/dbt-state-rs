@@ -524,23 +524,7 @@ async fn seed_copy_fallback(
     let Some(lookup) = result_copy::seed_lookup(req, evidence) else {
         return Ok(SeedCopy::Ordinary);
     };
-    let candidates = store
-        .find_seed_copy_candidates(
-            org_id,
-            &SeedCopyCandidateQuery {
-                table_namespace: lookup.table_namespace,
-                seed_logic_hash: lookup.seed_logic_hash,
-                values_hash: lookup.values_hash,
-                exclude_target: lookup.target_table,
-                dialect: &req.dialect,
-                limit: COPY_CANDIDATE_LIMIT,
-            },
-        )
-        .await?;
-    let Some(candidate) = candidates
-        .into_iter()
-        .find(|c| lookup.admits(&c.target_table))
-    else {
+    let Some(candidate) = seed_copy_source(store, org_id, req, &lookup).await? else {
         return Ok(SeedCopy::Ordinary);
     };
     // Snowflake tracks no copy depth: the source counts as a build, as for a
@@ -576,6 +560,45 @@ async fn seed_copy_fallback(
             Ok(SeedCopy::Refused(decision::DecisionReason::CopyChainLimit))
         }
         SubmitCopyPlan::Refused { .. } => Ok(SeedCopy::Ordinary),
+    }
+}
+
+/// The newest current load [`seed_copy_fallback`] may copy: the first
+/// candidate the lookup admits. The relation check is by canonical
+/// identifier, so it runs after the read; candidates are read a page at a
+/// time until one is admitted, because the same values under other object
+/// names (never sources) could otherwise fill the page and hide an eligible
+/// source (PR #131 review). Admitting a candidate costs no further read.
+async fn seed_copy_source(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitValuesRequest,
+    lookup: &result_copy::SeedCopyLookup<'_>,
+) -> sqlx::Result<Option<CopyCandidate>> {
+    let mut offset = 0;
+    loop {
+        let page = store
+            .find_seed_copy_candidates(
+                org_id,
+                &SeedCopyCandidateQuery {
+                    table_namespace: lookup.table_namespace,
+                    seed_logic_hash: lookup.seed_logic_hash,
+                    values_hash: lookup.values_hash,
+                    exclude_target: lookup.target_table,
+                    dialect: &req.dialect,
+                    limit: COPY_CANDIDATE_LIMIT,
+                    offset,
+                },
+            )
+            .await?;
+        let read = page.len() as i64;
+        if let Some(candidate) = page.into_iter().find(|c| lookup.admits(&c.target_table)) {
+            return Ok(Some(candidate));
+        }
+        if read < COPY_CANDIDATE_LIMIT {
+            return Ok(None);
+        }
+        offset += read;
     }
 }
 
@@ -837,7 +860,9 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
 /// build first. Each costs a state read (and a provenance walk where copy
 /// depth is tracked), so a rebuild in a namespace with many environments
 /// does not pay one read per environment. An equivalent past the cap is never
-/// copied; the ordinary decision applies instead.
+/// copied; the ordinary decision applies instead. A seed copy, which pays no
+/// read per candidate, reads candidates in pages of this size
+/// ([`seed_copy_source`]).
 const COPY_CANDIDATE_LIMIT: i64 = 16;
 
 /// Every current equivalent of the submit, up to [`COPY_CANDIDATE_LIMIT`], in

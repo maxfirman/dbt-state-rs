@@ -968,6 +968,29 @@ async fn a_seed_is_not_copied_from_a_superseded_load() {
     expect_load(outcome, "superseded prod load");
 }
 
+/// Newer loads of the same values and seed config under other object names
+/// are not copy sources, and however many there are they do not hide an
+/// older load of the seed itself in another schema (PR #131 review).
+#[tokio::test]
+async fn other_seeds_with_the_same_values_do_not_hide_a_copy_source() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+    for k in 0..20 {
+        let other = environment_seed("prod").values("v1").with(|r| {
+            r.target_table = format!("\"DB\".\"PROD\".\"OTHER_{k}\"");
+        });
+        load(store, other, BUILT + 1 + k).await;
+    }
+
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    let SubmitOutcome::Copy { copy, .. } = outcome else {
+        panic!("expected Copy from the prod seed, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, PROD_SEED);
+}
+
 /// `allow_clones: false` (client 2.0.11 sends it with
 /// `clone_chain_depth_limit = 0`) and a copy-forbidding target do not copy.
 /// Hosted's wording for such a seed is uncaptured, so it gets the ordinary
