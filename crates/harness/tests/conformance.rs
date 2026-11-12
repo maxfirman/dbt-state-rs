@@ -56,6 +56,74 @@ struct KnownGap {
     ignore_fields: Vec<String>,
 }
 
+/// New Databricks captures expose the actual hosted decision instant in a
+/// UUIDv7 decision ID. Request/response transit can straddle a second; using
+/// response recorded_at would change otherwise exact relative-age Explain text.
+/// Decoding is solely a replay clock source, never a production ID contract.
+fn databricks_decision_time(entry: &diff::GoldenEntry) -> Result<i64, String> {
+    let raw = hosted_submit_edid(&entry.response).ok_or("missing decision ID")?;
+    let id = uuid::Uuid::parse_str(&raw).map_err(|_| "invalid decision UUID")?;
+    if id.get_version_num() != 7 || id.get_variant() != uuid::Variant::RFC4122 {
+        return Err("unsupported decision UUID version/variant".into());
+    }
+    let at = (id.as_u128() >> 80) as i64;
+    let submitted = entry
+        .metadata
+        .iter()
+        .find(|(name, _)| name == "x-submitted-at-epoch")
+        .and_then(|(_, value)| value.parse::<i64>().ok())
+        .ok_or("missing captured submit instant")?;
+    let recorded = entry
+        .recorded_at_ms()
+        .ok_or("missing captured response instant")?;
+    if at < submitted || at > recorded {
+        return Err(format!(
+            "decision instant {at} outside captured interval {submitted}..={recorded}"
+        ));
+    }
+    Ok(at)
+}
+
+fn captured_submit_request<T>(
+    body: T,
+    entry: &diff::GoldenEntry,
+    fixture: &str,
+) -> tonic::Request<T> {
+    let mut request = support::captured_request(body, entry);
+    if fixture.starts_with("databricks_") {
+        let at = databricks_decision_time(entry).expect("evidenced Databricks decision clock");
+        request.metadata_mut().insert(
+            dbt_state_server::REPLAY_NOW_HEADER,
+            at.to_string().parse().unwrap(),
+        );
+    }
+    request
+}
+
+#[test]
+fn databricks_decision_clock_requires_v7_and_captured_interval() {
+    let mut entry: diff::GoldenEntry = serde_json::from_value(serde_json::json!({
+        "service":"SQL", "method":"SubmitEnrichedSQL",
+        "recorded_at":"2026-11-12T14:13:06.100Z",
+        "metadata":[["x-submitted-at-epoch","1794492785807"]],
+        "request":{}, "response":{"response":{"ready_to_execute":{
+            "execution_decision_id":"01a1d01a-e510-7aa5-b433-05a347265ef1"
+        }}}
+    }))
+    .unwrap();
+    assert_eq!(databricks_decision_time(&entry).unwrap(), 1_794_492_785_936);
+    for invalid in [
+        "bad",
+        "01a1d01a-e510-4aa5-b433-05a347265ef1",
+        "01a1d01a-e510-7aa5-1433-05a347265ef1",
+        "01a1d01a-e010-7aa5-b433-05a347265ef1",
+        "01a1d01a-ff10-7aa5-b433-05a347265ef1",
+    ] {
+        entry.response["response"]["ready_to_execute"]["execution_decision_id"] = invalid.into();
+        assert!(databricks_decision_time(&entry).is_err(), "{invalid}");
+    }
+}
+
 fn real_variant(resp: &serde_json::Value) -> Option<String> {
     diff::decision_variant(resp)
 }
@@ -549,7 +617,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        72,
+        74,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -607,21 +675,23 @@ async fn conformance_replay_all_corpora() {
             match e.method.as_str() {
                 "SubmitEnrichedSQL" | "SubmitValues" => {
                     let response = if e.method == "SubmitValues" {
-                        sql.submit_values(support::captured_request(
+                        sql.submit_values(captured_submit_request(
                             serde_json::from_value::<qc::SubmitValuesRequest>(e.request.clone())
                                 .unwrap(),
                             e,
+                            &fixture,
                         ))
                         .await
                         .unwrap()
                         .into_captured(e)
                     } else {
-                        sql.submit_enriched_sql(support::captured_request(
+                        sql.submit_enriched_sql(captured_submit_request(
                             serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(
                                 e.request.clone(),
                             )
                             .unwrap(),
                             e,
+                            &fixture,
                         ))
                         .await
                         .unwrap()
