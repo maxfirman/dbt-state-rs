@@ -117,6 +117,7 @@ impl AppState {
 /// Build the tonic router with all services registered against `state`.
 /// Shared by the binary and by in-process differential tests.
 pub fn build_router(state: AppState) -> tonic::transport::server::Router {
+    use crate::query_cache::client_telemetry_server::ClientTelemetryServer;
     use crate::query_cache::client_validation_server::ClientValidationServer;
     use crate::query_cache::clone_server::CloneServer;
     use crate::query_cache::execution_server::ExecutionServer;
@@ -124,8 +125,8 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
     use crate::query_cache::selector_service_server::SelectorServiceServer;
     use crate::query_cache::sql_server::SqlServer;
     use crate::services::{
-        ClientValidationService, CloneServiceImpl, ExecutionService, ExplainService,
-        SelectorServiceImpl, SqlService,
+        ClientTelemetryService, ClientValidationService, CloneServiceImpl, ExecutionService,
+        ExplainService, SelectorServiceImpl, SqlService,
     };
 
     tonic::transport::Server::builder()
@@ -134,6 +135,7 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))
         .add_service(CloneServer::new(CloneServiceImpl(state.clone())))
         .add_service(ClientValidationServer::new(ClientValidationService))
+        .add_service(ClientTelemetryServer::new(ClientTelemetryService))
         .add_service(ExplainServer::new(ExplainService(state.clone())))
         .add_service(SelectorServiceServer::new(SelectorServiceImpl(
             state.clone(),
