@@ -1,15 +1,16 @@
 //! Warehouse-specific interpretation of the dialect string on the wire.
 //!
 //! A parser accepting a dialect is not evidence that two SQL statements or
-//! physical relations are equivalent. Only Snowflake's schema abstraction has
-//! been characterized against the hosted service. Other warehouses retain exact
-//! rendered SQL, except DuckDB's validated formatting subset. DuckDB copying
+//! physical relations are equivalent. Snowflake's schema abstraction and the
+//! Databricks identifier subset have hosted evidence; other SQL remains exact,
+//! except DuckDB's validated formatting subset. DuckDB copying
 //! uses separate request eligibility rather than this warehouse-wide capability.
 //!
 //! Warehouse-specific rules dispatch to the per-warehouse submodules
 //! ([`snowflake`], [`duckdb`]); the other variants get conservative defaults
 //! (ADR 0004: shared machinery with explicit warehouse rules).
 
+mod databricks;
 mod duckdb;
 mod snowflake;
 
@@ -91,6 +92,87 @@ impl Warehouse {
         crate::sql_identity::normalized_sql(self, sql)
     }
 
+    /// Resolve demonstrated metadata spellings once before history, producer,
+    /// freshness and own-target processing. The caller retains its raw request
+    /// for wire DDL; SQL text itself remains unmodified.
+    pub(crate) fn resolve_submit(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> std::borrow::Cow<'_, crate::query_cache::SubmitEnrichedSqlRequest> {
+        if self != Self::Databricks {
+            return std::borrow::Cow::Borrowed(req);
+        }
+        let mut resolved = req.clone();
+        self.resolve_names(
+            &mut resolved.target_table,
+            &mut resolved.tables,
+            &mut resolved.query_dependencies,
+        );
+        std::borrow::Cow::Owned(resolved)
+    }
+
+    pub(crate) fn resolve_record(
+        self,
+        req: &crate::query_cache::SqlExecution,
+    ) -> std::borrow::Cow<'_, crate::query_cache::SqlExecution> {
+        if self != Self::Databricks {
+            return std::borrow::Cow::Borrowed(req);
+        }
+        let mut resolved = req.clone();
+        self.resolve_names(
+            &mut resolved.target_table,
+            &mut resolved.tables,
+            &mut resolved.query_dependencies,
+        );
+        std::borrow::Cow::Owned(resolved)
+    }
+
+    fn resolve_names(
+        self,
+        target: &mut Option<String>,
+        tables: &mut [crate::query_cache::TableModifiedInfo],
+        deps: &mut [crate::query_cache::QueryDependency],
+    ) {
+        let canonical = |name: &mut String| {
+            if let Some(resolved) = databricks::physical_name(name) {
+                *name = resolved;
+            }
+        };
+        if let Some(target) = target {
+            canonical(target);
+        }
+        for table in tables {
+            canonical(&mut table.name);
+        }
+        for dep in deps {
+            canonical(&mut dep.name);
+        }
+    }
+
+    /// A resolved query no longer depends on defaults; unsupported SQL retains
+    /// both exact bytes and its original context. No copy eligibility is added.
+    pub(crate) fn sql_identity(
+        self,
+        sql: &str,
+        catalog: &str,
+        schema: &str,
+    ) -> (String, String, String) {
+        if self == Self::Databricks {
+            if let Some(resolved) = databricks::resolved_sql(sql, catalog, schema) {
+                return (resolved, String::new(), String::new());
+            }
+        }
+        (self.normalized_sql(sql), catalog.into(), schema.into())
+    }
+
+    pub(crate) fn target_schema(self, target: Option<&str>) -> Option<String> {
+        if self != Self::Databricks {
+            return None;
+        }
+        let name = databricks::physical_name(target?)?;
+        Some(name.split('.').nth(1)?.trim_matches('`').to_owned())
+    }
+
     /// Whether the namespace logic identity abstracts physical schemas, so
     /// the same model can be reused across environments.
     pub fn supports_namespace_reuse(self) -> bool {
@@ -111,6 +193,7 @@ impl Warehouse {
     pub fn sql_identity_version(self) -> &'static [u8] {
         match self {
             Self::DuckDb => duckdb::SQL_IDENTITY_VERSION,
+            Self::Databricks => databricks::SQL_IDENTITY_VERSION,
             _ => SQL_IDENTITY_VERSION,
         }
     }

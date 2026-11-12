@@ -405,7 +405,9 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
+        let raw_req = request.into_inner();
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Only data tests have no Target relation. Deciding any other node
         // without one could answer a Result copy into an empty relation name
         // (#81). Hosted fails `""` with InvalidArgument and an unset target
@@ -423,7 +425,8 @@ impl Sql for SqlService {
             .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &outcome);
-        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
+        let response =
+            submit_response(outcome, raw_req.target_table.as_deref().unwrap_or_default());
         Ok(Response::new(response))
     }
 
@@ -451,7 +454,9 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
+        let raw_req = request.into_inner();
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Decided only where the decision needs no table evidence: a data
         // test without upstreams that the ordinary submit would SKIP, the one
         // speculative call hosted was seen to decide (#103). Every other one

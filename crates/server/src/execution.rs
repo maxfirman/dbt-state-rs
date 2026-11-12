@@ -243,7 +243,8 @@ impl ExecutionEvidence {
 
     pub(crate) fn sql_record(org_id: &str, req: &qc::SqlExecution) -> Self {
         // Record has no template comparison flag and computes the supplied SQL identity.
-        Self::sql(org_id, req, None, true)
+        let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_record(req);
+        Self::sql(org_id, &req, None, true)
     }
 
     fn sql(org_id: &str, req: &qc::SqlExecution, template: Option<&str>, copy: bool) -> Self {

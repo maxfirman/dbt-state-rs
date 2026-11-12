@@ -1,0 +1,101 @@
+{
+  "captured_at": "2026-11-12",
+  "source_revision": "c6bfa07 before identifier implementation; existing executable separately hashed",
+  "server_sha256": "d9beadc4f95c49f294af0151c70dc3de7358b3920842b068b1e79eb1abbbaf33",
+  "request": {
+    "query_dependencies": [],
+    "lenient_dependencies": [],
+    "freshness_tolerance_seconds": 0,
+    "stale_upstream_policy": 0,
+    "compare_unrendered_code": false,
+    "ignore_external_modifications": false,
+    "allow_clones": false,
+    "is_defer_to_profile": false,
+    "defer_enabled": false,
+    "labels": {},
+    "target_table": "`cdo_demo_db`.`frozen_schema`.`result`",
+    "dialect": "databricks",
+    "default_catalog": "cdo_demo_db",
+    "default_schema": "frozen_schema",
+    "execution_type": 1,
+    "sql": "select id from cdo_demo_db.frozen_schema.input",
+    "table_namespace": "frozen-databricks-136",
+    "tolerate_nondeterminism": true,
+    "tables": [
+      {
+        "name": "`cdo_demo_db`.`frozen_schema`.`result`",
+        "last_modified_epoch": 100
+      },
+      {
+        "name": "`cdo_demo_db`.`frozen_schema`.`input`",
+        "last_modified_epoch": 50
+      }
+    ],
+    "semantic_extras": {}
+  },
+  "response": {
+    "response": {
+      "ready_to_execute": {
+        "execution_decision_id": "01a1d01d-861e-77b0-a874-9acc88e7ecf2",
+        "explained_decision": {
+          "clone_rejection_reason": 6,
+          "decision": 1,
+          "decision_description": "model was executed because its table did not exist",
+          "is_stale": false,
+          "skip_rejection_reason": 6
+        },
+        "last_modified_query": "",
+        "query_hash_metadata_info": null,
+        "request_id": "01a1d01d-861e-77b0-a874-9acbfed52385",
+        "transformed_nodes_by_query": {}
+      }
+    }
+  },
+  "confirm_response": {
+    "request_id": "01a1d01d-861e-77b0-a874-9acbfed52385",
+    "success": true
+  },
+  "rows": [
+    {
+      "id": 1,
+      "org_id": "local",
+      "target_table": "`cdo_demo_db`.`frozen_schema`.`result`",
+      "execution_type": 1,
+      "node_hash": null,
+      "node_body_hash": null,
+      "node_configs_hash": null,
+      "node_contract_hash": null,
+      "node_unique_id": null,
+      "table_namespace": "frozen-databricks-136",
+      "dialect": "databricks",
+      "last_modified_epoch": 100,
+      "table_type": null,
+      "execution_runtime_ms": null,
+      "input_tables": [
+        {
+          "name": "`cdo_demo_db`.`frozen_schema`.`result`",
+          "last_modified_epoch": 100
+        },
+        {
+          "name": "`cdo_demo_db`.`frozen_schema`.`input`",
+          "producer": null,
+          "last_modified_epoch": 50
+        }
+      ],
+      "status": "confirmed",
+      "request_id": "01a1d01d-861e-77b0-a874-9acbfed52385",
+      "execution_decision_id": "01a1d01d-861e-77b0-a874-9acc88e7ecf2",
+      "created_at": "2026-11-12T14:15:58.239525+00:00",
+      "confirmed_at": "2026-11-12T14:15:58.252+00:00",
+      "values_hash": null,
+      "node_sql_hash": "50c4f6a4586e802fec7d040a7ae2c995581d507ffbe7f80c9d8346061a82ee0a",
+      "execution_results": null,
+      "project_id": null,
+      "node_namespace_logic_hash": null,
+      "clone_source_table": null,
+      "node_template_hash": null,
+      "warehouse_family": "databricks",
+      "clone_source_inputs": null
+    }
+  ]
+}
