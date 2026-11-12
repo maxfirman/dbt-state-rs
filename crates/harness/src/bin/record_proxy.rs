@@ -10,6 +10,7 @@
 //! Env:
 //!   PROXY_LISTEN      default 127.0.0.1:50099
 //!   PROXY_UPSTREAM    default https://api.state.dbt.com:443
+//!   PROXY_LOCAL_UPSTREAM explicit literal loopback HTTP endpoint, without cloud auth
 //!   GOLDEN_DIR        default ./golden
 //!   RUST_LOG          tracing filter
 
@@ -54,10 +55,8 @@ const NOT_FORWARDED: &[&str] = &[
 /// Shared proxy state: upstream channel, token minter, golden log.
 struct Proxy {
     channel: Channel,
-    minter: Arc<TokenMinter>,
+    minter: Option<Arc<TokenMinter>>,
     golden: Arc<GoldenLog>,
-    #[cfg(test)]
-    bypass_auth: bool,
 }
 
 /// Local newtype wrapper so we can implement the (foreign) generated service
@@ -96,19 +95,11 @@ impl Proxy {
         inbound: &[(String, String)],
         msg: T,
     ) -> Result<Request<T>, Status> {
-        #[cfg(test)]
-        if self.bypass_auth {
-            return Ok(Request::new(msg));
-        }
-        let token = self
-            .minter
-            .token()
-            .await
-            .map_err(|_| Status::unauthenticated("token exchange failed"))?;
         let mut req = Request::new(msg);
         let md = req.metadata_mut();
         for (key, value) in inbound {
-            if NOT_FORWARDED.contains(&key.as_str()) || key.starts_with("grpc-") {
+            let local_org = self.minter.is_none() && key == ORG_ID_HEADER;
+            if (NOT_FORWARDED.contains(&key.as_str()) && !local_org) || key.starts_with("grpc-") {
                 continue;
             }
             if let (Ok(k), Ok(v)) = (
@@ -118,6 +109,13 @@ impl Proxy {
                 md.append(k, v);
             }
         }
+        let Some(minter) = &self.minter else {
+            return Ok(req);
+        };
+        let token = minter
+            .token()
+            .await
+            .map_err(|_| Status::unauthenticated("token exchange failed"))?;
         md.insert(
             AUTHORIZATION_HEADER,
             format!("Bearer {}", token.id_token)
@@ -452,6 +450,23 @@ impl ClientTelemetry for ProxyService {
     }
 }
 
+fn local_endpoint(value: &str) -> anyhow::Result<String> {
+    let invalid = || {
+        anyhow::anyhow!(
+            "PROXY_LOCAL_UPSTREAM must be a literal loopback HTTP endpoint with an explicit port"
+        )
+    };
+    let addr: std::net::SocketAddr = value
+        .strip_prefix("http://")
+        .ok_or_else(invalid)?
+        .parse()
+        .map_err(|_| invalid())?;
+    if !addr.ip().is_loopback() || addr.port() == 0 || value != format!("http://{addr}") {
+        return Err(invalid());
+    }
+    Ok(value.to_owned())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -465,26 +480,33 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("PROXY_UPSTREAM").unwrap_or_else(|_| "https://api.state.dbt.com:443".into());
     let golden_dir = std::env::var("GOLDEN_DIR").unwrap_or_else(|_| "./golden".into());
 
-    let credential = DbtCloudCredential::from_default_config()?;
-    tracing::info!(
-        host = %credential.host,
-        project = %credential.project_id,
-        "loaded dbt Cloud credential"
-    );
+    let (channel, minter) = if let Ok(local) = std::env::var("PROXY_LOCAL_UPSTREAM") {
+        let local = local_endpoint(&local)?;
+        let channel = Channel::from_shared(local)?.connect().await?;
+        (channel, None)
+    } else {
+        let credential = DbtCloudCredential::from_default_config()?;
+        tracing::info!(
+            host = %credential.host,
+            project = %credential.project_id,
+            "loaded dbt Cloud credential"
+        );
 
-    // Pre-mint once to fail fast if auth is broken.
-    let minter = Arc::new(TokenMinter::new(credential));
-    let tok = minter
-        .token()
-        .await
-        .map_err(|_| anyhow::anyhow!("token exchange failed"))?;
-    tracing::info!(org_id = %tok.org_id, "token exchange OK");
+        // Pre-mint once to fail fast if auth is broken.
+        let minter = Arc::new(TokenMinter::new(credential));
+        let tok = minter
+            .token()
+            .await
+            .map_err(|_| anyhow::anyhow!("token exchange failed"))?;
+        tracing::info!(org_id = %tok.org_id, "token exchange OK");
 
-    let channel = Channel::from_shared(upstream.clone())?
-        .tls_config(ClientTlsConfig::new().with_native_roots())?
-        .connect()
-        .await?;
-    tracing::info!(%upstream, "connected to upstream");
+        let channel = Channel::from_shared(upstream.clone())?
+            .tls_config(ClientTlsConfig::new().with_native_roots())?
+            .connect()
+            .await?;
+        tracing::info!(%upstream, "connected to upstream");
+        (channel, Some(minter))
+    };
 
     let golden = Arc::new(GoldenLog::create(&golden_dir)?);
     tracing::info!(path = %golden.path().display(), "recording golden traffic");
@@ -493,8 +515,6 @@ async fn main() -> anyhow::Result<()> {
         channel,
         minter,
         golden: golden.clone(),
-        #[cfg(test)]
-        bypass_auth: false,
     });
     let svc = ProxyService(proxy);
 
