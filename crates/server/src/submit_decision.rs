@@ -1,7 +1,9 @@
 //! Submit decision: how one SQL or values (seed) submission is decided.
 //!
 //! Two entry points, [`submit_sql`] and [`submit_values`], each returning one
-//! [`SubmitOutcome`]. For a submission the module:
+//! [`SubmitOutcome`], and a third, [`speculative_sql`], which decides the
+//! speculative submits it can through the same code as [`submit_sql`]. For a
+//! submission the module:
 //!
 //! 1. records the node's comparison state for `state:*` selectors (best effort);
 //! 2. selects a reuse candidate from State history (one scoped read, then the
@@ -152,10 +154,73 @@ pub async fn submit_sql(
         req.target_table.as_deref(),
     )
     .await;
+    Ok(decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
+        .await?
+        .expect("an ordinary submit is always decided"))
+}
 
+/// Decide a `SubmitEnrichedSQLSpeculative` submission (#103). A speculative
+/// request carries whatever upstream epochs the client had already fetched,
+/// so only a decision that needs no table evidence at all is made on it: a
+/// data test with no Target relation and no reported tables, which the
+/// ordinary submit would SKIP. That Skip is returned exactly as the ordinary
+/// submit would return it, and its node state is recorded as the ordinary
+/// submit records it, because the client sends no ordinary submit after it.
+/// Every other submission returns `None` (`undecided`) without writing
+/// anything; the client then sends the ordinary submit.
+pub async fn speculative_sql(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    now_ms: i64,
+) -> sqlx::Result<Option<SubmitOutcome>> {
+    let needs_no_table_evidence = req.execution_type == ModelExecutionType::DbtDataTest as i32
+        && req.target_table.as_deref().is_none_or(str::is_empty)
+        && req.tables.is_empty();
+    if !needs_no_table_evidence {
+        return Ok(None);
+    }
+    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly).await?;
+    if outcome.is_some() {
+        record_node_state(
+            store,
+            org_id,
+            req.dbt_node_state.as_ref(),
+            req.target_table.as_deref(),
+        )
+        .await;
+    }
+    Ok(outcome)
+}
+
+/// Which outcomes a SQL decision may settle on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Every outcome (the ordinary submit).
+    Ordinary,
+    /// Only a Skip; any other outcome is abandoned, before anything is
+    /// written, at the first point the decision can no longer be a Skip.
+    SkipOnly,
+}
+
+/// The SQL decision shared by the ordinary and the speculative submit.
+/// `None` only under [`Mode::SkipOnly`], for a decision that is not a Skip.
+async fn decide_sql(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    now_ms: i64,
+    mode: Mode,
+) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
     resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
+    // Without a reuse candidate the decision never skips
+    // (decision_proptest::no_match_always_executes), and the Result copy
+    // fallback below would write a pending row.
+    if mode == Mode::SkipOnly && selection.candidate.is_none() {
+        return Ok(None);
+    }
 
     // Precedence: with no reuse candidate, a Result copy of an equivalent
     // overrides the ordinary verdict. Not when the target's own table was
@@ -186,7 +251,7 @@ pub async fn submit_sql(
         )
         .await?
         {
-            CopyFallback::Decided(outcome) => return Ok(*outcome),
+            CopyFallback::Decided(outcome) => return Ok(Some(*outcome)),
             CopyFallback::Refused {
                 clone_rejection_reason,
                 ..
@@ -195,6 +260,9 @@ pub async fn submit_sql(
         }
     }
     let (mut record, candidate) = decide(&evidence, &selection, &freshness);
+    if mode == Mode::SkipOnly && record.class != DecisionKind::Skip {
+        return Ok(None);
+    }
     let candidate = candidate.cloned();
     // The target's own reuse candidate must rebuild for freshness, but an
     // equivalent under another name may still be reusable for this submit
@@ -218,7 +286,7 @@ pub async fn submit_sql(
         {
             CopyFallback::Decided(outcome) => {
                 log_decision(&evidence, outcome.record(), true, &req.labels);
-                return Ok(*outcome);
+                return Ok(Some(*outcome));
             }
             // Captured for a data-only rebuild; an Upstream producer change
             // keeps the ordinary codes (uncaptured).
@@ -255,7 +323,7 @@ pub async fn submit_sql(
         selection.rejected.or(selection.type_changed),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
-    settle(store, &evidence, record, candidate).await
+    settle(store, &evidence, record, candidate).await.map(Some)
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own

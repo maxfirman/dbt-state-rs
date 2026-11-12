@@ -37,7 +37,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations. |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
 | `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
-| `submit_decision.rs` | How one SQL or values submit is decided (flow below). Returns a `SubmitOutcome` carrying its `DecisionRecord`. |
+| `submit_decision.rs` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`. |
 | `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
@@ -60,7 +60,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | Service | Methods |
 |---|---|
 | `grpc.health.v1.Health` | reports `SERVING` |
-| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` (always `undecided`) |
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` (`skip_execution` only for an unchanged data test without upstreams, otherwise `undecided`) |
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` |
 | `Clone` | `RegisterClone` |
 | `ClientValidation` | `ValidateClientVersion` |
@@ -97,6 +97,13 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
 
 `submit_values` (seeds) follows steps 1, 3, 5, 7 and 8: no producers, no Result
 copy, no Lag tolerance, ANY policy.
+
+`submit_decision::speculative_sql` (#103) runs the same code for a data test
+with no Target relation and no reported tables, and keeps only a SKIP: it
+stops, before anything is written, after step 3 when there is no Reuse
+candidate and after step 5 when the verdict is not SKIP, and answers
+`undecided`. It records the node state (step 1) only for the SKIP. Every
+other speculative submit is `undecided` without a read.
 
 ### Physical scope rule
 

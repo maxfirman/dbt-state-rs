@@ -47,15 +47,11 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
             execution_decision_id,
             matched_execution,
             record,
-        } => Response::SkipExecution(qc::SkipExecutionResponse {
-            explained_decision: Some(explained_decision(&record)),
-            transformed_nodes_by_query: Default::default(),
-            execution_results: matched_execution
-                .execution_results
-                .or_else(|| Some(qc::Struct::default())),
-            execution_runtime_ms: matched_execution.execution_runtime_ms,
-            execution_decision_id: Some(execution_decision_id),
-        }),
+        } => Response::SkipExecution(skip_response(
+            execution_decision_id,
+            matched_execution,
+            &record,
+        )),
         SubmitOutcome::Execute { ids, record, .. }
         | SubmitOutcome::ChainLimitExecute { ids, record, .. } => {
             Response::ReadyToExecute(qc::ReadyToExecuteResponse {
@@ -87,6 +83,25 @@ fn submit_response(outcome: SubmitOutcome, clone_target: &str) -> qc::SubmitSqlR
     };
     qc::SubmitSqlResponse {
         response: Some(response),
+    }
+}
+
+/// The wire SKIP of a Submit decision (ordinary or speculative): it echoes
+/// the matched execution's runtime and cached results, like the hosted
+/// service.
+fn skip_response(
+    execution_decision_id: String,
+    matched_execution: crate::store::ExecutionRow,
+    record: &DecisionRecord,
+) -> qc::SkipExecutionResponse {
+    qc::SkipExecutionResponse {
+        explained_decision: Some(explained_decision(record)),
+        transformed_nodes_by_query: Default::default(),
+        execution_results: matched_execution
+            .execution_results
+            .or_else(|| Some(qc::Struct::default())),
+        execution_runtime_ms: matched_execution.execution_runtime_ms,
+        execution_decision_id: Some(execution_decision_id),
     }
 }
 
@@ -430,14 +445,42 @@ impl Sql for SqlService {
 
     async fn submit_enriched_sql_speculative(
         &self,
-        _request: Request<qc::SubmitEnrichedSqlRequest>,
+        request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlSpeculativeResponse>, Status> {
-        // The hosted service returned `undecided` for every speculative call in
-        // our corpus. Match that conservative default.
+        use qc::submit_sql_speculative_response::Response as Speculative;
+        let org_id = org_id_checked(&self.0, &request)?;
+        let cap_meta = capture_meta_of(&request);
+        let now_ms = self.0.clock.now_ms(request.metadata());
+        let req = request.into_inner();
+        // Decided only where the decision needs no table evidence: a data
+        // test without upstreams that the ordinary submit would SKIP, the one
+        // speculative call hosted was seen to decide (#103). Every other one
+        // is `undecided`, as hosted answers in our corpus, and the client
+        // then sends the ordinary submit. Never `ready_to_execute_untracked`
+        // or `ready_to_clone`.
+        let outcome = crate::submit_decision::speculative_sql(&self.0.store, &org_id, &req, now_ms)
+            .await
+            .map_err(store_status)?;
+        let response = match &outcome {
+            Some(
+                skip @ SubmitOutcome::Skip {
+                    execution_decision_id,
+                    matched_execution,
+                    record,
+                },
+            ) => {
+                // Recorded like an ordinary SKIP, for Explain.
+                capture_submit(&self.0, &cap_meta, &req, skip);
+                Speculative::SkipExecution(skip_response(
+                    execution_decision_id.clone(),
+                    matched_execution.clone(),
+                    record,
+                ))
+            }
+            _ => Speculative::Undecided(qc::UndecidedResponse {}),
+        };
         Ok(Response::new(qc::SubmitSqlSpeculativeResponse {
-            response: Some(qc::submit_sql_speculative_response::Response::Undecided(
-                qc::UndecidedResponse {},
-            )),
+            response: Some(response),
         }))
     }
 }

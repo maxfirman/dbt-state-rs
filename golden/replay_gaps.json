@@ -193,12 +193,6 @@
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 6 (#87): hosted explains its data-test SKIP; the local server's incomplete_cached_test_results rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
   },
   {
-    "fixture": "explain_rebuild_reason_gaps.jsonl",
-    "entry": 39,
-    "local_variant": "undecided",
-    "reason": "DECISION DIVERGENCE (#103): the unchanged rerun of the data test `r40t0`, which has no upstreams. Hosted SKIPs it on the speculative call (cached results, 'data test was a no-op because both its query and its upstream data are up to date'), so the client sends no ordinary submit; this server answers every speculative call `undecided`. The replay drives the ordinary submit the client sends after `undecided` (entries 18 and 22 for the same node) and asserts it answers as hosted did."
-  },
-  {
     "fixture": "explain_reason_kind_cells.jsonl",
     "entry": 171,
     "local_variant": "ready_to_execute",

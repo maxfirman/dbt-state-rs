@@ -363,29 +363,29 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 316 trees in the
+Line counts from the [census](#explain-tree-census) over the 320 trees in the
 tracked fixtures (2026-11-11). A line without a marker or badge is "none"
-(1824 lines without a marker, 2102 without a badge). Only an explicit `0` is
+(1831 lines without a marker, 2114 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 820 lines |
-| ExplainMarker | FAIL (2) | ✅ 264 lines |
-| ExplainMarker | INFO (3) | not observed across 316 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 316 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 248 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 826 lines |
+| ExplainMarker | FAIL (2) | ✅ 268 lines |
+| ExplainMarker | INFO (3) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 250 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 62 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 202 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 205 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 30 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
 | ExplainBadge | FRESH (1) | ✅ 128 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 87 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 316 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 320 trees (2026-11-11; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 316 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 211 from client 2.0.11 and 96 for crafted
+1. The 320 trees are 9 real-client trees from client 2.0.6 (2 of them with
+   the version unrecorded), 215 from client 2.0.11 and 96 for crafted
    `state-probe` requests. 80 of the client 2.0.11 trees explain a
    real-client decision but were requested with `state-probe`
    (`explain_reason_kind_cells*.jsonl`, `explain_store_failures_audit_schema.jsonl`,
@@ -1124,9 +1124,9 @@ A test with no upstreams (`r40t0`, a singular test without `ref` or
 - data freshness analysis
   - no upstream dependencies                          [SUCCESS]
 ```
-Hosted decided that SKIP on the speculative submit, which this server
-answers `undecided` (divergence #103); the replay drives the ordinary submit
-the client then sends, and this server renders the same tree for its SKIP.
+Hosted decided that SKIP on the speculative submit, and so does this server
+(#103): the replay asserts the speculative SKIP and renders the same tree for
+it.
 
 ### EXECUTE
 ```

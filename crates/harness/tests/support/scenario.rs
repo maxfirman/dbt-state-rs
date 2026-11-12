@@ -819,6 +819,27 @@ pub fn into_clone(resp: qc::SubmitSqlResponse) -> qc::ReadyToCloneResponse {
     }
 }
 
+/// The answer variant name of a SubmitSQLSpeculativeResponse.
+pub fn speculative_variant(resp: &qc::SubmitSqlSpeculativeResponse) -> &'static str {
+    use qc::submit_sql_speculative_response::Response as Speculative;
+    match &resp.response {
+        Some(Speculative::ReadyToExecuteUntracked(_)) => "ready_to_execute_untracked",
+        Some(Speculative::SkipExecution(_)) => "skip_execution",
+        Some(Speculative::ReadyToClone(_)) => "ready_to_clone",
+        Some(Speculative::Undecided(_)) => "undecided",
+        None => "none",
+    }
+}
+
+/// The speculative SKIP, or a panic naming what was answered instead.
+pub fn into_speculative_skip(resp: qc::SubmitSqlSpeculativeResponse) -> qc::SkipExecutionResponse {
+    use qc::submit_sql_speculative_response::Response as Speculative;
+    match resp.response {
+        Some(Speculative::SkipExecution(skip)) => skip,
+        other => panic!("expected a speculative skip_execution, got {other:?}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Protocol client
 // ---------------------------------------------------------------------------
@@ -945,6 +966,20 @@ impl Scenario {
     /// The decision variant name for `req`.
     pub async fn verdict(&self, req: impl Into<qc::SubmitEnrichedSqlRequest>) -> &'static str {
         variant(&self.submit(req).await)
+    }
+
+    /// SubmitEnrichedSQLSpeculative of `req`.
+    pub async fn speculative(
+        &self,
+        req: impl Into<qc::SubmitEnrichedSqlRequest>,
+    ) -> qc::SubmitSqlSpeculativeResponse {
+        let mut req = req.into();
+        self.report_built_epoch(&mut req);
+        self.sql()
+            .submit_enriched_sql_speculative(self.request(req))
+            .await
+            .expect("SubmitEnrichedSQLSpeculative")
+            .into_inner()
     }
 
     pub async fn expect_execute(

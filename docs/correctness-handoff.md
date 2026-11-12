@@ -114,6 +114,16 @@ Do not weaken these without new evidence.
 Each item needs a controlled capture before the server changes. Until then the
 server keeps the conservative behavior described.
 
+- **Speculative decisions beyond a data test without upstreams (#103).**
+  Hosted SKIPs an unchanged data test with no upstreams on the
+  `SubmitEnrichedSQLSpeculative` call (`explain_rebuild_reason_gaps.jsonl`
+  entry 39) and answers `undecided` to the other 313 speculative calls in
+  `golden/fixtures/`. Whether hosted ever SKIPs, copies or answers
+  `ready_to_execute_untracked` for another workload (for example a data test
+  whose upstream epochs were all prefetched) is not captured. The server
+  decides only the captured case, through the ordinary submit's code, and
+  answers `undecided` otherwise, after which the client sends the ordinary
+  submit (`crates/harness/tests/speculative_submit.rs`).
 - **Resolution context of dependencies.** Whether hosted keys dependency
   equivalence on anything beyond the definition body and freshness. A
   context-only change could not be isolated from upstream freshness through the
@@ -375,13 +385,6 @@ replay fails when an entry becomes unused or resolved
   (AGENTS.md reuse invariant 3). Live since 2026-11-11 (#129):
   `explain_seed_copy_existing.jsonl` entries 13 (submit, local
   `ready_to_execute`) and 17 (Explain, local `empty_tree`).
-- **Speculative SKIP (#103).** Hosted SKIPs an unchanged data test with no
-  upstreams on the `SubmitEnrichedSQLSpeculative` call, so the client sends
-  no ordinary submit; the server answers every speculative call `undecided`,
-  and the client then sends the ordinary submit, which the server SKIPs with
-  hosted's payload. The final class and the Explain tree match. Keyed gap:
-  `explain_rebuild_reason_gaps.jsonl` entry 39 (`local_variant: "undecided"`;
-  the replay drives the follow-up submit and asserts it).
 - **Snapshot and custom node over a modified Target relation (#115).** An
   accepted divergence (see [below](#accepted-divergences)).
 - **2.0.6 submit copies of a MERGE incremental (deliberate, #101).** Client
@@ -507,8 +510,9 @@ local-only and renders no Explain tree.
 - **Capture** runs as unbounded background tasks (`services.rs::spawn_capture`)
   with no retention policy. Bound both before heavy load.
 - **ClientValidation** accepts every client version.
-- **Speculative submits** always return `Undecided` (hosted decides some,
-  #103).
+- **Speculative submits** are decided only for an unchanged data test with
+  no upstreams (#103); every other one is `Undecided`, which costs the
+  client one more round trip but leaves its decision to the ordinary submit.
 
 ## Primary sources
 
