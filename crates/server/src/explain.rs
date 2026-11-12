@@ -1027,7 +1027,7 @@ fn upstream_dependencies_freshness(
                     text: quote(&up.name),
                     marker: None,
                     badge: None,
-                    children: vec![line(rel_time_line(up))],
+                    children: vec![line(anchored_rel_time_line(node, up))],
                 };
             }
             let drifted = verdict.map(|u| u.drifted);
@@ -1051,7 +1051,7 @@ fn upstream_dependencies_freshness(
                 text: quote(&up.name),
                 marker: None,
                 badge,
-                children: vec![gap_or_fresh, line(rel_time_line(up))],
+                children: vec![gap_or_fresh, line(anchored_rel_time_line(node, up))],
             }
         })
         .collect();
@@ -1102,16 +1102,18 @@ fn fresh_anchor_line(node: &ExplainNode, anchor_name: &str) -> qc::ExplainLine {
 
 /// The OUTDATED first child, the `«gap»`:
 /// `updated N seconds after «FQN» last executed`, where N is the upstream's
-/// epoch minus the freshness anchor epoch (both milliseconds → whole seconds).
-/// The exact N is a runtime slot the gate masks to `«gap»`; we still render a
-/// faithful value from the verdict's two epochs.
+/// epoch minus the freshness anchor epoch. The duration is humanized from
+/// those exact recorded epochs, including subsecond gaps ("a moment").
 fn gap_line(
     node: &ExplainNode,
     anchor_name: &str,
     verdict: Option<&decision::UpstreamVerdict>,
 ) -> qc::ExplainLine {
-    let seconds = verdict
-        .and_then(|v| v.current_epoch.map(|c| (c - v.anchor_epoch).max(0) / 1000))
+    let elapsed_ms = verdict
+        .and_then(|v| {
+            v.current_epoch
+                .map(|c| c.saturating_sub(v.anchor_epoch).max(0))
+        })
         .unwrap_or(0);
     let anchor_ref = if node.is_data_test() {
         "test".to_string()
@@ -1119,17 +1121,45 @@ fn gap_line(
         quote(anchor_name)
     };
     line(format!(
-        "updated {} seconds after {} last executed",
-        seconds, anchor_ref
+        "updated {} after {} last executed",
+        humanize_duration(elapsed_ms),
+        anchor_ref
     ))
 }
 
-/// The humanized `last updated: …` line for an upstream. The absolute/relative
-/// wall-clock text is a runtime slot the gate masks (`«rel_time»`). We render a
-/// faithful `last updated: <epoch_ms> (UTC)` from the upstream's recorded epoch;
-/// the exact humanized phrasing ("7 seconds ago, 2026-11-08 17:11:54 UTC") is a
-/// client-side wall-clock-relative rendering out of this server's scope — the
-/// gate masks it on both sides.
+/// Anchored Explain times are frozen at the submit, including a later Explain
+/// after the execution finishes. The existing build age and build clock recover
+/// that instant without depending on the Explain request's wall clock (#140).
+fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
+    let decision_ms = node.anchor.as_ref().and_then(|build| {
+        crate::warehouse::Warehouse::from_dialect(&build.dialect)
+            .build_time_ms(build)
+            .zip(node.build_age_ms)
+            .map(|(built, age)| built.saturating_add(age))
+    });
+    match (up.last_modified_epoch, decision_ms) {
+        (Some(epoch), Some(now)) => {
+            let Some(absolute) = chrono::DateTime::from_timestamp_millis(epoch) else {
+                return rel_time_line(up);
+            };
+            let age = now.saturating_sub(epoch).max(0);
+            let relative = if age < 1000 {
+                "now".to_string()
+            } else {
+                format!("{} ago", humanize_duration(age))
+            };
+            format!(
+                "last updated: {relative}, {} UTC",
+                absolute.format("%Y-%m-%d %H:%M:%S")
+            )
+        }
+        _ => rel_time_line(up),
+    }
+}
+
+/// Legacy rendering when there is no recoverable decision instant. Anchored
+/// decisions use `anchored_rel_time_line`; unanchored copy paths still need
+/// separate temporal characterization before claiming exact humanized text.
 fn rel_time_line(up: &InputTable) -> String {
     match up.last_modified_epoch {
         Some(epoch) => format!("last updated: {epoch} (UTC)"),
