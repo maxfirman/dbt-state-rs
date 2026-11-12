@@ -3,6 +3,7 @@ from copy import deepcopy
 import unittest
 import json
 import hashlib
+from collections import Counter
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -11,6 +12,41 @@ from databricks_survey import Refused
 
 
 class PhysicalContract(unittest.TestCase):
+    def test_promoted_public_history_pins_each_lifecycle_and_both_explain_orders(self):
+        fixture = Path(__file__).resolve().parent.parent / 'golden/fixtures/databricks_table_view_baseline.jsonl'
+        rows = [json.loads(line) for line in fixture.read_text().splitlines()]
+        self.assertEqual(Counter(row['method'] for row in rows), {
+            'ValidateClientVersion':4, 'SubmitTelemetryBatch':10,
+            'SubmitEnrichedSQLSpeculative':8, 'SubmitEnrichedSQL':8,
+            'ConfirmExecution':4, 'GetExplainMessages':5})
+        submits = [row for row in rows if row['method']=='SubmitEnrichedSQL']
+        confirmed = {row['request']['request_id'] for row in rows
+                     if row['method']=='ConfirmExecution' and row['response']['success'] is True}
+        for offset, expected in [(0,'ready_to_execute'), (2,'skip_execution'),
+                                 (4,'ready_to_execute'), (6,'skip_execution')]:
+            pair = submits[offset:offset+2]
+            self.assertEqual({row['request']['labels']['dbt_node_name'] for row in pair},
+                             {'literal_table','literal_view'})
+            for row in pair:
+                self.assertIn(expected, row['response']['response'])
+                if expected=='ready_to_execute':
+                    self.assertIn(row['response']['response'][expected]['request_id'],confirmed)
+        known = set()
+        requests = []
+        for row in rows:
+            self.assertEqual(row['status']['code'],0)
+            if row['method']=='SubmitEnrichedSQL':
+                known.add(next(iter(row['response']['response'].values()))['execution_decision_id'])
+            if row['method']=='GetExplainMessages':
+                asked = row['request']['execution_decision_ids']
+                returned = [m['execution_decision_id'] for m in row['response']['messages']]
+                self.assertTrue(set(asked) <= known)
+                self.assertEqual(sorted(asked),returned)
+                self.assertTrue(all(m['explain_lines'] for m in row['response']['messages']))
+                requests.append(asked)
+        self.assertTrue(any(left==list(reversed(right)) for i,left in enumerate(requests)
+                            for right in requests[i+1:]))
+
     def test_lease_requires_owned_schemas_and_fresh_run_prefixed_relations(self):
         with TemporaryDirectory() as temporary:
             evidence = Path(temporary) / 'configuration.json'
