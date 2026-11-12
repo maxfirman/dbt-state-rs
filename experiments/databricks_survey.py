@@ -44,9 +44,12 @@ class Scope:
         self.schemas = {self.prefix + '_' + role for role in ('raw', 'prod', 'dev', 'ref', 'prod_raw', 'dev_raw', 'ref_raw', 'prod_dbt_test__audit', 'dev_dbt_test__audit', 'ref_dbt_test__audit')}
 
     def relation(self, role, name):
-        value = f'cdo_demo_db.{self.prefix}_{role}.{name}'
+        value = f'cdo_demo_db.{self.schema(role)}.{name}'
         self.check(value)
         return value
+
+    def schema(self, role):
+        return self.prefix + '_' + role
 
     def check(self, value):
         parts = value.replace('`', '').split('.')
@@ -56,11 +59,37 @@ class Scope:
         return value
 
 
-def complete_result(response):
+def complete_result(response, require_rows=False):
     if response.get('status', {}).get('state') != 'SUCCEEDED':
         raise Refused('statement did not succeed')
     manifest, result = response.get('manifest', {}), response.get('result', {})
     rows = result.get('data_array', [])
+    if require_rows:
+        schema = manifest.get('schema', {})
+        columns = schema.get('columns')
+        count = manifest.get('total_row_count')
+        chunk_count = manifest.get('total_chunk_count')
+        chunks = manifest.get('chunks', [] if chunk_count == 0 else None)
+        if (manifest.get('format') != 'JSON_ARRAY' or manifest.get('truncated') is not False
+                or not isinstance(columns, list) or not columns
+                or schema.get('column_count') != len(columns)
+                or type(count) is not int or count < 0
+                or type(chunk_count) is not int or chunk_count not in (0, 1)
+                or not isinstance(chunks, list) or len(chunks) != chunk_count
+                or any(not all(key in col for key in ('name', 'type_text', 'type_name', 'position'))
+                       or col['position'] != i for i, col in enumerate(columns))):
+            raise Refused('incomplete SQL read envelope')
+        if chunk_count == 0:
+            if count != 0 or result:
+                raise Refused('inconsistent empty SQL read')
+        elif (chunks != [{'chunk_index': 0, 'row_offset': 0, 'row_count': count}]
+              or result.get('chunk_index') != 0 or result.get('row_offset') != 0
+              or result.get('row_count') != count or 'data_array' not in result
+              or not isinstance(rows, list) or len(rows) != count
+              or any(not isinstance(row, list) or len(row) != len(columns)
+                     or any(cell is not None and not isinstance(cell, str) for cell in row)
+                     for row in rows)):
+            raise Refused('inconsistent SQL read chunks, rows or typed cells')
     if (manifest.get('truncated') or result.get('next_chunk_internal_link')
             or manifest.get('total_chunk_count', 1) > 1
             or manifest.get('total_row_count', len(rows)) != len(rows)
@@ -151,9 +180,9 @@ def status_for(message):
 
 
 class Campaign:
-    def __init__(self, args):
+    def __init__(self, args, scope=None):
         self.a = args
-        self.scope = Scope(args.run_id)
+        self.scope = scope or Scope(args.run_id)
         self.work = Path(args.work_dir).resolve()
         if self.work.exists() and any(self.work.iterdir()):
             raise Refused('work directory must be empty')
@@ -187,8 +216,8 @@ class Campaign:
         self.profiles = self.work / 'profiles'
         self.profiles.mkdir()
         outputs = {}
-        for role in ('prod', 'dev', 'ref'):
-            output = dict(source, schema=self.scope.prefix + '_' + role)
+        for role in getattr(self.scope, 'profile_roles', ('prod', 'dev', 'ref')):
+            output = dict(source, schema=self.scope.schema(role))
             output.pop('defer_to_target', None)
             output['token'] = "{{ env_var('DBT_ENV_SECRET_DATABRICKS_TOKEN') }}"
             if role == 'dev':
@@ -256,7 +285,7 @@ class Campaign:
         self.save('operations.json', self.events)
         if event['state'] != 'SUCCEEDED':
             raise Refused(json.dumps(response.get('status')))
-        return complete_result(response)
+        return complete_result(response, require_rows=statement.lstrip().upper().startswith(('SELECT ', 'DESCRIBE ', 'SHOW ')))
 
     def start(self):
         # The only local process managed by this campaign is this Popen instance.
@@ -265,7 +294,11 @@ class Campaign:
             port = sock.getsockname()[1]
         self.env.update(DBT_ENGINE_MANAGE_STATE='true', RUN_CACHE_API_URL=f'127.0.0.1:{port}', RUN_CACHE_API_SECURE='false')
         self.proxy_log = open(self.work / 'proxy.log', 'w')
-        env = dict(self.env, PROXY_LISTEN=f'127.0.0.1:{port}', GOLDEN_DIR=str(self.work / 'golden'), PROXY_UPSTREAM='https://api.state.dbt.com:443', RUST_LOG='warn')
+        env = dict(self.env, PROXY_LISTEN=f'127.0.0.1:{port}', GOLDEN_DIR=str(self.work / 'golden'),
+                   PROXY_UPSTREAM='https://api.state.dbt.com:443', RUST_LOG='warn')
+        env.pop('PROXY_LOCAL_UPSTREAM', None)
+        if getattr(self.a, 'rust_url', None):
+            env['PROXY_LOCAL_UPSTREAM'] = self.a.rust_url
         self.proxy = subprocess.Popen([self.a.proxy], env=env, stdout=self.proxy_log, stderr=subprocess.STDOUT)
         for _ in range(120):
             if self.proxy.poll() is not None:

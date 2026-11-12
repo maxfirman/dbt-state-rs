@@ -10,6 +10,40 @@ import databricks_survey as survey
 
 
 class SurveyContract(unittest.TestCase):
+    def test_physical_reads_refuse_missing_or_inconsistent_result_envelopes(self):
+        from copy import deepcopy
+        good = {'status': {'state': 'SUCCEEDED'}, 'manifest': {
+            'format': 'JSON_ARRAY', 'truncated': False, 'total_chunk_count': 1,
+            'chunks': [{'chunk_index': 0, 'row_offset': 0, 'row_count': 1}],
+            'total_row_count': 1, 'schema': {'column_count': 1, 'columns': [
+                {'name': 'id', 'type_text': 'BIGINT', 'type_name': 'LONG', 'position': 0}]}},
+            'result': {'chunk_index': 0, 'row_offset': 0, 'row_count': 1, 'data_array': [['1']]}}
+        self.assertEqual(survey.complete_result(good, require_rows=True)['rows'], [['1']])
+        for path in [('manifest',), ('result',), ('manifest', 'schema'),
+                     ('manifest', 'chunks'), ('manifest', 'total_row_count'),
+                     ('manifest', 'truncated'), ('result', 'row_count'),
+                     ('result', 'data_array')]:
+            broken = deepcopy(good)
+            parent = broken
+            for key in path[:-1]:
+                parent = parent[key]
+            del parent[path[-1]]
+            with self.subTest(missing=path), self.assertRaises(survey.Refused):
+                survey.complete_result(broken, require_rows=True)
+        for field, value in [('row_offset', 1), ('chunk_index', 1), ('row_count', 0),
+                             ('data_array', [[]]), ('data_array', [[1]])]:
+            broken = deepcopy(good)
+            broken['result'][field] = value
+            with self.subTest(field=field), self.assertRaises(survey.Refused):
+                survey.complete_result(broken, require_rows=True)
+        self.assertEqual(survey.complete_result({'status': {'state': 'SUCCEEDED'}}),
+                         {'columns': [], 'rows': []})
+        empty = deepcopy(good)
+        empty['manifest'].update(total_chunk_count=0, total_row_count=0)
+        del empty['manifest']['chunks']
+        empty['result'] = {}
+        self.assertEqual(survey.complete_result(empty, require_rows=True)['rows'], [])
+
     def test_refuses_unowned_or_off_catalog_relations(self):
         scope = survey.Scope('20261112abcdef')
         self.assertEqual(scope.relation('raw', 'inputs'), 'cdo_demo_db.ds_20261112abcdef_raw.inputs')

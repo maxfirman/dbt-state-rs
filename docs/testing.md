@@ -22,6 +22,7 @@ python3 experiments/trace_validate_test.py               # warehouse-free experi
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
 python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
+python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not

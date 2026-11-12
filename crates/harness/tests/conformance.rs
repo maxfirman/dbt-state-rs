@@ -1190,6 +1190,21 @@ async fn replay_explain_messages(
                 .unwrap_or(false)
         })
         .collect();
+    if fixture.starts_with("databricks_") {
+        assert_eq!(
+            tracked.len(),
+            hosted_messages.len(),
+            "{context}: every explained decision must have its submit in this fixture"
+        );
+        assert!(
+            e.request["execution_decision_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|id| id.as_str().is_some_and(|id| edid_remap.contains_key(id))),
+            "{context}: every requested decision must have complete history"
+        );
+    }
     if tracked.is_empty() {
         // All referenced decisions were minted in a PRIOR live session (not in
         // this capture); the server tracks none of them, so it returns nothing.
@@ -1214,14 +1229,24 @@ async fn replay_explain_messages(
     }
 
     // Build the remapped request (hosted id -> local id) for the tracked ids.
-    let local_ids: Vec<String> = tracked
-        .iter()
-        .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
-        .collect();
+    let local_ids: Vec<String> = if fixture.starts_with("databricks_") {
+        e.request["execution_decision_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| edid_remap[id.as_str().unwrap()].clone())
+            .collect()
+    } else {
+        tracked
+            .iter()
+            .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
+            .collect()
+    };
 
     // Poll for the best-effort capture to land for every tracked id.
     let mut explain = ExplainClient::new(ch);
     let mut local_by_id: HashMap<String, qc::ExplainMessageEntry> = HashMap::new();
+    let mut local_order = Vec::new();
     for _ in 0..100 {
         let resp = explain
             .get_explain_messages(qc::GetExplainMessagesRequest {
@@ -1230,6 +1255,11 @@ async fn replay_explain_messages(
             .await
             .unwrap()
             .into_captured(e);
+        local_order = resp
+            .messages
+            .iter()
+            .map(|m| m.execution_decision_id.clone())
+            .collect::<Vec<_>>();
         local_by_id = resp
             .messages
             .into_iter()
@@ -1245,6 +1275,16 @@ async fn replay_explain_messages(
         local_ids.len(),
         "{context}: server must re-derive a message for every tracked id"
     );
+    if fixture.starts_with("databricks_") {
+        let hosted_order: Vec<_> = hosted_messages
+            .iter()
+            .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
+            .collect();
+        assert_eq!(
+            local_order, hosted_order,
+            "{context}: complete response order"
+        );
+    }
 
     let mut asserted = 0usize;
     for m in tracked {
@@ -1260,11 +1300,22 @@ async fn replay_explain_messages(
         // re-derivable (asserted exactly by the seeded-history oracle tests
         // `explain_skip_tree_matches_hosted_oracle_when_history_seeded` and
         // `explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded`).
-        let hosted_tree = normalize_explain_lines(
-            &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
-                .unwrap_or_default(),
-        );
-        let local_tree = normalize_explain_lines(&local.explain_lines);
+        let (hosted_tree, local_tree) = if fixture.starts_with("databricks_") {
+            // A new complete capture keeps the actual names and full text;
+            // it cannot inherit the historical runtime-slot masks either.
+            (
+                m["explain_lines"].clone(),
+                serde_json::to_value(&local.explain_lines).unwrap(),
+            )
+        } else {
+            (
+                normalize_explain_lines(
+                    &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
+                        .unwrap_or_default(),
+                ),
+                normalize_explain_lines(&local.explain_lines),
+            )
+        };
 
         let decision_matches = local.decision == m["decision"].as_i64().unwrap_or(-1) as i32;
         let desc_matches =
