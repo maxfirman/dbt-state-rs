@@ -465,17 +465,40 @@ impl DecisionRecord {
 
     /// A seed load whose copy of an equivalent the submit disallowed
     /// (`allow_clones: false`) or forbade (`clone_chain_depth_limit = 0`)
-    /// (#91). Hosted's answer for such a seed is uncaptured, so the wire keeps
-    /// the ordinary load (description and codes); only the persisted reason
-    /// records why it was not copied, so Explain renders no tree claiming no
-    /// other table exists.
-    pub fn with_seed_copy_refused(mut self, reason: DecisionReason) -> Self {
+    /// (#91). Only the class Build is changed.
+    ///
+    /// `allow_clones: false`: VERIFIED LIVE 2026-11-12 (client 2.0.11, which
+    /// sends it with `clone_chain_depth_limit = 0`;
+    /// explain_seed_copy_disabled.jsonl entries 6 and 12). Hosted keeps the
+    /// ordinary load description and sends the codes of
+    /// [`copy_disabled`](Self::copy_disabled). A load over the table holding
+    /// other values keeps that table's latest load, `over`, as its Explain
+    /// anchor, as a copy over it does
+    /// ([`seed_result_copy`](Self::seed_result_copy)).
+    ///
+    /// `clone_chain_depth_limit = 0` alone is uncaptured for a seed, so the
+    /// wire keeps the ordinary load; only the persisted reason records why it
+    /// was not copied, so Explain renders no tree claiming no other table
+    /// exists.
+    pub fn with_seed_copy_refused(
+        mut self,
+        reason: DecisionReason,
+        over: Option<&ExecutionRow>,
+    ) -> Self {
         debug_assert!(matches!(
             reason,
             DecisionReason::CopyDisabled | DecisionReason::CopyChainLimit
         ));
-        if self.class == DecisionKind::Build {
-            self.reason = reason;
+        if self.class != DecisionKind::Build {
+            return self;
+        }
+        self.reason = reason;
+        if reason == DecisionReason::CopyDisabled {
+            let disabled = Self::copy_disabled();
+            self.skip_rejection_reason = disabled.skip_rejection_reason;
+            self.clone_rejection_reason = disabled.clone_rejection_reason;
+            self.is_stale = disabled.is_stale;
+            self.matched_execution_id = over.map(|row| row.id);
         }
         self
     }

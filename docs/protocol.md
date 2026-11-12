@@ -158,8 +158,13 @@ history match and the decision. The client derives:
   submits also carry `event_time`, `lookback` and `on_schema_change`.
 - `table_namespace`: from the warehouse connection identifier
   (account/project/host).
-- Profile `allow_clones: false` is sent as `clone_chain_depth_limit = 0`, on both
-  `SubmitEnrichedSQL` and `RegisterClone`. `allow_clones` itself stays unset.
+- Profile `allow_clones: false`: client 2.0.6 sent it as
+  `clone_chain_depth_limit = 0` alone, on both `SubmitEnrichedSQL` and
+  `RegisterClone` (`clone_rejected_allow_clones_false.jsonl`). Client 2.0.11
+  sends `allow_clones: false` with `clone_chain_depth_limit: 0` on
+  `SubmitEnrichedSQL` (`explain_copy_logic_mismatch.jsonl` `cf4`) and
+  `SubmitValues` (`explain_seed_copy_disabled.jsonl`), and `allow_clones:
+  true` without a limit otherwise.
 - Node config `lag_tolerance` becomes `freshness_tolerance_seconds`,
   `require_fresh_data_from` becomes `stale_upstream_policy`, and
   `evaluate_volatile_sql: true` becomes `tolerate_nondeterminism = false`. These
@@ -225,8 +230,8 @@ Hosted also says `model` for `DBT_CUSTOM` (`explain_custom_history.jsonl`).
 | EXECUTE | `{noun} was executed because the table was modified after the cached execution` | The target relation's epoch is later than its build (External modification) |
 | EXECUTE | `model was executed because the view definition is newer than the cached execution` | The same, for a VIEW (`explain_reason_kind_cells.jsonl` `vc0`) |
 | EXECUTE | `data test was executed because it has no prior execution or its query changed` | Every data-test execute |
-| EXECUTE | `seed was loaded because it did not exist` | Seed first load, or its table is absent |
-| EXECUTE | `seed was loaded because its data changed` | Seed reload |
+| EXECUTE | `seed was loaded because it did not exist` | Seed first load, or its table is absent; also when its copy is disallowed (`explain_seed_copy_disabled.jsonl` entry 6) |
+| EXECUTE | `seed was loaded because its data changed` | Seed reload; also over its table holding other values when its copy is disallowed (entry 12) |
 | EXECUTE | `model was executed because cloning is disabled` | An equivalent exists but the submit disallows copies (`allow_clones: false`; client 2.0.11 also sends `clone_chain_depth_limit: 0`) |
 | EXECUTE | `model was executed because the maximum number of nested clones has been reached` | An equivalent exists but the submit forbids copies with `clone_chain_depth_limit = 0` alone (client 2.0.6), or the copy chain is at its limit (DuckDB) |
 | CLONE | `an equivalent model exists under another name so we cloned that one` | Result copy on submit |
@@ -255,7 +260,7 @@ tolerance" string (`explain_freshness_cells.jsonl` `fa_*`).
 | EXECUTE | 8 / 7 (`LATEST_QUERY_HASH_NOT_MATCH` / `TARGET_TABLE_MATCH`) | A rebuild of an existing target relation whose older build (overwritten since) has the workload's identity and would still be reusable for this submit, also when an equivalent exists under another name (it goes ahead of 1 / 3, 1 / 6 and 1 / 2). Not for first builds, absent target relations or External modifications. | `with_older_match`, `reuse_candidate::{older_build_matches, older_seed_matches}` |
 | EXECUTE | 2 / 2 (`EXECUTION_TYPE_MISMATCH`) | The latest build has the workload's identity under another execution type and recorded the workload's genuine upstream names, and the target relation has no build of the workload's type (rule 1 below). Other upstream names are another identity: 6 / 6, or 8 / 7 (`explain_reason_kind_cells.jsonl` `vc`, `cv`). A RegisterClone copy has it when the submit has the logic the copy inherited (`explain_copy_logic_mismatch.jsonl` `kf4`) | `decision.rs::execute`, `NoCandidate::ExecutionTypeChanged` |
 | EXECUTE | 4 / 7 (`TARGET_TABLE_DOES_NOT_EXIST` / `TARGET_TABLE_MATCH`) | The target relation is absent, its latest build has the workload's identity and would otherwise be reusable. A stale latest build keeps 6 / 6. | `with_absent_target_match` |
-| EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise) |
+| EXECUTE | 1 / 10 (`TARGET_TABLE_MISMATCH` / `CLONE_CHAIN_LIMIT_EXCEEDED`) | An equivalent exists for an absent or mismatched target relation, but the submit forbids copies; for a Snowflake seed, a load to copy exists but the submit has `allow_clones: false` (`explain_seed_copy_disabled.jsonl`) | `DecisionRecord::copy_disabled` (`allow_clones: false`), `DecisionRecord::copy_chain_limit` (otherwise), `DecisionRecord::with_seed_copy_refused` (seed) |
 | EXECUTE | 1 / 3 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_NOT_FULL`) | A view, snapshot or custom node with no reuse candidate, or whose reuse candidate must rebuild for upstream data drift, whose equivalent exists under another name: it is not copied on submit | `result_copy::plan_submit`, `with_refused_copy` |
 | EXECUTE | 1 / 6 (`TARGET_TABLE_MISMATCH` / `NO_SUITABLE_MATCH_FOUND`) | As 1 / 3, for an incremental whose newest equivalent has its own execution type | same |
 | EXECUTE | 1 / 2 (`TARGET_TABLE_MISMATCH` / `EXECUTION_TYPE_MISMATCH`) | As 1 / 3, when the newest equivalent has another execution type | same |
@@ -271,7 +276,8 @@ Evidence: `lag_copy_candidates.jsonl` (`ob*`, `dt`), `lag_dropped_targets.jsonl`
 `explain_copy_probes.jsonl`, `explain_incremental_copy_over.jsonl`,
 `explain_copy_logic_mismatch.jsonl`, `explain_copy_logic_crafted.jsonl`,
 `explain_freshness_cells.jsonl` (8 / 7 ahead of an equivalent elsewhere;
-1 / 3 on a data-only rebuild), `explain_rebuild_tolerance_line.jsonl`.
+1 / 3 on a data-only rebuild), `explain_rebuild_tolerance_line.jsonl`,
+`explain_seed_copy_disabled.jsonl` (a seed's 1 / 10).
 
 ### Current decision semantics
 
@@ -494,14 +500,22 @@ every other dialect reload the seed.
   unset), or over an existing table whose latest load in scope is a seed load
   with other values or seed config. Not over a table modified after a load
   with the seed's values: hosted SKIPs that seed (`explain_seed_copy_existing.jsonl`
-  entry 13) and this server reloads it (the safety floor, #129). Not over an
+  entry 13) and this server reloads it (the safety floor, accepted
+  divergence #129). Not over an
   existing table without a seed load in scope (uncaptured).
 - **Limits.** As for a FULL copy: `allow_clones: false` and
   `clone_chain_depth_limit: 0` do not copy, a requested expiration refuses
-  the copy, and `clone_time_travel_limit` is not applied. Hosted's answer for
-  a seed whose copy is disallowed is uncaptured, so the server sends the
-  ordinary load (`seed was loaded because it did not exist`, 6 / 6) and
-  records `copy_disabled` or `copy_chain_limit`, whose Explain tree is empty.
+  the copy, and `clone_time_travel_limit` is not applied. With
+  `allow_clones: false` (client 2.0.11 sends it with
+  `clone_chain_depth_limit: 0`) hosted loads the seed with codes 1 / 10 and
+  its ordinary description (`seed was loaded because it did not exist` into
+  an absent table, `seed was loaded because its data changed` over one
+  holding other values), and its Explain tree names the load it could have
+  copied (VERIFIED LIVE 2026-11-12, `explain_seed_copy_disabled.jsonl`); the
+  server does the same and records `copy_disabled`. With
+  `clone_chain_depth_limit: 0` alone (uncaptured) the server sends the
+  ordinary load (6 / 6) and records `copy_chain_limit`, whose Explain tree
+  is empty.
 - **Response.** As for a FULL copy: codes 1 / -, `an equivalent seed exists
   under another name so we cloned that one`, the source's build epoch and
   runtime, and `CREATE OR REPLACE [TRANSIENT] TABLE <target> CLONE <source>
@@ -579,7 +593,8 @@ tolerance and always use `ANY`. On Snowflake a seed without a reuse
 candidate is copied from its load under another name
 ([Seed copy on submit](#seed-copy-on-submit), #91); elsewhere it is
 reloaded. An externally modified seed table is reloaded (hosted skips it,
-#129; see [correctness-handoff.md](correctness-handoff.md)).
+accepted divergence #129; see
+[correctness-handoff.md](correctness-handoff.md#accepted-divergences)).
 
 ## State selectors: `SelectorService.GetStateSelection`
 

@@ -991,40 +991,99 @@ async fn other_seeds_with_the_same_values_do_not_hide_a_copy_source() {
     assert_eq!(copy.source_table, PROD_SEED);
 }
 
+/// Expect a seed load whose copy from the prod seed the submit disallowed:
+/// the `copy_disabled` outcome, naming the prod seed.
+fn expect_copy_disabled(outcome: SubmitOutcome, why: &str) -> DecisionRecord {
+    let SubmitOutcome::ChainLimitExecute {
+        record,
+        source_table,
+        ..
+    } = outcome
+    else {
+        panic!("{why}: expected the copy-disabled load, got {outcome:?}");
+    };
+    assert_eq!(source_table, PROD_SEED, "{why}");
+    assert_eq!(record.reason, DecisionReason::CopyDisabled, "{why}");
+    assert_eq!(
+        (record.skip_rejection_reason, record.clone_rejection_reason),
+        (Some(1), Some(10)),
+        "{why}"
+    );
+    assert!(!record.is_stale, "{why}");
+    record
+}
+
 /// `allow_clones: false` (client 2.0.11 sends it with
-/// `clone_chain_depth_limit = 0`) and a copy-forbidding target do not copy.
-/// Hosted's wording for such a seed is uncaptured, so it gets the ordinary
-/// load answer; its decision reason says why it was not copied, so Explain
-/// renders no tree claiming there is no other table to copy.
+/// `clone_chain_depth_limit = 0`) does not copy. Hosted loads the seed with
+/// its ordinary description and codes 1 / 10, into its absent table and over
+/// its table holding other values (VERIFIED LIVE 2026-11-12, client 2.0.11,
+/// explain_seed_copy_disabled.jsonl entries 6 and 12). The load over the
+/// table keeps that table's latest load as its Explain anchor.
 #[tokio::test]
 async fn a_seed_is_not_copied_when_clones_are_disallowed() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
     load(store, environment_seed("prod").values("v1"), BUILT).await;
-
-    for (allow_clones, limit, reason) in [
-        (Some(false), Some(0), DecisionReason::CopyDisabled),
-        (Some(false), None, DecisionReason::CopyDisabled),
-        (None, Some(0), DecisionReason::CopyChainLimit),
-    ] {
-        let seed = environment_seed("dev").values("v1").with(|r| {
-            r.allow_clones = allow_clones;
+    let disallowed = |limit| {
+        move |r: &mut qc::SubmitValuesRequest| {
+            r.allow_clones = Some(false);
             r.clone_chain_depth_limit = limit;
-        });
-        let why = format!("allow_clones {allow_clones:?}, limit {limit:?}");
-        let record = expect_load(submit_values(store, seed).await, &why);
+        }
+    };
+
+    for limit in [Some(0), None] {
+        let why = format!("absent table, limit {limit:?}");
+        let seed = environment_seed("dev").values("v1").with(disallowed(limit));
+        let record = expect_copy_disabled(submit_values(store, seed).await, &why);
         assert_eq!(
             record.description, "seed was loaded because it did not exist",
             "{why}"
         );
-        assert_eq!(
-            (record.skip_rejection_reason, record.clone_rejection_reason),
-            (Some(6), Some(6)),
-            "{why}"
-        );
-        assert_eq!(record.reason, reason, "{why}");
+        assert_eq!(record.matched_execution_id, None, "{why}");
     }
+
+    let other = environment_seed("dev")
+        .values("v2")
+        .with(disallowed(Some(0)));
+    let dev_load = load(store, other, BUILT + 1).await;
+    let seed = environment_seed("dev")
+        .values("v1")
+        .own_epoch(Some(BUILT + 1))
+        .with(disallowed(Some(0)));
+    let record = expect_copy_disabled(submit_values(store, seed).await, "other values");
+    assert_eq!(
+        record.description,
+        "seed was loaded because its data changed"
+    );
+    assert_eq!(record.matched_execution_id, Some(dev_load));
+}
+
+/// A target that forbids copies with `clone_chain_depth_limit = 0` alone is
+/// not copied either. Client 2.0.11 never sends it for a seed and hosted's
+/// answer is uncaptured, so the seed gets the ordinary load answer; its
+/// decision reason says why it was not copied, so Explain renders no tree
+/// claiming there is no other table to copy.
+#[tokio::test]
+async fn a_seed_is_not_copied_when_the_target_forbids_copies() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+
+    let seed = environment_seed("dev").values("v1").with(|r| {
+        r.clone_chain_depth_limit = Some(0);
+    });
+    let record = expect_load(submit_values(store, seed).await, "limit 0");
+    assert_eq!(
+        record.description,
+        "seed was loaded because it did not exist"
+    );
+    assert_eq!(
+        (record.skip_rejection_reason, record.clone_rejection_reason),
+        (Some(6), Some(6))
+    );
+    assert_eq!(record.reason, DecisionReason::CopyChainLimit);
 }
 
 /// DuckDB reloads seeds: hosted does not engage DuckDB, and its checked copy
