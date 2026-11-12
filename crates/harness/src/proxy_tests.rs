@@ -251,6 +251,108 @@ impl CloneSvc for Upstream {
     }
 }
 
+#[tonic::async_trait]
+impl ClientTelemetry for Upstream {
+    #[allow(deprecated)]
+    async fn register_session_start(
+        &self,
+        _: Request<qc::SessionStartRequest>,
+    ) -> Result<Response<qc::SessionStartResponse>, Status> {
+        Err(Status::unimplemented("not used by pinned client"))
+    }
+
+    async fn submit_telemetry_batch(
+        &self,
+        request: Request<qc::SubmitTelemetryBatchRequest>,
+    ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
+        let request = request.into_inner();
+        let Some(qc::client_telemetry_event::Request::SessionEnd(end)) =
+            request.events[0].request.as_ref()
+        else {
+            panic!("expected session-end event");
+        };
+        assert_eq!(
+            end.session_duration,
+            Some(prost_types::Duration {
+                seconds: 12,
+                nanos: 345_678_901
+            })
+        );
+        Ok(Response::new(qc::SubmitTelemetryBatchResponse {
+            success: true,
+        }))
+    }
+}
+
+#[tokio::test]
+async fn session_end_duration_survives_public_proxy_capture_and_replay() {
+    let (up_addr, up_listener) = listen().await;
+    let upstream = tokio::spawn(
+        Server::builder()
+            .add_service(ClientTelemetryServer::new(Upstream))
+            .serve_with_incoming(up_listener),
+    );
+    let channel = Channel::from_shared(format!("http://{up_addr}"))
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("capture-{}", uuid::Uuid::new_v4()));
+    let golden = Arc::new(GoldenLog::create(&dir).unwrap());
+    let proxy = ProxyService(Arc::new(Proxy {
+        channel: channel.clone(),
+        minter: Arc::new(TokenMinter::new(DbtCloudCredential {
+            host: "unused".into(),
+            token: "unused".into(),
+            project_id: "unused".into(),
+        })),
+        golden: golden.clone(),
+        bypass_auth: true,
+    }));
+    let (addr, listener) = listen().await;
+    let server = tokio::spawn(
+        Server::builder()
+            .add_service(ClientTelemetryServer::new(proxy))
+            .serve_with_incoming(listener),
+    );
+    let mut client = ClientTelemetryClient::connect(format!("http://{addr}"))
+        .await
+        .unwrap();
+    client
+        .submit_telemetry_batch(qc::SubmitTelemetryBatchRequest {
+            events: vec![qc::ClientTelemetryEvent {
+                event_order: Some(3),
+                request: Some(qc::client_telemetry_event::Request::SessionEnd(
+                    qc::SessionEndRequest {
+                        session_duration: Some(prost_types::Duration {
+                            seconds: 12,
+                            nanos: 345_678_901,
+                        }),
+                        result: 0,
+                        result_description: "completed".into(),
+                        metrics: None,
+                    },
+                )),
+            }],
+        })
+        .await
+        .unwrap();
+    golden.finish().unwrap();
+    let entries = dbt_state_harness::diff::load_golden(golden.path().to_str().unwrap()).unwrap();
+    let entry = &entries[0];
+    assert_eq!(
+        entry.request["events"][0]["request"]["session_end"]["session_duration"],
+        serde_json::json!({"seconds": 12, "nanos": 345_678_901})
+    );
+    let replay = dbt_state_harness::diff::replay_rpc(channel, entry)
+        .await
+        .unwrap();
+    entry.compare_outcome(&replay).unwrap();
+    server.abort();
+    upstream.abort();
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn clone_mirrors_and_optional_field_presence_survive_capture_and_replay() {
     let (up_addr, up_listener) = listen().await;
