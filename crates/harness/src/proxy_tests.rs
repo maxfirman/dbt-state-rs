@@ -70,13 +70,8 @@ async fn successful_and_rejected_rpc_survive_forwarding_and_capture() {
     let golden = Arc::new(GoldenLog::create(&dir).unwrap());
     let proxy = ProxyService(Arc::new(Proxy {
         channel,
-        minter: Arc::new(TokenMinter::new(DbtCloudCredential {
-            host: "unused".into(),
-            token: "unused".into(),
-            project_id: "unused".into(),
-        })),
+        minter: None,
         golden: golden.clone(),
-        bypass_auth: true,
     }));
     let (addr, listener) = listen().await;
     let server = tokio::spawn(
@@ -194,13 +189,8 @@ async fn capture_write_failure_fails_rpc_and_session() {
     let golden = Arc::new(GoldenLog::create(&dir).unwrap());
     let proxy = ProxyService(Arc::new(Proxy {
         channel,
-        minter: Arc::new(TokenMinter::new(DbtCloudCredential {
-            host: "unused".into(),
-            token: "unused".into(),
-            project_id: "unused".into(),
-        })),
+        minter: None,
         golden: golden.clone(),
-        bypass_auth: true,
     }));
     let (addr, listener) = listen().await;
     let server = tokio::spawn(
@@ -301,13 +291,8 @@ async fn session_end_duration_survives_public_proxy_capture_and_replay() {
     let golden = Arc::new(GoldenLog::create(&dir).unwrap());
     let proxy = ProxyService(Arc::new(Proxy {
         channel: channel.clone(),
-        minter: Arc::new(TokenMinter::new(DbtCloudCredential {
-            host: "unused".into(),
-            token: "unused".into(),
-            project_id: "unused".into(),
-        })),
+        minter: None,
         golden: golden.clone(),
-        bypass_auth: true,
     }));
     let (addr, listener) = listen().await;
     let server = tokio::spawn(
@@ -370,13 +355,8 @@ async fn clone_mirrors_and_optional_field_presence_survive_capture_and_replay() 
     let golden = Arc::new(GoldenLog::create(&dir).unwrap());
     let proxy = ProxyService(Arc::new(Proxy {
         channel: channel.clone(),
-        minter: Arc::new(TokenMinter::new(DbtCloudCredential {
-            host: "unused".into(),
-            token: "unused".into(),
-            project_id: "unused".into(),
-        })),
+        minter: None,
         golden: golden.clone(),
-        bypass_auth: true,
     }));
     let (addr, listener) = listen().await;
     let server = tokio::spawn(
