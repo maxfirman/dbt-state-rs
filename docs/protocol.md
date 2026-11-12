@@ -45,12 +45,23 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 | `ClientValidation` | `ValidateClientVersion` | Returns `is_supported=true` for every version |
 | `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | `GetExplainMessages` re-derived on demand ([explain-catalog.md](explain-catalog.md)); `GetUpstreamDependencyChanges` is an empty stub (see below) |
 | `SelectorService` | `GetStateSelection` | Implemented |
-| `ClientTelemetry` | `SubmitTelemetryBatch`, … | Not served |
+| `ClientTelemetry` | `SubmitTelemetryBatch` | Acknowledges batches with `success=true`; no hosted metering persistence |
 | `Health` (`grpc.health.v1`) | `Check`, `Watch` | Always `SERVING` |
 
 The client treats `ValidateClientVersion` as fail-open: an RPC error is logged
 as a warning and dbt runs without dbt State
 (`validate_client_version_fail_open` in the client's `dbt-run-cache` crate).
+
+Pinned dbt 2.0.11 calls `ValidateClientVersion` and `SubmitTelemetryBatch` in
+the Databricks survey. Telemetry carries `session_start`,
+`enriched_sql_prepared` and `session_end` events, including unsuccessful
+invocations. Hosted returns OK with `is_supported=true` and `success=true`
+respectively; auxiliary replay compares the complete responses, statuses and
+application metadata. Session-end duration preserves seconds/nanoseconds and
+optional presence in new captures. Older captures omitted that field; it is
+not reconstructed. The deprecated standalone `RegisterSessionStart` was not
+called and remains unimplemented. OAuth, accounts and billing remain outside
+the self-hosted service. See the dated [auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md).
 
 Wire service names must be preserved exactly. The service named `Clone`
 collides with Rust's `std::clone::Clone`; the proto build patches the generated

@@ -18,8 +18,9 @@ and differential tests). Two notable build steps:
 
 - **serde derives** are added to every message (`type_attribute`) so the proxy
   can emit JSON golden files that are human-diffable and replayable. The one
-  `google.protobuf.Duration` field (`SessionEndRequest.session_duration`, in the
-  unused ClientTelemetry service) is `serde(skip)`-ed.
+  `google.protobuf.Duration` field (`SessionEndRequest.session_duration`) uses
+  a lossless optional seconds/nanoseconds serializer. Older captures omitted
+  it; the omission still deserializes as absent.
 - **`Clone` service collision patch.** The proto has a service literally named
   `Clone`; tonic generates a trait `clone_server::Clone` that shadows
   `std::clone::Clone` and makes the std-derive impl fail to compile. `build.rs`

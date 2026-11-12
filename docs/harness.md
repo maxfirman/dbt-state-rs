@@ -113,11 +113,16 @@ A run:
    per dbt call in `<work-dir>/dbt/`;
 4. stops only its own proxy (by pid), deletes the project copy (keep it with
    `--keep-project`), and writes `window.jsonl` (the whole capture),
-   `fixture_candidate.jsonl` (only the methods the conformance replay
-   handles, including `RecordExecutions`; telemetry, `GetStateSelection` and
+   `fixture_candidate.jsonl` (the driver's decision/Explain subset,
+   including `RecordExecutions`; telemetry, `GetStateSelection` and
    the like are
    dropped and counted), `steps.json` (bound steps and row offsets) and the
    oracle report on stdout.
+
+The generic conformance replay also handles version validation and batched
+telemetry. The separate [Databricks auxiliary runner](../experiments/databricks_auxiliary.py)
+captures complete auxiliary-only real-client sessions for hosted/Rust checks;
+it does not use this Snowflake driver's fixture filter.
 
 The oracle passes an `Explain` step when the step captured a
 `GetExplainMessages` call for the node's current decision (its latest submit

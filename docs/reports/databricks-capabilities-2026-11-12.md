@@ -72,6 +72,22 @@ invocations, 1,067 certified RPCs and 8,601 retained files. The State-disabled
 snapshot reference contributes eight invocations and **zero RPCs**; its empty
 proxy session certifies clean shutdown, not hosted policy.
 
+The later [auxiliary audit for #157](databricks-client-auxiliary-2026-11-12.md)
+found that the pre-#157 serializer omitted `session_duration` from all 150
+archived `session_end` telemetry events. These RPC counts certify durable
+decoded outcomes, but do not establish complete duration payload capture.
+The omitted durations were not reconstructed. New #157 real-client captures
+retain the field and independently verify successful and unsuccessful session
+telemetry against hosted State and the Rust production router.
+
+Later #135 preparation hit the Unity Catalog schema quota. Maintenance verified
+the archived-ledger schemas through the UC API and removed 35 empty schemas
+with `DROP SCHEMA ... RESTRICT`, preserving 19 populated diagnostic schemas
+and all archived artifacts. The supplemental ledger is
+`maintenance/empty-schema-cleanup-20261112.json` under the archive root;
+the original capture manifest is unchanged. Thus populated experiment objects
+remain retained, while the original empty schema allocation is not permanent.
+
 Original summaries are retained unchanged, including exploratory guard/oracle
 failures. The index distinguishes their recorded statuses from the final
 assessments: default-policy stale results needed zero-lag follow-ups; the first

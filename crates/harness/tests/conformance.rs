@@ -995,6 +995,11 @@ async fn conformance_replay_all_corpora() {
             .iter()
             .filter(|(f, _)| *f == fixture)
             .count();
+        if fixture.starts_with("databricks_") {
+            assert_eq!(unknown_baseline, 0, "{fixture}: incomplete history");
+            assert_eq!(gaps, 0, "{fixture}: no Databricks gap exceptions");
+            assert_eq!(partial_here, 0, "{fixture}: no partial-history exceptions");
+        }
         eprintln!(
             "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps} \
              partial_history={partial_here}",
