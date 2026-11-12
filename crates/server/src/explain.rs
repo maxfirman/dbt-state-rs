@@ -323,8 +323,11 @@ enum Shape {
     UpstreamNamesChanged,
     /// A build whose copy of an equivalent the submit disallowed
     /// (`allow_clones: false`): `table analysis` names the equivalent
-    /// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`).
-    CopyDisabled,
+    /// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`;
+    /// 2026-11-12 for a seed, explain_seed_copy_disabled.jsonl). Only a seed
+    /// is loaded `over` its existing table, whose latest load (the anchor)
+    /// had other values.
+    CopyDisabled { over: bool },
     /// A data test that executes: its tested upstreams, without verdicts
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
@@ -358,6 +361,15 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             (DecisionKind::Clone, R::ResultCopy) => Shape::SeedCopy {
                 over: node.anchor.is_some(),
             },
+            // The same anchor for a load whose copy the submit disallowed
+            // (explain_seed_copy_disabled.jsonl entries 10, 14). A copy
+            // forbidden by `clone_chain_depth_limit = 0` alone is uncaptured
+            // for a seed (client 2.0.11 sends it with `allow_clones: false`).
+            (DecisionKind::Build, R::CopyDisabled) if node.clone_source.is_some() => {
+                Shape::CopyDisabled {
+                    over: node.anchor.is_some(),
+                }
+            }
             _ => return None,
         });
     }
@@ -590,7 +602,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Build, R::CopyDisabled)
             if full && node.own_target_absent() && node.clone_source.is_some() =>
         {
-            Shape::CopyDisabled
+            Shape::CopyDisabled { over: false }
         }
         // Everything else renders nothing:
         // - LOCAL-ONLY (crafted probes d1–d4, explain_ambiguous_rebuilds.jsonl):
@@ -679,7 +691,8 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::CopyOver) => copy_over_tree(node),
         Some(Shape::Clone) => clone_tree(node),
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
-        Some(Shape::CopyDisabled) => vec![copy_disabled_table_analysis(node)],
+        Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
+        Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
         Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
     }
 }
@@ -1461,7 +1474,9 @@ fn first_build_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
 
 /// `table analysis` for a build whose copy the submit disallowed: the table
 /// does not exist, and the equivalent it could have been copied from
-/// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`).
+/// (VERIFIED LIVE 2026-11-11, explain_copy_logic_mismatch.jsonl `cf4`; with
+/// the seed noun for a seed, 2026-11-12, explain_seed_copy_disabled.jsonl
+/// entry 10).
 fn copy_disabled_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
     let source = node.clone_source.clone().unwrap_or_default();
     section(
@@ -1483,6 +1498,43 @@ fn copy_disabled_table_analysis(node: &ExplainNode) -> qc::ExplainLine {
             ),
         ],
     )
+}
+
+/// A seed loaded over its table holding other values because the submit
+/// disallowed the copy of its equivalent: the table exists, but it's old and
+/// could have been copied, and the seed data has not changed (VERIFIED LIVE
+/// 2026-11-12, client 2.0.11, explain_seed_copy_disabled.jsonl entry 14).
+/// Unlike the copy over it ([`seed_copy_tree`]), the query section is not
+/// `(vs clone)`.
+fn seed_copy_disabled_over_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let source = quote(node.clone_source.as_deref().unwrap_or_default());
+    vec![
+        section(
+            format!("table analysis ({})", fqn(node)),
+            vec![
+                leaf(
+                    "the seed file exists already",
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS),
+                ),
+                leaf(
+                    format!(
+                        "but it's old. We would have cloned from {source}, but cloning is disabled"
+                    ),
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
+        section(
+            "query analysis",
+            vec![leaf(
+                "the seed data has not changed",
+                Some(MARKER_SUCCESS),
+                Some(BADGE_NODE_QUERY_UNCHANGED),
+            )],
+        ),
+    ]
 }
 
 /// `query analysis` with the node-query-CHANGED body (SHAPE 7).
@@ -2155,14 +2207,76 @@ mod tests {
         assert!(explain_lines(&n).is_empty(), "{:?}", render(&n));
     }
 
-    /// The load of a seed whose copy the submit disallowed or forbade has no
-    /// captured hosted tree (#91), so none is invented for it.
+    /// The load of a seed whose copy the submit disallowed (VERIFIED LIVE
+    /// 2026-11-12, client 2.0.11, explain_seed_copy_disabled.jsonl): into its
+    /// absent table, the FULL `copy_disabled` table analysis with the seed
+    /// noun (entry 10); over its table holding other values (the anchor, its
+    /// latest load), "but it's old. We would have cloned from …" and the
+    /// seed data line (entry 14). A copy forbidden by
+    /// `clone_chain_depth_limit = 0` alone is uncaptured for a seed, and a
+    /// disallowed copy without its source names nothing: both render nothing.
     #[test]
-    fn seed_load_with_a_disallowed_copy_emits_nothing() {
-        for reason in [DecisionReason::CopyDisabled, DecisionReason::CopyChainLimit] {
-            let mut n = seed(DecisionKind::Build, reason);
-            n.clone_source = Some("\"DB\".\"PROD\".\"SRC\"".into());
-            assert!(explain_lines(&n).is_empty(), "{reason:?}: {:?}", render(&n));
+    fn seed_load_with_a_disallowed_copy_names_the_equivalent() {
+        let disabled = |over: bool| {
+            let mut n = seed_copy(over);
+            n.decision = DecisionKind::Build;
+            n.reason = Some(DecisionReason::CopyDisabled);
+            n
+        };
+        let fqn = "table analysis («FQN»)";
+        assert_eq!(
+            render(&disabled(false)),
+            vec![
+                (0, fqn.to_string(), None, None),
+                (
+                    1,
+                    "the seed table does not exist".into(),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+                (
+                    1,
+                    "the seed table could have been cloned from \"DB\".\"PROD\".\"SRC\", but cloning is disabled"
+                        .into(),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+            ]
+        );
+        assert_eq!(
+            render(&disabled(true)),
+            vec![
+                (0, fqn.to_string(), None, None),
+                (
+                    1,
+                    "the seed file exists already".into(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_TARGET_TABLE_EXISTS)
+                ),
+                (
+                    1,
+                    "but it's old. We would have cloned from \"DB\".\"PROD\".\"SRC\", but cloning is disabled"
+                        .into(),
+                    Some(MARKER_FAIL),
+                    None
+                ),
+                (0, "query analysis".into(), None, None),
+                (
+                    1,
+                    "the seed data has not changed".into(),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED)
+                ),
+            ]
+        );
+
+        for over in [false, true] {
+            let mut chain = disabled(over);
+            chain.reason = Some(DecisionReason::CopyChainLimit);
+            assert!(explain_lines(&chain).is_empty(), "{:?}", render(&chain));
+            let mut unnamed = disabled(over);
+            unnamed.clone_source = None;
+            assert!(explain_lines(&unnamed).is_empty(), "{:?}", render(&unnamed));
         }
     }
 
