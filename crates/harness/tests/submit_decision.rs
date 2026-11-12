@@ -764,3 +764,279 @@ async fn duckdb_result_copy_ignores_dialect_case() {
         );
     }
 }
+
+// ---- seed copy on submit (#91) ---------------------------------------------
+
+const PROD_SEED: &str = "\"DB\".\"PROD\".\"SEED\"";
+const DEV_SEED: &str = "\"DB\".\"DEV\".\"SEED\"";
+const SEED_COPY_DESCRIPTION: &str =
+    "an equivalent seed exists under another name so we cloned that one";
+
+/// Submit a seed, expect an ordinary load, and confirm it at `epoch`.
+async fn load(store: &Store, req: impl Into<qc::SubmitValuesRequest>, epoch: i64) -> i64 {
+    let outcome = submit_values(store, req).await;
+    let SubmitOutcome::Execute { ids, .. } = outcome else {
+        panic!("expected a load, got {outcome:?}");
+    };
+    confirm(store, &ids, epoch).await;
+    rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .expect("confirmed row")
+        .id
+}
+
+/// Expect the ordinary seed load: no copy.
+fn expect_load(outcome: SubmitOutcome, why: &str) -> DecisionRecord {
+    let SubmitOutcome::Execute { record, .. } = outcome else {
+        panic!("{why}: the seed is loaded, not copied; got {outcome:?}");
+    };
+    record
+}
+
+/// A Snowflake seed loaded with the same values in another schema of its
+/// namespace is copied into its absent table (VERIFIED LIVE 2026-11-10,
+/// explain_copy_probes.jsonl entry 12), and the confirmed copy is then reused.
+#[tokio::test]
+async fn a_seed_loaded_in_another_schema_is_copied_into_its_absent_table() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    let SubmitOutcome::Copy { ids, copy, record } = outcome else {
+        panic!("expected Copy, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, PROD_SEED);
+    assert_eq!(
+        copy.clone_sqls,
+        [format!(
+            "\n            CREATE OR REPLACE TABLE {DEV_SEED}\n            CLONE {PROD_SEED}\n            COPY GRANTS"
+        )]
+    );
+    assert_eq!(copy.source_last_modified_epoch, Some(BUILT));
+    assert_eq!(copy.source_execution_runtime_ms, Some(42));
+    assert_eq!(record.reason, DecisionReason::ResultCopy);
+    assert_eq!(record.description, SEED_COPY_DESCRIPTION);
+    assert_eq!(
+        (record.skip_rejection_reason, record.clone_rejection_reason),
+        (Some(1), None)
+    );
+    assert_eq!(record.matched_execution_id, None);
+
+    let row = rows::execution_in(store, ORG, &ids.request_id)
+        .await
+        .expect("pending row written");
+    assert_eq!(row.target_table, DEV_SEED, "keyed on the submit target");
+    assert_eq!(row.clone_source_table.as_deref(), Some(PROD_SEED));
+    assert_eq!(row.execution_type, 9);
+    assert!(row.node_sql_hash.is_some(), "the seed's own identity");
+    confirm(store, &ids, BUILT + 1).await;
+
+    let outcome = submit_values(
+        store,
+        environment_seed("dev")
+            .values("v1")
+            .own_epoch(Some(BUILT + 1)),
+    )
+    .await;
+    assert!(
+        matches!(outcome, SubmitOutcome::Skip { .. }),
+        "the confirmed copy is reused, got {outcome:?}"
+    );
+}
+
+/// A seed whose table holds a load with other values is copied over it
+/// (VERIFIED LIVE 2026-11-11, explain_seed_copy_existing.jsonl entry 14). The
+/// replaced load stays the decision's Explain anchor ("but it's old").
+#[tokio::test]
+async fn a_seed_is_copied_over_its_table_holding_other_values() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+    let old = load(store, environment_seed("dev").values("v0"), BUILT + 1).await;
+
+    let outcome = submit_values(
+        store,
+        environment_seed("dev")
+            .values("v1")
+            .own_epoch(Some(BUILT + 1)),
+    )
+    .await;
+    let SubmitOutcome::Copy { copy, record, .. } = outcome else {
+        panic!("expected Copy, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, PROD_SEED);
+    assert_eq!(record.description, SEED_COPY_DESCRIPTION);
+    assert_eq!(record.matched_execution_id, Some(old));
+}
+
+/// A seed table modified after a load with the submit's values is reloaded,
+/// not copied (AGENTS.md reuse invariant 3; hosted SKIPs it, #129).
+#[tokio::test]
+async fn a_seed_whose_table_was_modified_is_reloaded_not_copied() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+    // The dev seed is copied from prod, then its table is modified.
+    let SubmitOutcome::Copy { ids, .. } =
+        submit_values(store, environment_seed("dev").values("v1")).await
+    else {
+        panic!("the dev seed is copied from prod");
+    };
+    confirm(store, &ids, BUILT + 1).await;
+
+    let outcome = submit_values(
+        store,
+        environment_seed("dev")
+            .values("v1")
+            .own_epoch(Some(BUILT + 5)),
+    )
+    .await;
+    let record = expect_load(outcome, "modified table");
+    assert_eq!(
+        record.reason,
+        DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetChangedOrMissing)
+    );
+}
+
+#[tokio::test]
+async fn a_seed_is_not_copied_from_other_values() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+
+    let outcome = submit_values(store, environment_seed("dev").values("v2")).await;
+    let record = expect_load(outcome, "another values_hash");
+    assert_eq!(record.reason, DecisionReason::FirstBuild);
+}
+
+/// The same values under other seed config (column types) are another seed.
+#[tokio::test]
+async fn a_seed_is_not_copied_from_other_seed_config() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let typed = |schema: &str, types: &str| {
+        environment_seed(schema)
+            .values("v1")
+            .extra("column_types", types)
+    };
+    load(store, typed("prod", "{\"id\": \"varchar\"}"), BUILT).await;
+
+    let outcome = submit_values(store, typed("dev", "{\"id\": \"integer\"}")).await;
+    expect_load(outcome, "other column types");
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    expect_load(outcome, "no column types");
+}
+
+#[tokio::test]
+async fn a_seed_is_not_copied_from_another_namespace() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(
+        store,
+        environment_seed("prod").values("v1").namespace("ns-other"),
+        BUILT,
+    )
+    .await;
+
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    expect_load(outcome, "another namespace");
+}
+
+/// Only the latest load in the source's own State history is a copy source:
+/// a prod load since reloaded with other values is superseded.
+#[tokio::test]
+async fn a_seed_is_not_copied_from_a_superseded_load() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+    load(
+        store,
+        environment_seed("prod").values("v2").own_epoch(Some(BUILT)),
+        BUILT + 1,
+    )
+    .await;
+
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    expect_load(outcome, "superseded prod load");
+}
+
+/// Newer loads of the same values and seed config under other object names
+/// are not copy sources, and however many there are they do not hide an
+/// older load of the seed itself in another schema (PR #131 review).
+#[tokio::test]
+async fn other_seeds_with_the_same_values_do_not_hide_a_copy_source() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+    for k in 0..20 {
+        let other = environment_seed("prod").values("v1").with(|r| {
+            r.target_table = format!("\"DB\".\"PROD\".\"OTHER_{k}\"");
+        });
+        load(store, other, BUILT + 1 + k).await;
+    }
+
+    let outcome = submit_values(store, environment_seed("dev").values("v1")).await;
+    let SubmitOutcome::Copy { copy, .. } = outcome else {
+        panic!("expected Copy from the prod seed, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, PROD_SEED);
+}
+
+/// `allow_clones: false` (client 2.0.11 sends it with
+/// `clone_chain_depth_limit = 0`) and a copy-forbidding target do not copy.
+/// Hosted's wording for such a seed is uncaptured, so it gets the ordinary
+/// load answer; its decision reason says why it was not copied, so Explain
+/// renders no tree claiming there is no other table to copy.
+#[tokio::test]
+async fn a_seed_is_not_copied_when_clones_are_disallowed() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    load(store, environment_seed("prod").values("v1"), BUILT).await;
+
+    for (allow_clones, limit, reason) in [
+        (Some(false), Some(0), DecisionReason::CopyDisabled),
+        (Some(false), None, DecisionReason::CopyDisabled),
+        (None, Some(0), DecisionReason::CopyChainLimit),
+    ] {
+        let seed = environment_seed("dev").values("v1").with(|r| {
+            r.allow_clones = allow_clones;
+            r.clone_chain_depth_limit = limit;
+        });
+        let why = format!("allow_clones {allow_clones:?}, limit {limit:?}");
+        let record = expect_load(submit_values(store, seed).await, &why);
+        assert_eq!(
+            record.description, "seed was loaded because it did not exist",
+            "{why}"
+        );
+        assert_eq!(
+            (record.skip_rejection_reason, record.clone_rejection_reason),
+            (Some(6), Some(6)),
+            "{why}"
+        );
+        assert_eq!(record.reason, reason, "{why}");
+    }
+}
+
+/// DuckDB reloads seeds: hosted does not engage DuckDB, and its checked copy
+/// subset has no seeds (docs/duckdb.md).
+#[tokio::test]
+async fn a_duckdb_seed_is_reloaded_not_copied() {
+    let db = TestDatabase::new("submit_decision").await;
+    let state = db.state(false).await;
+    let store = &state.store;
+    let duck = |schema: &str| environment_seed(schema).values("v1").dialect("duckdb");
+    load(store, duck("prod"), BUILT).await;
+
+    let outcome = submit_values(store, duck("dev")).await;
+    expect_load(outcome, "duckdb");
+}

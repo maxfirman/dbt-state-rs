@@ -179,6 +179,36 @@ impl Store {
         .await
     }
 
+    /// Current seed loads with a seed's reuse identity under other names
+    /// (#91): the latest confirmed row of each other target in the physical
+    /// scope, kept only when it is a seed with these values and this seed
+    /// logic hash. As for [`Store::find_copy_candidates`], a load since
+    /// superseded in its own target is never returned.
+    pub async fn find_seed_copy_candidates(
+        &self,
+        org_id: &str,
+        q: &SeedCopyCandidateQuery<'_>,
+    ) -> sqlx::Result<Vec<CopyCandidate>> {
+        let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
+        query
+            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE execution_type = ")
+            .push_bind(ModelExecutionType::Values as i32)
+            .push(" AND node_sql_hash = ")
+            .push_bind(q.seed_logic_hash)
+            .push(" AND values_hash = ")
+            .push_bind(q.values_hash)
+            .push(" AND target_table <> ")
+            .push_bind(q.exclude_target)
+            .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
+            .push_bind(q.limit)
+            .push(" OFFSET ")
+            .push_bind(q.offset);
+        query
+            .build_query_as::<CopyCandidate>()
+            .fetch_all(&self.pool)
+            .await
+    }
+
     /// Find confirmed "equivalent models under another name" to clone FROM, in
     /// preference order (newest build first), with any of the query's logic
     /// identities. Which logic identity admits which candidate is for the

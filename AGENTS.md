@@ -62,7 +62,11 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      separately from upstream freshness.
   4. Cross-target Result copy: Snowflake matches by `table_namespace` +
      schema-abstracted logic + execution type, copies only FULL on submit
-     (`Warehouse::submit_copy_admits`, #101), and that logic identity binds
+     (`Warehouse::submit_copy_admits`, #101) with one exception: a seed is
+     copied on submit from the latest load of its reuse identity
+     (`values_hash` + seed config) in another schema of its namespace, into
+     an absent table or over one holding other values (#91,
+     `result_copy::seed_lookup`). The schema-abstracted logic identity binds
      each dependency's schema-abstracted name to its definition (swapping two
      dependency definitions between references is not equivalent). DuckDB has
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other

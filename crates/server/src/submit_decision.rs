@@ -8,10 +8,11 @@
 //! 1. records the node's comparison state for `state:*` selectors (best effort);
 //! 2. selects a reuse candidate from State history (one scoped read, then the
 //!    pure [`reuse_candidate`] selection);
-//! 3. SQL only: tries the Result copy fallback, which is considered only when
-//!    there is NO reuse candidate and, when it applies, overrides the verdict
-//!    (a submit whose execution type is not copied keeps the verdict and
-//!    reports the equivalent in its rejection codes);
+//! 3. tries the Result copy fallback, which is considered only when there is
+//!    NO reuse candidate and, when it applies, overrides the verdict (a SQL
+//!    submit whose execution type is not copied keeps the verdict and reports
+//!    the equivalent in its rejection codes; a seed is copied on Snowflake
+//!    only, #91);
 //! 4. otherwise builds the decision context and calls the pure
 //!    [`decide`](crate::decision::decide);
 //! 5. mints the request and execution decision ids and writes the pending row
@@ -25,9 +26,11 @@ use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 pub use crate::result_copy::ResultCopy;
-use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SubmitCopyPlan};
+use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SeedCopyTarget, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
-use crate::store::{CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, Store};
+use crate::store::{
+    CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, SeedCopyCandidateQuery, Store,
+};
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
@@ -490,8 +493,10 @@ struct Freshness<'a> {
     own_target_absent: bool,
 }
 
-/// Decide a `SubmitValues` (seed) submission. Seeds have no Result copy
-/// fallback, no Lag tolerance and always use the ANY stale-upstream policy.
+/// Decide a `SubmitValues` (seed) submission. Seeds have no Lag tolerance and
+/// always use the ANY stale-upstream policy. A seed without a reuse
+/// candidate may be copied from its load under another name where the
+/// Warehouse rules admit it (Snowflake, #91; [`seed_copy_fallback`]).
 pub async fn submit_values(
     store: &Store,
     org_id: &str,
@@ -515,7 +520,19 @@ pub async fn submit_values(
             &req.dialect,
         )
         .await?;
+    let latest = current.clone();
     let selection = reuse_candidate::for_seed(req, &evidence, current)?;
+    let mut refused_copy = None;
+    if let Some(target) = result_copy::seed_copy_target(req, &selection, latest.as_ref()) {
+        match seed_copy_fallback(store, org_id, req, &evidence, target).await? {
+            SeedCopy::Copied(outcome) => {
+                log_decision(&evidence, outcome.record(), false, &req.labels);
+                return Ok(*outcome);
+            }
+            SeedCopy::Refused(reason) => refused_copy = Some(reason),
+            SeedCopy::Ordinary => {}
+        }
+    }
 
     let freshness = Freshness {
         target_table: Some(req.target_table.as_str()),
@@ -532,11 +549,125 @@ pub async fn submit_values(
     .await?
     {
         Some((reuse, build_age_ms)) => record.with_older_match(reuse, build_age_ms),
-        None => record,
+        None => match refused_copy {
+            Some(reason) => record.with_seed_copy_refused(reason),
+            None => record,
+        },
     };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);
     settle(store, &evidence, record, candidate).await
+}
+
+/// What the seed copy on submit decided ([`seed_copy_fallback`]).
+enum SeedCopy {
+    /// The seed is copied (`ready_to_clone`).
+    Copied(Box<SubmitOutcome>),
+    /// A load to copy exists, but the submit disallows or forbids copies:
+    /// the ordinary decision applies, recording this reason.
+    Refused(decision::DecisionReason),
+    /// The ordinary decision applies unchanged.
+    Ordinary,
+}
+
+/// The seed copy on submit (#91, Snowflake only; see
+/// [`result_copy::seed_lookup`]): the newest current load of the seed's
+/// reuse identity in another schema of its namespace is copied into the
+/// target, under the limits of a FULL copy. Otherwise the ordinary decision
+/// applies: no copy is admitted, no such load exists, or the submit
+/// disallows copies. Hosted's wording for a seed whose copy is disallowed is
+/// uncaptured, so such a seed keeps the ordinary load answer
+/// ([`SeedCopy::Refused`]).
+///
+/// A seed has no upstreams, so the copy is not judged for freshness. An
+/// External modification of the source after its load is not visible at
+/// submit time (docs/correctness-handoff.md), as for a FULL copy.
+async fn seed_copy_fallback(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitValuesRequest,
+    evidence: &ExecutionEvidence,
+    target: SeedCopyTarget<'_>,
+) -> sqlx::Result<SeedCopy> {
+    let Some(lookup) = result_copy::seed_lookup(req, evidence) else {
+        return Ok(SeedCopy::Ordinary);
+    };
+    let Some(candidate) = seed_copy_source(store, org_id, req, &lookup).await? else {
+        return Ok(SeedCopy::Ordinary);
+    };
+    // Snowflake tracks no copy depth: the source counts as a build, as for a
+    // FULL copy.
+    match result_copy::plan_seed_submit(req, CloneEquivalent::new(candidate, 0)) {
+        SubmitCopyPlan::Copy(copy) => {
+            let ids = DecisionIds::mint();
+            // Keyed on the submit target with the seed's own identity, so a
+            // later submit reuses the copy once confirmed.
+            write_pending(store, &evidence.copied_from(&copy.source_table), &ids).await?;
+            let over = match target {
+                SeedCopyTarget::Absent => None,
+                SeedCopyTarget::Over(row) => Some(row),
+            };
+            Ok(SeedCopy::Copied(Box::new(SubmitOutcome::Copy {
+                ids,
+                copy,
+                record: DecisionRecord::seed_result_copy(over),
+            })))
+        }
+        SubmitCopyPlan::Unavailable { reason } => {
+            tracing::warn!(
+                target = %req.target_table,
+                reason,
+                "equivalent seed found but no result copy is available; loading it"
+            );
+            Ok(SeedCopy::Ordinary)
+        }
+        SubmitCopyPlan::CopiesDisabled => {
+            Ok(SeedCopy::Refused(decision::DecisionReason::CopyDisabled))
+        }
+        SubmitCopyPlan::ChainLimitExecute => {
+            Ok(SeedCopy::Refused(decision::DecisionReason::CopyChainLimit))
+        }
+        SubmitCopyPlan::Refused { .. } => Ok(SeedCopy::Ordinary),
+    }
+}
+
+/// The newest current load [`seed_copy_fallback`] may copy: the first
+/// candidate the lookup admits. The relation check is by canonical
+/// identifier, so it runs after the read; candidates are read a page at a
+/// time until one is admitted, because the same values under other object
+/// names (never sources) could otherwise fill the page and hide an eligible
+/// source (PR #131 review). Admitting a candidate costs no further read.
+async fn seed_copy_source(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitValuesRequest,
+    lookup: &result_copy::SeedCopyLookup<'_>,
+) -> sqlx::Result<Option<CopyCandidate>> {
+    let mut offset = 0;
+    loop {
+        let page = store
+            .find_seed_copy_candidates(
+                org_id,
+                &SeedCopyCandidateQuery {
+                    table_namespace: lookup.table_namespace,
+                    seed_logic_hash: lookup.seed_logic_hash,
+                    values_hash: lookup.values_hash,
+                    exclude_target: lookup.target_table,
+                    dialect: &req.dialect,
+                    limit: COPY_CANDIDATE_LIMIT,
+                    offset,
+                },
+            )
+            .await?;
+        let read = page.len() as i64;
+        if let Some(candidate) = page.into_iter().find(|c| lookup.admits(&c.target_table)) {
+            return Ok(Some(candidate));
+        }
+        if read < COPY_CANDIDATE_LIMIT {
+            return Ok(None);
+        }
+        offset += read;
+    }
 }
 
 /// State history selection for a SQL submission. Models read the target's
@@ -797,7 +928,9 @@ fn reads_same_upstreams(evidence: &ExecutionEvidence, source: &ExecutionRow) -> 
 /// build first. Each costs a state read (and a provenance walk where copy
 /// depth is tracked), so a rebuild in a namespace with many environments
 /// does not pay one read per environment. An equivalent past the cap is never
-/// copied; the ordinary decision applies instead.
+/// copied; the ordinary decision applies instead. A seed copy, which pays no
+/// read per candidate, reads candidates in pages of this size
+/// ([`seed_copy_source`]).
 const COPY_CANDIDATE_LIMIT: i64 = 16;
 
 /// Every current equivalent of the submit, up to [`COPY_CANDIDATE_LIMIT`], in

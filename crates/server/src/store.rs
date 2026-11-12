@@ -292,6 +292,21 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for CopyCandidate {
     }
 }
 
+/// What [`Store::find_seed_copy_candidates`] selects: up to `limit` current
+/// seed loads with this reuse identity under other names in the namespace,
+/// newest first, after skipping the first `offset` (#91).
+#[derive(Debug, Clone, Copy)]
+pub struct SeedCopyCandidateQuery<'a> {
+    pub table_namespace: &'a str,
+    /// The seed logic hash (`executions.node_sql_hash`).
+    pub seed_logic_hash: &'a str,
+    pub values_hash: &'a str,
+    pub exclude_target: &'a str,
+    pub dialect: &'a str,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// What [`Store::find_copy_candidates`] selects: up to `limit` current
 /// equivalents, newest build first. More than one, because candidates can
 /// still be rejected after the read (relation check, provenance walk,

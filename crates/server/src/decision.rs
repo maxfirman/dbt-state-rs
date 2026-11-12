@@ -449,6 +449,37 @@ impl DecisionRecord {
         }
     }
 
+    /// An equivalent seed loaded under another name is copied in (#91,
+    /// Snowflake only). VERIFIED LIVE shape (client 2.0.11): that of
+    /// [`result_copy`](Self::result_copy) with the seed description, into an
+    /// absent table (explain_copy_probes.jsonl entry 12) or over the table's
+    /// latest load with other values, `over`, which stays the Explain anchor
+    /// ("but it's old", explain_seed_copy_existing.jsonl entry 14).
+    pub fn seed_result_copy(over: Option<&ExecutionRow>) -> Self {
+        Self {
+            description: SEED_RESULT_COPY_DESCRIPTION.to_string(),
+            matched_execution_id: over.map(|row| row.id),
+            ..Self::result_copy()
+        }
+    }
+
+    /// A seed load whose copy of an equivalent the submit disallowed
+    /// (`allow_clones: false`) or forbade (`clone_chain_depth_limit = 0`)
+    /// (#91). Hosted's answer for such a seed is uncaptured, so the wire keeps
+    /// the ordinary load (description and codes); only the persisted reason
+    /// records why it was not copied, so Explain renders no tree claiming no
+    /// other table exists.
+    pub fn with_seed_copy_refused(mut self, reason: DecisionReason) -> Self {
+        debug_assert!(matches!(
+            reason,
+            DecisionReason::CopyDisabled | DecisionReason::CopyChainLimit
+        ));
+        if self.class == DecisionKind::Build {
+            self.reason = reason;
+        }
+        self
+    }
+
     /// An equivalent exists but the copy chain is at its limit, or the target
     /// forbids copies with `clone_chain_depth_limit = 0` alone. VERIFIED LIVE
     /// (client 2.0.6, experiments/clone_experiment.sh table --no-clones): the
@@ -492,6 +523,8 @@ pub const DESC_EXECUTE: &str =
 
 const RESULT_COPY_DESCRIPTION: &str =
     "an equivalent model exists under another name so we cloned that one";
+pub(crate) const SEED_RESULT_COPY_DESCRIPTION: &str =
+    "an equivalent seed exists under another name so we cloned that one";
 const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
     "model was executed because the maximum number of nested clones has been reached";
 const COPY_DISABLED_DESCRIPTION: &str = "model was executed because cloning is disabled";
