@@ -1008,6 +1008,17 @@ async fn conformance_replay_all_corpora() {
             .iter()
             .filter(|(f, _)| *f == fixture)
             .count();
+        // New Databricks acceptance is always a complete fresh history. It
+        // cannot inherit the historical Snowflake missing-history exceptions.
+        if fixture.starts_with("databricks_") {
+            assert_eq!(unknown_baseline, 0, "{fixture}: missing causal baseline");
+            assert_eq!(gaps, 0, "{fixture}: Databricks replay must be exact");
+            assert_eq!(partial_here, 0, "{fixture}: partial history is forbidden");
+            assert!(
+                !known.iter().any(|gap| gap.fixture == fixture),
+                "{fixture}: Databricks acceptance cannot use known-gap exceptions"
+            );
+        }
         eprintln!(
             "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps} \
              partial_history={partial_here}",
