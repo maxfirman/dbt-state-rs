@@ -82,7 +82,8 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
 - `scenario.rs` builds requests that fill in the reuse identity (`model`,
   `view`, `data_test`, `duckdb_model`, `seed`, `clone_request`), outcomes
   (`outcome`, `built_at`, `test_results`), and a `Scenario` client with
-  `expect_execute`/`expect_skip`/`expect_clone`, `verdict`, `build` and
+  `expect_execute`/`expect_skip`/`expect_clone`, `verdict`, `speculative`,
+  `build` and
   `record`. `Submit::body` changes the rendered SQL as well as the body hash,
   because reuse ignores `node_body_hash`. Seed State history through the
   protocol with `Scenario::build` or `Scenario::record`.
@@ -108,6 +109,11 @@ Postgres.
 - `warehouse_portability.rs`: independent physical histories across connection
   namespaces and conservative same-target reuse for unverified warehouses. It
   does not show hosted or warehouse parity.
+- `speculative_submit.rs`: `SubmitEnrichedSQLSpeculative` SKIPs only an
+  unchanged data test without upstreams, with the ordinary SKIP's payload and
+  an explainable decision id, and stays `undecided` for a data test with an
+  upstream, incomplete cached results, a model without upstreams and another
+  organization's history (#103).
 - `crates/ui/src/db.rs::every_read_is_scoped_to_the_configured_organization`:
   organization isolation for every UI read.
 - `crates/server/src/decision_proptest.rs`: properties of the pure freshness
@@ -177,7 +183,9 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   `ResolveDeferredRelations` entries are counted but not driven here;
   `deferral.rs` covers them.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
-  compared too.
+  compared too. A speculative submit is compared in full after removing
+  opaque IDs, and a speculative SKIP's decision id is correlated for the
+  Explain that follows, like a submit's (#103).
 
 `CHARACTERIZATION_ONLY` holds interleaved multi-run captures whose decisions
 depend on warehouse state or history outside the capture. Each entry has a
@@ -200,12 +208,6 @@ returns, and a `reason`. Kinds:
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.
-- **Speculative gap** (`local_variant: "undecided"`, on a
-  `SubmitEnrichedSQLSpeculative` entry): hosted decides on the speculative
-  call where this server answers `undecided` (#103). The replay then drives
-  the ordinary submit the client sends after `undecided` and asserts it
-  answers as hosted's speculative call did; its decision id stands in for
-  hosted's in the Explain that follows.
 
 The replay fails if any gap is unused, if a whole-response gap now matches
 hosted ("gap is resolved; remove its exemption"), or if a field-scoped gap's

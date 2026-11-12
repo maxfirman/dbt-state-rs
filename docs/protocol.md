@@ -39,7 +39,7 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 
 | Service | RPCs | Server status |
 |---|---|---|
-| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | Submits decided; speculative always returns `Undecided` (hosted SKIPs an unchanged data test with no upstreams there, divergence #103) |
+| `SQL` | `SubmitEnrichedSQL`, `SubmitValues`, `SubmitEnrichedSQLSpeculative` | Submits decided; speculative SKIPs only an unchanged data test with no upstreams and is otherwise `Undecided` ([below](#speculative-submits-sqlsubmitenrichedsqlspeculative), #103) |
 | `Execution` | `ConfirmExecution`, `RecordExecutions`, `ResolveDeferredRelations` | Implemented |
 | `Clone` | `RegisterClone` | Implemented; non-Snowflake DDL unverified |
 | `ClientValidation` | `ValidateClientVersion` | Returns `is_supported=true` for every version |
@@ -467,6 +467,37 @@ entry 1); this server builds there (keyed divergence). Whether 2.0.11 copies an
 incremental over a relation with no State history of its own is not captured
 (#101 question 3).
 
+## Speculative submits: `SQL.SubmitEnrichedSQLSpeculative`
+
+The client sends a `SubmitEnrichedSQLRequest` speculatively when its upstream
+epoch prefetch has not finished: the request lists every upstream relation,
+with the epochs fetched so far and the rest unset (dbt-state 2.62.6
+`request_builder.py`). In the client 2.0.11 captures, a model's speculative
+request never carries its Target relation's epoch. The answer is a
+`SubmitSQLSpeculativeResponse` oneof:
+`ready_to_execute_untracked` (1), `skip_execution` (2), `ready_to_clone` (3)
+or `undecided` (4). After `undecided` the client waits for the prefetch and
+sends the ordinary `SubmitEnrichedSQL`. After `skip_execution` it serves the
+SKIP, keeps its `execution_decision_id` for `dbt state explain`, and sends no
+ordinary submit and no `ConfirmExecution`.
+
+This server answers `skip_execution` only when the decision needs no table
+evidence at all: a data test with no Target relation and no reported tables
+that the ordinary submit would SKIP (complete cached results, scoped UID
+identity). It decides that submit through the ordinary submit's code
+(`submit_decision::speculative_sql`), returns the ordinary SKIP's payload, and
+records the decision, reason and node state as the ordinary SKIP does. Every
+other speculative call is `undecided` and writes nothing: first runs, logic
+changes, incomplete cached results, data tests with upstreams and every model
+kind. It never answers `ready_to_execute_untracked` or `ready_to_clone`.
+
+Evidence, client 2.0.11, 314 speculative calls in `golden/fixtures/`: hosted
+answers `undecided` to every model, snapshot, view and custom-node call and to
+every data test with an upstream. `explain_rebuild_reason_gaps.jsonl` entries
+2 and 18 (data test `r40t0` without upstreams: first run, logic change) are
+`undecided`; entry 39 (the unchanged rerun) is `skip_execution`, explained at
+entry 46, and the client sends no ordinary submit for it.
+
 ## State writes: `Execution`
 
 - `ConfirmExecution{request_id, last_modified_epoch?, failed_to_clone,
@@ -481,7 +512,11 @@ incremental over a relation with no State history of its own is not captured
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
   executions and selector/deferral node state are written in one transaction.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
-  the rendered identity.
+  the rendered identity. `SQLExecution.from_speculative_submit` is set by the
+  client (dbt-state 2.62.6 `run_cache.py`) only for a node it ran after a
+  speculative `ready_to_execute_untracked`, with its upstream epochs refetched
+  first. This server never answers `ready_to_execute_untracked`, so a client
+  never sets it here; a record that does is stored like any other.
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
   project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Maps each requested
   node to the target relation it was last recorded with in the `target_name`

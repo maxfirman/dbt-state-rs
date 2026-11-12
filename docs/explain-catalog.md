@@ -1110,9 +1110,9 @@ A test with no upstreams (`r40t0`, a singular test without `ref` or
 - data freshness analysis
   - no upstream dependencies                          [SUCCESS]
 ```
-Hosted decided that SKIP on the speculative submit, which this server
-answers `undecided` (divergence #103); the replay drives the ordinary submit
-the client then sends, and this server renders the same tree for its SKIP.
+Hosted decided that SKIP on the speculative submit, and so does this server
+(#103): the replay asserts the speculative SKIP and renders the same tree for
+it.
 
 ### EXECUTE
 ```
