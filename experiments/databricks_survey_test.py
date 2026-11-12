@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,6 +45,55 @@ class SurveyContract(unittest.TestCase):
         del empty['manifest']['chunks']
         empty['result'] = {}
         self.assertEqual(survey.complete_result(empty, require_rows=True)['rows'], [])
+
+    def test_hosted_launch_ignores_inherited_upstreams_and_records_provenance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            proxy = work / 'fake-proxy'
+            # Stand in for the process boundary, including record-proxy's local
+            # override precedence. No hosted or warehouse connection is made.
+            proxy.write_text(f'#!{sys.executable}\n' + '''import json
+import os
+from pathlib import Path
+import socket
+
+upstream = os.environ.get('PROXY_LOCAL_UPSTREAM') or os.environ['PROXY_UPSTREAM']
+Path(__file__).with_name('launch.json').write_text(json.dumps({
+    'effective_upstream': upstream,
+    'local_override_present': 'PROXY_LOCAL_UPSTREAM' in os.environ,
+}))
+host, port = os.environ['PROXY_LISTEN'].split(':')
+with socket.socket() as listener:
+    listener.bind((host, int(port)))
+    listener.listen()
+    while True:
+        connection, _ = listener.accept()
+        connection.close()
+''')
+            proxy.chmod(0o700)
+            # Start is the launch boundary; credential/profile loading belongs
+            # to campaign construction and is deliberately outside this test.
+            campaign = survey.Campaign.__new__(survey.Campaign)
+            campaign.a = SimpleNamespace(proxy=str(proxy))
+            campaign.work = work
+            campaign.env = {
+                'PROXY_LOCAL_UPSTREAM': 'http://127.0.0.1:1',
+                'PROXY_UPSTREAM': 'https://example.invalid:443',
+            }
+            campaign.events, campaign.secrets, campaign.proxy = [], [], None
+            try:
+                campaign.start()
+                launch = json.loads((work / 'launch.json').read_text())
+                self.assertEqual(launch, {
+                    'effective_upstream': 'https://api.state.dbt.com:443',
+                    'local_override_present': False,
+                })
+                operations = json.loads((work / 'operations.json').read_text())
+                self.assertEqual(operations[0]['upstream'], {
+                    'mode': 'hosted', 'endpoint': 'https://api.state.dbt.com:443',
+                })
+            finally:
+                campaign.stop()
 
     def test_refuses_unowned_or_off_catalog_relations(self):
         scope = survey.Scope('20261112abcdef')

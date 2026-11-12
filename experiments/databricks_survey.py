@@ -309,7 +309,9 @@ class Campaign:
             time.sleep(.25)
         else:
             raise Refused('owned proxy startup timeout')
-        self.event('proxy', pid=self.proxy.pid, port=port)
+        self.event('proxy', pid=self.proxy.pid, port=port,
+                   upstream={'mode': 'local' if env.get('PROXY_LOCAL_UPSTREAM') else 'hosted',
+                             'endpoint': env.get('PROXY_LOCAL_UPSTREAM') or env['PROXY_UPSTREAM']})
 
     def stop(self):
         if self.proxy is not None and self.proxy.poll() is None:
