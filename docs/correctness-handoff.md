@@ -514,7 +514,10 @@ local-only and renders no Explain tree.
   `x-organization-id` but does not verify it against a trusted token. OAuth,
   TLS and identity mapping are deployment work. The UI reads one configured
   organization (`DBT_STATE_UI_ORG_ID`).
-- **ClientTelemetry** is not served. Check whether supported clients need it.
+- **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
+  ([dated evidence](reports/databricks-client-auxiliary-2026-11-12.md)) without
+  hosted metering persistence. The deprecated standalone `RegisterSessionStart`
+  has no characterized contract and remains unimplemented.
 - **Health** always reports `SERVING`; it is not a database readiness check.
 - **Capture** runs as unbounded background tasks (`services.rs::spawn_capture`)
   with no retention policy. Bound both before heavy load.

@@ -50,6 +50,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 
 ## Other
 
+- [Databricks auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md):
+  pinned-client inventory, exact public replay, real-client hosted/Rust checks.
 - [golden/README.md](../golden/README.md): the golden fixture corpus.
 - [agents/](agents/): agent instructions for the issue tracker, triage labels
   and domain docs.
