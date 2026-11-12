@@ -9,15 +9,31 @@ and its copy/snapshot blockers remain separate.
 [The runner](../experiments/databricks_baseline.py) extends the survey's guarded
 profiles, schema ownership, SQL Statement Execution, process ownership and
 artifact retention. It pins dbt 2.0.11 by SHA-256, checks the CLI/profile
-workspace and warehouse agree, and creates only two fresh run-owned schemas
+workspace and warehouse agree, and normally creates two fresh run-owned schemas
 under `cdo_demo_db`. A schema collision fails before building. It retains
 successes and failures; it does not delete warehouse relations or overwrite an
 existing artifact directory. Schema quota failures are environment failures,
 not hosted-policy observations.
 
+When schema quota prevents new containers, `--schema-lease /path/to/ledger.json`
+uses two explicitly leased prior campaign reference schemas. The ledger names
+the exact catalog/schema allowlist, hashed original ownership configurations
+and preexisting object inventory. The runner verifies those hashes and actual
+inventory before starting. It permits only the new run's prefixed table/view
+aliases, refuses any existing run-prefixed object (including intermediate
+names), and checks the original inventory remains present afterward. It never
+creates/drops schemas or modifies prior objects in lease mode. Fresh physical
+relations and State histories are still required. The integration test accepts
+the same ledger via `DBT_STATE_DATABRICKS_SCHEMA_LEASE`.
+
 Both a managed Delta table and a view run through first build, unchanged
 reuse, changed-query rebuild, and unchanged reuse of the changed query. The
 literal workload declares BIGINT/INT/STRING columns, duplicate rows and NULLs.
+Its string literal contains a fresh query identity, preventing earlier campaign
+SQL from becoming hidden hosted copy history. `--query-identity` (or
+`DBT_STATE_DATABRICKS_QUERY_IDENTITY` in the integration test) lets the Rust
+phase use the hosted phase's exact declared data while keeping fresh physical
+relation names and isolated State history.
 Every step requires the expected node-level decision and successful build
 confirmations, and captures Explain for both actual decision IDs. Always
 building cannot satisfy the unchanged steps.

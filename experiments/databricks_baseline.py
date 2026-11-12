@@ -73,20 +73,22 @@ def check_inventory(scope, ledger, current):
             raise Refused('lease preexisting inventory changed')
 
 
-def query(revision):
+def query(revision, identity=None):
     amount = 10 if revision == 0 else 17
+    tag = 'one' if identity is None else 'one_' + identity
     return (f"select cast(id as bigint) id, cast(amount as int) amount, cast(tag as string) tag "
-            f"from values (1,{amount},'one'),(1,{amount},'one'),(2,cast(null as int),cast(null as string)) "
+            f"from values (1,{amount},'{tag}'),(1,{amount},'{tag}'),(2,cast(null as int),cast(null as string)) "
             "as declared(id,amount,tag)")
 
 
-def assert_physical(actual, properties, revision, kind):
+def assert_physical(actual, properties, revision, kind, identity=None):
     expected_schema = [('id', 'BIGINT', 'LONG'), ('amount', 'INT', 'INT'), ('tag', 'STRING', 'STRING')]
     schema = [(c.get('name'), c.get('type_text'), c.get('type_name')) for c in actual['columns']]
     if schema != expected_schema:
         raise Refused('physical:schema')
     amount = '10' if revision == 0 else '17'
-    expected = [['1',amount,'one'], ['1',amount,'one'], ['2',None,None]]
+    tag = 'one' if identity is None else 'one_' + identity
+    expected = [['1',amount,tag], ['1',amount,tag], ['2',None,None]]
     if Counter(map(tuple, actual['rows'])) != Counter(map(tuple, expected)):
         raise Refused('physical:rows')
     props = {row[0]: row[1] for row in properties['rows']}
@@ -113,6 +115,8 @@ def decisions(calls, expected):
 
 class Baseline(Campaign):
     def __init__(self, args):
+        self.query_identity = args.query_identity or args.run_id
+        Scope(self.query_identity)  # Restrict the literal to the run-ID alphabet.
         self.lease = json.loads(Path(args.schema_lease).read_text()) if args.schema_lease else None
         super().__init__(args, LeaseScope(args.run_id, self.lease) if self.lease else None)
         self.save('baseline-runner.py', Path(__file__).read_text())
@@ -123,6 +127,7 @@ class Baseline(Campaign):
             'probe_sha256': hashlib.sha256(Path(args.probe).read_bytes()).hexdigest(),
             'backend': 'rust' if args.rust_url else 'hosted',
             'rust_url': args.rust_url,
+            'query_identity': self.query_identity,
         }
         self.save('configuration.json', configuration)
 
@@ -186,7 +191,7 @@ class Baseline(Campaign):
             relation = self.scope.relation(target, 'literal_' + kind)
             actual = self.observe(label + '_' + kind, relation)
             properties = json.loads((self.work / 'physical' / (label + '_' + kind + '_properties.json')).read_text())
-            assert_physical(actual, properties, revision, kind)
+            assert_physical(actual, properties, revision, kind, self.query_identity)
             results[kind] = actual
         return results
 
@@ -199,6 +204,7 @@ class Baseline(Campaign):
         reference = self.work / 'reference-project'
         shutil.copytree(base, reference)
         self.save('operation-manifest.json', {'version': 1, 'backend': 'rust' if self.a.rust_url else 'hosted',
+                  'query_identity':self.query_identity,
                   'steps': [{'id': label, 'query_revision': rev, 'decision': decision}
                             for label, rev, decision in [('first',0,'ready_to_execute'),('unchanged',0,'skip_execution'),
                                                         ('changed',1,'ready_to_execute'),('changed_unchanged',1,'skip_execution')]],
@@ -210,7 +216,7 @@ class Baseline(Campaign):
             for project in (base, reference):
                 self.project = project
                 for kind in ('table','view'):
-                    self.write_model('literal_' + kind, "materialized='" + kind + "', file_format='delta', state={'lag_tolerance':'0s','pre_clone':'never'}", query(rev))
+                    self.write_model('literal_' + kind, "materialized='" + kind + "', file_format='delta', state={'lag_tolerance':'0s','pre_clone':'never'}", query(rev, self.query_identity))
             self.project = base
             if label == 'first':
                 self.dbt('inventory', ['parse'], managed=False)
@@ -226,7 +232,7 @@ class Baseline(Campaign):
             if self.dbt('reference_' + label, ['run'], target='ref', managed=False):
                 raise Refused('State-disabled reference unexpectedly sent State RPCs')
             reference_results = self.physical('reference_' + label, 'ref', rev)
-            independent = self.sql('reference_select_' + label, query(rev).replace('select ', 'SELECT ', 1))
+            independent = self.sql('reference_select_' + label, query(rev, self.query_identity).replace('select ', 'SELECT ', 1))
             for kind in ('table','view'):
                 if not same_result(actual[kind], reference_results[kind]) or not same_result(actual[kind], independent):
                     raise Refused('reference:rows-or-schema')
@@ -294,6 +300,7 @@ def main():
     parser.add_argument('--warehouse', default='47fd3fa312624d91')
     parser.add_argument('--work-dir', required=True)
     parser.add_argument('--schema-lease', help='explicit ownership/inventory ledger for existing run-owned schema containers')
+    parser.add_argument('--query-identity', help='shared fresh literal identity for equivalent hosted/Rust phases; defaults to run ID')
     parser.add_argument('--run-id', default=datetime.now(timezone.utc).strftime('%Y%m%d') + os.urandom(3).hex())
     args = parser.parse_args()
     if args.rust_url:

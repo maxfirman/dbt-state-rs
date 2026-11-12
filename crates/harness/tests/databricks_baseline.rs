@@ -48,6 +48,9 @@ async fn real_dbt_table_and_view_match_independent_reference() {
     if let Some(lease) = std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA_LEASE") {
         command.arg("--schema-lease").arg(lease);
     }
+    if let Some(identity) = std::env::var_os("DBT_STATE_DATABRICKS_QUERY_IDENTITY") {
+        command.arg("--query-identity").arg(identity);
+    }
     let output = command
         .output()
         .await

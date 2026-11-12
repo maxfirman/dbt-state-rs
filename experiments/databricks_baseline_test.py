@@ -32,6 +32,13 @@ class PhysicalContract(unittest.TestCase):
             collision[roles['prod']] = [{'name':relation.split('.')[-1], 'full_name':relation, 'table_type':'MANAGED'}]
             with self.assertRaisesRegex(Refused, 'already exists'):
                 baseline.check_inventory(scope, ledger, collision)
+            collision[roles['prod']][0]['name'] += '__dbt_tmp'
+            collision[roles['prod']][0]['full_name'] += '__dbt_tmp'
+            with self.assertRaisesRegex(Refused, 'already exists'):
+                baseline.check_inventory(scope, ledger, collision)
+            evidence.write_text('{}')
+            with self.assertRaisesRegex(Refused, 'digest changed'):
+                baseline.LeaseScope('20261112abcdef', ledger)
             ledger['roles']['prod'] = 'shared'
             with self.assertRaises(Refused): baseline.LeaseScope('20261112abcdef', ledger)
 
