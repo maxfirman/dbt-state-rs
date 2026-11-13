@@ -123,6 +123,9 @@ pub struct ExecutionRow {
     pub id: i64,
     pub org_id: String,
     pub target_table: String,
+    /// The persisted source spelling when the Warehouse provides a distinct
+    /// physical spelling for decisions. The SQL column itself stays raw.
+    pub raw_target_table: Option<String>,
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
     pub node_sql_hash: Option<String>,
@@ -254,10 +257,12 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             confirmed_at_ms: row.try_get("confirmed_at_ms")?,
             ..ExecutionRow::default()
         };
-        Ok(read.with_encoded_evidence(
+        let mut read = read.with_encoded_evidence(
             row.try_get("input_tables")?,
             row.try_get("execution_results")?,
-        ))
+        );
+        crate::warehouse::Warehouse::from_dialect(&read.dialect).resolve_execution_row(&mut read);
+        Ok(read)
     }
 }
 
@@ -453,7 +458,7 @@ impl Store {
             "#,
         )
         .bind(&e.org_id)
-        .bind(&e.target_table)
+        .bind(e.raw_target_table.as_deref().unwrap_or(&e.target_table))
         .bind(e.execution_type)
         .bind(&e.node_hash)
         .bind(&e.node_body_hash)
@@ -746,7 +751,7 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation
+                   unmatched_execution_id, reads_relation, query_dependencies
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -804,6 +809,7 @@ pub struct ExplainDecisionRow {
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: serde_json::Value,
+    pub query_dependencies: serde_json::Value,
     /// The matched prior `executions` row id (NULL when the decision matched no
     /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
     pub matched_execution_id: Option<i64>,
@@ -884,6 +890,7 @@ mod tests {
             target_table: Some("T".into()),
             clone_source: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
+            query_dependencies: serde_json::json!([]),
             matched_execution_id: Some(1),
             decision_reason: Some("reused.fresh".into()),
             freshness_tolerance_ms: None,

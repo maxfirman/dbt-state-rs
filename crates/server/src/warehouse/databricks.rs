@@ -43,33 +43,22 @@ fn rendered(parts: &[String]) -> String {
 /// Fully qualified metadata only. Never infer a physical scope from defaults,
 /// split quoted dots, remove escaped backticks or fold unknown identifier forms.
 pub(super) fn physical_name(raw: &str) -> Option<String> {
-    let statements =
-        Parser::parse_sql(&DatabricksDialect {}, &format!("SELECT id FROM {raw}")).ok()?;
-    let [Statement::Query(q)] = statements.as_slice() else {
+    let raw_parts: Vec<_> = raw.split('.').collect();
+    let [catalog, schema, name] = raw_parts.as_slice() else {
         return None;
     };
-    let SetExpr::Select(s) = q.body.as_ref() else {
-        return None;
-    };
-    let [table] = s.from.as_slice() else {
-        return None;
-    };
-    let TableFactor::Table {
-        name,
-        alias: None,
-        args: None,
-        ..
-    } = &table.relation
-    else {
-        return None;
-    };
-    // Exact lexical roundtrip prevents suffix clauses/comments from becoming a
-    // physical name. SQL parser serialization is not used for query identity.
-    if name.to_string() != raw || !table.joins.is_empty() {
-        return None;
-    }
-    let parts = parts(name)?;
-    (parts.len() == 3).then(|| rendered(&parts))
+    let names: Option<Vec<_>> = [catalog, schema, name]
+        .into_iter()
+        .map(|part| {
+            let value = if part.starts_with('`') && part.ends_with('`') {
+                part.get(1..part.len().checked_sub(1)?)?
+            } else {
+                part
+            };
+            component(value)
+        })
+        .collect();
+    Some(rendered(&names?))
 }
 
 fn byte_offset(sql: &str, at: Location) -> Option<usize> {
@@ -92,7 +81,14 @@ fn byte_offset(sql: &str, at: Location) -> Option<usize> {
 /// Resolve the sole input of a SELECT without CTEs/joins/subquery inputs.
 /// Return None rather than serialize an uncharacterized AST. Output expressions,
 /// whitespace, literals, aliases and every non-input byte remain untouched.
-pub(super) fn resolved_sql(sql: &str, catalog: &str, schema: &str) -> Option<String> {
+pub(super) struct ResolvedSql {
+    pub sql: String,
+    pub input: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+pub(super) fn resolved_sql(sql: &str, catalog: &str, schema: &str) -> Option<ResolvedSql> {
     let statements = Parser::parse_sql(&DatabricksDialect {}, sql).ok()?;
     let [Statement::Query(q)] = statements.as_slice() else {
         return None;
@@ -180,5 +176,10 @@ pub(super) fn resolved_sql(sql: &str, catalog: &str, schema: &str) -> Option<Str
     }
     let mut normalized = sql.to_owned();
     normalized.replace_range(start..end, &rendered(&qualified));
-    Some(normalized)
+    Some(ResolvedSql {
+        sql: normalized,
+        input: rendered(&qualified),
+        start,
+        end,
+    })
 }

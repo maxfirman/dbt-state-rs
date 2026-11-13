@@ -2,7 +2,7 @@
 
 The #136 campaign characterizes identifiers through the pinned dbt 2.0.11
 client and production gRPC router, with independent Databricks physical checks.
-The [dated evidence report](reports/databricks-identifiers-2026-11-12.md)
+The [dated evidence report](reports/databricks-identifiers-2026-11-13.md)
 records exact capture digests and validation. This extends the
 [table/view baseline](databricks-baseline.md); broader #132 copy/snapshot
 blockers remain unchanged.
@@ -42,7 +42,32 @@ physical metadata before history lookup, freshness, producer resolution,
 own-target checks and Explain capture; SQL execution recording uses the same
 rule. Raw SQL and wire target spelling remain available for DDL. Organization,
 warehouse family, namespace, and distinct catalog/schema/relation scope remain
-separate; only latest physical history can qualify. New Databricks identities
+separate; only latest physical history can qualify.
+
+Migration 0020 adds a generated `physical_target_key` and current-history index.
+The raw target spelling and old fingerprints stay intact for both old and new
+rows. SQL evidence carries its original target separately for persistence;
+decoded decision rows retain that spelling alongside the physical name.
+Selectors/deferral record the original submitted target, and a public confirmed
+build→deferral regression verifies it survives later output. Both preexisting
+confirmed aliases and old pending aliases confirmed after upgrade participate
+in the same latest-row selection. Canonicalizing only new publications would
+miss older alias history; equal-epoch frozen regressions demonstrate why target
+freshness cannot repair that lookup error. Producer and historical reads use
+the same key. PostgreSQL's projection admits exactly the Warehouse boundary's
+three plain ASCII components with independently optional backticks. ASCII
+`translate`, explicit `C` collation and exact unsupported forms avoid
+locale/Unicode/quoted-dot collisions. Only ordinary spaces around the known
+dialect family are admitted; tab/newline/Unicode whitespace stays exact.
+
+Explain distinguishes a changed physical binding from a changed rendered
+projection by reconstructing the prior build's full versioned identity, never
+by trusting a client body hash. This affects explanation only: the current
+physical input or context change still requires a build. Source view changes
+retain their external-table and view-ignored branches; relative source ages
+round minutes as captured.
+
+New Databricks identities
 use `dbt-state-databricks-identifiers-v1`; independently captured old-server
 hash bytes must cold-miss, including an old pending execution confirmed after
 upgrade. Existing warehouse versions are unchanged.

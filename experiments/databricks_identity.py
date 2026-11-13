@@ -2,6 +2,7 @@
 """Opt-in #136 identifier/resolution characterization with independent results."""
 import argparse
 import copy
+import hashlib
 from datetime import datetime, timezone
 import json
 import os
@@ -30,8 +31,21 @@ class Identity(Baseline):
         if not self.lease:
             raise Refused('identifier campaign requires the explicit schema lease')
         self.scope = IdentityScope(args.run_id, self.lease)
+        # Shared Cargo outputs may be rebuilt by another campaign. Every
+        # launched binary is retained under this campaign's exclusive directory.
+        for name in ('proxy','probe'):
+            owned=self.work/'bin'/name
+            owned.parent.mkdir(exist_ok=True)
+            shutil.copy2(getattr(args,name),owned)
+            setattr(args,name,str(owned))
         self.save('identity-runner.py', Path(__file__).read_text())
         self.save('identity-scope.json', {'allowed': sorted(self.scope.allowed)})
+        configuration=json.loads((self.work/'configuration.json').read_text())
+        configuration['identity']={'entrypoint_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                                   'physical_allowlist':sorted(self.scope.allowed),
+                                   'actual_client_steps':22,'crafted_boundary_submits':22,
+                                   'owned_binaries':{name:str(getattr(args,name)) for name in ('proxy','probe')}}
+        self.save('configuration.json',configuration)
 
     def baseline(self):
         self.setup_project()

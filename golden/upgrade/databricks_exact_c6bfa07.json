@@ -1,6 +1,6 @@
 {
   "captured_at": "2026-11-12",
-  "source_revision": "c6bfa07 before identifier implementation; existing executable separately hashed",
+  "source_revision": "Worktree c6bfa07 before identifier implementation; executable build revision unrecorded, separately identified by server_sha256",
   "server_sha256": "d9beadc4f95c49f294af0151c70dc3de7358b3920842b068b1e79eb1abbbaf33",
   "request": {
     "query_dependencies": [],
