@@ -14,6 +14,68 @@ use crate::store::InputTable;
 /// The decision class, as stored in `node_decisions.decision`.
 pub use crate::decision::DecisionKind;
 
+/// Tracks in-flight writes so Explain can observe decisions already returned
+/// to its caller without making Submit wait for UI persistence.
+#[derive(Default)]
+pub(crate) struct CaptureTasks {
+    pending: std::sync::Mutex<
+        std::collections::HashMap<(String, String), tokio::sync::watch::Receiver<bool>>,
+    >,
+}
+
+struct CaptureCompletion {
+    tasks: std::sync::Arc<CaptureTasks>,
+    key: (String, String),
+    complete: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for CaptureCompletion {
+    fn drop(&mut self) {
+        self.tasks
+            .pending
+            .lock()
+            .expect("capture tracking lock")
+            .remove(&self.key);
+        self.complete.send_replace(true);
+    }
+}
+
+impl CaptureTasks {
+    pub(crate) fn spawn(self: &std::sync::Arc<Self>, pool: PgPool, input: CaptureInput) {
+        let completion = input.execution_decision_id.as_ref().map(|id| {
+            let key = (input.org_id.clone(), id.clone());
+            let (complete, receiver) = tokio::sync::watch::channel(false);
+            self.pending
+                .lock()
+                .expect("capture tracking lock")
+                .insert(key.clone(), receiver);
+            CaptureCompletion {
+                tasks: self.clone(),
+                key,
+                complete,
+            }
+        });
+        tokio::spawn(async move {
+            let _completion = completion;
+            capture_decision(&pool, input).await;
+        });
+    }
+
+    pub(crate) async fn wait_for(&self, org_id: &str, ids: &[String]) {
+        let receivers: Vec<_> = {
+            let pending = self.pending.lock().expect("capture tracking lock");
+            ids.iter()
+                .filter_map(|id| pending.get(&(org_id.to_owned(), id.clone())).cloned())
+                .collect()
+        };
+        for mut receiver in receivers {
+            if !*receiver.borrow() {
+                let _ = receiver.changed().await;
+            }
+        }
+    }
+}
+
 /// Everything needed to record one decision. Built by the service from the
 /// request metadata + the decision record.
 #[derive(Debug, Clone)]
