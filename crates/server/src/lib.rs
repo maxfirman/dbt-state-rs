@@ -30,6 +30,7 @@ use crate::store::Store;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub(crate) captures: Arc<capture::CaptureTasks>,
     /// When true, reject requests lacking a non-empty `x-organization-id` header
     /// instead of bucketing them into the default tenant. See `config::Config`.
     pub require_org_header: bool,
@@ -80,6 +81,7 @@ impl AppState {
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self {
             store: Arc::new(Store::new(pool)),
+            captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
         })
@@ -96,6 +98,7 @@ impl AppState {
     pub fn from_pool(pool: PgPool) -> Self {
         Self {
             store: Arc::new(Store::new(pool)),
+            captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
         }
