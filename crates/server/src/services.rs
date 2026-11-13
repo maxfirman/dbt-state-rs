@@ -542,33 +542,32 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::ResolveDeferredRelationsRequest>,
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
-        // VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
-        // maps each requested node_unique_id to the PHYSICAL relation it was last
-        // built as in the `target_name` (defer-to) env, scoped by project_id —
-        // i.e. the submit `target_table` recorded for that (project, env, node).
-        // Nodes not built in that env are simply omitted (the empty-map case we
-        // first captured was precisely that: nothing built there yet).
+        // Fresh Snowflake + Databricks protocol histories pin confirmed-only
+        // visibility, exact profile scope, and ID-or-name project resolution.
+        // A missing project ID is normal for the pinned Databricks client.
         let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
-
-        // project_id scopes the recorded node state (same scope as the selector).
-        // Without it the defer-to env's node→FQN mapping is unresolvable, so we
-        // return an empty map rather than guessing across projects.
-        let Some(project_id) = req.project_id.as_deref().filter(|s| !s.is_empty()) else {
-            return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
-                fqn_by_unique_id: Default::default(),
-            }));
-        };
-        if req.target_name.is_empty() || req.node_unique_ids.is_empty() {
+        let project_id = req.project_id.as_deref().filter(|s| !s.is_empty());
+        if req.profile_name.is_empty()
+            || req.target_name.is_empty()
+            || req.node_unique_ids.is_empty()
+            || (project_id.is_none() && req.project_name.is_empty())
+        {
             return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
                 fqn_by_unique_id: Default::default(),
             }));
         }
-
         let fqn_by_unique_id = self
             .0
             .store
-            .resolve_deferred_fqns(&org_id, project_id, &req.target_name, &req.node_unique_ids)
+            .resolve_confirmed_deferred_fqns(
+                &org_id,
+                &req.profile_name,
+                &req.project_name,
+                project_id,
+                &req.target_name,
+                &req.node_unique_ids,
+            )
             .await
             .map_err(store_status)?;
 

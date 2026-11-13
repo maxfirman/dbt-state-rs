@@ -1,0 +1,152 @@
+{
+  "ticket": 155,
+  "date": "2026-11-13",
+  "scope": "dbt 2.0.11, Databricks Free Edition serverless Unity Catalog managed Delta",
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-155-20261113",
+  "overall_databricks_support_claim": false,
+  "unresolved_parent_blockers": [
+    "#140 omitted-source/missing-epoch/duplicate and remaining safety cells",
+    "#134 copied-target rebuild",
+    "#134 snapshot deletion"
+  ],
+  "selected_evidence": {
+    "actual_hosted": {
+      "directory": "final4",
+      "capture": "final4/golden/golden_20261113T083249.478Z_0b9e22399ed54e3cb588ae908959d83f.jsonl",
+      "sha256": "b5dabd811e1b6cace309101673c1c50595a6f98e5f08a1bb26bd72870affb931",
+      "rows": 54,
+      "methods": {
+        "ValidateClientVersion": 6,
+        "SubmitTelemetryBatch": 16,
+        "SubmitEnrichedSQLSpeculative": 6,
+        "SubmitEnrichedSQL": 7,
+        "ConfirmExecution": 2,
+        "GetExplainMessages": 4,
+        "ResolveDeferredRelations": 13
+      },
+      "classification": "actual-pinned-client-plus-crafted-scopes"
+    },
+    "protocol_scopes": {
+      "directory": "protocol-final2",
+      "capture": "protocol-final2/golden/golden_20261113T083246.780Z_c21af570bec34258814177bd919ef152.jsonl",
+      "sha256": "3a6ec0961ea8682e38ea6e114adbe47765a9e46913b9882a5121dd849268072f",
+      "rows": 56,
+      "methods": {
+        "SubmitEnrichedSQL": 8,
+        "ResolveDeferredRelations": 40,
+        "ConfirmExecution": 8
+      },
+      "classification": "crafted-public-grpc"
+    },
+    "protocol_skip_scope": {
+      "directory": "skip-corrected",
+      "capture": "skip-corrected/golden/golden_20261113T100525.947Z_ac0239fc1f684c43a4f623ae64eeb8d6.jsonl",
+      "sha256": "3666df7b97543077a76953b74cf069a52c6c831f175d036788ca9774ea66c95a",
+      "rows": 16,
+      "methods": {
+        "SubmitEnrichedSQL": 8,
+        "ConfirmExecution": 2,
+        "ResolveDeferredRelations": 6
+      },
+      "classification": "crafted-public-grpc"
+    },
+    "discovery_wrong_dev_source": {
+      "directory": "discovery",
+      "capture": "discovery/golden/golden_20261112T210440.325Z_0700a7e8be654326b0e58c922e41a2aa.jsonl",
+      "sha256": "a981b0d234ed45f61274895aa075e53f6fbb085dc5b14540478295bdb9f6afd2",
+      "rows": 23,
+      "methods": {
+        "ValidateClientVersion": 3,
+        "SubmitTelemetryBatch": 8,
+        "SubmitEnrichedSQLSpeculative": 3,
+        "SubmitEnrichedSQL": 3,
+        "ConfirmExecution": 2,
+        "GetExplainMessages": 3,
+        "ResolveDeferredRelations": 1
+      },
+      "classification": "failed-discovery-physical:rows"
+    },
+    "actual_rust": {
+      "directory": "rust",
+      "capture": "rust/golden/golden_20261113T082946.446Z_1e4aac2bbd0c4f808a6376acf6896a43.jsonl",
+      "sha256": "df3e80c25bc425363af3d284d94db8516e0b17545768d49b895106a1cbd52d35",
+      "rows": 54,
+      "methods": {
+        "ValidateClientVersion": 6,
+        "SubmitTelemetryBatch": 16,
+        "SubmitEnrichedSQLSpeculative": 6,
+        "SubmitEnrichedSQL": 7,
+        "ConfirmExecution": 2,
+        "GetExplainMessages": 4,
+        "ResolveDeferredRelations": 13
+      },
+      "classification": "actual-pinned-client-plus-crafted-scopes"
+    }
+  },
+  "fixtures": {
+    "databricks_deferral_scopes.jsonl": {
+      "sha256": "9af4cc21dbc28db4072b74db3e78295a508c967946380678c6c5beeb8d0f23a0",
+      "rows": 72,
+      "methods": {
+        "SubmitEnrichedSQL": 16,
+        "ResolveDeferredRelations": 46,
+        "ConfirmExecution": 10
+      }
+    },
+    "databricks_deferral.jsonl": {
+      "sha256": "b5dabd811e1b6cace309101673c1c50595a6f98e5f08a1bb26bd72870affb931",
+      "rows": 54,
+      "methods": {
+        "ValidateClientVersion": 6,
+        "SubmitTelemetryBatch": 16,
+        "SubmitEnrichedSQLSpeculative": 6,
+        "SubmitEnrichedSQL": 7,
+        "ConfirmExecution": 2,
+        "GetExplainMessages": 4,
+        "ResolveDeferredRelations": 13
+      }
+    }
+  },
+  "validation": {
+    "initial_red": "deferral155-red.log: exact populated null-ID mapping versus empty local map",
+    "intermediate_replay": "deferral155-green.log: 3 crafted-submit copy/drop-reason mismatches retained; no waiver added",
+    "exact_replay_before_skip_supplement": "76 corpora passed, all newfixture mappings/Explain/statuses exact, zero gaps/unknowns",
+    "public_deferral": "6 public tests passed",
+    "offline_python": "24 focused tests passed on continuation; historical 26-test count superseded",
+    "rust_live_before_final_crafted_namespace_isolation": "54 RPCs/6 dbt invocations, full physical+FQN+Explain+decoy checks passed",
+    "final_combined": {
+      "base_commit": "fbbd083170f630999b5ff6a96fab1c5e0e4f4a97",
+      "workspace": {
+        "passed": 593,
+        "failed": 0,
+        "ignored": 31
+      },
+      "workspace_log": "deferral155-workspace-final2.log",
+      "conformance_tests": 11,
+      "corpora": 77,
+      "clippy": "workspace --all-targets --features fuzz -- -D warnings passed",
+      "format_and_diff": "cargo fmt --all --check and git diff --check passed"
+    },
+    "exact_replay_final_before_integration_merge": "deferral155-green2.log: 76 corpora passed but only 56 scope calls; appended 16-call supplement was not covered. Superseded by final post-integration replay.",
+    "offline_integration": "deferral155-offline-integration.log: public offline integration test passed",
+    "duckdb_lifecycle_compatibility": "deferral155-duckdb-outcomes.log: both correlated confirmation and rejected Record batch tests passed",
+    "final_runner_guard": "Exact resolved FQN presence in downstream SQL verified against retained hosted and Rust captures; guard added without repeating successful cloud campaigns",
+    "malformed_snowflake_supplement_red": "deferral155-workspace-malformed-target-red.log: complete replay rejected entry67; retained original 72-row bytes in unvalidated-72-row-malformed-snowflake-target.jsonl"
+  },
+  "unresolved_coverage_limits": [
+    "Crafted Snowflake metadata using Databricks backtick target spelling: hosted accepts and returns doublequoted literal-backtick components; Rust preserves raw spelling. Original exact divergence retained outside the corrected per-dialect fixture. No normalization rule implemented or compatibility claim made for this spelling."
+  ],
+  "diagnostics": {
+    "unvalidated_original_combined_fixture": {
+      "path": "unvalidated-72-row-malformed-snowflake-target.jsonl",
+      "sha256": "f7338df30ab6b4030dcbcea7c313a42359349a668935fa58ef420f77fa752a61",
+      "rows": 72,
+      "failure": "entry67 Snowflake deferred FQN spelling"
+    },
+    "original_skip_supplement": {
+      "capture": "skip-scope/golden/golden_20261113T083722.550Z_74bc655147574e288aae6329e96593be.jsonl",
+      "sha256": "954a0e6b00bab528fb2ac9d3ac2a49ea959945f470ae557635fed5fa8bfabe25",
+      "rows": 16
+    }
+  }
+}

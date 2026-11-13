@@ -165,6 +165,11 @@ fn mentions_identifier(text: &str, identifier: &str) -> bool {
 pub(crate) struct ExecutionEvidence {
     pub(crate) org_id: String,
     pub(crate) project_id: Option<String>,
+    /// Logical named scope for clients that omit project_id. Deferral reads
+    /// only confirmed executions; this never participates in reuse identity.
+    pub(crate) node_profile_name: Option<String>,
+    pub(crate) node_project_name: Option<String>,
+    pub(crate) node_target_name: Option<String>,
     pub(crate) target_table: String,
     pub(crate) execution_type: i32,
     pub(crate) node_hash: Option<String>,
@@ -282,6 +287,9 @@ impl ExecutionEvidence {
             table_namespace,
             execution_type,
             project_id: state.and_then(|s| s.project_id.clone()),
+            node_profile_name: state.map(|s| s.profile_name.clone()),
+            node_project_name: state.map(|s| s.project_name.clone()),
+            node_target_name: state.map(|s| s.target_name.clone()),
             node_hash: state.map(|s| s.node_hash.clone()),
             node_body_hash: state.and_then(|s| s.node_body_hash.clone()),
             node_configs_hash: state.and_then(|s| s.node_configs_hash.clone()),
@@ -402,7 +410,7 @@ impl ExecutionEvidence {
     }
 }
 
-/// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
+/// Build the `NodeStateUpsert` for a node's selector comparison state,
 /// or `None` when the node_state lacks the scope keys (project_id/target_name/
 /// node_unique_id) the selector needs. Pure — performs no I/O.
 pub(crate) fn node_state_upsert(
@@ -426,9 +434,8 @@ pub(crate) fn node_state_upsert(
         node_macros_hash: ns.node_macros_hash.clone(),
         node_contract_hash: ns.node_contract_hash.clone(),
         node_database_representation: ns.node_database_representation.clone(),
-        // The physical FQN this node was built as in `target_name` — used to
-        // resolve deferral (ResolveDeferredRelations). Empty targets (data
-        // tests) record NULL and are not deferrable.
+        // Retained selector snapshot metadata. Deferral independently reads
+        // confirmed executions with their persisted logical scope.
         target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
     })
 }
@@ -443,14 +450,14 @@ pub(crate) enum RecordError {
 }
 
 /// Publish a RecordExecutions batch: every record's confirmed row and its
-/// selector/deferral node state, in one transaction. Returns the rows stored.
+/// selector snapshot, in one transaction. Returns the rows stored.
 pub(crate) async fn record_batch(
     store: &Store,
     org_id: &str,
     records: &[qc::ExecutionRecord],
 ) -> Result<u32, RecordError> {
     let mut rows: Vec<ExecutionWrite> = Vec::with_capacity(records.len());
-    // Collect selector/deferral state upserts to apply in the SAME
+    // Collect selector state upserts to apply in the SAME
     // transaction as the executions insert. Review #2 finding 5: writing
     // node_states per-record inside this loop (before full validation and
     // outside the batch transaction) leaked logical state when a later

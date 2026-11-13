@@ -577,7 +577,7 @@ entry 46, and the client sends no ordinary submit for it.
   a submit. Client 2.0.11 sends it for an incremental model run under
   `--full-refresh` (see [What the client computes](#what-the-client-computes)). Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
-  executions and selector/deferral node state are written in one transaction.
+  executions and selector node state are written in one transaction.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
   the rendered identity. `SQLExecution.from_speculative_submit` is set by the
   client (dbt-state 2.62.6 `run_cache.py`) only for a node it ran after a
@@ -585,13 +585,23 @@ entry 46, and the client sends no ordinary submit for it.
   first. This server never answers `ready_to_execute_untracked`, so a client
   never sets it here; a record that does is stored like any other.
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
-  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Maps each requested
-  node to the target relation it was last recorded with in the `target_name`
-  (defer-to) target, scoped by organization and `project_id`, for example
-  `"CDO_DEMO_DB"."PROD_STATE_DEMO"."STG_CUSTOMERS"`. Nodes never recorded there
-  are omitted. An empty `project_id`, `target_name` or ID list returns an empty
-  map. Node state is published at submit time, before confirmation. Fixture
-  `deferral_resolve.jsonl`, test `deferral.rs`.
+  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Resolves confirmed
+  outcomes by organization, exact profile, target and UID. A nonempty project
+  ID scopes by ID; otherwise exact project name scopes the lookup, including
+  executions originally recorded with an ID. Unknown UIDs are omitted.
+  Missing profile/target, no IDs, or missing both project ID and project name
+  returns an empty map. A pending or unconfirmed failed attempt cannot replace
+  the previous confirmed mapping. `failed_to_clone=true` confirms a successful
+  fallback build; the protocol has no general execution-failure flag.
+  Fresh hosted Snowflake/Databricks scope histories and actual pinned-client
+  Databricks failures establish this behavior (2026-11-13), superseding the
+  earlier assumption that selector snapshots made unconfirmed nodes deferrable.
+  FQNs retain the submitted warehouse quoting, including Databricks backticks.
+  Requests carry no dialect/family/connection namespace, so deferral uses the
+  logical scope supplied; physical reuse still requires its own warehouse scope.
+  Legacy executions without persisted profile/project/target evidence do not
+  resolve speculatively. Fixtures `databricks_deferral{,_scopes}.jsonl` replay
+  complete response bodies/statuses through the production router.
 
 ## Seeds: `SQL.SubmitValues`
 

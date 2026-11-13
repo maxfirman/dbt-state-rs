@@ -364,12 +364,6 @@ async fn both_entry_points_record_node_state_for_selectors() {
         Some("body")
     );
     assert!(recorded.contains_key("seed.p.s"));
-    let fqns = store
-        .resolve_deferred_fqns(ORG, "project", "prod", &uids)
-        .await
-        .expect("resolve");
-    assert_eq!(fqns["model.p.m"], PROD);
-    assert_eq!(fqns["seed.p.s"], "\"DB\".\"PROD\".\"SEED\"");
     assert_eq!(state.selector_write_failures(), 0);
 }
 
