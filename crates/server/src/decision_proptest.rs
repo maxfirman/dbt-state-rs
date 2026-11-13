@@ -457,7 +457,9 @@ fn hosted_wire(
         DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
             (DecisionKind::Build, rebuild, Some(2), Some(2))
         }
-        DecisionReason::NoReuseCandidate(_)
+        DecisionReason::ExistingTargetWithoutHistory
+        | DecisionReason::DataTestExistingTargetWithoutHistory
+        | DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
         | DecisionReason::NoBuildAnchor
         | DecisionReason::UpstreamOutdated

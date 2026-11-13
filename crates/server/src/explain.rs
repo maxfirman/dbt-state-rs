@@ -296,6 +296,8 @@ enum Shape {
     Skip,
     /// First build: `table analysis` only.
     FirstBuild,
+    /// Existing physical table, with no recorded query to compare.
+    ExistingTargetWithoutHistory,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
     ResolutionContextChanged,
@@ -340,6 +342,7 @@ enum Shape {
     /// A data test that executes: its tested upstreams, without verdicts
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
+    DataTestExistingTargetWithoutHistory,
 }
 
 /// Select the tree shape from the persisted decision reason, the class and
@@ -400,6 +403,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // is a fresh one.
         return Some(match (node.decision, reason) {
             (DecisionKind::Skip, R::Reused(Reuse::Fresh)) => Shape::Skip,
+            (DecisionKind::Build, R::DataTestExistingTargetWithoutHistory)
+                if node.genuine_upstreams().is_empty() =>
+            {
+                Shape::DataTestExistingTargetWithoutHistory
+            }
             (
                 DecisionKind::Build,
                 R::FirstBuild | R::NoReuseCandidate(NoCandidate::IdentityMismatch),
@@ -431,6 +439,13 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         )
     );
     Some(match (node.decision, reason) {
+        (DecisionKind::Build, R::ExistingTargetWithoutHistory)
+            if !upstreams
+                && (!matches!(kind, Some(ModelExecutionType::View))
+                    || view_reads_no_relation(node)) =>
+        {
+            Shape::ExistingTargetWithoutHistory
+        }
         (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
             Shape::Skip
         }
@@ -697,6 +712,11 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         None => Vec::new(),
         Some(Shape::Skip) => skip_tree(node),
         Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
+        Some(Shape::ExistingTargetWithoutHistory) => vec![
+            table_analysis_exists(node),
+            section("query analysis", Vec::new()),
+            data_freshness_analysis_fresh(node),
+        ],
         Some(Shape::QueryChanged) => query_changed_tree(node),
         Some(Shape::ResolutionContextChanged) => resolution_context_changed_tree(node),
         Some(Shape::InputBindingChanged) => input_binding_changed_tree(node),
@@ -711,6 +731,10 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
         Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
+        Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
+            section("query analysis", Vec::new()),
+            data_test_execute_freshness(node),
+        ],
     }
 }
 

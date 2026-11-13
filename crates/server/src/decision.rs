@@ -101,6 +101,12 @@ pub enum Reuse {
 pub enum DecisionReason {
     /// State history holds no latest row for the workload's output in scope.
     FirstBuild,
+    /// A source-less SQL submit reports a known existing Target relation, but
+    /// State has no confirmed evidence about its query.
+    ExistingTargetWithoutHistory,
+    /// A first data test reports only its existing result relation, without
+    /// recorded query evidence; the query-analysis section is empty.
+    DataTestExistingTargetWithoutHistory,
     /// A latest row exists but is not a reuse candidate.
     NoReuseCandidate(NoCandidate),
     /// The reuse candidate recorded a different genuine upstream set.
@@ -130,8 +136,10 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 22] = [
+    const ALL: [DecisionReason; 24] = [
         Self::FirstBuild,
+        Self::ExistingTargetWithoutHistory,
+        Self::DataTestExistingTargetWithoutHistory,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged),
         Self::NoReuseCandidate(NoCandidate::InputBindingChanged),
@@ -160,6 +168,10 @@ impl DecisionReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FirstBuild => "first_build",
+            Self::ExistingTargetWithoutHistory => "existing_target_without_history",
+            Self::DataTestExistingTargetWithoutHistory => {
+                "data_test_existing_target_without_history"
+            }
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
             }
@@ -714,6 +726,28 @@ pub struct SubmitContext<'a> {
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
 /// `reuse_candidate`).
 pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict {
+    // Hosted distinguishes physical existence from recorded execution history.
+    // This characterized source-less case cannot claim that the query changed
+    // or stayed unchanged: neither is recorded. The decision still builds.
+    let known_target_without_history = !ctx.target_has_prior_build
+        && ctx.why_no_candidate.is_none()
+        && ctx.target_table.is_some_and(|target| {
+            !target.is_empty()
+                && ctx.input_tables.len() == 1
+                && ctx.input_tables[0].name == target
+                && ctx.input_tables[0].last_modified_epoch.is_some()
+        });
+    let existing_without_history = known_target_without_history
+        && matches!(
+            ModelExecutionType::try_from(ctx.execution_type),
+            Ok(ModelExecutionType::Full
+                | ModelExecutionType::Append
+                | ModelExecutionType::Snapshot
+                | ModelExecutionType::View
+                | ModelExecutionType::DbtCustom)
+        );
+    let first_test_existing_target = known_target_without_history
+        && ctx.execution_type == ModelExecutionType::DbtDataTest as i32;
     match candidate {
         // No reuse candidate. The target either
         // never existed (first build → "did not exist") or existed under a
@@ -721,9 +755,17 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
         // `target_has_prior_build` carries the physical-existence signal.
         None => execute(
             ctx.execution_type,
-            ctx.target_has_prior_build && !ctx.own_target_absent,
-            ctx.why_no_candidate
-                .map_or(DecisionReason::FirstBuild, DecisionReason::NoReuseCandidate),
+            (ctx.target_has_prior_build || existing_without_history) && !ctx.own_target_absent,
+            ctx.why_no_candidate.map_or(
+                if existing_without_history {
+                    DecisionReason::ExistingTargetWithoutHistory
+                } else if first_test_existing_target {
+                    DecisionReason::DataTestExistingTargetWithoutHistory
+                } else {
+                    DecisionReason::FirstBuild
+                },
+                DecisionReason::NoReuseCandidate,
+            ),
         ),
         Some(prev) => {
             let f = evaluate_freshness(ctx, prev);
@@ -2304,6 +2346,14 @@ mod tests {
     fn decision_reasons_persist_as_stable_strings() {
         let pinned = [
             (DecisionReason::FirstBuild, "first_build"),
+            (
+                DecisionReason::ExistingTargetWithoutHistory,
+                "existing_target_without_history",
+            ),
+            (
+                DecisionReason::DataTestExistingTargetWithoutHistory,
+                "data_test_existing_target_without_history",
+            ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
                 "no_reuse_candidate.identity_mismatch",

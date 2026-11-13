@@ -658,7 +658,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        78,
+        79,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -1150,7 +1150,6 @@ async fn conformance_replay_all_corpora() {
         ("c1_config_semantics.jsonl", 0),
         ("c1_config_vs_logic.jsonl", 0),
         ("clone_chain_upstream_drift.jsonl", 4),
-        ("golden_20261008T222744.061Z.jsonl", 14),
         ("golden_20261009T083754.534Z.jsonl", 1),
         ("golden_20261009T100637.316Z.jsonl", 4),
         ("incremental_merge_reuse.jsonl", 0),
