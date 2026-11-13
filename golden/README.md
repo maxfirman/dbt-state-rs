@@ -6,6 +6,13 @@ pass proves is in [docs/testing.md](../docs/testing.md#captured-traffic-replay).
 
 ## Layout
 
+`databricks_explain_visibility.jsonl` records a warehouse-free hosted
+submit followed immediately by its first Explain (2026-11-13). The returned
+decision has a complete tree. `explain_visibility.rs` reproduces a local
+capture-lag race at the public gRPC seam and verifies scoped causal visibility
+without client retries. The fixture is the unchanged first pair from a
+certified twelve-RPC campaign; no execution or warehouse mutation is claimed.
+
 - `fixtures/`: the curated, git-tracked corpus. Treat it as read-only test data.
 - `replay_gaps.json`: keyed known divergences for the replay
   ([semantics](../docs/testing.md#goldenreplay_gapsjson)).

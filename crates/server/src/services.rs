@@ -235,9 +235,7 @@ fn capture_meta_of<T>(req: &Request<T>) -> CaptureMeta {
 /// fails the gRPC response.
 fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
     let pool = state.store.pool().clone();
-    tokio::spawn(async move {
-        crate::capture::capture_decision(&pool, input).await;
-    });
+    state.captures.spawn(pool, input);
 }
 
 /// The capture of a Submit decision. The node is described by the
@@ -827,17 +825,13 @@ impl Explain for ExplainService {
         // from the store) produce no message, so the response can be shorter
         // than the request — matching the hosted "omit untracked" behavior.
         //
-        // EVENTUAL CONSISTENCY (F3 — intentional, DO NOT make this read
-        // synchronous): the `node_decisions` row for an `execution_decision_id`
-        // is written by the Submit path's capture, which is a deliberate
-        // fire-and-forget async best-effort write (`spawn_capture`; see
-        // `capture_submit` and ADR 0005's "capture is best-effort and
-        // separate"). So a decision id issued only microseconds earlier may not
-        // yet be visible here; such an absent row is simply treated as untracked
-        // and omitted (same as a genuinely unknown id). This is by design —
-        // coupling this read to the capture write would change Submit semantics
-        // for every node. Clients that need the row observe eventual consistency
-        // (the harness polls briefly). Do not add retry/polling to the service.
+        // Submit remains nonblocking, but a returned decision's known capture
+        // must finish before its first Explain reads the persisted evidence.
+        // Unknown and other-organization IDs have no tracked write to await.
+        self.0
+            .captures
+            .wait_for(&org_id, &req.execution_decision_ids)
+            .await;
         let rows = self
             .0
             .store
