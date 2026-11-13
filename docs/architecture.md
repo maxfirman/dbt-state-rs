@@ -51,7 +51,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
-| `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, `resolve_deferred_fqns` for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
+| `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
 | `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Warehouse rule outcomes arrive as parameters; the store holds no dialect names. |
 
 ### Registered services
@@ -130,7 +130,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 | Table | Contents |
 |---|---|
 | `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`). |
-| `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus `target_table` for deferral. |
+| `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus retained `target_table` snapshot metadata. |
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `actors`, `roles`, `role_bindings` | Reserved for future auth; nothing writes them. |

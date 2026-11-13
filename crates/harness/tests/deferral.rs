@@ -16,15 +16,17 @@
 //! The FQN equals the submit `target_table` recorded for that (project, env,
 //! node). Nodes NOT built in the defer-to env are omitted (the empty-map case).
 //!
-//! The server records target_table in node_states (migration 0010) on every
-//! Submit/Record and resolves (org, project_id, target_name, uids) -> FQN.
+//! Fresh hosted Snowflake/Databricks histories (2026-11-13) supersede the
+//! earlier submit-visible assumption: only confirmed outcomes publish a map.
+//! Scope is org + profile + project ID (or project name without ID) + target
+//! + UID. Exact named/ID lifecycle responses replay in databricks_deferral_scopes.
 
 #[path = "support.rs"]
 mod support;
 
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
-use support::scenario::{model, Scenario};
+use support::scenario::{data_test, model, outcome, test_results, Scenario};
 use support::start_server;
 
 const ORG: &str = "acme";
@@ -84,7 +86,7 @@ async fn resolves_built_nodes_to_their_defer_to_env_fqn() {
 
     // Build both upstreams in the defer-to env (records their FQNs).
     for (uid, fqn) in [(stg, stg_fqn), (orders, orders_fqn)] {
-        sc.org(ORG).submit(build(uid, fqn)).await;
+        sc.org(ORG).build(build(uid, fqn), 1_000).await;
     }
 
     // Resolve both + one never-built node.
@@ -135,7 +137,7 @@ async fn resolution_is_scoped_by_org_project_and_env() {
 
     let uid = "model.jaffle_shop.stg_customers";
     let fqn = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"STG_CUSTOMERS\"";
-    sc.org(ORG).submit(build(uid, fqn)).await;
+    sc.org(ORG).build(build(uid, fqn), 1_000).await;
 
     // Same scope resolves.
     assert_eq!(
@@ -157,9 +159,9 @@ async fn resolution_is_scoped_by_org_project_and_env() {
         .is_empty());
 }
 
-/// Missing project_id / target / ids yield an empty map (never an error).
+/// An unknown named scope, absent target or absent ids yields an empty map.
 #[tokio::test]
-async fn missing_scope_yields_empty_map_not_error() {
+async fn unknown_or_incomplete_scope_yields_empty_map_not_error() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
     let uid = "model.jaffle_shop.x";
@@ -199,4 +201,116 @@ fn hosted_resolution_shape_is_pinned() {
         assert_eq!(f.matches('"').count(), 6, "quoted 3-part FQN: {f}");
         assert!(f.contains("PROD_STATE_DEMO"), "built in the defer-to env");
     }
+}
+
+/// A no-ID client resolves confirmed relations by its exact profile/project
+/// names; a later pending attempt cannot replace its prior successful result.
+#[tokio::test]
+async fn named_deferral_preserves_confirmed_source_and_org_scope() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    for dialect in ["snowflake", "databricks"] {
+        let uid = format!("model.named.{dialect}");
+        let target = format!("{dialect}_first");
+        let replacement = format!("{dialect}_replacement");
+        let request = |physical: &str| {
+            model(physical)
+                .dialect(dialect)
+                .sql("select 1 as id")
+                .no_tables()
+                .unique_id(&uid)
+                .target_name("prod")
+                .node_state(|state| {
+                    state.project_id = None;
+                    state.profile_name = "profile".into();
+                    state.project_name = "project".into();
+                })
+        };
+        let resolve = qc::ResolveDeferredRelationsRequest {
+            profile_name: "profile".into(),
+            project_name: "project".into(),
+            target_name: "prod".into(),
+            project_id: None,
+            node_unique_ids: vec![uid.clone(), "model.named.missing".into()],
+        };
+        let pending = sc.org(ORG).execute_id(request(&target)).await;
+        assert!(sc
+            .org(ORG)
+            .resolve_deferred(resolve.clone())
+            .await
+            .is_empty());
+        assert!(
+            sc.org(ORG)
+                .confirm(&pending, outcome().epoch(1_000).table())
+                .await
+        );
+        let expected = std::collections::HashMap::from([(uid.clone(), target.clone())]);
+        assert_eq!(
+            sc.org(ORG).resolve_deferred(resolve.clone()).await,
+            expected
+        );
+        sc.org(ORG).execute_id(request(&replacement)).await;
+        assert_eq!(
+            sc.org(ORG).resolve_deferred(resolve.clone()).await,
+            expected
+        );
+        assert!(sc
+            .org("other-org")
+            .resolve_deferred(resolve.clone())
+            .await
+            .is_empty());
+        for (profile, project, target_name) in [
+            ("other", "project", "prod"),
+            ("profile", "other", "prod"),
+            ("profile", "project", "other"),
+        ] {
+            let other = qc::ResolveDeferredRelationsRequest {
+                profile_name: profile.into(),
+                project_name: project.into(),
+                target_name: target_name.into(),
+                ..resolve.clone()
+            };
+            assert!(sc.org(ORG).resolve_deferred(other).await.is_empty());
+        }
+        assert!(
+            sc.org(ORG)
+                .confirm(&pending, outcome().epoch(2_000).table())
+                .await
+        );
+        assert_eq!(sc.org(ORG).resolve_deferred(resolve).await, expected);
+    }
+}
+
+/// Test outcomes can be confirmed and cached while having no relation to defer.
+#[tokio::test]
+async fn targetless_recorded_test_is_not_a_deferred_relation() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let uid = "test.named.failed";
+    let test = data_test(uid)
+        .dialect("databricks")
+        .target_name("prod")
+        .node_state(|state| {
+            state.project_id = None;
+            state.profile_name = "profile".into();
+            state.project_name = "project".into();
+        });
+    assert_eq!(
+        sc.org(ORG)
+            .record([test.record(outcome().results(test_results(1)))])
+            .await
+            .unwrap(),
+        1
+    );
+    let resolved = sc
+        .org(ORG)
+        .resolve_deferred(qc::ResolveDeferredRelationsRequest {
+            profile_name: "profile".into(),
+            project_name: "project".into(),
+            target_name: "prod".into(),
+            project_id: None,
+            node_unique_ids: vec![uid.into()],
+        })
+        .await;
+    assert!(resolved.is_empty());
 }

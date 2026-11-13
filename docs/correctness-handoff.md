@@ -237,10 +237,13 @@ server keeps the conservative behavior described.
 - **Copy limits.** `clone_time_travel_limit` and `OUTSIDE_TIME_TRAVEL_WINDOW`
   (code 9) are never applied. Outside DuckDB, a `clone_chain_depth_limit`
   above 0 is ignored.
-- **When node state is published.** The server publishes selector and deferral
-  node state at submit time, before confirmation, so an unconfirmed or failed
-  build is immediately deferrable. Hosted timing is unobserved
-  (`submit_decision.rs::record_node_state`).
+- **Selector snapshot timing.** Selector snapshots still publish at submit
+  time. Deferral now independently reads confirmed execution history: fresh
+  Snowflake/Databricks protocol captures and actual Databricks failed attempts
+  prove that unconfirmed attempts are not deferrable (2026-11-13; #155,
+  [report](reports/databricks-deferral-2026-11-13.md)). This supersedes the
+  earlier shared selector/deferral timing assumption. Hosted selector failure
+  timing remains unobserved.
 - **Wildcard views.** Column evidence for `SELECT *` over views with added or
   removed columns, nested views and transitive definition changes.
 - **`lenient_dependencies`.** The server ignores the field. Define it from
@@ -368,6 +371,15 @@ server keeps the conservative behavior described.
   loss (`crates/harness/src/bin/record_proxy.rs`).
 
 ## Known divergences
+
+The #155 crafted protocol diagnostic using Databricks backticks as Snowflake
+Target relation metadata is unresolved: hosted accepts it and resolves each
+component as a doublequoted identifier containing literal backticks; this
+server returns the submitted spelling. The dated
+[deferral report](reports/databricks-deferral-2026-11-13.md) retains the exact
+failed replay and original capture. The scoped fixtures use each warehouse's
+own quoting; this diagnostic has no replay exemption and establishes no
+cross-dialect spelling compatibility.
 
 New Databricks #140 missing-evidence diagnostics remain **blocking**, not
 accepted replay exceptions ([dated evidence](reports/databricks-freshness-2026-11-12.md)).
