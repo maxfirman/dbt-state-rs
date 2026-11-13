@@ -1855,6 +1855,7 @@ mod tests {
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             clone_source: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
+            query_dependencies: Vec::new(),
             tolerance_ms: 0,
             build_age_ms: None,
             skip_rejection_reason: None,

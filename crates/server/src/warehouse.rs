@@ -696,17 +696,17 @@ mod tests {
     ];
 
     #[test]
-    fn duckdb_strict_identities_carry_their_own_version_tag() {
-        assert_eq!(
-            Warehouse::DuckDb.sql_identity_version(),
-            b"dbt-state-duckdb-sql-v1"
-        );
-        for warehouse in OTHERS.into_iter().chain([Warehouse::Snowflake]) {
-            assert_eq!(
-                warehouse.sql_identity_version(),
-                b"dbt-state-sql-v4",
-                "{warehouse:?}"
-            );
+    fn strict_identities_keep_their_warehouse_version_contracts() {
+        for warehouse in OTHERS
+            .into_iter()
+            .chain([Warehouse::Snowflake, Warehouse::DuckDb])
+        {
+            let expected: &[u8] = match warehouse {
+                Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1",
+                Warehouse::Databricks => b"dbt-state-databricks-identifiers-v1",
+                _ => b"dbt-state-sql-v4",
+            };
+            assert_eq!(warehouse.sql_identity_version(), expected, "{warehouse:?}");
         }
     }
 
