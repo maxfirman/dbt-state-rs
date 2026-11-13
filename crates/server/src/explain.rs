@@ -61,6 +61,7 @@ pub struct ExplainNode {
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: Vec<InputTable>,
+    pub query_dependencies: Vec<String>,
     /// The node's Lag tolerance (0: none) and the reuse candidate's build age
     /// at decision time (ADR 0007).
     pub tolerance_ms: i64,
@@ -297,6 +298,8 @@ enum Shape {
     FirstBuild,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
+    ResolutionContextChanged,
+    InputBindingChanged,
     /// SHAPE 7 over a RegisterClone copy the submit could not adopt
     /// ([`copy_logic_changed_tree`]).
     CopyLogicChanged,
@@ -307,10 +310,14 @@ enum Shape {
     /// lag_copy_candidates `ome`), or an execution type change (#83).
     OwnTargetModified,
     /// A seed whose table exists: its data changed (`true`) or not.
-    Seed { changed: bool },
+    Seed {
+        changed: bool,
+    },
     /// A seed copied from its load under another name: into its absent table,
     /// or `over` its table, whose latest load (the anchor) had other values.
-    SeedCopy { over: bool },
+    SeedCopy {
+        over: bool,
+    },
     /// A copy of an equivalent over a target whose own build had to rebuild
     /// ("but it's old, so we will clone from …"), rendered against the
     /// target's own build (VERIFIED LIVE 2026-11-10, lag_copy_candidates).
@@ -327,7 +334,9 @@ enum Shape {
     /// 2026-11-12 for a seed, explain_seed_copy_disabled.jsonl). Only a seed
     /// is loaded `over` its existing table, whose latest load (the anchor)
     /// had other values.
-    CopyDisabled { over: bool },
+    CopyDisabled {
+        over: bool,
+    },
     /// A data test that executes: its tested upstreams, without verdicts
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
@@ -553,6 +562,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // explain_reason_kind_cells.jsonl `*_d`, every model kind): a model
         // whose logic changed while its Target relation was dropped reads
         // like a first build.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ResolutionContextChanged)) => {
+            Shape::ResolutionContextChanged
+        }
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::InputBindingChanged)) => {
+            Shape::InputBindingChanged
+        }
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
             if node.own_target_absent() =>
         {
@@ -683,6 +698,8 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Skip) => skip_tree(node),
         Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
         Some(Shape::QueryChanged) => query_changed_tree(node),
+        Some(Shape::ResolutionContextChanged) => resolution_context_changed_tree(node),
+        Some(Shape::InputBindingChanged) => input_binding_changed_tree(node),
         Some(Shape::CopyLogicChanged) => copy_logic_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
         Some(Shape::OwnTargetModified) => skip_tree(node),
@@ -1146,7 +1163,14 @@ fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
             let relative = if age < 1000 {
                 "now".to_string()
             } else {
-                format!("{} ago", humanize_duration(age))
+                // Hosted relative ages round minutes while exact subminute
+                // seconds and elapsed-duration/gap wording remain separate.
+                let relative_age = if (60_000..3_600_000).contains(&age) {
+                    humanize_duration(((age / 1000 + 30) / 60) * 60_000)
+                } else {
+                    humanize_duration(age)
+                };
+                format!("{relative_age} ago")
             };
             format!(
                 "last updated: {relative}, {} UTC",
@@ -1211,6 +1235,98 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     vec![
         table_analysis_exists(node),
         query_analysis_changed(node),
+        data_freshness_analysis_fresh(&judged),
+    ]
+}
+
+/// A changed resolution context preserves the rendered query but changes its
+/// resolved input binding (#136's independently captured root-context probes).
+fn resolution_context_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let ignored = node
+        .genuine_upstreams()
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line("view ignored")],
+        })
+        .collect();
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    format!("the {} query has not changed", node.noun()),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", ignored),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
+        section("data freshness analysis", Vec::new()),
+    ]
+}
+
+fn input_binding_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let judged = if node.anchor.is_some() {
+        node.clone()
+    } else {
+        judged_against_unmatched(node)
+    };
+    if node.query_dependencies.is_empty() {
+        return vec![
+            table_analysis_exists(node),
+            query_analysis_unchanged(node),
+            section(
+                "data freshness analysis",
+                vec![upstream_dependencies_freshness(
+                    &judged,
+                    &judged.genuine_upstreams(),
+                )],
+            ),
+        ];
+    }
+    let mut bindings: Vec<_> = node
+        .genuine_upstreams()
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line("external table")],
+        })
+        .collect();
+    bindings.extend(node.query_dependencies.iter().map(|name| qc::ExplainLine {
+        text: quote(name),
+        marker: None,
+        badge: None,
+        children: vec![line("view ignored")],
+    }));
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    format!("the {} query has not changed", node.noun()),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", bindings),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
         data_freshness_analysis_fresh(&judged),
     ]
 }
@@ -1739,6 +1855,7 @@ mod tests {
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
             clone_source: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
+            query_dependencies: Vec::new(),
             tolerance_ms: 0,
             build_age_ms: None,
             skip_rejection_reason: None,

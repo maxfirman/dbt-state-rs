@@ -215,6 +215,8 @@ async fn decide_sql(
     mode: Mode,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
+    let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
     // Without a reuse candidate the decision never skips
@@ -309,12 +311,29 @@ async fn decide_sql(
     // are answered LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH). A
     // refused copy otherwise reports its equivalent where a copy would have
     // been answered.
+    let binding_change = record.reason
+        == decision::DecisionReason::NoReuseCandidate(decision::NoCandidate::InputBindingChanged);
+    if binding_change {
+        record.build_age_ms = selection
+            .unmatched
+            .as_ref()
+            .and_then(|row| Warehouse::from_dialect(&row.dialect).build_time_ms(row))
+            .map(|built| now_ms.saturating_sub(built));
+    }
     let older = older_match(store, &evidence, &freshness, &record, |row| {
         reuse_candidate::older_build_matches(req, &evidence, row)
     })
     .await?;
+    let mut candidate = candidate;
     let record = match (older, refused_copy) {
-        (Some((reuse, build_age_ms)), _) => record.with_older_match(reuse, build_age_ms),
+        (Some((reuse, build_age_ms, older)), _) => {
+            let mut record = record.with_older_match(reuse, build_age_ms);
+            if binding_change {
+                record.matched_execution_id = Some(older.id);
+                candidate = Some(older);
+            }
+            record
+        }
         (None, Some(clone_rejection_reason)) => record.with_refused_copy(clone_rejection_reason),
         (None, None) => record,
     };
@@ -417,7 +436,7 @@ async fn older_match(
     freshness: &Freshness<'_>,
     record: &DecisionRecord,
     matches: impl Fn(&ExecutionRow) -> bool,
-) -> sqlx::Result<Option<(decision::Reuse, Option<i64>)>> {
+) -> sqlx::Result<Option<(decision::Reuse, Option<i64>, ExecutionRow)>> {
     use decision::{DecisionReason as R, NoCandidate as N};
     let applies = record.class == DecisionKind::Build
         && !freshness.own_target_absent
@@ -427,7 +446,10 @@ async fn older_match(
                 | R::UpstreamQueryChanged
                 | R::DependencySetChanged
                 | R::NoReuseCandidate(
-                    N::IdentityMismatch | N::UpstreamNamesChanged | N::CopyLogicMismatch
+                    N::IdentityMismatch
+                        | N::UpstreamNamesChanged
+                        | N::CopyLogicMismatch
+                        | N::InputBindingChanged
                 )
         );
     if !applies {
@@ -449,7 +471,8 @@ async fn older_match(
     };
     let selection = Selection::of_candidate(older.clone());
     let ctx = context(evidence, &selection, freshness, Some(&older));
-    Ok(decision::reusable(&ctx, &older).map(|reuse| (reuse, ctx.build_age_ms)))
+    let age = ctx.build_age_ms;
+    Ok(decision::reusable(&ctx, &older).map(|reuse| (reuse, age, older)))
 }
 
 /// Record, on each input the evidence read, which build in State history
@@ -555,7 +578,7 @@ pub async fn submit_values(
     // An older match of the table is reported ahead of a refused copy, as
     // for a SQL submit.
     let (record, refused_copy) = match older {
-        Some((reuse, build_age_ms)) => (record.with_older_match(reuse, build_age_ms), None),
+        Some((reuse, build_age_ms, _)) => (record.with_older_match(reuse, build_age_ms), None),
         None => (record, refused_copy),
     };
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);

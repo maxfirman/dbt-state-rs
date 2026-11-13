@@ -330,7 +330,24 @@ fn capture_submit(
         // the submitted inputs when the decision recorded none (a copy), less
         // a store_failures test's own audit relation, as the decision reads
         // them (#88, #123).
-        input_tables: if outcome.record().input_tables.is_empty() {
+        input_tables: if outcome.record().reason
+            == crate::decision::DecisionReason::NoReuseCandidate(
+                crate::decision::NoCandidate::ResolutionContextChanged,
+            ) {
+            // These are resolved SQL bindings, not guessed freshness metadata.
+            // A context-only rebuild explains the changed binding as ignored;
+            // its pending execution still retains the original request evidence.
+            req.tables
+                .iter()
+                .filter(|t| Some(&t.name) == req.target_table.as_ref())
+                .map(|t| crate::store::InputTable::at(&t.name, t.last_modified_epoch))
+                .chain(
+                    crate::warehouse::Warehouse::from_dialect(&req.dialect)
+                        .resolved_input(req)
+                        .map(|name| crate::store::InputTable::at(&name, None)),
+                )
+                .collect()
+        } else if outcome.record().input_tables.is_empty() {
             crate::execution::sql_inputs(&crate::execution::sql_execution(req))
         } else {
             outcome.record().input_tables.clone()
@@ -403,7 +420,9 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
+        let raw_req = request.into_inner();
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Only data tests have no Target relation. Deciding any other node
         // without one could answer a Result copy into an empty relation name
         // (#81). Hosted fails `""` with InvalidArgument and an unset target
@@ -416,12 +435,13 @@ impl Sql for SqlService {
             ));
         }
 
-        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req, now_ms)
+        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &raw_req, now_ms)
             .await
             .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &outcome);
-        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
+        let response =
+            submit_response(outcome, raw_req.target_table.as_deref().unwrap_or_default());
         Ok(Response::new(response))
     }
 
@@ -449,16 +469,19 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
+        let raw_req = request.into_inner();
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Decided only where the decision needs no table evidence: a data
         // test without upstreams that the ordinary submit would SKIP, the one
         // speculative call hosted was seen to decide (#103). Every other one
         // is `undecided`, as hosted answers in our corpus, and the client
         // then sends the ordinary submit. Never `ready_to_execute_untracked`
         // or `ready_to_clone`.
-        let outcome = crate::submit_decision::speculative_sql(&self.0.store, &org_id, &req, now_ms)
-            .await
-            .map_err(store_status)?;
+        let outcome =
+            crate::submit_decision::speculative_sql(&self.0.store, &org_id, &raw_req, now_ms)
+                .await
+                .map_err(store_status)?;
         let response = match &outcome {
             Some(
                 skip @ SubmitOutcome::Skip {
@@ -858,6 +881,8 @@ impl Explain for ExplainService {
                 target_table: row.target_table.clone(),
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
+                query_dependencies: serde_json::from_value(row.query_dependencies.clone())
+                    .unwrap_or_default(),
                 tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
                 build_age_ms: row.build_age_ms,
                 skip_rejection_reason: row.skip_rejection_reason,

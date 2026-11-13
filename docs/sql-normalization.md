@@ -2,9 +2,10 @@
 
 This page covers how SQL text enters the logic identity for **Snowflake**.
 DuckDB uses a separate validated formatting subset
-([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md)); every other
-dialect keeps exact SQL bytes (`crates/server/src/sql_identity.rs`
-`normalized_sql`).
+([duckdb-identity-and-copy.md](duckdb-identity-and-copy.md)). Databricks resolves
+only its [evidenced identifier subset](databricks-identifiers.md), preserving
+all other SQL bytes. Other dialects keep exact SQL bytes
+(`crates/server/src/sql_identity.rs` `normalized_sql`).
 
 ## Hosted behavior
 

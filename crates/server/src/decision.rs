@@ -35,6 +35,14 @@ impl StaleUpstreamPolicy {
 pub enum NoCandidate {
     /// The latest row does not have the workload's identity.
     IdentityMismatch,
+    /// The same rendered query resolves an unqualified input differently after
+    /// a root catalog/schema change (Databricks #136). Rebuild with the normal
+    /// identity-mismatch wire answer; Explain identifies the changed binding.
+    ResolutionContextChanged,
+    /// The same simple rendered query is bound to a different physical input
+    /// or newly supplied source view (#136). Rebuilds; Explain preserves the
+    /// query and names the binding change.
+    InputBindingChanged,
     /// The latest row has the workload's identity but was built as another
     /// node kind (a snapshot run under `--full-refresh` is sent with the wire
     /// `execution_type` FULL; a model whose materialization or incremental
@@ -122,9 +130,11 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 20] = [
+    const ALL: [DecisionReason; 22] = [
         Self::FirstBuild,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged),
+        Self::NoReuseCandidate(NoCandidate::InputBindingChanged),
         Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
         Self::NoReuseCandidate(NoCandidate::UpstreamNamesChanged),
         Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
@@ -152,6 +162,12 @@ impl DecisionReason {
             Self::FirstBuild => "first_build",
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged) => {
+                "no_reuse_candidate.resolution_context_changed"
+            }
+            Self::NoReuseCandidate(NoCandidate::InputBindingChanged) => {
+                "no_reuse_candidate.input_binding_changed"
             }
             Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
                 "no_reuse_candidate.execution_type_changed"

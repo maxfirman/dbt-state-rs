@@ -148,6 +148,15 @@ pub(crate) fn for_model(
         // The identity under another type, but over other upstream names:
         // another identity on hosted (#116).
         NoCandidate::UpstreamNamesChanged
+    } else if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        .changed_resolution_context(req, &current)
+        .is_some()
+    {
+        NoCandidate::ResolutionContextChanged
+    } else if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        .changed_input_binding(req, &current)
+    {
+        NoCandidate::InputBindingChanged
     } else {
         NoCandidate::IdentityMismatch
     };

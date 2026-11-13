@@ -4,6 +4,7 @@
 
 use super::*;
 use crate::query_cache::ModelExecutionType;
+use crate::warehouse::Warehouse;
 use sqlx::{Postgres, QueryBuilder};
 use std::collections::HashMap;
 
@@ -26,7 +27,7 @@ fn current_physical_state<'a>(
     query.push(if target.is_some() {
         "SELECT * FROM executions"
     } else {
-        "SELECT DISTINCT ON (target_table) * FROM executions"
+        "SELECT DISTINCT ON (physical_target_key) * FROM executions"
     });
     query
         .push(" WHERE org_id = ")
@@ -36,11 +37,13 @@ fn current_physical_state<'a>(
         .push(" AND table_namespace IS NOT DISTINCT FROM ")
         .push_bind(namespace);
     if let Some(target) = target {
-        query.push(" AND target_table = ").push_bind(target);
+        query
+            .push(" AND physical_target_key = ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target));
     }
     query.push(" ORDER BY ");
     if target.is_none() {
-        query.push("target_table, ");
+        query.push("physical_target_key, ");
     }
     query.push("confirmed_at DESC NULLS LAST, id DESC");
     if target.is_some() {
@@ -101,8 +104,8 @@ impl Store {
             .push_bind(warehouse_family(dialect))
             .push(" AND table_namespace IS NOT DISTINCT FROM ")
             .push_bind(table_namespace)
-            .push(" AND target_table = ")
-            .push_bind(target_table)
+            .push(" AND physical_target_key = ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target_table))
             .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
         query
             .build_query_as::<ExecutionRow>()
@@ -124,7 +127,15 @@ impl Store {
         if targets.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut query = QueryBuilder::new("SELECT DISTINCT ON (target_table) ");
+        let requested: HashMap<_, _> = targets
+            .iter()
+            .map(|name| (Warehouse::physical_scope_key(dialect, name), name.clone()))
+            .collect();
+        let keys: Vec<_> = targets
+            .iter()
+            .map(|name| Warehouse::physical_scope_key(dialect, name))
+            .collect();
+        let mut query = QueryBuilder::new("SELECT DISTINCT ON (physical_target_key) ");
         query
             .push(ExecutionRow::COLUMNS)
             .push(" FROM executions WHERE org_id = ")
@@ -133,16 +144,25 @@ impl Store {
             .push_bind(warehouse_family(dialect))
             .push(" AND table_namespace IS NOT DISTINCT FROM ")
             .push_bind(table_namespace)
-            .push(" AND target_table = ANY(")
-            .push_bind(targets)
-            .push(") ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC");
+            .push(" AND physical_target_key = ANY(")
+            .push_bind(keys)
+            .push(") ORDER BY physical_target_key, confirmed_at DESC NULLS LAST, id DESC");
         let rows = query
             .build_query_as::<ExecutionRow>()
             .fetch_all(&self.pool)
             .await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.target_table.clone(), r))
+            .map(|r| {
+                let key = Warehouse::physical_scope_key(dialect, &r.target_table);
+                (
+                    requested
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| r.target_table.clone()),
+                    r,
+                )
+            })
             .collect())
     }
 
@@ -197,8 +217,8 @@ impl Store {
             .push_bind(q.seed_logic_hash)
             .push(" AND values_hash = ")
             .push_bind(q.values_hash)
-            .push(" AND target_table <> ")
-            .push_bind(q.exclude_target)
+            .push(" AND physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(q.dialect,q.exclude_target))
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
             .push_bind(q.limit)
             .push(" OFFSET ")
@@ -247,8 +267,8 @@ impl Store {
                 .push_bind(execution_type);
         }
         query
-            .push(" AND target_table <> ")
-            .push_bind(q.exclude_target)
+            .push(" AND physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(q.dialect, q.exclude_target))
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
             .push_bind(q.limit);
         query
@@ -277,8 +297,8 @@ impl Store {
         let mut child_id: Option<i64> = None;
         for depth in 0..=max_ancestors {
             let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family=$6 AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
-            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
+                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family=$6 AND physical_target_key=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
+            ).bind(org_id).bind(namespace).bind(Warehouse::physical_scope_key(dialect,&name)).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
             let Some((id, source, created_at)) = row else {
                 return Ok(None);
             };

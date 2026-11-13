@@ -144,9 +144,50 @@ fn identity(req: &serde_json::Value) -> String {
             req["table_namespace"],
             req["dbt_node_state"]["node_unique_id"]
         )
+    } else if req["dialect"].as_str() == Some("databricks") {
+        // Causal bookkeeping only: the public RPC still receives every original
+        // byte and its complete response is compared. The identifier corpus
+        // proves these plain, fully qualified spellings share physical history.
+        let raw = req["target_table"].as_str().unwrap_or("");
+        let parts: Option<Vec<_>> = raw
+            .split('.')
+            .map(|part| {
+                let value = if part.starts_with('`') && part.ends_with('`') {
+                    part.get(1..part.len().checked_sub(1)?)?
+                } else {
+                    part
+                };
+                let mut chars = value.chars();
+                let first = chars.next()?;
+                ((first.is_ascii_alphabetic() || first == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| value.to_ascii_lowercase())
+            })
+            .collect();
+        let target = parts
+            .filter(|p| p.len() == 3)
+            .map(|p| p.join("."))
+            .unwrap_or_else(|| raw.into());
+        format!("target|{}|{}", req["table_namespace"], target)
     } else {
         format!("target|{}", req["target_table"])
     }
+}
+
+#[test]
+fn databricks_replay_causality_keeps_distinct_physical_scopes() {
+    let mut first = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
+    let mut second = first.clone();
+    second["target_table"] = "CAT.SCHEMA.TABLE".into();
+    assert_eq!(identity(&first), identity(&second));
+    second["table_namespace"] = "other-connection".into();
+    assert_ne!(identity(&first), identity(&second));
+    second["table_namespace"] = "connection".into();
+    second["target_table"] = "cat.other_schema.table".into();
+    assert_ne!(identity(&first), identity(&second));
+    first["target_table"] = "`cat.schema`.`table`".into();
+    second["target_table"] = "cat.schema.table".into();
+    assert_ne!(identity(&first), identity(&second));
 }
 
 fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
@@ -617,7 +658,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        77,
+        78,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

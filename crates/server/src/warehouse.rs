@@ -1,15 +1,16 @@
 //! Warehouse-specific interpretation of the dialect string on the wire.
 //!
 //! A parser accepting a dialect is not evidence that two SQL statements or
-//! physical relations are equivalent. Only Snowflake's schema abstraction has
-//! been characterized against the hosted service. Other warehouses retain exact
-//! rendered SQL, except DuckDB's validated formatting subset. DuckDB copying
+//! physical relations are equivalent. Snowflake's schema abstraction and the
+//! Databricks identifier subset have hosted evidence; other SQL remains exact,
+//! except DuckDB's validated formatting subset. DuckDB copying
 //! uses separate request eligibility rather than this warehouse-wide capability.
 //!
 //! Warehouse-specific rules dispatch to the per-warehouse submodules
 //! ([`snowflake`], [`duckdb`]); the other variants get conservative defaults
 //! (ADR 0004: shared machinery with explicit warehouse rules).
 
+mod databricks;
 mod duckdb;
 mod snowflake;
 
@@ -61,8 +62,8 @@ impl Warehouse {
             "duckdb" if trimmed.eq_ignore_ascii_case("duckdb") => Self::DuckDb,
             "bigquery" if trimmed.eq_ignore_ascii_case("bigquery") => Self::BigQuery,
             "databricks" | "spark"
-                if trimmed.eq_ignore_ascii_case("databricks")
-                    || trimmed.eq_ignore_ascii_case("spark") =>
+                if dialect.trim_matches(' ').eq_ignore_ascii_case("databricks")
+                    || dialect.trim_matches(' ').eq_ignore_ascii_case("spark") =>
             {
                 Self::Databricks
             }
@@ -78,17 +79,251 @@ impl Warehouse {
             Self::BigQuery => "bigquery".into(),
             Self::Databricks => "databricks".into(),
             Self::Redshift => "redshift".into(),
-            Self::Other => dialect
-                .split(',')
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase(),
+            Self::Other => {
+                let family = dialect
+                    .split(',')
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches(' ')
+                    .to_ascii_lowercase();
+                if family == "spark" {
+                    "databricks".into()
+                } else {
+                    family
+                }
+            }
         }
     }
 
     pub fn normalized_sql(self, sql: &str) -> String {
         crate::sql_identity::normalized_sql(self, sql)
+    }
+
+    /// Resolve demonstrated metadata spellings once before history, producer,
+    /// freshness and own-target processing. The caller retains its raw request
+    /// for wire DDL; SQL text itself remains unmodified.
+    pub(crate) fn resolve_submit(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> std::borrow::Cow<'_, crate::query_cache::SubmitEnrichedSqlRequest> {
+        if self != Self::Databricks {
+            return std::borrow::Cow::Borrowed(req);
+        }
+        let mut resolved = req.clone();
+        self.resolve_names(
+            &mut resolved.target_table,
+            &mut resolved.tables,
+            &mut resolved.query_dependencies,
+        );
+        std::borrow::Cow::Owned(resolved)
+    }
+
+    pub(crate) fn resolve_record(
+        self,
+        req: &crate::query_cache::SqlExecution,
+    ) -> std::borrow::Cow<'_, crate::query_cache::SqlExecution> {
+        if self != Self::Databricks {
+            return std::borrow::Cow::Borrowed(req);
+        }
+        let mut resolved = req.clone();
+        self.resolve_names(
+            &mut resolved.target_table,
+            &mut resolved.tables,
+            &mut resolved.query_dependencies,
+        );
+        std::borrow::Cow::Owned(resolved)
+    }
+
+    fn resolve_names(
+        self,
+        target: &mut Option<String>,
+        tables: &mut [crate::query_cache::TableModifiedInfo],
+        deps: &mut [crate::query_cache::QueryDependency],
+    ) {
+        let canonical = |name: &mut String| {
+            if let Some(resolved) = databricks::physical_name(name) {
+                *name = resolved;
+            }
+        };
+        if let Some(target) = target {
+            canonical(target);
+        }
+        for table in tables {
+            canonical(&mut table.name);
+        }
+        for dep in deps {
+            canonical(&mut dep.name);
+        }
+    }
+
+    /// Decode raw persisted names into physical decision evidence while
+    /// retaining their original target spelling for later output consumers.
+    pub(crate) fn resolve_execution_row(self, row: &mut ExecutionRow) {
+        if self != Self::Databricks {
+            return;
+        }
+        if let Some(target) = databricks::physical_name(&row.target_table) {
+            if target != row.target_table {
+                row.raw_target_table = Some(row.target_table.clone());
+                row.target_table = target;
+            }
+        }
+        for input in &mut row.input_tables {
+            if let Some(name) = databricks::physical_name(&input.name) {
+                input.name = name;
+            }
+        }
+    }
+
+    /// A resolved query no longer depends on defaults; unsupported SQL retains
+    /// both exact bytes and its original context. No copy eligibility is added.
+    pub(crate) fn sql_identity(
+        self,
+        sql: &str,
+        catalog: &str,
+        schema: &str,
+    ) -> (String, String, String) {
+        if self == Self::Databricks {
+            if let Some(resolved) = databricks::resolved_sql(sql, catalog, schema) {
+                return (resolved.sql, String::new(), String::new());
+            }
+        }
+        (self.normalized_sql(sql), catalog.into(), schema.into())
+    }
+
+    pub(crate) fn target_schema(self, target: Option<&str>) -> Option<String> {
+        if self != Self::Databricks {
+            return None;
+        }
+        let name = databricks::physical_name(target?)?;
+        Some(name.split('.').nth(1)?.trim_matches('`').to_owned())
+    }
+
+    /// A request whose rendered identity matches the latest build only when
+    /// its unqualified input is read in the target's context. This proves the
+    /// observed context-only mismatch without trusting client body hashes.
+    pub(crate) fn changed_resolution_context(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+        latest: &ExecutionRow,
+    ) -> Option<String> {
+        if self != Self::Databricks
+            || req.compare_unrendered_code
+            || req.execution_type != crate::query_cache::ModelExecutionType::Full as i32
+            || latest.clone_source_table.is_some()
+            || !req.tables.iter().any(|t| {
+                Some(&t.name) == req.target_table.as_ref() && t.last_modified_epoch.is_some()
+            })
+            || latest.execution_type != req.execution_type
+        {
+            return None;
+        }
+        let target = databricks::physical_name(req.target_table.as_deref()?)?;
+        let components: Vec<_> = target.split('.').map(|s| s.trim_matches('`')).collect();
+        let inferred = self.target_schema(req.target_table.as_deref());
+        let schema = req
+            .default_schema
+            .as_deref()
+            .or(inferred.as_deref())
+            .unwrap_or("");
+        let current = databricks::resolved_sql(&req.sql, &req.default_catalog, schema)?;
+        let mut target_context = req.clone();
+        target_context.default_catalog = components[0].into();
+        target_context.default_schema = Some(components[1].into());
+        let prior =
+            databricks::resolved_sql(&req.sql, &target_context.default_catalog, components[1])?;
+        if prior.input == current.input {
+            return None;
+        }
+        let hash = crate::fingerprint::sql_logic_hash(
+            &crate::execution::sql_execution(&target_context),
+            None,
+        );
+        (latest.node_sql_hash.as_deref() == Some(hash.as_str())).then_some(current.input)
+    }
+
+    /// Prove a changed input binding against a prior direct-input build by
+    /// reconstructing that exact full identity. This is Explain evidence only;
+    /// it never qualifies the prior build for reuse.
+    pub(crate) fn changed_input_binding(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+        latest: &ExecutionRow,
+    ) -> bool {
+        if self != Self::Databricks
+            || req.compare_unrendered_code
+            || req.execution_type != crate::query_cache::ModelExecutionType::Full as i32
+            || latest.execution_type != req.execution_type
+            || latest.clone_source_table.is_some()
+        {
+            return false;
+        }
+        let target_key =
+            Self::physical_scope_key(&req.dialect, req.target_table.as_deref().unwrap_or(""));
+        let previous: Vec<_> = latest
+            .input_tables
+            .iter()
+            .filter(|t| Self::physical_scope_key(&req.dialect, &t.name) != target_key)
+            .collect();
+        let [previous] = previous.as_slice() else {
+            return false;
+        };
+        let Some(name) = databricks::physical_name(&previous.name) else {
+            return false;
+        };
+        let inferred = self.target_schema(req.target_table.as_deref());
+        let schema = req
+            .default_schema
+            .as_deref()
+            .or(inferred.as_deref())
+            .unwrap_or("");
+        let Some(current) = databricks::resolved_sql(&req.sql, &req.default_catalog, schema) else {
+            return false;
+        };
+        if current.input == name && req.query_dependencies.is_empty() {
+            return false;
+        }
+        let mut prior = req.clone();
+        prior.sql = format!(
+            "{}{}{}",
+            &req.sql[..current.start],
+            name,
+            &req.sql[current.end..]
+        );
+        prior.query_dependencies.clear();
+        latest.node_sql_hash.as_deref()
+            == Some(
+                crate::fingerprint::sql_logic_hash(&crate::execution::sql_execution(&prior), None)
+                    .as_str(),
+            )
+    }
+
+    pub(crate) fn resolved_input(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> Option<String> {
+        if self != Self::Databricks {
+            return None;
+        }
+        let inferred = self.target_schema(req.target_table.as_deref());
+        let schema = req
+            .default_schema
+            .as_deref()
+            .or(inferred.as_deref())
+            .unwrap_or("");
+        Some(databricks::resolved_sql(&req.sql, &req.default_catalog, schema)?.input)
+    }
+
+    /// Storage's physical history key (migration 0020). Raw names remain in
+    /// target_table for DDL/Explain; the key never changes identity hashes.
+    pub(crate) fn physical_scope_key(dialect: &str, name: &str) -> String {
+        let family = dialect.split(',').next().unwrap_or("").trim_matches(' ');
+        if family.eq_ignore_ascii_case("databricks") || family.eq_ignore_ascii_case("spark") {
+            if let Some(name) = databricks::physical_name(name) {
+                return name.replace('`', "");
+            }
+        }
+        name.to_owned()
     }
 
     /// Whether the namespace logic identity abstracts physical schemas, so
@@ -111,6 +346,7 @@ impl Warehouse {
     pub fn sql_identity_version(self) -> &'static [u8] {
         match self {
             Self::DuckDb => duckdb::SQL_IDENTITY_VERSION,
+            Self::Databricks => databricks::SQL_IDENTITY_VERSION,
             _ => SQL_IDENTITY_VERSION,
         }
     }
@@ -460,17 +696,17 @@ mod tests {
     ];
 
     #[test]
-    fn duckdb_strict_identities_carry_their_own_version_tag() {
-        assert_eq!(
-            Warehouse::DuckDb.sql_identity_version(),
-            b"dbt-state-duckdb-sql-v1"
-        );
-        for warehouse in OTHERS.into_iter().chain([Warehouse::Snowflake]) {
-            assert_eq!(
-                warehouse.sql_identity_version(),
-                b"dbt-state-sql-v4",
-                "{warehouse:?}"
-            );
+    fn strict_identities_keep_their_warehouse_version_contracts() {
+        for warehouse in OTHERS
+            .into_iter()
+            .chain([Warehouse::Snowflake, Warehouse::DuckDb])
+        {
+            let expected: &[u8] = match warehouse {
+                Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1",
+                Warehouse::Databricks => b"dbt-state-databricks-identifiers-v1",
+                _ => b"dbt-state-sql-v4",
+            };
+            assert_eq!(warehouse.sql_identity_version(), expected, "{warehouse:?}");
         }
     }
 

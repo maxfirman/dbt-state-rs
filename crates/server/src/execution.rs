@@ -171,6 +171,9 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_project_name: Option<String>,
     pub(crate) node_target_name: Option<String>,
     pub(crate) target_table: String,
+    /// Original SQL target spelling for persistence/deferral/DDL. Decision
+    /// evidence uses the Warehouse's physical spelling independently.
+    pub(crate) raw_target_table: Option<String>,
     pub(crate) execution_type: i32,
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
@@ -236,19 +239,27 @@ impl WriteStatus {
 impl ExecutionEvidence {
     pub(crate) fn sql_submit(org_id: &str, req: &qc::SubmitEnrichedSqlRequest) -> Self {
         // Template mode retains rendered identity and additionally matches the template.
-        let body = crate::decision::node_body_hash_of(req);
-        Self::sql(
+        let raw_target = req.target_table.clone();
+        let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_submit(req);
+        let body = crate::decision::node_body_hash_of(&req);
+        let mut evidence = Self::sql(
             org_id,
-            &sql_execution(req),
+            &sql_execution(&req),
             req.compare_unrendered_code
                 .then(|| body.as_deref().unwrap_or("")),
             !req.compare_unrendered_code && !req.sql.trim().is_empty(),
-        )
+        );
+        evidence.raw_target_table = raw_target;
+        evidence
     }
 
     pub(crate) fn sql_record(org_id: &str, req: &qc::SqlExecution) -> Self {
         // Record has no template comparison flag and computes the supplied SQL identity.
-        Self::sql(org_id, req, None, true)
+        let raw_target = req.target_table.clone();
+        let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_record(req);
+        let mut evidence = Self::sql(org_id, &req, None, true);
+        evidence.raw_target_table = raw_target;
+        evidence
     }
 
     fn sql(org_id: &str, req: &qc::SqlExecution, template: Option<&str>, copy: bool) -> Self {
@@ -283,6 +294,7 @@ impl ExecutionEvidence {
         Self {
             org_id: org_id.to_owned(),
             target_table,
+            raw_target_table: None,
             dialect,
             table_namespace,
             execution_type,
