@@ -658,7 +658,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        75,
+        77,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -1096,7 +1096,19 @@ async fn conformance_replay_all_corpora() {
                     }
                 }
                 "ResolveDeferredRelations" => {
-                    gaps += 1;
+                    let request: qc::ResolveDeferredRelationsRequest =
+                        serde_json::from_value(e.request.clone()).unwrap();
+                    let response = exec
+                        .resolve_deferred_relations(support::captured_request(request, e))
+                        .await
+                        .unwrap()
+                        .into_captured(e);
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        e.response,
+                        "{context}: complete deferred relation mapping"
+                    );
+                    asserted += 1;
                 }
                 other => panic!("{context}: unhandled method {other}"),
             }

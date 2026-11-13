@@ -358,9 +358,9 @@ pub struct NodeStateUpsert {
     pub node_macros_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_database_representation: Option<String>,
-    /// The physical relation this node was built as in `target_name`, used to
-    /// resolve `ResolveDeferredRelations`. The submit/record `target_table`
-    /// (a quoted 3-part FQN). NULL for data tests (empty target).
+    /// Legacy selector snapshot metadata, retained for existing persisted rows.
+    /// Deferral reads confirmed executions with their own logical scope.
+    /// NULL for data tests (empty target).
     pub target_table: Option<String>,
 }
 
@@ -406,7 +406,7 @@ impl Store {
         Self::insert_row(&self.pool, row).await
     }
 
-    /// Insert a batch of fully-confirmed executions AND their selector/deferral
+    /// Insert a batch of fully-confirmed executions AND their selector
     /// `node_states` upserts in a SINGLE transaction. Either everything commits
     /// or nothing does: a failure writing either table rolls back BOTH.
     ///
@@ -414,7 +414,7 @@ impl Store {
     /// committed and THEN best-effort `node_states` upserts ran outside the
     /// transaction, so a logical-state write failure left a durable execution
     /// row with no corresponding selector/deferral state (`records_stored=1`,
-    /// zero logical rows, empty deferral resolution). Writing both in one
+    /// zero selector rows). Writing both in one
     /// transaction makes a successful `RecordExecutions` publish execution and
     /// logical state consistently — a `node_states` fault now rolls the whole
     /// request back and surfaces as an error, rather than a silent partial
@@ -452,9 +452,10 @@ impl Store {
                 dialect, input_tables, values_hash, status, request_id,
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
-                execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs
+                execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
+                node_profile_name, node_project_name, node_target_name
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29)
             "#,
         )
         .bind(&e.org_id)
@@ -495,6 +496,9 @@ impl Store {
                 .as_ref()
                 .map(|names| serde_json::json!(names)),
         )
+        .bind(&e.node_profile_name)
+        .bind(&e.node_project_name)
+        .bind(&e.node_target_name)
         .execute(executor)
         .await?;
         Ok(())
@@ -690,42 +694,39 @@ impl Store {
             .collect())
     }
 
-    /// Resolve each requested `node_unique_id` to the PHYSICAL relation it was
-    /// last built as in the `target_name` env (for `ResolveDeferredRelations`),
-    /// scoped by (org, project_id, target env). Only nodes with a recorded
-    /// physical `target_table` are returned; absent/data-test nodes are simply
-    /// omitted from the map (the client treats an unresolved node as not
-    /// deferrable), matching the hosted empty-when-unknown behavior.
-    ///
-    /// VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
-    /// returns `{ node_unique_id -> "CATALOG"."SCHEMA"."OBJECT" }` for upstreams
-    /// built in the defer-to env; the FQN equals the submit `target_table`.
-    pub async fn resolve_deferred_fqns(
+    /// Hosted deferral resolves confirmed outcomes by profile and either a
+    /// stable project ID or project name. A pending or failed execution cannot
+    /// publish a relation. Scope keys are exact wire strings; the request has
+    /// no warehouse/namespace field. Selector state remains independent.
+    pub async fn resolve_confirmed_deferred_fqns(
         &self,
         org_id: &str,
-        project_id: &str,
+        profile_name: &str,
+        project_name: &str,
+        project_id: Option<&str>,
         target_name: &str,
         node_unique_ids: &[String],
     ) -> sqlx::Result<std::collections::HashMap<String, String>> {
-        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String)> = sqlx::query_as(
             r#"
-            SELECT node_unique_id, target_table
-            FROM node_states
-            WHERE org_id = $1 AND project_id = $2 AND target_name = $3
-              AND node_unique_id = ANY($4)
-              AND target_table IS NOT NULL
+            SELECT DISTINCT ON (node_unique_id) node_unique_id, target_table
+            FROM executions
+            WHERE org_id = $1 AND node_profile_name = $2
+              AND (($4::text IS NULL AND node_project_name = $3) OR project_id = $4)
+              AND node_target_name = $5 AND node_unique_id = ANY($6)
+              AND status = 'confirmed' AND target_table <> ''
+            ORDER BY node_unique_id, confirmed_at DESC, id DESC
             "#,
         )
         .bind(org_id)
+        .bind(profile_name)
+        .bind(project_name)
         .bind(project_id)
         .bind(target_name)
         .bind(node_unique_ids)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(uid, fqn)| fqn.map(|f| (uid, f)))
-            .collect())
+        Ok(rows.into_iter().collect())
     }
 
     /// Fetch the persisted `node_decisions` rows for the requested

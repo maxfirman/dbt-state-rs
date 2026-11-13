@@ -5,7 +5,7 @@
 //! hosted service and records the exchange in the golden log. The request is
 //! read from stdin as the JSON form the golden log uses.
 //!
-//! Usage: `state-probe <submit|confirm|clone|explain|values|validate|select> < request.json`
+//! Usage: `state-probe <submit|confirm|clone|explain|values|validate|select|resolve> < request.json`
 //! (`clone` sends `Clone.RegisterClone`, the dev-clone pre-step's copy request.)
 //!
 //! Env:
@@ -47,7 +47,9 @@ fn with_client_metadata<T>(msg: T) -> anyhow::Result<Request<T>> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let op = std::env::args().nth(1).ok_or_else(|| {
-        anyhow::anyhow!("usage: state-probe <submit|confirm|clone|explain|values|validate|select>")
+        anyhow::anyhow!(
+            "usage: state-probe <submit|confirm|clone|explain|values|validate|select|resolve>"
+        )
     })?;
     let mut body = String::new();
     std::io::stdin().read_to_string(&mut body)?;
@@ -83,6 +85,14 @@ async fn main() -> anyhow::Result<()> {
             let msg: qc::SubmitValuesRequest = serde_json::from_str(&body)?;
             let resp = qc::sql_client::SqlClient::new(channel)
                 .submit_values(with_client_metadata(msg)?)
+                .await?
+                .into_inner();
+            serde_json::to_value(resp)?
+        }
+        "resolve" => {
+            let msg: qc::ResolveDeferredRelationsRequest = serde_json::from_str(&body)?;
+            let resp = qc::execution_client::ExecutionClient::new(channel)
+                .resolve_deferred_relations(with_client_metadata(msg)?)
                 .await?
                 .into_inner();
             serde_json::to_value(resp)?
