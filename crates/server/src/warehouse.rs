@@ -367,6 +367,62 @@ impl Warehouse {
         self == Self::Databricks && req.query_dependencies.iter().any(|d| d.query.is_empty())
     }
 
+    /// Bounded #144 ordinary-submit error, not an audit-input exclusion.
+    /// Native aliased/default-name histories and historical C/D/E controls
+    /// reject a reported audit table for source-less literal test SQL. Keep
+    /// genuine/unknown reads, other contexts and uncharacterized modes intact.
+    pub(crate) fn invalid_source_less_audit_input(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        use crate::query_cache::ModelExecutionType;
+
+        if self != Self::Databricks
+            || req.execution_type != ModelExecutionType::DbtDataTest as i32
+            || req.target_table.is_some()
+            || !req.compare_unrendered_code
+            || req
+                .semantic_extras
+                .get("store_failures")
+                .map(String::as_str)
+                != Some("true")
+            || req
+                .semantic_extras
+                .get("store_failures_as")
+                .map(String::as_str)
+                != Some("\"table\"")
+            || !req.query_dependencies.is_empty()
+        {
+            return false;
+        }
+        let [table] = req.tables.as_slice() else {
+            return false;
+        };
+        if !table.last_modified_epoch.is_some_and(|epoch| epoch > 0) {
+            return false;
+        }
+        let Some(schema) = req.default_schema.as_deref() else {
+            return false;
+        };
+        let Some(context) = databricks::physical_name(&format!(
+            "{}.{}.__audit_context",
+            req.default_catalog, schema
+        )) else {
+            return false;
+        };
+        let Some(input) = databricks::physical_name(&table.name) else {
+            return false;
+        };
+        context.rsplit_once('.').map(|(scope, _)| scope)
+            == input.rsplit_once('.').map(|(scope, _)| scope)
+            && context
+                .split('.')
+                .nth(1)
+                .is_some_and(|schema| schema.trim_matches('`').ends_with("_dbt_test__audit"))
+            && self.sql_reads_relation(&req.sql) == Some(false)
+            && databricks::literal_audit_query(&req.sql)
+    }
+
     /// Resolve demonstrated metadata spellings once before history, producer,
     /// freshness and own-target processing. The caller retains its raw request
     /// for wire DDL; SQL text itself remains unmodified.
