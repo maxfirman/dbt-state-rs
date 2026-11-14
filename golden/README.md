@@ -244,3 +244,20 @@ corruptions and literal upstream-view definitions. It has no replay gaps or
 unknown baseline allowances. Provenance, complete independent references and
 whole-ticket limitations are in
 [`docs/reports/databricks-target-lifecycle-2026-11-14.md`](../docs/reports/databricks-target-lifecycle-2026-11-14.md).
+
+`databricks_cached_test_config.jsonl` adds the complete 24-RPC fresh failing
+ERROR declaration/reuse and severity WARN declaration/reuse. The raw cached
+payload stays `3/true/true`; WARN changes client classification and exit to
+`warn/0`. Only the severity semantic extra changes on the wire. Every first
+call has its full Explain tree, and both reuses preserve confirmed runtime.
+The zero-object runner is `experiments/databricks_cached_config.py`; this is
+additional partial evidence, with #138's UID blocker unchanged.
+
+`databricks_cached_test_thresholds.jsonl` is a fresh complete 72-RPC history
+containing causal ERROR/WARN baselines plus threshold warning (`3/false/true`),
+threshold pass despite nonzero failures (`3/false/false`), NULL-excluding
+`count(v)` warning (`2/false/true`) and duplicate-preserving `sum(v)` failure
+(`4/true/true`). Each declaration builds once and positively reuses once;
+twelve full Explain trees and every computation confirmation are retained.
+All changes affect semantic extras only; the report lists the exact changed
+configuration fields rather than treating each transition as one field.
