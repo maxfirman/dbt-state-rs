@@ -698,6 +698,10 @@ fn execute_description(execution_type: i32, had_prior: bool, reason: DecisionRea
 pub struct SubmitContext<'a> {
     pub execution_type: i32,
     pub input_tables: &'a [InputTable],
+    /// Whether the submit SQL reads a relation, parsed at the service boundary.
+    /// Only `Some(false)` establishes the captured source-less case; missing
+    /// upstream metadata alone does not establish that a query has no inputs.
+    pub sql_reads_relation: Option<bool>,
     /// The node's own target table (fully-qualified). Its presence in
     /// `input_tables` is for own-existence/freshness tracking and must NOT be
     /// treated as upstream drift.
@@ -729,7 +733,8 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
     // Hosted distinguishes physical existence from recorded execution history.
     // This characterized source-less case cannot claim that the query changed
     // or stayed unchanged: neither is recorded. The decision still builds.
-    let known_target_without_history = !ctx.target_has_prior_build
+    let known_target_without_history = ctx.sql_reads_relation == Some(false)
+        && !ctx.target_has_prior_build
         && ctx.why_no_candidate.is_none()
         && ctx.target_table.is_some_and(|target| {
             !target.is_empty()
@@ -1147,6 +1152,7 @@ mod tests {
         SubmitContext {
             execution_type: 10,
             input_tables: tables,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
@@ -1876,6 +1882,7 @@ mod tests {
         SubmitContext {
             execution_type: ModelExecutionType::DbtDataTest as i32,
             input_tables: tables,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,

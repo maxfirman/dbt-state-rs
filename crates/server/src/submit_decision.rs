@@ -233,6 +233,7 @@ async fn decide_sql(
     let copy_considered = selection.candidate.is_none()
         && selection.why_no_candidate != Some(decision::NoCandidate::OwnTargetModified);
     let freshness = Freshness {
+        sql_reads_relation: Warehouse::from_dialect(&req.dialect).sql_reads_relation(&req.sql),
         target_table: req.target_table.as_deref(),
         stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
         tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
@@ -393,6 +394,7 @@ fn context<'a>(
     SubmitContext {
         execution_type: evidence.execution_type,
         input_tables: &evidence.input_tables,
+        sql_reads_relation: freshness.sql_reads_relation,
         target_table: freshness.target_table,
         stale_upstream_policy: freshness.stale_upstream_policy,
         target_has_prior_build: selection.target_has_prior_build,
@@ -510,6 +512,7 @@ pub(crate) async fn resolve_producers(
 
 /// The freshness parameters of one submission, distilled at the boundary.
 struct Freshness<'a> {
+    sql_reads_relation: Option<bool>,
     target_table: Option<&'a str>,
     stale_upstream_policy: decision::StaleUpstreamPolicy,
     tolerance_ms: i64,
@@ -563,6 +566,7 @@ pub async fn submit_values(
     }
 
     let freshness = Freshness {
+        sql_reads_relation: None,
         target_table: Some(req.target_table.as_str()),
         stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
         tolerance_ms: 0,

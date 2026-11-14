@@ -1150,6 +1150,10 @@ async fn conformance_replay_all_corpora() {
         ("c1_config_semantics.jsonl", 0),
         ("c1_config_vs_logic.jsonl", 0),
         ("clone_chain_upstream_drift.jsonl", 4),
+        // This VIEW reads a relation through a CTE despite reporting only its
+        // target. The source-less existing-target capture does not resolve its
+        // pre-existing missing-history rebuild-rationale exemption.
+        ("golden_20261008T222744.061Z.jsonl", 14),
         ("golden_20261009T083754.534Z.jsonl", 1),
         ("golden_20261009T100637.316Z.jsonl", 4),
         ("incremental_merge_reuse.jsonl", 0),
