@@ -131,6 +131,27 @@ class SubmitControls(unittest.TestCase):
             if fault=='failed-confirm':bad[1]['response']['success']=False
             with self.subTest(fault=fault),self.assertRaises(Refused):delete_insert_submit(bad,source,target,False,'ready_to_execute')
 
+class CodecPreflightControls(unittest.TestCase):
+    def test_preflight_pins_each_fraction_and_stops_on_precision_or_encoding_loss(self):
+        import json
+        from copy import deepcopy
+        from databricks_delete_insert import temporal_codec_preflight_plan,assert_reference
+        from databricks_survey import Refused
+        plan=temporal_codec_preflight_plan()
+        self.assertEqual([r[3] for r in plan['expected_rows']],['2026-11-01T12:00:00.123Z','2026-11-02T12:00:00.456Z','2026-11-03T12:00:00.789Z','2026-11-04T12:00:00.012Z',None,None])
+        rows=plan['expected_rows'];sql=plan['literal_sql']
+        direct={'columns':plan['typed_columns'],'rows':rows}
+        shown=[dict(zip(('id','v','p','ts'),(None if r[0] is None else int(r[0]),*r[1:]))) for r in rows]
+        assert_reference(json.dumps(shown),'',direct,rows,sql,sql+';',sql)
+        for fault in ('truncate','offset','space','more_precision','lost_duplicate'):
+            bad=deepcopy(shown)
+            if fault=='truncate':bad[0]['ts']='2026-11-01T12:00:00Z'
+            if fault=='offset':bad[0]['ts']='2026-11-01T12:00:00.123+00:00'
+            if fault=='space':bad[0]['ts']='2026-11-01 12:00:00.123Z'
+            if fault=='more_precision':bad[0]['ts']='2026-11-01T12:00:00.1230Z'
+            if fault=='lost_duplicate':bad.pop()
+            with self.subTest(fault=fault),self.assertRaises(Refused):assert_reference(json.dumps(bad),'',direct,rows,sql,sql+';',sql)
+
 class CodecControls(unittest.TestCase):
     def test_observed_whole_second_utc_codec_is_lossless_with_nullable_key(self):
         import json

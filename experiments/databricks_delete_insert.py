@@ -49,6 +49,16 @@ def ledger():
             'cells':CELLS,'history':{k:{'source':v.source,'R':v.R,'F':v.F} for k,v in HISTORY.items()},
             'basis':'independent immutable literal multiset key-replacement history; NULL-safe <=>'}
 
+def temporal_codec_preflight_plan():
+    """One immutable literal query, typed API + isolated show, before all DDL."""
+    rows=[list(r) for r in (a,c,d,y,n,n)]
+    return {'version':1,'purpose':'codec discovery only; no State policy inference',
+      'literal_sql':literal_reference(rows),'expected_rows':rows,
+      'typed_columns':[dict(zip(('name','type_text','type_name','position'),column)) for column in SCHEMA],
+      'budget':{'logical_literal_SELECT':1,'typed_API_SELECT_executions':1,
+        'State_disabled_dbt_show_SELECT_executions':1,'State_RPC':0,'new_objects':0},
+      'phase':'hosted only','unknown_encoding':'STOP before any source/consumer DDL; no coercion or ledger change'}
+
 def clearance_contract():
     schema='cdo_demo_db.state_20261114_append146'
     runs={'hosted':'20261114a149aa','rust':'20261114b149bb'}
@@ -60,6 +70,7 @@ def clearance_contract():
       'session_temporary_unqualified_names':{k:f'di_{v}_consumer__dbt_tmp' for k,v in runs.items()},
       'persistent_auxiliary_exact_spellings':{k:[f'{schema}.di_{v}_consumer{suffix}' for suffix in ('__dbt_stg','__dbt_backup')] for k,v in runs.items()},
       'limits':{'managed_per_backend':13,'disabled_select_only_references_per_backend':13,'parse_per_backend':1},
+      'hosted_temporal_codec_preflight':temporal_codec_preflight_plan(),
       'protected_permanent_names':[f'{schema}.{prefix}_20261114{r}_{name}'
         for prefix,suffix in [('a','146'),('io','147'),('rw','148')]
         for r in ('a'+suffix+'aa','b'+suffix+'bb') for name in ('inputs','consumer')]}
@@ -419,7 +430,18 @@ class DeleteInsert(Merge):
         config="materialized='incremental',incremental_strategy='delete+insert',unique_key='id',file_format='delta',on_schema_change='ignore',state={'lag_tolerance':'0s','pre_clone':'never'}"
         self.write_model('consumer',config,"select id,v,p,ts from {{ source('delete_insert_history','inputs') }} {% if not flags.FULL_REFRESH %} where "+PREDICATE+" {% endif %}")
 
+    def temporal_codec_preflight(self):
+        plan=temporal_codec_preflight_plan();sql=plan['literal_sql'];rows=plan['expected_rows']
+        self.save('temporal-codec-preflight/plan.json',plan)
+        direct=self.sql('temporal_codec_literal_typed',sql)
+        assert_typed(direct,rows)
+        checks=show_reference(self,'temporal-codec-literal',sql,rows,direct,validator=assert_reference)
+        self.save('temporal-codec-preflight/observed.json',{'purpose':plan['purpose'],
+          'complete_typed_API_rows':direct,'checks':checks,'no_objects_created':True,
+          'source_consumer_DDL_not_started':True,'zero_State_RPC':checks['zero_reference_rpcs']})
+
     def baseline(self):
+        if self.phase=='hosted':self.temporal_codec_preflight()
         self.setup_project();source=self.scope.relation('prod','inputs')
         self.save('project/models/sources.yml',{'version':2,'sources':[{'name':'delete_insert_history','database':'cdo_demo_db',
           'schema':self.scope.schema('prod'),'tables':[{'name':'inputs','identifier':source.split('.')[-1]}]}]})
