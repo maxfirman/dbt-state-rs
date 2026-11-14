@@ -75,9 +75,9 @@ class PredicateReplacementOracle(unittest.TestCase):
           'clone_chain_depth_limit':0,'ignore_external_modifications':False,'freshness_tolerance_seconds':0,'stale_upstream_policy':0,
           'tables':[{'name':'cdo_demo_db.owned.inputs','last_modified_epoch':10},{'name':'cdo_demo_db.owned.consumer','last_modified_epoch':20}],
           'target_table':'cdo_demo_db.owned.consumer','labels':{'dbt_node_name':'consumer'}}
-        row={'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'skip_execution':{}}}}
+        row={'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'skip_execution':{'explained_decision':{'is_stale':False}}}}}
         replace_submit([row],'cdo_demo_db.owned.inputs','cdo_demo_db.owned.consumer',True,HISTORY['steady'].predicate,'skip_execution')
-        for fault in ('missing','unknown','type','predicate','template','lag','confirm','false_reuse'):
+        for fault in ('missing','unknown','type','predicate','template','lag','confirm','false_reuse','stale'):
             calls=[deepcopy(row)]
             if fault=='missing':calls[0]['request']['tables'].pop(0)
             if fault=='unknown':calls[0]['request']['tables'][0]['last_modified_epoch']=None
@@ -86,6 +86,7 @@ class PredicateReplacementOracle(unittest.TestCase):
             if fault=='template':calls[0]['request']['compare_unrendered_code']=True
             if fault=='lag':calls[0]['request']['freshness_tolerance_seconds']=1
             if fault=='confirm':calls.append({'method':'ConfirmExecution'})
+            if fault=='stale':calls[0]['response']['response']['skip_execution']['explained_decision']['is_stale']=True
             with self.subTest(fault=fault),self.assertRaises(Refused):
                 replace_submit(calls,'cdo_demo_db.owned.inputs','cdo_demo_db.owned.consumer',True,HISTORY['steady'].predicate,'ready_to_execute' if fault=='false_reuse' else 'skip_execution')
 
@@ -95,10 +96,16 @@ class PredicateReplacementOracle(unittest.TestCase):
         for n in contract['protected_permanent_names']+contract['permanent_exact_allowlists']['rust']:
             with self.assertRaises(Refused):scope.check(n)
         target=scope.relation('prod','consumer')
-        calls=[{'method':'RecordExecutions','request':{'records':[{'input':{'enriched_sql':{'execution_type':1,'target_table':target}},'outcome':{'last_modified_epoch':1,'execution_runtime_ms':1}}]},'response':{'records_stored':1}}]
-        full_refresh_record(calls,target)
-        calls[0]['response']['records_stored']=0
+        calls=[{'method':'RecordExecutions','request':{'records':[{'input':{'enriched_sql':{'execution_type':11,'target_table':target}},'outcome':{'last_modified_epoch':1,'execution_runtime_ms':1}}]},'response':{'records_stored':1}}]
+        full_refresh_record(calls,target,expected_type=11)
+        for wrong in (1,4,5):
+            bad=deepcopy(calls);bad[0]['request']['records'][0]['input']['enriched_sql']['execution_type']=wrong
+            with self.assertRaises(Refused):full_refresh_record(bad,target,expected_type=11)
         with self.assertRaises(Refused):full_refresh_record(calls,target)
+        default=deepcopy(calls);default[0]['request']['records'][0]['input']['enriched_sql']['execution_type']=1
+        full_refresh_record(default,target)
+        calls[0]['response']['records_stored']=0
+        with self.assertRaises(Refused):full_refresh_record(calls,target,expected_type=11)
 
     def test_native_sql_requires_destination_predicate_and_session_temp(self):
         target='cdo_demo_db.owned.consumer';temp='consumer__dbt_tmp';predicate=HISTORY['steady'].predicate

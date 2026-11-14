@@ -183,23 +183,25 @@ def replace_submit(calls,source,target,target_exists,predicate,expected):
             or any(type(t.get('last_modified_epoch')) is not int or t['last_modified_epoch']<=0 for t in evidence)
             or normalize(request['target_table'])!=target):raise Refused('replace_where needs exact known positive epochs')
     decisions(calls,expected)
+    if expected=='skip_execution' and submits[0]['response']['response'][expected].get('explained_decision',{}).get('is_stale') is not False:
+        raise Refused('positive unchanged reuse must be explicitly fresh')
     if any(r['method'] in ('RecordExecutions','RegisterClone') for r in calls):raise Refused('unexpected ordinary Record/copy')
     if expected=='skip_execution' and any(r['method']=='ConfirmExecution' for r in calls):raise Refused('reuse unexpectedly confirmed')
     return submits
 
 
-def full_refresh_record(calls,target):
+def full_refresh_record(calls,target,expected_type=1):
     if any(r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone') for r in calls):
-        raise Refused('refresh route differs from FULL Record path')
+        raise Refused('refresh route differs from actual DBT_CUSTOM Record path')
     records=[r for r in calls if r['method']=='RecordExecutions']
     if (len(records)!=1 or len(records[0]['request']['records'])!=1
             or records[0]['response']!={'records_stored':1}
             or type(records[0]['response']['records_stored']) is not int):raise Refused('refresh lacks acknowledged record')
     record=records[0]['request']['records'][0];request=record['input']['enriched_sql'];outcome=record['outcome']
-    if (request['execution_type']!=1 or request['target_table'].replace('`','').lower()!=target
+    if (request['execution_type']!=expected_type or request['target_table'].replace('`','').lower()!=target
             or type(outcome.get('last_modified_epoch')) is not int or outcome['last_modified_epoch']<=0
             or type(outcome.get('execution_runtime_ms')) is not int or outcome['execution_runtime_ms']<=0):
-        raise Refused('refresh record lacks FULL known positive epoch/runtime')
+        raise Refused('refresh record lacks expected type/known positive epoch/runtime')
     return record
 
 
@@ -324,7 +326,7 @@ class ReplaceWhere(Merge):
         target=self.scope.relation('prod','consumer');source=self.scope.relation('prod','inputs')
         query=(self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         if expected=='record':
-            record=full_refresh_record(calls,target);self.last_runtime=record['outcome']['execution_runtime_ms']
+            record=full_refresh_record(calls,target,expected_type=11);self.last_runtime=record['outcome']['execution_runtime_ms']
             self.confirmed_epoch=record['outcome']['last_modified_epoch']
             self.save('full-refresh-wire.json',calls)
         else:
@@ -337,7 +339,6 @@ class ReplaceWhere(Merge):
                 if evidence[source]!=self.previous_epochs[source] or evidence[target]!=self.confirmed_epoch:
                     raise Refused('unchanged positive reuse differs from own confirmed/source epochs')
                 response=submits[0]['response']['response'][expected]
-                if response.get('is_stale'):raise Refused('positive reuse is stale')
                 if response['execution_runtime_ms']!=self.last_runtime:raise Refused('SKIP runtime differs from own confirmed replacement')
             else:
                 confirms=[r for r in calls if r['method']=='ConfirmExecution' and r.get('response',{}).get('success')]
