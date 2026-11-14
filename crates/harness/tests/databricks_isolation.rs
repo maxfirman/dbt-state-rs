@@ -492,7 +492,20 @@ async fn pre_v3_empty_namespace_rows_invalidate_and_still_control_latest_physica
         // sensitive even though the genuine frozen v2 hashes now invalidate.
         scenario.build(empty.clone(), 159).await;
         scenario.expect_skip(empty.clone()).await;
-        scenario.expect_skip(absent.clone()).await;
+        let skip = scenario.expect_skip(absent.clone()).await;
+        support::rows::wait_for_decision_capture(
+            &server,
+            "local",
+            skip.execution_decision_id.as_deref().unwrap(),
+        )
+        .await;
+        // The positive control's SKIPs retain audited references to its build.
+        // Frozen upgrade history is an independent starting state, so install
+        // it in a fresh schema instead of deleting that referenced build.
+        drop(scenario);
+        drop(server);
+        let server = support::start_server().await;
+        let scenario = Scenario::connect(&server).await;
         let old_id = uuid::Uuid::new_v4().to_string();
         legacy::replace_with_frozen_execution(
             &server,
