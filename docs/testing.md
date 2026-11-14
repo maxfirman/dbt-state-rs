@@ -29,6 +29,7 @@ python3 experiments/databricks_readonly_reference_test.py # no-object reference 
 python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes
 python3 experiments/databricks_sql_equivalence_test.py   # typed oracle sensitivity and separate hosted-history plans
 python3 experiments/databricks_dependency_identity_test.py # exact role ownership and complete-result fault probes
+python3 experiments/databricks_cached_tests_test.py      # no-object cached-failure payload/SQL/exit fault probes
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not

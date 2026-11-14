@@ -333,3 +333,22 @@ uv run --with grpcio python experiments/databricks_confirm_gate_test.py
 Equal changed-data epochs, delayed metadata and writes inside the warehouse
 SQL snapshot/read interval remain separate reachability questions. A successful bounded history does
 not close #140 or waive its independently unsafe omitted-source hosted SKIP.
+
+`databricks_cached_tests.py` is a dedicated no-object #143 partial runner for
+one selected source-less singular test with explicit `store_failures=false`.
+It has an empty warehouse mutation allowlist, checks the exact derived audit
+name absent, permits only that name's read-only client metadata probes and
+requires literal-only main/aggregate SQL plus exact before/after inventories.
+A stable inventory interval must be coordinated with concurrent live work.
+It never inherits the physical baseline/identity runners' mutation permissions.
+
+Run hosted first with `--dbt`, `--proxy`, `--probe`, `--schema-lease` and a fresh
+`--work-dir`. A fresh run ID supplies both full UID and body nonce. The four
+managed cells cover pass/reuse then SQL failure/reuse under false comparison mode, with typed
+duplicate/NULL row and aggregate oracles and separately certified zero-RPC
+disabled references. Raw failing exits are retained and checked against complete
+run_results and successful computation confirmations. `--rust-url` requires
+`--contract` from the observed hosted outcomes. The ignored
+`real_dbt_cached_failures_match_independent_literal_results` test uses the
+production router and the existing `DBT_STATE_DATABRICKS_{PYTHON,DBT,SCHEMA_LEASE,ARTIFACTS}`
+environment variables. See the [dated evidence and remaining scope](reports/databricks-cached-test-results-2026-11-14.md).
