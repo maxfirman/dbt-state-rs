@@ -17,6 +17,57 @@ fn replace_where_history_oracle_rejects_replacement_and_deletion_mistakes() {
     );
 }
 
+#[test]
+fn replace_where_capture_keeps_custom_refresh_and_sql_identity_transition() {
+    let rows: Vec<serde_json::Value> =
+        include_str!("../../../golden/fixtures/databricks_replace_where_history.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    assert_eq!(rows.len(), 90);
+    assert!(rows.iter().all(|row| row["status"]["code"] == 0));
+    let submits: Vec<_> = rows
+        .iter()
+        .filter(|row| row["method"] == "SubmitEnrichedSQL")
+        .collect();
+    assert_eq!(submits.len(), 12);
+    assert!(submits
+        .iter()
+        .all(|row| row["request"]["execution_type"] == 11));
+    assert_eq!(
+        submits
+            .iter()
+            .filter(|row| row["response"]["response"]["skip_execution"].is_object())
+            .count(),
+        5
+    );
+    let records: Vec<_> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row["method"] == "RecordExecutions")
+        .collect();
+    assert_eq!(records.len(), 1);
+    let (position, record) = records[0];
+    assert_eq!(record["response"]["records_stored"], 1);
+    let input = &record["request"]["records"][0]["input"]["enriched_sql"];
+    assert_eq!(input["execution_type"], 11);
+    assert!(!input["sql"]
+        .as_str()
+        .unwrap()
+        .to_lowercase()
+        .contains(" where "));
+    let next = rows[position + 1..]
+        .iter()
+        .find(|row| row["method"] == "SubmitEnrichedSQL")
+        .unwrap();
+    assert_eq!(next["request"]["execution_type"], 11);
+    assert!(next["request"]["sql"]
+        .as_str()
+        .unwrap()
+        .contains("where p = DATE '2026-11-01' OR p IS NULL"));
+    assert!(next["response"]["response"]["ready_to_execute"].is_object());
+}
+
 #[path = "support.rs"]
 mod support;
 
