@@ -376,7 +376,7 @@ async fn captured_gap_display_boundaries_preserve_seconds_even_ties_and_hour_car
     assert_eq!(entries.len(), 138);
     let server = support::start_server().await;
     let scenario = Scenario::connect(&server).await;
-    for triple in entries.chunks_exact(3) {
+    for triple in entries.as_chunks::<3>().0 {
         assert_eq!(triple[0].method, "RecordExecutions");
         let record: qc::RecordExecutionsRequest =
             serde_json::from_value(triple[0].request.clone()).unwrap();
