@@ -31,9 +31,13 @@ Do not weaken these without new evidence.
   the submit's type, which is never reused
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)). See
   [architecture.md](architecture.md#physical-scope-rule).
-- **Confirmation order defines current state.** The current build is the one
-  with the newest confirmation (ties broken by row id), not the newest submit
-  (`crates/harness/tests/concurrency.rs`).
+- **Physical completion order defines current state.** The greatest completion
+  epoch wins; confirmation receipt then row id break equal-epoch ties
+  (`databricks_lifecycle_ordering.jsonl`; the equal-epoch cases in
+  `crates/harness/tests/concurrency.rs`). A legacy confirmed unknown epoch is a
+  conservative physical cold miss, including for copies and with external
+  modification tolerance; delivery alone cannot prove safe recovery
+  ([#158 evidence](reports/databricks-lifecycle-2026-11-14.md)).
 - **Target relation as built.** Reuse needs exactly one known epoch for the
   target relation with `current_epoch <= confirmed_epoch` (a later epoch is
   accepted only with `ignore_external_modifications`). Missing, duplicated
@@ -392,6 +396,15 @@ Snowflake audit rules are unchanged. These captures stay in the durable archive
 with exact red replay, without a Databricks gap or golden exclusion. #140 stays
 incomplete and does not unblock its dependents.
 
+The #158 crafted untargeted FULL/VIEW diagnostic remains **blocking**. Fresh
+Snowflake and Databricks controls accept `target_table: null` and reuse the
+logical outcome after a null-epoch confirmation, independently of a subsequent
+physical target. The ordinary Rust non-test absent-target guard remains until
+logical qualification, result scope and isolation are established. Pinned
+read-only dbt show/operation probes did not send those execution RPCs. These
+complete diagnostic histories remain archived, without a replay exemption or
+overall support claim ([report](reports/databricks-lifecycle-2026-11-14.md)).
+
 Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
 where only part of a response differs, the `ignore_fields` it exempts. The
@@ -523,12 +536,11 @@ local-only and renders no Explain tree.
   (6 / 6). Rationale: AGENTS.md reuse invariant 3, the same choice as #115.
   Keyed gaps: `explain_seed_copy_existing.jsonl` entries 13 (decision) and
   17 (`empty_tree`).
-- **Unset target on a model submit (#81, crafted d3).** Hosted answers
-  `Internal` "Internal server error"; the server answers `InvalidArgument`,
-  the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
-  error is not worth it; the request is the caller's error and is rejected
-  before anything is decided or recorded. No keyed gap: failed calls are not
-  recorded.
+- **Historical unset-target error (#81, crafted d3).** That particular
+  capture returned hosted `Internal`, versus local `InvalidArgument`, and had
+  no keyed gap. It does not establish a general absent-target contract: fresh
+  #158 FULL/VIEW controls accept logical outcomes. Their unresolved behavior
+  is the blocking diagnostic above; the safety guard remains.
 
 ## Deployment gaps
 

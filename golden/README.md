@@ -36,6 +36,9 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `databricks_isolation_scopes.jsonl` | yes | Complete crafted scope collisions, absent/empty namespace and exact rendered Spark aliases, changed-SQL/latest-history and negative controls; 113 RPCs with full Explain, zero gaps/unknown baselines. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
 | `databricks_isolation_concurrent_a.jsonl`, `databricks_isolation_concurrent_b.jsonl` | yes | Actual pinned 2.0.11 concurrent independent projects: first build, required reuse and required peer reuse after exact owned cleanup; 15/21 RPCs. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
 | `databricks_isolation_{missing_namespace,full_controls,diagnostic_inputs,diagnostic_alias_scopes,diagnostic_identity,refusal_confirmation}.jsonl` | yes | Complete None/empty definition diagnostics, coherent FULL aliases, source metadata and strict literal/context/namespace negatives; refused optimization → Confirm → required reuse and source independence. No gaps/unknown baselines. [Evidence and unresolved scope contract](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_lifecycle_client.jsonl` | yes | Complete pinned 2.0.11 failure/retry, recovery and write-only Record/reuse, plus separately labeled crafted publication controls and full Explain; 70 RPCs. [Evidence and open logical-target limitation](../docs/reports/databricks-lifecycle-2026-11-14.md). |
+| `databricks_lifecycle_ordering.jsonl` | yes | Different completion/delivery orders, SQL identities and equal-epoch ties on Snowflake and Databricks, including independent actual Delta contents; 48 RPCs. |
+| `databricks_lifecycle_{confirm,record,null_confirm,null_record_batch,record_boundaries,empty_target,uuid_aliases,uuid_forms,protocol_errors}.jsonl` | yes | Nine complete crafted lifecycle sessions, 127 RPCs: exact errors/details/presence, immutable duplicates, valid retry, atomic rejection and UUID spelling correlation. No gaps or unknown baselines. |
 | `databricks_client_auxiliary.jsonl` | yes | Pinned 2.0.11 validation, session start/end including exact durations and client failure, plus query-preparation telemetry; `client_auxiliary.rs` and generic conformance. [Provenance](../docs/reports/databricks-client-auxiliary-2026-11-12.md). |
 | `databricks_table_view_baseline.jsonl` | yes | Complete pinned 2.0.11 managed Delta table/view build, unchanged reuse, changed-query rebuild and subsequent reuse, confirmations, speculative submits, telemetry and full Explain including opposite request orders; no history/gap exceptions. [Runner](../docs/databricks-baseline.md). |
 | `golden_20261008T222744.061Z.jsonl` | yes | Build, confirm and skip lifecycle with speculative submits and version checks; `differential.rs`. |
@@ -151,3 +154,12 @@ pre-normalization v2 server (exact source/provenance digests in the artifact).
 The isolation upgrade regression reads legacy empty strings as the absent
 physical scope, including old pending work confirmed after a newer NULL-scope
 build, without recomputing old hashes.
+
+`upgrade/databricks_null_epoch_v2_5585f53.json` and
+`upgrade/snowflake_null_epoch_5585f53.json` freeze genuine public pending and
+confirmed rows from the immutable pre-#158 server (source and binary provenance
+are pinned in each artifact). Lifecycle upgrade tests require matching known
+evidence to reuse before testing the unknown-epoch floor; they never regenerate
+old hashes from current code. Separate current-version storage-fault controls
+keep that floor meaningful after future identity-version changes. These are
+local upgrade artifacts, not hosted or physical warehouse captures.

@@ -734,7 +734,7 @@ impl From<Outcome> for qc::ExecutionOutcome {
 /// Apply a ConfirmExecution straight to the store, as the Execution service
 /// does, for module tests that run without gRPC. Returns `success`.
 pub async fn confirm_in(store: &Store, org: &str, confirm: qc::ConfirmExecutionRequest) -> bool {
-    store
+    let publication = store
         .confirm(
             org,
             &confirm.request_id,
@@ -746,7 +746,8 @@ pub async fn confirm_in(store: &Store, org: &str, confirm: qc::ConfirmExecutionR
             dbt_state_server::Clock::System.now_ms(&Default::default()),
         )
         .await
-        .expect("confirm")
+        .expect("confirm");
+    publication == dbt_state_server::store::Confirmation::Published
 }
 
 /// The outcome [`Scenario::build`] confirms: `epoch`, a `TABLE`, 10 ms.

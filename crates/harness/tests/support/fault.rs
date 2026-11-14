@@ -4,6 +4,23 @@
 
 use super::rows::Db;
 
+/// Corrupt current-version physical completion evidence without changing its
+/// identity. This is a storage fault, not a simulated historical fingerprint.
+pub async fn forget_completion_epoch(db: &impl Db, target: &str) {
+    let affected = sqlx::query(
+        "UPDATE executions SET last_modified_epoch = NULL WHERE target_table = $1 AND status = 'confirmed'",
+    )
+    .bind(target)
+    .execute(db.pool())
+    .await
+    .expect("inject missing completion epoch")
+    .rows_affected();
+    assert!(
+        affected > 0,
+        "completion fault must touch confirmed evidence"
+    );
+}
+
 /// Hold the first UI capture write while leaving State execution writes free.
 pub struct CaptureHold(sqlx::PgConnection);
 

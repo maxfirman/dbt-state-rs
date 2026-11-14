@@ -49,9 +49,8 @@ async fn duckdb_correlated_confirmation_retry_preserves_first_outcome_and_order(
         .org("other")
         .try_confirm(first.clone().confirm(&pending))
         .await
-        .unwrap();
-    assert!(!wrong_org.success);
-    assert_eq!(wrong_org.request_id, pending);
+        .unwrap_err();
+    assert_eq!(wrong_org.code(), tonic::Code::NotFound);
     sc.execute_id(req.clone()).await;
     let response = sc
         .try_confirm(first.clone().confirm(&pending))
@@ -66,7 +65,11 @@ async fn duckdb_correlated_confirmation_retry_preserves_first_outcome_and_order(
         .table_type("VIEW")
         .runtime(999)
         .results(qc::Struct::default());
-    assert!(sc.confirm(&pending, conflicting.clone()).await);
+    let error = sc
+        .try_confirm(conflicting.clone().confirm(&pending))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
     // A duplicate confirm must not replace the first physical epoch/type.
     let skip = sc.expect_skip(req.clone()).await;
     assert_eq!(skip.execution_runtime_ms, Some(123));
@@ -76,7 +79,11 @@ async fn duckdb_correlated_confirmation_retry_preserves_first_outcome_and_order(
     let changed = req.clone().sql("select 20::bigint as amount");
     let latest = sc.execute_id(changed.clone()).await;
     sc.confirm(&latest, first).await;
-    sc.confirm(&pending, conflicting).await;
+    let error = sc
+        .try_confirm(conflicting.confirm(&pending))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
     assert_eq!(sc.verdict(changed).await, "skip_execution");
     assert_eq!(sc.verdict(req).await, "ready_to_execute");
 }

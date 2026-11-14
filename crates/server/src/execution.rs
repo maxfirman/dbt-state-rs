@@ -457,7 +457,13 @@ pub(crate) fn node_state_upsert(
 #[derive(Debug)]
 pub(crate) enum RecordError {
     /// A record has no `input` (the batch is invalid).
-    MissingInput,
+    MissingInput {
+        index: usize,
+    },
+    /// SQL explicitly named an empty relation rather than omitting it.
+    InvalidTarget,
+    /// Physical target and completion epoch presence disagree.
+    InvalidOutcome,
     Store(sqlx::Error),
 }
 
@@ -481,9 +487,18 @@ pub(crate) async fn record_batch(
     let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
     let mut batch: Vec<(ExecutionEvidence, qc::ExecutionOutcome)> =
         Vec::with_capacity(records.len());
-    for record in records {
+    for (index, record) in records.iter().enumerate() {
         let outcome = record.outcome.clone().unwrap_or_default();
-        let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
+        let input = record
+            .input
+            .as_ref()
+            .ok_or(RecordError::MissingInput { index })?;
+
+        if matches!(input, qc::execution_record::Input::EnrichedSql(sql)
+            if crate::warehouse::Warehouse::from_dialect(&sql.dialect).rejects_empty_sql_target(sql.target_table.as_deref()))
+        {
+            return Err(RecordError::InvalidTarget);
+        }
 
         let evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
@@ -493,6 +508,11 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
+        // Validate the entire batch before producer reads or publication.
+        // Omitted targets represent result-only executions, not physical rows.
+        if evidence.target_table.is_empty() == outcome.last_modified_epoch.is_some() {
+            return Err(RecordError::InvalidOutcome);
+        }
         batch.push((evidence, outcome));
 
         // Collect each node's comparison state for `state:*` selectors; the

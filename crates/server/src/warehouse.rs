@@ -45,6 +45,12 @@ pub enum Warehouse {
 }
 
 impl Warehouse {
+    /// Hosted SQL distinguishes an omitted target from a present empty name.
+    /// Preserve other warehouses' established target-less test conventions.
+    pub(crate) fn rejects_empty_sql_target(self, target: Option<&str>) -> bool {
+        matches!(self, Self::Snowflake | Self::Databricks) && target == Some("")
+    }
+
     pub fn from_dialect(dialect: &str) -> Self {
         // dbt can append dialect options, for example
         // "redshift, normalization_strategy = lowercase". Uncharacterized

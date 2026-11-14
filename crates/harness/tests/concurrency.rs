@@ -1,22 +1,11 @@
-//! CONCURRENCY & LATE-CONFIRMATION physical-state determinism (review issue #1
-//! P1 "Concurrency and physical provenance").
+//! Equal-completion-epoch concurrency and late-confirmation determinism.
 //!
-//! The review flags that confirmation ordering may differ from warehouse
-//! replacement ordering, and asks to characterize overlapping A/B builds,
-//! reversed/late confirmations, and conflicting Record batches. The hosted
-//! service's behavior under true concurrency is NOT establishable from a
-//! sequential capture (the review says so), so these tests do NOT assert hosted
-//! parity. Instead they PIN the server's deterministic rule and make the
-//! physical-state invariant explicit:
-//!
-//!   CURRENT PHYSICAL STATE = the execution with the newest `confirmed_at`
-//!   (tie-broken by id). Confirmation order — NOT submission order — defines
-//!   which build is treated as the object's current contents. This models "the
-//!   last build to finish writing the warehouse object wins", which is the only
-//!   provenance signal available without stable warehouse object IDs.
-//!
-//! These are deterministic offline tests; the open question of stronger
-//! object-lineage provenance is documented in docs/correctness-handoff.md.
+//! All confirmations in these local tests carry the same completion epoch.
+//! Receipt time, then row id, breaks that tie independently of submit order.
+//! Unequal completion epochs and independent warehouse outcomes are separately
+//! characterized by `databricks_lifecycle_ordering.jsonl`; greatest completion
+//! epoch wins there. Sequential histories do not establish true concurrent
+//! warehouse object lineage (see docs/correctness-handoff.md).
 #[path = "support.rs"]
 mod support;
 
@@ -33,7 +22,7 @@ const SRC: &str = "\"DB\".\"S\".\"SRC\"";
 
 /// REVERSED CONFIRMATION ORDER. Two different-logic submits for the SAME target
 /// are both issued (both pending), then confirmed in REVERSE order (the
-/// first-submitted is confirmed LAST). The current physical state must be the
+/// first-submitted is confirmed LAST). At equal completion epochs, current state is the
 /// LAST-CONFIRMED build (logic A), not the last-submitted (logic B): a resubmit
 /// of A's logic + fresh upstream SKIPS, while B's logic rebuilds.
 #[tokio::test]
@@ -69,8 +58,8 @@ async fn confirmation_order_defines_current_state_not_submission_order() {
 
 /// LATE CONFIRMATION. After B is the current state, a LATE confirm of an even
 /// older pending row (C, submitted first but confirmed last) makes C the current
-/// state deterministically. This bounds the "late confirm" risk: the outcome is
-/// always well-defined (newest confirmed_at), never a silent corruption.
+/// state deterministically at these equal completion epochs. A late confirmation
+/// with a smaller completion epoch cannot replace newer completed evidence.
 #[tokio::test]
 async fn late_confirmation_deterministically_becomes_current() {
     let server = start_server().await;

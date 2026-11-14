@@ -21,6 +21,13 @@ pub(crate) struct QueryDiagnosticReference {
     pub source_name: String,
 }
 
+// Physical completion order is independent of confirmation delivery order.
+// A confirmed legacy row without an epoch is deliberately a permanent cold
+// miss: neither a late confirmation nor historical Record delivery can prove
+// that it replaced the unknown result. Pending rows are filtered out first.
+const PHYSICAL_ORDER: &str =
+    "last_modified_epoch DESC NULLS FIRST, confirmed_at DESC NULLS LAST, id DESC";
+
 /// The physical warehouse family a dialect's history is scoped by; matches the
 /// generated `executions.warehouse_family` column.
 fn warehouse_family(dialect: &str) -> String {
@@ -58,7 +65,7 @@ fn current_physical_state<'a>(
     if target.is_none() {
         query.push("physical_target_key, ");
     }
-    query.push("confirmed_at DESC NULLS LAST, id DESC");
+    query.push(PHYSICAL_ORDER);
     if target.is_some() {
         query.push(" LIMIT 1");
     }
@@ -119,7 +126,9 @@ impl Store {
             .push_bind(crate::execution::non_blank_namespace(table_namespace))
             .push(" AND physical_target_key = ")
             .push_bind(Warehouse::physical_scope_key(dialect, target_table))
-            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+            .push(" ORDER BY ")
+            .push(PHYSICAL_ORDER)
+            .push(" LIMIT 50");
         query
             .build_query_as::<ExecutionRow>()
             .fetch_all(&self.pool)
@@ -177,7 +186,10 @@ impl Store {
                 .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
                 .push_bind(crate::execution::non_blank_namespace(namespace));
         }
-        query.push(" ORDER BY NULLIF(table_namespace, ''), physical_target_key, confirmed_at DESC NULLS LAST, id DESC) SELECT ")
+        query
+            .push(" ORDER BY NULLIF(table_namespace, ''), physical_target_key, ")
+            .push(PHYSICAL_ORDER)
+            .push(") SELECT ")
             .push(ExecutionRow::COLUMNS)
             .push(" FROM diagnostic_current WHERE physical_target_key <> ")
             .push_bind(Warehouse::physical_scope_key(dialect, target_table))
@@ -257,7 +269,8 @@ impl Store {
             .push_bind(crate::execution::non_blank_namespace(table_namespace))
             .push(" AND physical_target_key = ANY(")
             .push_bind(keys)
-            .push(") ORDER BY physical_target_key, confirmed_at DESC NULLS LAST, id DESC");
+            .push(") ORDER BY physical_target_key, ")
+            .push(PHYSICAL_ORDER);
         let rows = query
             .build_query_as::<ExecutionRow>()
             .fetch_all(&self.pool)
@@ -322,7 +335,7 @@ impl Store {
     ) -> sqlx::Result<Vec<CopyCandidate>> {
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
         query
-            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE execution_type = ")
+            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND execution_type = ")
             .push_bind(ModelExecutionType::Values as i32)
             .push(" AND node_sql_hash = ")
             .push_bind(q.seed_logic_hash)
@@ -364,7 +377,7 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and (when asked)
         // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE node_namespace_logic_hash = ANY(")
+        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND node_namespace_logic_hash = ANY(")
             .push_bind(
                 q.node_namespace_logic_hashes
                     .iter()
@@ -407,8 +420,15 @@ impl Store {
         let mut cutoff: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut child_id: Option<i64> = None;
         for depth in 0..=max_ancestors {
+            // The head is current physical state. Ancestors remain immutable
+            // snapshots bounded by their child's submission, not current rows.
+            let order = if depth == 0 {
+                PHYSICAL_ORDER
+            } else {
+                "confirmed_at DESC NULLS LAST, id DESC"
+            };
             let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM $2 AND warehouse_family=$6 AND physical_target_key=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
+                &format!("SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM $2 AND warehouse_family=$6 AND physical_target_key=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY {order} LIMIT 1")
             ).bind(org_id).bind(crate::execution::non_blank_namespace(Some(namespace))).bind(Warehouse::physical_scope_key(dialect,&name)).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
             let Some((id, source, created_at)) = row else {
                 return Ok(None);
@@ -479,6 +499,7 @@ impl Store {
             .await?;
         // Corrupt recorded evidence on the source row fails the lookup.
         Ok(row
+            .filter(|row| row.last_modified_epoch.is_some() && !row.target_table.is_empty())
             .map(|r| r.into_checked(true))
             .transpose()?
             .map(CopySourceBuild::of))

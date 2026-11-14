@@ -416,7 +416,7 @@ async fn other_target_query_diagnostics_never_grant_copy_or_resurrect_a_source()
 
 #[tokio::test]
 async fn empty_namespace_writes_are_reusable_as_the_absent_scope() {
-    use support::scenario::{data_test, seed, test_results};
+    use support::scenario::{data_test, outcome, seed, test_results};
     let server = support::start_server().await;
     let scenario = Scenario::connect(&server).await;
     let request = model("`cdo_demo_db`.`isolation`.`empty_namespace`")
@@ -462,7 +462,7 @@ async fn empty_namespace_writes_are_reusable_as_the_absent_scope() {
     let pending = scenario.expect_execute(test.clone()).await;
     assert!(
         scenario
-            .confirm(&pending.request_id, built_at(159).results(test_results(0)))
+            .confirm(&pending.request_id, outcome().results(test_results(0)))
             .await
     );
     scenario

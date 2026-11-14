@@ -95,11 +95,13 @@ async fn confirming_wrong_request_id_leaves_original_pending() {
         .upstream("up", 100);
     let _rid = sc.execute_id(req.clone()).await;
 
-    // Confirm a DIFFERENT, unknown id → success=false.
-    assert!(
-        !sc.confirm("totally-unrelated-id", built_at(100)).await,
-        "confirming an unknown id must not succeed"
-    );
+    // Malformed correlation IDs fail without confirming pending work.
+    let error = sc
+        .try_confirm(built_at(100).confirm("totally-unrelated-id"))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(error.message(), "Database operation failed");
 
     // The original fingerprint is still unconfirmed → executes again.
     assert_eq!(sc.verdict(req).await, "ready_to_execute");

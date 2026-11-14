@@ -10,7 +10,7 @@ use crate::execution::RecordError;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
-use crate::store::CopySourceQuery;
+use crate::store::{Confirmation, CopySourceQuery};
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
 
@@ -421,12 +421,16 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
         let raw_req = request.into_inner();
+        if crate::warehouse::Warehouse::from_dialect(&raw_req.dialect)
+            .rejects_empty_sql_target(raw_req.target_table.as_deref())
+        {
+            return Err(Status::invalid_argument("Failed to process SQL"));
+        }
         let req =
             crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
-        // Only data tests have no Target relation. Deciding any other node
-        // without one could answer a Result copy into an empty relation name
-        // (#81). Hosted fails `""` with InvalidArgument and an unset target
-        // with Internal; both are InvalidArgument here.
+        // Untargeted non-test logical reuse remains unresolved (#158).
+        // Keep the safety guard until its qualification and isolation are
+        // established: an absent target must never become a physical copy.
         if req.execution_type != ModelExecutionType::DbtDataTest as i32
             && req.target_table.as_deref().is_none_or(str::is_empty)
         {
@@ -518,7 +522,7 @@ impl Execution for ExecutionService {
         let org_id = org_id_checked(&self.0, &request)?;
         let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
-        let found = self
+        let publication = self
             .0
             .store
             .confirm(
@@ -532,10 +536,34 @@ impl Execution for ExecutionService {
                 now_ms,
             )
             .await
-            .map_err(store_status)?;
+            .map_err(|error| {
+                // Hosted accepts PostgreSQL UUID spellings and rejects invalid
+                // spellings with this generic database status. Keep other
+                // storage errors on the ordinary adapter path.
+                if error
+                    .as_database_error()
+                    .is_some_and(|db| db.code().as_deref() == Some("22P02"))
+                {
+                    Status::internal("Database operation failed")
+                } else {
+                    store_status(error)
+                }
+            })?;
 
+        match publication {
+            Confirmation::Published => {}
+            Confirmation::AlreadyConfirmed | Confirmation::InvalidOutcome => {
+                return Err(Status::internal("Database operation failed"));
+            }
+            Confirmation::Missing => {
+                return Err(Status::not_found(format!(
+                    "Execution request with ID {} not found",
+                    req.request_id
+                )));
+            }
+        }
         Ok(Response::new(qc::ConfirmExecutionResponse {
-            success: found,
+            success: true,
             request_id: req.request_id,
         }))
     }
@@ -550,9 +578,11 @@ impl Execution for ExecutionService {
         let stored = crate::execution::record_batch(&self.0.store, &org_id, &req.records)
             .await
             .map_err(|e| match e {
-                RecordError::MissingInput => {
-                    Status::invalid_argument("ExecutionRecord missing input")
+                RecordError::MissingInput { index } => {
+                    Status::invalid_argument(format!("Record at index {index} has no input set"))
                 }
+                RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
+                RecordError::InvalidOutcome => Status::internal("Database operation failed"),
                 RecordError::Store(e) => store_status(e),
             })?;
 
