@@ -189,6 +189,11 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) table_namespace: Option<String>,
     pub(crate) dialect: String,
     pub(crate) input_tables: Vec<InputTable>,
+    /// Original wire inputs when the decision removes redundant current
+    /// evidence. Persist these, so no recorded duplicate is reinterpreted.
+    pub(crate) raw_input_tables: Option<Vec<InputTable>>,
+    /// Submit instant for Explain display only; never freshness evidence.
+    pub(crate) display_submitted_at_ms: Option<i64>,
     pub(crate) values_hash: Option<String>,
     /// Set only for copy-origin rows: the physical source this target is
     /// copied from. NULL for ordinary SQL/seed executions.
@@ -240,6 +245,8 @@ impl ExecutionEvidence {
     pub(crate) fn sql_submit(org_id: &str, req: &qc::SubmitEnrichedSqlRequest) -> Self {
         // Template mode retains rendered identity and additionally matches the template.
         let raw_target = req.target_table.clone();
+        let raw_inputs = sql_inputs(&sql_execution(req));
+        let raw_count = req.tables.len();
         let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_submit(req);
         let body = crate::decision::node_body_hash_of(&req);
         let mut evidence = Self::sql(
@@ -250,6 +257,9 @@ impl ExecutionEvidence {
             !req.compare_unrendered_code && !req.sql.trim().is_empty(),
         );
         evidence.raw_target_table = raw_target;
+        if raw_count != req.tables.len() {
+            evidence.raw_input_tables = Some(raw_inputs);
+        }
         evidence
     }
 
@@ -311,6 +321,8 @@ impl ExecutionEvidence {
             node_namespace_logic_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),
+            raw_input_tables: None,
+            display_submitted_at_ms: None,
             values_hash: None,
             clone_source_table: None,
             inherited_runtime_ms: None,

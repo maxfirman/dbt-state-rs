@@ -205,6 +205,12 @@ impl Warehouse {
         }
     }
 
+    /// Captured Databricks Explain timestamps use the submit instant. This
+    /// value is display data and cannot replace an unknown physical epoch.
+    pub(crate) fn explain_submit_clock(self, now_ms: i64) -> Option<i64> {
+        (self == Self::Databricks).then_some(now_ms)
+    }
+
     pub fn normalized_sql(self, sql: &str) -> String {
         crate::sql_identity::normalized_sql(self, sql)
     }
@@ -220,6 +226,48 @@ impl Warehouse {
             return std::borrow::Cow::Borrowed(req);
         }
         let mut resolved = req.clone();
+        // #140: only exact, known repeated current evidence is redundant.
+        // Check raw spellings before resolving aliases; conflicting/unknown
+        // entries and the target's own evidence must remain ambiguous.
+        if req.execution_type == 1
+            && !req.compare_unrendered_code
+            && req.query_dependencies.is_empty()
+            && req
+                .target_table
+                .as_deref()
+                .and_then(databricks::physical_name)
+                .is_some()
+        {
+            let redundant: Vec<_> = req
+                .tables
+                .iter()
+                .map(|table| {
+                    let physical = databricks::physical_name(&table.name);
+                    physical.as_ref().is_some_and(|name| {
+                        req.target_table
+                            .as_deref()
+                            .and_then(databricks::physical_name)
+                            .as_ref()
+                            != Some(name)
+                            && table.last_modified_epoch.is_some()
+                            && req
+                                .tables
+                                .iter()
+                                .filter(|other| {
+                                    databricks::physical_name(&other.name).as_ref() == Some(name)
+                                })
+                                .all(|other| other == table)
+                    })
+                })
+                .collect();
+            let mut seen = std::collections::HashSet::new();
+            let mut index = 0;
+            resolved.tables.retain(|table| {
+                let keep = !redundant[index] || seen.insert(table.name.clone());
+                index += 1;
+                keep
+            });
+        }
         self.resolve_names(
             &mut resolved.target_table,
             &mut resolved.tables,

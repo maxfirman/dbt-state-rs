@@ -73,3 +73,14 @@ continues treating IDs as opaque. Full Explain text, absolute timestamps,
 relative ages, structure, descriptions and statuses are compared exactly;
 there is no temporal mask or comparator. Other warehouses' replay clocks are
 unchanged. Unanchored copy timestamps remain separate unfinished coverage.
+
+The [2026-11-14 bounded follow-up](reports/databricks-freshness-followup-2026-11-14.md)
+adds submit-frozen missing-current/both-missing Explain defaults and identical
+known current upstream normalization for rendered FULL submits without query
+dependencies. Unknown/conflicting duplicates and omitted-source evidence retain
+the conservative BUILD floor. `experiments/databricks_freshness_followup.py`
+checks an actual repeated-source query and explicitly crafted duplicates over
+real warehouse data. Its opt-in test is
+`databricks_freshness_followup::real_dbt_repeated_source_and_crafted_duplicate_match_independent_results`;
+set `DBT_STATE_DATABRICKS_RUN_ID` to a fresh YYYYMMDD plus six hex digits as well
+as the existing live-test environment variables. #140 remains incomplete.

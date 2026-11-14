@@ -312,6 +312,7 @@ fn submit_capture(
         clone_rejection_reason: record.clone_rejection_reason,
         unmatched_execution_id: record.unmatched_execution_id,
         reads_relation: None,
+        display_submitted_at_ms: None,
     }
 }
 
@@ -321,8 +322,11 @@ fn capture_submit(
     meta: &CaptureMeta,
     req: &qc::SubmitEnrichedSqlRequest,
     outcome: &SubmitOutcome,
+    now_ms: i64,
 ) {
     let input = crate::capture::CaptureInput {
+        display_submitted_at_ms: crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            .explain_submit_clock(now_ms),
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
@@ -443,7 +447,7 @@ impl Sql for SqlService {
             .await
             .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &outcome);
+        capture_submit(&self.0, &cap_meta, &req, &outcome, now_ms);
         let response =
             submit_response(outcome, raw_req.target_table.as_deref().unwrap_or_default());
         Ok(Response::new(response))
@@ -495,7 +499,7 @@ impl Sql for SqlService {
                 },
             ) => {
                 // Recorded like an ordinary SKIP, for Explain.
-                capture_submit(&self.0, &cap_meta, &req, skip);
+                capture_submit(&self.0, &cap_meta, &req, skip, now_ms);
                 Speculative::SkipExecution(skip_response(
                     execution_decision_id.clone(),
                     matched_execution.clone(),
@@ -780,6 +784,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     clone_rejection_reason: None,
                     unmatched_execution_id: None,
                     reads_relation: None,
+                    display_submitted_at_ms: None,
                 },
             );
         }
@@ -902,6 +907,7 @@ impl Explain for ExplainService {
                 continue;
             };
             let node = crate::explain::ExplainNode {
+                display_submitted_at_ms: row.display_submitted_at_ms,
                 execution_decision_id: edid.clone(),
                 decision,
                 execution_type: row.execution_type,

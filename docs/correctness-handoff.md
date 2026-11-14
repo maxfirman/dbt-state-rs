@@ -44,13 +44,20 @@ Do not weaken these without new evidence.
   or unknown metadata builds. This assumes the confirmation epoch is an upper
   bound for the build's warehouse write time; timestamps alone cannot prove
   object lineage.
-- **Unknown evidence builds.** Unknown or duplicated upstream epochs, a changed
-  set of physical input names, empty or duplicated dependency definitions and
+- **Unknown evidence builds.** Unknown or conflicting upstream epochs, recorded
+  duplicate inputs, a changed set of physical input names, empty or duplicated dependency definitions and
   corrupt stored evidence (`INTERNAL`) never become a reuse. A node's own
   relation is not an input: a model's own target, and a `store_failures`
   data test's audit relation when the request identifies it exactly (#88)
   or, under a configured alias, as the only unnamed table in the test's
   schema (#123, [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
+- **Bounded current duplicate normalization (#140).** Databricks rendered FULL
+  submits without query dependencies may collapse only exactly identical raw
+  upstream entries with known epochs and a supported physical Target relation.
+  Other aliases of that physical name, conflicting/unknown entries and duplicate
+  Target evidence remain ambiguous. Pending builds retain their uncollapsed
+  inputs; stored duplicates are never retroactively normalized. Explain submit
+  clocks are separate nullable display data and never freshness evidence.
 - **Versioned fingerprints.** Each fingerprint starts with a version tag
   (`crates/server/src/warehouse.rs`, `fingerprint.rs`). A change to identity
   semantics takes a new tag, so older State history cold-misses and rebuilds
