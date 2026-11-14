@@ -397,20 +397,28 @@ accepted replay exceptions ([dated evidence](reports/databricks-freshness-2026-1
 Hosted SKIPs a crafted request that omits a source still read by its SQL;
 independent warehouse reads prove the cached target is stale. Missing recorded
 epochs also SKIP hosted, and missing/current epoch Explain differs. The server
-keeps conservative freshness checks. Identical known duplicate entries are a
-separate unresolved safe-normalization opportunity; ambiguous evidence and
-Snowflake audit rules are unchanged. These captures stay in the durable archive
-with exact red replay, without a Databricks gap or golden exclusion. #140 stays
+keeps conservative freshness checks. The bounded normalization of identical
+known current duplicates is integrated for Databricks rendered FULL submits
+without query dependencies and with a supported physical Target relation
+([follow-up report](reports/databricks-freshness-followup-2026-11-14.md)).
+Conflicting or unknown epochs, mixed physical aliases, duplicate Target relation
+evidence and recorded/legacy duplicates remain outside that normalization;
+ambiguous freshness evidence remains unresolved. Snowflake audit rules are
+unchanged. These captures stay in the durable archive with exact red replay,
+without a Databricks gap or golden exclusion. #140 stays
 incomplete and does not unblock its dependents.
 
 The #158 crafted untargeted FULL/VIEW diagnostic remains **blocking**. Fresh
-Snowflake and Databricks controls accept `target_table: null` and reuse the
-logical outcome after a null-epoch confirmation, independently of a subsequent
-physical target. The ordinary Rust non-test absent-target guard remains until
-logical qualification, result scope and isolation are established. Pinned
-read-only dbt show/operation probes did not send those execution RPCs. These
-complete diagnostic histories remain archived, without a replay exemption or
-overall support claim ([report](reports/databricks-lifecycle-2026-11-14.md)).
+Snowflake and Databricks FULL controls repeatedly reuse the logical outcome
+after a null-epoch confirmation, independently of subsequent physical target
+history. Both FULL and VIEW accept `target_table: null` submits and null-epoch
+confirmations, but the retained traces contain no repeated targetless VIEW
+submit or VIEW SKIP; VIEW reuse remains uncharacterized. Logical qualification,
+result scope, isolation and actual-client reachability remain incomplete for
+both FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
+Pinned read-only dbt show/operation probes did not send those execution RPCs;
+this does not establish general unreachability. These complete diagnostic
+histories remain archived, without a replay exemption or overall support claim ([report](reports/databricks-lifecycle-2026-11-14.md)).
 
 Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
