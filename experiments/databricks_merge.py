@@ -167,7 +167,7 @@ class Merge(ActualFreshness):
                 elif name in ({target}|self.scope.auxiliary):active.discard(name)
                 else:raise Refused('unapproved native DROP')
             else:
-                change=re.match(r'(?is)^(?:merge\s+into|insert\s+into|alter\s+table|update|delete\s+from)\s+'+relation,sql)
+                change=re.match(r'(?is)^(?:merge\s+into|insert\s+into(?:\s+table)?|alter\s+table|update|delete\s+from)\s+'+relation,sql)
                 if not change or normalize(change.group(1)) not in ({target}|self.scope.auxiliary):
                     raise Refused('unapproved native write')
             peak=max(peak,len(active))

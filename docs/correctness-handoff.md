@@ -615,3 +615,34 @@ positive reuse regressions. The certified four-RPC fresh-UID failure stays
 outside matching fixtures, with no gap, mask or unknown-baseline exemption.
 [Full evidence and limits](reports/databricks-data-test-uid-boundary-2026-11-14.md).
 The existing #132/#140/#158/#159 blockers remain unchanged.
+
+## Databricks partition replacement bounded partial (#147, 2026-11-14)
+
+The pinned serverless client reaches null-safe `REPLACE ON` for a managed Delta
+incremental configured with insert_overwrite and partition_by=['p']. The complete
+thirteen-cell hosted history and fresh independent Rust execution establish the
+bounded fixed-render single-partition-key path, including duplicate/NULL typed
+rows, removal of a represented row, disappearance of a NULL partition, empty F
+retaining old R, restoration, FULL1 Record and subsequent ordinary type4 rebuild
+and reuse. The entire hosted fixture replays without Databricks gaps. A helper
+INSERT INTO TABLE parser stop and its separately cleared continuation preserve
+every original RPC and successful physical write; delayed first Explain timing
+is retained rather than masked. See the [dated report](reports/databricks-insert-overwrite-2026-11-14.md).
+
+This does not establish multiple partition keys, unpartitioned/liquid settings,
+column reordering/missing/new/type/schema-policy evolution, strategy/node-kind
+transitions or generated/retry/restart histories. Generic execution types and
+pure composite-key oracle probes are not native coverage. #147 and its #138/#140
+native dependencies remain incomplete; no safety or isolation floor changed.
+
+The initial supplemental native replay differed by1s in the unchanged Explain:
+the handler sampled1794690806996ms and its UUID was minted5ms later across the
+second boundary. All12 actual audit clocks were independently recovered from
+private original WAL and verified against complete tuple/CRC/full-page evidence.
+A test-only hash-bound, org/decision-scoped sidecar now replays the entire original
+89-RPC capture exactly with all125 hosted corpora (19passed,0failed). No payload
+mask, known gap, clock guess or warehouse rerun was used. The historical red is
+retained; live production clock behavior is unchanged. Future147 harness runs
+retain audit clocks postflight before test-schema cleanup. The actual original
+native executable/source snapshots remain separately pinned. Whole147 and its
+settings/schema/lifecycle/dependency blockers remain incomplete.
