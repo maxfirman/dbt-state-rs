@@ -262,6 +262,17 @@ twelve full Explain trees and every computation confirmation are retained.
 All changes affect semantic extras only; the report lists the exact changed
 configuration fields rather than treating each transition as one field.
 
+`databricks_cached_test_template_failure.jsonl` adds a fresh complete 29-RPC
+true-template history: confirmed failing `4/true/true`, unchanged failure reuse,
+render-only fresh pass retaining the immutable failing template reference,
+then body-and-rendering pass BUILD and positive pass reuse. The rendered-only
+request delta is exactly `sql`; full UID, body/config hashes, context and true
+mode remain fixed. Five complete Explain trees, all successful computation
+confirmations, complete typed payloads and runtime echoes are retained. Fresh
+literal references are checked separately from permitted stale template reuse.
+See the [bounded evidence](../docs/reports/databricks-cached-test-template-failure-2026-11-14.md).
+Native #143 remains blocked by #138, with its UID isolation floor unchanged.
+
 ## Bounded Databricks producer / policy evidence (#142, 2026-11-14)
 
 `databricks_producer_policy.jsonl` retains the complete 261-RPC lifetime of one
