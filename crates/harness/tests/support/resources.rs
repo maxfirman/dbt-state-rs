@@ -151,6 +151,18 @@ pub async fn start_server_require_org() -> TestServer {
 }
 
 async fn start_server_configured(require_org_header: bool) -> TestServer {
+    start_server_with_database(require_org_header, None).await
+}
+
+/// Restart production routers while an external owner retains the same schema.
+pub async fn start_server_on_database(database: std::sync::Arc<TestDatabase>) -> TestServer {
+    start_server_with_database(false, Some(database)).await
+}
+
+async fn start_server_with_database(
+    require_org_header: bool,
+    database: Option<std::sync::Arc<TestDatabase>>,
+) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
     let worker = thread::spawn(move || {
@@ -158,7 +170,9 @@ async fn start_server_configured(require_org_header: bool) -> TestServer {
             .enable_all()
             .build()
             .expect("server runtime");
-        let database = runtime.block_on(TestDatabase::new("difftest"));
+        let database = database.unwrap_or_else(|| {
+            std::sync::Arc::new(runtime.block_on(TestDatabase::new("difftest")))
+        });
         // Always dispose of the runtime before schema cleanup, including on a
         // migration/startup panic. This drops any in-flight capture transactions.
         let result = catch_unwind(AssertUnwindSafe(|| {

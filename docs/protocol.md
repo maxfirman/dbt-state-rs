@@ -299,7 +299,12 @@ and fingerprints.
 
 1. **Current state first.** The server reads the latest confirmed build of the
    target relation in its scope (organization, warehouse family,
-   `table_namespace`, target relation) before comparing identity. An older
+   `table_namespace`, target relation) before comparing identity. Physical rows
+   are ranked by greatest completion epoch, then receipt order for equal epochs.
+   A confirmed legacy row with an unknown epoch conservatively blocks reuse and
+   copying: even a later delivered valid build cannot prove it replaced that
+   unknown result. This floor also applies with
+   `ignore_external_modifications=true`. An older
    matching build never resurrects a relation overwritten since; it only
    changes the rejection codes (8 / 7). The identity excludes the execution
    type. When the latest build has the workload's identity under another
@@ -570,14 +575,26 @@ entry 46, and the client sends no ordinary submit for it.
 - `ConfirmExecution{request_id, last_modified_epoch?, failed_to_clone,
   table_type?, execution_results, execution_runtime_ms?, labels}` →
   `{success, request_id}`. Confirms the pending row created by a
-  `ready_to_execute` or `ready_to_clone`. Idempotent for a repeated
-  `request_id`; the first confirmed outcome, including results, is immutable.
+  `ready_to_execute` or `ready_to_clone`. The first confirmed outcome, including
+  results, is immutable. A duplicate returns INTERNAL (13), `Database operation
+  failed`, without republishing. An unknown valid UUID returns NOT_FOUND (5),
+  `Execution request with ID {submitted_id} not found`; malformed or empty IDs
+  return INTERNAL (13), `Database operation failed`. Uppercase, simple and
+  braced UUID spellings correlate to the same request and are echoed unchanged.
+  A physical target requires `last_modified_epoch`; an absent target requires
+  it to be absent. A rejected outcome returns INTERNAL (13), `Database operation
+  failed`, leaves the row pending and permits a valid retry.
   A confirm with `failed_to_clone=true` is recorded as a normal build.
 - `RecordExecutions{records[]}` → `{records_stored}`. Records outcomes without
   a submit. Client 2.0.11 sends it for an incremental model run under
   `--full-refresh` (see [What the client computes](#what-the-client-computes)). Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
-  executions and selector node state are written in one transaction.
+  executions and selector node state are written in one transaction. Missing
+  input returns INVALID_ARGUMENT (3), `Record at index N has no input set`.
+  Target/epoch presence follows Confirm; an invalid outcome rejects the whole
+  batch with INTERNAL (13), `Database operation failed`. Explicit empty SQL
+  targets on Snowflake and Databricks return INVALID_ARGUMENT (3), `Failed to
+  process SQL`. An empty batch succeeds with zero records.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
   the rendered identity. `SQLExecution.from_speculative_submit` is set by the
   client (dbt-state 2.62.6 `run_cache.py`) only for a node it ran after a

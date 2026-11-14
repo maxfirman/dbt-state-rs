@@ -272,11 +272,13 @@ async fn named_deferral_preserves_confirmed_source_and_org_scope() {
             };
             assert!(sc.org(ORG).resolve_deferred(other).await.is_empty());
         }
-        assert!(
-            sc.org(ORG)
-                .confirm(&pending, outcome().epoch(2_000).table())
-                .await
-        );
+        let duplicate = sc
+            .org(ORG)
+            .try_confirm(outcome().epoch(2_000).table().confirm(&pending))
+            .await
+            .unwrap_err();
+        assert_eq!(duplicate.code(), tonic::Code::Internal);
+        assert_eq!(duplicate.message(), "Database operation failed");
         assert_eq!(sc.org(ORG).resolve_deferred(resolve).await, expected);
     }
 }

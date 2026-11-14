@@ -607,6 +607,31 @@ fn rebuild_rationale_exemption_is_history_gated_and_field_narrow() {
     ));
 }
 
+/// Correlate an opaque execution ID while preserving its captured UUID spelling.
+/// Confirm accepts canonical, uppercase, simple and braced UUID representations.
+fn correlated_confirmation(
+    hosted: &str,
+    requests: &HashMap<String, (String, String)>,
+) -> Option<(String, String)> {
+    let canonical = uuid::Uuid::parse_str(hosted).ok()?.to_string();
+    let (local, identity) = requests.get(&canonical)?;
+    let local = uuid::Uuid::parse_str(local).expect("locally minted execution UUID");
+    let mut remapped = if hosted.len() == 32 {
+        local.simple().to_string()
+    } else {
+        local.to_string()
+    };
+    if hosted.chars().any(|c| c.is_ascii_uppercase()) {
+        remapped.make_ascii_uppercase();
+    }
+    if hosted.starts_with('{') && hosted.ends_with('}') {
+        remapped = format!("{{{remapped}}}");
+    } else if hosted.starts_with("urn:uuid:") {
+        remapped = format!("urn:uuid:{remapped}");
+    }
+    Some((remapped, identity.clone()))
+}
+
 #[tokio::test]
 async fn conformance_replay_all_corpora() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../golden/fixtures");
@@ -695,7 +720,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        88,
+        99,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -737,8 +762,8 @@ async fn conformance_replay_all_corpora() {
                 // of dropping them or coercing them into empty responses.
                 let mut entry = e.clone();
                 if let Some(hosted_id) = entry.request["request_id"].as_str() {
-                    if let Some((local_id, _)) = pending.get(hosted_id) {
-                        entry.request["request_id"] = local_id.clone().into();
+                    if let Some((local_id, _)) = correlated_confirmation(hosted_id, &pending) {
+                        entry.request["request_id"] = local_id.into();
                     }
                 }
                 let outcome = diff::replay_rpc(ch.clone(), &entry)
@@ -982,7 +1007,9 @@ async fn conformance_replay_all_corpora() {
                 "ConfirmExecution" => {
                     let mut req: qc::ConfirmExecutionRequest =
                         serde_json::from_value(e.request.clone()).unwrap();
-                    if let Some((id, key)) = pending.remove(&req.request_id) {
+                    // Keep correlation after publication: retries must reach the same
+                    // execution, including error statuses and UUID spelling aliases.
+                    if let Some((id, key)) = correlated_confirmation(&req.request_id, &pending) {
                         req.request_id = id.clone();
                         let response = exec
                             .confirm_execution(support::captured_request(req, e))

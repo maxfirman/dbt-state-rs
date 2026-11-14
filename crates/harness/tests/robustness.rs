@@ -129,10 +129,9 @@ async fn near_empty_submit_executes_without_panic() {
     assert!(!r.request_id.is_empty(), "a pending request_id is issued");
 }
 
-/// Item 2b — INVALID INPUT: ConfirmExecution for an unknown request_id must
-/// return success=false (and must not error), echoing the request_id back.
+/// Captured malformed UUID input is rejected without publishing anything.
 #[tokio::test]
-async fn confirm_unknown_request_id_returns_false() {
+async fn confirm_malformed_request_id_returns_captured_database_error() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
 
@@ -144,14 +143,14 @@ async fn confirm_unknown_request_id_returns_false() {
                 .confirm("does-not-exist"),
         )
         .await
-        .expect("confirm of unknown id must return Ok");
-    assert!(!resp.success, "unknown request_id must not confirm");
-    assert_eq!(resp.request_id, "does-not-exist");
+        .expect_err("malformed request ID is rejected");
+    assert_eq!(resp.code(), tonic::Code::Internal);
+    assert_eq!(resp.message(), "Database operation failed");
 }
 
 /// Item 3 — CONFIRM IDEMPOTENCY: calling ConfirmExecution twice for the same
-/// request_id must both return success=true (the row exists and stays
-/// confirmed). Verifies the current store.confirm behavior is idempotent.
+/// request_id must preserve its first immutable publication. The second call
+/// returns the captured database error.
 #[tokio::test]
 async fn confirm_is_idempotent_for_duplicate_request_id() {
     let server = start_server().await;
@@ -169,12 +168,18 @@ async fn confirm_is_idempotent_for_duplicate_request_id() {
         "first confirm must succeed"
     );
 
-    // Second confirm for the SAME request_id must also succeed (idempotent).
-    assert!(
-        sc.confirm(&req_id, outcome().epoch(CONFIRMED_EPOCH).runtime(999))
-            .await,
-        "confirming an already-confirmed request_id must still return true"
-    );
+    // A duplicate fails with the captured status, without republishing.
+    let error = sc
+        .try_confirm(
+            outcome()
+                .epoch(CONFIRMED_EPOCH)
+                .runtime(999)
+                .confirm(&req_id),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(error.message(), "Database operation failed");
 
     // Exactly one row should still exist for this request_id (no duplication).
     let count = rows::executions(&server)

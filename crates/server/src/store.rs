@@ -365,6 +365,15 @@ pub struct NodeStateUpsert {
     pub target_table: Option<String>,
 }
 
+/// Publication result of a correlated confirmation. Existing evidence is immutable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation {
+    Published,
+    AlreadyConfirmed,
+    InvalidOutcome,
+    Missing,
+}
+
 #[derive(Debug)]
 pub struct Store {
     pool: PgPool,
@@ -508,15 +517,14 @@ impl Store {
     }
 
     /// Mark a pending execution confirmed, recording the outcome. Semantics
-    /// (pinned by tests, mirrors the hosted service's idempotent confirm):
+    /// (pinned by captured public lifecycle controls):
     ///
     ///   * The outcome fields are written ONLY on the pending→confirmed
     ///     transition. A `request_id` that is already confirmed is NOT mutated —
     ///     the first confirm's recorded `last_modified_epoch`/runtime is stable,
     ///     so a late/duplicate confirm cannot silently rewrite skippable history.
-    ///   * Returns `true` when the row exists for this (org, request_id) — whether
-    ///     it was just confirmed OR was already confirmed (idempotent success).
-    ///   * Returns `false` only when no such row exists (unknown request_id).
+    ///   * Distinguishes publication, an immutable already-confirmed row, and
+    ///     an unknown request, so the adapter can preserve hosted statuses.
     ///
     /// Scoped by `org_id` to honor the global org-isolation invariant, even
     /// though `request_id` is a unique server-minted UUID.
@@ -531,7 +539,7 @@ impl Store {
         execution_results: Option<&qc::Struct>,
         failed_to_clone: bool,
         confirmed_at_ms: i64,
-    ) -> sqlx::Result<bool> {
+    ) -> sqlx::Result<Confirmation> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
             r#"
@@ -553,8 +561,9 @@ impl Store {
                     ELSE node_namespace_logic_hash END,
                 confirmed_at = to_timestamp($8::double precision / 1000.0)
             WHERE org_id = $1
-              AND request_id = $2
+              AND request_id = ($2::uuid)::text
               AND status = 'pending'
+              AND ((target_table <> '') = ($3::bigint IS NOT NULL))
             "#,
         )
         .bind(org_id)
@@ -570,15 +579,15 @@ impl Store {
         .rows_affected();
 
         if affected > 0 {
-            return Ok(true);
+            return Ok(Confirmation::Published);
         }
 
-        // No pending row updated: either already confirmed (idempotent success)
+        // No pending row updated: either already confirmed
         // or genuinely unknown. Distinguish without mutating the outcome.
-        let exists: Option<i64> = sqlx::query_scalar(
+        let status: Option<String> = sqlx::query_scalar(
             r#"
-            SELECT id FROM executions
-            WHERE org_id = $1 AND request_id = $2
+            SELECT status FROM executions
+            WHERE org_id = $1 AND request_id = ($2::uuid)::text
             LIMIT 1
             "#,
         )
@@ -586,7 +595,11 @@ impl Store {
         .bind(request_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(exists.is_some())
+        Ok(match status.as_deref() {
+            Some("pending") => Confirmation::InvalidOutcome,
+            Some(_) => Confirmation::AlreadyConfirmed,
+            None => Confirmation::Missing,
+        })
     }
 
     /// Upsert a node's comparison state for `state:*` selectors (latest wins),

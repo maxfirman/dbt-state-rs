@@ -147,12 +147,19 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
    (`ready_to_clone`) and the chain-limit EXECUTE write a `pending` row keyed
    by `request_id`; `RegisterClone` does too.
 2. `ConfirmExecution(request_id, …)` flips the row to `confirmed` with the
-   outcome and the server receipt time, exactly once. A repeat confirm succeeds
-   without rewriting it.
+   outcome and the server receipt time, exactly once. A repeat confirm returns
+   INTERNAL (`Database operation failed`) without rewriting the outcome. A
+   missing valid UUID returns NOT_FOUND; malformed IDs return INTERNAL.
 3. `RecordExecutions` writes a batch of confirmed rows and their `node_states`
-   in one transaction.
+   in one transaction, after validating the complete batch. A physical target
+   requires an outcome epoch; an absent target requires an absent epoch.
 4. Later submits consider only confirmed rows. A SKIP echoes the recorded
-   `execution_runtime_ms`.
+   `execution_runtime_ms`. Physical current state uses the greatest completion
+   epoch, with confirmation receipt order breaking equal epochs. A legacy
+   confirmed row with an unknown epoch blocks physical reuse and copying even
+   when external modifications are ignored; later delivery cannot prove recovery.
+   Logical test/deferral histories and historical copy provenance retain their
+   separate ordering rules.
 
 ## ui crate
 

@@ -1,0 +1,508 @@
+{
+  "ticket": 158,
+  "date": "2026-11-14",
+  "status": "INCOMPLETE: validated physical lifecycle partial; untargeted FULL/VIEW qualification/reachability blocking",
+  "scope": "dbt2.0.11 serverless Unity Catalog managed Delta physical lifecycle",
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-158-20261113",
+  "overall_databricks_support_claim": false,
+  "implemented_slices": [
+    "immutable Confirm publication with captured statuses and UUID spelling",
+    "target/completion presence validation and atomic Record",
+    "completion-epoch physical current history",
+    "legacy/current fault unknown-epoch physical floors",
+    "restart persistence"
+  ],
+  "open_slices": [
+    "FULL/VIEW absent-target logical reuse qualification/isolation; ordinary guard retained"
+  ],
+  "parent_blockers_unchanged": [
+    "copied-target rebuild",
+    "snapshot deletion",
+    "#140 unresolved safety cells"
+  ],
+  "fixtures": [
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_client.jsonl",
+      "rpc_count": 70,
+      "sha256": "ac1fbaf7a1b8aa08019773b591a194471018b809dcfd749a304efd76929f794f",
+      "methods": {
+        "ValidateClientVersion": 8,
+        "SubmitTelemetryBatch": 19,
+        "SubmitEnrichedSQLSpeculative": 7,
+        "SubmitEnrichedSQL": 14,
+        "GetExplainMessages": 12,
+        "ConfirmExecution": 6,
+        "RecordExecutions": 4
+      },
+      "durable_original": "raw-hosted-2/golden/golden_20261113T100502.936Z_ead8db0b6637476999d37926aa45aa44.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_ordering.jsonl",
+      "rpc_count": 48,
+      "sha256": "da317fd6c5f16d6395ff498f76968e9f8c90a77225c507e2207b3f20c38336ae",
+      "methods": {
+        "SubmitEnrichedSQL": 24,
+        "ConfirmExecution": 12,
+        "GetExplainMessages": 12
+      },
+      "durable_original": "raw-ordering-2/golden/golden_20261113T142442.669Z_1f69f332c903424da1e99f4a54797386.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_null_record_batch.jsonl",
+      "rpc_count": 10,
+      "sha256": "fa794aafb6acc514b23e37aaf6f070b4d8ee25250594cf5002728014deddc9ad",
+      "methods": {
+        "RecordExecutions": 2,
+        "SubmitEnrichedSQL": 4,
+        "GetExplainMessages": 4
+      },
+      "durable_original": "raw-null-record-batch/golden/golden_20261113T193118.084Z_572d2b4fd2874254b0d00a4fd76aecb8.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_null_confirm.jsonl",
+      "rpc_count": 22,
+      "sha256": "c9d5213bea40e18cc2b484cf61f0b4b6ea0268d8e8a31c7a62dac58713e4ff11",
+      "methods": {
+        "SubmitEnrichedSQL": 8,
+        "ConfirmExecution": 14
+      },
+      "durable_original": "raw-null-confirm/golden/golden_20261113T143157.142Z_9cc66d805c7d457cb4837b32700c054e.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_record_boundaries.jsonl",
+      "rpc_count": 24,
+      "sha256": "7dd31dae33abb9c2a65e688e75619c5863e8b7b1b887fde29ef570f43410b7f2",
+      "methods": {
+        "RecordExecutions": 24
+      },
+      "durable_original": "raw-record-targets/golden/golden_20261113T145024.440Z_f130085b952f444e959f32ef3a2139e2.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_empty_target.jsonl",
+      "rpc_count": 4,
+      "sha256": "8415c950d565e11f615cbc0003ecb0886b0ef0cda1bcbf3b7705308902b86e89",
+      "methods": {
+        "SubmitEnrichedSQL": 4
+      },
+      "durable_original": "raw-empty-targets/golden/golden_20261113T144921.895Z_0f5dc4bac84d4873bf30f3f39a764b42.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_uuid_aliases.jsonl",
+      "rpc_count": 12,
+      "sha256": "0f2ff99ce11f6a7c61c681665fff91df3597a04946fc0407478dc5124c69c024",
+      "methods": {
+        "SubmitEnrichedSQL": 6,
+        "ConfirmExecution": 6
+      },
+      "durable_original": "raw-aliases/golden/golden_20261113T101031.448Z_a76aae4108b04f8e8a5d8b91c839490b.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_uuid_forms.jsonl",
+      "rpc_count": 8,
+      "sha256": "a37c54986c10b6bca56ea35eafa70e469f079c0e9b75302b2020f187d943ed08",
+      "methods": {
+        "ConfirmExecution": 8
+      },
+      "durable_original": "raw-idforms/golden/golden_20261113T100918.949Z_a6255e0f31fc41c596943b5316e3b301.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_protocol_errors.jsonl",
+      "rpc_count": 4,
+      "sha256": "a1b4a79cf0bc6e04d37dffc10f902ce71daf44d15ab42ab182f81581e5d55c7d",
+      "methods": {
+        "ConfirmExecution": 2,
+        "RecordExecutions": 2
+      },
+      "durable_original": "raw-errors-2/golden/golden_20261113T100744.972Z_5678aebab94d4da68491ae97d7f7c835.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_record.jsonl",
+      "rpc_count": 9,
+      "sha256": "d91db2d31e816ac8762ff30d2117ed5c19b0a8ce2d3f6a336fbe8b39c13b1261",
+      "methods": {
+        "RecordExecutions": 3,
+        "SubmitEnrichedSQL": 3,
+        "GetExplainMessages": 3
+      },
+      "durable_original": "raw-atomic-explain/golden/golden_20261113T144718.028Z_6c7e53344f7d4adfb0828a64dc4123d0.jsonl"
+    },
+    {
+      "fixture": "golden/fixtures/databricks_lifecycle_confirm.jsonl",
+      "rpc_count": 34,
+      "sha256": "10d1bb6d7b23e50c0dd4fd35f0b8e4bf2888357655b6458f37389bc06dce405b",
+      "methods": {
+        "SubmitEnrichedSQL": 14,
+        "ConfirmExecution": 10,
+        "GetExplainMessages": 10
+      },
+      "durable_original": "raw-controls/golden/golden_20261113T100037.289Z_2ad87636be354b409b7067c2a945cec5.jsonl"
+    }
+  ],
+  "promoted_rpc_count": 245,
+  "checks": {
+    "focused-full": {
+      "path": "validation/lifecycle158-focused-full.log",
+      "sha256": "5da110876ef934c44a3cf4d48dde5babfa769a7716b6a25e0724e8aa292ce814",
+      "classification": "unaccepted stale shared-target server artifact; not a behavior red"
+    },
+    "focused-full-rebuilt": {
+      "path": "validation/lifecycle158-focused-full-rebuilt.log",
+      "sha256": "6084e20769f7125f25695748d1658748cfa3ea6450f9745a9a8f01095b1462eb",
+      "classification": "unaccepted final gate: Databricks v2 frozen known positive on v1 base; passes after159 merge"
+    },
+    "replay-full": {
+      "path": "validation/lifecycle158-replay-full.log",
+      "sha256": "b2cc27f6fae208164a3bd3c4be1d87ed86e8593c40f1d7a5ea735e654e1dc50e"
+    },
+    "critical-regressions": {
+      "path": "validation/lifecycle158-critical-regressions.log",
+      "sha256": "b3a4f25668ac7e23e242d8331d46d882a0c9e4963e26c7924bd7d73498e32b0b"
+    },
+    "critical-regressions-2": {
+      "path": "validation/lifecycle158-critical-regressions-2.log",
+      "sha256": "1a6551483947e766400c90c172b0b481af125b1d739278c633c065286dba798a"
+    },
+    "python": {
+      "path": "validation/lifecycle158-python.log",
+      "sha256": "5279d1fc9a1ced44f9c96da1414ef59e4676f963fbad52e7a1a2903538819b0d"
+    },
+    "fmt": {
+      "path": "validation/lifecycle158-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "rust-live": {
+      "path": "validation/lifecycle158-rust-live.log",
+      "sha256": "ba4aaa2ec5b34fa8835915ab3a0d83362bbc73d7ed2ff8cf13db81846d9898a3",
+      "classification": "retained incomplete driver attempt: protobuf default missing before crafted RPC"
+    },
+    "rust-live-2": {
+      "path": "validation/lifecycle158-rust-live-2.log",
+      "sha256": "e3285886237770d0c13fc76a8d427913da1bb3686d6bc63cc8fbda6ac91cfeef",
+      "classification": "accepted mid-base837 actualRust9dbt70RPC; final merged-tree run pending"
+    },
+    "final-clean": {
+      "path": "validation/lifecycle158-final-clean.log",
+      "sha256": "e74aada3fe8f80108a76b11ff568246a012481f9a66fc0e2eb36d9532256b190",
+      "classification": "workspace server+harness package clean before exclusive158 build"
+    },
+    "final-focused": {
+      "path": "validation/lifecycle158-final-focused.log",
+      "sha256": "6a7e8d392544d644f11b4347c7d3a98fc49ad8e82f4e1c9de87fde4bff11fd77",
+      "classification": "accepted12 public lifecycle tests; genuinev2 positive retained"
+    },
+    "final-clone-upgrade": {
+      "path": "validation/lifecycle158-final-clone-upgrade.log",
+      "sha256": "6622a6860dec111d8a2c442d44b09c3d1f850fa5af47a5bb463ed44ca4e55732",
+      "classification": "accepted31 clone regressions; fresh valid UUIDs retain frozen proofs"
+    },
+    "final-isolation": {
+      "path": "validation/lifecycle158-final-isolation.log",
+      "sha256": "aef98ca260f626d2c41c0f36ab0af15260c8a6b3fe75057890e2e026e7d6b548",
+      "classification": "accepted10 isolation tests; no-target data-test epoch absent"
+    },
+    "final-deferral": {
+      "path": "validation/lifecycle158-final-deferral.log",
+      "sha256": "1dbcc653d20a1b47e8a980b1e1c323d89833f03d3fa21874a0f9f772d849da10",
+      "classification": "accepted6 deferral tests; duplicate error preserves mapping"
+    },
+    "final-workspace": {
+      "path": "validation/lifecycle158-final-workspace.log",
+      "sha256": "53e6f07f51075165dbdfc88e5e19a6bc24f82d4d05318265fd5b28400c57fa9b",
+      "classification": "failed: clone fixtures used synthetic malformed IDs"
+    },
+    "final-workspace-2": {
+      "path": "validation/lifecycle158-final-workspace-2.log",
+      "sha256": "99fb86cc9f32c2d879f5c8f50ca4667180d6eb504a0598c52db6791c718a5a32",
+      "classification": "failed:159 no-target data-test setup supplied physical epoch; exact99 replay passed"
+    },
+    "final-workspace-3": {
+      "path": "validation/lifecycle158-final-workspace-3.log",
+      "sha256": "fc5c30ac0ec24b0d1031334c115d6511dc06f07b33427b9a3482c3f42f04637e",
+      "classification": "failed:155 duplicate Confirm expected old success; exact99 replay passed"
+    },
+    "final-workspace-4": {
+      "path": "validation/lifecycle158-final-workspace-4.log",
+      "sha256": "9911a576807ff2d7eece82215892e6f57df6eb9af70153ae74ae4ff5f7a0894b",
+      "classification": "retained failed complete run:627pass1fail34ignored; sole obsolete duplicate-success assertion"
+    },
+    "final-workspace-5": {
+      "path": "validation/lifecycle158-final-workspace-5.log",
+      "sha256": "556c447458ea558b54a6b2e849db15dd720441388b3e42e04eacd2b05fac744f",
+      "classification": "accepted complete workspace628pass0fail34ignored, exact99 corpora"
+    },
+    "final-clippy": {
+      "path": "validation/lifecycle158-final-clippy.log",
+      "sha256": "d7e11477b7288317fd13f55c1b6673e715f98fe5ed861c97c79c29225860ae26",
+      "classification": "accepted workspace/all-targets/featuresfuzz strict warnings"
+    },
+    "final-offline": {
+      "path": "validation/lifecycle158-final-offline.log",
+      "sha256": "3fc88097e94ef06b0ca5b53d2d0aba8d198c1caf2556b9a3e41be49dc4f245a6",
+      "classification": "accepted17 regressions, complete nonfinite payload preserved"
+    },
+    "final-duckdb": {
+      "path": "validation/lifecycle158-final-duckdb.log",
+      "sha256": "cadecda7598fb83aae3d8f2e3ce33b8c2d369c2a77b18b3ca0c9b4bf5be7bd2e",
+      "classification": "accepted25actual fixed/generated cases, existing publication expectations unchanged"
+    },
+    "final-rust": {
+      "path": "validation/lifecycle158-final-rust.log",
+      "sha256": "8dcc553c2739c8cd6ccf76134e8d93a4e3828e1a5855aefb284d9c571b8772b5",
+      "classification": "accepted final merged-source pinned2.0.11 campaign9dbt70RPC"
+    },
+    "final-python": {
+      "path": "validation/lifecycle158-final-python.log",
+      "sha256": "f76f0a1ebd2696cd4ff9e3822cfc12c4af979f9037c74a8b78ecbd60d639e052",
+      "classification": "accepted25credential-free Databricks oracles"
+    },
+    "final-fmt": {
+      "path": "validation/lifecycle158-final-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "classification": "accepted cargo fmt all check"
+    }
+  },
+  "actual_rust": {
+    "success": true,
+    "failure": null,
+    "invocations": 9,
+    "capture": [
+      {
+        "path": "golden/golden_20261114T101728.344Z_78e4c32ffaf244f5a7b9cc09650415d1.jsonl",
+        "complete": true,
+        "rows": 70,
+        "sha256": "6129add3dbcaf73f2bb4188d4271604692786f799c0291e3b96dc514fc8e8e6c",
+        "methods": {
+          "ValidateClientVersion": 8,
+          "SubmitTelemetryBatch": 19,
+          "SubmitEnrichedSQLSpeculative": 7,
+          "SubmitEnrichedSQL": 14,
+          "GetExplainMessages": 12,
+          "ConfirmExecution": 6,
+          "RecordExecutions": 4
+        }
+      }
+    ]
+  },
+  "actual_rust_directory": "rust-20261114a158c6",
+  "retained_incomplete_rust_directory": "rust-20261114a158c4",
+  "current_version_fault_classification": "explicit local storage corruption following valid public build; not fabricated historic evidence",
+  "legacy_classification": "publicly generated genuine159v2 pre158 upgrade fixture, not hosted or actual warehouse capture",
+  "local_public_coverage": [
+    "exact rejected Record status and subsequent complete BUILD response",
+    "duplicate exact/conflicting outcomes preserve original runtime",
+    "UUID aliases preserve spelling and correlation",
+    "wrong-org pending/confirmed IDs indistinguishable from unknown IDs",
+    "missing physical epoch stays pending; valid retry",
+    "atomic invalid batch leaves execution/selector/deferral state unpublished",
+    "real production-router restart persists pending/confirmed/Record outcomes",
+    "matching-version frozen unknown history prevents identity resurrection",
+    "current-version storage fault with known positive controls for own reuse/copy",
+    "generated arbitrary-epoch unknown-floor invariant"
+  ],
+  "validation_counts": {
+    "replay_corpora_before159": 90,
+    "replay_test_functions": 12,
+    "critical_test_functions": 51,
+    "critical_test_binaries": 8,
+    "offline_python_oracles": 25,
+    "actual_rust_dbt_invocations": 9,
+    "actual_rust_required_reuses": 9,
+    "actual_rust_rpc_count": 70,
+    "lifecycle_public_tests": 12,
+    "combined_replay_corpora": 99,
+    "workspace_passed": 628,
+    "workspace_failed": 0,
+    "workspace_ignored": 34,
+    "server_library_passed": 310,
+    "actual_duckdb_cases_passed": 25
+  },
+  "base_commit": "a67fd130f3dc444640cd578227ae0b03b9a6a0e7",
+  "frozen_v2_positive": "passed with merged159v2; no cold-miss substitution",
+  "actual_rust_base_commit": "a67fd130f3dc444640cd578227ae0b03b9a6a0e7",
+  "final_merged_tree_rust_acceptance": "passed9dbt/9requiredreuses/70completeRPC; independently typed multiset/schema/Delta properties",
+  "validation_pending": [],
+  "explain_origin": "public state-probe using correlated decision IDs from actual-client and crafted submits",
+  "ticket_complete": false,
+  "actual_duckdb_directory": "duckdb-final-v2",
+  "actual_duckdb_timing": {
+    "jobs": 4,
+    "setup_build_seconds": 1.35,
+    "acceptance_seconds": 683.51,
+    "total_seconds": 684.85,
+    "cases": [
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_lag_tolerance_reuse_expiry_and_external_change",
+        "seconds": 44.99,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_function_bindings_prevent_stale_reuse",
+        "seconds": 99.24,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_hidden_rowid_references_rebuild_after_reordering",
+        "seconds": 59.68,
+        "success": true
+      },
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_durable_table_reuse_and_external_changes",
+        "seconds": 131.14,
+        "success": true
+      },
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_views_dependency_evidence",
+        "seconds": 133.64,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_integer_division_rebuilds_after_reordering",
+        "seconds": 80.72,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_hook_changes_and_pre_hook_bindings_rebuild",
+        "seconds": 97.41,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_nested_floating_casts_rebuild_after_reordering",
+        "seconds": 84.44,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_named_type_redefinitions_rebuild",
+        "seconds": 97.2,
+        "success": true
+      },
+      {
+        "target": "duckdb_identity_python",
+        "case": "real_dbt_sql_formatting_reuses_independently_verified_results",
+        "seconds": 22.12,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_permissive_scalar_subqueries_rebuild_after_reordering",
+        "seconds": 74.07,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_timezone_sensitive_casts_rebuild",
+        "seconds": 84.78,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_worker_collation_changes_rebuild",
+        "seconds": 72.84,
+        "success": true
+      },
+      {
+        "target": "duckdb_parallel",
+        "case": "real_dbt_parallel_workers_preserve_committed_evidence",
+        "seconds": 66.5,
+        "success": true
+      },
+      {
+        "target": "duckdb_interruptions",
+        "case": "real_dbt_interrupted_work_requires_recovery_before_reuse",
+        "seconds": 129.53,
+        "success": true
+      },
+      {
+        "target": "duckdb_data_tests_python",
+        "case": "real_dbt_stored_failures_use_ordinary_execution",
+        "seconds": 15.95,
+        "success": true
+      },
+      {
+        "target": "duckdb_seeds_python",
+        "case": "real_dbt_seed_reuse_and_change_propagation",
+        "seconds": 160.18,
+        "success": true
+      },
+      {
+        "target": "duckdb_data_tests_python",
+        "case": "real_dbt_complete_cached_data_test_outcomes",
+        "seconds": 104.23,
+        "success": true
+      },
+      {
+        "target": "duckdb_recovery",
+        "case": "real_dbt_reset_and_generation_recovery",
+        "seconds": 241.57,
+        "success": true
+      },
+      {
+        "target": "duckdb_copy_python",
+        "case": "real_dbt_view_graph_copy_chains_and_allowed_staleness",
+        "seconds": 81.56,
+        "success": true
+      },
+      {
+        "target": "duckdb_incremental_python",
+        "case": "real_dbt_incremental_self_reads_require_reuse_proof",
+        "seconds": 80.81,
+        "success": true
+      },
+      {
+        "target": "duckdb_copy_python",
+        "case": "real_dbt_table_copy_and_adoption",
+        "seconds": 198.42,
+        "success": true
+      },
+      {
+        "target": "duckdb_workflow",
+        "case": "real_dbt_fresh_mixed_project_copy_reset_restore_and_file_isolation",
+        "seconds": 89.23,
+        "success": true
+      },
+      {
+        "target": "duckdb_generated",
+        "case": "generated_physical_state_and_oracle_mutations",
+        "seconds": 60.89,
+        "success": true
+      },
+      {
+        "target": "duckdb_incremental_python",
+        "case": "real_dbt_incremental_build_copy_and_adoption",
+        "seconds": 231.16,
+        "success": true
+      }
+    ]
+  },
+  "prior_actual_rust": {
+    "success": true,
+    "failure": null,
+    "invocations": 9,
+    "capture": [
+      {
+        "path": "golden/golden_20261114T082507.689Z_99920deb2e8049938ec30ec374c25a17.jsonl",
+        "complete": true,
+        "rows": 70,
+        "sha256": "6e571d61b553e39e9bcae7fad0f04bab3e7b000dc4ba266c066b33955c06b3ab",
+        "methods": {
+          "ValidateClientVersion": 8,
+          "SubmitTelemetryBatch": 19,
+          "SubmitEnrichedSQLSpeculative": 7,
+          "SubmitEnrichedSQL": 14,
+          "GetExplainMessages": 12,
+          "ConfirmExecution": 6,
+          "RecordExecutions": 4
+        }
+      }
+    ]
+  },
+  "prior_actual_rust_directory": "rust-20261114a158c5"
+}

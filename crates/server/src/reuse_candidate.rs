@@ -594,7 +594,8 @@ fn own_target(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> OwnTar
     if own.is_empty() {
         return OwnTarget::Missing;
     }
-    if own.len() != 1 || own[0].last_modified_epoch.is_none() {
+    if own.len() != 1 || own[0].last_modified_epoch.is_none() || prev.last_modified_epoch.is_none()
+    {
         return OwnTarget::Ambiguous;
     }
     if req.ignore_external_modifications
@@ -1480,6 +1481,23 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn unknown_physical_epoch_never_qualifies_even_with_modification_tolerance(
+            current_epoch in any::<i64>(),
+            ignore_external in any::<bool>(),
+        ) {
+            let mut req = model_req("select id from DB.DEV.UP");
+            req.tables[0].last_modified_epoch = Some(current_epoch);
+            req.ignore_external_modifications = ignore_external;
+            let mut row = recorded(&evidence(&req));
+            row.last_modified_epoch = Some(current_epoch);
+            prop_assert!(model(&req, Some(row.clone())).candidate.is_some(),
+                "matching known evidence must qualify before the fault");
+            row.last_modified_epoch = None;
+            prop_assert!(model(&req, Some(row)).candidate.is_none(),
+                "modification tolerance cannot supply missing physical evidence");
+        }
+
         #[test]
         fn prior_build_reported_iff_a_current_row_exists(
             row in prop::option::of(arbitrary_row(evidence(&model_req("select id from DB.DEV.UP")))),
