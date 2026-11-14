@@ -579,6 +579,22 @@ async fn frozen_pre_v3_identity_invalidates_and_legacy_unknown_epochs_remain_ine
             "frozen version compatibility must follow the explicit contract for {}",
             request.dialect
         );
+        if request.dialect == "snowflake" {
+            let skip = support::scenario::into_skip(compatibility);
+            support::rows::wait_for_decision_capture(
+                &server,
+                "local",
+                skip.execution_decision_id.as_deref().unwrap(),
+            )
+            .await;
+        }
+        // The compatibility control may have audited a SKIP of the known
+        // epoch. The unknown-epoch fixture starts independently and must not
+        // delete that referenced execution while capture runs asynchronously.
+        drop(scenario);
+        drop(server);
+        let server = support::start_server().await;
+        let scenario = Scenario::connect(&server).await;
         replace_with_frozen_execution(&server, &frozen_execution(&snapshot, "confirmed", None))
             .await;
         request.ignore_external_modifications = true;
@@ -661,6 +677,11 @@ async fn frozen_unknown_source_cannot_supply_an_automatic_result_copy() {
     .await;
     let positive = support::scenario::into_clone(scenario.submit(request.clone()).await);
     assert_eq!(positive.clone_required_last_modified_epoch, Some(1000));
+    // Keep the independent copy control out of the unknown-epoch fixture.
+    drop(scenario);
+    drop(server);
+    let server = support::start_server().await;
+    let scenario = Scenario::connect(&server).await;
     replace_with_frozen_execution(&server, &frozen_execution(&snapshot, "confirmed", None)).await;
     scenario.expect_execute(request).await;
 }
