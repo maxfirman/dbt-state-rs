@@ -274,3 +274,14 @@ and cannot establish exact native relative-age fidelity.
 The exact five-row regression and its independent clock evidence are documented
 in `crates/harness/tests/fixtures/native-clock147.md`. Native supplementary
 results remain local replay evidence, separate from hosted conformance.
+
+For the bounded #148 predicate replacement seam, run
+`python3 experiments/databricks_replace_where_test.py` and
+`cargo test -p dbt-state-harness --test databricks_replace_where`. The ordinary
+tests check independent cumulative history, duplicate/NULL retention, typed
+schema/reference faults, exact scope/wire/SQL guards, and the complete hosted
+Record11→ordinary11 SQL transition. The real-client test is ignored and needs
+an exact separate grant, fresh owned pair and frozen tools/ledger. Its native
+capture must retain actual audit clocks before State cleanup and pass complete
+supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
+header is used. See the [bounded report](reports/databricks-replace-where-2026-11-14.md).
