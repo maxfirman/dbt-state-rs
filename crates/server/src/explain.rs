@@ -1420,9 +1420,21 @@ fn gap_line(
     } else {
         quote(anchor_name)
     };
+    // Databricks primary gap controls truncate subsecond precision, then
+    // round minutes with even ties (90s -> 2m, 150s -> 2m, 151s -> 3m).
+    // Keep shared durations, subminute text and hour-range gaps unchanged.
+    let display_ms = if node.anchor.as_ref().is_some_and(|build| {
+        crate::warehouse::Warehouse::from_dialect(&build.dialect)
+            == crate::warehouse::Warehouse::Databricks
+    }) && (60_000..3_600_000).contains(&elapsed_ms)
+    {
+        (((elapsed_ms / 1000) as f64 / 60.0).round_ties_even() as i64) * 60_000
+    } else {
+        elapsed_ms
+    };
     line(format!(
         "updated {} after {} last executed",
-        humanize_duration(elapsed_ms),
+        humanize_duration(display_ms),
         anchor_ref
     ))
 }
@@ -1453,7 +1465,16 @@ fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
             } else {
                 // Hosted relative ages round minutes while exact subminute
                 // seconds and elapsed-duration/gap wording remain separate.
-                let relative_age = if (60_000..3_600_000).contains(&age) {
+                let relative_age = if node.anchor.as_ref().is_some_and(|build| {
+                    crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                        == crate::warehouse::Warehouse::Databricks
+                }) && (3_600_000..86_400_000).contains(&age)
+                {
+                    // Primary bounded clock intervals establish whole-second
+                    // hour rounding with even ties and the carry into a day.
+                    let hours = ((age / 1000) as f64 / 3_600.0).round_ties_even() as i64;
+                    humanize_duration(hours * 3_600_000)
+                } else if (60_000..3_600_000).contains(&age) {
                     humanize_duration(((age / 1000 + 30) / 60) * 60_000)
                 } else {
                     humanize_duration(age)
