@@ -711,3 +711,170 @@ async fn real_dbt_failure_retry_and_publication_match_independent_results() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Targetless Record is accepted publication, not physical reuse evidence.
+/// Exercise coexistence through the production router and a real restart;
+/// request identities are deliberately otherwise identical within each cell.
+#[tokio::test]
+async fn targetless_model_records_do_not_replace_physical_history_across_restart() {
+    use support::scenario::{outcome, ExecutionType};
+    for execution_type in [ExecutionType::Full, ExecutionType::View] {
+        for logical_last in [false, true] {
+            let database =
+                std::sync::Arc::new(support::TestDatabase::new("targetless_scope").await);
+            let server = Running::start(&database).await;
+            let physical = model("`cdo_demo_db`.`owned_protocol`.`coexist`")
+                .execution_type(execution_type)
+                .dialect("databricks")
+                .catalog("cdo_demo_db")
+                .schema("owned_protocol")
+                .namespace("targetless-coexist")
+                .unique_id("model.targetless.coexist")
+                .sql("select 158 as id")
+                .own_epoch(Some(1000));
+            let logical = physical
+                .clone()
+                .no_tables()
+                .with(|req| req.target_table = None);
+            let physical_results = qc::Struct {
+                fields: [(
+                    "marker".into(),
+                    qc::Value {
+                        kind: Some(qc::value::Kind::StringValue("physical-result".into())),
+                    },
+                )]
+                .into(),
+            };
+            let logical_results = qc::Struct {
+                fields: [(
+                    "marker".into(),
+                    qc::Value {
+                        kind: Some(qc::value::Kind::StringValue("logical-result".into())),
+                    },
+                )]
+                .into(),
+            };
+            let logical_record = logical.record(outcome().runtime(999).results(logical_results));
+            // A targetless record cannot make the same named physical query reusable.
+            assert_eq!(
+                server
+                    .record(vec![logical_record.clone()])
+                    .await
+                    .unwrap()
+                    .records_stored,
+                1
+            );
+            into_execute(server.submit(physical.clone().build()).await);
+            let records = if logical_last {
+                vec![
+                    physical.record(
+                        built_at(1000)
+                            .runtime(158)
+                            .results(physical_results.clone()),
+                    ),
+                    logical_record,
+                ]
+            } else {
+                vec![
+                    logical_record,
+                    physical.record(
+                        built_at(1000)
+                            .runtime(158)
+                            .results(physical_results.clone()),
+                    ),
+                ]
+            };
+            assert_eq!(server.record(records).await.unwrap().records_stored, 2);
+            server.stop().await;
+            let restarted = Running::start(&database).await;
+            let reused = into_skip(restarted.submit(physical.clone().build()).await);
+            assert_eq!(reused.execution_runtime_ms, Some(158));
+            assert_eq!(reused.execution_results, Some(physical_results.clone()));
+            let mut sql = qc::sql_client::SqlClient::new(restarted.channel.clone());
+            for (target, message) in [
+                (None, "target_table is required for a non-test node"),
+                (Some(String::new()), "Failed to process SQL"),
+            ] {
+                let mut request = logical.clone().build();
+                request.target_table = target;
+                let error = sql.submit_enriched_sql(request).await.unwrap_err();
+                assert_eq!(error.code(), tonic::Code::InvalidArgument);
+                assert_eq!(error.message(), message);
+            }
+            // Non-test speculative calls remain undecided even with accepted
+            // logical publication; they cannot suppress physical execution.
+            let speculative = logical.build();
+            let response = sql
+                .submit_enriched_sql_speculative(speculative)
+                .await
+                .unwrap()
+                .into_inner();
+            assert!(matches!(
+                response.response,
+                Some(qc::submit_sql_speculative_response::Response::Undecided(_))
+            ));
+            let reused = into_skip(restarted.submit(physical.build()).await);
+            assert_eq!(reused.execution_runtime_ms, Some(158));
+            assert_eq!(reused.execution_results, Some(physical_results));
+            restarted.stop().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn targetless_record_with_physical_epoch_rejects_the_whole_batch_and_allows_null_retry() {
+    use support::scenario::{outcome, ExecutionType};
+    let database = std::sync::Arc::new(support::TestDatabase::new("targetless_atomic").await);
+    let server = Running::start(&database).await;
+    for execution_type in [ExecutionType::Full, ExecutionType::View] {
+        let physical = model("`cdo_demo_db`.`owned_protocol`.`atomic_targetless`")
+            .execution_type(execution_type)
+            .dialect("databricks")
+            .namespace(&format!("targetless-atomic-{execution_type:?}"))
+            .unique_id("model.targetless.atomic")
+            .target_name("prod")
+            .node_state(|state| {
+                state.project_id = None;
+                state.project_name = "targetless".into();
+                state.profile_name = "profile".into();
+            })
+            .sql("select 158 as id")
+            .own_epoch(Some(1000));
+        let logical = physical
+            .clone()
+            .no_tables()
+            .with(|req| req.target_table = None);
+        let error = server
+            .record(vec![
+                physical.record(built_at(1000).runtime(158)),
+                logical.record(built_at(1000).runtime(999)),
+            ])
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::Internal);
+        assert_eq!(error.message(), "Database operation failed");
+        into_execute(server.submit(physical.clone().build()).await);
+        assert_eq!(
+            server
+                .record(vec![logical.record(outcome().runtime(999))])
+                .await
+                .unwrap()
+                .records_stored,
+            1
+        );
+        let resolved = qc::execution_client::ExecutionClient::new(server.channel.clone())
+            .resolve_deferred_relations(qc::ResolveDeferredRelationsRequest {
+                profile_name: "profile".into(),
+                project_name: "targetless".into(),
+                target_name: "prod".into(),
+                project_id: None,
+                node_unique_ids: vec!["model.targetless.atomic".into()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(resolved.fqn_by_unique_id.is_empty());
+        into_execute(server.submit(physical.build()).await);
+    }
+    server.stop().await;
+}
