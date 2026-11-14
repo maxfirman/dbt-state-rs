@@ -235,3 +235,12 @@ Confirm payloads and all four first-call Explain trees. Failures retain typed
 `3/true/true` and raw client exit 1. No audit object or physical data relation
 is read or written. See the [bounded evidence report](../docs/reports/databricks-cached-test-results-2026-11-14.md).
 #143 remains blocked by #138; no dependency promotion or scope waiver follows.
+
+`databricks_target_lifecycle.jsonl` is the complete 303-RPC hosted #141 bounded
+history: the original fresh table pair followed by its explicitly owned
+same-lifetime continuation. It includes all confirmations, 46 Explain requests,
+actual source preprocessing failure, explicit ignore policy, seeded target
+corruptions and literal upstream-view definitions. It has no replay gaps or
+unknown baseline allowances. Provenance, complete independent references and
+whole-ticket limitations are in
+[`docs/reports/databricks-target-lifecycle-2026-11-14.md`](../docs/reports/databricks-target-lifecycle-2026-11-14.md).

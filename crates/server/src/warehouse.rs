@@ -305,10 +305,29 @@ impl Warehouse {
         } else {
             databricks::explain_input_order(req).unwrap_or_default()
         };
-        if !enabled && display_upstream_order.is_empty() {
+        let rendered_query = (req.execution_type
+            == crate::query_cache::ModelExecutionType::Full as i32)
+            .then(|| {
+                let mut outer = crate::execution::sql_execution(req);
+                outer.query_dependencies.clear();
+                crate::explain::RenderedQuery {
+                    outer_hash: crate::fingerprint::sql_logic_hash(&outer, None),
+                    dependency_names: req
+                        .query_dependencies
+                        .iter()
+                        .map(|dep| dep.name.clone())
+                        .collect(),
+                    literal_dependencies: req
+                        .query_dependencies
+                        .iter()
+                        .all(|dep| self.sql_reads_relation(&dep.query) == Some(false)),
+                }
+            });
+        if !enabled && display_upstream_order.is_empty() && rendered_query.is_none() {
             return None;
         }
         Some(crate::explain::TemplateComparison {
+            rendered_query,
             enabled,
             display_upstream_order,
             body: state.and_then(|s| s.node_body_hash.clone()),

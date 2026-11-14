@@ -720,7 +720,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        114,
+        115,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -2026,4 +2026,425 @@ async fn submit_enriched_sql_clone_fallback_is_characterized() {
         ours[0], ddl,
         "our clone DDL must byte-match the real service's clone_sqls"
     );
+}
+
+/// Fast public tracer for the four actual literal-view Explain cells. The
+/// baseline is explicitly built from the actual pre-view request in an empty
+/// store; the full causal capture is independently replayed by the main gate.
+#[tokio::test]
+async fn databricks_literal_view_dependency_explain_matches_hosted() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/databricks_target_lifecycle.jsonl"
+    ));
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let ordinary: Vec<_> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .collect();
+    let tail = &ordinary[ordinary.len() - 6..];
+    let server = support::start_server().await;
+    let ch = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+    let mut remap = HashMap::new();
+    let mut mismatches = Vec::new();
+    for (index, entry) in tail.iter().enumerate().filter(|(index, _)| *index != 1) {
+        let request: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(entry.request.clone()).unwrap();
+        let response = sql
+            .submit_enriched_sql(support::captured_request(request, entry))
+            .await
+            .unwrap()
+            .into_inner();
+        let local = serde_json::to_value(&response).unwrap();
+        let hosted_body = entry.response["response"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        let local_body = local["response"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        assert_eq!(
+            support::response_variant(&response),
+            if index == 3 || index == 5 {
+                "skip_execution"
+            } else {
+                "ready_to_execute"
+            }
+        );
+        let hosted_id = hosted_body["execution_decision_id"].as_str().unwrap();
+        remap.insert(
+            hosted_id.to_owned(),
+            local_body["execution_decision_id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+        if let Some(id) = local_body["request_id"].as_str() {
+            support::confirm_captured(&mut exec, &entries, entry, id.to_owned()).await;
+        }
+        if index > 0 {
+            let (entry_index, explain) = entries
+                .iter()
+                .enumerate()
+                .find(|(_, row)| {
+                    row.method == "GetExplainMessages"
+                        && row.request["execution_decision_ids"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|id| id.as_str() == Some(hosted_id))
+                })
+                .unwrap();
+            replay_explain_messages(
+                ch.clone(),
+                explain,
+                entry_index,
+                path,
+                &remap,
+                &[],
+                &mut HashSet::new(),
+                &mut mismatches,
+            )
+            .await;
+        }
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[tokio::test]
+async fn databricks_equal_body_hash_does_not_hide_changed_rendered_outer_sql() {
+    use qc::explain_client::ExplainClient;
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/databricks_target_lifecycle.jsonl"
+    );
+    let entries = diff::load_golden(path).unwrap();
+    let ordinary: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.method == "SubmitEnrichedSQL")
+        .collect();
+    let baseline = ordinary[ordinary.len() - 4];
+    let replacement = ordinary[ordinary.len() - 2];
+    let server = support::start_server().await;
+    let ch = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+    let mut explain = ExplainClient::new(ch);
+    let request: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(baseline.request.clone()).unwrap();
+    let built = sql
+        .submit_enriched_sql(request.clone())
+        .await
+        .unwrap()
+        .into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(built) = built.response.unwrap() else {
+        panic!("baseline must build")
+    };
+    support::confirm_captured(&mut exec, &entries, baseline, built.request_id).await;
+    for _ in 0..50 {
+        if !explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![built.execution_decision_id.clone().unwrap()],
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .messages
+            .is_empty()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let mut changed: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(replacement.request.clone()).unwrap();
+    assert_eq!(
+        changed.dbt_node_state.as_ref().unwrap().node_body_hash,
+        request.dbt_node_state.as_ref().unwrap().node_body_hash
+    );
+    changed.sql = changed.sql.replace("amount+0", "amount+1");
+    assert_ne!(changed.sql, request.sql);
+    assert!(!changed.compare_unrendered_code);
+    let response = sql.submit_enriched_sql(changed).await.unwrap().into_inner();
+    let qc::submit_sql_response::Response::ReadyToExecute(response) = response.response.unwrap()
+    else {
+        panic!("changed outer SQL must build")
+    };
+    let mut lines = Vec::new();
+    for _ in 0..50 {
+        let messages = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![response.execution_decision_id.clone().unwrap()],
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .messages;
+        if let Some(message) = messages.into_iter().next() {
+            lines = message.explain_lines;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let tree = serde_json::to_string(&lines).unwrap();
+    assert!(tree.contains("the model query has changed"), "{tree}");
+    assert!(!tree.contains("view ignored"), "{tree}");
+}
+
+async fn wait_for_scoped_explain(
+    channel: tonic::transport::Channel,
+    decision_id: &str,
+    org: &str,
+) -> qc::ExplainMessageEntry {
+    let mut client = qc::explain_client::ExplainClient::new(channel);
+    for _ in 0..100 {
+        let messages = client
+            .get_explain_messages(support::request_with_org(
+                qc::GetExplainMessagesRequest {
+                    execution_decision_ids: vec![decision_id.into()],
+                },
+                org,
+            ))
+            .await
+            .unwrap()
+            .into_inner()
+            .messages;
+        if let Some(message) = messages.into_iter().next() {
+            return message;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("scoped decision audit did not become visible");
+}
+
+fn sql_decision_id(response: &qc::SubmitSqlResponse) -> String {
+    let value = serde_json::to_value(response).unwrap();
+    value["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["execution_decision_id"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+
+#[tokio::test]
+async fn databricks_true_template_old_json_survives_restart_with_complete_explain_and_reuse() {
+    use support::fault::{comparison_audit_fault, ComparisonAuditFault};
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/databricks_template_config.jsonl"
+    ));
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let baseline = &entries[3];
+    let reuse = &entries[23];
+    let initial: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(baseline.request.clone()).unwrap();
+    let changed: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(reuse.request.clone()).unwrap();
+    assert!(initial.compare_unrendered_code && changed.compare_unrendered_code);
+    assert_ne!(initial.sql, changed.sql);
+    assert_eq!(
+        initial.dbt_node_state.as_ref().unwrap().node_body_hash,
+        changed.dbt_node_state.as_ref().unwrap().node_body_hash
+    );
+    assert_eq!(
+        initial.dbt_node_state.as_ref().unwrap().node_configs_hash,
+        changed.dbt_node_state.as_ref().unwrap().node_configs_hash
+    );
+    let hosted_id = reuse.response["response"]["skip_execution"]["execution_decision_id"]
+        .as_str()
+        .unwrap();
+    let (explain_index, expected) = entries
+        .iter()
+        .enumerate()
+        .find(|(_, row)| {
+            row.method == "GetExplainMessages"
+                && row.request["execution_decision_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id.as_str() == Some(hosted_id))
+        })
+        .unwrap();
+    let database = std::sync::Arc::new(support::TestDatabase::new("old_template_audit").await);
+    let previous_skip;
+    {
+        let server = support::start_server_on_database(database.clone()).await;
+        let channel = support::channel(server.addr).await;
+        let mut sql = SqlClient::new(channel.clone());
+        let mut exec = ExecutionClient::new(channel.clone());
+        let response = sql
+            .submit_enriched_sql(support::captured_request(initial, baseline))
+            .await
+            .unwrap()
+            .into_inner();
+        let baseline_id = sql_decision_id(&response);
+        let qc::submit_sql_response::Response::ReadyToExecute(response) =
+            response.response.unwrap()
+        else {
+            panic!("baseline must build")
+        };
+        support::confirm_captured(&mut exec, &entries, baseline, response.request_id).await;
+        wait_for_scoped_explain(channel.clone(), &baseline_id, "local").await;
+        let response = sql
+            .submit_enriched_sql(support::captured_request(changed.clone(), reuse))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(support::response_variant(&response), "skip_execution");
+        previous_skip = sql_decision_id(&response);
+        wait_for_scoped_explain(channel, &previous_skip, "local").await;
+        comparison_audit_fault(
+            &server,
+            "local",
+            &baseline_id,
+            ComparisonAuditFault::LegacyJson,
+        )
+        .await;
+        comparison_audit_fault(
+            &server,
+            "local",
+            &previous_skip,
+            ComparisonAuditFault::LegacyJson,
+        )
+        .await;
+    }
+    let server = support::start_server_on_database(database).await;
+    let channel = support::channel(server.addr).await;
+    let mut remap = HashMap::from([(hosted_id.to_owned(), previous_skip)]);
+    let mut mismatches = Vec::new();
+    replay_explain_messages(
+        channel.clone(),
+        expected,
+        explain_index,
+        path,
+        &remap,
+        &[],
+        &mut HashSet::new(),
+        &mut mismatches,
+    )
+    .await;
+    let response = SqlClient::new(channel.clone())
+        .submit_enriched_sql(support::captured_request(changed, reuse))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        support::response_variant(&response),
+        "skip_execution",
+        "old audit JSON must never cold-miss execution identity"
+    );
+    remap.insert(hosted_id.to_owned(), sql_decision_id(&response));
+    replay_explain_messages(
+        channel,
+        expected,
+        explain_index,
+        path,
+        &remap,
+        &[],
+        &mut HashSet::new(),
+        &mut mismatches,
+    )
+    .await;
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+}
+
+#[tokio::test]
+async fn databricks_auxiliary_audit_faults_restart_with_reuse_and_scoped_legacy_fallback() {
+    use support::fault::{
+        collide_foreign_audit_request, comparison_audit_fault, ComparisonAuditFault,
+    };
+    for (fault, foreign) in [
+        (ComparisonAuditFault::LegacyJson, false),
+        (ComparisonAuditFault::MalformedRendered, false),
+        (ComparisonAuditFault::MissingComparison, false),
+        (ComparisonAuditFault::MissingAudit, false),
+        (ComparisonAuditFault::MissingComparison, true),
+    ] {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../golden/fixtures/databricks_target_lifecycle.jsonl"
+        );
+        let entries = diff::load_golden(path).unwrap();
+        let ordinary: Vec<_> = entries
+            .iter()
+            .filter(|row| row.method == "SubmitEnrichedSQL")
+            .collect();
+        let baseline = ordinary[ordinary.len() - 4];
+        let reuse = ordinary[ordinary.len() - 3];
+        let database =
+            std::sync::Arc::new(support::TestDatabase::new("auxiliary_audit_fault").await);
+        {
+            let server = support::start_server_on_database(database.clone()).await;
+            let channel = support::channel(server.addr).await;
+            let mut sql = SqlClient::new(channel.clone());
+            let mut exec = ExecutionClient::new(channel.clone());
+            let request: qc::SubmitEnrichedSqlRequest =
+                serde_json::from_value(baseline.request.clone()).unwrap();
+            let response = sql
+                .submit_enriched_sql(support::captured_request(request.clone(), baseline))
+                .await
+                .unwrap()
+                .into_inner();
+            let baseline_id = sql_decision_id(&response);
+            let qc::submit_sql_response::Response::ReadyToExecute(response) =
+                response.response.unwrap()
+            else {
+                panic!("baseline must build")
+            };
+            let request_id = response.request_id.clone();
+            support::confirm_captured(&mut exec, &entries, baseline, response.request_id).await;
+            wait_for_scoped_explain(channel.clone(), &baseline_id, "local").await;
+            if foreign {
+                let response = sql
+                    .submit_enriched_sql(support::request_with_org(request, "foreign-audit"))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let foreign_id = sql_decision_id(&response);
+                wait_for_scoped_explain(channel.clone(), &foreign_id, "foreign-audit").await;
+                collide_foreign_audit_request(&server, "foreign-audit", &foreign_id, &request_id)
+                    .await;
+            }
+            comparison_audit_fault(&server, "local", &baseline_id, fault).await;
+        }
+        let server = support::start_server_on_database(database).await;
+        let channel = support::channel(server.addr).await;
+        let request: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(reuse.request.clone()).unwrap();
+        let response = SqlClient::new(channel.clone())
+            .submit_enriched_sql(support::captured_request(request, reuse))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            support::response_variant(&response),
+            "skip_execution",
+            "auxiliary audit must not affect eligibility"
+        );
+        let message = wait_for_scoped_explain(channel, &sql_decision_id(&response), "local").await;
+        assert_eq!(message.explain_lines[1].text, "query analysis");
+        assert_eq!(message.explain_lines[1].children.len(), 1);
+        assert_eq!(
+            message.explain_lines[1].children[0].text,
+            "the model query has not changed"
+        );
+        assert_eq!(message.explain_lines[1].children[0].marker, Some(1));
+        assert_eq!(message.explain_lines[1].children[0].badge, Some(5));
+        assert_eq!(message.explain_lines[2].children.len(), 1);
+        assert_eq!(
+            message.explain_lines[2].children[0].text, "no upstream dependencies",
+            "foreign or malformed audit cannot manufacture a literal-view shape"
+        );
+    }
 }

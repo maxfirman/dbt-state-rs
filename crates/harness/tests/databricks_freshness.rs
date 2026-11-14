@@ -147,9 +147,15 @@ async fn run_live(entrypoint: &str) {
         .arg("--dbt")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_DBT").expect("pinned dbt"))
         .arg("--proxy")
-        .arg(env!("CARGO_BIN_EXE_record-proxy"))
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_PROXY")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_record-proxy").into()),
+        )
         .arg("--probe")
-        .arg(env!("CARGO_BIN_EXE_state-probe"))
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_PROBE")
+                .unwrap_or_else(|| env!("CARGO_BIN_EXE_state-probe").into()),
+        )
         .arg("--rust-url")
         .arg(format!("http://{}", server.addr))
         .arg("--work-dir")
@@ -158,6 +164,9 @@ async fn run_live(entrypoint: &str) {
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA_LEASE").expect("owned schema lease"));
     if let Some(identity) = std::env::var_os("DBT_STATE_DATABRICKS_QUERY_IDENTITY") {
         command.arg("--query-identity").arg(identity);
+    }
+    if let Some(run_id) = std::env::var_os("DBT_STATE_DATABRICKS_RUN_ID") {
+        command.arg("--run-id").arg(run_id);
     }
     let output = command.output().await.expect("run live freshness campaign");
     println!("{}", String::from_utf8_lossy(&output.stdout));
@@ -209,4 +218,27 @@ fn readonly_reference_rejects_lossy_results_and_extra_sql() {
 #[ignore = "requires pinned client and Databricks credentials; writes two fresh owned demo relations"]
 async fn real_dbt_before_sql_and_confirm_races_match_readonly_reference() {
     run_live("databricks_freshness_combined_race.py").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned client and Databricks credentials; writes two fresh owned demo relations"]
+async fn real_dbt_target_lifecycle_matches_readonly_reference() {
+    run_live("databricks_target_lifecycle_campaign.py").await;
+}
+
+#[test]
+fn lifecycle_continuation_refuses_failed_or_unrelated_histories_before_credentials() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_target_lifecycle_test.py"
+        ))
+        .output()
+        .expect("run credential-free continuation admission checks");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

@@ -84,3 +84,75 @@ pub async fn drop_node_states(db: &impl Db) {
         .await
         .expect("drop node_states");
 }
+
+/// Remove or corrupt only auxiliary Explain audit data. Execution fingerprints,
+/// physical epochs, confirmations and outcomes remain genuine current rows.
+pub enum ComparisonAuditFault {
+    LegacyJson,
+    MalformedRendered,
+    MissingComparison,
+    MissingAudit,
+}
+
+pub async fn comparison_audit_fault(
+    db: &impl Db,
+    org: &str,
+    decision_id: &str,
+    fault: ComparisonAuditFault,
+) {
+    let before: serde_json::Value = sqlx::query_scalar(
+        "SELECT template_comparison FROM node_decisions WHERE org_id = $1 AND execution_decision_id = $2",
+    ).bind(org).bind(decision_id).fetch_one(db.pool()).await.expect("read genuine comparison audit");
+    assert!(
+        before["rendered_query"].is_object(),
+        "fault must start from genuine new comparison evidence"
+    );
+    if matches!(fault, ComparisonAuditFault::MissingAudit) {
+        let affected = sqlx::query(
+            "DELETE FROM node_decisions WHERE org_id = $1 AND execution_decision_id = $2",
+        )
+        .bind(org)
+        .bind(decision_id)
+        .execute(db.pool())
+        .await
+        .expect("remove exact auxiliary audit")
+        .rows_affected();
+        assert_eq!(affected, 1);
+        return;
+    }
+    let after = match fault {
+        ComparisonAuditFault::LegacyJson => {
+            let mut old = before.clone();
+            old.as_object_mut().unwrap().remove("rendered_query");
+            assert_eq!(
+                old.as_object().unwrap().len() + 1,
+                before.as_object().unwrap().len()
+            );
+            Some(old)
+        }
+        ComparisonAuditFault::MalformedRendered => {
+            let mut malformed = before;
+            malformed["rendered_query"] = serde_json::json!(17);
+            Some(malformed)
+        }
+        ComparisonAuditFault::MissingComparison => None,
+        ComparisonAuditFault::MissingAudit => unreachable!(),
+    };
+    let affected = sqlx::query("UPDATE node_decisions SET template_comparison = $1 WHERE org_id = $2 AND execution_decision_id = $3")
+        .bind(after).bind(org).bind(decision_id).execute(db.pool()).await.expect("alter exact auxiliary comparison only").rows_affected();
+    assert_eq!(affected, 1);
+}
+
+/// Deliberately collide a genuine foreign audit's request UUID with a local
+/// execution. The new Explain lookup must retain its organization boundary.
+pub async fn collide_foreign_audit_request(
+    db: &impl Db,
+    foreign_org: &str,
+    foreign_decision_id: &str,
+    local_request_id: &str,
+) {
+    assert_ne!(foreign_org, "local");
+    let affected = sqlx::query("UPDATE node_decisions SET request_id = $1 WHERE org_id = $2 AND execution_decision_id = $3")
+        .bind(local_request_id).bind(foreign_org).bind(foreign_decision_id).execute(db.pool()).await.expect("collide foreign auxiliary request UUID").rows_affected();
+    assert_eq!(affected, 1);
+}
