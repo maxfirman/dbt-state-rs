@@ -1,0 +1,22 @@
+{
+  "fail_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "fail_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "severity_warn_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "severity_warn_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "warn"
+  }
+}

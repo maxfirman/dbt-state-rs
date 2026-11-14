@@ -24,15 +24,15 @@ from databricks_readonly_reference import reference_canary
 from databricks_survey import Campaign, Refused, complete_result
 
 
-def payload(failures):
+def payload(failures, should_error=None, should_warn=None):
     return {'fields': {'failures': {'kind': {'int_value': failures}},
-                       'should_error': {'kind': {'bool_value': failures > 0}},
-                       'should_warn': {'kind': {'bool_value': failures > 0}}}}
+                       'should_error': {'kind': {'bool_value': failures > 0 if should_error is None else should_error}},
+                       'should_warn': {'kind': {'bool_value': failures > 0 if should_warn is None else should_warn}}}}
 
 
-def assert_payload(actual, failures):
+def assert_payload(actual, failures, should_error=None, should_warn=None):
     # Python equality alone equates bool and int. Compare JSON types as well.
-    if json.dumps(actual, sort_keys=True) != json.dumps(payload(failures), sort_keys=True):
+    if json.dumps(actual, sort_keys=True) != json.dumps(payload(failures, should_error, should_warn), sort_keys=True):
         raise Refused('oracle:complete-typed-test-payload')
 
 
@@ -138,6 +138,15 @@ class CachedTests(Campaign):
         return [('pass_first', 0, 'ready_to_execute'), ('pass_repeat', 0, 'skip_execution'),
                 ('fail_first', 3, 'ready_to_execute'), ('fail_repeat', 3, 'skip_execution')]
 
+    def test_config(self):
+        return {'severity': 'ERROR', 'error_if': '> 0', 'warn_if': '> 0', 'fail_calc': 'count(*)'}
+
+    def expected_result(self, rows):
+        return rows, bool(rows), bool(rows)
+
+    def command_variables(self):
+        return []
+
     def sql(self, label, statement):
         select_only(statement)
         return super().sql(label, statement)
@@ -162,6 +171,7 @@ class CachedTests(Campaign):
                 '--target-path', str(target), '--log-path', str(logs),
                 '--no-version-check', '--skip-semantic-manifest-validation',
                 '--manage-state' if managed else '--no-manage-state']
+        argv.extend(self.command_variables())
         env = dict(self.env)
         if endpoint:
             env['RUN_CACHE_API_URL'] = endpoint
@@ -251,18 +261,16 @@ class CachedTests(Campaign):
             raise Refused('oracle:exact-selected-test-result')
         run = runs[0]
         status = run['status']
+        failures, should_error, should_warn = self.expected_result(failures)
+        severity = self.test_config()['severity']
+        classification = 'fail' if should_error and severity == 'ERROR' else 'warn' if should_warn else 'pass'
         # Raw numerical exits are retained and learned; only this complete logical
         # result can explain a nonzero. Capture certification is still mandatory.
         if run.get('failures') != failures or type(run.get('failures')) is not int:
             raise Refused('oracle:client-failures')
-        if failures:
-            # Hosted 2.0.11 primary observed exit 1 for both executed and cached
-            # logical failures. Other nonzero exits remain unexplained failures.
-            if (status not in ('fail', 'reused') or result.returncode not in (0, 1)
-                    or (status == 'fail' and result.returncode != 1)):
-                raise Refused('oracle:logical-fail-status-exit')
-        elif status not in ('pass', 'reused') or result.returncode != 0:
-            raise Refused('oracle:logical-pass-status-exit')
+        expected_exit = 1 if classification == 'fail' else 0
+        if (status not in (classification, 'reused') or result.returncode != expected_exit):
+            raise Refused('oracle:logical-class-status-exit')
         if not managed and (result.calls or status == 'reused'):
             raise Refused('oracle:disabled-state-reference')
         return {'raw_returncode': result.returncode, 'run_result': run}
@@ -286,15 +294,18 @@ class CachedTests(Campaign):
         self.reference('reference_' + label, failures)
         direct = self.sql('rows_' + label, query(self.a.query_identity or self.a.run_id, failures))
         assert_literal_rows(direct, failures)
+        config = self.test_config()
+        expected_failures, expected_error, expected_warn = self.expected_result(failures)
+        calc = config['fail_calc']
         aggregate = self.sql('aggregate_' + label,
-                 'SELECT count(*) AS failures, count(*) > 0 AS should_error, count(*) > 0 AS should_warn FROM ('
+                 f"SELECT {calc} AS failures, {calc} {config['error_if']} AS should_error, {calc} {config['warn_if']} AS should_warn FROM ("
                  + query(self.a.query_identity or self.a.run_id, failures) + ') AS independently_declared')
         aggregate_schema = [tuple(c.get(k) for k in ('name', 'type_text', 'type_name', 'position'))
                             for c in aggregate['columns']]
         if (aggregate_schema != [('failures', 'BIGINT', 'LONG', 0),
                                  ('should_error', 'BOOLEAN', 'BOOLEAN', 1),
                                  ('should_warn', 'BOOLEAN', 'BOOLEAN', 2)]
-                or aggregate['rows'] != [[str(failures), str(bool(failures)).lower(), str(bool(failures)).lower()]]):
+                or aggregate['rows'] != [[str(expected_failures), str(expected_error).lower(), str(expected_warn).lower()]]):
             raise Refused('oracle:independent-aggregate')
         result = self.command(label, 'test', True)
         self.manifest(result, failures)
@@ -316,9 +327,8 @@ class CachedTests(Campaign):
                     or req.get('compare_unrendered_code') is not False
                     or (req.get('dbt_node_state') or {}).get('node_unique_id') != self.uid):
                 raise Refused('wire:scope-target-deps-type-mode')
-            extras = {'severity': '"ERROR"', 'error_if': '"> 0"',
-                      'warn_if': '"> 0"', 'fail_calc': '"count(*)"',
-                      'store_failures': 'false', 'store_failures_as': '"ephemeral"'}
+            extras = {key: json.dumps(value) for key, value in self.test_config().items()}
+            extras.update(store_failures='false', store_failures_as='"ephemeral"')
             if req.get('semantic_extras') != extras:
                 raise Refused('wire:actual-test-config')
             namespace = req.get('table_namespace')
@@ -347,7 +357,7 @@ class CachedTests(Campaign):
             if (type(body['execution_runtime_ms']) is not int
                     or body['execution_runtime_ms'] != self.recorded_runtime):
                 raise Refused('wire:cached-runtime-echo')
-        assert_payload(cached, failures)
+        assert_payload(cached, expected_failures, expected_error, expected_warn)
         outcome = self.outcome(result, failures, True)
         if self.contract is not None:
             expected = self.contract[label]
@@ -397,7 +407,7 @@ class CachedTests(Campaign):
         return 0 if json.loads((self.work / 'summary.json').read_text())['success'] else 1
 
 
-def main():
+def main(runner_class=CachedTests):
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('dbt', 'proxy', 'probe', 'work-dir', 'schema-lease'):
         parser.add_argument('--' + name, required=True)
@@ -408,13 +418,15 @@ def main():
     parser.add_argument('--contract', help='observed hosted exit/status/decision contract; required for Rust')
     parser.add_argument('--query-identity')
     parser.add_argument('--run-id', default=datetime.now(timezone.utc).strftime('%Y%m%d') + os.urandom(3).hex())
+    if hasattr(runner_class, 'configure_parser'):
+        runner_class.configure_parser(parser)
     args = parser.parse_args()
     if args.rust_url and not re.fullmatch(r'http://127\.0\.0\.1:\d+', args.rust_url):
         parser.error('--rust-url must be an owned loopback endpoint')
     if args.rust_url and not args.contract:
         parser.error('--rust-url requires the observed hosted contract')
     try:
-        return CachedTests(args).run()
+        return runner_class(args).run()
     except Exception as error:
         print('FAILED:', error, file=sys.stderr)
         return 1
