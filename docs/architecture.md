@@ -172,3 +172,14 @@ The recording proxy (`record-proxy`), the single-RPC `state-probe` used by
 live characterization drivers, the opt-in `diff-fuzz` tool (`--features fuzz`),
 golden/auth/diff support modules and the integration tests. See
 [harness.md](harness.md) and [testing.md](testing.md).
+
+### Submit clock for Explain
+
+Databricks SQL submits retain nullable `display_submitted_at_ms` on their
+execution and node-decision rows (migration 0022). Explain uses this frozen
+instant for temporal text, including identity-change rebuilds without a reuse
+anchor. A captured FULL upstream with a missing current epoch displays the
+current submit instant; a missing recorded epoch uses the original build
+submit instant only when it was retained. Both raw epochs remain unknown.
+These columns never participate in freshness, producer selection, physical
+history ordering or fingerprints, and legacy rows are never backfilled.

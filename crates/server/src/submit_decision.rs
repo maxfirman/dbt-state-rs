@@ -216,6 +216,8 @@ async fn decide_sql(
     mode: Mode,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    evidence.display_submitted_at_ms =
+        Warehouse::from_dialect(&req.dialect).explain_submit_clock(now_ms);
     let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;

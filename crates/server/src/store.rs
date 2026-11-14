@@ -152,6 +152,8 @@ pub struct ExecutionRow {
     pub clone_source_inputs: Option<Vec<String>>,
     /// When the server recorded the confirmation (Unix ms, server clock).
     pub confirmed_at_ms: Option<i64>,
+    /// Original submit clock for Explain only; unknown on legacy/Record rows.
+    pub display_submitted_at_ms: Option<i64>,
     /// Why recorded inputs or cached results could not be decoded, if they
     /// could not. Raised by [`ExecutionRow::into_checked`].
     pub(crate) undecodable: Undecodable,
@@ -181,7 +183,7 @@ impl ExecutionRow {
         node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, clone_source_inputs, \
+        clone_source_table, clone_source_inputs, display_submitted_at_ms, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -256,6 +258,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
                 .try_get::<Option<serde_json::Value>, _>("clone_source_inputs")?
                 .and_then(|v| serde_json::from_value(v).ok()),
             confirmed_at_ms: row.try_get("confirmed_at_ms")?,
+            display_submitted_at_ms: row.try_get("display_submitted_at_ms")?,
             ..ExecutionRow::default()
         };
         let mut read = read.with_encoded_evidence(
@@ -453,7 +456,9 @@ impl Store {
     ) -> sqlx::Result<()> {
         let e = &row.evidence;
         let outcome = row.status.outcome();
-        let input_tables = serde_json::to_value(&e.input_tables).unwrap_or_default();
+        let input_tables =
+            serde_json::to_value(e.raw_input_tables.as_ref().unwrap_or(&e.input_tables))
+                .unwrap_or_default();
         sqlx::query(
             r#"
             INSERT INTO executions (
@@ -463,9 +468,9 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30)
             "#,
         )
         .bind(&e.org_id)
@@ -511,6 +516,7 @@ impl Store {
         .bind(&e.node_profile_name)
         .bind(&e.node_project_name)
         .bind(&e.node_target_name)
+        .bind(e.display_submitted_at_ms)
         .execute(executor)
         .await?;
         Ok(())
@@ -768,7 +774,7 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation, query_dependencies
+                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -818,6 +824,7 @@ impl Store {
 /// its matched `executions` anchor (ticket #30) when one was recorded.
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
+    pub display_submitted_at_ms: Option<i64>,
     pub dialect: Option<String>,
     pub execution_decision_id: Option<String>,
     pub decision: String,
@@ -900,6 +907,7 @@ mod tests {
 
     fn decision_row(anchor_node_sql_hash: Option<&str>) -> ExplainDecisionRow {
         ExplainDecisionRow {
+            display_submitted_at_ms: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),

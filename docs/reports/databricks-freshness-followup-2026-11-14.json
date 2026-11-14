@@ -1,0 +1,200 @@
+{
+  "issue": 140,
+  "parent": 132,
+  "date": "2026-11-14",
+  "status": "validated-partial-incomplete",
+  "ticket_complete": false,
+  "unblocks_dependents": false,
+  "source_base": "a2330b0764d495614398617733d67d1ff3a683ed",
+  "hosted_archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-140-followup-20261113",
+  "validation_archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-140-followup-20261114",
+  "preserved_full_hosted_campaigns": [
+    {
+      "phase": "protocol-hosted",
+      "path": "protocol-hosted/golden/golden_20261113T144914.252Z_32c3c7a747004ef8965c1375e5e8b95b.jsonl",
+      "sha256": "e1d97d8c34be188a5a92c5f1164e9d4a0c2f67d6fbefd6eb7d7b7330852d35b0",
+      "rows": 54
+    },
+    {
+      "phase": "physical-hosted",
+      "path": "physical-hosted/golden/golden_20261113T145018.932Z_d753101bee944b6b811dfbcf538fd91e.jsonl",
+      "sha256": "6ff28f23f8d768732569ae0b78244647db8979253a8cd30f5d7da5185badb03e",
+      "rows": 32
+    },
+    {
+      "phase": "explain-delayed-hosted",
+      "path": "explain-delayed-hosted/golden/golden_20261113T192434.912Z_db9b748c14fe4f50a90790600f30e17b.jsonl",
+      "sha256": "ef4f206de14313520d62f600e632c25fa448e48bea1e26e7eb54d056af49e75a",
+      "rows": 10
+    }
+  ],
+  "accepted_fixtures": [
+    {
+      "path": "golden/fixtures/databricks_freshness_identical_current.jsonl",
+      "rpc_count": 4,
+      "sha256": "93140079852f8cf9cb744b03b3dd91e6c19d64c8999e0b4d67e57ccc31483664",
+      "known_gaps": 0,
+      "excluded": false,
+      "unknown_baselines": 0,
+      "temporal_mask": false
+    },
+    {
+      "path": "golden/fixtures/databricks_freshness_missing_current.jsonl",
+      "rpc_count": 5,
+      "sha256": "5a41e16e13928a9121c664f51b1a2cfcd20bd1919d758f6d1d65ea3226a55319",
+      "known_gaps": 0,
+      "excluded": false,
+      "unknown_baselines": 0,
+      "temporal_mask": false
+    },
+    {
+      "path": "golden/fixtures/databricks_freshness_both_missing.jsonl",
+      "rpc_count": 5,
+      "sha256": "d96f2be2f5319375cce99116fcf277d1714ff792d0acb666aec3d020a792a0c3",
+      "known_gaps": 0,
+      "excluded": false,
+      "unknown_baselines": 0,
+      "temporal_mask": false
+    },
+    {
+      "path": "golden/fixtures/databricks_explain_identity_submit_clock.jsonl",
+      "rpc_count": 6,
+      "sha256": "06f01db44599798626a24cc15feadf40754be8776967c436cb69a245f1c042bf",
+      "known_gaps": 0,
+      "excluded": false,
+      "unknown_baselines": 0,
+      "temporal_mask": false
+    }
+  ],
+  "identity_display_source": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/hosted-discovery/golden/golden_20261113T143716.670Z_9ec02e7b1a80486dacb409e84c198afb.jsonl",
+    "sha256": "7b2da7cf0e190dacf2d72a86aa988d0ae224b4cfcd4d68514b0337e83221eba2",
+    "source_rpc_count": 179,
+    "unmodified_indices": [
+      0,
+      3,
+      5,
+      48,
+      49,
+      51
+    ],
+    "omitted_intermediate_execution_publications": 0
+  },
+  "rust_physical": {
+    "initial": {
+      "success": true,
+      "failure": null,
+      "invocations": 10,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T103846.831Z_3d8fb13890a24870a532c4ef07e726bb.jsonl",
+          "complete": true,
+          "rows": 32,
+          "sha256": "e8fef5f1322a00b1e22a7f99288ca4d6ad7437ab680f3722ea6aa29ddce406e3",
+          "methods": {
+            "ValidateClientVersion": 4,
+            "SubmitTelemetryBatch": 9,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 6,
+            "ConfirmExecution": 2,
+            "GetExplainMessages": 7
+          }
+        }
+      ]
+    },
+    "final": {
+      "success": true,
+      "failure": null,
+      "invocations": 10,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T104252.508Z_fbcaff206599482aa561240e35fd4082.jsonl",
+          "complete": true,
+          "rows": 32,
+          "sha256": "9935a1a8225aa9d015d9891356ed8c622a14d4008e742785ac482122b1dc038d",
+          "methods": {
+            "ValidateClientVersion": 4,
+            "SubmitTelemetryBatch": 9,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 6,
+            "ConfirmExecution": 2,
+            "GetExplainMessages": 7
+          }
+        }
+      ]
+    },
+    "actual_required_builds": 2,
+    "actual_required_reuses": 2,
+    "crafted_required_reuses": 2,
+    "independent_full_result_checks": 6,
+    "state_disabled_references_emit_rpc": false,
+    "classification": "mixed-actual-client-and-crafted-public-grpc",
+    "runs": [
+      "20261114f140aa",
+      "20261114f140ab"
+    ],
+    "final_lease_inventory": {
+      "prod_before": 87,
+      "prod_after": 89,
+      "ref_before": 62,
+      "ref_after": 63,
+      "all_preexisting_objects_preserved": true,
+      "schema_creates": 0
+    }
+  },
+  "validation": {
+    "workspace": {
+      "status": "passed",
+      "passed": 634,
+      "failed": 0,
+      "ignored": 35,
+      "base": "a2330b0 plus this bounded production change"
+    },
+    "strict_conformance_corpora": 104,
+    "clippy_workspace_all_targets_fuzz": "passed",
+    "format": "passed",
+    "no_db_library": {
+      "status": "passed",
+      "tests": 310
+    },
+    "duckdb_25_case_gate": {
+      "status": "prior integration-base release evidence; not rerun for this slice",
+      "source_base": "a2330b0764d495614398617733d67d1ff3a683ed"
+    },
+    "python_oracles": [
+      "databricks_survey_test.py",
+      "databricks_baseline_test.py",
+      "databricks_freshness_test.py",
+      "explain_capture_test.py",
+      "explain_census_test.py",
+      "trace_validate_test.py"
+    ],
+    "strict_conformance": "passed all 104 corpora through production router",
+    "python_oracles_status": "all six passed (PyYAML venv)",
+    "post_seed_merge": {
+      "status": "passed",
+      "integration": "4a276427134bfe444a005e3293742a3acdc1dfb6",
+      "command": "cargo test -p dbt-state-harness --test databricks_seeds --test databricks_freshness_followup --test conformance",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 2,
+      "production_source_changed": false
+    }
+  },
+  "limits": [
+    "Physically stale hosted omitted-source SKIP remains unresolved; conservative BUILD retained.",
+    "Missing recorded/known current and all differing/unknown duplicate evidence retain conservative BUILD.",
+    "Actual repeated-source query emits one source entry; duplicate requests are explicitly crafted.",
+    "No targetless qualification, dependency/audit normalization, copies or snapshots expanded.",
+    "#158 and #159 partial blockers remain explicit.",
+    "Display clock NULL on legacy and Record rows; never backfilled or used for freshness."
+  ],
+  "resource_policy": {
+    "cargo_target_dir": "/home/maxfirman/.cache/dbt-state-rs/target-140",
+    "build_jobs": 3,
+    "rust_test_threads": 2,
+    "debug": 0,
+    "incremental": false
+  },
+  "merged_integration_base": "4a276427134bfe444a005e3293742a3acdc1dfb6"
+}

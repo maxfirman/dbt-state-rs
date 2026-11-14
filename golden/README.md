@@ -164,3 +164,28 @@ evidence to reuse before testing the unknown-epoch floor; they never regenerate
 old hashes from current code. Separate current-version storage-fault controls
 keep that floor meaningful after future identity-version changes. These are
 local upgrade artifacts, not hosted or physical warehouse captures.
+
+## Bounded Databricks freshness follow-up (2026-11-14)
+
+- `databricks_freshness_identical_current.jsonl`: complete four-RPC crafted
+  Submit/Confirm/duplicate Submit/Explain history; only identical known raw
+  current upstream evidence collapses. Source: certified 54-RPC protocol
+  campaign, captured before implementation.
+- `databricks_freshness_missing_current.jsonl` and
+  `databricks_freshness_both_missing.jsonl`: the two complete five-RPC histories
+  from the certified delayed 10-RPC campaign, including repeated Explain after
+  distinct delays. Decisions remain BUILD; display timestamps are frozen at
+  submit, with no synthetic freshness epoch.
+- `databricks_explain_identity_submit_clock.jsonl`: six unmodified RPCs at
+  indices 0/3/5/48/49/51 of #137's certified 179-RPC actual-client SQL discovery
+  capture. They retain client validation, initial build/confirmation, then the
+  identity-change build/confirmation and Explain. Removed calls between the
+  two builds are SKIPs, speculative undecided calls, Explain and telemetry;
+  none publish execution history. This isolates temporal rendering without
+  requiring unmerged SQL equivalence rules.
+
+All four fixtures enter the strict generic replay with zero gaps, exclusions,
+unknown baselines or temporal masks. Full campaigns and unsafe/conflicting
+control captures remain intact in the linked
+[partial report](../docs/reports/databricks-freshness-followup-2026-11-14.md);
+they are not replaced by the passing subset. #140 remains incomplete.

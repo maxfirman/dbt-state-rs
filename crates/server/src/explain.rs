@@ -45,6 +45,8 @@ const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 /// for #30, the matched `executions` anchor row). Keyed by `execution_decision_id`.
 #[derive(Debug, Clone)]
 pub struct ExplainNode {
+    /// Original submit instant, solely for rendering temporal text.
+    pub display_submitted_at_ms: Option<i64>,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -483,7 +485,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // rebuild for an unknown upstream epoch is local-only: hosted reuses
         // it (explain_unknown_epoch.jsonl, crafted).
         (DecisionKind::Build, R::UpstreamOutdated)
-            if has_provably_outdated_upstream(node)
+            if (has_provably_outdated_upstream(node) || has_missing_current_display(node))
                 // The equivalent's age words the Lag tolerance line; an
                 // unjudged equivalent (another environment) has none.
                 && !(reports_equivalent(node) && node.build_age_ms.is_none())
@@ -1184,8 +1186,15 @@ fn gap_line(
 ) -> qc::ExplainLine {
     let elapsed_ms = verdict
         .and_then(|v| {
+            let display = node
+                .input_tables
+                .iter()
+                .find(|up| up.name == v.name)
+                .and_then(|up| databricks_missing_current_display(node, up));
             v.current_epoch
-                .map(|c| c.saturating_sub(v.anchor_epoch).max(0))
+                .map(|current| (current, v.anchor_epoch))
+                .or(display)
+                .map(|(current, recorded)| current.saturating_sub(recorded).max(0))
         })
         .unwrap_or(0);
     let anchor_ref = if node.is_data_test() {
@@ -1204,13 +1213,18 @@ fn gap_line(
 /// after the execution finishes. The existing build age and build clock recover
 /// that instant without depending on the Explain request's wall clock (#140).
 fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
-    let decision_ms = node.anchor.as_ref().and_then(|build| {
-        crate::warehouse::Warehouse::from_dialect(&build.dialect)
-            .build_time_ms(build)
-            .zip(node.build_age_ms)
-            .map(|(built, age)| built.saturating_add(age))
+    let decision_ms = node.display_submitted_at_ms.or_else(|| {
+        node.anchor.as_ref().and_then(|build| {
+            crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                .build_time_ms(build)
+                .zip(node.build_age_ms)
+                .map(|(built, age)| built.saturating_add(age))
+        })
     });
-    match (up.last_modified_epoch, decision_ms) {
+    let display_epoch = up
+        .last_modified_epoch
+        .or_else(|| databricks_missing_current_display(node, up).map(|(current, _)| current));
+    match (display_epoch, decision_ms) {
         (Some(epoch), Some(now)) => {
             let Some(absolute) = chrono::DateTime::from_timestamp_millis(epoch) else {
                 return rel_time_line(up);
@@ -1235,6 +1249,50 @@ fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
         }
         _ => rel_time_line(up),
     }
+}
+
+/// The hosted missing-current FULL cell renders the submit clock as its
+/// timestamp. This is a display default only: raw epochs and the shared
+/// unprovable freshness verdict remain unchanged.
+fn databricks_missing_current_display(node: &ExplainNode, up: &InputTable) -> Option<(i64, i64)> {
+    let build = node.anchor.as_ref()?;
+    if node.execution_type != ModelExecutionType::Full as i32
+        || crate::warehouse::Warehouse::from_dialect(&build.dialect)
+            != crate::warehouse::Warehouse::Databricks
+        || !node.query_dependencies.is_empty()
+        || up.last_modified_epoch.is_some()
+        || build.last_modified_epoch.is_none()
+        || Some(up.name.as_str()) == node.target_table.as_deref()
+    {
+        return None;
+    }
+    let mut recorded = build.input_tables.iter().filter(|t| t.name == up.name);
+    let recorded_epoch = recorded
+        .next()?
+        .last_modified_epoch
+        .or(build.display_submitted_at_ms)?;
+    if recorded.next().is_some()
+        || node
+            .input_tables
+            .iter()
+            .filter(|t| t.name == up.name)
+            .count()
+            != 1
+    {
+        return None;
+    }
+    let verdicts = anchored_verdicts(node)?;
+    let verdict = verdicts.iter().find(|v| v.name == up.name)?;
+    if verdict.producer_changed {
+        return None;
+    }
+    Some((node.display_submitted_at_ms?, recorded_epoch))
+}
+
+fn has_missing_current_display(node: &ExplainNode) -> bool {
+    node.input_tables
+        .iter()
+        .any(|up| databricks_missing_current_display(node, up).is_some())
 }
 
 /// Legacy rendering when there is no recoverable decision instant. Anchored
@@ -1900,6 +1958,7 @@ mod tests {
 
     fn node(decision: DecisionKind, et: i32, desc: &str) -> ExplainNode {
         ExplainNode {
+            display_submitted_at_ms: None,
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,

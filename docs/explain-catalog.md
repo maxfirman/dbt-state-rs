@@ -14,6 +14,13 @@ and its shape is selected from the persisted Decision reason
 separate output, listed in [protocol.md](protocol.md).
 
 Source fixtures (`golden/fixtures/`):
+- `databricks_freshness_{identical_current,missing_current,both_missing}.jsonl`:
+  three complete crafted histories; identical known current duplicates SKIP,
+  unknown current epochs BUILD with submit-frozen display defaults.
+  `databricks_explain_identity_submit_clock.jsonl` retains the complete
+  actual-client causal baseline and identity-change rebuild, including
+  confirmation before Explain. See
+  [bounded follow-up evidence](reports/databricks-freshness-followup-2026-11-14.md).
 - `databricks_isolation_*.jsonl`: nine exact scope, rendered-alias,
   rejection/confirmation and concurrent-client histories, 378 RPCs and 157
   complete Explain trees; [dated partial evidence](reports/databricks-isolation-2026-11-13.md).
@@ -362,28 +369,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 644 trees in the
+Line counts from the [census](#explain-tree-census) over the 650 trees in the
 tracked fixtures (2026-11-14). A line without a marker or badge is "none"
-(3071 lines without a marker, 3702 without a badge). Only an explicit `0` is
+(3113 lines without a marker, 3750 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 1649 lines |
-| ExplainMarker | FAIL (2) | ✅ 392 lines |
-| ExplainMarker | INFO (3) | not observed across 644 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 644 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 539 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 92 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 401 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 1668 lines |
+| ExplainMarker | FAIL (2) | ✅ 397 lines |
+| ExplainMarker | INFO (3) | not observed across 650 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 650 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 545 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 93 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 406 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 34 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 194 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 101 lines |
+| ExplainBadge | FRESH (1) | ✅ 196 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 105 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 644 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 650 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 644 tracked trees: 320 crafted, 315 client 2.0.11, 7 client 2.0.6, 2 client (version unrecorded). The census reports no explicit INFO, unspecified or unmapped value.
+1. Origins across the 650 tracked trees: 2 client (version unrecorded), 316 client 2.0.11, 7 client 2.0.6, 325 crafted. The census reports no explicit INFO, unspecified or unmapped value.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -403,12 +410,12 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-14 (644 trees, none empty, no findings):
+Tracked fixtures, 2026-11-14 (650 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 137 | 78 crafted, 55 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 116 | 74 crafted, 40 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | SKIP | 138 | 79 crafted, 55 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 121 | 78 crafted, 41 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | APPEND | SKIP | 9 | 8 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |

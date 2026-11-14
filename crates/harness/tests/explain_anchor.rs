@@ -24,6 +24,7 @@ fn now_ms() -> i64 {
 /// The `node_decisions` row a Skip capture writes, anchored on `matched`.
 fn skip_capture(execution_decision_id: &str, matched: i64) -> CaptureInput {
     CaptureInput {
+        display_submitted_at_ms: None,
         org_id: ORG.into(),
         external_invocation_id: None,
         session_id: None,
