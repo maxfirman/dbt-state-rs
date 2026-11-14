@@ -32,10 +32,11 @@ Every call has a complete captured Explain response.
 Warehouse rules implement only these demonstrated identifier forms. A simple
 SELECT with named-column projections and one named input resolves its input
 against its own catalog/schema. Only that input's exact source span is changed;
-all other SQL bytes remain intact. Quoted dots, escaped backticks, CTEs,
-functions, expressions and other uncharacterized shapes retain exact SQL and
-resolution contexts. Formatting/expression policy (#137) and template/config
-policy (#138) remain separate slices. No Result copy eligibility is added.
+all other SQL bytes remain intact at this resolution stage. The subsequent
+[bounded SQL identity rules](databricks-sql-equivalence.md) admit captured
+formatting, table-alias, literal-projection and single-CTE forms; other shapes
+retain exact SQL and resolution context. Template/configuration policy (#138)
+remains a separate slice. No Result copy eligibility is added.
 
 A single Warehouse ingress rule canonicalizes demonstrated fully qualified
 physical metadata before history lookup, freshness, producer resolution,
@@ -67,12 +68,13 @@ physical input or context change still requires a build. Source view changes
 retain their external-table and view-ignored branches; relative source ages
 round minutes as captured.
 
-New Databricks identities
-use `dbt-state-databricks-identifiers-v2` (the exact rendered Spark aliases are
-covered by [#159 isolation evidence](reports/databricks-isolation-2026-11-13.md));
-independently captured old-server
-hash bytes must cold-miss, including an old pending execution confirmed after
-upgrade. Existing warehouse versions are unchanged.
+Current Databricks SQL identities use `dbt-state-databricks-sql-v3`, building on
+the earlier identifier-v1 and rendered Spark-alias-v2 rules (the aliases are
+covered by [#159 isolation evidence](reports/databricks-isolation-2026-11-13.md)).
+Representative rendered-mode v1/v2 frozen histories cold-miss, including an old
+pending execution confirmed after upgrade. Existing `compare_unrendered_code`
+template alternatives can still qualify under the preserved policy. Other
+warehouse versions are unchanged.
 
 Reproduce hosted characterization first:
 

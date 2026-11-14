@@ -471,7 +471,7 @@ async fn empty_namespace_writes_are_reusable_as_the_absent_scope() {
 }
 
 #[tokio::test]
-async fn legacy_empty_namespace_rows_and_late_pending_rows_share_latest_physical_scope() {
+async fn pre_v3_empty_namespace_rows_invalidate_and_still_control_latest_physical_scope() {
     use dbt_state_proto::query_cache as qc;
     use support::legacy;
     let frozen: serde_json::Value = serde_json::from_str(include_str!(
@@ -483,6 +483,13 @@ async fn legacy_empty_namespace_rows_and_late_pending_rows_share_latest_physical
     for pending in [false, true] {
         let server = support::start_server().await;
         let scenario = Scenario::connect(&server).await;
+        let mut absent = empty.clone();
+        absent.table_namespace = None;
+        // Current-version positive controls keep empty/absent equivalence
+        // sensitive even though the genuine frozen v2 hashes now invalidate.
+        scenario.build(empty.clone(), 159).await;
+        scenario.expect_skip(empty.clone()).await;
+        scenario.expect_skip(absent.clone()).await;
         let old_id = uuid::Uuid::new_v4().to_string();
         legacy::replace_with_frozen_execution(
             &server,
@@ -502,11 +509,9 @@ async fn legacy_empty_namespace_rows_and_late_pending_rows_share_latest_physical
             },
         )
         .await;
-        let mut absent = empty.clone();
-        absent.table_namespace = None;
         if !pending {
-            scenario.expect_skip(empty.clone()).await;
-            scenario.expect_skip(absent.clone()).await;
+            scenario.expect_execute(empty.clone()).await;
+            scenario.expect_execute(absent.clone()).await;
         }
         let mut changed = absent.clone();
         changed.sql = "select cast(160 as bigint) as id".into();
@@ -515,7 +520,11 @@ async fn legacy_empty_namespace_rows_and_late_pending_rows_share_latest_physical
         if pending {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             assert!(scenario.confirm(&old_id, built_at(159)).await);
-            scenario.expect_skip(absent).await;
+            // Late confirmation preserves the genuine old hash, so both
+            // spellings cold-miss. That same latest physical row must also
+            // block resurrection of the older CURRENT-version changed build.
+            scenario.expect_execute(empty.clone()).await;
+            scenario.expect_execute(absent).await;
             scenario.expect_execute(changed).await;
         } else {
             scenario.expect_execute(absent).await;
