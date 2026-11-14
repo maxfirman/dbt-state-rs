@@ -342,3 +342,21 @@ actual elapsed age. No prefix, mask, unknown baseline or Databricks replay gap
 is accepted. The [bounded report](../docs/reports/databricks-insert-overwrite-2026-11-14.md)
 links independent typed R/F/physical checks and fresh Rust acceptance. Whole
 #147/settings/schema/lifecycle coverage and #138/#140 remain incomplete.
+
+## Bounded Databricks audit ordinary-error histories (#144, 2026-11-14)
+
+`databricks_audit_aliased_error_history.jsonl` is the entire actual native
+28-RPC failed campaign followed by the separately cleared two historical
+ordinary transport controls. `databricks_audit_default_error_history.jsonl`
+retains the entire no-alias native 18-RPC failed attempt followed by all three
+separately cleared historical/synthetic controls. They are byte-for-byte
+concatenations in causal order, not selected prefixes; original campaign
+summaries and failed labels remain unchanged externally. Complete statuses,
+null error responses, six full Explain trees and the unchanged speculative
+fastpath remain observable. The narrow ordinary source-less audit-input error
+boundary matches every row without a gap, unknown baseline or partial-history
+allowance. C/D/E retain opaque historical hashes and make no native declaration
+or physical-execution claim. Separate fresh Rust counterparts verify the bounded
+five/three-cell contracts, including native fallback and physical F after the
+expected error; these fixtures do not complete #144 or its #143/#138 dependencies. See the
+[dated evidence and scope](../docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
