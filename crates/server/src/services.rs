@@ -883,7 +883,9 @@ impl ClientValidation for ClientValidationService {
 fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> Option<String> {
     let current: crate::explain::TemplateComparison =
         serde_json::from_value(row.template_comparison.clone()?).ok()?;
-    if row.execution_type != ModelExecutionType::Full as i32
+    if crate::warehouse::Warehouse::from_dialect(row.dialect.as_deref()?)
+        != crate::warehouse::Warehouse::Databricks
+        || row.execution_type != ModelExecutionType::Full as i32
         || current.enabled
         || !current.rendered_query.as_ref()?.literal_dependencies
         || row.query_dependencies.as_array()?.is_empty()
