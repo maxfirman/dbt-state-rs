@@ -26,6 +26,7 @@ python3 experiments/databricks_isolation_test.py         # offline concurrent ca
 python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates
 python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
 python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes
+python3 experiments/databricks_sql_equivalence_test.py   # typed oracle sensitivity and separate hosted-history plans
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not

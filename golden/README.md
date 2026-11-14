@@ -189,3 +189,17 @@ unknown baselines or temporal masks. Full campaigns and unsafe/conflicting
 control captures remain intact in the linked
 [partial report](../docs/reports/databricks-freshness-followup-2026-11-14.md);
 they are not replaced by the passing subset. #140 remains incomplete.
+
+
+`databricks_sql_equivalence.jsonl` and `databricks_sql_equivalence_cte.jsonl`
+contain complete179+26-RPC hosted histories for30 actual pinned-dbt SQL cells,
+including17+1 confirmed builds and9+3 required reuses. Captured ordinary comments,
+formatting, table aliases, literal values/spelling, output aliases and CTE scoped
+bindings are checked independently against complete typed physical results in
+State-disabled dbt references. Both sidecar-certified originals and all failed
+controller attempts remain under `~/.local/state/dbt-state-rs/databricks-137-20261113/`.
+The two frozen `databricks_identifiers_v{1,2}_*.json` upgrade fixtures come from
+immutable old servers, with v2 pending and confirmed exports and dirty-source
+candidate provenance explicitly retained. SQL-v3 invalidation does not weaken
+current-version NULL-epoch floor controls. Full exact replay/live acceptance is
+required before treating #137 as complete.

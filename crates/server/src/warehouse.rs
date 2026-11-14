@@ -343,7 +343,20 @@ impl Warehouse {
     ) -> (String, String, String) {
         if self == Self::Databricks {
             if let Some(resolved) = databricks::resolved_sql(sql, catalog, schema) {
-                return (resolved.sql, String::new(), String::new());
+                return (
+                    databricks::formatted_direct_sql(&resolved),
+                    String::new(),
+                    String::new(),
+                );
+            }
+            if let Some(normalized) = databricks::table_alias_sql(sql, catalog, schema) {
+                return (normalized, catalog.into(), schema.into());
+            }
+            if let Some(normalized) = databricks::literal_projection_sql(sql, catalog, schema) {
+                return (normalized, catalog.into(), schema.into());
+            }
+            if let Some(normalized) = databricks::cte_formatting_sql(sql, catalog, schema) {
+                return (normalized, catalog.into(), schema.into());
             }
         }
         (self.normalized_sql(sql), catalog.into(), schema.into())
@@ -862,7 +875,7 @@ mod tests {
         {
             let expected: &[u8] = match warehouse {
                 Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1",
-                Warehouse::Databricks => b"dbt-state-databricks-identifiers-v2",
+                Warehouse::Databricks => b"dbt-state-databricks-sql-v3",
                 _ => b"dbt-state-sql-v4",
             };
             assert_eq!(warehouse.sql_identity_version(), expected, "{warehouse:?}");

@@ -547,7 +547,7 @@ async fn current_identity_storage_fault_cannot_supply_an_automatic_copy() {
 }
 
 #[tokio::test]
-async fn frozen_unknown_epoch_is_ineligible_even_when_external_modifications_are_ignored() {
+async fn frozen_pre_v3_identity_invalidates_and_legacy_unknown_epochs_remain_ineligible() {
     use support::legacy::replace_with_frozen_execution;
     use support::scenario::Scenario;
     for bytes in [
@@ -559,8 +559,10 @@ async fn frozen_unknown_epoch_is_ineligible_even_when_external_modifications_are
             serde_json::from_value(snapshot["request"].clone()).unwrap();
         let server = support::start_server().await;
         let scenario = Scenario::connect(&server).await;
-        // This positive control proves the genuinely frozen fingerprint still
-        // matches today's submit. A v1/v2 mismatch cannot hide this regression.
+        // Databricks v2 is genuine pre-v3 history and must now cold-miss even
+        // with a known epoch. Snowflake's unchanged identity still reuses here.
+        // The separate CURRENT-version storage-fault test above requires a
+        // known-epoch positive before NULL, keeping floor coverage sensitive.
         replace_with_frozen_execution(
             &server,
             &frozen_execution(&snapshot, "confirmed", Some(1000)),
@@ -569,8 +571,12 @@ async fn frozen_unknown_epoch_is_ineligible_even_when_external_modifications_are
         let compatibility = scenario.submit(request.clone()).await;
         assert_eq!(
             support::response_variant(&compatibility),
-            "skip_execution",
-            "frozen known-epoch positive must match current identity for {}",
+            if request.dialect == "databricks" {
+                "ready_to_execute"
+            } else {
+                "skip_execution"
+            },
+            "frozen version compatibility must follow the explicit contract for {}",
             request.dialect
         );
         replace_with_frozen_execution(&server, &frozen_execution(&snapshot, "confirmed", None))
