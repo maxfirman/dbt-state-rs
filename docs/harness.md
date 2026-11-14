@@ -301,3 +301,35 @@ Commands, evidence and the copy/snapshot blockers are recorded in the
 [2026-11-12 capability report](reports/databricks-capabilities-2026-11-12.md).
 The runner's credential-free guard/comparison tests run under ordinary
 `cargo test --workspace`. This survey makes no Rust support claim.
+
+The [actual freshness follow-up](reports/databricks-freshness-actual-2026-11-14.md)
+adds a zero-object Reference execution for the evidenced three-column FULL
+SELECT contract. `databricks_reference_pilot.py` runs an isolated, State-disabled
+`dbt show --inline … --limit -1 --output json`, compares full duplicate/NULL rows
+with a complete typed API SELECT, certifies zero RPCs and requires unchanged
+inventories. Its `--schema-lease` must be the original ownership evidence with
+the intended roles; it creates no relation or schema.
+
+`databricks_freshness_actual.py` and `databricks_freshness_combined_race.py` each require
+only two fresh exact owned names in the lease's `prod` schema. The latter holds
+one owned ready-to-execute response before model SQL, then one owned Confirm
+after SQL, with an owned source UPDATE during each hold; original bytes continue
+unchanged. The earlier Confirm-only history remains reproducible through
+`databricks_freshness_race.py`. Both runners accept the baseline
+`--dbt`, `--proxy`, `--probe`, `--schema-lease`, `--work-dir` arguments and optional
+owned-loopback `--rust-url`. Run hosted first, certify/promote/replay its complete
+history, then use the ignored Rust tests in `databricks_freshness.rs` with fresh
+objects. The actual runner needs PyYAML; the race also needs Python grpcio,
+protobuf and `protoc`. No prior campaign object may be written or recycled.
+
+The strict reference adapter fault probes use ordinary Python. The gate's
+credential-free real-loopback transport checks require grpcio:
+
+```bash
+python3 experiments/databricks_readonly_reference_test.py
+uv run --with grpcio python experiments/databricks_confirm_gate_test.py
+```
+
+Equal changed-data epochs, delayed metadata and writes inside the warehouse
+SQL snapshot/read interval remain separate reachability questions. A successful bounded history does
+not close #140 or waive its independently unsafe omitted-source hosted SKIP.
