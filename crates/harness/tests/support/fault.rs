@@ -156,3 +156,61 @@ pub async fn collide_foreign_audit_request(
         .bind(local_request_id).bind(foreign_org).bind(foreign_decision_id).execute(db.pool()).await.expect("collide foreign auxiliary request UUID").rows_affected();
     assert_eq!(affected, 1);
 }
+
+/// Selective capture ordering fault: delay a physical-source baseline audit,
+/// without delaying the later literal-view decision audit or execution writes.
+pub async fn hold_physical_source_audit(db: &impl Db, target: &str) -> CaptureHold {
+    use sqlx::Connection;
+    let schema: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(db.pool())
+        .await
+        .expect("read capture fault scope");
+    let target_literal = target.replace('\'', "''");
+    sqlx::query(&format!(
+        r#"
+        CREATE FUNCTION hold_physical_source_capture() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+            IF NEW.org_id = 'local' AND NEW.target_table = '{target_literal}'
+               AND NEW.query_dependencies = '[]'::jsonb THEN
+                PERFORM pg_advisory_xact_lock(hashtext(TG_TABLE_SCHEMA), 141882);
+            END IF;
+            RETURN NEW;
+        END
+        $$
+    "#
+    ))
+    .execute(db.pool())
+    .await
+    .expect("create selective capture hold");
+    sqlx::query("CREATE TRIGGER hold_physical_source_capture BEFORE INSERT ON node_decisions FOR EACH ROW EXECUTE FUNCTION hold_physical_source_capture()")
+        .execute(db.pool()).await.expect("install selective capture hold");
+    let mut connection = sqlx::PgConnection::connect_with(&db.pool().connect_options())
+        .await
+        .expect("connect selective capture hold");
+    sqlx::query("SELECT set_config('search_path', $1, false)")
+        .bind(schema)
+        .execute(&mut connection)
+        .await
+        .expect("scope selective capture hold");
+    sqlx::query("BEGIN")
+        .execute(&mut connection)
+        .await
+        .expect("begin selective capture hold");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext(current_schema()), 141882)")
+        .execute(&mut connection)
+        .await
+        .expect("hold only baseline audit lock");
+    CaptureHold(connection)
+}
+
+pub async fn wait_for_physical_source_audit_hold(db: &impl Db) {
+    for _ in 0..100 {
+        let waiting: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND classid = hashtext(current_schema())::oid AND objid = 141882 AND NOT granted)")
+            .fetch_one(db.pool()).await.expect("observe selective audit waiter");
+        if waiting {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("prior audit did not reach the selective trigger");
+}

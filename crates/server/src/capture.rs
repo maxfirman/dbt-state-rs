@@ -19,42 +19,59 @@ pub use crate::decision::DecisionKind;
 #[derive(Default)]
 pub(crate) struct CaptureTasks {
     pending: std::sync::Mutex<
-        std::collections::HashMap<(String, String), tokio::sync::watch::Receiver<bool>>,
+        std::collections::HashMap<(String, CaptureId), tokio::sync::watch::Receiver<bool>>,
     >,
+}
+
+// These UUID domains must stay distinct: a request ID is never a decision ID.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum CaptureId {
+    Decision(String),
+    Request(String),
 }
 
 struct CaptureCompletion {
     tasks: std::sync::Arc<CaptureTasks>,
-    key: (String, String),
+    keys: Vec<(String, CaptureId)>,
     complete: tokio::sync::watch::Sender<bool>,
 }
 
 impl Drop for CaptureCompletion {
     fn drop(&mut self) {
-        self.tasks
-            .pending
-            .lock()
-            .expect("capture tracking lock")
-            .remove(&self.key);
+        let mut pending = self.tasks.pending.lock().expect("capture tracking lock");
+        for key in &self.keys {
+            pending.remove(key);
+        }
         self.complete.send_replace(true);
     }
 }
 
 impl CaptureTasks {
     pub(crate) fn spawn(self: &std::sync::Arc<Self>, pool: PgPool, input: CaptureInput) {
-        let completion = input.execution_decision_id.as_ref().map(|id| {
-            let key = (input.org_id.clone(), id.clone());
-            let (complete, receiver) = tokio::sync::watch::channel(false);
-            self.pending
-                .lock()
-                .expect("capture tracking lock")
-                .insert(key.clone(), receiver);
-            CaptureCompletion {
-                tasks: self.clone(),
-                key,
-                complete,
+        let keys: Vec<_> = input
+            .execution_decision_id
+            .iter()
+            .map(|id| CaptureId::Decision(id.clone()))
+            .chain(
+                input
+                    .request_id
+                    .iter()
+                    .map(|id| CaptureId::Request(id.clone())),
+            )
+            .map(|id| (input.org_id.clone(), id))
+            .collect();
+        let (complete, receiver) = tokio::sync::watch::channel(false);
+        {
+            let mut pending = self.pending.lock().expect("capture tracking lock");
+            for key in &keys {
+                pending.insert(key.clone(), receiver.clone());
             }
-        });
+        }
+        let completion = CaptureCompletion {
+            tasks: self.clone(),
+            keys,
+            complete,
+        };
         tokio::spawn(async move {
             let _completion = completion;
             capture_decision(&pool, input).await;
@@ -62,10 +79,19 @@ impl CaptureTasks {
     }
 
     pub(crate) async fn wait_for(&self, org_id: &str, ids: &[String]) {
+        self.wait_for_ids(org_id, ids.iter().cloned().map(CaptureId::Decision))
+            .await;
+    }
+
+    pub(crate) async fn wait_for_requests(&self, org_id: &str, ids: &[String]) {
+        self.wait_for_ids(org_id, ids.iter().cloned().map(CaptureId::Request))
+            .await;
+    }
+
+    async fn wait_for_ids(&self, org_id: &str, ids: impl Iterator<Item = CaptureId>) {
         let receivers: Vec<_> = {
             let pending = self.pending.lock().expect("capture tracking lock");
-            ids.iter()
-                .filter_map(|id| pending.get(&(org_id.to_owned(), id.clone())).cloned())
+            ids.filter_map(|id| pending.get(&(org_id.to_owned(), id)).cloned())
                 .collect()
         };
         for mut receiver in receivers {

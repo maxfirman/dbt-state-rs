@@ -99,6 +99,17 @@ stored. Tracking is in-memory and removed when a task finishes or unwinds;
 capture failures and decisions absent after restart retain the existing
 best-effort persistence semantics.
 
+The Databricks literal-view display also needs the auxiliary comparison for
+its exact matched/unmatched execution. When that evidence is absent, Explain
+waits for the same organization's capture keyed by that execution's request
+UUID, then rereads the requested decisions. Request and decision IDs occupy
+separate tracking domains. The reread is unconditional even if no pending
+capture remains: completion between the first read and registry lookup must
+not preserve a stale snapshot. This is one bounded dependency pass, without
+polling, an organization-wide barrier or a search for older matching builds.
+Genuinely absent, failed, malformed or pre-upgrade audit evidence still uses
+the existing fallback. Submit and Confirm do not wait for audit persistence.
+
 This avoids returning an empty first Explain merely because its successful
 Submit's capture is still running. A public regression delays capture writes
 with a database lock; the original read returned zero messages, while six

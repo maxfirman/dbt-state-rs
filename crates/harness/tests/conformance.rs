@@ -2448,3 +2448,158 @@ async fn databricks_auxiliary_audit_faults_restart_with_reuse_and_scoped_legacy_
         );
     }
 }
+
+/// The later literal-view decision must not change
+/// its Explain tree when its exact prior build's still-pending audit completes.
+#[tokio::test]
+async fn databricks_literal_view_explain_is_stable_while_prior_audit_is_pending() {
+    use qc::explain_client::ExplainClient;
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../golden/fixtures/databricks_target_lifecycle.jsonl"
+    ));
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let ordinary: Vec<_> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .collect();
+    let baseline = ordinary[ordinary.len() - 6];
+    let transition = ordinary[ordinary.len() - 4];
+    let initial: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(baseline.request.clone()).unwrap();
+    let changed: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(transition.request.clone()).unwrap();
+    assert!(initial.query_dependencies.is_empty());
+    assert!(!changed.query_dependencies.is_empty());
+    assert_eq!(initial.target_table, changed.target_table);
+    assert_eq!(initial.sql, changed.sql);
+    let server = support::start_server().await;
+    let channel = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(channel.clone());
+    let mut exec = ExecutionClient::new(channel.clone());
+    let mut explain = ExplainClient::new(channel.clone());
+    let unrelated = sql
+        .submit_enriched_sql(support::scenario::model("UNRELATED_LITERAL_ANCHOR").build())
+        .await
+        .unwrap()
+        .into_inner();
+    let unrelated_id = sql_decision_id(&unrelated);
+    let unrelated_tree = wait_for_scoped_explain(channel.clone(), &unrelated_id, "local").await;
+    let hold = support::fault::hold_physical_source_audit(
+        &server,
+        initial.target_table.as_deref().unwrap(),
+    )
+    .await;
+    let response = sql
+        .submit_enriched_sql(support::captured_request(initial, baseline))
+        .await
+        .unwrap()
+        .into_inner();
+    let baseline_id = sql_decision_id(&response);
+    let qc::submit_sql_response::Response::ReadyToExecute(response) = response.response.unwrap()
+    else {
+        panic!("baseline must build")
+    };
+    support::fault::wait_for_physical_source_audit_hold(&server).await;
+    support::confirm_captured(&mut exec, &entries, baseline, response.request_id.clone()).await;
+    assert!(support::rows::execution(&server, &response.request_id)
+        .await
+        .unwrap()
+        .is_confirmed());
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        sql.submit_enriched_sql(support::captured_request(changed, transition)),
+    )
+    .await
+    .expect("later submit must proceed while baseline audit is held")
+    .unwrap()
+    .into_inner();
+    assert_eq!(support::response_variant(&response), "ready_to_execute");
+    let changed_id = sql_decision_id(&response);
+    support::rows::wait_for_decision_capture(&server, "local", &changed_id).await;
+    for (org, id, expected_count) in [
+        ("local", unrelated_id, 1),
+        ("foreign-audit", baseline_id.clone(), 0),
+        ("local", "unknown-anchor".to_owned(), 0),
+    ] {
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            explain.get_explain_messages(support::request_with_org(
+                qc::GetExplainMessagesRequest {
+                    execution_decision_ids: vec![id],
+                },
+                org,
+            )),
+        )
+        .await
+        .expect("unrelated IDs must not await the held anchor")
+        .unwrap()
+        .into_inner();
+        assert_eq!(response.messages.len(), expected_count);
+        if expected_count == 1 {
+            assert_eq!(response.messages[0], unrelated_tree);
+        }
+    }
+    // B's own audit passes the selective hold. Start Explain before releasing
+    // only A; the fixed handler must await its exact anchor, not deadlock.
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        hold.rollback().await.unwrap();
+    });
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        explain.get_explain_messages(qc::GetExplainMessagesRequest {
+            execution_decision_ids: vec![changed_id.clone()],
+        }),
+    )
+    .await
+    .expect("Explain must complete after its exact prior audit is released")
+    .unwrap()
+    .into_inner();
+    assert_eq!(first.messages.len(), 1);
+    release.await.unwrap();
+    wait_for_scoped_explain(channel.clone(), &baseline_id, "local").await;
+    let after = explain
+        .get_explain_messages(qc::GetExplainMessagesRequest {
+            execution_decision_ids: vec![changed_id.clone()],
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let hosted_id = transition.response["response"]["ready_to_execute"]["execution_decision_id"]
+        .as_str()
+        .unwrap();
+    let (entry_index, hosted_explain) = entries
+        .iter()
+        .enumerate()
+        .find(|(_, row)| {
+            row.method == "GetExplainMessages"
+                && row.request["execution_decision_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|id| id.as_str() == Some(hosted_id))
+        })
+        .unwrap();
+    let mut mismatches = Vec::new();
+    replay_explain_messages(
+        channel,
+        hosted_explain,
+        entry_index,
+        path,
+        &HashMap::from([(hosted_id.to_owned(), changed_id)]),
+        &[],
+        &mut HashSet::new(),
+        &mut mismatches,
+    )
+    .await;
+    assert!(
+        mismatches.is_empty(),
+        "after prior capture must match actual hosted tree: {}",
+        mismatches.join("\n")
+    );
+    assert_eq!(
+        first, after,
+        "same decision's first Explain changes solely when the prior baseline audit finishes"
+    );
+}

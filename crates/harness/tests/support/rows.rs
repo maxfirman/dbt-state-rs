@@ -144,3 +144,17 @@ pub async fn node_states(db: &impl Db) -> Vec<StoredNodeState> {
     .await
     .expect("read node_states")
 }
+
+/// Establish that an exact decision's audit passed a selective capture fault.
+pub async fn wait_for_decision_capture(db: &impl Db, org: &str, id: &str) {
+    for _ in 0..100 {
+        let captured: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM node_decisions WHERE org_id = $1 AND execution_decision_id = $2)",
+        ).bind(org).bind(id).fetch_one(db.pool()).await.expect("read exact captured decision");
+        if captured {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("decision audit did not pass selective capture hold");
+}
