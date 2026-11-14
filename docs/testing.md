@@ -27,6 +27,7 @@ python3 experiments/databricks_deferral_test.py          # offline deferral hist
 python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
 python3 experiments/databricks_readonly_reference_test.py # no-object reference output/SQL fault probes
 python3 experiments/databricks_target_lifecycle_test.py   # same-lifetime continuation admission guards
+python3 experiments/databricks_policy_test.py             # immutable BUILD vs fresh policy reference fault probes
 python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes
 python3 experiments/databricks_sql_equivalence_test.py   # typed oracle sensitivity and separate hosted-history plans
 python3 experiments/databricks_dependency_identity_test.py # exact role ownership and complete-result fault probes
