@@ -472,3 +472,37 @@ variables plus `DBT_STATE_DATABRICKS_LIVE_CLEARANCE` and
 `DBT_STATE_DATABRICKS_RUN_ID`. It does not use a two-schema lease.
 See the [dated bounded evidence](reports/databricks-append-2026-11-14.md);
 whole #146, its dependencies and full #132 remain incomplete.
+
+`databricks_insert_overwrite.py` adds the bounded #147 SQL partition replacement
+history. The actual pinned serverless path is `INSERT INTO TABLE ... REPLACE ON`
+with null-safe partition key `p`; a configured unique key does not replace that
+key. Fixed first/steady SQL selects A or NULL. Independent literal cumulative
+`R` and selected `F` preserve duplicates, DATE/TIMESTAMP values, NULL payloads,
+unrepresented NULL partitions and the entire old target when `F` is empty.
+Every cell also retains full source/target Delta history, typed schema and
+partition metadata, own-runtime reuse, client statuses and a zero-RPC disabled
+SELECT-only `R` reference. The ordinary adapter warning, reuse and FULL refresh
+statuses are checked separately. Whole-second UTC show timestamps are accepted
+only through the independently demonstrated lossless `.000Z` spelling.
+
+The clearance fixes the reused owned container identity, four new names across
+both backends, exact staging/backup spellings, one concurrent extra persistent
+slot and unqualified session temporary views. It authorizes each backend
+separately and preserves all prior objects; it does not authorize replaying
+retained names, cleanup or new schemas. Hosted capture and complete exact public
+replay precede the ignored
+`databricks_insert_overwrite.rs::real_dbt_insert_overwrite_matches_independent_operation_history`.
+Use the same pinned-client/tool/artifact/clearance/run-ID environment variables
+as APPEND. The [dated evidence](reports/databricks-insert-overwrite-2026-11-14.md)
+records the two preserved helper guard stops, root-reviewed continuation and
+whole chronological fixture. Whole #147, settings/schema/lifecycle coverage and
+#138/#140 dependencies remain incomplete.
+
+For supplemental native replay, retain the exact audit-clock sidecar before the
+test State schema is dropped. The147 wrapper calls
+`support::native_clock::retain` after the proxy drains; set
+`DBT_STATE_EXTRA_REPLAY_CLOCKS` with the corresponding
+`DBT_STATE_EXTRA_REPLAY_CAPTURE`. Evidence is capture-hash-bound, complete for
+every ordinary submit, and keyed by organization/decision; it never changes a
+live request clock. The original147 capture uses independently verified original
+WAL recovery rather than a warehouse rerun. See [native clock replay](testing.md).

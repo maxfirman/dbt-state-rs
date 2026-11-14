@@ -98,7 +98,7 @@ def reference_canary(campaign, label):
             raise Refused('reference:state-rpc')
 
 
-def show_reference(campaign, label, sql, expected, direct):
+def show_reference(campaign, label, sql, expected, direct, validator=assert_reference):
     """Execute only the isolated, State-disabled show candidate proved by pilot."""
     c = campaign
     project = c.work / 'readonly-project'
@@ -141,7 +141,7 @@ def show_reference(campaign, label, sql, expected, direct):
     compiled = list((target/'compiled').glob('inline_*.sql'))
     if len(compiled) != 1:
         raise Refused('reference:compiled-output')
-    checks = assert_reference(result.stdout,result.stderr,direct,expected,sql,
+    checks = validator(result.stdout,result.stderr,direct,expected,sql,
                               (logs/'query_log.sql').read_text(),compiled[0].read_text())
     checks['zero_reference_rpcs'] = True
     c.save('readonly-results/'+label+'.json',checks)

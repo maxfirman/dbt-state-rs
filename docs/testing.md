@@ -248,3 +248,29 @@ Needs `~/.dbt/dbt_cloud.yml` and uses dbt State metering. Its local side starts
 with empty history and compares decision variants only, so it is discovery,
 not a conformance gate. Failed comparisons and divergences fail the process.
 Promote useful controlled cases into `golden/fixtures/`.
+
+### Native supplementary replay clocks
+
+`DBT_STATE_EXTRA_REPLAY_CAPTURE=/path/databricks_native.jsonl` adds a complete
+native capture to the hosted conformance gate. Native UUIDv7 IDs are minted
+*after* the handler samples its clock: their timestamps do not establish the
+instant saved for relative-age Explain text. Retain that actual clock with
+`support::native_clock::retain(&server, capture, evidence)` in the native test
+wrapper after the proxy drains and before the temporary State schema is dropped.
+The collector reads exact organization-scoped `node_decisions` audit rows; it
+never changes the live request clock or the proxy capture.
+
+Set `DBT_STATE_EXTRA_REPLAY_CLOCKS=/path/native-clocks.json` with the extra
+capture to replay those saved instants. The evidence must match the entire
+capture's SHA-256, cover every ordinary Submit decision once with its original
+organization and ID, and put each sampled clock inside the captured request
+interval. Missing, duplicate, foreign or out-of-interval rows fail validation.
+The sidecar records its persisted-audit schema or reviewed WAL-recovery
+provenance. Its provenance hashes identify independently retained evidence;
+they do not replace review of that evidence. Hosted fixtures keep their existing
+UUID clock path. Without a sidecar, supplemental replay retains that old path
+and cannot establish exact native relative-age fidelity.
+
+The exact five-row regression and its independent clock evidence are documented
+in `crates/harness/tests/fixtures/native-clock147.md`. Native supplementary
+results remain local replay evidence, separate from hosted conformance.

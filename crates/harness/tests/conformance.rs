@@ -88,10 +88,14 @@ fn captured_submit_request<T>(
     body: T,
     entry: &diff::GoldenEntry,
     fixture: &str,
+    native_clocks: Option<&support::native_clock::NativeClocks>,
 ) -> tonic::Request<T> {
     let mut request = support::captured_request(body, entry);
     if fixture.starts_with("databricks_") {
-        let at = databricks_decision_time(entry).expect("evidenced Databricks decision clock");
+        let at = native_clocks.map_or_else(
+            || databricks_decision_time(entry).expect("evidenced Databricks decision clock"),
+            |clocks| clocks.submit_clock(entry),
+        );
         request.metadata_mut().insert(
             dbt_state_server::REPLAY_NOW_HEADER,
             at.to_string().parse().unwrap(),
@@ -720,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        124,
+        125,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -748,6 +752,13 @@ async fn conformance_replay_all_corpora() {
     let mut partial_history: HashSet<(String, usize)> = HashSet::new();
     for path in paths {
         let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+        let native_clocks = std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE")
+            .filter(|extra| std::path::Path::new(extra) == path)
+            .and_then(|_| std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS"))
+            .map(|evidence| {
+                support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence))
+                    .expect("valid complete native audit clock evidence")
+            });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
         let server = support::start_server().await;
         let addr = server.addr;
@@ -795,6 +806,7 @@ async fn conformance_replay_all_corpora() {
                                 .unwrap(),
                             e,
                             &fixture,
+                            native_clocks.as_ref(),
                         ))
                         .await
                         .unwrap()
@@ -807,6 +819,7 @@ async fn conformance_replay_all_corpora() {
                             .unwrap(),
                             e,
                             &fixture,
+                            native_clocks.as_ref(),
                         ))
                         .await
                         .unwrap()
@@ -2602,4 +2615,144 @@ async fn databricks_literal_view_explain_is_stable_while_prior_audit_is_pending(
         first, after,
         "same decision's first Explain changes solely when the prior baseline audit finishes"
     );
+}
+
+/// Exact native rows 3/5/11/13/14 from the immutable #147 capture. The clock
+/// sidecar is independently recovered persisted audit evidence, never inferred
+/// from this expected tree. Default UUID replay crosses 21:13:27 by five ms.
+#[tokio::test]
+async fn native_explain_replays_sampled_audit_clock_across_uuid_second_boundary() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/databricks_native_explain_clock147.jsonl"
+    ));
+    let evidence = path.with_extension("clocks.json");
+    let clocks = support::native_clock::NativeClocks::load(path, &evidence).unwrap();
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    assert_ne!(
+        clocks.submit_clock(&entries[2]),
+        databricks_decision_time(&entries[2]).unwrap()
+    );
+    let server = support::start_server().await;
+    let ch = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+    let mut remap = HashMap::new();
+    let mut native_capture = entries.clone();
+    for index in [0, 2] {
+        let entry = &entries[index];
+        let req: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(entry.request.clone()).unwrap();
+        let response = sql
+            .submit_enriched_sql(captured_submit_request(
+                req,
+                entry,
+                "databricks_native_clock147",
+                Some(&clocks),
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let local = serde_json::to_value(&response).unwrap();
+        let body = local["response"]
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap();
+        native_capture[index].response = local.clone();
+        remap.insert(
+            hosted_submit_edid(&entry.response).unwrap(),
+            body["execution_decision_id"].as_str().unwrap().to_owned(),
+        );
+        if index == 0 {
+            let mut confirm: qc::ConfirmExecutionRequest =
+                serde_json::from_value(entries[1].request.clone()).unwrap();
+            confirm.request_id = body["request_id"].as_str().unwrap().to_owned();
+            exec.confirm_execution(support::captured_request(confirm, &entries[1]))
+                .await
+                .unwrap();
+        }
+    }
+    let mut mismatches = Vec::new();
+    for index in [3, 4] {
+        replay_explain_messages(
+            ch.clone(),
+            &entries[index],
+            index,
+            path,
+            &remap,
+            &[],
+            &mut HashSet::new(),
+            &mut mismatches,
+        )
+        .await;
+    }
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    // Retain a real audit from this production router before schema Drop.
+    // Only opaque response IDs differ from the immutable source capture.
+    let output = std::env::temp_dir().join(format!("native-clock-{}.json", uuid::Uuid::new_v4()));
+    let native_path = output.with_extension("jsonl");
+    let mut native_lines = Vec::new();
+    for (entry, original) in native_capture
+        .iter()
+        .zip(std::fs::read_to_string(path).unwrap().lines())
+    {
+        let mut value: serde_json::Value = serde_json::from_str(original).unwrap();
+        value["response"] = entry.response.clone();
+        native_lines.extend(serde_json::to_vec(&value).unwrap());
+        native_lines.push(b'\n');
+    }
+    std::fs::write(&native_path, native_lines).unwrap();
+    support::native_clock::retain(&server, &native_path, &output)
+        .await
+        .unwrap();
+    let retained = support::native_clock::NativeClocks::load(&native_path, &output).unwrap();
+    assert_eq!(retained.submit_clock(&native_capture[0]), 1794690782797);
+    assert_eq!(retained.submit_clock(&native_capture[2]), 1794690806996);
+    std::fs::remove_file(native_path).unwrap();
+    std::fs::remove_file(output).unwrap();
+}
+
+#[test]
+fn native_replay_clock_evidence_rejects_bad_hash_scope_coverage_and_intervals() {
+    let path = std::path::Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/databricks_native_explain_clock147.jsonl"
+    ));
+    let bytes = std::fs::read(path).unwrap();
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let base: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("clocks.json")).unwrap())
+            .unwrap();
+    let rejected = |value: serde_json::Value| {
+        let clocks: support::native_clock::NativeClocks = serde_json::from_value(value).unwrap();
+        assert!(clocks.validate(&bytes, &entries).is_err());
+    };
+    let mut bad = base.clone();
+    bad["capture_sha256"] = "wrong".into();
+    rejected(bad);
+    let mut bad = base.clone();
+    bad["audit_clocks"].as_array_mut().unwrap().pop();
+    rejected(bad);
+    let mut bad = base.clone();
+    bad["audit_clocks"][1] = bad["audit_clocks"][0].clone();
+    rejected(bad);
+    let mut bad = base.clone();
+    bad["audit_clocks"][1]["org_id"] = "foreign".into();
+    rejected(bad);
+    let mut bad = base.clone();
+    bad["audit_clocks"][1]["execution_decision_id"] = uuid::Uuid::nil().to_string().into();
+    rejected(bad);
+    for instant in [1794690806988i64, 1794690807003] {
+        let mut bad = base.clone();
+        bad["audit_clocks"][1]["display_submitted_at_ms"] = instant.into();
+        rejected(bad);
+    }
+    let mut bad = base.clone();
+    bad["provenance"]["decoder_sha256"] = "missing".into();
+    rejected(bad);
+    let mut bad = base;
+    bad["provenance"]["relation"] = "unknown".into();
+    rejected(bad);
 }

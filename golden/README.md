@@ -324,3 +324,21 @@ baseline, partial history or known gap. Complete typed cumulative multiset
 `R` and separate selected `F` References check physical correctness at every
 checkpoint. See [the bounded report](../docs/reports/databricks-append-2026-11-14.md).
 This does not complete whole #146 or promote its blocked dependencies.
+
+### Databricks null-safe partition replacement history (2026-11-14)
+
+`databricks_insert_overwrite_history.jsonl` contains the entire89-RPC hosted
+history: twelve ordinary type4 submits (six BUILD/Confirm and six positive
+SKIPs), FULL1 Record acknowledgement, thirteen Explain responses and all
+validation/telemetry/status envelopes. Fixed first/steady SELECTs exercise
+represented-partition deletion, exact duplicates, NULL replacement, an absent
+NULL partition, empty F retention, restoration and refresh→ordinary→reuse.
+
+The raw22+67 certified captures are concatenated byte for byte. The initial
+successful upsert stopped in a helper footprint parser; a separately reviewed
+continuation collected its missing Explain/reference and continued without
+rerunning successful dbt or source writes. The delayed first Explain retains its
+actual elapsed age. No prefix, mask, unknown baseline or Databricks replay gap
+is accepted. The [bounded report](../docs/reports/databricks-insert-overwrite-2026-11-14.md)
+links independent typed R/F/physical checks and fresh Rust acceptance. Whole
+#147/settings/schema/lifecycle coverage and #138/#140 remain incomplete.

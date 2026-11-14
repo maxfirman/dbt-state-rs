@@ -1,0 +1,21 @@
+{
+  "capture_sha256": "dbfbf20e6455f0e2d28cbe1c3248299435a6424b6da96e33e4fba72b05b5f8b8",
+  "provenance": {
+    "source": "wal_recovery",
+    "wal_sha256": "6bc01ee6feab6c5290792299b333f1291b45aee7e26623d57f8b0f40e3646c66",
+    "relation": "1663/16384/402593",
+    "decoder_sha256": "e0c9f2266a85bc3801c2c9cc5131c06e02e76e19497e0ef28cf55560c076d8ef"
+  },
+  "audit_clocks": [
+    {
+      "org_id": "local",
+      "execution_decision_id": "01a1dbe8-169c-77fa-a053-5aa0801d8515",
+      "display_submitted_at_ms": 1794690782797
+    },
+    {
+      "org_id": "local",
+      "execution_decision_id": "01a1dbe8-74d9-7157-8913-dc52f3fe36b1",
+      "display_submitted_at_ms": 1794690806996
+    }
+  ]
+}
