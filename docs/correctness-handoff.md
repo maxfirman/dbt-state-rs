@@ -446,17 +446,31 @@ replay fails when an entry becomes unused or resolved
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
-  The Target relation listed twice or with no epoch (#80) and the
-  ConfirmExecution without an epoch (#82) are accepted divergences (see
-  [below](#accepted-divergences)). A model submit with no target (#81) is
-  rejected with `InvalidArgument` before it is decided; hosted fails it too
-  (`Internal` when unset, `InvalidArgument` "Failed to process SQL" when
-  `""`). Pinned by
+  The Target relation listed twice or with no epoch (#80) remains an
+  accepted divergence (see [below](#accepted-divergences)). The original #81
+  no-target model submits failed hosted (`Internal` when unset,
+  `InvalidArgument` "Failed to process SQL" when `""`); the server's
+  absent-target guard is pinned by
   `offline_regressions.rs::model_submit_without_target_is_invalid_argument_not_a_result_copy`.
+  Later #158 controls accept absent-target FULL/VIEW logical outcomes; that
+  separate qualification/isolation blocker is described above.
 
-  The proxy does not record failed calls (see "Proxy fidelity"), so the
-  no-target submits and the no-epoch confirm have no fixture rows and no keyed
-  gap. The driver's stdout is their only record.
+  The proxy did not record the failed #81 submits or #82 no-epoch confirm
+  (see "Proxy fidelity"), so their original record is the driver's stdout,
+  without fixture rows or keyed gaps. Fresh #158 captures resolve #82 below.
+
+**Resolved 2026-11-14 — target-bearing ConfirmExecution without an epoch
+(#82 / #158).** The earlier server accepted this crafted confirmation and
+later rebuilt with `no_build_anchor`. It now matches hosted `Internal` (13),
+`Database operation failed`, leaving the physical execution pending so a valid
+retry can publish. Fresh Databricks and Snowflake controls are retained in
+[`databricks_lifecycle_null_confirm.jsonl`](../golden/fixtures/databricks_lifecycle_null_confirm.jsonl);
+invalid target/epoch pairs in RecordExecutions reject the whole batch in
+[`databricks_lifecycle_null_record_batch.jsonl`](../golden/fixtures/databricks_lifecycle_null_record_batch.jsonl).
+An absent target with an outcome epoch is also invalid; this does not settle
+absent-target, null-epoch FULL/VIEW logical reuse (#158). Raw legacy confirmed
+physical rows with NULL epochs still prevent physical reuse and copying, even
+after later valid deliveries ([lifecycle report](reports/databricks-lifecycle-2026-11-14.md)).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
@@ -480,13 +494,6 @@ local-only and renders no Explain tree.
   "Target relation as built" invariant above, which needs exactly one known
   epoch, is the conservative rule. Keyed gaps:
   `explain_ambiguous_rebuilds.jsonl` entries 2, 3, 6 and 7 (`empty_tree`).
-- **ConfirmExecution without an epoch for a target-bearing build (#82,
-  crafted d4).** Hosted fails it (`Internal`, "Database operation failed");
-  the server records it and a later submit rebuilds with `no_build_anchor`.
-  Rationale: crafted-only (client 2.0.11 never sends that confirm for a
-  non-test node), and a build with no epoch never proves the Target relation
-  is as built, so rebuilding is the conservative rule. No keyed gap: the
-  failed hosted call was not recorded.
 - **Data test with incomplete cached results (#87, crafted,
   `experiments/incomplete_test_results.py`).** A data test confirmed with
   `execution_results: null`, or with only `failures`, then resubmitted
