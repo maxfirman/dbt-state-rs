@@ -77,6 +77,7 @@ class WireGuard(unittest.TestCase):
         source='cdo_demo_db.state_20261114_append146.mb_20261114a150aa_inputs'
         target=source.replace('_inputs','_consumer')
         request={'execution_type':6,'dialect':'databricks','compare_unrendered_code':False,
+          'default_catalog':'cdo_demo_db','default_schema':'state_20261114_append146',
           'table_namespace':'fresh','query_dependencies':[],'freshness_tolerance_seconds':0,
           'stale_upstream_policy':0,'clone_chain_depth_limit':0,'ignore_external_modifications':False,
           'sql':'select * from '+source,'target_table':target,'tables':[{'name':source,'last_modified_epoch':1}],
@@ -86,7 +87,7 @@ class WireGuard(unittest.TestCase):
         calls=[{'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'ready_to_execute':{'request_id':'one'}}}},
           {'method':'ConfirmExecution','request':{'request_id':'one'},'response':{'success':True}}]
         m.microbatch_submit(calls,source,target,False,('2026-11-01','2026-11-03'),'ready_to_execute')
-        for field,value in [('execution_type',1),('freshness_tolerance_seconds',2700),('sql','select * from old_source'),('tables',[{'name':source,'last_modified_epoch':None}])]:
+        for field,value in [('execution_type',1),('default_catalog','other'),('default_schema','other'),('freshness_tolerance_seconds',2700),('stale_upstream_policy',1),('sql','select * from old_source'),('tables',[{'name':source,'last_modified_epoch':None}])]:
             changed=copy.deepcopy(calls);changed[0]['request'][field]=value
             with self.assertRaises(m.Refused):m.microbatch_submit(changed,source,target,False,('2026-11-01','2026-11-03'),'ready_to_execute')
         with self.assertRaises(m.Refused):m.microbatch_submit(calls+calls,source,target,False,('2026-11-01','2026-11-03'),'ready_to_execute')

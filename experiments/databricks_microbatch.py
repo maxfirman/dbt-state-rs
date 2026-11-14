@@ -369,6 +369,8 @@ def microbatch_submit(calls,source,target,target_exists,window,expected):
       '__microbatch_event_time_start':window[0]+'T00:00:00+00:00','__microbatch_event_time_end':window[1]+'T00:00:00+00:00'}
     normalize=lambda s:s.replace('`','').lower().strip()
     if (request.get('execution_type')!=6 or request.get('dialect')!='databricks' or extras!=wanted_extras
+            or request.get('default_catalog')!=source.split('.')[0]
+            or request.get('default_schema')!=source.split('.')[1]
             or request.get('compare_unrendered_code') or not request.get('table_namespace') or request.get('query_dependencies')
             or request.get('freshness_tolerance_seconds')!=0 or request.get('clone_chain_depth_limit')!=0
             or request.get('ignore_external_modifications') or normalize(request['sql'])!='select * from '+source

@@ -85,6 +85,15 @@ async fn real_dbt_microbatch_matches_independent_operation_history() {
     )
     .await
     .expect("retain exact native audit clocks before State schema cleanup");
+    std::fs::write(
+        artifacts.join("native-extra-replay-environment.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "DBT_STATE_EXTRA_REPLAY_CAPTURE": captures[0],
+            "DBT_STATE_EXTRA_REPLAY_CLOCKS": artifacts.join("native-replay-clocks.json"),
+        }))
+        .unwrap(),
+    )
+    .expect("retain actual capture and clock sidecar for native extra replay");
     assert!(
         output.status.success(),
         "artifacts: {}\n{}\n{}",
