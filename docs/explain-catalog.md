@@ -14,6 +14,9 @@ and its shape is selected from the persisted Decision reason
 separate output, listed in [protocol.md](protocol.md).
 
 Source fixtures (`golden/fixtures/`):
+- `databricks_cached_test_results.jsonl`: four actual-client source-less
+  pass/fail first-build and speculative-reuse trees, complete typed outcomes
+  and successful computation confirmations; [bounded #143 evidence](reports/databricks-cached-test-results-2026-11-14.md).
 - `databricks_freshness_{identical_current,missing_current,both_missing}.jsonl`:
   three complete crafted histories; identical known current duplicates SKIP,
   unknown current epochs BUILD with submit-frozen display defaults.
@@ -248,7 +251,7 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 5 (5 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 17 (11 client 2.0.11, 6 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 16 (14 client 2.0.11, 2 crafted), SKIP 22 (16 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 18 (16 client 2.0.11, 2 crafted), SKIP 24 (18 client 2.0.11, 5 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 106 (92 crafted, 14 client 2.0.11), SKIP 39 (30 crafted, 8 client 2.0.11, 1 client 2.0.6) |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 17 (13 client 2.0.11, 4 crafted), SKIP 9 (8 client 2.0.11, 1 crafted) |
@@ -369,28 +372,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 775 trees in the
+Line counts from the [census](#explain-tree-census) over the 779 trees in the
 tracked fixtures (2026-11-14). A line without a marker or badge is "none"
-(4027 lines without a marker, 4871 without a badge). Only an explicit `0` is
+(4033 lines without a marker, 4881 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 2042 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 2048 lines |
 | ExplainMarker | FAIL (2) | ✅ 482 lines |
 | ExplainMarker | INFO (3) | ✅ 59 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 775 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 779 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 650 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 120 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 451 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 453 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 34 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
 | ExplainBadge | FRESH (1) | ✅ 322 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 113 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 775 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 779 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 775 tracked trees: 2 client (version unrecorded), 395 client 2.0.11, 7 client 2.0.6, 371 crafted. INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
+1. Origins across the 779 tracked trees: 2 client (version unrecorded), 399 client 2.0.11, 7 client 2.0.6, 371 crafted. INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -410,7 +413,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-14 (775 trees in 124 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-14 (779 trees in 125 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -429,8 +432,8 @@ Tracked fixtures, 2026-11-14 (775 trees in 124 files, none empty; INFO catalogue
 | MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
 | SNAPSHOT | EXECUTE | 17 | 11 client 2.0.11, 6 crafted |
-| DBT_DATA_TEST | SKIP | 22 | 16 client 2.0.11, 5 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 16 | 14 client 2.0.11, 2 crafted |
+| DBT_DATA_TEST | SKIP | 24 | 18 client 2.0.11, 5 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 18 | 16 client 2.0.11, 2 crafted |
 | VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
 | VALUES | EXECUTE | 13 | 8 client 2.0.11, 5 crafted |
 | VALUES | CLONE | 3 | 3 client 2.0.11 |

@@ -225,3 +225,13 @@ upgrade tests require v4 cold misses and current-version positive controls.
 Supplementary local Rust captures may be replayed with
 `DBT_STATE_EXTRA_REPLAY_CAPTURE=<databricks_*.jsonl>`; they are never presented as
 hosted evidence or added to the ordinary hosted corpus count.
+
+## Databricks no-object cached failures (#143 partial, 2026-11-14)
+
+`databricks_cached_test_results.jsonl` is one complete 24-RPC actual-client
+history: source-less pass BUILD/unchanged speculative SKIP, then false-mode
+SQL change to failure BUILD/unchanged speculative SKIP, successful computation
+Confirm payloads and all four first-call Explain trees. Failures retain typed
+`3/true/true` and raw client exit 1. No audit object or physical data relation
+is read or written. See the [bounded evidence report](../docs/reports/databricks-cached-test-results-2026-11-14.md).
+#143 remains blocked by #138; no dependency promotion or scope waiver follows.
