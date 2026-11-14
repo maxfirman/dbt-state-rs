@@ -374,6 +374,14 @@ async fn captured_gap_display_boundaries_preserve_seconds_even_ties_and_hour_car
         .unwrap(),
     );
     assert_eq!(entries.len(), 138);
+    entries.extend(
+        diff::load_golden(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../golden/fixtures/databricks_relative_minute_duration.jsonl"
+        ))
+        .unwrap(),
+    );
+    assert_eq!(entries.len(), 150);
     let server = support::start_server().await;
     let scenario = Scenario::connect(&server).await;
     for triple in entries.as_chunks::<3>().0 {

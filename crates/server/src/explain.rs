@@ -1475,7 +1475,15 @@ fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
                     let hours = ((age / 1000) as f64 / 3_600.0).round_ties_even() as i64;
                     humanize_duration(hours * 3_600_000)
                 } else if (60_000..3_600_000).contains(&age) {
-                    humanize_duration(((age / 1000 + 30) / 60) * 60_000)
+                    let minutes = if node.anchor.as_ref().is_some_and(|build| {
+                        crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                            == crate::warehouse::Warehouse::Databricks
+                    }) {
+                        ((age / 1000) as f64 / 60.0).round_ties_even() as i64
+                    } else {
+                        (age / 1000 + 30) / 60
+                    };
+                    humanize_duration(minutes * 60_000)
                 } else {
                     humanize_duration(age)
                 };
