@@ -1,0 +1,1363 @@
+{
+  "fixture": "databricks_producer_policy.jsonl",
+  "origin": "actual pinned dbt2.0.11, complete same-graph causal lifetime",
+  "parts": [
+    {
+      "phase": "hosted",
+      "sha256": "169473a6ecb57e176bc830a9c07a2130f4457f1648b2aafe5c4b9539f1469cf0",
+      "rows": 30,
+      "source_path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-142-20261114/hosted/golden/golden_20261114T162654.460Z_f3409c486e994538b95d92472ef73fe3.jsonl"
+    },
+    {
+      "phase": "hosted-continuation",
+      "sha256": "d96c5e486ff520d4a10cdd9684dff405f1e876476bbc03a0e2d03cb9baec7042",
+      "rows": 231,
+      "source_path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-142-20261114/hosted-continuation/golden/golden_20261114T162944.310Z_4f701eb8d3c742609baec3973bb37c91.jsonl"
+    }
+  ],
+  "sha256": "c4e303c1820bbd3b13af97473efea930c31ac0e3273affcd6a7d57223d1e9547",
+  "methods": {
+    "ValidateClientVersion": 47,
+    "SubmitTelemetryBatch": 98,
+    "SubmitEnrichedSQLSpeculative": 29,
+    "SubmitEnrichedSQL": 29,
+    "ConfirmExecution": 11,
+    "GetExplainMessages": 28,
+    "RecordExecutions": 19
+  },
+  "cells": [
+    {
+      "label": "first",
+      "entry": 14,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because its table did not exist"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": null
+    },
+    {
+      "label": "first_unchanged",
+      "entry": 22,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "first",
+        "rows": [
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673627000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794673636000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "config_all_documented",
+      "entry": 34,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "first",
+        "rows": [
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673627000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794673636000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_partial_anchor_unchanged",
+      "entry": 44,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "dbt_node_state",
+        "stale_upstream_policy",
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_partial_anchor",
+        "rows": [
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673627000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794673804000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_partial_inside",
+      "entry": 54,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": true,
+        "decision_description": "model was a no-op because its query is up to date and its data is within lag tolerance"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_partial_anchor",
+        "rows": [
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673627000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794673804000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_partial_outside",
+      "entry": 60,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "any_partial_anchor",
+        "rows": [
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            10,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673627000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794673804000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_both_anchor_unchanged",
+      "entry": 72,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_both_anchor",
+        "rows": [
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673825000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794674020000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_both_inside",
+      "entry": 86,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": true,
+        "decision_description": "model was a no-op because its query is up to date and its data is within lag tolerance"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_both_anchor",
+        "rows": [
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673825000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794674020000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_both_outside",
+      "entry": 92,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "any_both_anchor",
+        "rows": [
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            17,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            20,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794673825000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794673627000
+        },
+        "build_epoch": 1794674020000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_logic_inside_anchor_unchanged",
+      "entry": 103,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_logic_inside_anchor",
+        "rows": [
+          [
+            1,
+            24,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            24,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674041000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674235000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_changed_logic_inside",
+      "entry": 113,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_logic_inside_anchor",
+        "rows": [
+          [
+            1,
+            24,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            24,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674041000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674235000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_logic_outside_anchor_unchanged",
+      "entry": 124,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674253000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674276000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_logic_outside_unchanged",
+      "entry": 130,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "any_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674253000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674276000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "any_changed_logic_outside",
+      "entry": 140,
+      "policy": 0,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "any_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            25,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674253000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674276000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_partial_anchor_unchanged",
+      "entry": 152,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "dbt_node_state",
+        "stale_upstream_policy",
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_partial_anchor",
+        "rows": [
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674488000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674511000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_partial_inside",
+      "entry": 162,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": true,
+        "decision_description": "model was a no-op because its query is up to date and its data is within lag tolerance"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_partial_anchor",
+        "rows": [
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674488000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674511000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_partial_outside",
+      "entry": 168,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": true,
+        "decision_description": "model was a no-op because its query is up to date and at least one upstream dependency is unchanged"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "all_partial_anchor",
+        "rows": [
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674488000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674511000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_b_after_partial_skips",
+      "entry": 178,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_partial_anchor",
+        "rows": [
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            26,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            27,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674488000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674051000
+        },
+        "build_epoch": 1794674511000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_both_anchor_unchanged",
+      "entry": 189,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_both_anchor",
+        "rows": [
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            34,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674532000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674725000
+        },
+        "build_epoch": 1794674747000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_both_inside",
+      "entry": 203,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": true,
+        "decision_description": "model was a no-op because its query is up to date and its data is within lag tolerance"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_both_anchor",
+        "rows": [
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            34,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674532000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674725000
+        },
+        "build_epoch": 1794674747000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_both_outside",
+      "entry": 209,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "all_both_anchor",
+        "rows": [
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            33,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            34,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674532000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674725000
+        },
+        "build_epoch": 1794674747000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_logic_inside_anchor_unchanged",
+      "entry": 220,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_logic_inside_anchor",
+        "rows": [
+          [
+            1,
+            40,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            40,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            41,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674768000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674779000
+        },
+        "build_epoch": 1794674962000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_changed_logic_inside",
+      "entry": 230,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_logic_inside_anchor",
+        "rows": [
+          [
+            1,
+            40,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            40,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            41,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674768000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674779000
+        },
+        "build_epoch": 1794674962000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_logic_outside_anchor_unchanged",
+      "entry": 241,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            41,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674980000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674779000
+        },
+        "build_epoch": 1794675003000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_logic_outside_unchanged",
+      "entry": 247,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "skip_execution",
+      "explained_decision": {
+        "decision": 0,
+        "skip_rejection_reason": null,
+        "clone_rejection_reason": null,
+        "is_stale": false,
+        "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+      },
+      "consumer_delta_fields": [],
+      "build_anchor": {
+        "label": "all_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            41,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674980000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674779000
+        },
+        "build_epoch": 1794675003000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    },
+    {
+      "label": "all_changed_logic_outside",
+      "entry": 257,
+      "policy": 1,
+      "lag_seconds": 180,
+      "decision": "ready_to_execute",
+      "explained_decision": {
+        "decision": 1,
+        "skip_rejection_reason": 6,
+        "clone_rejection_reason": 6,
+        "is_stale": false,
+        "decision_description": "model was executed because either its query didn't match or its upstream data is out of date"
+      },
+      "consumer_delta_fields": [
+        "tables"
+      ],
+      "build_anchor": {
+        "label": "all_logic_outside_anchor",
+        "rows": [
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            1,
+            41,
+            "a_20261114c142cc"
+          ],
+          [
+            2,
+            null,
+            "a_20261114c142cc"
+          ],
+          [
+            3,
+            41,
+            "b_20261114c142cc"
+          ],
+          [
+            4,
+            null,
+            "b_20261114c142cc"
+          ]
+        ],
+        "upstream_epochs": {
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_a`": 1794674980000,
+          "`cdo_demo_db`.`ds_20261112e134ef_ref`.`p_20261114a142aa_producer_b`": 1794674779000
+        },
+        "build_epoch": 1794675003000,
+        "origin": "declared-operation-reference-at-BUILD"
+      }
+    }
+  ],
+  "legacy_all_candidate": "updates_on:all parsed but emittedANY; stopped30RPC phase retained in full; not ALL acceptance",
+  "native142": "INCOMPLETE blocked138+140"
+}

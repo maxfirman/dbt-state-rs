@@ -32,14 +32,26 @@ const MARKER_INFO: i32 = 3;
 
 /// Decision-time template inputs, not a stored Explain tree. The pure renderer
 /// compares them with the same matched/unmatched physical row as the decision.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct TemplateComparison {
+    /// Auxiliary rendered-root evidence; absent on genuine older JSON rows.
+    /// This never participates in candidate, producer or copy identity.
+    #[serde(default)]
+    pub rendered_query: Option<RenderedQuery>,
     pub enabled: bool,
     pub display_upstream_order: Vec<String>,
     pub body: Option<String>,
     pub config: Option<String>,
     pub macros: Option<String>,
     pub rendered_hash: String,
+}
+
+/// Decision-time display inputs for the captured literal-view dependency shape.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct RenderedQuery {
+    pub outer_hash: String,
+    pub dependency_names: Vec<String>,
+    pub literal_dependencies: bool,
 }
 
 // Badges (only the OBSERVED subset — see docs/explain-catalog.md).
@@ -747,6 +759,9 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         });
     }
     let node = &displayed;
+    if let Some(lines) = literal_dependency_lines(node) {
+        return lines;
+    }
     let mut lines = base_explain_lines(node);
     let Some(current) = &node.template_comparison else {
         return lines;
@@ -834,6 +849,80 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         }
     }
     lines
+}
+
+/// Databricks FULL over literal query dependencies, captured in #141. Read
+/// only the exact anchor's auxiliary comparison; old/missing evidence keeps the
+/// existing renderer. Full rendered identity still decides rebuild/reuse.
+fn literal_dependency_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
+    let current = node.template_comparison.as_ref()?;
+    let rendered = current.rendered_query.as_ref()?;
+    let prior = node.anchor.as_ref().or(node.unmatched.as_ref())?;
+    let prior_comparison = prior.explain_comparison.as_ref()?;
+    let prior_rendered = prior_comparison.rendered_query.as_ref()?;
+    if current.enabled
+        || prior_comparison.enabled
+        || prior.execution_type != ModelExecutionType::Full as i32
+        || (!prior_rendered.dependency_names.is_empty() && !prior_rendered.literal_dependencies)
+        || crate::warehouse::Warehouse::from_dialect(&prior.dialect)
+            != crate::warehouse::Warehouse::Databricks
+        || node.execution_type != ModelExecutionType::Full as i32
+        || !node.genuine_upstreams().is_empty()
+        || node.own_target_absent()
+        || node.query_dependencies.is_empty()
+        || !rendered.literal_dependencies
+        || rendered.outer_hash != prior_rendered.outer_hash
+    {
+        return None;
+    }
+    let changed = prior.node_sql_hash.as_deref() != Some(current.rendered_hash.as_str());
+    let mut query = vec![leaf(
+        "the model query has not changed",
+        Some(MARKER_SUCCESS),
+        Some(BADGE_NODE_QUERY_UNCHANGED),
+    )];
+    match (node.decision, node.reason?, changed) {
+        (
+            DecisionKind::Build,
+            DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
+            true,
+        ) => {
+            query.push(section(
+                "upstream dependencies",
+                node.query_dependencies
+                    .iter()
+                    .map(|name| section(quote(name), vec![line("view ignored")]))
+                    .collect(),
+            ));
+            query.push(leaf(
+                "an upstream model query has changed",
+                Some(MARKER_FAIL),
+                None,
+            ));
+        }
+        (DecisionKind::Skip, DecisionReason::Reused(Reuse::Fresh), false) => {
+            query.push(leaf(
+                "upstream model queries have not changed",
+                Some(MARKER_SUCCESS),
+                None,
+            ));
+        }
+        _ => return None,
+    }
+    let freshness = if changed && prior_rendered.dependency_names.is_empty() {
+        Vec::new()
+    } else {
+        vec![leaf(
+            "upstream data is up to date",
+            Some(MARKER_SUCCESS),
+            None,
+        )]
+    };
+    Some(vec![
+        table_analysis_exists(node),
+        section("query analysis", query),
+        section("data freshness analysis", freshness),
+    ])
 }
 
 fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
@@ -1331,9 +1420,21 @@ fn gap_line(
     } else {
         quote(anchor_name)
     };
+    // Databricks primary gap controls truncate subsecond precision, then
+    // round minutes with even ties (90s -> 2m, 150s -> 2m, 151s -> 3m).
+    // Keep shared durations, subminute text and hour-range gaps unchanged.
+    let display_ms = if node.anchor.as_ref().is_some_and(|build| {
+        crate::warehouse::Warehouse::from_dialect(&build.dialect)
+            == crate::warehouse::Warehouse::Databricks
+    }) && (60_000..3_600_000).contains(&elapsed_ms)
+    {
+        (((elapsed_ms / 1000) as f64 / 60.0).round_ties_even() as i64) * 60_000
+    } else {
+        elapsed_ms
+    };
     line(format!(
         "updated {} after {} last executed",
-        humanize_duration(elapsed_ms),
+        humanize_duration(display_ms),
         anchor_ref
     ))
 }
@@ -1364,8 +1465,25 @@ fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
             } else {
                 // Hosted relative ages round minutes while exact subminute
                 // seconds and elapsed-duration/gap wording remain separate.
-                let relative_age = if (60_000..3_600_000).contains(&age) {
-                    humanize_duration(((age / 1000 + 30) / 60) * 60_000)
+                let relative_age = if node.anchor.as_ref().is_some_and(|build| {
+                    crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                        == crate::warehouse::Warehouse::Databricks
+                }) && (3_600_000..86_400_000).contains(&age)
+                {
+                    // Primary bounded clock intervals establish whole-second
+                    // hour rounding with even ties and the carry into a day.
+                    let hours = ((age / 1000) as f64 / 3_600.0).round_ties_even() as i64;
+                    humanize_duration(hours * 3_600_000)
+                } else if (60_000..3_600_000).contains(&age) {
+                    let minutes = if node.anchor.as_ref().is_some_and(|build| {
+                        crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                            == crate::warehouse::Warehouse::Databricks
+                    }) {
+                        ((age / 1000) as f64 / 60.0).round_ties_even() as i64
+                    } else {
+                        (age / 1000 + 30) / 60
+                    };
+                    humanize_duration(minutes * 60_000)
                 } else {
                     humanize_duration(age)
                 };

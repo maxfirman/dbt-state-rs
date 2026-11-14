@@ -1,0 +1,445 @@
+{
+  "status": "validated bounded safe partial; #141 INCOMPLETE and blocked by #140",
+  "native_blockers_unchanged": [
+    138,
+    140,
+    158,
+    159,
+    "clone managed-shallow-clone replacement",
+    "snapshot NULL business fields"
+  ],
+  "initial_integration": "f55b29fa3e43eeee1396041fe12e75a6b0586104",
+  "latest_integration": "facbe84547d09a2f6c0c9127dd8661a72b41519e",
+  "pinned_client": {
+    "version": "2.0.11",
+    "sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+  },
+  "warehouse": {
+    "catalog": "cdo_demo_db",
+    "dbsql_version": "2026.44",
+    "dbr_version": null,
+    "tables": "Unity Catalog MANAGED/Delta",
+    "converted_sources": "VIEW checked as VIEW"
+  },
+  "footprint": {
+    "fresh_names_total": 4,
+    "reference_objects": 0,
+    "before_counts": {
+      "originala": 100,
+      "originale": 95
+    },
+    "after_campaign_counts": {
+      "originala": 100,
+      "originale": 99
+    },
+    "protected_original_relations_preserved": 12,
+    "scope": "exact two fresh names per backend; same-name lifecycle changes only; no cleanup"
+  },
+  "phases": {
+    "hosted": [
+      {
+        "stage": "hosted",
+        "capture": [
+          {
+            "path": "golden/golden_20261114T152328.800Z_a582393177fe404da147e553b6228495.jsonl",
+            "complete": true,
+            "rows": 161,
+            "sha256": "827b2f650a7c4a271a2a749278d2e0011c397d4e972e6a91b19c61918ca7c5fc",
+            "methods": {
+              "ValidateClientVersion": 24,
+              "SubmitTelemetryBatch": 52,
+              "SubmitEnrichedSQLSpeculative": 24,
+              "SubmitEnrichedSQL": 24,
+              "ConfirmExecution": 12,
+              "GetExplainMessages": 25
+            }
+          }
+        ],
+        "managed_invocations": 24,
+        "readonly_show_invocations": 24,
+        "inventory_before": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/hosted/lease-inventory-before.json",
+        "inventory_after": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/hosted/lease-inventory-after.json"
+      },
+      {
+        "stage": "hosted-continuation",
+        "capture": [
+          {
+            "path": "golden/golden_20261114T153123.314Z_8d55f36adfb741a1b9687a16ca3b142f.jsonl",
+            "complete": true,
+            "rows": 142,
+            "sha256": "466609a70ff3fe342a4b14353ea91faaf572850a092b827304e6cbc6e9b1fb60",
+            "methods": {
+              "ValidateClientVersion": 22,
+              "SubmitTelemetryBatch": 48,
+              "SubmitEnrichedSQLSpeculative": 21,
+              "SubmitEnrichedSQL": 21,
+              "ConfirmExecution": 9,
+              "GetExplainMessages": 21
+            }
+          }
+        ],
+        "managed_invocations": 22,
+        "readonly_show_invocations": 21,
+        "inventory_before": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/hosted-continuation/lease-inventory-before.json",
+        "inventory_after": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/hosted-continuation/lease-inventory-after.json"
+      }
+    ],
+    "rust": [
+      {
+        "stage": "rust/base",
+        "capture": [
+          {
+            "path": "golden/golden_20261114T160159.254Z_9947cddb17794b99bb64ece4c884c0b3.jsonl",
+            "complete": true,
+            "rows": 160,
+            "sha256": "f4833394aca52a204664f266bf3b360f073bcbb1328deefac368ad25840c38f9",
+            "methods": {
+              "ValidateClientVersion": 24,
+              "SubmitTelemetryBatch": 51,
+              "SubmitEnrichedSQLSpeculative": 24,
+              "SubmitEnrichedSQL": 24,
+              "ConfirmExecution": 12,
+              "GetExplainMessages": 25
+            }
+          }
+        ],
+        "managed_invocations": 24,
+        "readonly_show_invocations": 24,
+        "inventory_before": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/rust/base/lease-inventory-before.json",
+        "inventory_after": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/rust/base/lease-inventory-after.json"
+      },
+      {
+        "stage": "rust/continuation",
+        "capture": [
+          {
+            "path": "golden/golden_20261114T160923.430Z_23c1d67a590e4d6980afb9a1e2d02eb9.jsonl",
+            "complete": true,
+            "rows": 142,
+            "sha256": "69a0af16c0c64cd25be0e13e8818092fb80ca7fda3a50698abe88cdd0cb5cf96",
+            "methods": {
+              "ValidateClientVersion": 22,
+              "SubmitTelemetryBatch": 48,
+              "SubmitEnrichedSQLSpeculative": 21,
+              "SubmitEnrichedSQL": 21,
+              "ConfirmExecution": 9,
+              "GetExplainMessages": 21
+            }
+          }
+        ],
+        "managed_invocations": 22,
+        "readonly_show_invocations": 21,
+        "inventory_before": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/rust/continuation/lease-inventory-before.json",
+        "inventory_after": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114/rust/continuation/lease-inventory-after.json"
+      }
+    ]
+  },
+  "per_backend": {
+    "managed_invocations": 46,
+    "successful_ordinary_submits": 45,
+    "builds": 21,
+    "required_reuses": 24,
+    "expected_pre_submit_client_failures": 1,
+    "explain_requests": 46,
+    "readonly_show_invocations": 45,
+    "version_only_setup_invocations": 2,
+    "warehouse_dbt_invocations_including_references": 91
+  },
+  "fixture": {
+    "path": "golden/fixtures/databricks_target_lifecycle.jsonl",
+    "rows": 303,
+    "sha256": "c8eb30ea74255ca2c7403ce7928c31ab90b4b90edb9eca7847bd88b24dccc5dd",
+    "causal_stages": 2,
+    "gaps": 0,
+    "unknown_baselines": 0,
+    "partial_history": 0,
+    "new_response_or_tree_masks": 0
+  },
+  "production_change": {
+    "files": {
+      "crates/server/src/explain.rs": "ccbc6f19410c8473377fedab210252868d99c92e82c1c3345be9d674b65ea15d",
+      "crates/server/src/store.rs": "0381236a52736027659aa2bd7ed2aa2f181be4a7e357055d4b7642ffcd7edc0a",
+      "crates/server/src/warehouse.rs": "4f1d28b21568e2325d7708ad377af9f1b40739d3f53e912f496bef26612e7609"
+    },
+    "kind": "auxiliary persisted Explain comparison/read-only exact-anchor lookup; no migration",
+    "decision_identity_or_candidate_changes": false,
+    "fingerprint_version_changes": false,
+    "current_production_matches_all_frozen_gates_and_live": true,
+    "production_file_hashes": {
+      "crates/server/Cargo.toml": "47fb42b16eaf3617b6d7379108bf7e67afabed75d82a81e73ba9490543795fd5",
+      "crates/proto/build.rs": "7726f226bbb57ebf4bf05acff43c0a293e2e2870c8475279056cec0c7779b843",
+      "crates/proto/Cargo.toml": "cf234b4bd92937e1e5c8fc8dfbc88b6f635a8ee7a0d683d6181f7877c4c2b5fc",
+      "crates/proto/src/lib.rs": "917694ddea50317eba7e6f13c7cf0e16ba54974e7a39137cb3928bcbb40405fa",
+      "crates/server/tests/capture.rs": "dbd20c53a5f689e3e0fd1d340a37e17bdf3666f6e49426b3fb1c0516cc2f688d",
+      "crates/server/src/warehouse.rs": "4f1d28b21568e2325d7708ad377af9f1b40739d3f53e912f496bef26612e7609",
+      "crates/server/src/submit_decision.rs": "a6b38052b1fbc88f9c9466272c6f4430b10301b63f2811652f1d5576e14dad8d",
+      "crates/server/src/store.rs": "0381236a52736027659aa2bd7ed2aa2f181be4a7e357055d4b7642ffcd7edc0a",
+      "crates/server/src/sql_norm.rs": "6a30747f2fc87774393dd4a188cd726a9adde4f2f5af8a8b86893f9b9f26507d",
+      "crates/server/src/sql_identity.rs": "a96f67ee24e392580430ed056374214c2426fd57be9e8768cc66c489fad642bc",
+      "crates/server/src/services.rs": "f90d5bf82998f68f814fe0b6197452ba7ccb6895d40eaad1de4eacd7af9808b2",
+      "crates/server/src/selector.rs": "bec277816bccb04065bb44ae37166487238083117fd1b69fa274aa084f2dd0a0",
+      "crates/server/src/reuse_candidate.rs": "d516c21637dd3af2aa56d9d1fcda5a8e983dbc471fc538bc24165e3b08af39c6",
+      "crates/server/src/result_copy.rs": "3160291fe79fbb06f00cd23c5b730b50123165694f287f7ad3ad8b3fe220d07d",
+      "crates/server/src/main.rs": "f78b1fc4c1524310dca03fcbaf264e060b3d66e7d55cf3068bcfb4af0d13669d",
+      "crates/server/src/lib.rs": "e96f80cc6fb5cdae25e69ae5acdb56b17f1ed8ebe71b4a71cafcfa8691320ed5",
+      "crates/server/src/fingerprint.rs": "82e6b79d47d1457aec11583f0a1da3b0a2a3016a6f17600544ef3cfe8248d5d9",
+      "crates/server/src/explain.rs": "ccbc6f19410c8473377fedab210252868d99c92e82c1c3345be9d674b65ea15d",
+      "crates/server/src/execution.rs": "7a5a653fe5e2c3583234ee095b98516b5b45dde435a97ed3d4872ca60e356693",
+      "crates/server/src/decision_proptest.rs": "b9e52905a026cf64dc9d40d59130e5f4ed3dcdd4a7c4c9368da6753e60949b2c",
+      "crates/server/src/decision.rs": "4269454763e63555e8fdff2e08f2279f7f64c0b24b7492f5e866b7e1a4d2c802",
+      "crates/server/src/config.rs": "6896a830f0ee244fc2a67c33a0a397fd5554be5264f0db0f43dc0176dda9cf41",
+      "crates/server/src/capture.rs": "7c9d717cde069706fd9708695c6ecb7340f938f6e23fbf185d65a6f11fea2180",
+      "crates/server/proptest-regressions/sql_norm.txt": "b07ee70cc10ef1b8ffd477e91154ec70e0ae0041f2ba82646b51c63bc8a768b7",
+      "crates/server/proptest-regressions/decision_proptest.txt": "13a0fbb88ce6da580a7b92ad5a318516e4d77e7672e651aa348e17ef5da0c5c7",
+      "crates/server/migrations/0023_template_comparison.sql": "bee220587802b5e7d4fa8c0ae787f31158140872e58e5e2506388c0e462d0295",
+      "crates/server/migrations/0022_explain_submit_clock.sql": "5352931b857d0c50d8280e5898e1e3249c96553d24e623f0b8933efc8f77ff9d",
+      "crates/server/migrations/0021_named_deferral_scope.sql": "2caca4694b54230e07f012e61a37b82f251585d6902d899d085d944387d35865",
+      "crates/server/migrations/0020_physical_relation_key.sql": "cfde0236e39335f2369d7697376b8688c79278cc1c770a1f132e1e0475938036",
+      "crates/server/migrations/0019_decision_reads_relation.sql": "ddf9c7938cfcacc3526ed5e2d4fa6f13778ca0e1f501757f30f89abaad006f4d",
+      "crates/server/migrations/0018_copy_source_inputs.sql": "48c7a6c82890ddd9e71b1c987a3b58b1fc9ddc99e886cd5b77a6fc851fda0601",
+      "crates/server/migrations/0017_decision_unmatched_execution.sql": "ea0c79935f75809d06026e8ec697f9ba6db89b0e474daa48e4fd82fb8d83b794",
+      "crates/server/migrations/0016_decision_rejection_codes.sql": "f72f4934919cbecb62b439be917cffc68972bc042e806199e141bc805ace6b31",
+      "crates/server/migrations/0015_decision_freshness.sql": "f4b00a606bea395b64408c1c080e96f30ab9df7452a38b1e7a04f0afeba89383",
+      "crates/server/migrations/0014_decision_reason.sql": "8428392229c3009a067c0f82427fc939c57c49522025c2e2238f60bfe96474a4",
+      "crates/server/migrations/0013_matched_execution_id.sql": "8303a6061030d606e53c4d015099ffa60522632dc0e9945728003eb962a7826b",
+      "crates/server/migrations/0012_physical_warehouse_scope.sql": "deb6c70024b681a710e7de609901920657032fbcf613524d9d3f4cdad254a52d",
+      "crates/server/migrations/0011_node_template_hash.sql": "b06c1e5f8f5db6cd9857be3adda415f6c4817a31a65384fce63e008895f0eb86",
+      "crates/server/migrations/0010_node_state_fqn.sql": "10f2d972c8a68aae4a1799bf310990d18026bbbcc12fe58bdd18be76e36ad29d",
+      "crates/server/migrations/0009_node_states.sql": "16ced674784e5bd3959e6802b5a35201bf6b5631a0e254d21d718b4afdcdedee",
+      "crates/server/migrations/0008_cross_env_reuse.sql": "eb20de0be838dc7596fae3e19a82157bc82fce9f35ef82260fb194d2c5f6b8ac",
+      "crates/server/migrations/0007_execution_results.sql": "272329f22212a8b399c5829dd8345b80e76cae98e3162788ee3a71be237ac8ed",
+      "crates/server/migrations/0006_node_sql_hash.sql": "c47e58ab9e341ce3727ec6eac9af0ab9d1fa71032357050df19273f82c24c5f6",
+      "crates/server/migrations/0005_query_dependencies.sql": "18c1b03511d48658ec7d1d1a6c28d069f55b30eaf61df6c4fc40fd2da2f94d5c",
+      "crates/server/migrations/0004_honest_log.sql": "98cbb28c571a89a8f8920eaad13ec0cc81e864071d138e37446b4a52762b1135",
+      "crates/server/migrations/0003_ui_domain.sql": "d72f46ec7f4c3dcd81082baa748c733168f5d9aea410f86e843e2e246d71abe8",
+      "crates/server/migrations/0002_values_hash.sql": "f235340db16d81d3c47f496ac162618ffcb53b65ff3bbbf0bced996f3d5911d3",
+      "crates/server/migrations/0001_init.sql": "415592494bcdb93ff7d37fdd000e53e846e78cae1c680be7985eb3e47fde8f8d",
+      "crates/server/src/warehouse/snowflake.rs": "da0c7bf73c67f6cc7a23a1e89de879644ce6e9256e45ed30157595b80a941a14",
+      "crates/server/src/warehouse/duckdb.rs": "f3d16989d187fc935ee20730224d3746e9ec345e7f363cf0c1f972d88665e242",
+      "crates/server/src/warehouse/databricks.rs": "271fa0e2290999318577873b0dba6b47bc999048ed665da2c0b133011afcbbf5",
+      "crates/server/src/store/history.rs": "77a7b0e99fe2307bee860e51f79355a1b2748d4a0f144367ffa29e6750b10640",
+      "proto/query_cache_protobuf/query_cache/struct.proto": "1f4efd0ebb93a2e0851f40bb3936d4e40708225032160e8bb074d9773dbe5a51",
+      "proto/query_cache_protobuf/query_cache/shared.proto": "dfddbbea2bd28fae978341d6df0e3dfcefacb657d889375e091cbd38070f6bcf",
+      "proto/query_cache_protobuf/query_cache/services/sql_service.proto": "49fd24185f183814234447babf7b66267a3ee87a55ce214acb21e4435f184642",
+      "proto/query_cache_protobuf/query_cache/services/selector_service.proto": "da2ef334979dc2b485fbaf6d7e19b4695c1d334c21c5e4f9d0b276c2d3a69497",
+      "proto/query_cache_protobuf/query_cache/services/health_service.proto": "c04dbf403d0e4006e52a41011bbb002cb5c43a3d6638b286f856c2e2d168a561",
+      "proto/query_cache_protobuf/query_cache/services/explain_service.proto": "066abaed9da3e1d2397bd1ea536b6abc2c9c0b5884d130fdf5e6c0238b8ec32b",
+      "proto/query_cache_protobuf/query_cache/services/execution_service.proto": "f8689cd41b6a5b3eab7f63c6fa5824debdc9f7d972c643aae27554f5a4fc0db5",
+      "proto/query_cache_protobuf/query_cache/services/clone_service.proto": "f4f767112833585f0f7fc4236cf203dd1e73e7be1af65631a5458ba0b2003466",
+      "proto/query_cache_protobuf/query_cache/services/client_validation_service.proto": "28a95609242ffe8504a1fe8fe64d149371d0e3a0781070d7d696dc0e9530e6b2",
+      "proto/query_cache_protobuf/query_cache/services/client_telemetry_service.proto": "17b2bf78b91a83ff065b3e3e441ea5b63094536ae3e5d3dea36220985b4c5e2b",
+      "Cargo.toml": "b04dc0e81c6aece2380849366fbd5b76d6323c2cce4b1d62fa680a1b82065e97",
+      "Cargo.lock": "a2e329fab002d4744e98ac0167daa5e6030bdbba70c124a7744dcf0170d5a7c2"
+    }
+  },
+  "oracle": {
+    "complete_typed_schema_multiset_and_properties": true,
+    "duplicates_and_nulls": true,
+    "zero_rpc_references": 90,
+    "generated_seed": 141,
+    "deliberate_live_corruption_rejections_per_backend": 3,
+    "ignore_snapshot": "explicit target999 vs independently fresh source10, checked separately",
+    "view_evidence": "literal definitions in query_dependencies; no physical view-epoch policy inferred"
+  },
+  "gates": {
+    "frozen_clippy": {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--features",
+        "fuzz",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0,
+      "elapsed": 26.449449728010222,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-clippy.json"
+    },
+    "frozen_library": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-server",
+        "--lib"
+      ],
+      "returncode": 0,
+      "elapsed": 30.42762610700447,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-library.json"
+    },
+    "frozen_public": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-harness",
+        "--test",
+        "conformance",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "elapsed": 210.59561953600496,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-public.json"
+    },
+    "frozen_live-build": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-harness",
+        "--test",
+        "databricks_freshness",
+        "--no-run",
+        "--message-format=json"
+      ],
+      "returncode": 0,
+      "elapsed": 3.174169803969562,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-live-build.json"
+    },
+    "frozen_workspace": {
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "returncode": 0,
+      "elapsed": 583.0096702870214,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-workspace.json"
+    },
+    "frozen_duckdb": {
+      "argv": [
+        "./scripts/duckdb-ci.sh",
+        "--jobs",
+        "2",
+        "--artifacts",
+        "/tmp/dbt-state-141/artifacts/duckdb-141"
+      ],
+      "returncode": 0,
+      "elapsed": 1049.2372580319643,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-duckdb.json"
+    },
+    "frozen_format": {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "returncode": 0,
+      "elapsed": 2.192968868999742,
+      "metadata": "/tmp/dbt-state-132-context/target141-final2-format.json"
+    },
+    "post_sync_public": {
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-harness",
+        "--test",
+        "conformance",
+        "--",
+        "--nocapture"
+      ],
+      "returncode": 0,
+      "elapsed": 218.79415408091154,
+      "metadata": "/tmp/dbt-state-132-context/target141-final3-public.json"
+    },
+    "post_sync_clippy": {
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--features",
+        "fuzz",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "returncode": 0,
+      "elapsed": 20.502129224012606,
+      "metadata": "/tmp/dbt-state-132-context/target141-final3-clippy.json"
+    },
+    "post_sync_format": {
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "returncode": 0,
+      "elapsed": 1.9357196179917082,
+      "metadata": "/tmp/dbt-state-132-context/target141-final3-format.json"
+    }
+  },
+  "gate_attribution": {
+    "frozen_workspace": {
+      "passed": 661,
+      "failed": 0,
+      "ignored": 42,
+      "base": "e8e0f8d with frozen141 production"
+    },
+    "frozen_duckdb": {
+      "passed": 25,
+      "failed": 0,
+      "fresh_run": true,
+      "total_seconds": 1049.14
+    },
+    "post_d4_compatibility_conformance_subset": {
+      "passed": 6,
+      "includes_new_persistence_tests": 2,
+      "false_mode_storage_fault_and_org_collision_cases": 5,
+      "true_template_genuine_old_json_after_restart": true
+    },
+    "post_d4_targetless_guards": {
+      "passed": 2
+    },
+    "post_facbe_cached_result_controls": {
+      "passed": 2,
+      "ignored_cloud_case": 1
+    },
+    "post_facbe_full_conformance": {
+      "passed": 16,
+      "generic_corpora": 115,
+      "all_141_and_143_exact": true
+    },
+    "nonproduction_sync_only_no_cloud_or_duckdb_repeat": true
+  },
+  "supplementary_live_comparison": {
+    "path": "live-hosted-comparison.json",
+    "success": true,
+    "managed_boundaries": 46,
+    "explain_trees": 46,
+    "normalizations": "every original and mapped value retained; exact two owned physical-name mapping, opaque IDs, measured runtime correlated to own Confirm, existing display-only rel_time/gap/build-age text, established five ingress headers",
+    "request_epochs_never_normalized": true,
+    "emitted_logic_dependency_context_extras_policy_compared": true,
+    "fault_probes": [
+      "decision description",
+      "Explain marker",
+      "Skip runtime correlation",
+      "dependency definition"
+    ]
+  },
+  "separate_after_campaign_cleanup": {
+    "receipt": "external-after-campaign-cleanup/next-e-reference-cleanup-receipt.json",
+    "receipt_sha256": "6af2247f55f4d422b09cfd07e9029ccecb325d025d7054fdf75ab31a54390875",
+    "completed_utc": "2026-11-14T16:23:44.981637+00:00",
+    "counts_after": {
+      "originala": 100,
+      "originale": 92
+    },
+    "all_141_phase_receipts_unchanged": true
+  },
+  "evidence_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-20261114",
+  "artifact_index": "artifact-index.json",
+  "limitations": [
+    "#141 remains blocked/incomplete; no dependent promotion",
+    "no omitted/equal/unknown/delayed metadata inference",
+    "table-model repair over external VIEW is not every VIEW-model lifecycle",
+    "literal upstream view definitions do not prove physical-view freshness epochs",
+    "prior/audit auxiliary evidence absent or malformed retains legacy display and never changes reuse eligibility"
+  ]
+}

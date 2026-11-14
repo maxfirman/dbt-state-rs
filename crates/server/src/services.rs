@@ -878,6 +878,44 @@ impl ClientValidation for ClientValidationService {
     }
 }
 
+/// Missing audit evidence that the Databricks literal-dependency renderer may
+/// consume. Persisted legacy/malformed evidence retains its normal fallback.
+fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> Option<String> {
+    let current: crate::explain::TemplateComparison =
+        serde_json::from_value(row.template_comparison.clone()?).ok()?;
+    if crate::warehouse::Warehouse::from_dialect(row.dialect.as_deref()?)
+        != crate::warehouse::Warehouse::Databricks
+        || row.execution_type != ModelExecutionType::Full as i32
+        || current.enabled
+        || !current.rendered_query.as_ref()?.literal_dependencies
+        || row.query_dependencies.as_array()?.is_empty()
+    {
+        return None;
+    }
+    let inputs = row.input_tables();
+    let target = row.target_table.as_deref();
+    if inputs
+        .iter()
+        .any(|input| Some(input.name.as_str()) != target)
+        || target
+            .is_some_and(|name| !name.is_empty() && !inputs.iter().any(|input| input.name == name))
+    {
+        return None;
+    }
+    let anchor = row
+        .matched_execution
+        .as_ref()
+        .or(row.unmatched_execution.as_ref())?;
+    if anchor.execution_type != ModelExecutionType::Full as i32
+        || crate::warehouse::Warehouse::from_dialect(&anchor.dialect)
+            != crate::warehouse::Warehouse::Databricks
+        || anchor.explain_comparison.is_some()
+    {
+        return None;
+    }
+    Some(anchor.request_id.clone())
+}
+
 #[derive(Clone)]
 pub struct ExplainService(pub AppState);
 
@@ -904,12 +942,31 @@ impl Explain for ExplainService {
             .captures
             .wait_for(&org_id, &req.execution_decision_ids)
             .await;
-        let rows = self
+        let mut rows = self
             .0
             .store
             .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
             .await
             .map_err(store_status)?;
+
+        // Literal-view display also consumes the exact prior build's audit.
+        // Await only those request correlations, never all captures in an org.
+        let anchor_requests: Vec<_> = rows.iter().filter_map(literal_anchor_request).collect();
+        if !anchor_requests.is_empty() {
+            self.0
+                .captures
+                .wait_for_requests(&org_id, &anchor_requests)
+                .await;
+            // Always reread: a capture can commit and leave the pending map
+            // between the first read and wait lookup. Its absence is not proof
+            // that the first snapshot already contained its evidence.
+            rows = self
+                .0
+                .store
+                .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
+                .await
+                .map_err(store_status)?;
+        }
 
         let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
             std::collections::HashMap::new();

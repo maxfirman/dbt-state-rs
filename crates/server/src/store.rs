@@ -121,6 +121,9 @@ pub(crate) fn logic_identity(
 /// Fields that failed to decode read as empty.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecutionRow {
+    /// Exact execution's org-scoped decision-audit inputs, loaded only for
+    /// Explain. Not an execution column or a candidate/producer identity input.
+    pub explain_comparison: Option<crate::explain::TemplateComparison>,
     pub id: i64,
     pub org_id: String,
     pub target_table: String,
@@ -803,7 +806,7 @@ impl Store {
         if matched.is_empty() {
             return Ok(rows);
         }
-        let anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
+        let mut anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
             "SELECT {} FROM executions WHERE org_id = $1 AND id = ANY($2)",
             ExecutionRow::COLUMNS
         ))
@@ -811,6 +814,27 @@ impl Store {
         .bind(&matched)
         .fetch_all(&self.pool)
         .await?;
+        // Only exact execution/request correlations selected above. No older
+        // matching workload, relation or logical identity is consulted.
+        let request_ids: Vec<_> = anchors
+            .iter()
+            .map(|anchor| anchor.request_id.clone())
+            .collect();
+        let comparisons: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT DISTINCT ON (request_id) request_id, template_comparison FROM node_decisions \
+             WHERE org_id = $1 AND request_id = ANY($2) ORDER BY request_id, id DESC",
+        )
+        .bind(org_id)
+        .bind(&request_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let comparisons: std::collections::HashMap<_, _> = comparisons.into_iter().collect();
+        for anchor in &mut anchors {
+            anchor.explain_comparison = comparisons
+                .get(&anchor.request_id)
+                .and_then(|value| value.clone())
+                .and_then(|value| serde_json::from_value(value).ok());
+        }
         let anchors: std::collections::HashMap<i64, ExecutionRow> =
             anchors.into_iter().map(|a| (a.id, a)).collect();
         for row in &mut rows {

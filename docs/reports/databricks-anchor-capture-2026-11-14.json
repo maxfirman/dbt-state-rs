@@ -1,0 +1,423 @@
+{
+  "candidate": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+  "basis": "b8821b698dc8e2d01504d2b2ceb076088076ec03",
+  "canonical_integration": "f6a5e973677b901bd5dd1a8dfdb3763779570622",
+  "evidence_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-141-capture-fix-20261114",
+  "artifact_index_sha256": "8e8c2a7afe13bd7fdcac7a2e8eb54d9373cfb1076f79ac601a45172495d3ae69",
+  "artifact_index_entries": 227,
+  "final_source_count": 457,
+  "final_source_set_sha256": "088e2a1cff621c1154b25b8a56d98aef4a4caf916e99d2e6d8ea13f9aa4d4aa8",
+  "production_sha256": {
+    "crates/server/src/explain.rs": "90c43e251dc0aa164f747507753355b1353eb5579c7aaf432defea71b7aa2f35",
+    "crates/server/src/warehouse.rs": "4f1d28b21568e2325d7708ad377af9f1b40739d3f53e912f496bef26612e7609",
+    "crates/server/src/submit_decision.rs": "a6b38052b1fbc88f9c9466272c6f4430b10301b63f2811652f1d5576e14dad8d",
+    "crates/server/src/store.rs": "0381236a52736027659aa2bd7ed2aa2f181be4a7e357055d4b7642ffcd7edc0a",
+    "crates/server/src/sql_norm.rs": "6a30747f2fc87774393dd4a188cd726a9adde4f2f5af8a8b86893f9b9f26507d",
+    "crates/server/src/sql_identity.rs": "a96f67ee24e392580430ed056374214c2426fd57be9e8768cc66c489fad642bc",
+    "crates/server/src/services.rs": "ac4a42786546cc82855e6cce0c3ab260a4204032eb953f37df99525e1a736227",
+    "crates/server/src/selector.rs": "bec277816bccb04065bb44ae37166487238083117fd1b69fa274aa084f2dd0a0",
+    "crates/server/src/reuse_candidate.rs": "d516c21637dd3af2aa56d9d1fcda5a8e983dbc471fc538bc24165e3b08af39c6",
+    "crates/server/src/result_copy.rs": "3160291fe79fbb06f00cd23c5b730b50123165694f287f7ad3ad8b3fe220d07d",
+    "crates/server/src/main.rs": "f78b1fc4c1524310dca03fcbaf264e060b3d66e7d55cf3068bcfb4af0d13669d",
+    "crates/server/src/lib.rs": "e96f80cc6fb5cdae25e69ae5acdb56b17f1ed8ebe71b4a71cafcfa8691320ed5",
+    "crates/server/src/fingerprint.rs": "82e6b79d47d1457aec11583f0a1da3b0a2a3016a6f17600544ef3cfe8248d5d9",
+    "crates/server/src/execution.rs": "7a5a653fe5e2c3583234ee095b98516b5b45dde435a97ed3d4872ca60e356693",
+    "crates/server/src/decision_proptest.rs": "b9e52905a026cf64dc9d40d59130e5f4ed3dcdd4a7c4c9368da6753e60949b2c",
+    "crates/server/src/decision.rs": "4269454763e63555e8fdff2e08f2279f7f64c0b24b7492f5e866b7e1a4d2c802",
+    "crates/server/src/config.rs": "6896a830f0ee244fc2a67c33a0a397fd5554be5264f0db0f43dc0176dda9cf41",
+    "crates/server/src/capture.rs": "99a8bc30587fed609772a462f2ac4c260fdb4f75cd80e67f70a0f4bc47e57a9e",
+    "crates/server/src/warehouse/snowflake.rs": "da0c7bf73c67f6cc7a23a1e89de879644ce6e9256e45ed30157595b80a941a14",
+    "crates/server/src/warehouse/duckdb.rs": "f3d16989d187fc935ee20730224d3746e9ec345e7f363cf0c1f972d88665e242",
+    "crates/server/src/warehouse/databricks.rs": "271fa0e2290999318577873b0dba6b47bc999048ed665da2c0b133011afcbbf5",
+    "crates/server/src/store/history.rs": "77a7b0e99fe2307bee860e51f79355a1b2748d4a0f144367ffa29e6750b10640"
+  },
+  "gates": {
+    "public": {
+      "phase": "public",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-harness",
+        "--test",
+        "conformance",
+        "--",
+        "--nocapture"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 237.99059818207752
+    },
+    "visibility": {
+      "phase": "visibility",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-harness",
+        "--test",
+        "explain_visibility",
+        "--test",
+        "databricks_policy",
+        "--",
+        "--nocapture"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 22.93015104404185
+    },
+    "library": {
+      "phase": "library",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-server",
+        "--lib"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 10.022318166913465
+    },
+    "clippy": {
+      "phase": "clippy",
+      "argv": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--features",
+        "fuzz",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 21.33444322401192
+    },
+    "format": {
+      "phase": "format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 2.0602246980415657
+    },
+    "workspace": {
+      "phase": "workspace",
+      "argv": [
+        "cargo",
+        "test",
+        "--workspace"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 617.4349681040039
+    },
+    "duckdb": {
+      "phase": "duckdb",
+      "argv": [
+        "./scripts/duckdb-ci.sh",
+        "--jobs",
+        "2",
+        "--artifacts",
+        "/tmp/dbt-state-141-capture-fix/artifacts/duckdb-141-capture-fix"
+      ],
+      "head": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+      "cargo_target": "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix",
+      "returncode": 0,
+      "elapsed": 894.0643771939212
+    }
+  },
+  "reproduction": {
+    "original_red_seconds": 1.19,
+    "adapted_red_seconds": 1.58,
+    "first_green_seconds": 1.67,
+    "initial_report": "merge141-anchor-race-finding.md",
+    "public_test": "databricks_literal_view_explain_is_stable_while_prior_audit_is_pending"
+  },
+  "formatter_provenance": {
+    "initial_patch_sha256": "06801e45655e36d2d938a70de4fbcb6fd7764ddca5bac202f476d89245762304",
+    "relative_minute_patch_sha256": "f9af50521413e7dcd06f2885463223ccaec1ac08efcc2e42a1052c19b2f99a1d",
+    "owner": "ticket142_policy_subset"
+  },
+  "duckdb_cases": [
+    {
+      "target": "duckdb_python",
+      "case": "real_dbt_lag_tolerance_reuse_expiry_and_external_change",
+      "seconds": 41.81,
+      "success": true
+    },
+    {
+      "target": "duckdb_python",
+      "case": "real_dbt_durable_table_reuse_and_external_changes",
+      "seconds": 103.13,
+      "success": true
+    },
+    {
+      "target": "duckdb_python",
+      "case": "real_dbt_views_dependency_evidence",
+      "seconds": 100.63,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_function_bindings_prevent_stale_reuse",
+      "seconds": 80.4,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_hidden_rowid_references_rebuild_after_reordering",
+      "seconds": 48.46,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_integer_division_rebuilds_after_reordering",
+      "seconds": 47.96,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_hook_changes_and_pre_hook_bindings_rebuild",
+      "seconds": 59.81,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_nested_floating_casts_rebuild_after_reordering",
+      "seconds": 47.57,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_named_type_redefinitions_rebuild",
+      "seconds": 54.85,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_permissive_scalar_subqueries_rebuild_after_reordering",
+      "seconds": 42.56,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_timezone_sensitive_casts_rebuild",
+      "seconds": 48.08,
+      "success": true
+    },
+    {
+      "target": "duckdb_identity_python",
+      "case": "real_dbt_sql_formatting_reuses_independently_verified_results",
+      "seconds": 13.21,
+      "success": true
+    },
+    {
+      "target": "duckdb_functions_python",
+      "case": "real_dbt_worker_collation_changes_rebuild",
+      "seconds": 41.55,
+      "success": true
+    },
+    {
+      "target": "duckdb_interruptions",
+      "case": "real_dbt_interrupted_work_requires_recovery_before_reuse",
+      "seconds": 84.54,
+      "success": true
+    },
+    {
+      "target": "duckdb_parallel",
+      "case": "real_dbt_parallel_workers_preserve_committed_evidence",
+      "seconds": 41.66,
+      "success": true
+    },
+    {
+      "target": "duckdb_recovery",
+      "case": "real_dbt_reset_and_generation_recovery",
+      "seconds": 158.78,
+      "success": true
+    },
+    {
+      "target": "duckdb_data_tests_python",
+      "case": "real_dbt_complete_cached_data_test_outcomes",
+      "seconds": 69.87,
+      "success": true
+    },
+    {
+      "target": "duckdb_data_tests_python",
+      "case": "real_dbt_stored_failures_use_ordinary_execution",
+      "seconds": 8.35,
+      "success": true
+    },
+    {
+      "target": "duckdb_seeds_python",
+      "case": "real_dbt_seed_reuse_and_change_propagation",
+      "seconds": 103.99,
+      "success": true
+    },
+    {
+      "target": "duckdb_copy_python",
+      "case": "real_dbt_view_graph_copy_chains_and_allowed_staleness",
+      "seconds": 55.41,
+      "success": true
+    },
+    {
+      "target": "duckdb_copy_python",
+      "case": "real_dbt_table_copy_and_adoption",
+      "seconds": 136.33,
+      "success": true
+    },
+    {
+      "target": "duckdb_incremental_python",
+      "case": "real_dbt_incremental_self_reads_require_reuse_proof",
+      "seconds": 53.18,
+      "success": true
+    },
+    {
+      "target": "duckdb_incremental_python",
+      "case": "real_dbt_incremental_build_copy_and_adoption",
+      "seconds": 174.97,
+      "success": true
+    },
+    {
+      "target": "duckdb_workflow",
+      "case": "real_dbt_fresh_mixed_project_copy_reset_restore_and_file_isolation",
+      "seconds": 60.92,
+      "success": true
+    },
+    {
+      "target": "duckdb_generated",
+      "case": "generated_physical_state_and_oracle_mutations",
+      "seconds": 37.16,
+      "success": true
+    }
+  ],
+  "binaries": {
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/dbt_state_server-d04e340d9de4464a": {
+      "target": "dbt-state-server",
+      "test": true,
+      "bytes": 1086536,
+      "sha256": "950a3039a815969e1867dd1565bfe91810386fead6484edbf6f50931fd954b3e"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_parallel-2b3e322055b5213b": {
+      "target": "duckdb_parallel",
+      "test": true,
+      "bytes": 52634464,
+      "sha256": "e89e0f73745108b5ee67c50c7e8a438b83ecd4941822f2860d2f317e14a5cc2c"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_generated-27e76aaef1130b68": {
+      "target": "duckdb_generated",
+      "test": true,
+      "bytes": 11290944,
+      "sha256": "062346a60824905a91f0e167858bf74a2b34578224bcb70e7db6052ade87400f"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_data_tests_python-bab94d7355fe7aef": {
+      "target": "duckdb_data_tests_python",
+      "test": true,
+      "bytes": 52680760,
+      "sha256": "6eef2d671de09a2ce8cfa0058fc38d8d3665d29616498531a78021609dc04ba3"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_identity_python-c6324d8e6533a2e0": {
+      "target": "duckdb_identity_python",
+      "test": true,
+      "bytes": 52663088,
+      "sha256": "ddb952201e1cb5457f8b21921d8b418c1f409c7a346a41f546b017713ac68fa2"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_recovery-fa72451fd93fe50b": {
+      "target": "duckdb_recovery",
+      "test": true,
+      "bytes": 52634392,
+      "sha256": "160802843d7fc4943a38b0e5b752f5b41cdd0c9169a64c1cc9ee76040c8fa3a4"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_python-ed32b5d2cd6a2427": {
+      "target": "duckdb_python",
+      "test": true,
+      "bytes": 52687024,
+      "sha256": "353aa6596ba3b27e0f6eb05bafd8cc5a782c3cc3f92f0fe2c69f0833a8154df5"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_interruptions-34c2a5f2822d4dff": {
+      "target": "duckdb_interruptions",
+      "test": true,
+      "bytes": 52654936,
+      "sha256": "c92e5e188556fa30d0554eba1f88b837990c654ddab93dabd2c875c348f5d091"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_workflow-8dc4bace5b322638": {
+      "target": "duckdb_workflow",
+      "test": true,
+      "bytes": 52634584,
+      "sha256": "c99497b15b0daf23fd5409708549a5d5b8278f469c8de72d1202792df4b094d4"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_incremental_python-1f486054204aaa25": {
+      "target": "duckdb_incremental_python",
+      "test": true,
+      "bytes": 52679072,
+      "sha256": "6f80b967530021ea1b0d46a36e1da6df1abcf0a8b54c85d1b78d1d8e82a43eae"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_seeds_python-afddbd071fe511f4": {
+      "target": "duckdb_seeds_python",
+      "test": true,
+      "bytes": 52650712,
+      "sha256": "b55c5accf40bfcee30974e4bbecca0bfeceaebd64e3dddc8acd696716459e4de"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/conformance-0c95cef572305c9a": {
+      "target": "conformance",
+      "test": true,
+      "bytes": 61011416,
+      "sha256": "161b52033b813a5845db08e30043afde2a6634d528ad2cdc163311932d4cab86"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/explain_visibility-6f9106494f002050": {
+      "target": "explain_visibility",
+      "test": true,
+      "bytes": 55919232,
+      "sha256": "ce36dba952c341e9afb5bbff86a55d31f2df1d95d81cbaf52c5c2e401f5ceec5"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_copy_python-4afa20a36b74890b": {
+      "target": "duckdb_copy_python",
+      "test": true,
+      "bytes": 52650480,
+      "sha256": "6849427127af594c6dfbee79b6441564908bf2e8e2757ac29e8211bf6ef73c60"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/databricks_policy-db606082b200ab37": {
+      "target": "databricks_policy",
+      "test": true,
+      "bytes": 57513200,
+      "sha256": "0c0b12ceddcdff04953235a320a901450e1b1b973fe3d8bf51aa46f22c6fc155"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/deps/duckdb_functions_python-b0512d23e72ba681": {
+      "target": "duckdb_functions_python",
+      "test": true,
+      "bytes": 52698104,
+      "sha256": "caa8ac75129a5aea46a922726598c213adf86cfa698ed7cf9bf29611f3e72f81"
+    },
+    "/home/maxfirman/.cache/dbt-state-rs/target-141-capture-fix/debug/dbt-state-server": {
+      "target": "dbt-state-server",
+      "test": false,
+      "bytes": 55638184,
+      "sha256": "437205a76bc9fb46663d1be7a73c25553c96b314c42d40baf26ecabc90802bcf"
+    }
+  },
+  "corpora": 121,
+  "explain_census": {
+    "trees": 920,
+    "files": 132
+  },
+  "limitations": [
+    "#141 remains incomplete and blocked by #140; #132 not promoted",
+    "#142 remains partial under its #138/#140 blockers",
+    "No new #141 warehouse acceptance run; old live binary did not contain this handler fix",
+    "In-memory tracking covers known captures within the shared AppState; best-effort failures/restarts retain fallback",
+    "No decision, fingerprint, history scope, producer, migration or Result copy change"
+  ]
+}

@@ -353,6 +353,27 @@ run_results and successful computation confirmations. `--rust-url` requires
 production router and the existing `DBT_STATE_DATABRICKS_{PYTHON,DBT,SCHEMA_LEASE,ARTIFACTS}`
 environment variables. See the [dated evidence and remaining scope](reports/databricks-cached-test-results-2026-11-14.md).
 
+The bounded [target lifecycle slice](reports/databricks-target-lifecycle-2026-11-14.md)
+uses `databricks_target_lifecycle_campaign.py` with those same baseline arguments.
+It allocates one fresh source/consumer pair per backend and runs a serial table
+history plus an explicitly admitted continuation on the same names and State
+store. The continuation requires the successful original receipt, exact inventory
+and UC identities, and preserves all causal capture prerequisites. It adds no
+physical names. Target/source drops and replacements are lifecycle operations
+only on those just-created names; the runner performs no cleanup.
+
+Run hosted first, replay the complete causal capture without gaps, then run
+`databricks_freshness.rs::real_dbt_target_lifecycle_matches_readonly_reference`
+with a fresh `DBT_STATE_DATABRICKS_ARTIFACTS` path and the established pinned
+client/Python/lease environment. For separate staged hosted execution, run
+`databricks_target_lifecycle.py`, then
+`databricks_target_lifecycle_continuation.py --prerequisite <successful-stage>`
+with the **same** run ID and backend. Never treat the continuation capture alone
+as empty-history evidence. Ordinary project YAML controls the evidenced ignore
+policy; retained external contents are checked against explicit snapshots,
+separately from the fresh transformation reference. #141 remains blocked by
+#140; these bounded cells do not claim full ticket or release completion.
+
 `databricks_cached_config.py` extends that same zero-object boundary with a
 fixed body and variable severity/threshold/fail_calc declarations. Its default
 four-cell vertical is fresh ERROR failure/reuse then WARN/reuse; `--through
