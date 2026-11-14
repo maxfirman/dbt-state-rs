@@ -352,3 +352,23 @@ run_results and successful computation confirmations. `--rust-url` requires
 `real_dbt_cached_failures_match_independent_literal_results` test uses the
 production router and the existing `DBT_STATE_DATABRICKS_{PYTHON,DBT,SCHEMA_LEASE,ARTIFACTS}`
 environment variables. See the [dated evidence and remaining scope](reports/databricks-cached-test-results-2026-11-14.md).
+
+`databricks_cached_config.py` extends that same zero-object boundary with a
+fixed body and variable severity/threshold/fail_calc declarations. Its default
+four-cell vertical is fresh ERROR failure/reuse then WARN/reuse; `--through
+sum_v` runs the complete twelve-cell configuration matrix. Each step still
+requires complete typed rows and independent aggregation plus a separately
+recorded zero-RPC disabled test and compile precheck. `request-deltas/` records
+all changed request fields; configuration changes must not be inferred solely
+from CLI flags or node hashes. The raw payload and client classification are
+checked independently: WARN may retain should_error=true, while a threshold
+pass may retain nonzero failures.
+
+The ignored `real_dbt_cached_configuration_matches_independent_literal_results`
+uses the same environment variables. It defaults to the observed four-cell
+contract; set `DBT_STATE_DATABRICKS_CONFIG_THROUGH=sum_v`,
+`DBT_STATE_DATABRICKS_CONFIG_QUERY_IDENTITY=20261114d143dd` and
+`DBT_STATE_DATABRICKS_CONFIG_CONTRACT=<repo>/experiments/databricks_cached_thresholds_contract.json`
+for the complete observed matrix. Always use a fresh artifact directory and
+an isolated server store; pin the launch source and executable hashes before
+actual use. See the [configuration evidence](reports/databricks-cached-test-configuration-2026-11-14.md).

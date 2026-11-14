@@ -156,3 +156,75 @@ async fn real_dbt_cached_failures_match_independent_literal_results() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned dbt and Databricks; no warehouse objects or relation data reads"]
+async fn real_dbt_cached_configuration_matches_independent_literal_results() {
+    let server = support::start_server().await;
+    let mut command = tokio::process::Command::new(
+        std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").expect("Python with PyYAML"),
+    );
+    command
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_cached_config.py"
+        ))
+        .arg("--dbt")
+        .arg(std::env::var_os("DBT_STATE_DATABRICKS_DBT").expect("pinned dbt"))
+        .arg("--proxy")
+        .arg(env!("CARGO_BIN_EXE_record-proxy"))
+        .arg("--probe")
+        .arg(env!("CARGO_BIN_EXE_state-probe"))
+        .arg("--schema-lease")
+        .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA_LEASE").expect("explicit lease"))
+        .arg("--contract")
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_CONFIG_CONTRACT").unwrap_or_else(|| {
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../experiments/databricks_cached_config_contract.json"
+                )
+                .into()
+            }),
+        )
+        .arg("--through")
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_CONFIG_THROUGH")
+                .unwrap_or_else(|| "severity_warn".into()),
+        )
+        .arg("--query-identity")
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_CONFIG_QUERY_IDENTITY")
+                .unwrap_or_else(|| "20261114c143cc".into()),
+        )
+        .arg("--rust-url")
+        .arg(format!("http://{}", server.addr))
+        .arg("--work-dir")
+        .arg(std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS").expect("fresh retained artifacts"));
+    let output = command.output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn configuration_oracle_distinguishes_raw_flags_from_client_classification() {
+    let output = std::process::Command::new(
+        std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").unwrap_or_else(|| "python3".into()),
+    )
+    .arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../experiments/databricks_cached_config_test.py"
+    ))
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

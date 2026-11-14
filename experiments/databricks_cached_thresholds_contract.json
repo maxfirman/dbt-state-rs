@@ -1,0 +1,62 @@
+{
+  "fail_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "fail_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "severity_warn_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "severity_warn_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "threshold_warn_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "threshold_warn_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "threshold_pass_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "pass"
+  },
+  "threshold_pass_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "reused"
+  },
+  "count_v_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "count_v_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "warn"
+  },
+  "sum_v_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "sum_v_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 1,
+    "status": "fail"
+  }
+}
