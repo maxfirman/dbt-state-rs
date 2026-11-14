@@ -879,6 +879,11 @@ impl Explain for ExplainService {
                 reason: row.decision_reason(),
                 is_stale: row.is_stale,
                 target_table: row.target_table.clone(),
+                display_target_table: row.target_table.as_deref().zip(row.dialect.as_deref()).map(
+                    |(name, dialect)| {
+                        crate::warehouse::Warehouse::from_dialect(dialect).explain_target_name(name)
+                    },
+                ),
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
                 query_dependencies: serde_json::from_value(row.query_dependencies.clone())

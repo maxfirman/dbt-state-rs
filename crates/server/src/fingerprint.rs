@@ -61,7 +61,14 @@ pub fn sql_logic_hash_with_version(
 ) -> String {
     let mut h = Sha256::new();
     field(&mut h, version_tag);
-    field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
+    // Alias evidence covers rendered SQL; template/configuration equivalence
+    // remains a separate characterized slice.
+    let dialect = if template.is_none() {
+        Warehouse::rendered_identity_dialect(&req.dialect)
+    } else {
+        req.dialect.to_ascii_lowercase()
+    };
+    field(&mut h, dialect.as_bytes());
     let warehouse = match (Warehouse::from_dialect(&req.dialect), template) {
         // Template/configuration policy is a separately characterized slice.
         (Warehouse::Databricks, Some(_)) => Warehouse::Other,

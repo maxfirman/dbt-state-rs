@@ -33,6 +33,9 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 
 | File | Replay | What it captures; which test pins it |
 |---|---|---|
+| `databricks_isolation_scopes.jsonl` | yes | Complete crafted scope collisions, absent/empty namespace and exact rendered Spark aliases, changed-SQL/latest-history and negative controls; 113 RPCs with full Explain, zero gaps/unknown baselines. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_concurrent_a.jsonl`, `databricks_isolation_concurrent_b.jsonl` | yes | Actual pinned 2.0.11 concurrent independent projects: first build, required reuse and required peer reuse after exact owned cleanup; 15/21 RPCs. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_{missing_namespace,full_controls,diagnostic_inputs,diagnostic_alias_scopes,diagnostic_identity,refusal_confirmation}.jsonl` | yes | Complete None/empty definition diagnostics, coherent FULL aliases, source metadata and strict literal/context/namespace negatives; refused optimization → Confirm → required reuse and source independence. No gaps/unknown baselines. [Evidence and unresolved scope contract](../docs/reports/databricks-isolation-2026-11-13.md). |
 | `databricks_client_auxiliary.jsonl` | yes | Pinned 2.0.11 validation, session start/end including exact durations and client failure, plus query-preparation telemetry; `client_auxiliary.rs` and generic conformance. [Provenance](../docs/reports/databricks-client-auxiliary-2026-11-12.md). |
 | `databricks_table_view_baseline.jsonl` | yes | Complete pinned 2.0.11 managed Delta table/view build, unchanged reuse, changed-query rebuild and subsequent reuse, confirmations, speculative submits, telemetry and full Explain including opposite request orders; no history/gap exceptions. [Runner](../docs/databricks-baseline.md). |
 | `golden_20261008T222744.061Z.jsonl` | yes | Build, confirm and skip lifecycle with speculative submits and version checks; `differential.rs`. |
@@ -134,3 +137,17 @@ hashing code:
 Both tests assert the current server rebuilds instead of reusing these rows.
 Regenerate only from the recorded revision with the `#[ignore]`d
 `zz_capture_prefix_clone_fixture` / `zz_capture_incorrect_clone_fixture` drivers.
+
+`upgrade/databricks_alias_identifiers_v1_aa89b6a.json` freezes genuine
+Submit/Confirm history from clean #136 source `aa89b6a` and records exact server
+and probe digests. `databricks_isolation.rs` rejects its old v1 fingerprint after
+the rendered Spark-alias identity change, including old pending work confirmed
+after a new-version build. The file is an independent historical artifact; do
+not regenerate it using current fingerprint code.
+
+`upgrade/databricks_empty_namespace_v2_4b38371.json` contains genuine pending
+and confirmed rows exported through public Submit/Confirm from the immutable
+pre-normalization v2 server (exact source/provenance digests in the artifact).
+The isolation upgrade regression reads legacy empty strings as the absent
+physical scope, including old pending work confirmed after a newer NULL-scope
+build, without recomputing old hashes.

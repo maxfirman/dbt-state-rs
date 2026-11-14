@@ -1,0 +1,115 @@
+{
+  "ticket": 159,
+  "status": "INCOMPLETE_SAFE_PARTIAL",
+  "source_base_commit": "837bab596307f8ee8da07fd783f558e50b795152",
+  "identity_version": "dbt-state-databricks-identifiers-v2",
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-159-20261113",
+  "fixtures": [
+    {
+      "path": "golden/fixtures/databricks_isolation_concurrent_a.jsonl",
+      "sha256": "a0b0352c76fef0ee515f96cfbcda023158199ac8fd97e5c7469817ec5134a222",
+      "rpc_count": 15,
+      "explain_count": 3
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_concurrent_b.jsonl",
+      "sha256": "c5c9b93af05562a4908bf69983ac4404e3c85b018a09661b08e1b444ac2c91a3",
+      "rpc_count": 21,
+      "explain_count": 4
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_diagnostic_alias_scopes.jsonl",
+      "sha256": "3585c18e0d3f40933766e7fa58a90d05b50d5f6d10bd44596d87a0d21d76101e",
+      "rpc_count": 35,
+      "explain_count": 15
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_diagnostic_identity.jsonl",
+      "sha256": "ba9ffb54f361de73b1d9153cb8237b1d5d2d2008f37ff411effb05205d2186f7",
+      "rpc_count": 30,
+      "explain_count": 14
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_diagnostic_inputs.jsonl",
+      "sha256": "3e47d0da4ed77dd1e368213f91203fcd6aef90d28ef88fa05acc3ae6277c51d0",
+      "rpc_count": 36,
+      "explain_count": 16
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_full_controls.jsonl",
+      "sha256": "45b6fc03764b8427af672b0f9766a4fc3d35058150a24124174ffeb7d37b7a15",
+      "rpc_count": 61,
+      "explain_count": 27
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_missing_namespace.jsonl",
+      "sha256": "2cc4b0a2db5eeb73af25192a00bab92db6422542104baf0bd4f797aa5166bf40",
+      "rpc_count": 37,
+      "explain_count": 17
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_refusal_confirmation.jsonl",
+      "sha256": "c7feabda63ed764c16000fa2c0eab1cd930f13203ec679d94f6cc3e987f197b0",
+      "rpc_count": 30,
+      "explain_count": 12
+    },
+    {
+      "path": "golden/fixtures/databricks_isolation_scopes.jsonl",
+      "sha256": "ed93426ffd3ba8a205c70500edc6286959b6c9c01d65241daf96b5d8f3f6bb2e",
+      "rpc_count": 113,
+      "explain_count": 49
+    }
+  ],
+  "totals": {
+    "fixtures": 9,
+    "rpc": 378,
+    "explain": 157,
+    "eligible_conformance_corpora": 88
+  },
+  "checks": {
+    "workspace": {
+      "passed": 615,
+      "ignored": 33,
+      "log": "validation/isolation159-workspace.log"
+    },
+    "conformance_public": "validation/isolation159-final-focused.log",
+    "clippy": "validation/isolation159-final-clippy.log",
+    "invalid_database_library": "validation/isolation159-final-lib.log",
+    "fmt": "validation/isolation159-final-fmt.log",
+    "python": "validation/isolation159-python-final.log",
+    "live_current_source": "rust-concurrent-final/campaigns/summary.json",
+    "duckdb": {
+      "report": "duckdb/timing.json",
+      "log": "validation/isolation159-duckdb.log",
+      "passed": 25,
+      "total_seconds": 596.68
+    },
+    "all_experiment_python": "validation/isolation159-all-python-pyyaml-final.log",
+    "all_experiment_python_initial_environment_failure": "validation/isolation159-all-python-final.log (missing PyYAML; rerun with uv --with pyyaml passed)"
+  },
+  "binary_provenance": "bin-final/provenance.json",
+  "driver_manifest": "drivers/manifest.json",
+  "retained_nonacceptance_evidence": [
+    "protocol-discovery",
+    "protocol-scopes",
+    "hosted-concurrent",
+    "pre-alias-upgrade",
+    "pre-alias-upgrade-v2",
+    "pre-alias-red",
+    "other-target-diagnostic-red/provenance-correction.json",
+    "default-definition-controls",
+    "full-default-definition-controls",
+    "pending-explain-controls",
+    "pending-alias-explain-controls",
+    "full-view-sequence-recheck",
+    "target-spark-sequence-reduction"
+  ],
+  "limitations": [
+    "Hosted None/empty scope confirmation followed by fresh named namespace same-query SKIP conflicts with required physical scope. Rust conservatively builds; both complete 28-RPC VIEW/FULL histories remain explicit nonacceptance evidence.",
+    "Synthetic wire captures are not actual pinned-client dialect emissions or a two-warehouse wrong-row proof. Hosted organization is OAuth; header controls are self-hosted safety only.",
+    "Original VIEW history has synthetic MANAGED declarations; separate FULL and coherent VIEW controls preserve this distinction.",
+    "Unsupported uppercase Databricks returned hosted INTERNAL; arbitrary option and template alias equivalence are not admitted.",
+    "Copy-rebuild, snapshot and ticket140 safety blockers remain unchanged."
+  ],
+  "validation_archive": "validation/manifest.json"
+}

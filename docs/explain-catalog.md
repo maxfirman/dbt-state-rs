@@ -3,7 +3,7 @@
 The catalog of record for the structured Explain tree
 (`ExplainMessageEntry` → `ExplainLine` / `ExplainMarker` / `ExplainBadge`) that
 `ExplainService.GetExplainMessages` returns. Every tree is pinned from live
-captures against `api.state.dbt.com` (Snowflake), never inferred. A cell
+captures against `api.state.dbt.com` (Snowflake and the explicitly scoped Databricks captures), never inferred. A cell
 without a capture renders nothing and has a final status
 ([Decision reason coverage](#decision-reason-coverage)).
 
@@ -14,6 +14,9 @@ and its shape is selected from the persisted Decision reason
 separate output, listed in [protocol.md](protocol.md).
 
 Source fixtures (`golden/fixtures/`):
+- `databricks_isolation_*.jsonl`: nine exact scope, rendered-alias,
+  rejection/confirmation and concurrent-client histories, 378 RPCs and 157
+  complete Explain trees; [dated partial evidence](reports/databricks-isolation-2026-11-13.md).
 - `explain_happy_history.jsonl`: history-bearing model/view/data-test SKIPs.
 - `explain_clone_history.jsonl`: CLONE with the copy source built in-window.
 - `explain_tolerance_history.jsonl`: within-tolerance SKIP and upstream-OUTDATED
@@ -221,40 +224,23 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. Inside an open cell, each Decision reason renders only
 where a tracked capture backs it for that node kind; the status of every
 other reason is in [Decision reason coverage](#decision-reason-coverage). The evidence column gives the census tree counts by origin
-(see [Explain tree census](#explain-tree-census)). The real-client trees in the
-tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-9 in `explain_snapshot_history.jsonl`, the 4 in `explain_copy_probes.jsonl`
-and `explain_snapshot_register_clone.jsonl`, the 4 in
-`explain_seed_copy_existing.jsonl`, the 11 in
-`explain_data_test_history.jsonl`, the 2 in
-`explain_store_failures_audit.jsonl`, the 4 in
-`explain_store_failures_audit_schema.jsonl` and
-`explain_store_failures_audit_alias.jsonl`, the 7 in
-`explain_rebuild_reason_gaps.jsonl`, the 10 in `explain_custom_history.jsonl`
-and `explain_custom_copy.jsonl`, the 21 in the `explain_incremental_*`
-append/merge fixtures, the 20 in the three insert_overwrite,
-delete+insert and microbatch fixtures, the 5 in
-`explain_incremental_copy_over.jsonl`, the 5 in
-`explain_execution_type_change.jsonl`, the 4 in
-`explain_post_copy_identity.jsonl`, the 18 in
-`explain_freshness_cells.jsonl`, the 10 in
-`explain_copy_logic_mismatch.jsonl`, the 71 in
-`explain_reason_kind_cells.jsonl` and `explain_reason_kind_cells_custom.jsonl`
-and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
+(see [Explain tree census](#explain-tree-census)). Client versions and crafted-probe origins are counted directly from the
+capture metadata. The current table includes the Databricks identity, freshness,
+deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-11) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-14) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 25 (5 client, 20 crafted), EXECUTE 48 (13 client, 35 crafted), CLONE 8 (1 client, 7 crafted) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 18 (16 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 20 (18 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6 (5 client 2.0.11, 1 crafted), EXECUTE 20 (16 client 2.0.11, 4 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 13 (12 client 2.0.11, 1 crafted), EXECUTE 15 (11 client 2.0.11, 4 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 15 (11 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit*.jsonl`, `explain_malformed_requests.jsonl`) |
-| 9 | VALUES (seed) | characterized (crafted only)² | characterized (live)² | characterized (live)⁸ | S E C | SKIP 2 (1 crafted, 1 client 2.0.11), EXECUTE 8 (5 crafted, 3 client 2.0.11) (`lag_seed_upstream.jsonl`, `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`); CLONE 3 (client 2.0.11, `explain_copy_probes.jsonl`, `explain_seed_copy_existing.jsonl`) |
-| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | SKIP 7 (5 client 2.0.11, 1 client 2.0.6, 1 crafted); EXECUTE 14 (12 client 2.0.11, 2 crafted) (`explain_view_reads_no_relation.jsonl`, `explain_reason_kind_cells.jsonl`, `explain_snapshot_history.jsonl`; `explain_copy_logic_crafted.jsonl` for the crafted ones); CLONE 0 |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 15 (13 client 2.0.11, 2 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells*.jsonl`) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 99 (65 crafted, 32 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 103 (53 crafted, 46 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (16 client 2.0.11, 4 crafted), SKIP 9 (8 client 2.0.11, 1 crafted) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (18 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (16 client 2.0.11, 4 crafted), SKIP 6 (5 client 2.0.11, 1 crafted) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 5 (5 client 2.0.11) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 17 (11 client 2.0.11, 6 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 14 (12 client 2.0.11, 2 crafted), SKIP 15 (11 client 2.0.11, 3 crafted, 1 client 2.0.6) |
+| 9 | VALUES (seed) | characterized (crafted only)² | characterized (live)² | characterized (live)⁸ | S E C | CLONE 3 (3 client 2.0.11), EXECUTE 8 (5 crafted, 3 client 2.0.11), SKIP 2 (1 client 2.0.11, 1 crafted) |
+| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 106 (92 crafted, 14 client 2.0.11), SKIP 39 (30 crafted, 8 client 2.0.11, 1 client 2.0.6) |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 17 (13 client 2.0.11, 4 crafted), SKIP 9 (8 client 2.0.11, 1 crafted) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -372,37 +358,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 322 trees in the
-tracked fixtures (2026-11-12). A line without a marker or badge is "none"
-(1834 lines without a marker, 2120 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 583 trees in the
+tracked fixtures (2026-11-14). A line without a marker or badge is "none"
+(2859 lines without a marker, 3433 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 828 lines |
-| ExplainMarker | FAIL (2) | ✅ 271 lines |
-| ExplainMarker | INFO (3) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 251 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 62 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 206 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 1502 lines |
+| ExplainMarker | FAIL (2) | ✅ 364 lines |
+| ExplainMarker | INFO (3) | not observed across 583 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 583 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 483 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 86 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 358 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 30 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 128 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 87 lines |
+| ExplainBadge | FRESH (1) | ✅ 189 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 97 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 583 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 322 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 217 from client 2.0.11 and 96 for crafted
-   `state-probe` requests. 85 of the client 2.0.11 trees explain a
-   real-client decision but were requested with `state-probe`
-   (`explain_reason_kind_cells*.jsonl`, `explain_store_failures_audit_schema.jsonl`,
-   `explain_store_failures_audit_alias.jsonl`, `explain_view_reads_no_relation.jsonl`,
-   `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`, `via="probe"` in
-   [harness.md](harness.md#shared-live-capture-driver-experimentsexplain_capturepy)). The removed `explain_snowflake_happy.jsonl` and
-   `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
-   either.
+1. Origins across the 583 tracked trees: 2 client (version unrecorded), 288 client 2.0.11, 7 client 2.0.6, 286 crafted. The census reports no explicit INFO, unspecified or unmapped value.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -422,34 +399,34 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-12 (322 trees, none empty, no findings):
+Tracked fixtures, 2026-11-14 (583 trees, none empty, no findings):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 25 | 20 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
-| FULL | EXECUTE | 48 | 35 crafted, 11 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | SKIP | 103 | 53 crafted, 46 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 99 | 65 crafted, 32 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | APPEND | SKIP | 9 | 8 client 2.0.11, 1 crafted |
-| APPEND | EXECUTE | 18 | 16 client 2.0.11, 2 crafted |
-| MERGE | SKIP | 6 | client 2.0.11 |
+| APPEND | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |
+| MERGE | SKIP | 6 | 6 client 2.0.11 |
 | MERGE | EXECUTE | 20 | 18 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 6 | 5 client 2.0.11, 1 crafted |
 | INSERT_OVERWRITE | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |
-| DELETE_INSERT | SKIP | 5 | client 2.0.11 |
+| DELETE_INSERT | SKIP | 5 | 5 client 2.0.11 |
 | DELETE_INSERT | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
-| MICROBATCH | SKIP | 6 | client 2.0.11 |
+| MICROBATCH | SKIP | 6 | 6 client 2.0.11 |
 | MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 15 | 11 client 2.0.11, 4 crafted |
+| SNAPSHOT | EXECUTE | 17 | 11 client 2.0.11, 6 crafted |
 | DBT_DATA_TEST | SKIP | 15 | 11 client 2.0.11, 3 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
-| VALUES | SKIP | 2 | 1 crafted, 1 client 2.0.11 |
+| DBT_DATA_TEST | EXECUTE | 14 | 12 client 2.0.11, 2 crafted |
+| VALUES | SKIP | 2 | 1 client 2.0.11, 1 crafted |
 | VALUES | EXECUTE | 8 | 5 crafted, 3 client 2.0.11 |
-| VALUES | CLONE | 3 | client 2.0.11 |
-| VIEW | SKIP | 7 | 5 client 2.0.11, 1 client 2.0.6, 1 crafted |
-| VIEW | EXECUTE | 14 | 12 client 2.0.11, 2 crafted |
+| VALUES | CLONE | 3 | 3 client 2.0.11 |
+| VIEW | SKIP | 39 | 30 crafted, 8 client 2.0.11, 1 client 2.0.6 |
+| VIEW | EXECUTE | 106 | 92 crafted, 14 client 2.0.11 |
 | DBT_CUSTOM | SKIP | 9 | 8 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | EXECUTE | 15 | 13 client 2.0.11, 2 crafted |
+| DBT_CUSTOM | EXECUTE | 17 | 13 client 2.0.11, 4 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.

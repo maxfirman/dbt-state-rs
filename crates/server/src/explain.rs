@@ -59,6 +59,8 @@ pub struct ExplainNode {
     pub reason: Option<DecisionReason>,
     pub is_stale: bool,
     pub target_table: Option<String>,
+    /// Warehouse presentation only; raw names still identify own inputs.
+    pub display_target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: Vec<InputTable>,
     pub query_dependencies: Vec<String>,
@@ -298,6 +300,8 @@ enum Shape {
     FirstBuild,
     /// Existing physical table, with no recorded query to compare.
     ExistingTargetWithoutHistory,
+    QueryObservedOutsideScope,
+    ExistingTargetCopyDisabledDiagnostic,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
     ResolutionContextChanged,
@@ -439,6 +443,13 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         )
     );
     Some(match (node.decision, reason) {
+        (DecisionKind::Build, R::ExistingTargetCopyDisabledDiagnostic) if !upstreams => {
+            Shape::ExistingTargetCopyDisabledDiagnostic
+        }
+        (DecisionKind::Build, R::QueryChangedOutsideScope) if !upstreams => Shape::QueryChanged,
+        (DecisionKind::Build, R::QueryObservedOutsideScope) if !upstreams => {
+            Shape::QueryObservedOutsideScope
+        }
         (DecisionKind::Build, R::ExistingTargetWithoutHistory)
             if !upstreams
                 && (!matches!(kind, Some(ModelExecutionType::View))
@@ -715,6 +726,27 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::ExistingTargetWithoutHistory) => vec![
             table_analysis_exists(node),
             section("query analysis", Vec::new()),
+            data_freshness_analysis_fresh(node),
+        ],
+        Some(Shape::ExistingTargetCopyDisabledDiagnostic) => {
+            let mut table = table_analysis_exists(node);
+            table.children.push(leaf(
+                format!(
+                    "but it's old. We would have cloned from {}, but cloning is disabled",
+                    node.clone_source.as_deref().unwrap_or("")
+                ),
+                Some(MARKER_FAIL),
+                None,
+            ));
+            vec![
+                table,
+                query_analysis_unchanged(node),
+                data_freshness_analysis_fresh(node),
+            ]
+        }
+        Some(Shape::QueryObservedOutsideScope) => vec![
+            table_analysis_exists(node),
+            query_analysis_unchanged(node),
             data_freshness_analysis_fresh(node),
         ],
         Some(Shape::QueryChanged) => query_changed_tree(node),
@@ -1834,7 +1866,12 @@ fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
 
 /// The node's own fully-qualified target, as stored (already quoted by client).
 fn fqn(node: &ExplainNode) -> String {
-    quote(node.target_table.as_deref().unwrap_or(""))
+    quote(
+        node.display_target_table
+            .as_deref()
+            .or(node.target_table.as_deref())
+            .unwrap_or(""),
+    )
 }
 
 /// Physical names are stored already quoted by the client (`"DB"."S"."T"`).
@@ -1877,6 +1914,7 @@ mod tests {
             }),
             is_stale: false,
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
+            display_target_table: None,
             clone_source: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
             query_dependencies: Vec::new(),
