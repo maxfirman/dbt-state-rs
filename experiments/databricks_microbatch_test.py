@@ -8,7 +8,8 @@ class Windows(unittest.TestCase):
         prior=()
         for name in m.STAGES:
             case=m.HISTORY[name]
-            prior=m.apply_window(prior,case.source,*case.window)
+            if name=='update':prior=prior+(m.target_null,)
+            prior=m.apply_window(prior,case.source,*case.window,planned_target_null=True)
             self.assertEqual(Counter(prior),Counter(case.R),name)
             self.assertEqual(Counter(m.selected(case.source,*case.window)),Counter(case.F),name)
     def test_null_predicate_is_unknown_and_unproved_target_null_stops(self):
@@ -18,7 +19,7 @@ class Windows(unittest.TestCase):
             m.apply_window((null,),(),'2026-11-01','2026-11-03')
     def test_empty_revisit_deletes_window_and_retains_old_outside(self):
         case=m.HISTORY['empty']
-        self.assertEqual(Counter(case.R),Counter((m.moved,m.edge)))
+        self.assertEqual(Counter(case.R),Counter((m.moved,m.edge,m.target_null)))
         self.assertEqual(case.F,())
     def test_duplicate_and_null_keys_are_bags(self):
         self.assertEqual(Counter(m.HISTORY['first'].R)[m.b],2)
@@ -26,6 +27,27 @@ class Windows(unittest.TestCase):
     def test_window_bounds_include_start_exclude_end(self):
         self.assertTrue(m.in_window(('8','x',None,'2026-11-01T00:00:00.000Z'),'2026-11-01','2026-11-03'))
         self.assertFalse(m.in_window(('8','x',None,'2026-11-03T00:00:00.000Z'),'2026-11-01','2026-11-03'))
+
+class TargetNullPlan(unittest.TestCase):
+    def test_manual_null_row_is_retained_in_every_later_literal_R_not_F(self):
+        for stage in ('update','shifted','overlap','empty'):
+            case=m.HISTORY[stage]
+            self.assertIn(m.target_null,case.R)
+            self.assertNotIn(m.target_null,case.source)
+            self.assertNotIn(m.target_null,case.F)
+            actual={'columns':[dict(zip(('name','type_text','type_name','position'),c)) for c in m.SCHEMA],
+              'rows':tuple(row for row in case.R if row!=m.target_null)}
+            with self.assertRaisesRegex(m.Refused,'physical:rows'):m.assert_typed(actual,case.R)
+
+    def test_nullable_metadata_is_exact_and_fails_closed(self):
+        good={'full_name':'cdo_demo_db.owned.consumer','table_type':'MANAGED','data_source_format':'DELTA',
+          'columns':[{'name':'ts','type_name':'TIMESTAMP','nullable':True}]}
+        m.require_nullable_target(good,'cdo_demo_db.owned.consumer')
+        for value in (False,None,1):
+            with self.subTest(value=value), self.assertRaises(m.Refused):
+                m.require_nullable_target(dict(good,columns=[{'name':'ts','type_name':'TIMESTAMP','nullable':value}]),good['full_name'])
+        with self.assertRaises(m.Refused):m.require_nullable_target(dict(good,columns=[]),good['full_name'])
+        with self.assertRaises(m.Refused):m.require_nullable_target(good,'cdo_demo_db.foreign.consumer')
 
 class NativeGuard(unittest.TestCase):
     def test_primary_two_batch_sql_and_foreign_mutations(self):
@@ -61,6 +83,7 @@ class Contract(unittest.TestCase):
     def test_source_null_exclusion_does_not_prove_target_null_retention(self):
         self.assertNotIn(m.null_time,m.HISTORY['first'].F)
         self.assertIn('target NULL retention',m.ledger()['unverified'])
+        self.assertEqual(m.ledger()['manual_target_operations'][0]['row'],m.target_null)
 
 class ReferenceCodec(unittest.TestCase):
     def test_evidenced_whole_second_encoding_retains_zero_fraction(self):

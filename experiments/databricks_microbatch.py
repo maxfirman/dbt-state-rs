@@ -12,6 +12,7 @@ a_new=('1','updated','2026-11-01','2026-11-01T00:00:00.000Z')
 b=('2','duplicate','2026-11-02','2026-11-02T12:00:00.123Z')
 null_id=(None,'nullable-key','2026-11-02','2026-11-02T23:59:59.999Z')
 null_time=('3','excluded-time',None,None)
+target_null=('99','retained-target-null','2026-11-02',None)
 edge=('4','end-boundary','2026-11-03','2026-11-03T00:00:00.000Z')
 moved=('1','updated','2026-11-03','2026-11-03T12:00:00.456Z')
 @dataclass(frozen=True)
@@ -23,10 +24,10 @@ class Snapshot:
 # Literal bags independently worked before the operation implementation.
 HISTORY=MappingProxyType({
  'first':Snapshot((a,b,b,null_id,null_time,edge),('2026-11-01','2026-11-03'),(a,b,b,null_id),(a,b,b,null_id)),
- 'update':Snapshot((a_new,b,b,null_id,null_time,edge),('2026-11-01','2026-11-03'),(a_new,b,b,null_id),(a_new,b,b,null_id)),
- 'shifted':Snapshot((moved,b,b,null_id,null_time,edge),('2026-11-02','2026-11-04'),(a_new,b,b,null_id,edge,moved),(b,b,null_id,edge,moved)),
- 'overlap':Snapshot((moved,null_id,null_time,edge),('2026-11-01','2026-11-03'),(moved,edge,null_id),(null_id,)),
- 'empty':Snapshot((moved,null_time,edge),('2026-11-02','2026-11-03'),(moved,edge),()),
+ 'update':Snapshot((a_new,b,b,null_id,null_time,edge),('2026-11-01','2026-11-03'),(a_new,b,b,null_id,target_null),(a_new,b,b,null_id)),
+ 'shifted':Snapshot((moved,b,b,null_id,null_time,edge),('2026-11-02','2026-11-04'),(a_new,b,b,null_id,edge,moved,target_null),(b,b,null_id,edge,moved)),
+ 'overlap':Snapshot((moved,null_id,null_time,edge),('2026-11-01','2026-11-03'),(moved,edge,null_id,target_null),(null_id,)),
+ 'empty':Snapshot((moved,null_time,edge),('2026-11-02','2026-11-03'),(moved,edge,target_null),()),
 })
 STAGES=tuple(HISTORY)
 CELLS=tuple((label,stage,kind) for stage in STAGES for label,kind in
@@ -44,16 +45,20 @@ def in_window(row,start,end):
 def selected(source,start,end):
     return tuple(row for row in source if in_window(row,start,end) is True)
 
-def apply_window(previous,source,start,end):
-    """Proposed non-NULL target operation; NULL retention requires live evidence."""
+def apply_window(previous,source,start,end,*,planned_target_null=False):
+    """Independent planned operation; NULL retention is a hosted-first hypothesis."""
     if utc(start)>=utc(end):raise Refused('empty or reversed bounds')
-    if any(row[3] is None for row in previous):raise Refused('target NULL retention unproved')
-    return tuple(row for row in previous if in_window(row,start,end) is False)+selected(source,start,end)
+    if not planned_target_null and any(row[3] is None for row in previous):raise Refused('target NULL retention unproved')
+    return tuple(row for row in previous if in_window(row,start,end) is not True)+selected(source,start,end)
 
 def ledger():
-    return {'version':1,'ticket':150,'schema':SCHEMA,'cells':CELLS,
+    return {'version':2,'ticket':150,'schema':SCHEMA,'cells':CELLS,
       'history':{k:{'source':v.source,'window':v.window,'R':v.R,'F':v.F} for k,v in HISTORY.items()},
-      'basis':'independent literal cumulative bags, command-ordered bounded replacement; NULL target unproved',
+      'basis':'independent literal cumulative bags; target NULL retention is planned hosted-first, not accepted',
+      'manual_target_operations':[{'before_cell':'update','operation':'INSERT','row':target_null,
+        'required_metadata':'exact own MANAGED DELTA ts TIMESTAMP nullable=true',
+        'expected_after':HISTORY['first'].R+(target_null,),
+        'reason':'dedicated target NULL retention test paired with independent source change at zero lag'}],
       'full_refresh':'DISCOVERY ONLY: no assumed Record execution type or batch behavior',
       'unverified':['target NULL retention','implicit moving clock/lookback','settings/predicates','concurrency','partial failure','full refresh']}
 
@@ -69,7 +74,15 @@ def clearance_contract():
       'limits':{'managed_per_backend':10,'disabled_select_only_references_per_backend':10,'parse_per_backend':1,
         'managed_executed_daily_batches_per_backend':9,'ordinary_submit_per_backend':10,
         'speculative_submit_per_backend':10,'confirm_per_backend':5,'record_per_backend':0,
-        'managed_dbt_commands_per_backend':10,'reference_dbt_commands_per_backend':10},
+        'managed_dbt_commands_per_backend':10,'reference_dbt_commands_per_backend':10,
+        'manual_target_insert_per_backend':1,'target_nullability_uc_get_per_backend':1,
+        'manual_target_inspection_sql_per_backend':5},
+      'manual_target_insert':{'before_cell':'update','row':target_null,
+        'exact_targets':{k:f'{namespace}.mb_{v}_consumer' for k,v in runs.items()},
+        'nullable_guard':'ts TIMESTAMP nullable is exactly true; MANAGED DELTA exact full_name',
+        'exact_insert_sql':{k:f'INSERT INTO {namespace}.mb_{v}_consumer '+literal_reference((target_null,)) for k,v in runs.items()},
+        'inspection_reads':['SELECT * before','DESCRIBE TABLE EXTENDED before',
+          'SELECT * after','DESCRIBE TABLE EXTENDED after','DESCRIBE HISTORY after']},
       'requires_prior_windows_complete':[148,149],
       'protected_permanent_names':[f'{namespace}.{prefix}_20261114{r}_{name}'
         for prefix,suffix in [('a','146'),('io','147'),('rw','148'),('di','149')]
@@ -81,6 +94,14 @@ def assert_typed(actual,expected):
         raise Refused('physical:schema')
     if Counter(map(tuple,actual['rows']))!=Counter(map(tuple,expected)):
         raise Refused('physical:rows')
+
+
+def require_nullable_target(metadata,target):
+    columns=[c for c in metadata.get('columns',[]) if c.get('name')=='ts']
+    if (metadata.get('full_name')!=target or metadata.get('table_type')!='MANAGED'
+            or metadata.get('data_source_format')!='DELTA' or len(columns)!=1
+            or columns[0].get('type_name')!='TIMESTAMP' or columns[0].get('nullable') is not True):
+        raise Refused('target NULL retention requires exact nullable MANAGED Delta TIMESTAMP metadata')
 
 
 def assert_result(actual,properties,expected):
@@ -321,6 +342,8 @@ class Microbatch(Merge):
         if hasattr(self,'namespace') and request['table_namespace']!=self.namespace:raise Refused('namespace changed')
         self.namespace=request['table_namespace']
         if label in STAGES[1:] and epochs[source]<=self.previous_epochs[source]:raise Refused('changed source epoch failed to advance')
+        if label=='update' and epochs[target]<=self.confirmed_epoch:
+            raise Refused('manual target NULL insert epoch failed to advance')
         if expected=='skip_execution':
             response=submits[0]['response']['response'][expected]
             explained=response.get('explained_decision')
@@ -335,6 +358,23 @@ class Microbatch(Merge):
             if any(type(v) is not int or v<=0 for v in (self.last_runtime,self.confirmed_epoch)):raise Refused('Confirm lacks own positive runtime/epoch')
         self.previous_epochs=epochs;self.previous_sql=request['sql'];self.previous_extras=request['semantic_extras']
         self.explain(label,submits);self.checked_results(label,stage)
+
+    def insert_planned_target_null(self):
+        target=self.scope.relation('prod','consumer')
+        self.scope.check(target)
+        metadata=self.api('get','/api/2.1/unity-catalog/tables/'+target)
+        self.save('target-null/metadata-before.json',metadata)
+        require_nullable_target(metadata,target)
+        before=self.observe('target_null_before',target)
+        before_props=json.loads((self.work/'physical/target_null_before_properties.json').read_text())
+        assert_result(before,before_props,HISTORY['first'].R)
+        statement=f'INSERT INTO {target} '+literal_reference((target_null,))
+        self.save('target-null/planned-insert.sql',statement)
+        self.sql('insert_target_null',statement)
+        after=self.observe('target_null_after',target)
+        after_props=json.loads((self.work/'physical/target_null_after_properties.json').read_text())
+        assert_result(after,after_props,HISTORY['first'].R+(target_null,))
+        self.save('target-null/history-after.json',self.sql('target_null_history',f'DESCRIBE HISTORY {target}'))
 
     def baseline(self):
         timezone_result=self.sql('session_timezone', 'SELECT current_timezone() AS session_timezone')
@@ -354,7 +394,9 @@ class Microbatch(Merge):
         self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
         self.sql('initial_source',f'INSERT INTO {source} '+literal_reference(HISTORY['first'].source))
         for label,stage,expected in CELLS:
-            if label=='update':self.sql('source_update',f"UPDATE {source} SET v='updated' WHERE id=1")
+            if label=='update':
+                self.sql('source_update',f"UPDATE {source} SET v='updated' WHERE id=1")
+                self.insert_planned_target_null()
             elif label=='shifted':self.sql('source_timestamp_move',f"UPDATE {source} SET p=DATE '2026-11-03',ts=TIMESTAMP '2026-11-03 12:00:00.456' WHERE id=1")
             elif label=='overlap':self.sql('source_delete_duplicates',f'DELETE FROM {source} WHERE id=2')
             elif label=='empty':self.sql('source_empty_day',f'DELETE FROM {source} WHERE id IS NULL')
