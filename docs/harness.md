@@ -427,3 +427,24 @@ zero-RPC disabled/compile controls apply. Its observed contract is
 `real_dbt_true_template_cached_failure_matches_independent_literal_results`
 uses the established pinned dbt/Python/lease/artifact environment. See the
 [dated bounded evidence](reports/databricks-cached-test-template-failure-2026-11-14.md).
+
+`databricks_merge.py` runs the bounded SQL MERGE history with two exact fresh
+production-role names, no persistent Reference objects, and an explicit
+`--live-clearance` matching its lease and hosted/Rust run IDs. Clearance must
+reserve native staging/backup spellings and one concurrent extra persistent
+slot; the session-only unqualified `__dbt_tmp` view has a separate allowlist.
+The runner retains actual default native SQL rather than disabling a client
+materialization route to fit capacity. Independent literal operation snapshots
+retain source-deleted rows after MERGE and remove them after full refresh.
+
+Hosted capture and exact public replay precede the ignored
+`databricks_merge.rs::real_dbt_merge_matches_independent_operation_history`.
+It requires the pinned `DBT_STATE_DATABRICKS_DBT`, persistent
+`DBT_STATE_DATABRICKS_PYTHON`, immutable `DBT_STATE_DATABRICKS_PROXY` and
+`DBT_STATE_DATABRICKS_PROBE`, plus `DBT_STATE_DATABRICKS_SCHEMA_LEASE`,
+`DBT_STATE_DATABRICKS_LIVE_CLEARANCE`, `DBT_STATE_DATABRICKS_RUN_ID` and a fresh
+`DBT_STATE_DATABRICKS_ARTIFACTS` directory. Pin source/executable identity before
+use; live acceptance runs the production router in an isolated State schema.
+The [dated partial report](reports/databricks-merge-2026-11-14.md) records the
+actual FULL1 Record after CLI refresh and next ordinary MERGE3 rebuild/reuse,
+complete physical checks and coverage still required for whole #145.

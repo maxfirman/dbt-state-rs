@@ -1,0 +1,167 @@
+{
+  "scope": "bounded SQL MERGE history; native #145 remains incomplete, blocked by incomplete dependencies; no promotion or scope waiver",
+  "client": "official dbt 2.0.11",
+  "warehouse": "Databricks serverless Unity Catalog managed Delta",
+  "production_base": "e5b2c5cc17bf8dba4ff94eee9664472df5aa38c7",
+  "production_frozen_source": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+  "production_changed": false,
+  "hosted": {
+    "run": "20261114a145aa",
+    "summary": {
+      "success": true,
+      "failure": null,
+      "invocations": 12,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T185927.810Z_5ca7128433bc4d298ff229dcae937dc7.jsonl",
+          "complete": true,
+          "rows": 75,
+          "sha256": "98ba6e18fa71ae1d22c2ca53549c68bef0b66a858cea286f39a236ed28bb4aee",
+          "methods": {
+            "ValidateClientVersion": 11,
+            "SubmitTelemetryBatch": 27,
+            "SubmitEnrichedSQLSpeculative": 10,
+            "SubmitEnrichedSQL": 10,
+            "ConfirmExecution": 5,
+            "GetExplainMessages": 11,
+            "RecordExecutions": 1
+          }
+        }
+      ]
+    },
+    "certified_zero_rpc_references": 11
+  },
+  "rust": {
+    "run": "20261114b145bb",
+    "summary": {
+      "success": true,
+      "failure": null,
+      "invocations": 12,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T190904.023Z_d1fca08e2cb74b09b1a37929c189e8ab.jsonl",
+          "complete": true,
+          "rows": 75,
+          "sha256": "c2416363b57f5614e86c52a19443ae319139b47e8642a9e6d05537812b119343",
+          "methods": {
+            "ValidateClientVersion": 11,
+            "SubmitTelemetryBatch": 27,
+            "SubmitEnrichedSQLSpeculative": 10,
+            "SubmitEnrichedSQL": 10,
+            "ConfirmExecution": 5,
+            "GetExplainMessages": 11,
+            "RecordExecutions": 1
+          }
+        }
+      ]
+    },
+    "live_seconds": 170.52,
+    "certified_zero_rpc_references": 11,
+    "physical_response_audit": {
+      "phase_complete": true,
+      "accepted_cells": 10,
+      "stable_complete_payloads_equal_primary": true,
+      "own_causal_runtime_echoes": [
+        5580,
+        8081,
+        8809,
+        8567,
+        8067
+      ],
+      "source_epochs": {
+        "first": 1794683349000,
+        "unchanged": 1794683349000,
+        "upsert": 1794683383000,
+        "upsert_repeat": 1794683383000,
+        "delete": 1794683412000,
+        "delete_repeat": 1794683412000,
+        "projection": 1794683412000,
+        "projection_repeat": 1794683412000,
+        "next_ordinary": 1794683412000,
+        "next_repeat": 1794683412000
+      },
+      "full_refresh_records": [
+        {
+          "type": 1,
+          "epoch": 1794683473000
+        }
+      ],
+      "all_rpc_statuses_ok": true,
+      "full_captures_unmodified": true,
+      "comparison_limits": "Cross-run excludes invocation IDs, maps only exact phase run spelling, verifies runtime against own causal Confirm/Record. Exact replay compares every retained response/status/Explain field separately."
+    },
+    "final_acceptance_proof": {
+      "final_counts": {
+        "ds_20261112a134ef_ref": 99,
+        "ds_20261112e134ef_ref": 100
+      },
+      "all_197_prior_objects_preserved": true,
+      "added": {
+        "ds_20261112a134ef_ref": [
+          {
+            "name": "m_20261114b145bb_consumer",
+            "full_name": "cdo_demo_db.ds_20261112a134ef_ref.m_20261114b145bb_consumer",
+            "table_type": "MANAGED"
+          },
+          {
+            "name": "m_20261114b145bb_inputs",
+            "full_name": "cdo_demo_db.ds_20261112a134ef_ref.m_20261114b145bb_inputs",
+            "table_type": "MANAGED"
+          }
+        ],
+        "ds_20261112e134ef_ref": []
+      },
+      "peak_extra_persistent_by_invocation": {
+        "first": 0,
+        "unchanged": 0,
+        "upsert": 0,
+        "upsert_repeat": 0,
+        "delete": 0,
+        "delete_repeat": 0,
+        "projection": 0,
+        "projection_repeat": 0,
+        "full_refresh": 0,
+        "next_ordinary": 0,
+        "next_repeat": 0
+      },
+      "binary_and_source_pins_unchanged": true,
+      "no_more_warehouse_calls_planned": true
+    }
+  },
+  "validation": {
+    "hosted_corpora": 123,
+    "hosted_replay_seconds": 229.23,
+    "new_fixture_assertions": 64,
+    "new_fixture_explain_trees": 11,
+    "new_fixture_gaps": 0,
+    "new_fixture_unknown_baseline": 0,
+    "new_fixture_partial_history": 0,
+    "supplementary_rust_replay_seconds": 235.75,
+    "supplementary_capture_rpc_count": 75,
+    "focused_harness_passed": 1,
+    "focused_live_opt_in_ignored_in_default_run": 1,
+    "fresh_live_passed": 1,
+    "independent_oracle_probes_passed": 6,
+    "existing_strict_reference_probes_passed": 5,
+    "focused_strict_clippy_fuzz": true,
+    "format_syntax_whitespace": true,
+    "reused_prior_workspace_tests": 675,
+    "reused_prior_library_tests": 310,
+    "reused_prior_duckdb_cases": 25,
+    "identical_gate_source_files": 159,
+    "no_fresh_full_workspace_library_duckdb_run": true
+  },
+  "remaining": [
+    "predicates",
+    "schema evolution",
+    "config-only update/exclude columns",
+    "actual NULL-key matching",
+    "ambiguous-key negatives",
+    "conditional incremental SQL",
+    "generated lifecycle",
+    "restart/upgrade",
+    "V2 safer replacement"
+  ],
+  "no_more_warehouse_calls": true,
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-145-20261114"
+}
