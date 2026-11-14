@@ -181,3 +181,32 @@ async fn real_dbt_source_changes_match_independent_reference() {
 async fn real_dbt_same_logic_recorded_rebuild_matches_independent_reference() {
     run_live("databricks_recorded_freshness.py").await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned client and Databricks credentials; writes two fresh owned demo relations"]
+async fn real_dbt_actual_epochs_match_readonly_reference() {
+    run_live("databricks_freshness_actual.py").await;
+}
+
+#[test]
+fn readonly_reference_rejects_lossy_results_and_extra_sql() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_readonly_reference_test.py"
+        ))
+        .output()
+        .expect("run warehouse-free readonly reference fault probes");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned client and Databricks credentials; writes two fresh owned demo relations"]
+async fn real_dbt_before_sql_and_confirm_races_match_readonly_reference() {
+    run_live("databricks_freshness_combined_race.py").await;
+}
