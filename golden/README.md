@@ -296,3 +296,18 @@ characterize display rounding only; they make no warehouse/physical-result or
 exact raw service-time equality claim. Whole-second clock bounds distinguish
 minute/hour even ties and unit carries. The original complete trees are
 unfiltered; all display differences are covered by the scoped formatter fix.
+
+## Bounded Databricks MERGE history (#145, 2026-11-14)
+
+`databricks_merge_history.jsonl` retains the complete 75-RPC actual pinned-client
+history: MERGE3 first BUILD/Confirm and unchanged SKIP, unique-key update/insert,
+source deletion with target-row retention, rendered projection change, CLI
+full-refresh FULL1 Record, next ordinary MERGE3 BUILD/Confirm and positive SKIP.
+Every ordinary decision's Explain, speculative call, validation, telemetry and
+causal outcome remains unfiltered. Independent operation-history snapshots,
+complete typed/schema/managed-Delta checks and zero-object State-disabled
+References pass against both hosted and current Rust. No new replay gap,
+unknown-baseline exemption or production change was needed. See the
+[dated partial evidence](../docs/reports/databricks-merge-2026-11-14.md).
+Native #145 remains incomplete, with #138/#140 dependencies and predicates,
+schema evolution and other required coverage unpromoted.
