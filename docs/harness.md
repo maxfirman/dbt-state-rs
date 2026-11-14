@@ -506,3 +506,29 @@ test State schema is dropped. The147 wrapper calls
 every ordinary submit, and keyed by organization/decision; it never changes a
 live request clock. The original147 capture uses independently verified original
 WAL recovery rather than a warehouse rerun. See [native clock replay](testing.md).
+
+`databricks_audit.py` characterizes only the bounded #144 source-less native
+audit-table histories. Its original failed aliased/default-name campaigns are
+retained unchanged. The matching 30/21-row fixtures include every original RPC
+and all separately attributed causal transport controls; synthetic requests
+retain historical hashes and never publish a result or establish physical rows.
+The narrow ordinary error guard adds no audit-input elimination or reuse rule.
+
+The ignored
+`databricks_audit.rs::real_dbt_audit_relations_match_independent_recorded_and_fresh_results`
+requires the established `DBT_STATE_DATABRICKS_{PYTHON,DBT,PROXY,PROBE,ARTIFACTS}`,
+`SCHEMA_LEASE`, `LIVE_CLEARANCE` and `RUN_ID` variables, plus
+`DBT_STATE_DATABRICKS_AUDIT_CONTRACT` and a separately issued
+`DBT_STATE_DATABRICKS_AUDIT_RUST_CLEARANCE`. The dedicated receipt binds mode
+`alias5` or `default3`, exact objects/limits, whole hosted fixture and contract
+hashes, green public replay and the actual running server executable hash.
+The default mode also requires a separate exact-output retirement receipt.
+No further live phase follows from an earlier receipt or this documentation.
+
+The final body-changing cell expects exactly the observed ordinary status 3,
+null response and successful native fallback, with no Confirm. Its physical
+empty result F is checked independently; the prior confirmed failing State R
+is not replaced. Other cells require actual fresh BUILD/Confirm and positive
+speculative reuse with complete payload/runtime/Explain and physical oracles.
+All compile/reference invocations use independent zero-RPC canaries. See the
+[dated status evidence and remaining scope](reports/databricks-audit-hosted-rejection-2026-11-14.md).

@@ -646,3 +646,35 @@ retained; live production clock behavior is unchanged. Future147 harness runs
 retain audit clocks postflight before test-schema cleanup. The actual original
 native executable/source snapshots remain separately pinned. Whole147 and its
 settings/schema/lifecycle/dependency blockers remain incomplete.
+
+## Databricks audit ordinary-submit partial (#144, 2026-11-14)
+
+[Bounded primary evidence](reports/databricks-audit-hosted-rejection-2026-11-14.md)
+records aliased and default-name source-less native audit-table histories.
+Both BUILD/Confirm a complete failing result and positively reuse it; a later
+body-changing pass reaches ordinary INVALID_ARGUMENT 3, `Failed to process SQL`,
+and native fallback. The original pre-guard public replay failures and campaign
+labels remain immutable. Separately attributed historical transport controls
+repeat the rejection, accept a genuine relation read, and rule out configured
+alias, UNION syntax and changed-body cache path as necessary conditions.
+No synthetic control publishes a confirmed result or claims physical execution.
+
+The narrow ordinary status guard now matches both entire causal histories
+(30/21 rows, including all controls) without new replay exemptions. It requires
+parsed source-less literal SELECT/UNION ALL, true template/table-store mode and
+one checked same-native-audit-context positive-epoch table. Genuine or unknown
+reads, CTEs, functions, dependencies, other modes/contexts and other dialects
+keep their prior handling. No audit input is removed, no history or identity is
+widened, and speculative reuse is unchanged. Snowflake ADR 0008 stays scoped.
+
+Fresh independent Rust aliased/default-name counterparts match all five/three
+cells, complete statuses, runtime echoes, Explain and typed physical results.
+Their final expected error has no result publication; pinned native fallback
+passes with empty physical F while last confirmed State R remains failing.
+Every compile/reference canary proves zero State RPCs. Original inventories
+and host outputs are preserved; root separately retires only owned outputs
+between phases with full identity/actor/history provenance.
+
+Views, alternate audit schemas, genuine-upstream native audit behavior, external
+modifications, drop/recreation and post-error reuse remain uncovered. #144,
+#143/#138's UID boundary blocker and the wider #132 blockers remain incomplete.

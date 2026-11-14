@@ -58,3 +58,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 - [golden/README.md](../golden/README.md): the golden fixture corpus.
 - [agents/](agents/): agent instructions for the issue tracker, triage labels
   and domain docs.
+
+- [Databricks audit hosted rejection](reports/databricks-audit-hosted-rejection-2026-11-14.md):
+  bounded #144 ordinary error-status fidelity from complete native and causal
+  diagnostic histories, with fresh Rust fallback/physical checks; broader audit
+  scope and dependencies remain incomplete.
