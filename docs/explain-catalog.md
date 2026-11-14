@@ -244,14 +244,14 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
 
 | `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-14) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 167 (86 crafted, 79 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 208 (115 crafted, 89 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 248 (135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 252 (132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
 | 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (16 client 2.0.11, 4 crafted), SKIP 9 (8 client 2.0.11, 1 crafted) |
 | 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (18 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
 | 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 20 (16 client 2.0.11, 4 crafted), SKIP 6 (5 client 2.0.11, 1 crafted) |
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 5 (5 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 17 (11 client 2.0.11, 6 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 18 (16 client 2.0.11, 2 crafted), SKIP 24 (18 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 26 (24 client 2.0.11, 2 crafted), SKIP 32 (26 client 2.0.11, 5 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 106 (92 crafted, 14 client 2.0.11), SKIP 39 (30 crafted, 8 client 2.0.11, 1 client 2.0.6) |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 17 (13 client 2.0.11, 4 crafted), SKIP 9 (8 client 2.0.11, 1 crafted) |
@@ -372,28 +372,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 825 trees in the
+Line counts from the [census](#explain-tree-census) over the 920 trees in the
 tracked fixtures (2026-11-14). A line without a marker or badge is "none"
-(4327 lines without a marker, 5227 without a badge). Only an explicit `0` is
+(4984 lines without a marker, 5948 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 2213 lines |
-| ExplainMarker | FAIL (2) | ✅ 494 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 2479 lines |
+| ExplainMarker | FAIL (2) | ✅ 567 lines |
 | ExplainMarker | INFO (3) | ✅ 59 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 825 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 693 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 920 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 769 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 122 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 494 lines |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 34 lines |
-| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 359 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 115 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 825 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 578 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 38 lines |
+| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 14 lines (SHAPE 9 per-upstream query listing only) |
+| ExplainBadge | FRESH (1) | ✅ 394 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 183 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 43 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 920 trees (2026-11-14; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 825 tracked trees: 2 client (version unrecorded), 445 client 2.0.11, 7 client 2.0.6, 371 crafted. INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
+1. Origins across the 920 tracked trees: 490 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -413,12 +413,12 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-14 (825 trees in 126 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-14 (920 trees in 132 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 233 | 115 crafted, 114 client 2.0.11, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 188 | 100 client 2.0.11, 86 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | SKIP | 252 | 132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 248 | 135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
 | APPEND | SKIP | 9 | 8 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |
@@ -432,8 +432,8 @@ Tracked fixtures, 2026-11-14 (825 trees in 126 files, none empty; INFO catalogue
 | MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
 | SNAPSHOT | EXECUTE | 17 | 11 client 2.0.11, 6 crafted |
-| DBT_DATA_TEST | SKIP | 24 | 18 client 2.0.11, 5 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 18 | 16 client 2.0.11, 2 crafted |
+| DBT_DATA_TEST | SKIP | 32 | 26 client 2.0.11, 5 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 26 | 24 client 2.0.11, 2 crafted |
 | VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
 | VALUES | EXECUTE | 13 | 8 client 2.0.11, 5 crafted |
 | VALUES | CLONE | 3 | 3 client 2.0.11 |
@@ -1699,3 +1699,10 @@ The hosted d1 and d2 trees use existing shapes (the anchored SKIP tree and the
 first-build tree). #80, #82 and #87 are accepted divergences
 ([correctness-handoff.md](correctness-handoff.md#accepted-divergences)): the
 server keeps its conservative rebuilds, so their keyed gaps stay.
+
+The [bounded producer/policy history](reports/databricks-policy-2026-11-14.md)
+adds 29 actual client 2.0.11 FULL trees with complete producer Record histories
+and exact ANY/ALL lag responses. Separate complete crafted duration controls
+add 50 FULL trees. Those controls establish Databricks display-only whole-second
+even-tie rounding and minute/hour/day carries, without a warehouse-result or
+exact raw service-time equality claim. All original full trees are retained.

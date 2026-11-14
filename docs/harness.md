@@ -393,3 +393,25 @@ contract; set `DBT_STATE_DATABRICKS_CONFIG_THROUGH=sum_v`,
 for the complete observed matrix. Always use a fresh artifact directory and
 an isolated server store; pin the launch source and executable hashes before
 actual use. See the [configuration evidence](reports/databricks-cached-test-configuration-2026-11-14.md).
+
+The bounded `databricks_policy_actual.py` campaign uses four exact fresh
+production-role names (`p_<run>_{inputs,producer_a,producer_b,consumer}`) and zero
+persistent reference objects. It requires an explicit `--live-clearance` as well
+as the evidenced schema lease; the clearance pins hosted/Rust run IDs, exact
+allowlists and fresh inventory counts. Ordinary properties YAML uses
+`state.require_fresh_data_from: any|all` with `lag_tolerance: 3m`; manifest and wire
+must both prove the setting. A legacy `lag_tolerance.updates_on` candidate parsed
+but emitted ANY and is retained as a failed discovery, not ALL acceptance.
+
+Hosted capture precedes exact public replay and the ignored
+`databricks_policy.rs::real_dbt_policy_matches_saved_and_fresh_independent_references`
+Rust acceptance. The test additionally requires `DBT_STATE_DATABRICKS_RUN_ID`,
+`DBT_STATE_DATABRICKS_LIVE_CLEARANCE` and
+`DBT_STATE_DATABRICKS_POLICY_CONTRACT`, alongside the existing pinned-client,
+Python, lease, artifact and query-identity variables. Every consumer BUILD saves
+an immutable operation-derived reference R; a later SKIP checks R while a
+separate direct typed/State-disabled-show reference computes current F. Actual
+elapsed-age checks retain margins and full producer Record histories. Crafted
+local-clock equality tests make no exact hosted-equality claim.
+The [dated report](reports/databricks-policy-2026-11-14.md) states the bounded
+coverage and continuing #138/#140 blockers.

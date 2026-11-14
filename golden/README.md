@@ -261,3 +261,27 @@ threshold pass despite nonzero failures (`3/false/false`), NULL-excluding
 twelve full Explain trees and every computation confirmation are retained.
 All changes affect semantic extras only; the report lists the exact changed
 configuration fields rather than treating each transition as one field.
+
+## Bounded Databricks producer / policy evidence (#142, 2026-11-14)
+
+`databricks_producer_policy.jsonl` retains the complete 261-RPC lifetime of one
+actual pinned 2.0.11 graph: both initial producer BUILDs/Confirms, consumer
+BUILD/Confirm, positive reuse, all same/changed-logic producer Records, explicit
+consumer Record anchors, ANY/ALL partial/all drift inside/outside positive lag,
+speculative UNDECIDED, telemetry and every ordinary decision's Explain tree.
+The first 30 RPCs include the failed `updates_on:all` configuration candidate;
+the same-name continuation uses the documented `require_fresh_data_from` field
+and proves actual ALL1 on wire. No request or response was filtered, altered,
+masked or exempted. The indexed observed contract and causal part hashes are in
+`experiments/databricks_policy_contract.json`. See the
+[dated evidence report](../docs/reports/databricks-policy-2026-11-14.md).
+Native #142 remains blocked by incomplete #138 and #140.
+
+`databricks_gap_duration.jsonl`, `databricks_relative_hour_duration.jsonl` and
+`databricks_relative_minute_duration.jsonl` retain 102/36/12 complete crafted
+public RPCs using only admitted names in fresh synthetic named namespaces.
+Every cell includes causal Record→Submit→Explain. Engineered known epochs
+characterize display rounding only; they make no warehouse/physical-result or
+exact raw service-time equality claim. Whole-second clock bounds distinguish
+minute/hour even ties and unit carries. The original complete trees are
+unfiltered; all display differences are covered by the scoped formatter fix.
