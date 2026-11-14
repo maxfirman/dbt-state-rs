@@ -172,7 +172,12 @@ def delete_insert_submit(calls,source,target,target_exists,expected):
     return submits
 
 
-def full_refresh_record(calls,target):
+def full_refresh_record(calls,target,expected_kind=None):
+    """Hosted discovery extracts shape; native uses a prior hosted kind lock.
+
+    A valid enum alone establishes neither faithful Record behavior nor support.
+    Complete original input/outcome/ack and whole public replay remain required.
+    """
     if any(r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone') for r in calls):
         raise Refused('refresh route differs from native Record path')
     records=[r for r in calls if r['method']=='RecordExecutions']
@@ -185,6 +190,8 @@ def full_refresh_record(calls,target):
             or type(outcome.get('last_modified_epoch')) is not int or outcome['last_modified_epoch']<=0
             or type(outcome.get('execution_runtime_ms')) is not int or outcome['execution_runtime_ms']<=0):
         raise Refused('refresh record lacks actual protocol node kind or known positive epoch/runtime')
+    if expected_kind is not None and request['execution_type']!=expected_kind:
+        raise Refused('native refresh Record kind differs from prior hosted contract')
     return record
 
 
@@ -275,6 +282,9 @@ class DeleteInsert(Merge):
         if (not clearance.get('status','').startswith('LIVE CLEARED')
                 or self.phase not in clearance.get('authorized_phases',[])
                 or args.run_id!=proposal['run_ids'][self.phase]):raise Refused('backend lacks separate exact root clearance')
+        self.expected_refresh_kind=clearance.get('expected_full_refresh_record_execution_type')
+        if self.phase=='rust' and (type(self.expected_refresh_kind) is not int or not 1<=self.expected_refresh_kind<=11):
+            raise Refused('native phase requires prior hosted full-refresh Record kind contract')
         scope=DeleteInsertScope(args.run_id,clearance)
         if args.rust_url and not re.fullmatch(r'http://127\.0\.0\.1:\d+',args.rust_url):raise Refused('Rust endpoint must be owned loopback')
         # #147 introduces this shared validator seam; consume only after canonical merge.
@@ -373,11 +383,11 @@ class DeleteInsert(Merge):
         target=self.scope.relation('prod','consumer');source=self.scope.relation('prod','inputs')
         query=(self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         if expected=='record':
-            record=full_refresh_record(calls,target);self.last_runtime=record['outcome']['execution_runtime_ms']
+            record=full_refresh_record(calls,target,expected_kind=self.expected_refresh_kind if self.phase=='rust' else None);self.last_runtime=record['outcome']['execution_runtime_ms']
             self.confirmed_epoch=record['outcome']['last_modified_epoch']
             self.full_refresh_type=record['input']['enriched_sql']['execution_type']
             self.save('full-refresh-wire.json',calls)
-            self.save('full-refresh-route.json',{'method':'RecordExecutions','actual_execution_type':self.full_refresh_type,'acknowledged_records':1,'no_assumed_type_conversion':True})
+            self.save('full-refresh-route.json',{'method':'RecordExecutions','actual_execution_type':self.full_refresh_type,'acknowledged_records':1,'no_assumed_type_conversion':True,'phase':self.phase,'locked_prior_hosted_kind':self.expected_refresh_kind if self.phase=='rust' else None,'discovery_shape_only':self.phase=='hosted'})
         else:
             submits=delete_insert_submit(calls,source,target,label!='first',expected)
             request=submits[0]['request'];evidence={t['name'].replace('`','').lower():t['last_modified_epoch'] for t in request['tables']}

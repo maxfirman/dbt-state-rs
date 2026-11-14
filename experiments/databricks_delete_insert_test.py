@@ -94,6 +94,16 @@ class BoundaryControls(unittest.TestCase):
             if fault=='extra':bad.append({'method':'ConfirmExecution'})
             with self.subTest(fault=fault),self.assertRaises(Refused):full_refresh_record(bad,target)
 
+class RefreshContractControls(unittest.TestCase):
+    def test_native_refresh_kind_must_match_prior_hosted_observation(self):
+        from databricks_delete_insert import full_refresh_record
+        from databricks_survey import Refused
+        target='cdo_demo_db.owned.consumer'
+        record={'input':{'enriched_sql':{'execution_type':5,'target_table':target}},'outcome':{'last_modified_epoch':123,'execution_runtime_ms':456}}
+        calls=[{'method':'RecordExecutions','request':{'records':[record]},'response':{'records_stored':1}}]
+        self.assertEqual(full_refresh_record(calls,target,expected_kind=5),record)
+        with self.assertRaises(Refused):full_refresh_record(calls,target,expected_kind=1)
+
 class SubmitControls(unittest.TestCase):
     def test_public_submit_requires_exact_oneof_and_scoped_positive_evidence(self):
         from copy import deepcopy
