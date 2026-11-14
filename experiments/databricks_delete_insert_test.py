@@ -87,12 +87,50 @@ class BoundaryControls(unittest.TestCase):
         self.assertEqual(full_refresh_record(calls,target),record)
         for fault in ('type','epoch','runtime','ack','extra'):
             bad=deepcopy(calls)
-            if fault=='type':bad[0]['request']['records'][0]['input']['enriched_sql']['execution_type']=5
+            if fault=='type':bad[0]['request']['records'][0]['input']['enriched_sql']['execution_type']=0
             if fault=='epoch':bad[0]['request']['records'][0]['outcome']['last_modified_epoch']=None
             if fault=='runtime':bad[0]['request']['records'][0]['outcome']['execution_runtime_ms']=0
             if fault=='ack':bad[0]['response']['records_stored']=True
             if fault=='extra':bad.append({'method':'ConfirmExecution'})
             with self.subTest(fault=fault),self.assertRaises(Refused):full_refresh_record(bad,target)
+
+class SubmitControls(unittest.TestCase):
+    def test_public_submit_requires_exact_oneof_and_scoped_positive_evidence(self):
+        from copy import deepcopy
+        from databricks_delete_insert import delete_insert_submit
+        from databricks_survey import Refused
+        source='cdo_demo_db.owned.di_inputs';target='cdo_demo_db.owned.di_consumer'
+        request={'dialect':'databricks','execution_type':5,'compare_unrendered_code':False,
+          'table_namespace':'own','query_dependencies':{},'target_table':target,
+          'semantic_extras':{'unique_key':'"id"','on_schema_change':'"ignore"','file_format':'"delta"'},
+          'tables':[{'name':source,'last_modified_epoch':123}], 'clone_chain_depth_limit':0,
+          'ignore_external_modifications':False,'freshness_tolerance_seconds':0,'stale_upstream_policy':0,
+          'labels':{'dbt_node_name':'consumer'}}
+        calls=[{'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'ready_to_execute':{'request_id':'own'}}}},
+          {'method':'ConfirmExecution','request':{'request_id':'own'},'response':{'success':True}}]
+        delete_insert_submit(calls,source,target,False,'ready_to_execute')
+        for fault in ('oneof','type','unknown','duplicate','target','predicate','depth','failed-confirm'):
+            bad=deepcopy(calls)
+            if fault=='oneof':bad[0]['response']['response']['skip_execution']={}
+            if fault=='type':bad[0]['request']['execution_type']=3
+            if fault=='unknown':bad[0]['request']['tables'][0]['last_modified_epoch']=None
+            if fault=='duplicate':bad[0]['request']['tables']*=2
+            if fault=='target':bad[0]['request']['target_table']='cdo_demo_db.protected.foreign'
+            if fault=='predicate':bad[0]['request']['semantic_extras']['incremental_predicates']='["id>0"]'
+            if fault=='depth':bad[0]['request']['clone_chain_depth_limit']=1
+            if fault=='failed-confirm':bad[1]['response']['success']=False
+            with self.subTest(fault=fault),self.assertRaises(Refused):delete_insert_submit(bad,source,target,False,'ready_to_execute')
+
+class CodecControls(unittest.TestCase):
+    def test_observed_whole_second_utc_codec_is_lossless_with_nullable_key(self):
+        import json
+        from databricks_delete_insert import SCHEMA,assert_reference,literal_reference
+        rows=((None,'a','2026-11-01','2026-11-01T12:00:00.000Z'),)
+        direct={'columns':[dict(zip(('name','type_text','type_name','position'),c)) for c in SCHEMA],'rows':rows}
+        sql=literal_reference(rows)
+        shown=[{'id':None,'v':'a','p':'2026-11-01','ts':'2026-11-01T12:00:00Z'}]
+        result=assert_reference(json.dumps(shown),'',direct,rows,sql,sql+';',sql)
+        self.assertEqual(result['observed_show_whole_second_rows'],1)
 
 class FootprintControls(unittest.TestCase):
     def test_native_safe_replacement_has_one_shared_persistent_peak(self):

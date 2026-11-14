@@ -55,6 +55,7 @@ def clearance_contract():
     return {'ticket':149,'catalog':'cdo_demo_db','schema':schema.split('.')[1],
       'schema_id':'6f14be2c-a920-4309-8240-caf8e8df7888','run_ids':runs,
       'max_final_permanent':4,'max_extra_concurrent_persistent':1,
+      'container_counts':{'before_hosted':12,'before_rust':14,'final_permanent':16,'peak_with_one_auxiliary':17},
       'permanent_exact_allowlists':{k:[f'{schema}.di_{v}_{n}' for n in ('inputs','consumer')] for k,v in runs.items()},
       'session_temporary_unqualified_names':{k:f'di_{v}_consumer__dbt_tmp' for k,v in runs.items()},
       'persistent_auxiliary_exact_spellings':{k:[f'{schema}.di_{v}_consumer{suffix}' for suffix in ('__dbt_stg','__dbt_backup')] for k,v in runs.items()},
@@ -103,10 +104,13 @@ def assert_reference(stdout,stderr,direct,expected,sql,query_log,compiled):
     try:rows=json.loads(stdout,object_pairs_hook=unique_object)
     except (TypeError,ValueError) as error:raise Refused('reference:json') from error
     if not isinstance(rows,list):raise Refused('reference:json-array')
-    actual=[]
+    actual=[];whole_second_rows=0
     for row in rows:
         if not isinstance(row,dict) or list(row)!=['id','v','p','ts']:raise Refused('reference:columns')
         a,v,p,ts=row.values()
+        # #147 independent pinned-client proof: only zero fractional UTC part is omitted.
+        if type(ts) is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',ts):
+            ts=ts[:-1]+'.000Z';whole_second_rows+=1
         if ((a is not None and (type(a) is not int or abs(a)>2**53-1))
                 or (v is not None and type(v) is not str)
                 or (p is not None and (type(p) is not str or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',p)))
@@ -122,7 +126,7 @@ def assert_reference(stdout,stderr,direct,expected,sql,query_log,compiled):
             or not query.rstrip().endswith(';') or normalize(query.rstrip()[:-1])!=normalize(sql)):
         raise Refused('reference:query-sql')
     return {'complete_show_rows':len(rows),'typed_schema':True,'exact_select_only':True,
-            'duplicate_null_multiset':True,'exact_temporal_codec':True}
+            'duplicate_null_multiset':True,'exact_temporal_codec':True,'observed_show_whole_second_rows':whole_second_rows}
 
 
 
@@ -161,6 +165,7 @@ def delete_insert_submit(calls,source,target,target_exists,expected):
     if (len(evidence)!=len(wanted) or {normalize(t['name']) for t in evidence}!=wanted
             or any(type(t.get('last_modified_epoch')) is not int or t['last_modified_epoch']<=0 for t in evidence)
             or normalize(request['target_table'])!=target):raise Refused('delete+insert needs exact known positive epochs')
+    if set(submits[0]['response']['response'])!={expected}:raise Refused('unexpected DELETE_INSERT response oneof')
     decisions(calls,expected)
     if any(r['method'] in ('RecordExecutions','RegisterClone') for r in calls):raise Refused('unexpected ordinary Record/copy')
     if expected=='skip_execution' and any(r['method']=='ConfirmExecution' for r in calls):raise Refused('reuse unexpectedly confirmed')
@@ -169,16 +174,17 @@ def delete_insert_submit(calls,source,target,target_exists,expected):
 
 def full_refresh_record(calls,target):
     if any(r['method'] in ('SubmitEnrichedSQL','ConfirmExecution','RegisterClone') for r in calls):
-        raise Refused('refresh route differs from FULL Record path')
+        raise Refused('refresh route differs from native Record path')
     records=[r for r in calls if r['method']=='RecordExecutions']
     if (len(records)!=1 or len(records[0]['request']['records'])!=1
             or records[0]['response']!={'records_stored':1}
             or type(records[0]['response']['records_stored']) is not int):raise Refused('refresh lacks acknowledged record')
     record=records[0]['request']['records'][0];request=record['input']['enriched_sql'];outcome=record['outcome']
-    if (request['execution_type']!=1 or request['target_table'].replace('`','').lower()!=target
+    if (type(request.get('execution_type')) is not int or not 1<=request['execution_type']<=11
+            or request['target_table'].replace('`','').lower()!=target
             or type(outcome.get('last_modified_epoch')) is not int or outcome['last_modified_epoch']<=0
             or type(outcome.get('execution_runtime_ms')) is not int or outcome['execution_runtime_ms']<=0):
-        raise Refused('refresh record lacks FULL known positive epoch/runtime')
+        raise Refused('refresh record lacks actual protocol node kind or known positive epoch/runtime')
     return record
 
 
@@ -369,7 +375,9 @@ class DeleteInsert(Merge):
         if expected=='record':
             record=full_refresh_record(calls,target);self.last_runtime=record['outcome']['execution_runtime_ms']
             self.confirmed_epoch=record['outcome']['last_modified_epoch']
+            self.full_refresh_type=record['input']['enriched_sql']['execution_type']
             self.save('full-refresh-wire.json',calls)
+            self.save('full-refresh-route.json',{'method':'RecordExecutions','actual_execution_type':self.full_refresh_type,'acknowledged_records':1,'no_assumed_type_conversion':True})
         else:
             submits=delete_insert_submit(calls,source,target,label!='first',expected)
             request=submits[0]['request'];evidence={t['name'].replace('`','').lower():t['last_modified_epoch'] for t in request['tables']}
@@ -424,7 +432,7 @@ class DeleteInsert(Merge):
             elif label=='restore_null':self.sql('restore_source_null',f'INSERT INTO {source} '+literal_reference((na,)))
             elif label=='empty':self.sql('empty_selected_source',f'DELETE FROM {source} WHERE '+PREDICATE)
             self.invocation(label,stage,expected)
-        return {'managed_runs':13,'reference_objects':0,'whole_ticket_complete':False,'dependencies_138_140_complete':False}
+        return {'managed_runs':13,'actual_full_refresh_record_execution_type':self.full_refresh_type,'reference_objects':0,'whole_ticket_complete':False,'dependencies_138_140_complete':False}
 
 
 def main():
