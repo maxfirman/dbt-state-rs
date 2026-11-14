@@ -6,12 +6,19 @@ pass proves is in [docs/testing.md](../docs/testing.md#captured-traffic-replay).
 
 ## Layout
 
+`databricks_explain_visibility.jsonl` records a warehouse-free hosted
+submit followed immediately by its first Explain (2026-11-13). The returned
+decision has a complete tree. `explain_visibility.rs` reproduces a local
+capture-lag race at the public gRPC seam and verifies scoped causal visibility
+without client retries. The fixture is the unchanged first pair from a
+certified twelve-RPC campaign; no execution or warehouse mutation is claimed.
+
 - `fixtures/`: the curated, git-tracked corpus. Treat it as read-only test data.
 - `replay_gaps.json`: keyed known divergences for the replay
   ([semantics](../docs/testing.md#goldenreplay_gapsjson)).
 - `upgrade/`: frozen rows from an old server revision (below).
 - Top level: the recording proxy's output directory. `record-proxy` writes
-  `golden_<timestamp>.jsonl` here each session. These files are gitignored
+  `golden_<timestamp>_<session>.jsonl` and a `.capture.json` integrity sidecar here each session. These files are gitignored
   (`/golden/golden_*.jsonl`) and ephemeral. Promote a useful capture by copying
   it into `fixtures/`; do not leave session files at the top level.
 
@@ -26,6 +33,15 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 
 | File | Replay | What it captures; which test pins it |
 |---|---|---|
+| `databricks_isolation_scopes.jsonl` | yes | Complete crafted scope collisions, absent/empty namespace and exact rendered Spark aliases, changed-SQL/latest-history and negative controls; 113 RPCs with full Explain, zero gaps/unknown baselines. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_concurrent_a.jsonl`, `databricks_isolation_concurrent_b.jsonl` | yes | Actual pinned 2.0.11 concurrent independent projects: first build, required reuse and required peer reuse after exact owned cleanup; 15/21 RPCs. [Evidence](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_{missing_namespace,full_controls,diagnostic_inputs,diagnostic_alias_scopes,diagnostic_identity,refusal_confirmation}.jsonl` | yes | Complete None/empty definition diagnostics, coherent FULL aliases, source metadata and strict literal/context/namespace negatives; refused optimization → Confirm → required reuse and source independence. No gaps/unknown baselines. [Evidence and unresolved scope contract](../docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_managed_seeds.jsonl` | yes | Complete pinned 2.0.11 managed-seed contents, column types, delimiter and quoting changes; ten required seed/downstream SKIPs, ten confirmations and 20 first-call Explain responses; all 121 RPCs retained. [Seed evidence](../docs/reports/databricks-seeds-2026-11-13.md). |
+| `databricks_lifecycle_client.jsonl` | yes | Complete pinned 2.0.11 failure/retry, recovery and write-only Record/reuse, plus separately labeled crafted publication controls and full Explain; 70 RPCs. [Evidence and open logical-target limitation](../docs/reports/databricks-lifecycle-2026-11-14.md). |
+| `databricks_lifecycle_ordering.jsonl` | yes | Different completion/delivery orders, SQL identities and equal-epoch ties on Snowflake and Databricks, including independent actual Delta contents; 48 RPCs. |
+| `databricks_lifecycle_{confirm,record,null_confirm,null_record_batch,record_boundaries,empty_target,uuid_aliases,uuid_forms,protocol_errors}.jsonl` | yes | Nine complete crafted lifecycle sessions, 127 RPCs: exact errors/details/presence, immutable duplicates, valid retry, atomic rejection and UUID spelling correlation. No gaps or unknown baselines. |
+| `databricks_client_auxiliary.jsonl` | yes | Pinned 2.0.11 validation, session start/end including exact durations and client failure, plus query-preparation telemetry; `client_auxiliary.rs` and generic conformance. [Provenance](../docs/reports/databricks-client-auxiliary-2026-11-12.md). |
+| `databricks_table_view_baseline.jsonl` | yes | Complete pinned 2.0.11 managed Delta table/view build, unchanged reuse, changed-query rebuild and subsequent reuse, confirmations, speculative submits, telemetry and full Explain including opposite request orders; no history/gap exceptions. [Runner](../docs/databricks-baseline.md). |
 | `golden_20261008T222744.061Z.jsonl` | yes | Build, confirm and skip lifecycle with speculative submits and version checks; `differential.rs`. |
 | `golden_20261009T083754.534Z.jsonl` | yes | Prod build then dev skip through namespace reuse, with cross-target data-test entries keyed in `replay_gaps.json`; `conformance.rs`. |
 | `golden_20261009T100637.316Z.jsonl` | yes | `RegisterClone` to `ready_to_clone` plus an empty `ResolveDeferredRelations`; `clone.rs::register_clone_matches_real_shape`, `deferred_relations_empty_when_nothing_built`. |
@@ -87,6 +103,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `explain_unknown_epoch.jsonl` | yes | Crafted `state-probe` requests only (`experiments/unknown_epoch_probes.py`, #104): a FULL model whose upstream epoch is unknown at the build, the resubmit or both; hosted SKIPs within the Lag tolerance, keyed as accepted divergences (#113); `conformance.rs`. |
 | `explain_copy_logic_mismatch.jsonl` | yes | Client 2.0.11, `experiments/explain_capture.py copy_logic_mismatch` (#104): rebuilds over a `RegisterClone` pre-step copy after a logic change (five incrementals, a snapshot) or a materialization change (a table: 2 / 2; a view and a custom node: 6 / 6), and a table with a prod equivalent under `allow_clones: false` (1 / 10, "cloning is disabled"); `conformance.rs` RegisterClone and Explain arms. |
 | `explain_copy_logic_crafted.jsonl` | yes | Crafted `state-probe` requests only (`experiments/copy_logic_probes.py`, #104), including `RegisterClone`: a table over an append copy with other logic, every model kind over a copy without upstreams, and every model kind over a dropped copy (`x11`–`x19`); `conformance.rs`. |
+| `rpc_success_and_rejection.jsonl` | yes | Warehouse-free hosted calls (2026-11-12, #133): version validation succeeds; a selector without `project_id` returns `INVALID_ARGUMENT: project_id must be provided`. Status/response metadata and field presence replay in `rpc_capture_replay.rs` and `conformance.rs`; no history exemption. |
 | `explain_malformed_requests.jsonl` | yes | Crafted `state-probe` requests only (`experiments/malformed_requests.py`, #104): a node of each kind whose query dependency is listed twice, built then resubmitted; hosted SKIPs, keyed as accepted divergences (#114). The empty-SQL and empty-dependency probes failed with `INVALID_ARGUMENT` and were not recorded; `conformance.rs`. |
 | `clone_chain_upstream_history.jsonl` | char-only | A copy chain whose consumed upstream copy is externally modified, which rebuilds within tolerance; `lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`. |
 | `clone_chain_upstream_drift.jsonl` | yes | A copied target rebuilds once its upstream advances past the copy's build epoch; `clone_chain_provenance.rs::hosted_clone_rebuilds_when_upstream_advances_past_clone`. |
@@ -124,3 +141,65 @@ hashing code:
 Both tests assert the current server rebuilds instead of reusing these rows.
 Regenerate only from the recorded revision with the `#[ignore]`d
 `zz_capture_prefix_clone_fixture` / `zz_capture_incorrect_clone_fixture` drivers.
+
+`upgrade/databricks_alias_identifiers_v1_aa89b6a.json` freezes genuine
+Submit/Confirm history from clean #136 source `aa89b6a` and records exact server
+and probe digests. `databricks_isolation.rs` rejects its old v1 fingerprint after
+the rendered Spark-alias identity change, including old pending work confirmed
+after a new-version build. The file is an independent historical artifact; do
+not regenerate it using current fingerprint code.
+
+`upgrade/databricks_empty_namespace_v2_4b38371.json` contains genuine pending
+and confirmed rows exported through public Submit/Confirm from the immutable
+pre-normalization v2 server (exact source/provenance digests in the artifact).
+The isolation upgrade regression reads legacy empty strings as the absent
+physical scope, including old pending work confirmed after a newer NULL-scope
+build, without recomputing old hashes.
+
+`upgrade/databricks_null_epoch_v2_5585f53.json` and
+`upgrade/snowflake_null_epoch_5585f53.json` freeze genuine public pending and
+confirmed rows from the immutable pre-#158 server (source and binary provenance
+are pinned in each artifact). Lifecycle upgrade tests require matching known
+evidence to reuse before testing the unknown-epoch floor; they never regenerate
+old hashes from current code. Separate current-version storage-fault controls
+keep that floor meaningful after future identity-version changes. These are
+local upgrade artifacts, not hosted or physical warehouse captures.
+
+## Bounded Databricks freshness follow-up (2026-11-14)
+
+- `databricks_freshness_identical_current.jsonl`: complete four-RPC crafted
+  Submit/Confirm/duplicate Submit/Explain history; only identical known raw
+  current upstream evidence collapses. Source: certified 54-RPC protocol
+  campaign, captured before implementation.
+- `databricks_freshness_missing_current.jsonl` and
+  `databricks_freshness_both_missing.jsonl`: the two complete five-RPC histories
+  from the certified delayed 10-RPC campaign, including repeated Explain after
+  distinct delays. Decisions remain BUILD; display timestamps are frozen at
+  submit, with no synthetic freshness epoch.
+- `databricks_explain_identity_submit_clock.jsonl`: six unmodified RPCs at
+  indices 0/3/5/48/49/51 of #137's certified 179-RPC actual-client SQL discovery
+  capture. They retain client validation, initial build/confirmation, then the
+  identity-change build/confirmation and Explain. Removed calls between the
+  two builds are SKIPs, speculative undecided calls, Explain and telemetry;
+  none publish execution history. This isolates temporal rendering without
+  requiring unmerged SQL equivalence rules.
+
+All four fixtures enter the strict generic replay with zero gaps, exclusions,
+unknown baselines or temporal masks. Full campaigns and unsafe/conflicting
+control captures remain intact in the linked
+[partial report](../docs/reports/databricks-freshness-followup-2026-11-14.md);
+they are not replaced by the passing subset. #140 remains incomplete.
+
+
+`databricks_sql_equivalence.jsonl` and `databricks_sql_equivalence_cte.jsonl`
+contain complete179+26-RPC hosted histories for30 actual pinned-dbt SQL cells,
+including17+1 confirmed builds and9+3 required reuses. Captured ordinary comments,
+formatting, table aliases, literal values/spelling, output aliases and CTE scoped
+bindings are checked independently against complete typed physical results in
+State-disabled dbt references. Both sidecar-certified originals and all failed
+controller attempts remain under `~/.local/state/dbt-state-rs/databricks-137-20261113/`.
+The two frozen `databricks_identifiers_v{1,2}_*.json` upgrade fixtures come from
+immutable old servers, with v2 pending and confirmed exports and dirty-source
+candidate provenance explicitly retained. SQL-v3 invalidation does not weaken
+current-version NULL-epoch floor controls. Full exact replay/live acceptance is
+required before treating #137 as complete.

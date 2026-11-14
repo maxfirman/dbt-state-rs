@@ -165,7 +165,15 @@ fn mentions_identifier(text: &str, identifier: &str) -> bool {
 pub(crate) struct ExecutionEvidence {
     pub(crate) org_id: String,
     pub(crate) project_id: Option<String>,
+    /// Logical named scope for clients that omit project_id. Deferral reads
+    /// only confirmed executions; this never participates in reuse identity.
+    pub(crate) node_profile_name: Option<String>,
+    pub(crate) node_project_name: Option<String>,
+    pub(crate) node_target_name: Option<String>,
     pub(crate) target_table: String,
+    /// Original SQL target spelling for persistence/deferral/DDL. Decision
+    /// evidence uses the Warehouse's physical spelling independently.
+    pub(crate) raw_target_table: Option<String>,
     pub(crate) execution_type: i32,
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
@@ -181,6 +189,11 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) table_namespace: Option<String>,
     pub(crate) dialect: String,
     pub(crate) input_tables: Vec<InputTable>,
+    /// Original wire inputs when the decision removes redundant current
+    /// evidence. Persist these, so no recorded duplicate is reinterpreted.
+    pub(crate) raw_input_tables: Option<Vec<InputTable>>,
+    /// Submit instant for Explain display only; never freshness evidence.
+    pub(crate) display_submitted_at_ms: Option<i64>,
     pub(crate) values_hash: Option<String>,
     /// Set only for copy-origin rows: the physical source this target is
     /// copied from. NULL for ordinary SQL/seed executions.
@@ -231,19 +244,32 @@ impl WriteStatus {
 impl ExecutionEvidence {
     pub(crate) fn sql_submit(org_id: &str, req: &qc::SubmitEnrichedSqlRequest) -> Self {
         // Template mode retains rendered identity and additionally matches the template.
-        let body = crate::decision::node_body_hash_of(req);
-        Self::sql(
+        let raw_target = req.target_table.clone();
+        let raw_inputs = sql_inputs(&sql_execution(req));
+        let raw_count = req.tables.len();
+        let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_submit(req);
+        let body = crate::decision::node_body_hash_of(&req);
+        let mut evidence = Self::sql(
             org_id,
-            &sql_execution(req),
+            &sql_execution(&req),
             req.compare_unrendered_code
                 .then(|| body.as_deref().unwrap_or("")),
             !req.compare_unrendered_code && !req.sql.trim().is_empty(),
-        )
+        );
+        evidence.raw_target_table = raw_target;
+        if raw_count != req.tables.len() {
+            evidence.raw_input_tables = Some(raw_inputs);
+        }
+        evidence
     }
 
     pub(crate) fn sql_record(org_id: &str, req: &qc::SqlExecution) -> Self {
         // Record has no template comparison flag and computes the supplied SQL identity.
-        Self::sql(org_id, req, None, true)
+        let raw_target = req.target_table.clone();
+        let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_record(req);
+        let mut evidence = Self::sql(org_id, &req, None, true);
+        evidence.raw_target_table = raw_target;
+        evidence
     }
 
     fn sql(org_id: &str, req: &qc::SqlExecution, template: Option<&str>, copy: bool) -> Self {
@@ -278,10 +304,14 @@ impl ExecutionEvidence {
         Self {
             org_id: org_id.to_owned(),
             target_table,
+            raw_target_table: None,
             dialect,
             table_namespace,
             execution_type,
             project_id: state.and_then(|s| s.project_id.clone()),
+            node_profile_name: state.map(|s| s.profile_name.clone()),
+            node_project_name: state.map(|s| s.project_name.clone()),
+            node_target_name: state.map(|s| s.target_name.clone()),
             node_hash: state.map(|s| s.node_hash.clone()),
             node_body_hash: state.and_then(|s| s.node_body_hash.clone()),
             node_configs_hash: state.and_then(|s| s.node_configs_hash.clone()),
@@ -291,6 +321,8 @@ impl ExecutionEvidence {
             node_namespace_logic_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),
+            raw_input_tables: None,
+            display_submitted_at_ms: None,
             values_hash: None,
             clone_source_table: None,
             inherited_runtime_ms: None,
@@ -402,7 +434,7 @@ impl ExecutionEvidence {
     }
 }
 
-/// Build the `NodeStateUpsert` for a node's selector/deferral comparison state,
+/// Build the `NodeStateUpsert` for a node's selector comparison state,
 /// or `None` when the node_state lacks the scope keys (project_id/target_name/
 /// node_unique_id) the selector needs. Pure — performs no I/O.
 pub(crate) fn node_state_upsert(
@@ -426,9 +458,8 @@ pub(crate) fn node_state_upsert(
         node_macros_hash: ns.node_macros_hash.clone(),
         node_contract_hash: ns.node_contract_hash.clone(),
         node_database_representation: ns.node_database_representation.clone(),
-        // The physical FQN this node was built as in `target_name` — used to
-        // resolve deferral (ResolveDeferredRelations). Empty targets (data
-        // tests) record NULL and are not deferrable.
+        // Retained selector snapshot metadata. Deferral independently reads
+        // confirmed executions with their persisted logical scope.
         target_table: target_table.filter(|s| !s.is_empty()).map(str::to_owned),
     })
 }
@@ -438,19 +469,25 @@ pub(crate) fn node_state_upsert(
 #[derive(Debug)]
 pub(crate) enum RecordError {
     /// A record has no `input` (the batch is invalid).
-    MissingInput,
+    MissingInput {
+        index: usize,
+    },
+    /// SQL explicitly named an empty relation rather than omitting it.
+    InvalidTarget,
+    /// Physical target and completion epoch presence disagree.
+    InvalidOutcome,
     Store(sqlx::Error),
 }
 
 /// Publish a RecordExecutions batch: every record's confirmed row and its
-/// selector/deferral node state, in one transaction. Returns the rows stored.
+/// selector snapshot, in one transaction. Returns the rows stored.
 pub(crate) async fn record_batch(
     store: &Store,
     org_id: &str,
     records: &[qc::ExecutionRecord],
 ) -> Result<u32, RecordError> {
     let mut rows: Vec<ExecutionWrite> = Vec::with_capacity(records.len());
-    // Collect selector/deferral state upserts to apply in the SAME
+    // Collect selector state upserts to apply in the SAME
     // transaction as the executions insert. Review #2 finding 5: writing
     // node_states per-record inside this loop (before full validation and
     // outside the batch transaction) leaked logical state when a later
@@ -462,9 +499,18 @@ pub(crate) async fn record_batch(
     let mut node_state_upserts: Vec<crate::store::NodeStateUpsert> = Vec::new();
     let mut batch: Vec<(ExecutionEvidence, qc::ExecutionOutcome)> =
         Vec::with_capacity(records.len());
-    for record in records {
+    for (index, record) in records.iter().enumerate() {
         let outcome = record.outcome.clone().unwrap_or_default();
-        let input = record.input.as_ref().ok_or(RecordError::MissingInput)?;
+        let input = record
+            .input
+            .as_ref()
+            .ok_or(RecordError::MissingInput { index })?;
+
+        if matches!(input, qc::execution_record::Input::EnrichedSql(sql)
+            if crate::warehouse::Warehouse::from_dialect(&sql.dialect).rejects_empty_sql_target(sql.target_table.as_deref()))
+        {
+            return Err(RecordError::InvalidTarget);
+        }
 
         let evidence = match input {
             qc::execution_record::Input::EnrichedSql(sql) => {
@@ -474,6 +520,11 @@ pub(crate) async fn record_batch(
                 ExecutionEvidence::values_record(org_id, values)
             }
         };
+        // Validate the entire batch before producer reads or publication.
+        // Omitted targets represent result-only executions, not physical rows.
+        if evidence.target_table.is_empty() == outcome.last_modified_epoch.is_some() {
+            return Err(RecordError::InvalidOutcome);
+        }
         batch.push((evidence, outcome));
 
         // Collect each node's comparison state for `state:*` selectors; the

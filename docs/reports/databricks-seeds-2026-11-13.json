@@ -1,0 +1,160 @@
+{
+  "ticket": 139,
+  "date": "2026-11-14",
+  "status": "complete ordinary managed-seed matrix",
+  "overall_databricks_support_claim": false,
+  "base_commit": "a2330b0764d495614398617733d67d1ff3a683ed",
+  "production_changes": false,
+  "identity_version_changed": false,
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-139-20261113",
+  "scope": {
+    "client": "dbt 2.0.11",
+    "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+    "warehouse": "Databricks Free Edition serverless, Unity Catalog, managed Delta",
+    "dbsql_version": "2026.44",
+    "catalog": "cdo_demo_db",
+    "columns": [
+      "BIGINT id",
+      "INT then BIGINT amount",
+      "STRING tag"
+    ],
+    "contents": "duplicates and NULL values, amount10\u219217",
+    "delimiter": [
+      ",",
+      "|"
+    ],
+    "quote_columns": [
+      false,
+      true
+    ]
+  },
+  "hosted": {
+    "directory": "hosted-1",
+    "invocations": 40,
+    "capture": [
+      {
+        "path": "golden/golden_20261113T144551.391Z_092c394fc7e84e9183c98286600dbb7a.jsonl",
+        "complete": true,
+        "rows": 121,
+        "sha256": "3f8d4f47748353efc7d44ac24e5254b399d3a6026247da135b33561d5a9ae33d",
+        "methods": {
+          "ValidateClientVersion": 20,
+          "SubmitTelemetryBatch": 41,
+          "SubmitValues": 10,
+          "ConfirmExecution": 10,
+          "GetExplainMessages": 20,
+          "SubmitEnrichedSQLSpeculative": 10,
+          "SubmitEnrichedSQL": 10
+        }
+      }
+    ]
+  },
+  "rust": {
+    "directory": "rust-final-1",
+    "invocations": 41,
+    "capture": [
+      {
+        "path": "golden/golden_20261114T102911.599Z_0791586f5f994ea6afdb3dccdb5bb670.jsonl",
+        "complete": true,
+        "rows": 121,
+        "sha256": "0138ef944f56a765728132e62d36a3a6813051b8e126688eb1a3dd06f61aeae7",
+        "methods": {
+          "ValidateClientVersion": 20,
+          "SubmitTelemetryBatch": 41,
+          "SubmitValues": 10,
+          "ConfirmExecution": 10,
+          "GetExplainMessages": 20,
+          "SubmitEnrichedSQLSpeculative": 10,
+          "SubmitEnrichedSQL": 10
+        }
+      }
+    ],
+    "required_skips": 10,
+    "confirmed_builds": 10,
+    "first_call_explain": 20,
+    "complete_independent_physical_checks_every_step": true,
+    "state_disabled_dbt_reference_every_step": true,
+    "input_run_prefix": "s_20261114568a7b_",
+    "inventory_before": {
+      "prod": 83,
+      "ref": 59
+    },
+    "inventory_after": {
+      "prod": 85,
+      "ref": 61
+    },
+    "preexisting_objects_preserved": true,
+    "server_source_provenance": "current-source-binaries/provenance.json"
+  },
+  "checks": {
+    "seed139-exact-replay-1.log": {
+      "path": "validation/seed139-exact-replay-1.log",
+      "sha256": "fa9abfb2f022395f2d3b23cd252efb688481140822d5d833111e3212c1a442b4"
+    },
+    "seed139-rust-final-1.log": {
+      "path": "validation/seed139-rust-final-1.log",
+      "sha256": "3bc3a423221e1538e9bd73246ae53f2ccbe5f6c76c37ca12f1b9f803cc323ba9"
+    },
+    "seed139-workspace-final.log": {
+      "path": "validation/seed139-workspace-final.log",
+      "sha256": "5ca7bfb7f831f3ebace647a73f068517b9ee721e8387ef7d761eb3ed6d5d682e"
+    },
+    "seed139-clippy-final.log": {
+      "path": "validation/seed139-clippy-final.log",
+      "sha256": "9e3db65303eb01deb59abddacec3a937a36b5ef77b4172db140e7761cb2aa81e"
+    },
+    "seed139-fmt-final.log": {
+      "path": "validation/seed139-fmt-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "seed139-python-final.log": {
+      "path": "validation/seed139-python-final.log",
+      "sha256": "3af22351580f9b221ca18c63a2b10547a92fabe46d85ace530fdb859b66c2020"
+    },
+    "seed139-census-final.txt": {
+      "path": "validation/seed139-census-final.txt",
+      "sha256": "b5c17692932c29c235a4fefcfe1520250bf93c7fc13b143f70a3654ab187fa0d"
+    }
+  },
+  "validation_counts": {
+    "conformance_tests": 12,
+    "replay_corpora": 100,
+    "seed_rpc_exact": 121,
+    "seed_ordinary_assertions": 101,
+    "seed_explain_comparisons": 20,
+    "seed_unknown_baselines": 0,
+    "seed_known_gaps": 0,
+    "seed_partial_history": 0,
+    "workspace_passed": 629,
+    "workspace_failed": 0,
+    "workspace_ignored": 35,
+    "python_checks": 23,
+    "strict_clippy": true,
+    "formatting": true,
+    "diff_check": true,
+    "census_trees": 644,
+    "census_files": 111,
+    "census_findings": 0
+  },
+  "duckdb": {
+    "new_run_for_139": false,
+    "classification": "25 prior accepted fixed/generated cases at identical production source; explicitly reused",
+    "source_commit": "df8461a5323da0602716c3db9d048a2f1594f021",
+    "integration_commit": "a2330b0764d495614398617733d67d1ff3a683ed",
+    "report": "databricks-lifecycle-2026-11-14.json",
+    "retained_log": "/home/maxfirman/.local/state/dbt-state-rs/databricks-158-20261113/validation/lifecycle158-final-duckdb.log",
+    "sha256": "cadecda7598fb83aae3d8f2e3ce33b8c2d369c2a77b18b3ca0c9b4bf5be7bd2e",
+    "cases_passed": 25,
+    "local_evidence": "reused-duckdb-evidence.json"
+  },
+  "known_parent_blockers_unchanged": [
+    "copied FULL-table and seed shallow-clone rebuild warehouse failure",
+    "snapshot new_record NULL deletion business columns",
+    "#140 unsafe missing freshness evidence",
+    "#158 logical absent-target diagnostics incomplete",
+    "#159 default-namespace fallback/isolation conflict incomplete"
+  ],
+  "automatic_databricks_seed_copy_enabled": false,
+  "no_databricks_schema_creation": true,
+  "validation_pending": []
+}

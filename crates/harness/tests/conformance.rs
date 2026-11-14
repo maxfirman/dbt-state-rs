@@ -12,6 +12,32 @@ use qc::execution_client::ExecutionClient;
 use qc::sql_client::SqlClient;
 use std::collections::{HashMap, HashSet};
 
+/// Successful calls retain new capture metadata; old fixtures omit it.
+trait CapturedResponse<T> {
+    fn into_captured(self, entry: &diff::GoldenEntry) -> T;
+}
+
+impl<T> CapturedResponse<T> for tonic::Response<T> {
+    fn into_captured(self, entry: &diff::GoldenEntry) -> T {
+        use dbt_state_harness::golden::{RecordedMetadata, RpcStatus};
+        if let Some(expected) = &entry.status {
+            let success = RpcStatus::capture(&Ok::<_, tonic::Status>(tonic::Response::new(())));
+            assert!(
+                expected.equivalent(&success),
+                "successful RPC status mismatch"
+            );
+        }
+        if let Some(expected) = &entry.response_metadata {
+            assert_eq!(
+                expected.protocol(),
+                RecordedMetadata::capture(self.metadata()).protocol(),
+                "successful RPC response metadata mismatch"
+            );
+        }
+        self.into_inner()
+    }
+}
+
 #[derive(serde::Deserialize)]
 struct KnownGap {
     fixture: String,
@@ -28,6 +54,74 @@ struct KnownGap {
     /// least one named field genuinely differs (so a resolved gap is flagged).
     #[serde(default)]
     ignore_fields: Vec<String>,
+}
+
+/// New Databricks captures expose the actual hosted decision instant in a
+/// UUIDv7 decision ID. Request/response transit can straddle a second; using
+/// response recorded_at would change otherwise exact relative-age Explain text.
+/// Decoding is solely a replay clock source, never a production ID contract.
+fn databricks_decision_time(entry: &diff::GoldenEntry) -> Result<i64, String> {
+    let raw = hosted_submit_edid(&entry.response).ok_or("missing decision ID")?;
+    let id = uuid::Uuid::parse_str(&raw).map_err(|_| "invalid decision UUID")?;
+    if id.get_version_num() != 7 || id.get_variant() != uuid::Variant::RFC4122 {
+        return Err("unsupported decision UUID version/variant".into());
+    }
+    let at = (id.as_u128() >> 80) as i64;
+    let submitted = entry
+        .metadata
+        .iter()
+        .find(|(name, _)| name == "x-submitted-at-epoch")
+        .and_then(|(_, value)| value.parse::<i64>().ok())
+        .ok_or("missing captured submit instant")?;
+    let recorded = entry
+        .recorded_at_ms()
+        .ok_or("missing captured response instant")?;
+    if at < submitted || at > recorded {
+        return Err(format!(
+            "decision instant {at} outside captured interval {submitted}..={recorded}"
+        ));
+    }
+    Ok(at)
+}
+
+fn captured_submit_request<T>(
+    body: T,
+    entry: &diff::GoldenEntry,
+    fixture: &str,
+) -> tonic::Request<T> {
+    let mut request = support::captured_request(body, entry);
+    if fixture.starts_with("databricks_") {
+        let at = databricks_decision_time(entry).expect("evidenced Databricks decision clock");
+        request.metadata_mut().insert(
+            dbt_state_server::REPLAY_NOW_HEADER,
+            at.to_string().parse().unwrap(),
+        );
+    }
+    request
+}
+
+#[test]
+fn databricks_decision_clock_requires_v7_and_captured_interval() {
+    let mut entry: diff::GoldenEntry = serde_json::from_value(serde_json::json!({
+        "service":"SQL", "method":"SubmitEnrichedSQL",
+        "recorded_at":"2026-11-12T14:13:06.100Z",
+        "metadata":[["x-submitted-at-epoch","1794492785807"]],
+        "request":{}, "response":{"response":{"ready_to_execute":{
+            "execution_decision_id":"01a1d01a-e510-7aa5-b433-05a347265ef1"
+        }}}
+    }))
+    .unwrap();
+    assert_eq!(databricks_decision_time(&entry).unwrap(), 1_794_492_785_936);
+    for invalid in [
+        "bad",
+        "01a1d01a-e510-4aa5-b433-05a347265ef1",
+        "01a1d01a-e510-7aa5-1433-05a347265ef1",
+        "01a1d01a-e010-7aa5-b433-05a347265ef1",
+        "01a1d01a-ff10-7aa5-b433-05a347265ef1",
+    ] {
+        entry.response["response"]["ready_to_execute"]["execution_decision_id"] = invalid.into();
+        assert!(databricks_decision_time(&entry).is_err(), "{invalid}");
+    }
 }
 
 fn real_variant(resp: &serde_json::Value) -> Option<String> {
@@ -50,15 +144,98 @@ fn identity(req: &serde_json::Value) -> String {
             req["table_namespace"],
             req["dbt_node_state"]["node_unique_id"]
         )
+    } else if matches!(
+        req["dialect"].as_str(),
+        Some("databricks" | "spark" | "spark, normalization_strategy = lowercase")
+    ) {
+        // Causal bookkeeping only: the public RPC still receives every original
+        // byte and its complete response is compared. The identifier corpus
+        // proves these plain, fully qualified spellings share physical history.
+        let raw = req["target_table"].as_str().unwrap_or("");
+        let parts: Option<Vec<_>> = raw
+            .split('.')
+            .map(|part| {
+                let value = if part.starts_with('`') && part.ends_with('`') {
+                    part.get(1..part.len().checked_sub(1)?)?
+                } else {
+                    part
+                };
+                let mut chars = value.chars();
+                let first = chars.next()?;
+                ((first.is_ascii_alphabetic() || first == '_')
+                    && chars.all(|c| c.is_ascii_alphanumeric() || c == '_'))
+                .then(|| value.to_ascii_lowercase())
+            })
+            .collect();
+        let target = parts
+            .filter(|p| p.len() == 3)
+            .map(|p| p.join("."))
+            .unwrap_or_else(|| raw.into());
+        // Both wire spellings address the absent physical scope. This only
+        // strengthens causal tracking; requests and full responses stay intact.
+        let namespace = match req["table_namespace"].as_str() {
+            None | Some("") => serde_json::Value::Null,
+            Some(_) => req["table_namespace"].clone(),
+        };
+        format!("target|{}|{}", namespace, target)
     } else {
         format!("target|{}", req["target_table"])
     }
 }
 
-fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
+#[test]
+fn databricks_replay_causality_keeps_distinct_physical_scopes() {
+    let base = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
+    for dialect in [
+        "databricks",
+        "spark",
+        "spark, normalization_strategy = lowercase",
+    ] {
+        let mut request = base.clone();
+        request["dialect"] = dialect.into();
+        request["target_table"] = "CAT.SCHEMA.TABLE".into();
+        assert_eq!(identity(&base), identity(&request));
+        request["table_namespace"] = "other-connection".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["table_namespace"] = "connection".into();
+        request["target_table"] = "cat.other_schema.table".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["target_table"] = "`cat.schema`.`table`".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["target_table"] = base["target_table"].clone();
+        request["table_namespace"] = serde_json::Value::Null;
+        let absent = identity(&request);
+        request["table_namespace"] = "".into();
+        assert_eq!(absent, identity(&request));
+        assert_ne!(identity(&base), identity(&request));
+    }
+    for unsupported in [
+        "Databricks",
+        "spark, normalization_strategy = uppercase",
+        "spark , normalization_strategy = lowercase",
+    ] {
+        let mut request = base.clone();
+        request["dialect"] = unsupported.into();
+        assert_ne!(identity(&base), identity(&request));
+    }
+    // Physical history still exists when SQL/template comparison options
+    // change. Treating those as a new causal scope could hide a mismatch as an
+    // unknown baseline; the production request/response must remain compared.
+    let mut changed_identity = base.clone();
+    changed_identity["compare_unrendered_code"] = true.into();
+    changed_identity["sql"] = "select 160 as changed".into();
+    assert_eq!(identity(&base), identity(&changed_identity));
+}
+
+fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
     fn remove_ids(m: &mut serde_json::Map<String, serde_json::Value>) {
-        m.remove("request_id");
-        m.remove("execution_decision_id");
+        for key in ["request_id", "execution_decision_id"] {
+            if let Some(value) = m.get_mut(key) {
+                if value.is_string() {
+                    *value = serde_json::Value::String("<opaque>".into());
+                }
+            }
+        }
     }
     if let serde_json::Value::Object(root) = &mut value {
         remove_ids(root);
@@ -78,7 +255,7 @@ fn without_ids(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
-/// After `without_ids` (and any `ignore_fields`) stripping, decide whether the
+/// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
 /// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
 /// target had NO confirmed history in the replay (`has_history == false`). This
@@ -190,7 +367,7 @@ fn execute_diff_is_only_rebuild_rationale(
 /// payload key (`transformed_nodes_by_query`) OR a one-level dotted path into a
 /// nested object (`explained_decision.skip_rejection_reason`). Returns whether
 /// ANY named field was actually present/removed, so a comparison can assert the
-/// gap is real. Operates on the `without_ids`-normalized shape.
+/// gap is real. Operates on the `normalize_ids`-normalized shape.
 fn strip_named_fields(value: &mut serde_json::Value, fields: &[String]) -> bool {
     let mut removed = false;
     if let serde_json::Value::Object(root) = value {
@@ -251,7 +428,7 @@ fn retain_named_fields(value: &mut serde_json::Value, fields: &[String]) {
     }
 }
 
-/// Assert a FIELD-SCOPED known gap: the two `without_ids`-normalized responses
+/// Assert a FIELD-SCOPED known gap: the two `normalize_ids`-normalized responses
 /// must match EXACTLY outside `fields`, and the exempted `fields` THEMSELVES must
 /// genuinely differ (else the exemption is stale — something else differs, or the
 /// gap is resolved). Shared by the execute / skip submit arms and (structurally)
@@ -283,13 +460,26 @@ fn assert_field_scoped_gap(
 }
 
 #[test]
+fn replay_normalization_preserves_optional_id_presence() {
+    let absent = serde_json::json!({"ready_to_clone": {"execution_decision_id": null}});
+    let present = serde_json::json!({"ready_to_clone": {"execution_decision_id": ""}});
+    assert_ne!(normalize_ids(absent), normalize_ids(present));
+    let first = serde_json::json!({"ready_to_clone": {"execution_decision_id": "hosted"}});
+    let second = serde_json::json!({"ready_to_clone": {"execution_decision_id": "local"}});
+    assert_eq!(normalize_ids(first), normalize_ids(second));
+}
+
+#[test]
 fn comparison_preserves_result_fields_named_like_ids() {
     let response = serde_json::json!({"response": {"skip_execution": {
         "execution_decision_id": "opaque",
         "execution_results": {"fields": {"request_id": {"kind": {"string_value": "result"}}}}
     }}});
-    let normalized = without_ids(response);
-    assert!(normalized["response"]["skip_execution"]["execution_decision_id"].is_null());
+    let normalized = normalize_ids(response);
+    assert_eq!(
+        normalized["response"]["skip_execution"]["execution_decision_id"],
+        "<opaque>"
+    );
     assert_eq!(
         normalized["response"]["skip_execution"]["execution_results"]["fields"]["request_id"]
             ["kind"]["string_value"],
@@ -417,6 +607,31 @@ fn rebuild_rationale_exemption_is_history_gated_and_field_narrow() {
     ));
 }
 
+/// Correlate an opaque execution ID while preserving its captured UUID spelling.
+/// Confirm accepts canonical, uppercase, simple and braced UUID representations.
+fn correlated_confirmation(
+    hosted: &str,
+    requests: &HashMap<String, (String, String)>,
+) -> Option<(String, String)> {
+    let canonical = uuid::Uuid::parse_str(hosted).ok()?.to_string();
+    let (local, identity) = requests.get(&canonical)?;
+    let local = uuid::Uuid::parse_str(local).expect("locally minted execution UUID");
+    let mut remapped = if hosted.len() == 32 {
+        local.simple().to_string()
+    } else {
+        local.to_string()
+    };
+    if hosted.chars().any(|c| c.is_ascii_uppercase()) {
+        remapped.make_ascii_uppercase();
+    }
+    if hosted.starts_with('{') && hosted.ends_with('}') {
+        remapped = format!("{{{remapped}}}");
+    } else if hosted.starts_with("urn:uuid:") {
+        remapped = format!("urn:uuid:{remapped}");
+    }
+    Some((remapped, identity.clone()))
+}
+
 #[tokio::test]
 async fn conformance_replay_all_corpora() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../golden/fixtures");
@@ -505,7 +720,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        68,
+        106,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;
@@ -541,28 +756,49 @@ async fn conformance_replay_all_corpora() {
         let mut gaps = 0;
         for (i, e) in entries.iter().enumerate() {
             let context = format!("{fixture} entry {i}");
+            if e.status.as_ref().is_some_and(|status| status.code != 0) {
+                // Errors have no response oneof or minted IDs to correlate.
+                // Compare the complete code/message/details/metadata instead
+                // of dropping them or coercing them into empty responses.
+                let mut entry = e.clone();
+                if let Some(hosted_id) = entry.request["request_id"].as_str() {
+                    if let Some((local_id, _)) = correlated_confirmation(hosted_id, &pending) {
+                        entry.request["request_id"] = local_id.into();
+                    }
+                }
+                let outcome = diff::replay_rpc(ch.clone(), &entry)
+                    .await
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                entry
+                    .compare_outcome(&outcome)
+                    .unwrap_or_else(|error| panic!("{context}: {error}"));
+                asserted += 1;
+                continue;
+            }
             match e.method.as_str() {
                 "SubmitEnrichedSQL" | "SubmitValues" => {
                     let response = if e.method == "SubmitValues" {
-                        sql.submit_values(support::captured_request(
+                        sql.submit_values(captured_submit_request(
                             serde_json::from_value::<qc::SubmitValuesRequest>(e.request.clone())
                                 .unwrap(),
                             e,
+                            &fixture,
                         ))
                         .await
                         .unwrap()
-                        .into_inner()
+                        .into_captured(e)
                     } else {
-                        sql.submit_enriched_sql(support::captured_request(
+                        sql.submit_enriched_sql(captured_submit_request(
                             serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(
                                 e.request.clone(),
                             )
                             .unwrap(),
                             e,
+                            &fixture,
                         ))
                         .await
                         .unwrap()
-                        .into_inner()
+                        .into_captured(e)
                     };
                     let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
                     // Record the hosted->local execution_decision_id mapping for
@@ -617,8 +853,8 @@ async fn conformance_replay_all_corpora() {
                             // the local wording). Anything else is a mismatch.
                             let has_history = confirmed.contains(&key);
                             let response_json = serde_json::to_value(&response).unwrap();
-                            let ours_full = without_ids(response_json);
-                            let real_full = without_ids(e.response.clone());
+                            let ours_full = normalize_ids(response_json);
+                            let real_full = normalize_ids(e.response.clone());
                             let mut ours = ours_full.clone();
                             let mut real = real_full.clone();
                             let gap = find_gap(&known, &fixture, i)
@@ -678,8 +914,8 @@ async fn conformance_replay_all_corpora() {
                         "skip_execution" if confirmed.contains(&key) => {
                             let local_variant = support::response_variant(&response);
                             let response_json = serde_json::to_value(response).unwrap();
-                            let ours = without_ids(response_json);
-                            let real = without_ids(e.response.clone());
+                            let ours = normalize_ids(response_json);
+                            let real = normalize_ids(e.response.clone());
                             if let Some(gap) = find_gap(&known, &fixture, i) {
                                 assert!(!gap.reason.trim().is_empty());
                                 assert_eq!(
@@ -734,8 +970,8 @@ async fn conformance_replay_all_corpora() {
                                 else {
                                     unreachable!()
                                 };
-                                let ours = without_ids(serde_json::to_value(&response).unwrap());
-                                let real = without_ids(e.response.clone());
+                                let ours = normalize_ids(serde_json::to_value(&response).unwrap());
+                                let real = normalize_ids(e.response.clone());
                                 if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
@@ -771,17 +1007,19 @@ async fn conformance_replay_all_corpora() {
                 "ConfirmExecution" => {
                     let mut req: qc::ConfirmExecutionRequest =
                         serde_json::from_value(e.request.clone()).unwrap();
-                    if let Some((id, key)) = pending.remove(&req.request_id) {
+                    // Keep correlation after publication: retries must reach the same
+                    // execution, including error statuses and UUID spelling aliases.
+                    if let Some((id, key)) = correlated_confirmation(&req.request_id, &pending) {
                         req.request_id = id.clone();
                         let response = exec
                             .confirm_execution(support::captured_request(req, e))
                             .await
                             .unwrap()
-                            .into_inner();
+                            .into_captured(e);
                         assert_eq!(response.request_id, id, "{context}: confirmation ID echo");
                         assert_eq!(
-                            without_ids(serde_json::to_value(response).unwrap()),
-                            without_ids(e.response.clone()),
+                            normalize_ids(serde_json::to_value(response).unwrap()),
+                            normalize_ids(e.response.clone()),
                             "{context}"
                         );
                         confirmed.insert(key);
@@ -790,23 +1028,10 @@ async fn conformance_replay_all_corpora() {
                         unknown_baseline += 1;
                     }
                 }
-                "ValidateClientVersion" => {
-                    let response =
-                        qc::client_validation_client::ClientValidationClient::new(ch.clone())
-                            .validate_client_version(
-                                serde_json::from_value::<qc::ValidateClientVersionRequest>(
-                                    e.request.clone(),
-                                )
-                                .unwrap(),
-                            )
-                            .await
-                            .unwrap()
-                            .into_inner();
-                    assert_eq!(
-                        serde_json::to_value(response).unwrap(),
-                        e.response,
-                        "{context}"
-                    );
+                "ValidateClientVersion" | "SubmitTelemetryBatch" => {
+                    let outcome = diff::replay_rpc(ch.clone(), e).await.unwrap();
+                    e.compare_outcome(&outcome)
+                        .unwrap_or_else(|error| panic!("{context}: {error}"));
                     asserted += 1;
                 }
                 "SubmitEnrichedSQLSpeculative" => {
@@ -817,7 +1042,7 @@ async fn conformance_replay_all_corpora() {
                         .submit_enriched_sql_speculative(support::captured_request(req, e))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     // A speculative SKIP is a decision the client explains
                     // and never resubmits (#103), so its decision id keys the
                     // Explain that follows, like a submit's.
@@ -828,8 +1053,8 @@ async fn conformance_replay_all_corpora() {
                         edid_remap.insert(hosted, local);
                     }
                     assert_eq!(
-                        without_ids(serde_json::to_value(&response).unwrap()),
-                        without_ids(e.response.clone()),
+                        normalize_ids(serde_json::to_value(&response).unwrap()),
+                        normalize_ids(e.response.clone()),
                         "{context}"
                     );
                     asserted += 1;
@@ -862,7 +1087,7 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     assert_eq!(
                         serde_json::to_value(response).unwrap(),
                         e.response,
@@ -878,7 +1103,7 @@ async fn conformance_replay_all_corpora() {
                 "RegisterClone" => {
                     // The dev-clone pre-step's copy (client 2.0.11: incrementals
                     // and snapshots under deferral). Driven like a submit: the
-                    // full response is compared after `without_ids`, and a
+                    // full response is compared after `normalize_ids`, and a
                     // granted copy's confirmation is correlated so the copied
                     // target carries State history for the submit that follows.
                     let response = qc::clone_client::CloneClient::new(ch.clone())
@@ -888,14 +1113,14 @@ async fn conformance_replay_all_corpora() {
                         ))
                         .await
                         .unwrap()
-                        .into_inner();
+                        .into_captured(e);
                     let key = format!("{}|{}", support::captured_org(e), identity(&e.request));
                     let local_variant = support::clone_response_variant(&response);
                     let hosted_variant = support::clone_response_variant(
                         &serde_json::from_value(e.response.clone()).unwrap(),
                     );
-                    let ours = without_ids(serde_json::to_value(&response).unwrap());
-                    let real = without_ids(e.response.clone());
+                    let ours = normalize_ids(serde_json::to_value(&response).unwrap());
+                    let real = normalize_ids(e.response.clone());
                     if let Some(gap) = find_gap(&known, &fixture, i) {
                         assert!(!gap.reason.trim().is_empty());
                         assert_eq!(
@@ -935,7 +1160,19 @@ async fn conformance_replay_all_corpora() {
                     }
                 }
                 "ResolveDeferredRelations" => {
-                    gaps += 1;
+                    let request: qc::ResolveDeferredRelationsRequest =
+                        serde_json::from_value(e.request.clone()).unwrap();
+                    let response = exec
+                        .resolve_deferred_relations(support::captured_request(request, e))
+                        .await
+                        .unwrap()
+                        .into_captured(e);
+                    assert_eq!(
+                        serde_json::to_value(response).unwrap(),
+                        e.response,
+                        "{context}: complete deferred relation mapping"
+                    );
+                    asserted += 1;
                 }
                 other => panic!("{context}: unhandled method {other}"),
             }
@@ -945,6 +1182,17 @@ async fn conformance_replay_all_corpora() {
             .iter()
             .filter(|(f, _)| *f == fixture)
             .count();
+        // New Databricks acceptance is always a complete fresh history. It
+        // cannot inherit the historical Snowflake missing-history exceptions.
+        if fixture.starts_with("databricks_") {
+            assert_eq!(unknown_baseline, 0, "{fixture}: missing causal baseline");
+            assert_eq!(gaps, 0, "{fixture}: Databricks replay must be exact");
+            assert_eq!(partial_here, 0, "{fixture}: partial history is forbidden");
+            assert!(
+                !known.iter().any(|gap| gap.fixture == fixture),
+                "{fixture}: Databricks acceptance cannot use known-gap exceptions"
+            );
+        }
         eprintln!(
             "{}: asserted={asserted} unknown_baseline={unknown_baseline} known_gaps={gaps} \
              partial_history={partial_here}",
@@ -966,6 +1214,9 @@ async fn conformance_replay_all_corpora() {
         ("c1_config_semantics.jsonl", 0),
         ("c1_config_vs_logic.jsonl", 0),
         ("clone_chain_upstream_drift.jsonl", 4),
+        // This VIEW reads a relation through a CTE despite reporting only its
+        // target. The source-less existing-target capture does not resolve its
+        // pre-existing missing-history rebuild-rationale exemption.
         ("golden_20261008T222744.061Z.jsonl", 14),
         ("golden_20261009T083754.534Z.jsonl", 1),
         ("golden_20261009T100637.316Z.jsonl", 4),
@@ -1129,6 +1380,21 @@ async fn replay_explain_messages(
                 .unwrap_or(false)
         })
         .collect();
+    if fixture.starts_with("databricks_") {
+        assert_eq!(
+            tracked.len(),
+            hosted_messages.len(),
+            "{context}: every explained decision must have its submit in this fixture"
+        );
+        assert!(
+            e.request["execution_decision_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|id| id.as_str().is_some_and(|id| edid_remap.contains_key(id))),
+            "{context}: every requested decision must have complete history"
+        );
+    }
     if tracked.is_empty() {
         // All referenced decisions were minted in a PRIOR live session (not in
         // this capture); the server tracks none of them, so it returns nothing.
@@ -1144,7 +1410,7 @@ async fn replay_explain_messages(
             })
             .await
             .unwrap()
-            .into_inner();
+            .into_captured(e);
         assert!(
             resp.messages.is_empty(),
             "{context}: untracked ids must be omitted"
@@ -1153,14 +1419,24 @@ async fn replay_explain_messages(
     }
 
     // Build the remapped request (hosted id -> local id) for the tracked ids.
-    let local_ids: Vec<String> = tracked
-        .iter()
-        .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
-        .collect();
+    let local_ids: Vec<String> = if fixture.starts_with("databricks_") {
+        e.request["execution_decision_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| edid_remap[id.as_str().unwrap()].clone())
+            .collect()
+    } else {
+        tracked
+            .iter()
+            .map(|m| edid_remap[m["execution_decision_id"].as_str().unwrap()].clone())
+            .collect()
+    };
 
     // Poll for the best-effort capture to land for every tracked id.
     let mut explain = ExplainClient::new(ch);
     let mut local_by_id: HashMap<String, qc::ExplainMessageEntry> = HashMap::new();
+    let mut local_order = Vec::new();
     for _ in 0..100 {
         let resp = explain
             .get_explain_messages(qc::GetExplainMessagesRequest {
@@ -1168,7 +1444,12 @@ async fn replay_explain_messages(
             })
             .await
             .unwrap()
-            .into_inner();
+            .into_captured(e);
+        local_order = resp
+            .messages
+            .iter()
+            .map(|m| m.execution_decision_id.clone())
+            .collect::<Vec<_>>();
         local_by_id = resp
             .messages
             .into_iter()
@@ -1184,6 +1465,27 @@ async fn replay_explain_messages(
         local_ids.len(),
         "{context}: server must re-derive a message for every tracked id"
     );
+    if fixture.starts_with("databricks_") {
+        let hosted_order: Vec<_> = hosted_messages
+            .iter()
+            .map(|m| m["execution_decision_id"].as_str().unwrap().to_owned())
+            .collect();
+        let mut expected_hosted_order = hosted_order.clone();
+        expected_hosted_order.sort();
+        assert_eq!(
+            hosted_order, expected_hosted_order,
+            "{context}: hosted ID order"
+        );
+        // IDs are freshly minted during replay. Their relative order can
+        // differ from the hosted IDs when concurrent submits were captured in
+        // response order, so compare the ordering contract on each ID domain.
+        let mut expected_local_order = local_ids.clone();
+        expected_local_order.sort();
+        assert_eq!(
+            local_order, expected_local_order,
+            "{context}: complete response must be ordered by decision ID"
+        );
+    }
 
     let mut asserted = 0usize;
     for m in tracked {
@@ -1199,11 +1501,22 @@ async fn replay_explain_messages(
         // re-derivable (asserted exactly by the seeded-history oracle tests
         // `explain_skip_tree_matches_hosted_oracle_when_history_seeded` and
         // `explain_outdated_execute_tree_matches_hosted_oracle_when_history_seeded`).
-        let hosted_tree = normalize_explain_lines(
-            &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
-                .unwrap_or_default(),
-        );
-        let local_tree = normalize_explain_lines(&local.explain_lines);
+        let (hosted_tree, local_tree) = if fixture.starts_with("databricks_") {
+            // A new complete capture keeps the actual names and full text;
+            // it cannot inherit the historical runtime-slot masks either.
+            (
+                m["explain_lines"].clone(),
+                serde_json::to_value(&local.explain_lines).unwrap(),
+            )
+        } else {
+            (
+                normalize_explain_lines(
+                    &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
+                        .unwrap_or_default(),
+                ),
+                normalize_explain_lines(&local.explain_lines),
+            )
+        };
 
         let decision_matches = local.decision == m["decision"].as_i64().unwrap_or(-1) as i32;
         let desc_matches =
@@ -1292,6 +1605,36 @@ async fn replay_explain_messages(
         }
     }
     asserted
+}
+
+#[tokio::test]
+async fn explain_replay_checks_success_response_metadata() {
+    let server = support::start_server().await;
+    let channel = support::channel(server.addr).await;
+    let entry: diff::GoldenEntry = serde_json::from_value(serde_json::json!({
+        "service": "Explain", "method": "GetExplainMessages",
+        "request": {"execution_decision_ids": []}, "response": {"messages": []},
+        "response_metadata": {"ascii": [["x-evidence", "required"]], "binary": []}
+    }))
+    .unwrap();
+    let result = tokio::spawn(async move {
+        replay_explain_messages(
+            channel,
+            &entry,
+            0,
+            std::path::Path::new("metadata.jsonl"),
+            &HashMap::new(),
+            &[],
+            &mut HashSet::new(),
+            &mut Vec::new(),
+        )
+        .await;
+    })
+    .await;
+    assert!(
+        result.is_err_and(|error| error.is_panic()),
+        "Explain replay must reject missing application response metadata"
+    );
 }
 
 /// HOSTED-ORACLE CROSS-CHECK for the re-derived SKIP explain tree.

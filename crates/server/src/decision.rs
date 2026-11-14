@@ -35,6 +35,14 @@ impl StaleUpstreamPolicy {
 pub enum NoCandidate {
     /// The latest row does not have the workload's identity.
     IdentityMismatch,
+    /// The same rendered query resolves an unqualified input differently after
+    /// a root catalog/schema change (Databricks #136). Rebuild with the normal
+    /// identity-mismatch wire answer; Explain identifies the changed binding.
+    ResolutionContextChanged,
+    /// The same simple rendered query is bound to a different physical input
+    /// or newly supplied source view (#136). Rebuilds; Explain preserves the
+    /// query and names the binding change.
+    InputBindingChanged,
     /// The latest row has the workload's identity but was built as another
     /// node kind (a snapshot run under `--full-refresh` is sent with the wire
     /// `execution_type` FULL; a model whose materialization or incremental
@@ -93,6 +101,17 @@ pub enum Reuse {
 pub enum DecisionReason {
     /// State history holds no latest row for the workload's output in scope.
     FirstBuild,
+    /// A source-less SQL submit reports a known existing Target relation, but
+    /// State has no confirmed evidence about its query.
+    ExistingTargetWithoutHistory,
+    /// A first data test reports only its existing result relation, without
+    /// recorded query evidence; the query-analysis section is empty.
+    DataTestExistingTargetWithoutHistory,
+    /// Query evidence outside the absent namespace affects only diagnostics.
+    QueryObservedOutsideScope,
+    QueryChangedOutsideScope,
+    /// A source-less FULL result exists elsewhere, but the request forbids copying.
+    ExistingTargetCopyDisabledDiagnostic,
     /// A latest row exists but is not a reuse candidate.
     NoReuseCandidate(NoCandidate),
     /// The reuse candidate recorded a different genuine upstream set.
@@ -122,9 +141,16 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 20] = [
+    const ALL: [DecisionReason; 27] = [
         Self::FirstBuild,
+        Self::ExistingTargetWithoutHistory,
+        Self::DataTestExistingTargetWithoutHistory,
+        Self::QueryObservedOutsideScope,
+        Self::QueryChangedOutsideScope,
+        Self::ExistingTargetCopyDisabledDiagnostic,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
+        Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged),
+        Self::NoReuseCandidate(NoCandidate::InputBindingChanged),
         Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged),
         Self::NoReuseCandidate(NoCandidate::UpstreamNamesChanged),
         Self::NoReuseCandidate(NoCandidate::CopyLogicMismatch),
@@ -150,8 +176,23 @@ impl DecisionReason {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::FirstBuild => "first_build",
+            Self::ExistingTargetWithoutHistory => "existing_target_without_history",
+            Self::DataTestExistingTargetWithoutHistory => {
+                "data_test_existing_target_without_history"
+            }
+            Self::QueryObservedOutsideScope => "query_observed_outside_scope",
+            Self::QueryChangedOutsideScope => "query_changed_outside_scope",
+            Self::ExistingTargetCopyDisabledDiagnostic => {
+                "existing_target_copy_disabled_diagnostic"
+            }
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
+            }
+            Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged) => {
+                "no_reuse_candidate.resolution_context_changed"
+            }
+            Self::NoReuseCandidate(NoCandidate::InputBindingChanged) => {
+                "no_reuse_candidate.input_binding_changed"
             }
             Self::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
                 "no_reuse_candidate.execution_type_changed"
@@ -363,6 +404,61 @@ impl DecisionRecord {
             self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
             self.is_stale = older != Reuse::Fresh;
             self.build_age_ms = build_age_ms;
+        }
+        self
+    }
+
+    /// A diagnostic match has no physical result or freshness evidence. The
+    /// decision remains BUILD and retains only its scoped Explain anchors.
+    pub(crate) fn with_namespace_query_diagnostic(mut self, target_present: bool) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(if target_present {
+                REJECTION_LATEST_QUERY_HASH_NOT_MATCH
+            } else {
+                REJECTION_TARGET_TABLE_DOES_NOT_EXIST
+            });
+            self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+            self.is_stale = false;
+            self.build_age_ms = None;
+            if !target_present {
+                self.reason = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing);
+            } else if self.reason == DecisionReason::ExistingTargetWithoutHistory {
+                self.reason = DecisionReason::QueryObservedOutsideScope;
+            }
+        }
+        self
+    }
+
+    /// Only a refused optimization is reported. No external-scope build is
+    /// retained as a physical candidate or freshness/Explain anchor.
+    pub(crate) fn with_other_target_query_diagnostic(mut self, execution_type: i32) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_MISMATCH);
+            self.clone_rejection_reason =
+                Some(if execution_type == ModelExecutionType::View as i32 {
+                    REJECTION_EXECUTION_TYPE_NOT_FULL
+                } else {
+                    REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED
+                });
+            self.is_stale = false;
+            self.build_age_ms = None;
+            if execution_type == ModelExecutionType::Full as i32 {
+                self.reason = DecisionReason::ExistingTargetCopyDisabledDiagnostic;
+                self.description = COPY_DISABLED_DESCRIPTION.into();
+            } else if self.reason == DecisionReason::ExistingTargetWithoutHistory {
+                self.reason = DecisionReason::QueryObservedOutsideScope;
+            }
+        }
+        self
+    }
+
+    /// Keep the scoped BUILD and its rejection codes. An absent-scope
+    /// definition can explain the query comparison, never justify reuse.
+    pub(crate) fn with_changed_absent_scope_definition_diagnostic(mut self) -> Self {
+        if self.class == DecisionKind::Build
+            && self.reason == DecisionReason::ExistingTargetWithoutHistory
+        {
+            self.reason = DecisionReason::QueryChangedOutsideScope;
         }
         self
     }
@@ -670,6 +766,10 @@ fn execute_description(execution_type: i32, had_prior: bool, reason: DecisionRea
 pub struct SubmitContext<'a> {
     pub execution_type: i32,
     pub input_tables: &'a [InputTable],
+    /// Whether the submit SQL reads a relation, parsed at the service boundary.
+    /// Only `Some(false)` establishes the captured source-less case; missing
+    /// upstream metadata alone does not establish that a query has no inputs.
+    pub sql_reads_relation: Option<bool>,
     /// The node's own target table (fully-qualified). Its presence in
     /// `input_tables` is for own-existence/freshness tracking and must NOT be
     /// treated as upstream drift.
@@ -698,6 +798,29 @@ pub struct SubmitContext<'a> {
 /// Decide SKIP vs EXECUTE given the reuse candidate (if any; see
 /// `reuse_candidate`).
 pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict {
+    // Hosted distinguishes physical existence from recorded execution history.
+    // This characterized source-less case cannot claim that the query changed
+    // or stayed unchanged: neither is recorded. The decision still builds.
+    let known_target_without_history = ctx.sql_reads_relation == Some(false)
+        && !ctx.target_has_prior_build
+        && ctx.why_no_candidate.is_none()
+        && ctx.target_table.is_some_and(|target| {
+            !target.is_empty()
+                && ctx.input_tables.len() == 1
+                && ctx.input_tables[0].name == target
+                && ctx.input_tables[0].last_modified_epoch.is_some()
+        });
+    let existing_without_history = known_target_without_history
+        && matches!(
+            ModelExecutionType::try_from(ctx.execution_type),
+            Ok(ModelExecutionType::Full
+                | ModelExecutionType::Append
+                | ModelExecutionType::Snapshot
+                | ModelExecutionType::View
+                | ModelExecutionType::DbtCustom)
+        );
+    let first_test_existing_target = known_target_without_history
+        && ctx.execution_type == ModelExecutionType::DbtDataTest as i32;
     match candidate {
         // No reuse candidate. The target either
         // never existed (first build → "did not exist") or existed under a
@@ -705,9 +828,17 @@ pub fn decide(ctx: &SubmitContext, candidate: Option<&ExecutionRow>) -> Verdict 
         // `target_has_prior_build` carries the physical-existence signal.
         None => execute(
             ctx.execution_type,
-            ctx.target_has_prior_build && !ctx.own_target_absent,
-            ctx.why_no_candidate
-                .map_or(DecisionReason::FirstBuild, DecisionReason::NoReuseCandidate),
+            (ctx.target_has_prior_build || existing_without_history) && !ctx.own_target_absent,
+            ctx.why_no_candidate.map_or(
+                if existing_without_history {
+                    DecisionReason::ExistingTargetWithoutHistory
+                } else if first_test_existing_target {
+                    DecisionReason::DataTestExistingTargetWithoutHistory
+                } else {
+                    DecisionReason::FirstBuild
+                },
+                DecisionReason::NoReuseCandidate,
+            ),
         ),
         Some(prev) => {
             let f = evaluate_freshness(ctx, prev);
@@ -1089,6 +1220,7 @@ mod tests {
         SubmitContext {
             execution_type: 10,
             input_tables: tables,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
@@ -1818,6 +1950,7 @@ mod tests {
         SubmitContext {
             execution_type: ModelExecutionType::DbtDataTest as i32,
             input_tables: tables,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: StaleUpstreamPolicy::Any,
             target_has_prior_build: false,
@@ -2288,6 +2421,26 @@ mod tests {
     fn decision_reasons_persist_as_stable_strings() {
         let pinned = [
             (DecisionReason::FirstBuild, "first_build"),
+            (
+                DecisionReason::ExistingTargetWithoutHistory,
+                "existing_target_without_history",
+            ),
+            (
+                DecisionReason::DataTestExistingTargetWithoutHistory,
+                "data_test_existing_target_without_history",
+            ),
+            (
+                DecisionReason::QueryObservedOutsideScope,
+                "query_observed_outside_scope",
+            ),
+            (
+                DecisionReason::QueryChangedOutsideScope,
+                "query_changed_outside_scope",
+            ),
+            (
+                DecisionReason::ExistingTargetCopyDisabledDiagnostic,
+                "existing_target_copy_disabled_diagnostic",
+            ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),
                 "no_reuse_candidate.identity_mismatch",

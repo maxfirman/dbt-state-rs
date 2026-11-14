@@ -1,0 +1,644 @@
+{
+  "issue": 140,
+  "parent": 132,
+  "date": "2026-11-12",
+  "status": "partial-incomplete",
+  "ticket_complete": false,
+  "unblocks_dependents": false,
+  "archive_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-140-20261112",
+  "pinned_dbt": {
+    "version": "2.0.11",
+    "sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+  },
+  "environment": {
+    "warehouse_id": "47fd3fa312624d91",
+    "catalog": "cdo_demo_db",
+    "compute": "Free Edition serverless",
+    "catalog_type": "Unity Catalog",
+    "storage": "managed Delta",
+    "dbsql": "2026.44"
+  },
+  "source_commit_for_live": "70347a7",
+  "phases": {
+    "hosted": {
+      "captures": [
+        {
+          "path": "hosted/golden/golden_20261112T141132.643Z_67ea90fb630047c8acea3d6baf8bf2b0.jsonl",
+          "sha256": "312d1aaf860edc1cd7df44fb01355023fafb3837c55675fde39f4353f238666a",
+          "rpc_count": 118,
+          "methods": {
+            "ValidateClientVersion": 18,
+            "SubmitTelemetryBatch": 37,
+            "SubmitEnrichedSQLSpeculative": 18,
+            "SubmitEnrichedSQL": 18,
+            "ConfirmExecution": 8,
+            "GetExplainMessages": 19
+          }
+        }
+      ],
+      "summary_success": true,
+      "invocations": 36,
+      "classification": "actual-pinned-client"
+    },
+    "rust": {
+      "captures": [
+        {
+          "path": "rust/golden/golden_20261112T204358.523Z_6c74a50535ee480d8b39ebdb8398fc17.jsonl",
+          "sha256": "994a80dc827e94d4b3b544ce50ad3d69be7ea3d81a07ab6bd4f2199a51d82331",
+          "rpc_count": 120,
+          "methods": {
+            "ValidateClientVersion": 18,
+            "SubmitTelemetryBatch": 39,
+            "SubmitEnrichedSQLSpeculative": 18,
+            "SubmitEnrichedSQL": 18,
+            "ConfirmExecution": 8,
+            "GetExplainMessages": 19
+          }
+        }
+      ],
+      "summary_success": true,
+      "invocations": 36,
+      "classification": "actual-pinned-client"
+    },
+    "recorded-hosted": {
+      "captures": [
+        {
+          "path": "recorded-hosted/golden/golden_20261112T141839.351Z_8f861e95e8d04ecfb158a1739c0392bc.jsonl",
+          "sha256": "f30608c71a7d96bcb75d9f40ffa365257ad1077fcdedbcfa2364ae2151576c96",
+          "rpc_count": 36,
+          "methods": {
+            "ValidateClientVersion": 5,
+            "SubmitTelemetryBatch": 11,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 7,
+            "ConfirmExecution": 3,
+            "GetExplainMessages": 5,
+            "RecordExecutions": 1
+          }
+        }
+      ],
+      "summary_success": true,
+      "invocations": 10,
+      "classification": "actual-pinned-client"
+    },
+    "recorded-rust": {
+      "captures": [
+        {
+          "path": "recorded-rust/golden/golden_20261112T204358.498Z_8e30077754664e52880da28b756bf96a.jsonl",
+          "sha256": "b4d1f23b6ce85c978b53ca9961ff04b3ffb2713be7c4abef70d9f7c77e30609c",
+          "rpc_count": 37,
+          "methods": {
+            "ValidateClientVersion": 5,
+            "SubmitTelemetryBatch": 12,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 7,
+            "ConfirmExecution": 3,
+            "GetExplainMessages": 5,
+            "RecordExecutions": 1
+          }
+        }
+      ],
+      "summary_success": true,
+      "invocations": 10,
+      "classification": "actual-pinned-client"
+    },
+    "boundaries": {
+      "captures": [
+        {
+          "path": "boundaries/golden/golden_20261112T141910.387Z_37e539dbca414d5095f3373107e2a68e.jsonl",
+          "sha256": "d5ca5ebcc72d52f04a8f83add5efa76e253da01e4f94826fd0fef9f440a7a5cc",
+          "rpc_count": 38,
+          "methods": {
+            "SubmitEnrichedSQL": 19,
+            "ConfirmExecution": 9,
+            "GetExplainMessages": 10
+          }
+        }
+      ],
+      "summary_success": null,
+      "invocations": 0,
+      "classification": "crafted-public-grpc"
+    },
+    "boundaries-initial": {
+      "captures": [
+        {
+          "path": "boundaries-initial/golden/golden_20261112T141316.786Z_6cc2411db613428c81205b0330049d73.jsonl",
+          "sha256": "51153ebbf34f2ba77359085d4873e1cb9432f6066376a4593d572a8f3b290f80",
+          "rpc_count": 38,
+          "methods": {
+            "SubmitEnrichedSQL": 19,
+            "ConfirmExecution": 9,
+            "GetExplainMessages": 10
+          }
+        }
+      ],
+      "summary_success": null,
+      "invocations": 0,
+      "classification": "crafted-public-grpc"
+    },
+    "unsafe-diagnostic": {
+      "captures": [
+        {
+          "path": "unsafe-diagnostic/golden/golden_20261112T142043.075Z_ed9213c8821c4ad4b7bafdc7624eab22.jsonl",
+          "sha256": "aa44ba79701c57778b58af3abf5cfe113bf647272494dc563da3eff1d6e025cf",
+          "rpc_count": 27,
+          "methods": {
+            "ValidateClientVersion": 4,
+            "SubmitTelemetryBatch": 9,
+            "SubmitEnrichedSQLSpeculative": 3,
+            "SubmitEnrichedSQL": 4,
+            "ConfirmExecution": 3,
+            "GetExplainMessages": 4
+          }
+        }
+      ],
+      "summary_success": true,
+      "invocations": 7,
+      "classification": "mixed-actual-client-and-crafted-public-grpc"
+    },
+    "recorded-full-refresh-hypothesis": {
+      "captures": [
+        {
+          "path": "recorded-full-refresh-hypothesis/golden/golden_20261112T141541.360Z_d00a066173204cb487e177951959bca1.jsonl",
+          "sha256": "c0c2818a788993d31cf8168d7e555e0c760f94e657c6de8c0ea10af77b6ee2de",
+          "rpc_count": 24,
+          "methods": {
+            "ValidateClientVersion": 3,
+            "SubmitTelemetryBatch": 7,
+            "SubmitEnrichedSQLSpeculative": 3,
+            "SubmitEnrichedSQL": 5,
+            "ConfirmExecution": 3,
+            "GetExplainMessages": 3
+          }
+        }
+      ],
+      "summary_success": false,
+      "invocations": 5,
+      "classification": "actual-pinned-client"
+    }
+  },
+  "accepted_fixtures": [
+    {
+      "path": "golden/fixtures/databricks_freshness_client.jsonl",
+      "sha256": "312d1aaf860edc1cd7df44fb01355023fafb3837c55675fde39f4353f238666a",
+      "rpc_count": 118,
+      "classification": "actual-pinned-client"
+    },
+    {
+      "path": "golden/fixtures/databricks_freshness_recorded.jsonl",
+      "sha256": "f30608c71a7d96bcb75d9f40ffa365257ad1077fcdedbcfa2364ae2151576c96",
+      "rpc_count": 36,
+      "classification": "actual-pinned-client"
+    },
+    {
+      "path": "golden/fixtures/databricks_freshness_epoch_boundaries.jsonl",
+      "sha256": "909c0676ad93ce3d9a99544877753846935867de8eda75092c26f4a059358c45",
+      "rpc_count": 18,
+      "classification": "crafted-public-grpc"
+    }
+  ],
+  "decisions": {
+    "source_operations": {
+      "build": 8,
+      "skip": 10,
+      "zero_lag": true,
+      "policy": "ANY"
+    },
+    "recorded_rebuild": {
+      "build": 3,
+      "skip": 4,
+      "records_stored": 1,
+      "same_logic_fields_verified": [
+        "target_table",
+        "dialect",
+        "default_catalog",
+        "default_schema",
+        "execution_type",
+        "sql",
+        "query_dependencies",
+        "semantic_extras",
+        "table_namespace"
+      ]
+    },
+    "crafted_known_epochs": {
+      "build": 6,
+      "skip": 3,
+      "successful_confirms": 4,
+      "classification": "crafted-public-grpc",
+      "actual_client_reachable": false
+    }
+  },
+  "independent_evidence": {
+    "complete_cross_phase_snapshots": 21,
+    "cross_phase_comparison": "cross-phase-comparison.json",
+    "literal_expected_rows": true,
+    "state_disabled_dbt_reference": true,
+    "independent_select": true,
+    "typed_multiset": true,
+    "ordered_schema": true,
+    "required_properties": [
+      "MANAGED",
+      "delta"
+    ]
+  },
+  "freshness_observations": [
+    {
+      "operation": "first",
+      "wire_epoch": 1794492697000,
+      "unchanged_wire_epoch": 1794492697000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:11:40.088921+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:11:42.955608+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:12:05.430866+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:12:20.612335+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        }
+      }
+    },
+    {
+      "operation": "unchanged",
+      "wire_epoch": 1794492697000,
+      "unchanged_wire_epoch": 1794492697000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:12:23.105642+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:12:25.593567+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:12:40.892603+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:12:56.598871+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        }
+      }
+    },
+    {
+      "operation": "insert",
+      "wire_epoch": 1794492781000,
+      "unchanged_wire_epoch": 1794492781000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:12:59.033113+00:00",
+          "version": "1",
+          "timestamp": "2026-11-12T14:11:37.000Z",
+          "last_altered": "2026-11-12T14:11:37.286Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:13:03.357794+00:00",
+          "version": "2",
+          "timestamp": "2026-11-12T14:13:01.000Z",
+          "last_altered": "2026-11-12T14:13:00.965Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:13:21.754668+00:00",
+          "version": "2",
+          "timestamp": "2026-11-12T14:13:01.000Z",
+          "last_altered": "2026-11-12T14:13:00.965Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:13:36.313963+00:00",
+          "version": "2",
+          "timestamp": "2026-11-12T14:13:01.000Z",
+          "last_altered": "2026-11-12T14:13:00.965Z"
+        }
+      }
+    },
+    {
+      "operation": "update",
+      "wire_epoch": 1794492822000,
+      "unchanged_wire_epoch": 1794492822000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:13:38.858897+00:00",
+          "version": "2",
+          "timestamp": "2026-11-12T14:13:01.000Z",
+          "last_altered": "2026-11-12T14:13:00.965Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:13:44.999426+00:00",
+          "version": "3",
+          "timestamp": "2026-11-12T14:13:42.000Z",
+          "last_altered": "2026-11-12T14:13:42.132Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:14:03.149800+00:00",
+          "version": "3",
+          "timestamp": "2026-11-12T14:13:42.000Z",
+          "last_altered": "2026-11-12T14:13:42.132Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:14:17.572702+00:00",
+          "version": "3",
+          "timestamp": "2026-11-12T14:13:42.000Z",
+          "last_altered": "2026-11-12T14:13:42.132Z"
+        }
+      }
+    },
+    {
+      "operation": "delete",
+      "wire_epoch": 1794492862000,
+      "unchanged_wire_epoch": 1794492862000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:14:20.033459+00:00",
+          "version": "3",
+          "timestamp": "2026-11-12T14:13:42.000Z",
+          "last_altered": "2026-11-12T14:13:42.132Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:14:24.426502+00:00",
+          "version": "4",
+          "timestamp": "2026-11-12T14:14:22.000Z",
+          "last_altered": "2026-11-12T14:14:21.478Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:14:42.319324+00:00",
+          "version": "4",
+          "timestamp": "2026-11-12T14:14:22.000Z",
+          "last_altered": "2026-11-12T14:14:21.478Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:14:56.306678+00:00",
+          "version": "4",
+          "timestamp": "2026-11-12T14:14:22.000Z",
+          "last_altered": "2026-11-12T14:14:21.478Z"
+        }
+      }
+    },
+    {
+      "operation": "no_op",
+      "wire_epoch": 1794492901000,
+      "unchanged_wire_epoch": 1794492901000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:14:58.838791+00:00",
+          "version": "4",
+          "timestamp": "2026-11-12T14:14:22.000Z",
+          "last_altered": "2026-11-12T14:14:21.478Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:15:03.444069+00:00",
+          "version": "5",
+          "timestamp": "2026-11-12T14:15:01.000Z",
+          "last_altered": "2026-11-12T14:15:00.644Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:15:21.676307+00:00",
+          "version": "5",
+          "timestamp": "2026-11-12T14:15:01.000Z",
+          "last_altered": "2026-11-12T14:15:00.644Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:15:35.593854+00:00",
+          "version": "5",
+          "timestamp": "2026-11-12T14:15:01.000Z",
+          "last_altered": "2026-11-12T14:15:00.644Z"
+        }
+      }
+    },
+    {
+      "operation": "add_column",
+      "wire_epoch": 1794492940000,
+      "unchanged_wire_epoch": 1794492940000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:15:38.027663+00:00",
+          "version": "5",
+          "timestamp": "2026-11-12T14:15:01.000Z",
+          "last_altered": "2026-11-12T14:15:00.644Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:15:42.017995+00:00",
+          "version": "6",
+          "timestamp": "2026-11-12T14:15:40.000Z",
+          "last_altered": "2026-11-12T14:15:39.336Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:16:00.383005+00:00",
+          "version": "6",
+          "timestamp": "2026-11-12T14:15:40.000Z",
+          "last_altered": "2026-11-12T14:15:39.336Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:16:15.386901+00:00",
+          "version": "6",
+          "timestamp": "2026-11-12T14:15:40.000Z",
+          "last_altered": "2026-11-12T14:15:39.336Z"
+        }
+      }
+    },
+    {
+      "operation": "property",
+      "wire_epoch": 1794492980000,
+      "unchanged_wire_epoch": 1794492980000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:16:17.900122+00:00",
+          "version": "6",
+          "timestamp": "2026-11-12T14:15:40.000Z",
+          "last_altered": "2026-11-12T14:15:39.336Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:16:22.563803+00:00",
+          "version": "7",
+          "timestamp": "2026-11-12T14:16:20.000Z",
+          "last_altered": "2026-11-12T14:16:19.984Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:16:40.494990+00:00",
+          "version": "7",
+          "timestamp": "2026-11-12T14:16:20.000Z",
+          "last_altered": "2026-11-12T14:16:19.984Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:16:56.126731+00:00",
+          "version": "7",
+          "timestamp": "2026-11-12T14:16:20.000Z",
+          "last_altered": "2026-11-12T14:16:19.984Z"
+        }
+      }
+    },
+    {
+      "operation": "comment",
+      "wire_epoch": 1794493020000,
+      "unchanged_wire_epoch": 1794493020000,
+      "samples": {
+        "before": {
+          "at": "2026-11-12T14:16:58.626596+00:00",
+          "version": "7",
+          "timestamp": "2026-11-12T14:16:20.000Z",
+          "last_altered": "2026-11-12T14:16:19.984Z"
+        },
+        "immediate": {
+          "at": "2026-11-12T14:17:02.118699+00:00",
+          "version": "8",
+          "timestamp": "2026-11-12T14:17:00.000Z",
+          "last_altered": "2026-11-12T14:16:59.682Z"
+        },
+        "after_build": {
+          "at": "2026-11-12T14:17:19.932152+00:00",
+          "version": "8",
+          "timestamp": "2026-11-12T14:17:00.000Z",
+          "last_altered": "2026-11-12T14:16:59.682Z"
+        },
+        "final": {
+          "at": "2026-11-12T14:17:33.743123+00:00",
+          "version": "8",
+          "timestamp": "2026-11-12T14:17:00.000Z",
+          "last_altered": "2026-11-12T14:16:59.682Z"
+        }
+      }
+    }
+  ],
+  "clock": {
+    "classification": "test-only-evidenced-UUIDv7-decision-instant",
+    "verification": "uuidv7-clock-verification.json",
+    "observations": 25,
+    "full_explain_text_comparison": true,
+    "temporal_masks": false,
+    "production_ids_opaque": true
+  },
+  "safety_conflict": {
+    "classification": "crafted-public-grpc-over-real-warehouse",
+    "actual_client_reachable": false,
+    "condition": "source omitted while unchanged SQL still reads source; genuine prior confirmed build and own target epoch retained",
+    "hosted": "SKIP",
+    "rust": "BUILD",
+    "physical_target_duplicate_amounts": [
+      "10",
+      "10"
+    ],
+    "independent_current_duplicate_amounts": [
+      "17",
+      "17"
+    ],
+    "precise_failure": "physical:rows",
+    "artifact": "unsafe-diagnostic/checks/omitted-source.json"
+  },
+  "remaining": [
+    "Preserve conservative Safety on omitted source and missing recorded epoch; hosted SKIP differs.",
+    "Known recorded/missing current and both-missing epochs BUILD but Explain differs.",
+    "Identical known duplicate entries SKIP hosted and BUILD locally; safe normalization opportunity, distinct from ambiguous epochs.",
+    "Actual changed-data equal epoch, delayed metadata visibility and actual mutation between submit and confirm remain unverified.",
+    "Copied-target rebuild and snapshot deletion-record blockers from #134/#132 unchanged."
+  ],
+  "diagnostic_red_replay": {
+    "source": "boundaries",
+    "log": "databricks-freshness-140-boundaries-final-red.log",
+    "provenance": "diagnostic-replay-provenance.json",
+    "expected_exit": 101,
+    "no_golden_exclusion_or_gap": true
+  },
+  "validation": [
+    {
+      "check": "11 conformance tests /73 corpora at standalone Explain commit",
+      "result": "pass",
+      "log": "databricks-freshness-140-replay-green-2.log"
+    },
+    {
+      "check": "real_dbt_source_changes_match_independent_reference",
+      "result": "pass",
+      "invocations": 36,
+      "certified_rpcs": 120,
+      "log": "databricks-freshness-140-rust-1.log"
+    },
+    {
+      "check": "real_dbt_same_logic_recorded_rebuild_matches_independent_reference",
+      "result": "pass",
+      "invocations": 10,
+      "certified_rpcs": 37,
+      "log": "databricks-freshness-140-recorded-rust-1.log"
+    },
+    {
+      "check": "credential-free Python physical and lease probes",
+      "result": "pass",
+      "tests": 2
+    },
+    {
+      "check": "configured credential-byte scan",
+      "result": "pass",
+      "artifact": "secret-scan.json"
+    },
+    {
+      "check": "freshness integration inventory/physical/lease probes",
+      "result": "pass",
+      "tests": 3,
+      "ignored_live_tests": 2,
+      "log": "databricks-freshness-140-focused-tests.log"
+    },
+    {
+      "check": "server library regression suite",
+      "result": "pass",
+      "tests": 309,
+      "log": "databricks-freshness-140-server-lib.log"
+    },
+    {
+      "check": "cargo clippy -p dbt-state-server --lib -p dbt-state-harness --test databricks_freshness -- -D warnings",
+      "result": "pass",
+      "log": "databricks-freshness-140-clippy.log"
+    },
+    {
+      "check": "cargo fmt --all --check and git diff --check",
+      "result": "pass"
+    },
+    {
+      "check": "merge current integrate/databricks-132 tip c6bfa07",
+      "result": "already up to date",
+      "log": "databricks-freshness-140-integration-merge.log"
+    },
+    {
+      "check": "final exact public conformance replay",
+      "result": "pass",
+      "tests": 11,
+      "corpora": 74,
+      "per_freshness_fixture_assertions": [
+        99,
+        13,
+        31
+      ],
+      "unknown_baselines": 0,
+      "gaps": 0,
+      "partial_histories": 0,
+      "log": "databricks-freshness-140-final-conformance.log"
+    }
+  ],
+  "combined_workspace_validation": "Not redundantly rerun here; coordinator integrates #136/shared Explain followups and runs final combined workspace/Clippy gates.",
+  "live_runner_provenance": "Archive preserves actual run entrypoint/configuration hashes. Later assertion-only checks of zero-lag/ANY, precise missing-source error and same-logic Record fields were verified against both completed public captures; final runner sources are retained separately.",
+  "artifact_manifest": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-140-20261112/artifact-manifest.json",
+    "sha256": "2f781ea3ffde04c425ea9442b8c44527a9d11f87943dc0f12033a08df217e84f",
+    "files": 7183
+  }
+}

@@ -4,8 +4,29 @@
 
 use super::*;
 use crate::query_cache::ModelExecutionType;
+use crate::warehouse::Warehouse;
 use sqlx::{Postgres, QueryBuilder};
 use std::collections::HashMap;
+
+/// Namespace range for diagnostic-only query evidence. `All` is used only
+/// for an omitted namespace's rejection/Explain contract, never physical reuse.
+pub(crate) enum QueryDiagnosticNamespaces<'a> {
+    All,
+    Exact(Option<&'a str>),
+}
+
+/// A name for a refused optimization's explanation. This intentionally cannot
+/// carry cached results, epochs, producers or execution IDs into a candidate.
+pub(crate) struct QueryDiagnosticReference {
+    pub source_name: String,
+}
+
+// Physical completion order is independent of confirmation delivery order.
+// A confirmed legacy row without an epoch is deliberately a permanent cold
+// miss: neither a late confirmation nor historical Record delivery can prove
+// that it replaced the unknown result. Pending rows are filtered out first.
+const PHYSICAL_ORDER: &str =
+    "last_modified_epoch DESC NULLS FIRST, confirmed_at DESC NULLS LAST, id DESC";
 
 /// The physical warehouse family a dialect's history is scoped by; matches the
 /// generated `executions.warehouse_family` column.
@@ -26,23 +47,25 @@ fn current_physical_state<'a>(
     query.push(if target.is_some() {
         "SELECT * FROM executions"
     } else {
-        "SELECT DISTINCT ON (target_table) * FROM executions"
+        "SELECT DISTINCT ON (physical_target_key) * FROM executions"
     });
     query
         .push(" WHERE org_id = ")
         .push_bind(org_id)
         .push(" AND status = 'confirmed' AND warehouse_family = ")
         .push_bind(warehouse_family(dialect))
-        .push(" AND table_namespace IS NOT DISTINCT FROM ")
-        .push_bind(namespace);
+        .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
+        .push_bind(crate::execution::non_blank_namespace(namespace));
     if let Some(target) = target {
-        query.push(" AND target_table = ").push_bind(target);
+        query
+            .push(" AND physical_target_key = ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target));
     }
     query.push(" ORDER BY ");
     if target.is_none() {
-        query.push("target_table, ");
+        query.push("physical_target_key, ");
     }
-    query.push("confirmed_at DESC NULLS LAST, id DESC");
+    query.push(PHYSICAL_ORDER);
     if target.is_some() {
         query.push(" LIMIT 1");
     }
@@ -99,15 +122,118 @@ impl Store {
             .push_bind(org_id)
             .push(" AND status = 'confirmed' AND warehouse_family = ")
             .push_bind(warehouse_family(dialect))
-            .push(" AND table_namespace IS NOT DISTINCT FROM ")
-            .push_bind(table_namespace)
-            .push(" AND target_table = ")
-            .push_bind(target_table)
-            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+            .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
+            .push_bind(crate::execution::non_blank_namespace(table_namespace))
+            .push(" AND physical_target_key = ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target_table))
+            .push(" ORDER BY ")
+            .push(PHYSICAL_ORDER)
+            .push(" LIMIT 50");
         query
             .build_query_as::<ExecutionRow>()
             .fetch_all(&self.pool)
             .await
+    }
+
+    /// Diagnostic query evidence for one physical name across namespaces.
+    /// Returns only a boolean: these rows must never become reuse/copy
+    /// candidates, producer evidence, or freshness anchors.
+    pub(crate) async fn has_target_query_diagnostic(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        dialect: &str,
+        matches: impl Fn(&ExecutionRow) -> bool,
+    ) -> sqlx::Result<bool> {
+        let mut query = QueryBuilder::new("SELECT ");
+        query
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ")
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect))
+            .push(" AND physical_target_key = ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target_table))
+            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+        let rows = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.into_checked(false).ok())
+            .any(|row| matches(&row)))
+    }
+
+    /// Current query evidence under another physical name, only for rejection
+    /// diagnostics. Latest physical state is selected before the identity
+    /// predicate. The return type contains a name, never an execution row.
+    pub(crate) async fn other_target_query_diagnostic(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        dialect: &str,
+        namespaces: QueryDiagnosticNamespaces<'_>,
+        matches: impl Fn(&ExecutionRow) -> bool,
+    ) -> sqlx::Result<Option<QueryDiagnosticReference>> {
+        let mut query = QueryBuilder::new("WITH diagnostic_current AS (SELECT DISTINCT ON (NULLIF(table_namespace, ''), physical_target_key) * FROM executions WHERE org_id = ");
+        query
+            .push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ")
+            .push_bind(warehouse_family(dialect));
+        if let QueryDiagnosticNamespaces::Exact(namespace) = namespaces {
+            query
+                .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
+                .push_bind(crate::execution::non_blank_namespace(namespace));
+        }
+        query
+            .push(" ORDER BY NULLIF(table_namespace, ''), physical_target_key, ")
+            .push(PHYSICAL_ORDER)
+            .push(") SELECT ")
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM diagnostic_current WHERE physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target_table))
+            .push(" ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+        let rows = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.into_checked(false).ok())
+            .find(|row| matches(row))
+            .map(|row| QueryDiagnosticReference {
+                source_name: row.raw_target_table.unwrap_or(row.target_table),
+            }))
+    }
+
+    /// Last definition in the absent namespace, solely for the explanation of
+    /// a fresh named scope. Never return its execution as physical evidence.
+    pub(crate) async fn absent_scope_query_definition_changed(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        dialect: &str,
+        execution_type: i32,
+        current_hash: Option<&str>,
+    ) -> sqlx::Result<bool> {
+        let mut query = current_physical_state(org_id, None, dialect, Some(target_table));
+        query
+            .push("SELECT ")
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM current_state");
+        let row = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .filter(|row| row.execution_type == execution_type)
+            .is_some_and(|row| {
+                row.node_sql_hash
+                    .as_deref()
+                    .zip(current_hash)
+                    .is_some_and(|(prior, current)| prior != current)
+            }))
     }
 
     /// The CURRENT physical state of each named target (see
@@ -124,25 +250,43 @@ impl Store {
         if targets.is_empty() {
             return Ok(HashMap::new());
         }
-        let mut query = QueryBuilder::new("SELECT DISTINCT ON (target_table) ");
+        let requested: HashMap<_, _> = targets
+            .iter()
+            .map(|name| (Warehouse::physical_scope_key(dialect, name), name.clone()))
+            .collect();
+        let keys: Vec<_> = targets
+            .iter()
+            .map(|name| Warehouse::physical_scope_key(dialect, name))
+            .collect();
+        let mut query = QueryBuilder::new("SELECT DISTINCT ON (physical_target_key) ");
         query
             .push(ExecutionRow::COLUMNS)
             .push(" FROM executions WHERE org_id = ")
             .push_bind(org_id)
             .push(" AND status = 'confirmed' AND warehouse_family = ")
             .push_bind(warehouse_family(dialect))
-            .push(" AND table_namespace IS NOT DISTINCT FROM ")
-            .push_bind(table_namespace)
-            .push(" AND target_table = ANY(")
-            .push_bind(targets)
-            .push(") ORDER BY target_table, confirmed_at DESC NULLS LAST, id DESC");
+            .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
+            .push_bind(crate::execution::non_blank_namespace(table_namespace))
+            .push(" AND physical_target_key = ANY(")
+            .push_bind(keys)
+            .push(") ORDER BY physical_target_key, ")
+            .push(PHYSICAL_ORDER);
         let rows = query
             .build_query_as::<ExecutionRow>()
             .fetch_all(&self.pool)
             .await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.target_table.clone(), r))
+            .map(|r| {
+                let key = Warehouse::physical_scope_key(dialect, &r.target_table);
+                (
+                    requested
+                        .get(&key)
+                        .cloned()
+                        .unwrap_or_else(|| r.target_table.clone()),
+                    r,
+                )
+            })
             .collect())
     }
 
@@ -162,7 +306,7 @@ impl Store {
             SELECT {} FROM executions
             WHERE org_id = $1 AND node_unique_id = $2 AND execution_type = $6
               AND project_id IS NOT DISTINCT FROM $3
-              AND table_namespace IS NOT DISTINCT FROM $4
+              AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM $4
               AND warehouse_family = $5
               AND status = 'confirmed'
             ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
@@ -172,7 +316,7 @@ impl Store {
         .bind(org_id)
         .bind(node_unique_id)
         .bind(project_id)
-        .bind(table_namespace)
+        .bind(crate::execution::non_blank_namespace(table_namespace))
         .bind(warehouse_family(dialect))
         .bind(ModelExecutionType::DbtDataTest as i32)
         .fetch_optional(&self.pool)
@@ -191,14 +335,14 @@ impl Store {
     ) -> sqlx::Result<Vec<CopyCandidate>> {
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
         query
-            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE execution_type = ")
+            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND execution_type = ")
             .push_bind(ModelExecutionType::Values as i32)
             .push(" AND node_sql_hash = ")
             .push_bind(q.seed_logic_hash)
             .push(" AND values_hash = ")
             .push_bind(q.values_hash)
-            .push(" AND target_table <> ")
-            .push_bind(q.exclude_target)
+            .push(" AND physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(q.dialect,q.exclude_target))
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
             .push_bind(q.limit)
             .push(" OFFSET ")
@@ -233,7 +377,7 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and (when asked)
         // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE node_namespace_logic_hash = ANY(")
+        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND node_namespace_logic_hash = ANY(")
             .push_bind(
                 q.node_namespace_logic_hashes
                     .iter()
@@ -247,8 +391,8 @@ impl Store {
                 .push_bind(execution_type);
         }
         query
-            .push(" AND target_table <> ")
-            .push_bind(q.exclude_target)
+            .push(" AND physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(q.dialect, q.exclude_target))
             .push(" ORDER BY last_modified_epoch DESC NULLS LAST, target_table LIMIT ")
             .push_bind(q.limit);
         query
@@ -276,9 +420,16 @@ impl Store {
         let mut cutoff: Option<chrono::DateTime<chrono::Utc>> = None;
         let mut child_id: Option<i64> = None;
         for depth in 0..=max_ancestors {
+            // The head is current physical state. Ancestors remain immutable
+            // snapshots bounded by their child's submission, not current rows.
+            let order = if depth == 0 {
+                PHYSICAL_ORDER
+            } else {
+                "confirmed_at DESC NULLS LAST, id DESC"
+            };
             let row: Option<(i64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-                "SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND table_namespace=$2 AND warehouse_family=$6 AND target_table=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1"
-            ).bind(org_id).bind(namespace).bind(&name).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
+                &format!("SELECT id, clone_source_table, created_at FROM executions WHERE org_id=$1 AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM $2 AND warehouse_family=$6 AND physical_target_key=$3 AND status='confirmed' AND ($4::timestamptz IS NULL OR confirmed_at <= $4) AND ($5::bigint IS NULL OR id < $5) ORDER BY {order} LIMIT 1")
+            ).bind(org_id).bind(crate::execution::non_blank_namespace(Some(namespace))).bind(Warehouse::physical_scope_key(dialect,&name)).bind(cutoff).bind(child_id).bind(&family).fetch_optional(&self.pool).await?;
             let Some((id, source, created_at)) = row else {
                 return Ok(None);
             };
@@ -348,6 +499,7 @@ impl Store {
             .await?;
         // Corrupt recorded evidence on the source row fails the lookup.
         Ok(row
+            .filter(|row| row.last_modified_epoch.is_some() && !row.target_table.is_empty())
             .map(|r| r.into_checked(true))
             .transpose()?
             .map(CopySourceBuild::of))

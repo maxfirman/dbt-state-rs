@@ -18,8 +18,9 @@ and differential tests). Two notable build steps:
 
 - **serde derives** are added to every message (`type_attribute`) so the proxy
   can emit JSON golden files that are human-diffable and replayable. The one
-  `google.protobuf.Duration` field (`SessionEndRequest.session_duration`, in the
-  unused ClientTelemetry service) is `serde(skip)`-ed.
+  `google.protobuf.Duration` field (`SessionEndRequest.session_duration`) uses
+  a lossless optional seconds/nanoseconds serializer. Older captures omitted
+  it; the omission still deserializes as absent.
 - **`Clone` service collision patch.** The proto has a service literally named
   `Clone`; tonic generates a trait `clone_server::Clone` that shadows
   `std::clone::Clone` and makes the std-derive impl fail to compile. `build.rs`
@@ -49,9 +50,9 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `fingerprint.rs` | Versioned SQL/dependency/context, seed and schema-abstracted logic fingerprints shared by Submit and Record. Computes identities only. |
 | `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
-| `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs` and `warehouse/duckdb.rs`; other warehouses get conservative defaults (ADR 0004). |
-| `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, `resolve_deferred_fqns` for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
-| `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Warehouse rule outcomes arrive as parameters; the store holds no dialect names. |
+| `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
+| `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
+| `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Derives warehouse-family and canonical physical lookup keys through the centralized Warehouse naming rules to match generated persisted keys ([ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md)); Reuse qualification, freshness assessment and Result copy policy remain outside storage. |
 
 ### Registered services
 
@@ -118,7 +119,13 @@ current row has the submit's identity under another execution type and
 recorded the submit's genuine upstream names, the latest
 row of the submit's type is (`submit_decision::select_sql`, ADR 0007); it is
 never reused. Other upstream names are another identity (#116). A client without a namespace gets an isolated absent-namespace
-scope per family. Data tests select by org, project, warehouse scope and UID.
+scope per family. Empty strings share that physical scope, including legacy
+confirmed and pending rows. Source-less Databricks rejection/Explain reads can
+return query diagnostics from outside a physical reuse scope; those reads
+return only booleans or a name and never feed a reuse/copy candidate, producer
+or freshness anchor. A hosted absent-to-named fallback conflicts with this
+required self-hosted isolation and remains [an explicit incomplete
+contract](reports/databricks-isolation-2026-11-13.md). Data tests select by org, project, warehouse scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.
 
@@ -129,7 +136,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 | Table | Contents |
 |---|---|
 | `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`). |
-| `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus `target_table` for deferral. |
+| `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus retained `target_table` snapshot metadata. |
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `actors`, `roles`, `role_bindings` | Reserved for future auth; nothing writes them. |
@@ -140,12 +147,19 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
    (`ready_to_clone`) and the chain-limit EXECUTE write a `pending` row keyed
    by `request_id`; `RegisterClone` does too.
 2. `ConfirmExecution(request_id, …)` flips the row to `confirmed` with the
-   outcome and the server receipt time, exactly once. A repeat confirm succeeds
-   without rewriting it.
+   outcome and the server receipt time, exactly once. A repeat confirm returns
+   INTERNAL (`Database operation failed`) without rewriting the outcome. A
+   missing valid UUID returns NOT_FOUND; malformed IDs return INTERNAL.
 3. `RecordExecutions` writes a batch of confirmed rows and their `node_states`
-   in one transaction.
+   in one transaction, after validating the complete batch. A physical target
+   requires an outcome epoch; an absent target requires an absent epoch.
 4. Later submits consider only confirmed rows. A SKIP echoes the recorded
-   `execution_runtime_ms`.
+   `execution_runtime_ms`. Physical current state uses the greatest completion
+   epoch, with confirmation receipt order breaking equal epochs. A legacy
+   confirmed row with an unknown epoch blocks physical reuse and copying even
+   when external modifications are ignored; later delivery cannot prove recovery.
+   Logical test/deferral histories and historical copy provenance retain their
+   separate ordering rules.
 
 ## ui crate
 
@@ -158,3 +172,14 @@ The recording proxy (`record-proxy`), the single-RPC `state-probe` used by
 live characterization drivers, the opt-in `diff-fuzz` tool (`--features fuzz`),
 golden/auth/diff support modules and the integration tests. See
 [harness.md](harness.md) and [testing.md](testing.md).
+
+### Submit clock for Explain
+
+Databricks SQL submits retain nullable `display_submitted_at_ms` on their
+execution and node-decision rows (migration 0022). Explain uses this frozen
+instant for temporal text, including identity-change rebuilds without a reuse
+anchor. A captured FULL upstream with a missing current epoch displays the
+current submit instant; a missing recorded epoch uses the original build
+submit instant only when it was retained. Both raw epochs remain unknown.
+These columns never participate in freshness, producer selection, physical
+history ordering or fingerprints, and legacy rows are never backfilled.

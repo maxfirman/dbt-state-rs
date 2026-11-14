@@ -4,6 +4,61 @@
 
 use super::rows::Db;
 
+/// Corrupt current-version physical completion evidence without changing its
+/// identity. This is a storage fault, not a simulated historical fingerprint.
+pub async fn forget_completion_epoch(db: &impl Db, target: &str) {
+    let affected = sqlx::query(
+        "UPDATE executions SET last_modified_epoch = NULL WHERE target_table = $1 AND status = 'confirmed'",
+    )
+    .bind(target)
+    .execute(db.pool())
+    .await
+    .expect("inject missing completion epoch")
+    .rows_affected();
+    assert!(
+        affected > 0,
+        "completion fault must touch confirmed evidence"
+    );
+}
+
+/// Hold the first UI capture write while leaving State execution writes free.
+pub struct CaptureHold(sqlx::PgConnection);
+
+impl CaptureHold {
+    pub async fn rollback(mut self) -> sqlx::Result<()> {
+        use sqlx::Connection;
+        sqlx::query("ROLLBACK").execute(&mut self.0).await?;
+        self.0.close().await
+    }
+}
+
+pub async fn hold_decision_capture(db: &impl Db) -> CaptureHold {
+    use sqlx::Connection;
+    let schema: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(db.pool())
+        .await
+        .expect("read fault scope");
+    // Do not consume a server-pool slot: the intended fault is a delayed
+    // capture write, not starvation of unrelated gRPC reads.
+    let mut connection = sqlx::PgConnection::connect_with(&db.pool().connect_options())
+        .await
+        .expect("connect scoped fault injector");
+    sqlx::query("SELECT set_config('search_path', $1, false)")
+        .bind(schema)
+        .execute(&mut connection)
+        .await
+        .expect("set fault scope");
+    sqlx::query("BEGIN")
+        .execute(&mut connection)
+        .await
+        .expect("begin capture hold");
+    sqlx::query("LOCK TABLE organizations IN ACCESS EXCLUSIVE MODE")
+        .execute(&mut connection)
+        .await
+        .expect("hold capture writes");
+    CaptureHold(connection)
+}
+
 /// Make every `node_states` write fail (a `CHECK (false)` constraint), so a
 /// transaction that writes node state rolls back.
 pub async fn reject_node_state_writes(db: &impl Db) {

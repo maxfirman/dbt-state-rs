@@ -1,0 +1,205 @@
+{
+  "date": "2026-11-14",
+  "ticket": 137,
+  "scope": "bounded rendered SQL identity; dbt2.0.11/serverless Unity Catalog/managed Delta",
+  "identity_version": "dbt-state-databricks-sql-v3",
+  "template_policy": "existing exact raw-dialect/body/context/dependency path unchanged; no new equivalence",
+  "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+  "controller": {
+    "python": "3.14.0 (main, Oct 10 2025, 12:47:49) [Clang 20.1.4 ]",
+    "pyyaml": "6.0.3"
+  },
+  "dbsql_version": "2026.44",
+  "dbr_version": null,
+  "integration_base": "bf360345d4c46e65f279ec52e303de4558364c15",
+  "source_clean_at_gates": false,
+  "production_source_sha256": {
+    "crates/server/src/warehouse.rs": "0cbd0ea72f59f58d097fbbea9806d22a6c56ed277a5da2e74629573e3d15b492",
+    "crates/server/src/warehouse/databricks.rs": "c0b1ba02eb46327ffa5537acb8a5c28a8ce5de0a7bfa4bb06398f666d3d67439"
+  },
+  "campaigns": [
+    {
+      "phase": "hosted-discovery",
+      "success": true,
+      "failure": null,
+      "invocations": 52,
+      "capture": [
+        {
+          "path": "golden/golden_20261113T143716.670Z_9ec02e7b1a80486dacb409e84c198afb.jsonl",
+          "complete": true,
+          "rows": 179,
+          "sha256": "7b2da7cf0e190dacf2d72a86aa988d0ae224b4cfcd4d68514b0337e83221eba2",
+          "methods": {
+            "ValidateClientVersion": 26,
+            "SubmitTelemetryBatch": 57,
+            "SubmitEnrichedSQLSpeculative": 26,
+            "SubmitEnrichedSQL": 26,
+            "ConfirmExecution": 17,
+            "GetExplainMessages": 27
+          }
+        }
+      ]
+    },
+    {
+      "phase": "hosted-cte",
+      "success": true,
+      "failure": null,
+      "invocations": 8,
+      "capture": [
+        {
+          "path": "golden/golden_20261113T144419.133Z_4ecd04d5c1934368af094191b95bec7f.jsonl",
+          "complete": true,
+          "rows": 26,
+          "sha256": "973e4b7e32e1f4385bb84e6b9098bd95cd9068dd734f19212c7c5159d3a2edc3",
+          "methods": {
+            "ValidateClientVersion": 4,
+            "SubmitTelemetryBatch": 9,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 4,
+            "ConfirmExecution": 1,
+            "GetExplainMessages": 4
+          }
+        }
+      ]
+    },
+    {
+      "phase": "rust-final/main",
+      "success": true,
+      "failure": null,
+      "invocations": 52,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T110616.696Z_ad50a5513daf477a972e5c6c4c917594.jsonl",
+          "complete": true,
+          "rows": 178,
+          "sha256": "212215a46738632dd089c35160a2ae2d87a9c83601b2f1aa306769c78d0c175e",
+          "methods": {
+            "ValidateClientVersion": 26,
+            "SubmitTelemetryBatch": 56,
+            "SubmitEnrichedSQLSpeculative": 26,
+            "SubmitEnrichedSQL": 26,
+            "ConfirmExecution": 17,
+            "GetExplainMessages": 27
+          }
+        }
+      ]
+    },
+    {
+      "phase": "rust-final/cte",
+      "success": true,
+      "failure": null,
+      "invocations": 8,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T111249.491Z_2dc4a64d975c42bfb5fa651fc68158cf.jsonl",
+          "complete": true,
+          "rows": 26,
+          "sha256": "2909e5a191600a0a3c5bae07979a934811a1167231ec7b55a6ad876d869c2a65",
+          "methods": {
+            "ValidateClientVersion": 4,
+            "SubmitTelemetryBatch": 9,
+            "SubmitEnrichedSQLSpeculative": 4,
+            "SubmitEnrichedSQL": 4,
+            "ConfirmExecution": 1,
+            "GetExplainMessages": 4
+          }
+        }
+      ]
+    }
+  ],
+  "gates": {
+    "workspace": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-workspace-final.log",
+      "sha256": "9ed960a060af81776740e90b4cbca69efb5f58bef712193389da8f2484e8ccad",
+      "passed": 645,
+      "failed": 0,
+      "ignored": 37,
+      "result_groups": 82
+    },
+    "replay": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-replay-final.log",
+      "sha256": "53041c584e188800b1ed12bc70bc853fda2b29761617f0f81ba3792acccbe0ec",
+      "tests_passed": 12,
+      "corpora": 106,
+      "new_databricks_gaps": 0,
+      "new_databricks_unknown_baselines": 0
+    },
+    "clippy": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-clippy-final.log",
+      "sha256": "2553a16a2eca92d817bc7d27957d209dd7c2019aeaff1e8757ed31490a65a713"
+    },
+    "fmt": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-fmt-final.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "python": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-python-final.log",
+      "sha256": "e742db54b5d36ae2ccb14c0d9194f8796e05dc7e43c0eb5b0e7c93f7201eb8ef",
+      "passed": 33
+    },
+    "live": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-rust-final.log",
+      "sha256": "b59488f62dfc1e7d3785d8b1cf199b93131c304fea8602929d24987c14aaa9cb",
+      "passed": true,
+      "dbt_invocations": 60,
+      "actual_cells": 30,
+      "confirmed_builds": 18,
+      "required_reuses": 12,
+      "seconds": 458.92
+    },
+    "cross_phase": {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113/validation/sql137-compare-phases.log",
+      "sha256": "f37aeb580d1d0de206c9f824d2a105a2e0378ddd57c836a81269423b2d4d09a5"
+    }
+  },
+  "cross_phase": {
+    "classification": "supplementary cross-history diagnostic; NOT an exact replay replacement",
+    "substitutions": [
+      "owned q_<run>_ prefixes",
+      "Explain last updated temporal display text only"
+    ],
+    "not_compared_across_independent_histories": [
+      "opaque IDs",
+      "measured execution runtime values",
+      "client-derived body/project hashes",
+      "different physical epoch values"
+    ],
+    "phases": [
+      {
+        "hosted": "hosted-discovery",
+        "rust": "rust-final/main",
+        "cells": 26,
+        "complete_actual_and_reference_results": 52,
+        "explain_structures": 27,
+        "reference_and_actual_MANAGED_Delta_properties": true,
+        "preexisting_inventory_preserved": true,
+        "owned_proxy_stopped": true,
+        "humanized_source_epoch_lines_checked": 26,
+        "hosted_rpc": 179,
+        "rust_rpc": 178
+      },
+      {
+        "hosted": "hosted-cte",
+        "rust": "rust-final/cte",
+        "cells": 4,
+        "complete_actual_and_reference_results": 8,
+        "explain_structures": 4,
+        "reference_and_actual_MANAGED_Delta_properties": true,
+        "preexisting_inventory_preserved": true,
+        "owned_proxy_stopped": true,
+        "humanized_source_epoch_lines_checked": 3,
+        "hosted_rpc": 26,
+        "rust_rpc": 26
+      }
+    ]
+  },
+  "evidence_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-137-20261113",
+  "known_limits": [
+    "No general Databricks support/release claim",
+    "Uncharacterized SQL remains exact",
+    "No new template/configuration/copy/freshness policy",
+    "Extended real-DuckDB acceptance not rerun for this identity slice",
+    "Parent copy/snapshot and140/158/159 blockers remain unchanged"
+  ],
+  "upgrade_coverage": "representative rendered-mode genuine v1/v2 histories, both confirmation orders; existing compare_unrendered_code template alternative eligibility unchanged"
+}

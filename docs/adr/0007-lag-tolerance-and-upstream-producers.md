@@ -7,7 +7,8 @@ Accepted (2026-11-10). Supersedes the earlier own-build freshness anchor (see
 only with External modifications of dbt-managed upstreams. Amended by
 #83/#90 (2026-11-11): which build a submit is judged against when the node's
 execution type changed ([below](#execution-type-change)), and by #116
-(2026-11-11): only over the submit's genuine upstream names.
+(2026-11-11): only over the submit's genuine upstream names. Amended by
+#158 (2026-11-14): physical completion ordering and unknown-epoch safety.
 
 ## Decision
 
@@ -60,8 +61,9 @@ reused within tolerance.
   batch itself, as the batch's builds are not yet in history. A consumer
   records the batch build that produced what it read: the earliest build of
   that relation not older than its read. A read later than every batch build,
-  or a batch build without an epoch, records no build, as a later submit
-  would resolve it too.
+  records no build, as a later submit would resolve it too. Physical batch
+  outcomes without an epoch are rejected atomically (#158); legacy unknown
+  physical rows cannot establish a producer.
 - Copies registered with RegisterClone record no inputs. Their freshness stays
   anchored on the copy's own build epoch, so a copy is never treated as
   fresher than when it was made.
@@ -155,3 +157,35 @@ mismatch.
 #90, but not the SKIP after a recorded FULL full refresh. Preferring the
 latest build of the submit's type whatever the newer builds' identity does
 not explain FULL → VIEW → FULL, where hosted judged the latest (view) build.
+
+
+## Physical completion ordering and unknown epochs
+
+Amendment (#158, 2026-11-14). Complete hosted Snowflake and Databricks histories
+vary completion epochs independently from confirmation delivery, with different
+SQL identities and equal-epoch controls (`databricks_lifecycle_ordering.jsonl`).
+Independent Databricks writes verify the relation contents in both orders.
+
+**Rule.** Within a physical scope, the greatest completion epoch is current;
+confirmation receipt and insertion order break equal-epoch ties. Select the
+current row before identity and eligibility. This definition is shared by own
+Target relation history, current upstream producers and current copy sources.
+Logical UID histories and immutable copy ancestry at a child's submit time
+retain their separate ordering semantics.
+
+**Unknown evidence.** Physical Confirm/Record outcomes must include an epoch.
+Confirm rejection leaves pending evidence unpublished and permits a valid
+retry; an invalid Record batch publishes neither executions nor selector state.
+Existing confirmed rows without epochs remain a conservative physical cold
+miss, including with `ignore_external_modifications=true`, and cannot supply
+copies. This is a legacy/corruption safety floor, not a claim about hosted
+recovery of unknown physical evidence.
+
+**Considered.** Putting unknown epochs last can resurrect an older matching
+identity after an untracked replacement. Recovering on a later publication is
+also insufficient: a known pending execution may have started before the
+unknown replacement and confirm afterward; historical Record may arrive late
+as well. Neither delivery proves a new warehouse build after the barrier.
+The cold-miss limitation preserves safety without inventing chronology.
+Genuine matching-version frozen histories and current-version storage-fault
+public tests cover both paths.

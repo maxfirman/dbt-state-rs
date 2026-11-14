@@ -1,0 +1,1004 @@
+{
+  "date": "2026-11-12",
+  "ticket": 134,
+  "scope": "official dbt 2.0.11; Databricks Free Edition serverless DBSQL 2026.44; Unity Catalog; Delta tables and views",
+  "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+  "rust_conformance_claim": false,
+  "archive_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-134-20261112",
+  "artifact_manifest": {
+    "path": "artifact-manifest.json",
+    "sha256": "a4e8f14f8f07ca97b2bbe96e52c7e11c28e549971ade6d7624870ca3753fa59d",
+    "bytes": 1734293
+  },
+  "campaigns": [
+    {
+      "name": "live",
+      "invocations": 72,
+      "summary": {
+        "path": "live/summary.json",
+        "sha256": "61c52a6f78745d3e41bb1b6583fd3e855e5a68dbc19187275931f5aa183302b3",
+        "bytes": 23711
+      },
+      "operations": {
+        "path": "live/operations.json",
+        "sha256": "3deef34dceae4746f90e509202379c6b0f7422e9d8f46cb1571f46978492174a",
+        "bytes": 109196
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "live/golden/golden_20261112T013331.065Z_32715af187c74da895de33133182f3b2.jsonl",
+            "sha256": "ac31a8cf60a40cf170e54be9fa111c455d10a8d07bd80f34b786fc40af3516c5",
+            "bytes": 996124
+          },
+          "integrity_sidecar": {
+            "path": "live/golden/golden_20261112T013331.065Z_32715af187c74da895de33133182f3b2.jsonl.capture.json",
+            "sha256": "3bf2d4e415e99575a67cadbdc7af83fe04c6f1ffb33c4066e6af4be1d9ace641",
+            "bytes": 61
+          },
+          "certified_rpc_count": 489
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "explicit-clone-diagnostic",
+          "status": "observed-success"
+        },
+        {
+          "case": "jaffle-shop-baseline",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/incremental",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/snapshot",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/table",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/seed",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/append",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/delete+insert",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/merge",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/insert_overwrite",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/replace_where",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/microbatch",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/timestamp/ignore",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot/timestamp/invalidate",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot/timestamp/new_record",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot/check/ignore",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot/check/invalidate",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot/check/new_record",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/insert",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/update",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/delete",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/no_op",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/add_column",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/properties",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/replace",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/drop_recreate",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "freshness/own_target",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/view_replace",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness",
+          "status": "observed-success"
+        }
+      ]
+    },
+    {
+      "name": "freshness",
+      "invocations": 12,
+      "summary": {
+        "path": "freshness/summary.json",
+        "sha256": "e979138f5b5c2270832f2686121cc4964e90a8f7dbc94e728cd129dd0cd7e124",
+        "bytes": 4802
+      },
+      "operations": {
+        "path": "freshness/operations.json",
+        "sha256": "df71f1f172b22f8400562624c5282f755ab93c7430181d7a0bd4770c05a5f7ca",
+        "bytes": 30652
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "freshness/golden/golden_20261112T013625.515Z_ae782ff58bee480d9b593cf114a9d40e.jsonl",
+            "sha256": "55cc526e1d800610dfe16e3c1e9660e0149dc05a7af4407cfc39a65607508b1a",
+            "bytes": 185105
+          },
+          "integrity_sidecar": {
+            "path": "freshness/golden/golden_20261112T013625.515Z_ae782ff58bee480d9b593cf114a9d40e.jsonl.capture.json",
+            "sha256": "5d8f00b6958fe97a4a9182ba58075ee246f01593927f965cc64ba1d8be579c6d",
+            "bytes": 61
+          },
+          "certified_rpc_count": 104
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/insert",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/update",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/delete",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/no_op",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/add_column",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/properties",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/replace",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/drop_recreate",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/own_target",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness/view_replace",
+          "status": "observed-success"
+        },
+        {
+          "case": "freshness",
+          "status": "observed-success"
+        }
+      ]
+    },
+    {
+      "name": "copy-followup",
+      "invocations": 16,
+      "summary": {
+        "path": "copy-followup/summary.json",
+        "sha256": "603aba300bb8666f3632c01cf0813b09624be261bcb820bc8d0ca409bfd004cf",
+        "bytes": 3922
+      },
+      "operations": {
+        "path": "copy-followup/operations.json",
+        "sha256": "4c14c9105f9dba78eae3082bb801966c0f889ed77f51428d2ee44146c727f727",
+        "bytes": 24818
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "copy-followup/golden/golden_20261112T013815.437Z_47549de40490495a8db5a463e3a07b61.jsonl",
+            "sha256": "34a83a75166dcccb65a77adfd9587ad258811070cab254f0ad86e49983d63f7a",
+            "bytes": 145264
+          },
+          "integrity_sidecar": {
+            "path": "copy-followup/golden/golden_20261112T013815.437Z_47549de40490495a8db5a463e3a07b61.jsonl.capture.json",
+            "sha256": "d1203e35dabd7b02ab61b33b8451ea00d7d4b0b78236b682c5805d90cb10122f",
+            "bytes": 59
+          },
+          "certified_rpc_count": 88
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/incremental",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "copy/snapshot",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "copy/table",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "copy/seed",
+          "status": "warehouse-capability-failed"
+        }
+      ]
+    },
+    {
+      "name": "zero-lag",
+      "invocations": 70,
+      "summary": {
+        "path": "zero-lag/summary.json",
+        "sha256": "31be25021af1a817e65bf45c2a79dea75eb10ecd88271e9b8e65c06463dea4ba",
+        "bytes": 55459
+      },
+      "operations": {
+        "path": "zero-lag/operations.json",
+        "sha256": "f64a0130f4557b2ad63b071faa23e9591a1a8c2525a269a71ebef3cb7b7577b5",
+        "bytes": 107378
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "zero-lag/golden/golden_20261112T014013.365Z_6728e5f8c1bc48a4884fd9d720a16cd5.jsonl",
+            "sha256": "6a7b16a989da7fb8ae628b41927ddc3c712de96794b0459ec09f1bfeec7730c8",
+            "bytes": 600603
+          },
+          "integrity_sidecar": {
+            "path": "zero-lag/golden/golden_20261112T014013.365Z_6728e5f8c1bc48a4884fd9d720a16cd5.jsonl.capture.json",
+            "sha256": "48d7c6da9cd9d12e65bd9485bb1b39b21d3a23e61872b19a082e6f64ce2a9815",
+            "bytes": 61
+          },
+          "certified_rpc_count": 368
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/incremental",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/snapshot",
+          "status": "observed-success"
+        },
+        {
+          "case": "copy/table",
+          "status": "warehouse-capability-failed"
+        },
+        {
+          "case": "copy/seed",
+          "status": "warehouse-capability-failed"
+        },
+        {
+          "case": "incremental/append",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/delete+insert",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/merge",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/insert_overwrite",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/replace_where",
+          "status": "observed-success"
+        },
+        {
+          "case": "incremental/microbatch",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/timestamp/ignore",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/timestamp/invalidate",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/timestamp/new_record",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/check/ignore",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/check/invalidate",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot/check/new_record",
+          "status": "observed-success"
+        }
+      ]
+    },
+    {
+      "name": "seed-diagnostic",
+      "invocations": 7,
+      "summary": {
+        "path": "seed-diagnostic/summary.json",
+        "sha256": "6c9db0efd62eb8a542018272aab401d42afef99d988ee9efe72734d04bf42269",
+        "bytes": 5874
+      },
+      "operations": {
+        "path": "seed-diagnostic/operations.json",
+        "sha256": "02d9cedf82cb97103b6ac1bf2308edfd3500953b4a434fd2e0e1fb1f4a96d9d0",
+        "bytes": 11942
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "seed-diagnostic/golden/golden_20261112T014307.596Z_cfdd4426a3994f57bb5b5420dfebba6a.jsonl",
+            "sha256": "6afff084acd737d3f11f3888dac57b1f9961a9cb75053128155f597d92e21e31",
+            "bytes": 25564
+          },
+          "integrity_sidecar": {
+            "path": "seed-diagnostic/golden/golden_20261112T014307.596Z_cfdd4426a3994f57bb5b5420dfebba6a.jsonl.capture.json",
+            "sha256": "8f9f7eb77833553bb733161624c833fec253c69105fdc3298b3b12d8edf3a165",
+            "bytes": 59
+          },
+          "certified_rpc_count": 18
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "seed-diagnostic/managed-rebuild",
+          "status": "warehouse-capability-failed"
+        },
+        {
+          "case": "seed-diagnostic/managed-retry",
+          "status": "warehouse-capability-failed"
+        },
+        {
+          "case": "seed-diagnostic/no-state-clone-rebuild",
+          "status": "warehouse-capability-failed"
+        },
+        {
+          "case": "seed-diagnostic/no-state-managed-reference",
+          "status": "observed-success"
+        },
+        {
+          "case": "seed-rebuild-diagnostic",
+          "status": "observed-success"
+        }
+      ]
+    },
+    {
+      "name": "snapshot-reference",
+      "invocations": 8,
+      "summary": {
+        "path": "snapshot-reference/summary.json",
+        "sha256": "91e3abdada53658dbfd293dc0d6a8cb18e4ff3e771e88a53708561ed7cf2b133",
+        "bytes": 2415
+      },
+      "operations": {
+        "path": "snapshot-reference/operations.json",
+        "sha256": "27feea0506bc56f4d0b14b4e3decb268d6c25e84c2a837c96897623e15e57912",
+        "bytes": 15876
+      },
+      "captures": [
+        {
+          "jsonl": {
+            "path": "snapshot-reference/golden/golden_20261112T081635.745Z_e01666f5f3df48e48f3c4b8f8387774d.jsonl",
+            "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "bytes": 0
+          },
+          "integrity_sidecar": {
+            "path": "snapshot-reference/golden/golden_20261112T081635.745Z_e01666f5f3df48e48f3c4b8f8387774d.jsonl.capture.json",
+            "sha256": "bc3a7f43c815b9602775cb58745712afb99f644f1510521a035ea7f800a49593",
+            "bytes": 57
+          },
+          "certified_rpc_count": 0
+        }
+      ],
+      "recorded_outcomes": [
+        {
+          "case": "environment",
+          "status": "observed-success"
+        },
+        {
+          "case": "snapshot-reference/timestamp/new_record",
+          "status": "unverified/blocked"
+        },
+        {
+          "case": "snapshot-reference/check/new_record",
+          "status": "unverified/blocked"
+        }
+      ]
+    }
+  ],
+  "assessments": [
+    {
+      "case": "jaffle-shop-baseline",
+      "status": "observed-success",
+      "reason": "45 exact node identities each confirmed on first build and reused on unchanged repeat; unit tests remain separate",
+      "evidence": [
+        {
+          "path": "live/baseline.json",
+          "sha256": "ac4407509f005807a8302dee23b62fa50351c63bea323babe5ddfe7cefaafded",
+          "bytes": 86064
+        },
+        {
+          "path": "live/wire/001_baseline_first.json",
+          "sha256": "ca1906c883a18b993b116c851f57aa4a327667ad64fed18ac41fddcf028eaa65",
+          "bytes": 344610
+        },
+        {
+          "path": "live/wire/002_baseline_repeat.json",
+          "sha256": "776943635599b2820c87b1e137fdd52635310baaf4a00319f809942a753c1f23",
+          "bytes": 256513
+        }
+      ],
+      "node_count": 45
+    },
+    {
+      "case": "incremental/append",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_append_changed.json",
+          "sha256": "371bbb8f1eff1eceb80592bef687eee8c6ad896dc80e2c3cc11a2f9f4a9f3fa6",
+          "bytes": 751
+        },
+        {
+          "path": "zero-lag/physical/inc_append_reference_dml.json",
+          "sha256": "fc6cfd227d77fb449c70dd268807c003197308ccb067f72cd08e30e5d296644d",
+          "bytes": 842
+        }
+      ]
+    },
+    {
+      "case": "incremental/delete+insert",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_delete_insert_changed.json",
+          "sha256": "ab25f3fb7b473335aec3184cac9126daff3a1ffe0c678e303d467a5a6cf58c63",
+          "bytes": 755
+        },
+        {
+          "path": "zero-lag/physical/inc_delete_insert_reference_dml.json",
+          "sha256": "994cfae227630b239b679764966a66010c48482a9e2f7bddc72b71e34c43a102",
+          "bytes": 846
+        }
+      ]
+    },
+    {
+      "case": "incremental/merge",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_merge_changed.json",
+          "sha256": "33b1a31ad5e7f23692a6d18a3ec0d5dfa5f3777bdc818be86e6149f5374dd1b3",
+          "bytes": 755
+        },
+        {
+          "path": "zero-lag/physical/inc_merge_reference_dml.json",
+          "sha256": "c3e6d5ea9edb8e2093c0e15f83469677d2ee72d4f7b158d7ff62ade69843644b",
+          "bytes": 846
+        }
+      ]
+    },
+    {
+      "case": "incremental/insert_overwrite",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_insert_overwrite_changed.json",
+          "sha256": "ab25f3fb7b473335aec3184cac9126daff3a1ffe0c678e303d467a5a6cf58c63",
+          "bytes": 755
+        },
+        {
+          "path": "zero-lag/physical/inc_insert_overwrite_reference_dml.json",
+          "sha256": "994cfae227630b239b679764966a66010c48482a9e2f7bddc72b71e34c43a102",
+          "bytes": 846
+        }
+      ]
+    },
+    {
+      "case": "incremental/replace_where",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_replace_where_changed.json",
+          "sha256": "ab25f3fb7b473335aec3184cac9126daff3a1ffe0c678e303d467a5a6cf58c63",
+          "bytes": 755
+        },
+        {
+          "path": "zero-lag/physical/inc_replace_where_reference_dml.json",
+          "sha256": "5ed9672b0076e52a14d9b0a84664b9826861bbccbad599f248f7f72bb516c1a1",
+          "bytes": 846
+        }
+      ]
+    },
+    {
+      "case": "incremental/microbatch",
+      "status": "observed-success",
+      "reason": "Zero-lag hosted changed-input result and independent no-State existing-target DML both match complete literal schema/rows",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/inc_microbatch_changed.json",
+          "sha256": "ab25f3fb7b473335aec3184cac9126daff3a1ffe0c678e303d467a5a6cf58c63",
+          "bytes": 755
+        },
+        {
+          "path": "zero-lag/physical/inc_microbatch_reference_dml.json",
+          "sha256": "994cfae227630b239b679764966a66010c48482a9e2f7bddc72b71e34c43a102",
+          "bytes": 846
+        }
+      ]
+    },
+    {
+      "case": "snapshot/timestamp/ignore",
+      "status": "observed-success",
+      "reason": "Complete SCD update/insertion and configured delete semantics pass independent oracle",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_timestamp_ignore_changed.json",
+          "sha256": "ccead24f2c5b9ede7e7705c128094c8cb3f70c48b506ef1ce8513bf6233f0af7",
+          "bytes": 1859
+        },
+        {
+          "path": "zero-lag/physical/snap_timestamp_ignore_deleted.json",
+          "sha256": "ccead24f2c5b9ede7e7705c128094c8cb3f70c48b506ef1ce8513bf6233f0af7",
+          "bytes": 1859
+        }
+      ]
+    },
+    {
+      "case": "snapshot/timestamp/invalidate",
+      "status": "observed-success",
+      "reason": "Complete SCD update/insertion and configured delete semantics pass independent oracle",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_timestamp_invalidate_changed.json",
+          "sha256": "ccead24f2c5b9ede7e7705c128094c8cb3f70c48b506ef1ce8513bf6233f0af7",
+          "bytes": 1859
+        },
+        {
+          "path": "zero-lag/physical/snap_timestamp_invalidate_deleted.json",
+          "sha256": "14b8aaf4dc17c25f019e852af2790a7628e2729f7f3426475335b5c49a4514ac",
+          "bytes": 1881
+        }
+      ]
+    },
+    {
+      "case": "snapshot/timestamp/new_record",
+      "status": "unverified/blocked",
+      "reason": "SQL succeeds but the deletion record has NULL id/v/p/ts, losing deleted business key 2. Reproduced with State disabled; original zero-lag observed-success label predates current oracle and is superseded.",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_timestamp_new_record_changed.json",
+          "sha256": "d5211fb27b462875506c87e7639435f01030c132781fd90f95d4e735b9642712",
+          "bytes": 2044
+        },
+        {
+          "path": "zero-lag/physical/snap_timestamp_new_record_deleted.json",
+          "sha256": "0dcbc5ce41e8037a6f276fc2fa493f5d678bc859f28dee26ed7251e8c7f7ad55",
+          "bytes": 2262
+        },
+        {
+          "path": "snapshot-reference/physical/snap_timestamp_new_record_deleted.json",
+          "sha256": "abc71c2f20cbbdcb830ba9f5dda984935a058123c7c48b019fd3e00c5423d43d",
+          "bytes": 2262
+        }
+      ],
+      "classification": "client-physical-result-failed",
+      "oracle_checks": [
+        "pass",
+        "snapshot new_record did not retain its deletion version"
+      ]
+    },
+    {
+      "case": "snapshot/check/ignore",
+      "status": "observed-success",
+      "reason": "Complete SCD update/insertion and configured delete semantics pass independent oracle",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_check_ignore_changed.json",
+          "sha256": "a36b1721655ee8c6df69fbccef03e5f7e6aa824433926956354d9ef7d4bfd841",
+          "bytes": 1859
+        },
+        {
+          "path": "zero-lag/physical/snap_check_ignore_deleted.json",
+          "sha256": "a36b1721655ee8c6df69fbccef03e5f7e6aa824433926956354d9ef7d4bfd841",
+          "bytes": 1859
+        }
+      ]
+    },
+    {
+      "case": "snapshot/check/invalidate",
+      "status": "observed-success",
+      "reason": "Complete SCD update/insertion and configured delete semantics pass independent oracle",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_check_invalidate_changed.json",
+          "sha256": "4ea1f3cac0d9e416bc932487dc97f2d9337d185a04f5b2d6fe116c5e1ce52d44",
+          "bytes": 1859
+        },
+        {
+          "path": "zero-lag/physical/snap_check_invalidate_deleted.json",
+          "sha256": "25facfcd7a8e1fe8138af75f3680dfb10a4d653a7ab97b403da24bf8c0065197",
+          "bytes": 1881
+        }
+      ]
+    },
+    {
+      "case": "snapshot/check/new_record",
+      "status": "unverified/blocked",
+      "reason": "SQL succeeds but the deletion record has NULL id/v/p/ts, losing deleted business key 2. Reproduced with State disabled; original zero-lag observed-success label predates current oracle and is superseded.",
+      "evidence": [
+        {
+          "path": "zero-lag/physical/snap_check_new_record_changed.json",
+          "sha256": "0e8c6b9a4534fa747db282d31ea614d40b4d4aedb7aca264f0e2f10c21920d46",
+          "bytes": 2044
+        },
+        {
+          "path": "zero-lag/physical/snap_check_new_record_deleted.json",
+          "sha256": "f5089c9c6fcb7a859ab515683c6af4077372f323fdb542ff55b411f07d9d3e4d",
+          "bytes": 2262
+        },
+        {
+          "path": "snapshot-reference/physical/snap_check_new_record_deleted.json",
+          "sha256": "798b33ad877439d5b5dbd0aa6fce2449a9e31a25c932fc8632a1500f444dcb57",
+          "bytes": 2262
+        }
+      ],
+      "classification": "client-physical-result-failed",
+      "oracle_checks": [
+        "pass",
+        "snapshot new_record did not retain its deletion version"
+      ]
+    },
+    {
+      "case": "freshness/insert",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/insert_comparison.json",
+          "sha256": "297d41d921ed73c60beccae4d5fe386bc4fb1f6ca8694c22170ab7abe2f931fb",
+          "bytes": 898
+        },
+        {
+          "path": "freshness/freshness/insert_before.json",
+          "sha256": "67d8e03660c08a12aafd5e3cd3d5dfda6ef38dd15669b7229b1871065d83ba8b",
+          "bytes": 5495
+        },
+        {
+          "path": "freshness/freshness/insert_after.json",
+          "sha256": "44f08b6063c1a201e69d6afce0e5a08be05032b47620d4b92f3dd78f7960b52a",
+          "bytes": 5495
+        }
+      ]
+    },
+    {
+      "case": "freshness/update",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/update_comparison.json",
+          "sha256": "f1f2e93b72ca802cafcb900a349db071e98309bdcfbd774242aa16a7465f003a",
+          "bytes": 907
+        },
+        {
+          "path": "freshness/freshness/update_before.json",
+          "sha256": "664f1f1d1d925a3732090fd50460fad5e1e761572532c986b8de7fc23e39f1e2",
+          "bytes": 5495
+        },
+        {
+          "path": "freshness/freshness/update_after.json",
+          "sha256": "f429be49a7a06963d50147e80768d7d647a267a7fbd82a04ab020286c2e56b1c",
+          "bytes": 5714
+        }
+      ]
+    },
+    {
+      "case": "freshness/delete",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/delete_comparison.json",
+          "sha256": "5264bbdd2a32e38d8a2629bb4f103d26d01d459190cb9342499ddc131fc2b6fc",
+          "bytes": 818
+        },
+        {
+          "path": "freshness/freshness/delete_before.json",
+          "sha256": "d314bfb560ea38c7f9e9a585e51b000ea057511edf0a16d057c1b89a6c5b616c",
+          "bytes": 5714
+        },
+        {
+          "path": "freshness/freshness/delete_after.json",
+          "sha256": "b5c2bdf41badee2b3316e7f199a353e5f3ab250ac4a49ab29dd88b20d86e3030",
+          "bytes": 5712
+        }
+      ]
+    },
+    {
+      "case": "freshness/no_op",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/no_op_comparison.json",
+          "sha256": "5264bbdd2a32e38d8a2629bb4f103d26d01d459190cb9342499ddc131fc2b6fc",
+          "bytes": 818
+        },
+        {
+          "path": "freshness/freshness/no_op_before.json",
+          "sha256": "055cba807b1114fc3dd843d2b8174a3aca8011a92fef3f42737cd1f621f84aaa",
+          "bytes": 5712
+        },
+        {
+          "path": "freshness/freshness/no_op_after.json",
+          "sha256": "edf1b8aa6c5ea01da1ea0c192661ab1fbd045ed83f0a8f24edb0b3063b303356",
+          "bytes": 5716
+        }
+      ]
+    },
+    {
+      "case": "freshness/add_column",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/add_column_comparison.json",
+          "sha256": "5264bbdd2a32e38d8a2629bb4f103d26d01d459190cb9342499ddc131fc2b6fc",
+          "bytes": 818
+        },
+        {
+          "path": "freshness/freshness/add_column_before.json",
+          "sha256": "9e1f0e9e5bf0561a590e42f3d98e4f92dc0511503bb1c2a4e4b0348825cd5068",
+          "bytes": 5716
+        },
+        {
+          "path": "freshness/freshness/add_column_after.json",
+          "sha256": "2206a7d7ac2c7586b182333f3f4ea2d582c37a24c69faf96ce44c221e73ebbee",
+          "bytes": 5443
+        }
+      ]
+    },
+    {
+      "case": "freshness/properties",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/properties_comparison.json",
+          "sha256": "5264bbdd2a32e38d8a2629bb4f103d26d01d459190cb9342499ddc131fc2b6fc",
+          "bytes": 818
+        },
+        {
+          "path": "freshness/freshness/properties_before.json",
+          "sha256": "d5dfc96fa450cac67d443d5167c2ce72121f5a13ee014b96822700d4119a130d",
+          "bytes": 5443
+        },
+        {
+          "path": "freshness/freshness/properties_after.json",
+          "sha256": "519ca4c5dcefe55806b90f5d3d550f02f6d80b04250717c7af4e0d04ff536d2c",
+          "bytes": 5378
+        }
+      ]
+    },
+    {
+      "case": "freshness/replace",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/replace_comparison.json",
+          "sha256": "25a2983711e8534ddc609c6f687a20a2d8cffcc9a5e957bc10e4baa193af3cf2",
+          "bytes": 728
+        },
+        {
+          "path": "freshness/freshness/replace_before.json",
+          "sha256": "33e0c8d91b150d960bbbc6baf32ffab22032cf0369026f1e8dc9e331b46714b1",
+          "bytes": 5378
+        },
+        {
+          "path": "freshness/freshness/replace_after.json",
+          "sha256": "9b3d1b01fc706d4e2f501d11e11d8ae4bd54211ff5bc09f7a671c86e46a69b22",
+          "bytes": 6559
+        }
+      ]
+    },
+    {
+      "case": "freshness/drop_recreate",
+      "status": "observed-success",
+      "reason": "Zero-lag rebuilt result equals complete independently selected typed row multiset. Original update equality false used row ordering; this assessment preserves multiplicity and ignores row order.",
+      "evidence": [
+        {
+          "path": "freshness/freshness/drop_recreate_comparison.json",
+          "sha256": "da5c20fc31a81cc453acd642122a40bdc184b774e8963803ea442eeaa45f95d8",
+          "bytes": 730
+        },
+        {
+          "path": "freshness/freshness/drop_recreate_before.json",
+          "sha256": "dd42349ffbce3ce4b6602247282cae2ac0ebfc491855bea2adab8e7c44fb05f7",
+          "bytes": 6559
+        },
+        {
+          "path": "freshness/freshness/drop_recreate_after.json",
+          "sha256": "215c78973eb553d091aec8c2accd6ba9b5607019f459f366029d132e65297d50",
+          "bytes": 6457
+        }
+      ]
+    },
+    {
+      "case": "copy/incremental",
+      "status": "observed-success",
+      "reason": "RegisterClone grant and mirrors, successful confirmation, equal typed copy, unchanged reuse and zero-lag changed-source adoption observed",
+      "evidence": [
+        {
+          "path": "zero-lag/copies/incremental.json",
+          "sha256": "69727c73f76ac3beea03c1920fa2eb05e7b298a0ebc60a2327f3687bc2d46326",
+          "bytes": 5868
+        },
+        {
+          "path": "zero-lag/physical/copy_incremental_changed_source.json",
+          "sha256": "f688cf0d7c370ef04644d3cde8e1fcd12b30a106f2d24eec16d1b3b5c64cd732",
+          "bytes": 663
+        }
+      ]
+    },
+    {
+      "case": "copy/snapshot",
+      "status": "observed-success",
+      "reason": "RegisterClone grant and mirrors, successful confirmation, equal typed copy, unchanged reuse and zero-lag changed-source adoption observed",
+      "evidence": [
+        {
+          "path": "zero-lag/copies/snapshot.json",
+          "sha256": "1badc221a068ef9c8e28ebcb5adbf5f205ea431a9f0a8ae0cb1f75bf70f49b48",
+          "bytes": 7470
+        },
+        {
+          "path": "zero-lag/physical/copy_snapshot_changed_source.json",
+          "sha256": "38c25ffbee08834bae7b8d8432ad25afc85faafbbf2d429b88eceeb1f48b0a0f",
+          "bytes": 1645
+        }
+      ]
+    },
+    {
+      "case": "copy/table",
+      "status": "warehouse-capability-failed",
+      "reason": "Initial hosted grant, confirmed shallow copy and unchanged reuse succeed; changed-source/value CREATE OR REPLACE on copied target fails CLUSTER_BY_AUTO_UNSUPPORTED_TABLE_TYPE_ERROR. Seed separately reproduced without State and after delayed retry.",
+      "evidence": [
+        {
+          "path": "zero-lag/copies/table.json",
+          "sha256": "a039fd34356335e0a4ce9bf60feff9f8c58e2ad5611dd548eb0e4399e7a4df84",
+          "bytes": 6220
+        },
+        {
+          "path": "zero-lag/dbt/012_copy_table_changed_source.log",
+          "sha256": "4ea825980930c21f96a9dfca15db52928569f775a065900819d5881a537c9476",
+          "bytes": 879
+        },
+        {
+          "path": "zero-lag/logs/012_copy_table_changed_source/query_log.sql",
+          "sha256": "b1568cc217c66de26b7852d2ddbff8163288fbfa38129bb0c2a41bee0759785d",
+          "bytes": 4837
+        }
+      ]
+    },
+    {
+      "case": "copy/seed",
+      "status": "warehouse-capability-failed",
+      "reason": "Initial hosted grant, confirmed shallow copy and unchanged reuse succeed; changed-source/value CREATE OR REPLACE on copied target fails CLUSTER_BY_AUTO_UNSUPPORTED_TABLE_TYPE_ERROR. Seed separately reproduced without State and after delayed retry.",
+      "evidence": [
+        {
+          "path": "zero-lag/copies/seed.json",
+          "sha256": "61d17dd19f2573336f952145cb963c4053cae9a8d5798c9b2c254492f8a6698d",
+          "bytes": 4813
+        },
+        {
+          "path": "zero-lag/dbt/016_copy_seed_changed_source.log",
+          "sha256": "fc8dc112b7d31f8d17121a81628486445de3105d380f8ee07b0803d4b1883e10",
+          "bytes": 871
+        },
+        {
+          "path": "zero-lag/logs/016_copy_seed_changed_source/query_log.sql",
+          "sha256": "79ce4489bb876e831487300fab47553b1a4e39021d04b4b0ded25024d5f1ba70",
+          "bytes": 3230
+        }
+      ]
+    }
+  ],
+  "interpretation_notes": [
+    "Raw capture and summary files remain unchanged. Current assessments supersede exploratory oracle/guard mistakes without deleting their evidence.",
+    "live and copy-followup default-policy changed-input SKIPs record freshness_tolerance_seconds=2700 and is_stale=true; they do not prove strategy DML and are not capability failures.",
+    "live freshness information_schema reads were refused by the initial guard before any corresponding mutation; the isolated freshness campaign supplies those cells.",
+    "zero-lag new_record raw summaries predate business-key-preservation validation; both modes remain blocked despite successful SQL.",
+    "snapshot-reference has a clean zero-RPC session because all eight invocations explicitly disable State; this is independent client/warehouse evidence, not hosted policy evidence.",
+    "No observed warehouse permission denial or hosted policy rejection is claimed by this survey; copied-target SQL failures and client physical-result failures are separately classified."
+  ]
+}

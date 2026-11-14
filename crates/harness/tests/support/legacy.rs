@@ -124,6 +124,12 @@ pub async fn replace_with_frozen_execution(db: &impl Db, row: &FrozenExecution<'
         .execute(db.pool())
         .await
         .expect("clear frozen target");
+    append_frozen_execution(db, row).await;
+}
+
+/// Append a frozen pre-upgrade row without deleting correlated pending work.
+/// Used to characterize old unknown-epoch history through later public calls.
+pub async fn append_frozen_execution(db: &impl Db, row: &FrozenExecution<'_>) {
     sqlx::query(
         "INSERT INTO executions \
          (org_id, target_table, execution_type, dialect, status, request_id, \

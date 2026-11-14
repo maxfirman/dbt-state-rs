@@ -1,0 +1,120 @@
+{
+  "classification": "selfhost pre158 frozen physical unknown epoch, not hosted acceptance",
+  "source_base_commit": "5585f530075795674a699377e4febe4ac2623892",
+  "source_server_sha256": "4b38371ae586ae727eebf3e67fc45c0b298c249c90426fa57af81a0ac987d373",
+  "producer_provenance": "/home/maxfirman/.local/state/dbt-state-rs/databricks-158-20261113/frozen-v2-3/provenance.json",
+  "request": {
+    "target_table": "`cdo_demo_db`.`frozen_lifecycle`.`result`",
+    "dialect": "databricks",
+    "default_catalog": "cdo_demo_db",
+    "execution_type": 1,
+    "sql": "select 158 as id",
+    "tables": [
+      {
+        "name": "`cdo_demo_db`.`frozen_lifecycle`.`result`",
+        "last_modified_epoch": 1000
+      }
+    ],
+    "query_dependencies": [],
+    "semantic_extras": {},
+    "freshness_tolerance_seconds": 0,
+    "lenient_dependencies": [],
+    "tolerate_nondeterminism": true,
+    "labels": {},
+    "clone_time_travel_limit": null,
+    "clone_table_properties": null,
+    "stale_upstream_policy": 0,
+    "clone_chain_depth_limit": null,
+    "dbt_node_state": null,
+    "default_schema": "frozen_lifecycle",
+    "compare_unrendered_code": false,
+    "table_namespace": "frozen-pre158-v2",
+    "ignore_external_modifications": false,
+    "allow_clones": true,
+    "is_defer_to_profile": true,
+    "defer_enabled": true
+  },
+  "submit": {
+    "response": {
+      "ready_to_execute": {
+        "execution_decision_id": "01a1d677-aafe-722c-96b9-e5baff8d53da",
+        "explained_decision": {
+          "clone_rejection_reason": 6,
+          "decision": 1,
+          "decision_description": "model was executed because either its query didn't match or its upstream data is out of date",
+          "is_stale": false,
+          "skip_rejection_reason": 6
+        },
+        "last_modified_query": "",
+        "query_hash_metadata_info": null,
+        "request_id": "01a1d677-aafe-722c-96b9-e5b9160659c9",
+        "transformed_nodes_by_query": {}
+      }
+    }
+  },
+  "confirmation": {
+    "request_id": "01a1d677-aafe-722c-96b9-e5b9160659c9",
+    "success": true
+  },
+  "rows": [
+    {
+      "id": 1,
+      "org_id": "local",
+      "target_table": "`cdo_demo_db`.`frozen_lifecycle`.`result`",
+      "execution_type": 1,
+      "node_hash": null,
+      "node_body_hash": null,
+      "node_configs_hash": null,
+      "node_contract_hash": null,
+      "node_unique_id": null,
+      "table_namespace": "frozen-pre158-v2",
+      "dialect": "databricks",
+      "last_modified_epoch": null,
+      "table_type": "MANAGED",
+      "execution_runtime_ms": 158,
+      "input_tables": [
+        {
+          "name": "`cdo_demo_db`.`frozen_lifecycle`.`result`",
+          "last_modified_epoch": 1000
+        }
+      ],
+      "status": "confirmed",
+      "request_id": "01a1d677-aafe-722c-96b9-e5b9160659c9",
+      "execution_decision_id": "01a1d677-aafe-722c-96b9-e5baff8d53da",
+      "created_at": "2026-11-13T19:52:09.293052+00:00",
+      "confirmed_at": "2026-11-13T19:52:09.308+00:00",
+      "values_hash": null,
+      "node_sql_hash": "10c5a335bf5baef4c0eb0cc26feb8327203ac1a653a25012a806970765c33945",
+      "execution_results": null,
+      "project_id": null,
+      "node_namespace_logic_hash": null,
+      "clone_source_table": null,
+      "node_template_hash": null,
+      "warehouse_family": "databricks",
+      "clone_source_inputs": null,
+      "physical_target_key": "cdo_demo_db.frozen_lifecycle.result",
+      "node_profile_name": null,
+      "node_project_name": null,
+      "node_target_name": null
+    }
+  ],
+  "old_public_ignore_external": {
+    "response": {
+      "skip_execution": {
+        "execution_decision_id": "01a1d677-aecd-7291-bc57-98a1ba91e6f0",
+        "execution_results": {
+          "fields": {}
+        },
+        "execution_runtime_ms": 158,
+        "explained_decision": {
+          "clone_rejection_reason": null,
+          "decision": 0,
+          "decision_description": "model was a no-op because both its query and its upstream data are up to date",
+          "is_stale": false,
+          "skip_rejection_reason": null
+        },
+        "transformed_nodes_by_query": {}
+      }
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "ticket": 136,
+  "scope": "dbt 2.0.11, serverless Unity Catalog, managed Delta; identifiers only",
+  "archive_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112",
+  "full_artifact_index": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/artifact-index.json",
+  "merged_integration": "cd79d3c5b3392924ae7dba194877780907ddd545",
+  "hosted": {
+    "success": true,
+    "failure": null,
+    "invocations": 45,
+    "capture": [
+      {
+        "path": "golden/golden_20261112T141511.506Z_f725691394ea4efc920315988357770c.jsonl",
+        "complete": true,
+        "rows": 182,
+        "sha256": "5a058c42142447f8a80f24805625e9faae9584173d1089fe65f397aaa25021d7",
+        "methods": {
+          "ValidateClientVersion": 22,
+          "SubmitTelemetryBatch": 46,
+          "SubmitEnrichedSQLSpeculative": 22,
+          "SubmitEnrichedSQL": 44,
+          "ConfirmExecution": 4,
+          "GetExplainMessages": 44
+        }
+      }
+    ]
+  },
+  "rust": {
+    "success": true,
+    "failure": null,
+    "invocations": 45,
+    "capture": [
+      {
+        "path": "golden/golden_20261113T095409.361Z_9ff0320cfe8047b4af98b1d779fb524a.jsonl",
+        "complete": true,
+        "rows": 179,
+        "sha256": "2746e537fe986d99dac82b2e0dfcd827f4268bb69d3f4168ed5571575e7d404f",
+        "methods": {
+          "ValidateClientVersion": 22,
+          "SubmitTelemetryBatch": 48,
+          "SubmitEnrichedSQLSpeculative": 17,
+          "SubmitEnrichedSQL": 44,
+          "ConfirmExecution": 4,
+          "GetExplainMessages": 44
+        }
+      }
+    ]
+  },
+  "validation": {
+    "workspace": {
+      "passed": 605,
+      "failed": 0,
+      "ignored": 32,
+      "result_blocks": 77,
+      "corpora": 78,
+      "conformance_tests": 12
+    },
+    "server_library_passed": 309,
+    "combined_python_passed": 25,
+    "strict_workspace_all_targets_fuzz_clippy": "passed",
+    "format_and_diff": "passed",
+    "actual_required_reuses": 18,
+    "actual_confirmed_builds": 4,
+    "actual_steps": 22,
+    "crafted_boundary_submits": 22,
+    "strict_first_call_explain": 44
+  },
+  "limitations": [
+    "No general #132 support claim",
+    "#134 copied-target rebuild and snapshot new_record blockers remain unresolved",
+    "#140 freshness Safety divergences remain unresolved",
+    "Long opt-in DuckDB real-client acceptance was not rerun"
+  ],
+  "rejected_attempts": [
+    "rust/: first Explain was empty",
+    "rust-2/: interrupted attempt with unapproved polling",
+    "workspace-final-2.log: shared-target provenance could not be established",
+    "workspace-exclusive-final.log: stale version assertion, subsequently corrected"
+  ],
+  "artifacts": [
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/hosted/summary.json",
+      "bytes": 552,
+      "sha256": "1047402789eb0537ae65d449289fc7ae92e3ad53ba76d1db25c3e428707a7743"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/rust-3/summary.json",
+      "bytes": 552,
+      "sha256": "88c86f7a5a60a9720c6a788e8ab7994e554bb7f4f6c7e8af4a046aa3759ed860"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/rust-live-3.log",
+      "bytes": 1802,
+      "sha256": "ba9ba0018b3270dfd900a5d79defa540c9537869fcd35526d51a7280a1eb34b3"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/workspace-exclusive-final-2.log",
+      "bytes": 65656,
+      "sha256": "1e97ceb40ebaab0a3f390b4114d09468f6c498cff0cebce51b8c22bfb79516e4"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/clippy-exclusive-final.log",
+      "bytes": 219,
+      "sha256": "f7f53903bb38c303415cfd51c110e2c0a2a3b13762f43a8c088438ac764aaab7"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/serverlib-version-final.log",
+      "bytes": 24930,
+      "sha256": "7a8e1015e5da4169ee69f7e1ba26bf041fd29c7a44d195cafe00c1a9cf75b523"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/python-combined-final.log",
+      "bytes": 124,
+      "sha256": "06450287b97bffab3b2e054544646c8359970fdb8d2eb4cfa367d81013e4a0e6"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/cross-phase-strict.log",
+      "bytes": 1677,
+      "sha256": "be5cb9e341c628bcca7e1dda07c4d5df385023dd2222de4702fc732efcdb5761"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/compare-phases-strict.py",
+      "bytes": 3647,
+      "sha256": "c9ff999a3fbccad446c48886e774001273dec0d04d54b7a135e5907b2b2a4234"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/workspace-final-2-unaccepted.json",
+      "bytes": 521,
+      "sha256": "b9616cf0c10ac9e842a43817fd4b06866bd53aac25dd137608d75dd28b62d3f2"
+    },
+    {
+      "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-136-20261112/rust-2-interruption.json",
+      "bytes": 197,
+      "sha256": "e3848339dfdbc2379e7abb8e067c66c7af77092430ee8193a32e5d744329d528"
+    }
+  ]
+}

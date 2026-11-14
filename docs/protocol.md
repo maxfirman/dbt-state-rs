@@ -45,12 +45,23 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 | `ClientValidation` | `ValidateClientVersion` | Returns `is_supported=true` for every version |
 | `Explain` | `GetExplainMessages`, `GetUpstreamDependencyChanges` | `GetExplainMessages` re-derived on demand ([explain-catalog.md](explain-catalog.md)); `GetUpstreamDependencyChanges` is an empty stub (see below) |
 | `SelectorService` | `GetStateSelection` | Implemented |
-| `ClientTelemetry` | `SubmitTelemetryBatch`, … | Not served |
+| `ClientTelemetry` | `SubmitTelemetryBatch` | Acknowledges batches with `success=true`; no hosted metering persistence |
 | `Health` (`grpc.health.v1`) | `Check`, `Watch` | Always `SERVING` |
 
 The client treats `ValidateClientVersion` as fail-open: an RPC error is logged
 as a warning and dbt runs without dbt State
 (`validate_client_version_fail_open` in the client's `dbt-run-cache` crate).
+
+Pinned dbt 2.0.11 calls `ValidateClientVersion` and `SubmitTelemetryBatch` in
+the Databricks survey. Telemetry carries `session_start`,
+`enriched_sql_prepared` and `session_end` events, including unsuccessful
+invocations. Hosted returns OK with `is_supported=true` and `success=true`
+respectively; auxiliary replay compares the complete responses, statuses and
+application metadata. Session-end duration preserves seconds/nanoseconds and
+optional presence in new captures. Older captures omitted that field; it is
+not reconstructed. The deprecated standalone `RegisterSessionStart` was not
+called and remains unimplemented. OAuth, accounts and billing remain outside
+the self-hosted service. See the dated [auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md).
 
 Wire service names must be preserved exactly. The service named `Clone`
 collides with Rust's `std::clone::Clone`; the proto build patches the generated
@@ -288,7 +299,12 @@ and fingerprints.
 
 1. **Current state first.** The server reads the latest confirmed build of the
    target relation in its scope (organization, warehouse family,
-   `table_namespace`, target relation) before comparing identity. An older
+   `table_namespace`, target relation) before comparing identity. Physical rows
+   are ranked by greatest completion epoch, then receipt order for equal epochs.
+   A confirmed legacy row with an unknown epoch conservatively blocks reuse and
+   copying: even a later delivered valid build cannot prove it replaced that
+   unknown result. This floor also applies with
+   `ignore_external_modifications=true`. An older
    matching build never resurrects a relation overwritten since; it only
    changes the rejection codes (8 / 7). The identity excludes the execution
    type. When the latest build has the workload's identity under another
@@ -559,14 +575,26 @@ entry 46, and the client sends no ordinary submit for it.
 - `ConfirmExecution{request_id, last_modified_epoch?, failed_to_clone,
   table_type?, execution_results, execution_runtime_ms?, labels}` →
   `{success, request_id}`. Confirms the pending row created by a
-  `ready_to_execute` or `ready_to_clone`. Idempotent for a repeated
-  `request_id`; the first confirmed outcome, including results, is immutable.
+  `ready_to_execute` or `ready_to_clone`. The first confirmed outcome, including
+  results, is immutable. A duplicate returns INTERNAL (13), `Database operation
+  failed`, without republishing. An unknown valid UUID returns NOT_FOUND (5),
+  `Execution request with ID {submitted_id} not found`; malformed or empty IDs
+  return INTERNAL (13), `Database operation failed`. Uppercase, simple and
+  braced UUID spellings correlate to the same request and are echoed unchanged.
+  A physical target requires `last_modified_epoch`; an absent target requires
+  it to be absent. A rejected outcome returns INTERNAL (13), `Database operation
+  failed`, leaves the row pending and permits a valid retry.
   A confirm with `failed_to_clone=true` is recorded as a normal build.
 - `RecordExecutions{records[]}` → `{records_stored}`. Records outcomes without
   a submit. Client 2.0.11 sends it for an incremental model run under
   `--full-refresh` (see [What the client computes](#what-the-client-computes)). Each `ExecutionRecord` has an `outcome` and either `enriched_sql`
   (`SQLExecution`) or `values` (`ValuesExecution`). The batch is all-or-nothing:
-  executions and selector/deferral node state are written in one transaction.
+  executions and selector node state are written in one transaction. Missing
+  input returns INVALID_ARGUMENT (3), `Record at index N has no input set`.
+  Target/epoch presence follows Confirm; an invalid outcome rejects the whole
+  batch with INTERNAL (13), `Database operation failed`. Explicit empty SQL
+  targets on Snowflake and Databricks return INVALID_ARGUMENT (3), `Failed to
+  process SQL`. An empty batch succeeds with zero records.
   `SQLExecution` has no `compare_unrendered_code` flag, so a Record stores only
   the rendered identity. `SQLExecution.from_speculative_submit` is set by the
   client (dbt-state 2.62.6 `run_cache.py`) only for a node it ran after a
@@ -574,13 +602,23 @@ entry 46, and the client sends no ordinary submit for it.
   first. This server never answers `ready_to_execute_untracked`, so a client
   never sets it here; a record that does is stored like any other.
 - `ResolveDeferredRelations{profile_name, target_name, project_name,
-  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Maps each requested
-  node to the target relation it was last recorded with in the `target_name`
-  (defer-to) target, scoped by organization and `project_id`, for example
-  `"CDO_DEMO_DB"."PROD_STATE_DEMO"."STG_CUSTOMERS"`. Nodes never recorded there
-  are omitted. An empty `project_id`, `target_name` or ID list returns an empty
-  map. Node state is published at submit time, before confirmation. Fixture
-  `deferral_resolve.jsonl`, test `deferral.rs`.
+  project_id?, node_unique_ids[]}` → `{fqn_by_unique_id{}}`. Resolves confirmed
+  outcomes by organization, exact profile, target and UID. A nonempty project
+  ID scopes by ID; otherwise exact project name scopes the lookup, including
+  executions originally recorded with an ID. Unknown UIDs are omitted.
+  Missing profile/target, no IDs, or missing both project ID and project name
+  returns an empty map. A pending or unconfirmed failed attempt cannot replace
+  the previous confirmed mapping. `failed_to_clone=true` confirms a successful
+  fallback build; the protocol has no general execution-failure flag.
+  Fresh hosted Snowflake/Databricks scope histories and actual pinned-client
+  Databricks failures establish this behavior (2026-11-13), superseding the
+  earlier assumption that selector snapshots made unconfirmed nodes deferrable.
+  FQNs retain the submitted warehouse quoting, including Databricks backticks.
+  Requests carry no dialect/family/connection namespace, so deferral uses the
+  logical scope supplied; physical reuse still requires its own warehouse scope.
+  Legacy executions without persisted profile/project/target evidence do not
+  resolve speculatively. Fixtures `databricks_deferral{,_scopes}.jsonl` replay
+  complete response bodies/statuses through the production router.
 
 ## Seeds: `SQL.SubmitValues`
 
@@ -724,6 +762,17 @@ server mints an id there; the replay compares responses without ids.
 `struct.proto` defines a `Struct`/`Value`/`ListValue` like
 `google.protobuf.Struct` with `int64` support, used for `execution_results` and
 telemetry config.
+
+## Explain: `Explain.GetExplainMessages`
+
+The request names execution decision IDs; each tracked ID returns its decision,
+description and complete nested Explain tree. Unknown IDs are omitted.
+Observed hosted batches of distinct tracked IDs return entries in ascending
+decision-ID order, including when the request reverses them (2026-11-12
+Databricks baseline and six forward/reverse probes). The shared handler follows
+that order. Replay compares every entry's complete text, markers, badges and
+children; the new Databricks fixture keeps actual relation names and permits no
+missing-history or known-gap exception. See [table/view acceptance](databricks-baseline.md).
 
 ## Explain: `Explain.GetUpstreamDependencyChanges` is client-unreachable
 

@@ -8,10 +8,6 @@ use crate::warehouse::{CopyIdentity, NamespaceIdentity, Warehouse};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
-fn normalized(dialect: &str, sql: &str) -> String {
-    Warehouse::from_dialect(dialect).normalized_sql(sql)
-}
-
 /// Schema-abstracted normalization for the cross-environment (namespace-scoped)
 /// logic identity. The SAME model built in different environments differs only
 /// in the physical schema qualifier of its three-part names; abstracting that
@@ -65,12 +61,28 @@ pub fn sql_logic_hash_with_version(
 ) -> String {
     let mut h = Sha256::new();
     field(&mut h, version_tag);
-    field(&mut h, req.dialect.to_ascii_lowercase().as_bytes());
-    field(&mut h, req.default_catalog.as_bytes());
-    field(
-        &mut h,
-        req.default_schema.as_deref().unwrap_or("").as_bytes(),
-    );
+    // Alias evidence covers rendered SQL; template/configuration equivalence
+    // remains a separate characterized slice.
+    let dialect = if template.is_none() {
+        Warehouse::rendered_identity_dialect(&req.dialect)
+    } else {
+        req.dialect.to_ascii_lowercase()
+    };
+    field(&mut h, dialect.as_bytes());
+    let warehouse = match (Warehouse::from_dialect(&req.dialect), template) {
+        // Template/configuration policy is a separately characterized slice.
+        (Warehouse::Databricks, Some(_)) => Warehouse::Other,
+        (warehouse, _) => warehouse,
+    };
+    let inferred_schema = warehouse.target_schema(req.target_table.as_deref());
+    let schema = req
+        .default_schema
+        .as_deref()
+        .or(inferred_schema.as_deref())
+        .unwrap_or("");
+    let (sql, catalog, schema) = warehouse.sql_identity(&req.sql, &req.default_catalog, schema);
+    field(&mut h, catalog.as_bytes());
+    field(&mut h, schema.as_bytes());
     match template {
         Some(body) => {
             field(&mut h, b"template");
@@ -78,7 +90,7 @@ pub fn sql_logic_hash_with_version(
         }
         None => {
             field(&mut h, b"rendered");
-            field(&mut h, normalized(&req.dialect, &req.sql).as_bytes());
+            field(&mut h, sql.as_bytes());
         }
     }
     extras(&mut h, &req.semantic_extras);
@@ -86,18 +98,15 @@ pub fn sql_logic_hash_with_version(
         .query_dependencies
         .iter()
         .map(|d| {
-            (
-                d.name.as_str(),
-                normalized(&req.dialect, &d.query),
-                d.default_catalog.as_str(),
-                d.default_schema.as_str(),
-            )
+            let (query, catalog, schema) =
+                warehouse.sql_identity(&d.query, &d.default_catalog, &d.default_schema);
+            (d.name.as_str(), query, catalog, schema)
         })
         .collect();
     dependencies.sort();
     field(&mut h, &(dependencies.len() as u64).to_le_bytes());
     for (name, query, catalog, schema) in dependencies {
-        for value in [name, query.as_str(), catalog, schema] {
+        for value in [name, query.as_str(), catalog.as_str(), schema.as_str()] {
             field(&mut h, value.as_bytes());
         }
     }

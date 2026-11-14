@@ -45,6 +45,8 @@ const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 /// for #30, the matched `executions` anchor row). Keyed by `execution_decision_id`.
 #[derive(Debug, Clone)]
 pub struct ExplainNode {
+    /// Original submit instant, solely for rendering temporal text.
+    pub display_submitted_at_ms: Option<i64>,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -59,8 +61,11 @@ pub struct ExplainNode {
     pub reason: Option<DecisionReason>,
     pub is_stale: bool,
     pub target_table: Option<String>,
+    /// Warehouse presentation only; raw names still identify own inputs.
+    pub display_target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: Vec<InputTable>,
+    pub query_dependencies: Vec<String>,
     /// The node's Lag tolerance (0: none) and the reuse candidate's build age
     /// at decision time (ADR 0007).
     pub tolerance_ms: i64,
@@ -295,8 +300,14 @@ enum Shape {
     Skip,
     /// First build: `table analysis` only.
     FirstBuild,
+    /// Existing physical table, with no recorded query to compare.
+    ExistingTargetWithoutHistory,
+    QueryObservedOutsideScope,
+    ExistingTargetCopyDisabledDiagnostic,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
+    ResolutionContextChanged,
+    InputBindingChanged,
     /// SHAPE 7 over a RegisterClone copy the submit could not adopt
     /// ([`copy_logic_changed_tree`]).
     CopyLogicChanged,
@@ -307,10 +318,14 @@ enum Shape {
     /// lag_copy_candidates `ome`), or an execution type change (#83).
     OwnTargetModified,
     /// A seed whose table exists: its data changed (`true`) or not.
-    Seed { changed: bool },
+    Seed {
+        changed: bool,
+    },
     /// A seed copied from its load under another name: into its absent table,
     /// or `over` its table, whose latest load (the anchor) had other values.
-    SeedCopy { over: bool },
+    SeedCopy {
+        over: bool,
+    },
     /// A copy of an equivalent over a target whose own build had to rebuild
     /// ("but it's old, so we will clone from …"), rendered against the
     /// target's own build (VERIFIED LIVE 2026-11-10, lag_copy_candidates).
@@ -327,10 +342,13 @@ enum Shape {
     /// 2026-11-12 for a seed, explain_seed_copy_disabled.jsonl). Only a seed
     /// is loaded `over` its existing table, whose latest load (the anchor)
     /// had other values.
-    CopyDisabled { over: bool },
+    CopyDisabled {
+        over: bool,
+    },
     /// A data test that executes: its tested upstreams, without verdicts
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
+    DataTestExistingTargetWithoutHistory,
 }
 
 /// Select the tree shape from the persisted decision reason, the class and
@@ -391,6 +409,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // is a fresh one.
         return Some(match (node.decision, reason) {
             (DecisionKind::Skip, R::Reused(Reuse::Fresh)) => Shape::Skip,
+            (DecisionKind::Build, R::DataTestExistingTargetWithoutHistory)
+                if node.genuine_upstreams().is_empty() =>
+            {
+                Shape::DataTestExistingTargetWithoutHistory
+            }
             (
                 DecisionKind::Build,
                 R::FirstBuild | R::NoReuseCandidate(NoCandidate::IdentityMismatch),
@@ -422,6 +445,20 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         )
     );
     Some(match (node.decision, reason) {
+        (DecisionKind::Build, R::ExistingTargetCopyDisabledDiagnostic) if !upstreams => {
+            Shape::ExistingTargetCopyDisabledDiagnostic
+        }
+        (DecisionKind::Build, R::QueryChangedOutsideScope) if !upstreams => Shape::QueryChanged,
+        (DecisionKind::Build, R::QueryObservedOutsideScope) if !upstreams => {
+            Shape::QueryObservedOutsideScope
+        }
+        (DecisionKind::Build, R::ExistingTargetWithoutHistory)
+            if !upstreams
+                && (!matches!(kind, Some(ModelExecutionType::View))
+                    || view_reads_no_relation(node)) =>
+        {
+            Shape::ExistingTargetWithoutHistory
+        }
         (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
             Shape::Skip
         }
@@ -448,7 +485,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // rebuild for an unknown upstream epoch is local-only: hosted reuses
         // it (explain_unknown_epoch.jsonl, crafted).
         (DecisionKind::Build, R::UpstreamOutdated)
-            if has_provably_outdated_upstream(node)
+            if (has_provably_outdated_upstream(node) || has_missing_current_display(node))
                 // The equivalent's age words the Lag tolerance line; an
                 // unjudged equivalent (another environment) has none.
                 && !(reports_equivalent(node) && node.build_age_ms.is_none())
@@ -553,6 +590,12 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         // explain_reason_kind_cells.jsonl `*_d`, every model kind): a model
         // whose logic changed while its Target relation was dropped reads
         // like a first build.
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::ResolutionContextChanged)) => {
+            Shape::ResolutionContextChanged
+        }
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::InputBindingChanged)) => {
+            Shape::InputBindingChanged
+        }
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::IdentityMismatch))
             if node.own_target_absent() =>
         {
@@ -682,7 +725,35 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         None => Vec::new(),
         Some(Shape::Skip) => skip_tree(node),
         Some(Shape::FirstBuild) => vec![first_build_table_analysis(node)],
+        Some(Shape::ExistingTargetWithoutHistory) => vec![
+            table_analysis_exists(node),
+            section("query analysis", Vec::new()),
+            data_freshness_analysis_fresh(node),
+        ],
+        Some(Shape::ExistingTargetCopyDisabledDiagnostic) => {
+            let mut table = table_analysis_exists(node);
+            table.children.push(leaf(
+                format!(
+                    "but it's old. We would have cloned from {}, but cloning is disabled",
+                    node.clone_source.as_deref().unwrap_or("")
+                ),
+                Some(MARKER_FAIL),
+                None,
+            ));
+            vec![
+                table,
+                query_analysis_unchanged(node),
+                data_freshness_analysis_fresh(node),
+            ]
+        }
+        Some(Shape::QueryObservedOutsideScope) => vec![
+            table_analysis_exists(node),
+            query_analysis_unchanged(node),
+            data_freshness_analysis_fresh(node),
+        ],
         Some(Shape::QueryChanged) => query_changed_tree(node),
+        Some(Shape::ResolutionContextChanged) => resolution_context_changed_tree(node),
+        Some(Shape::InputBindingChanged) => input_binding_changed_tree(node),
         Some(Shape::CopyLogicChanged) => copy_logic_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
         Some(Shape::OwnTargetModified) => skip_tree(node),
@@ -694,6 +765,10 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
         Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
+        Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
+            section("query analysis", Vec::new()),
+            data_test_execute_freshness(node),
+        ],
     }
 }
 
@@ -1027,7 +1102,7 @@ fn upstream_dependencies_freshness(
                     text: quote(&up.name),
                     marker: None,
                     badge: None,
-                    children: vec![line(rel_time_line(up))],
+                    children: vec![line(anchored_rel_time_line(node, up))],
                 };
             }
             let drifted = verdict.map(|u| u.drifted);
@@ -1051,7 +1126,7 @@ fn upstream_dependencies_freshness(
                 text: quote(&up.name),
                 marker: None,
                 badge,
-                children: vec![gap_or_fresh, line(rel_time_line(up))],
+                children: vec![gap_or_fresh, line(anchored_rel_time_line(node, up))],
             }
         })
         .collect();
@@ -1102,16 +1177,25 @@ fn fresh_anchor_line(node: &ExplainNode, anchor_name: &str) -> qc::ExplainLine {
 
 /// The OUTDATED first child, the `«gap»`:
 /// `updated N seconds after «FQN» last executed`, where N is the upstream's
-/// epoch minus the freshness anchor epoch (both milliseconds → whole seconds).
-/// The exact N is a runtime slot the gate masks to `«gap»`; we still render a
-/// faithful value from the verdict's two epochs.
+/// epoch minus the freshness anchor epoch. The duration is humanized from
+/// those exact recorded epochs, including subsecond gaps ("a moment").
 fn gap_line(
     node: &ExplainNode,
     anchor_name: &str,
     verdict: Option<&decision::UpstreamVerdict>,
 ) -> qc::ExplainLine {
-    let seconds = verdict
-        .and_then(|v| v.current_epoch.map(|c| (c - v.anchor_epoch).max(0) / 1000))
+    let elapsed_ms = verdict
+        .and_then(|v| {
+            let display = node
+                .input_tables
+                .iter()
+                .find(|up| up.name == v.name)
+                .and_then(|up| databricks_missing_current_display(node, up));
+            v.current_epoch
+                .map(|current| (current, v.anchor_epoch))
+                .or(display)
+                .map(|(current, recorded)| current.saturating_sub(recorded).max(0))
+        })
         .unwrap_or(0);
     let anchor_ref = if node.is_data_test() {
         "test".to_string()
@@ -1119,17 +1203,101 @@ fn gap_line(
         quote(anchor_name)
     };
     line(format!(
-        "updated {} seconds after {} last executed",
-        seconds, anchor_ref
+        "updated {} after {} last executed",
+        humanize_duration(elapsed_ms),
+        anchor_ref
     ))
 }
 
-/// The humanized `last updated: …` line for an upstream. The absolute/relative
-/// wall-clock text is a runtime slot the gate masks (`«rel_time»`). We render a
-/// faithful `last updated: <epoch_ms> (UTC)` from the upstream's recorded epoch;
-/// the exact humanized phrasing ("7 seconds ago, 2026-11-08 17:11:54 UTC") is a
-/// client-side wall-clock-relative rendering out of this server's scope — the
-/// gate masks it on both sides.
+/// Anchored Explain times are frozen at the submit, including a later Explain
+/// after the execution finishes. The existing build age and build clock recover
+/// that instant without depending on the Explain request's wall clock (#140).
+fn anchored_rel_time_line(node: &ExplainNode, up: &InputTable) -> String {
+    let decision_ms = node.display_submitted_at_ms.or_else(|| {
+        node.anchor.as_ref().and_then(|build| {
+            crate::warehouse::Warehouse::from_dialect(&build.dialect)
+                .build_time_ms(build)
+                .zip(node.build_age_ms)
+                .map(|(built, age)| built.saturating_add(age))
+        })
+    });
+    let display_epoch = up
+        .last_modified_epoch
+        .or_else(|| databricks_missing_current_display(node, up).map(|(current, _)| current));
+    match (display_epoch, decision_ms) {
+        (Some(epoch), Some(now)) => {
+            let Some(absolute) = chrono::DateTime::from_timestamp_millis(epoch) else {
+                return rel_time_line(up);
+            };
+            let age = now.saturating_sub(epoch).max(0);
+            let relative = if age < 1000 {
+                "now".to_string()
+            } else {
+                // Hosted relative ages round minutes while exact subminute
+                // seconds and elapsed-duration/gap wording remain separate.
+                let relative_age = if (60_000..3_600_000).contains(&age) {
+                    humanize_duration(((age / 1000 + 30) / 60) * 60_000)
+                } else {
+                    humanize_duration(age)
+                };
+                format!("{relative_age} ago")
+            };
+            format!(
+                "last updated: {relative}, {} UTC",
+                absolute.format("%Y-%m-%d %H:%M:%S")
+            )
+        }
+        _ => rel_time_line(up),
+    }
+}
+
+/// The hosted missing-current FULL cell renders the submit clock as its
+/// timestamp. This is a display default only: raw epochs and the shared
+/// unprovable freshness verdict remain unchanged.
+fn databricks_missing_current_display(node: &ExplainNode, up: &InputTable) -> Option<(i64, i64)> {
+    let build = node.anchor.as_ref()?;
+    if node.execution_type != ModelExecutionType::Full as i32
+        || crate::warehouse::Warehouse::from_dialect(&build.dialect)
+            != crate::warehouse::Warehouse::Databricks
+        || !node.query_dependencies.is_empty()
+        || up.last_modified_epoch.is_some()
+        || build.last_modified_epoch.is_none()
+        || Some(up.name.as_str()) == node.target_table.as_deref()
+    {
+        return None;
+    }
+    let mut recorded = build.input_tables.iter().filter(|t| t.name == up.name);
+    let recorded_epoch = recorded
+        .next()?
+        .last_modified_epoch
+        .or(build.display_submitted_at_ms)?;
+    if recorded.next().is_some()
+        || node
+            .input_tables
+            .iter()
+            .filter(|t| t.name == up.name)
+            .count()
+            != 1
+    {
+        return None;
+    }
+    let verdicts = anchored_verdicts(node)?;
+    let verdict = verdicts.iter().find(|v| v.name == up.name)?;
+    if verdict.producer_changed {
+        return None;
+    }
+    Some((node.display_submitted_at_ms?, recorded_epoch))
+}
+
+fn has_missing_current_display(node: &ExplainNode) -> bool {
+    node.input_tables
+        .iter()
+        .any(|up| databricks_missing_current_display(node, up).is_some())
+}
+
+/// Legacy rendering when there is no recoverable decision instant. Anchored
+/// decisions use `anchored_rel_time_line`; unanchored copy paths still need
+/// separate temporal characterization before claiming exact humanized text.
 fn rel_time_line(up: &InputTable) -> String {
     match up.last_modified_epoch {
         Some(epoch) => format!("last updated: {epoch} (UTC)"),
@@ -1181,6 +1349,98 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     vec![
         table_analysis_exists(node),
         query_analysis_changed(node),
+        data_freshness_analysis_fresh(&judged),
+    ]
+}
+
+/// A changed resolution context preserves the rendered query but changes its
+/// resolved input binding (#136's independently captured root-context probes).
+fn resolution_context_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let ignored = node
+        .genuine_upstreams()
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line("view ignored")],
+        })
+        .collect();
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    format!("the {} query has not changed", node.noun()),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", ignored),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
+        section("data freshness analysis", Vec::new()),
+    ]
+}
+
+fn input_binding_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let judged = if node.anchor.is_some() {
+        node.clone()
+    } else {
+        judged_against_unmatched(node)
+    };
+    if node.query_dependencies.is_empty() {
+        return vec![
+            table_analysis_exists(node),
+            query_analysis_unchanged(node),
+            section(
+                "data freshness analysis",
+                vec![upstream_dependencies_freshness(
+                    &judged,
+                    &judged.genuine_upstreams(),
+                )],
+            ),
+        ];
+    }
+    let mut bindings: Vec<_> = node
+        .genuine_upstreams()
+        .iter()
+        .map(|up| qc::ExplainLine {
+            text: quote(&up.name),
+            marker: None,
+            badge: None,
+            children: vec![line("external table")],
+        })
+        .collect();
+    bindings.extend(node.query_dependencies.iter().map(|name| qc::ExplainLine {
+        text: quote(name),
+        marker: None,
+        badge: None,
+        children: vec![line("view ignored")],
+    }));
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    format!("the {} query has not changed", node.noun()),
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", bindings),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
         data_freshness_analysis_fresh(&judged),
     ]
 }
@@ -1664,7 +1924,12 @@ fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
 
 /// The node's own fully-qualified target, as stored (already quoted by client).
 fn fqn(node: &ExplainNode) -> String {
-    quote(node.target_table.as_deref().unwrap_or(""))
+    quote(
+        node.display_target_table
+            .as_deref()
+            .or(node.target_table.as_deref())
+            .unwrap_or(""),
+    )
 }
 
 /// Physical names are stored already quoted by the client (`"DB"."S"."T"`).
@@ -1693,6 +1958,7 @@ mod tests {
 
     fn node(decision: DecisionKind, et: i32, desc: &str) -> ExplainNode {
         ExplainNode {
+            display_submitted_at_ms: None,
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,
@@ -1707,8 +1973,10 @@ mod tests {
             }),
             is_stale: false,
             target_table: Some("\"DB\".\"S\".\"T\"".into()),
+            display_target_table: None,
             clone_source: None,
             input_tables: vec![tbl("\"DB\".\"S\".\"T\"")],
+            query_dependencies: Vec::new(),
             tolerance_ms: 0,
             build_age_ms: None,
             skip_rejection_reason: None,

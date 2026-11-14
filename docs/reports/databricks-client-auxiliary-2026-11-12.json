@@ -1,0 +1,128 @@
+{
+  "date": "2026-11-12",
+  "ticket": 157,
+  "client_version": "2.0.11",
+  "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+  "survey_index": "databricks-capabilities-2026-11-12.json",
+  "archive_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-134-20261112",
+  "inventory": {
+    "methods": {
+      "ClientValidation.ValidateClientVersion": 150,
+      "ClientTelemetry.SubmitTelemetryBatch": 383
+    },
+    "events": {
+      "session_start": 150,
+      "enriched_sql_prepared": 223,
+      "session_end": 150
+    },
+    "session_end_results": {
+      "0": 145,
+      "1": 5
+    },
+    "campaigns": [
+      {
+        "campaign": "live",
+        "methods": {
+          "ValidateClientVersion": 60,
+          "SubmitTelemetryBatch": 149
+        }
+      },
+      {
+        "campaign": "freshness",
+        "methods": {
+          "ValidateClientVersion": 12,
+          "SubmitTelemetryBatch": 35
+        }
+      },
+      {
+        "campaign": "copy-followup",
+        "methods": {
+          "ValidateClientVersion": 16,
+          "SubmitTelemetryBatch": 36
+        }
+      },
+      {
+        "campaign": "zero-lag",
+        "methods": {
+          "ValidateClientVersion": 58,
+          "SubmitTelemetryBatch": 155
+        }
+      },
+      {
+        "campaign": "seed-diagnostic",
+        "methods": {
+          "ValidateClientVersion": 4,
+          "SubmitTelemetryBatch": 8
+        }
+      },
+      {
+        "campaign": "snapshot-reference",
+        "methods": {}
+      }
+    ]
+  },
+  "historical_capture_limitation": "All 150 archived session_end events omit session_duration because the pre-157 serde serializer skipped it. Counts certify durable decoded RPC outcomes, not full duration payload fidelity. No old duration was reconstructed.",
+  "fixture": "golden/fixtures/databricks_client_auxiliary.jsonl",
+  "new_archive_root": "/home/maxfirman/.local/state/dbt-state-rs/databricks-157-20261112",
+  "new_artifact_manifest": {
+    "path": "artifacts.json",
+    "sha256": "b3a3ccdb8b3d1a446355d3ba3eb5a9a8a1d1b3d822d95247cd53cb9541c6d42a"
+  },
+  "new_campaigns": [
+    {
+      "role": "hosted",
+      "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+      "runner_sha256": "356ffad2d8f585033f0327c2239ae3bfac36e5225386e22a8a89981b488f8258",
+      "upstream": "hosted",
+      "warehouse_statements_executed": 0,
+      "rpc_count": 5,
+      "capture_sha256": "d5d66ac9d5e83b4706d3e29164e46c04498f12c25744c3ca45953194a40172f1",
+      "session_results": [
+        0,
+        1
+      ],
+      "capture": "hosted-verified/golden/golden_20261112T084143.343Z_958f9c433fd349568d6eb8cd56f96d99.jsonl"
+    },
+    {
+      "role": "rust",
+      "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+      "runner_sha256": "356ffad2d8f585033f0327c2239ae3bfac36e5225386e22a8a89981b488f8258",
+      "upstream": "http://127.0.0.1:46087",
+      "warehouse_statements_executed": 0,
+      "rpc_count": 5,
+      "capture_sha256": "fd3e3bc4f15a4719114f472d5cd1f5eb5e61cd3a8681b93251a04a516f659aab",
+      "session_results": [
+        0,
+        1
+      ],
+      "capture": "rust-verified/golden/golden_20261112T084210.333Z_21f46ebff1ad40b4979ee927c5f4d168.jsonl"
+    }
+  ],
+  "fixture_sha256": "2a62db9c0179fa89a2d1854a1b5c527e389296dd538707ff9ebacddf519221fb",
+  "fixture_provenance": [
+    {
+      "entries": "0-4",
+      "source": "hosted/golden/golden_20261112T083550.175Z_4e549fe8a490499dad03ee9d2af642de.jsonl",
+      "meaning": "complete auxiliary-only actual-client success/failure compile session"
+    },
+    {
+      "entry": 5,
+      "source": "live/golden/golden_20261112T013331.065Z_32715af187c74da895de33133182f3b2.jsonl",
+      "meaning": "independent stateless enriched_sql_prepared batch from certified #134 archive; no session_end events",
+      "source_entry_zero_based": 31
+    }
+  ],
+  "fixture_source_campaign": {
+    "role": "hosted",
+    "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+    "upstream": "hosted",
+    "warehouse_statements_executed": 0,
+    "rpc_count": 5,
+    "capture_sha256": "cf78bf173c0cafbb7ed676d84df23f187b11f302068aa2fbea5108b08de3ab5e",
+    "session_results": [
+      0,
+      1
+    ],
+    "capture": "hosted/golden/golden_20261112T083550.175Z_4e549fe8a490499dad03ee9d2af642de.jsonl"
+  }
+}

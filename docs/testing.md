@@ -21,6 +21,12 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
+python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
+python3 experiments/databricks_isolation_test.py         # offline concurrent campaign ownership/physical-peer gates
+python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates
+python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
+python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes
+python3 experiments/databricks_sql_equivalence_test.py   # typed oracle sensitivity and separate hosted-history plans
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
@@ -180,8 +186,10 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
   incremental run under `--full-refresh`) is driven and its response compared;
   each record counts as confirmed history for its workload.
-  `ResolveDeferredRelations` entries are counted but not driven here;
-  `deferral.rs` covers them.
+  `ResolveDeferredRelations` executes through the same production router and
+  compares the complete mapping, success status and application metadata.
+  Fresh `databricks_deferral{,_scopes}.jsonl` histories have zero unknown
+  baselines/gaps; `deferral.rs` also pins organization and lifecycle safety.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too. A speculative submit is compared in full after removing
   opaque IDs, and a speculative SKIP's decision id is correlated for the

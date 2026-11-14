@@ -218,7 +218,11 @@ async fn failed_clone_confirmation_does_not_certify_source_logic() {
     assert!(sc.confirm(&ready.request_id, failed).await);
     // Duplicate success acknowledgement cannot replace the first actual outcome.
     let duplicate = outcome().epoch(200).table();
-    assert!(sc.confirm(&ready.request_id, duplicate).await);
+    let error = sc
+        .try_confirm(duplicate.confirm(&ready.request_id))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
     let result = sc
         .submit(
             clone_probe(DEV, DEV_SCHEMA)

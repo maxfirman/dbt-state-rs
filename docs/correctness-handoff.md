@@ -31,22 +31,33 @@ Do not weaken these without new evidence.
   the submit's type, which is never reused
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)). See
   [architecture.md](architecture.md#physical-scope-rule).
-- **Confirmation order defines current state.** The current build is the one
-  with the newest confirmation (ties broken by row id), not the newest submit
-  (`crates/harness/tests/concurrency.rs`).
+- **Physical completion order defines current state.** The greatest completion
+  epoch wins; confirmation receipt then row id break equal-epoch ties
+  (`databricks_lifecycle_ordering.jsonl`; the equal-epoch cases in
+  `crates/harness/tests/concurrency.rs`). A legacy confirmed unknown epoch is a
+  conservative physical cold miss, including for copies and with external
+  modification tolerance; delivery alone cannot prove safe recovery
+  ([#158 evidence](reports/databricks-lifecycle-2026-11-14.md)).
 - **Target relation as built.** Reuse needs exactly one known epoch for the
   target relation with `current_epoch <= confirmed_epoch` (a later epoch is
   accepted only with `ignore_external_modifications`). Missing, duplicated
   or unknown metadata builds. This assumes the confirmation epoch is an upper
   bound for the build's warehouse write time; timestamps alone cannot prove
   object lineage.
-- **Unknown evidence builds.** Unknown or duplicated upstream epochs, a changed
-  set of physical input names, empty or duplicated dependency definitions and
+- **Unknown evidence builds.** Unknown or conflicting upstream epochs, recorded
+  duplicate inputs, a changed set of physical input names, empty or duplicated dependency definitions and
   corrupt stored evidence (`INTERNAL`) never become a reuse. A node's own
   relation is not an input: a model's own target, and a `store_failures`
   data test's audit relation when the request identifies it exactly (#88)
   or, under a configured alias, as the only unnamed table in the test's
   schema (#123, [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
+- **Bounded current duplicate normalization (#140).** Databricks rendered FULL
+  submits without query dependencies may collapse only exactly identical raw
+  upstream entries with known epochs and a supported physical Target relation.
+  Other aliases of that physical name, conflicting/unknown entries and duplicate
+  Target evidence remain ambiguous. Pending builds retain their uncollapsed
+  inputs; stored duplicates are never retroactively normalized. Explain submit
+  clocks are separate nullable display data and never freshness evidence.
 - **Versioned fingerprints.** Each fingerprint starts with a version tag
   (`crates/server/src/warehouse.rs`, `fingerprint.rs`). A change to identity
   semantics takes a new tag, so older State history cold-misses and rebuilds
@@ -237,10 +248,13 @@ server keeps the conservative behavior described.
 - **Copy limits.** `clone_time_travel_limit` and `OUTSIDE_TIME_TRAVEL_WINDOW`
   (code 9) are never applied. Outside DuckDB, a `clone_chain_depth_limit`
   above 0 is ignored.
-- **When node state is published.** The server publishes selector and deferral
-  node state at submit time, before confirmation, so an unconfirmed or failed
-  build is immediately deferrable. Hosted timing is unobserved
-  (`submit_decision.rs::record_node_state`).
+- **Selector snapshot timing.** Selector snapshots still publish at submit
+  time. Deferral now independently reads confirmed execution history: fresh
+  Snowflake/Databricks protocol captures and actual Databricks failed attempts
+  prove that unconfirmed attempts are not deferrable (2026-11-13; #155,
+  [report](reports/databricks-deferral-2026-11-13.md)). This supersedes the
+  earlier shared selector/deferral timing assumption. Hosted selector failure
+  timing remains unobserved.
 - **Wildcard views.** Column evidence for `SELECT *` over views with added or
   removed columns, nested views and transitive definition changes.
 - **`lenient_dependencies`.** The server ignores the field. Define it from
@@ -369,7 +383,36 @@ server keeps the conservative behavior described.
 
 ## Known divergences
 
-Every replay divergence is pinned per fixture entry in
+The #155 crafted protocol diagnostic using Databricks backticks as Snowflake
+Target relation metadata is unresolved: hosted accepts it and resolves each
+component as a doublequoted identifier containing literal backticks; this
+server returns the submitted spelling. The dated
+[deferral report](reports/databricks-deferral-2026-11-13.md) retains the exact
+failed replay and original capture. The scoped fixtures use each warehouse's
+own quoting; this diagnostic has no replay exemption and establishes no
+cross-dialect spelling compatibility.
+
+New Databricks #140 missing-evidence diagnostics remain **blocking**, not
+accepted replay exceptions ([dated evidence](reports/databricks-freshness-2026-11-12.md)).
+Hosted SKIPs a crafted request that omits a source still read by its SQL;
+independent warehouse reads prove the cached target is stale. Missing recorded
+epochs also SKIP hosted, and missing/current epoch Explain differs. The server
+keeps conservative freshness checks. Identical known duplicate entries are a
+separate unresolved safe-normalization opportunity; ambiguous evidence and
+Snowflake audit rules are unchanged. These captures stay in the durable archive
+with exact red replay, without a Databricks gap or golden exclusion. #140 stays
+incomplete and does not unblock its dependents.
+
+The #158 crafted untargeted FULL/VIEW diagnostic remains **blocking**. Fresh
+Snowflake and Databricks controls accept `target_table: null` and reuse the
+logical outcome after a null-epoch confirmation, independently of a subsequent
+physical target. The ordinary Rust non-test absent-target guard remains until
+logical qualification, result scope and isolation are established. Pinned
+read-only dbt show/operation probes did not send those execution RPCs. These
+complete diagnostic histories remain archived, without a replay exemption or
+overall support claim ([report](reports/databricks-lifecycle-2026-11-14.md)).
+
+Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
 where only part of a response differs, the `ignore_fields` it exempts. The
 replay fails when an entry becomes unused or resolved
@@ -403,17 +446,31 @@ replay fails when an entry becomes unused or resolved
 - **Crafted ambiguous Target relation evidence** (#71 probes,
   `experiments/ambiguous_rebuilds.py`). Client 2.0.11 sends none of these
   requests ([explain-catalog.md](explain-catalog.md#ambiguous-rebuild-reasons)).
-  The Target relation listed twice or with no epoch (#80) and the
-  ConfirmExecution without an epoch (#82) are accepted divergences (see
-  [below](#accepted-divergences)). A model submit with no target (#81) is
-  rejected with `InvalidArgument` before it is decided; hosted fails it too
-  (`Internal` when unset, `InvalidArgument` "Failed to process SQL" when
-  `""`). Pinned by
+  The Target relation listed twice or with no epoch (#80) remains an
+  accepted divergence (see [below](#accepted-divergences)). The original #81
+  no-target model submits failed hosted (`Internal` when unset,
+  `InvalidArgument` "Failed to process SQL" when `""`); the server's
+  absent-target guard is pinned by
   `offline_regressions.rs::model_submit_without_target_is_invalid_argument_not_a_result_copy`.
+  Later #158 controls accept absent-target FULL/VIEW logical outcomes; that
+  separate qualification/isolation blocker is described above.
 
-  The proxy does not record failed calls (see "Proxy fidelity"), so the
-  no-target submits and the no-epoch confirm have no fixture rows and no keyed
-  gap. The driver's stdout is their only record.
+  The proxy did not record the failed #81 submits or #82 no-epoch confirm
+  (see "Proxy fidelity"), so their original record is the driver's stdout,
+  without fixture rows or keyed gaps. Fresh #158 captures resolve #82 below.
+
+**Resolved 2026-11-14 — target-bearing ConfirmExecution without an epoch
+(#82 / #158).** The earlier server accepted this crafted confirmation and
+later rebuilt with `no_build_anchor`. It now matches hosted `Internal` (13),
+`Database operation failed`, leaving the physical execution pending so a valid
+retry can publish. Fresh Databricks and Snowflake controls are retained in
+[`databricks_lifecycle_null_confirm.jsonl`](../golden/fixtures/databricks_lifecycle_null_confirm.jsonl);
+invalid target/epoch pairs in RecordExecutions reject the whole batch in
+[`databricks_lifecycle_null_record_batch.jsonl`](../golden/fixtures/databricks_lifecycle_null_record_batch.jsonl).
+An absent target with an outcome epoch is also invalid; this does not settle
+absent-target, null-epoch FULL/VIEW logical reuse (#158). Raw legacy confirmed
+physical rows with NULL epochs still prevent physical reuse and copying, even
+after later valid deliveries ([lifecycle report](reports/databricks-lifecycle-2026-11-14.md)).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
@@ -437,13 +494,6 @@ local-only and renders no Explain tree.
   "Target relation as built" invariant above, which needs exactly one known
   epoch, is the conservative rule. Keyed gaps:
   `explain_ambiguous_rebuilds.jsonl` entries 2, 3, 6 and 7 (`empty_tree`).
-- **ConfirmExecution without an epoch for a target-bearing build (#82,
-  crafted d4).** Hosted fails it (`Internal`, "Database operation failed");
-  the server records it and a later submit rebuilds with `no_build_anchor`.
-  Rationale: crafted-only (client 2.0.11 never sends that confirm for a
-  non-test node), and a build with no epoch never proves the Target relation
-  is as built, so rebuilding is the conservative rule. No keyed gap: the
-  failed hosted call was not recorded.
 - **Data test with incomplete cached results (#87, crafted,
   `experiments/incomplete_test_results.py`).** A data test confirmed with
   `execution_results: null`, or with only `failures`, then resubmitted
@@ -500,12 +550,11 @@ local-only and renders no Explain tree.
   (6 / 6). Rationale: AGENTS.md reuse invariant 3, the same choice as #115.
   Keyed gaps: `explain_seed_copy_existing.jsonl` entries 13 (decision) and
   17 (`empty_tree`).
-- **Unset target on a model submit (#81, crafted d3).** Hosted answers
-  `Internal` "Internal server error"; the server answers `InvalidArgument`,
-  the code hosted gives for `""` (d3e). Rationale: copying hosted's internal
-  error is not worth it; the request is the caller's error and is rejected
-  before anything is decided or recorded. No keyed gap: failed calls are not
-  recorded.
+- **Historical unset-target error (#81, crafted d3).** That particular
+  capture returned hosted `Internal`, versus local `InvalidArgument`, and had
+  no keyed gap. It does not establish a general absent-target contract: fresh
+  #158 FULL/VIEW controls accept logical outcomes. Their unresolved behavior
+  is the blocking diagnostic above; the safety guard remains.
 
 ## Deployment gaps
 
@@ -514,7 +563,10 @@ local-only and renders no Explain tree.
   `x-organization-id` but does not verify it against a trusted token. OAuth,
   TLS and identity mapping are deployment work. The UI reads one configured
   organization (`DBT_STATE_UI_ORG_ID`).
-- **ClientTelemetry** is not served. Check whether supported clients need it.
+- **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
+  ([dated evidence](reports/databricks-client-auxiliary-2026-11-12.md)) without
+  hosted metering persistence. The deprecated standalone `RegisterSessionStart`
+  has no characterized contract and remains unimplemented.
 - **Health** always reports `SERVING`; it is not a database readiness check.
 - **Capture** runs as unbounded background tasks (`services.rs::spawn_capture`)
   with no retention policy. Bound both before heavy load.

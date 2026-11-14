@@ -10,7 +10,7 @@ use crate::execution::RecordError;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
-use crate::store::CopySourceQuery;
+use crate::store::{Confirmation, CopySourceQuery};
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
 
@@ -235,9 +235,7 @@ fn capture_meta_of<T>(req: &Request<T>) -> CaptureMeta {
 /// fails the gRPC response.
 fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
     let pool = state.store.pool().clone();
-    tokio::spawn(async move {
-        crate::capture::capture_decision(&pool, input).await;
-    });
+    state.captures.spawn(pool, input);
 }
 
 /// The capture of a Submit decision. The node is described by the
@@ -314,6 +312,7 @@ fn submit_capture(
         clone_rejection_reason: record.clone_rejection_reason,
         unmatched_execution_id: record.unmatched_execution_id,
         reads_relation: None,
+        display_submitted_at_ms: None,
     }
 }
 
@@ -323,8 +322,11 @@ fn capture_submit(
     meta: &CaptureMeta,
     req: &qc::SubmitEnrichedSqlRequest,
     outcome: &SubmitOutcome,
+    now_ms: i64,
 ) {
     let input = crate::capture::CaptureInput {
+        display_submitted_at_ms: crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            .explain_submit_clock(now_ms),
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
@@ -332,7 +334,24 @@ fn capture_submit(
         // the submitted inputs when the decision recorded none (a copy), less
         // a store_failures test's own audit relation, as the decision reads
         // them (#88, #123).
-        input_tables: if outcome.record().input_tables.is_empty() {
+        input_tables: if outcome.record().reason
+            == crate::decision::DecisionReason::NoReuseCandidate(
+                crate::decision::NoCandidate::ResolutionContextChanged,
+            ) {
+            // These are resolved SQL bindings, not guessed freshness metadata.
+            // A context-only rebuild explains the changed binding as ignored;
+            // its pending execution still retains the original request evidence.
+            req.tables
+                .iter()
+                .filter(|t| Some(&t.name) == req.target_table.as_ref())
+                .map(|t| crate::store::InputTable::at(&t.name, t.last_modified_epoch))
+                .chain(
+                    crate::warehouse::Warehouse::from_dialect(&req.dialect)
+                        .resolved_input(req)
+                        .map(|name| crate::store::InputTable::at(&name, None)),
+                )
+                .collect()
+        } else if outcome.record().input_tables.is_empty() {
             crate::execution::sql_inputs(&crate::execution::sql_execution(req))
         } else {
             outcome.record().input_tables.clone()
@@ -405,11 +424,17 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
-        // Only data tests have no Target relation. Deciding any other node
-        // without one could answer a Result copy into an empty relation name
-        // (#81). Hosted fails `""` with InvalidArgument and an unset target
-        // with Internal; both are InvalidArgument here.
+        let raw_req = request.into_inner();
+        if crate::warehouse::Warehouse::from_dialect(&raw_req.dialect)
+            .rejects_empty_sql_target(raw_req.target_table.as_deref())
+        {
+            return Err(Status::invalid_argument("Failed to process SQL"));
+        }
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
+        // Untargeted non-test logical reuse remains unresolved (#158).
+        // Keep the safety guard until its qualification and isolation are
+        // established: an absent target must never become a physical copy.
         if req.execution_type != ModelExecutionType::DbtDataTest as i32
             && req.target_table.as_deref().is_none_or(str::is_empty)
         {
@@ -418,12 +443,13 @@ impl Sql for SqlService {
             ));
         }
 
-        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &req, now_ms)
+        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &raw_req, now_ms)
             .await
             .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &outcome);
-        let response = submit_response(outcome, req.target_table.as_deref().unwrap_or_default());
+        capture_submit(&self.0, &cap_meta, &req, &outcome, now_ms);
+        let response =
+            submit_response(outcome, raw_req.target_table.as_deref().unwrap_or_default());
         Ok(Response::new(response))
     }
 
@@ -451,16 +477,19 @@ impl Sql for SqlService {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
-        let req = request.into_inner();
+        let raw_req = request.into_inner();
+        let req =
+            crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Decided only where the decision needs no table evidence: a data
         // test without upstreams that the ordinary submit would SKIP, the one
         // speculative call hosted was seen to decide (#103). Every other one
         // is `undecided`, as hosted answers in our corpus, and the client
         // then sends the ordinary submit. Never `ready_to_execute_untracked`
         // or `ready_to_clone`.
-        let outcome = crate::submit_decision::speculative_sql(&self.0.store, &org_id, &req, now_ms)
-            .await
-            .map_err(store_status)?;
+        let outcome =
+            crate::submit_decision::speculative_sql(&self.0.store, &org_id, &raw_req, now_ms)
+                .await
+                .map_err(store_status)?;
         let response = match &outcome {
             Some(
                 skip @ SubmitOutcome::Skip {
@@ -470,7 +499,7 @@ impl Sql for SqlService {
                 },
             ) => {
                 // Recorded like an ordinary SKIP, for Explain.
-                capture_submit(&self.0, &cap_meta, &req, skip);
+                capture_submit(&self.0, &cap_meta, &req, skip, now_ms);
                 Speculative::SkipExecution(skip_response(
                     execution_decision_id.clone(),
                     matched_execution.clone(),
@@ -497,7 +526,7 @@ impl Execution for ExecutionService {
         let org_id = org_id_checked(&self.0, &request)?;
         let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
-        let found = self
+        let publication = self
             .0
             .store
             .confirm(
@@ -511,10 +540,34 @@ impl Execution for ExecutionService {
                 now_ms,
             )
             .await
-            .map_err(store_status)?;
+            .map_err(|error| {
+                // Hosted accepts PostgreSQL UUID spellings and rejects invalid
+                // spellings with this generic database status. Keep other
+                // storage errors on the ordinary adapter path.
+                if error
+                    .as_database_error()
+                    .is_some_and(|db| db.code().as_deref() == Some("22P02"))
+                {
+                    Status::internal("Database operation failed")
+                } else {
+                    store_status(error)
+                }
+            })?;
 
+        match publication {
+            Confirmation::Published => {}
+            Confirmation::AlreadyConfirmed | Confirmation::InvalidOutcome => {
+                return Err(Status::internal("Database operation failed"));
+            }
+            Confirmation::Missing => {
+                return Err(Status::not_found(format!(
+                    "Execution request with ID {} not found",
+                    req.request_id
+                )));
+            }
+        }
         Ok(Response::new(qc::ConfirmExecutionResponse {
-            success: found,
+            success: true,
             request_id: req.request_id,
         }))
     }
@@ -529,9 +582,11 @@ impl Execution for ExecutionService {
         let stored = crate::execution::record_batch(&self.0.store, &org_id, &req.records)
             .await
             .map_err(|e| match e {
-                RecordError::MissingInput => {
-                    Status::invalid_argument("ExecutionRecord missing input")
+                RecordError::MissingInput { index } => {
+                    Status::invalid_argument(format!("Record at index {index} has no input set"))
                 }
+                RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
+                RecordError::InvalidOutcome => Status::internal("Database operation failed"),
                 RecordError::Store(e) => store_status(e),
             })?;
 
@@ -544,33 +599,32 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::ResolveDeferredRelationsRequest>,
     ) -> Result<Response<qc::ResolveDeferredRelationsResponse>, Status> {
-        // VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
-        // maps each requested node_unique_id to the PHYSICAL relation it was last
-        // built as in the `target_name` (defer-to) env, scoped by project_id —
-        // i.e. the submit `target_table` recorded for that (project, env, node).
-        // Nodes not built in that env are simply omitted (the empty-map case we
-        // first captured was precisely that: nothing built there yet).
+        // Fresh Snowflake + Databricks protocol histories pin confirmed-only
+        // visibility, exact profile scope, and ID-or-name project resolution.
+        // A missing project ID is normal for the pinned Databricks client.
         let org_id = org_id_checked(&self.0, &request)?;
         let req = request.into_inner();
-
-        // project_id scopes the recorded node state (same scope as the selector).
-        // Without it the defer-to env's node→FQN mapping is unresolvable, so we
-        // return an empty map rather than guessing across projects.
-        let Some(project_id) = req.project_id.as_deref().filter(|s| !s.is_empty()) else {
-            return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
-                fqn_by_unique_id: Default::default(),
-            }));
-        };
-        if req.target_name.is_empty() || req.node_unique_ids.is_empty() {
+        let project_id = req.project_id.as_deref().filter(|s| !s.is_empty());
+        if req.profile_name.is_empty()
+            || req.target_name.is_empty()
+            || req.node_unique_ids.is_empty()
+            || (project_id.is_none() && req.project_name.is_empty())
+        {
             return Ok(Response::new(qc::ResolveDeferredRelationsResponse {
                 fqn_by_unique_id: Default::default(),
             }));
         }
-
         let fqn_by_unique_id = self
             .0
             .store
-            .resolve_deferred_fqns(&org_id, project_id, &req.target_name, &req.node_unique_ids)
+            .resolve_confirmed_deferred_fqns(
+                &org_id,
+                &req.profile_name,
+                &req.project_name,
+                project_id,
+                &req.target_name,
+                &req.node_unique_ids,
+            )
             .await
             .map_err(store_status)?;
 
@@ -730,6 +784,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     clone_rejection_reason: None,
                     unmatched_execution_id: None,
                     reads_relation: None,
+                    display_submitted_at_ms: None,
                 },
             );
         }
@@ -769,6 +824,33 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 #[derive(Clone)]
 pub struct ClientValidationService;
 
+/// Pinned dbt 2.0.11 batches session and query-preparation events. Hosted
+/// acknowledges them without a result payload beyond success; self-hosted
+/// State does not need hosted metering/account persistence.
+pub struct ClientTelemetryService;
+
+#[tonic::async_trait]
+impl qc::client_telemetry_server::ClientTelemetry for ClientTelemetryService {
+    #[allow(deprecated)]
+    async fn register_session_start(
+        &self,
+        _request: Request<qc::SessionStartRequest>,
+    ) -> Result<Response<qc::SessionStartResponse>, Status> {
+        // The pinned client uses session_start inside SubmitTelemetryBatch.
+        // No hosted contract has been characterized for this obsolete RPC.
+        Err(Status::unimplemented(""))
+    }
+
+    async fn submit_telemetry_batch(
+        &self,
+        _request: Request<qc::SubmitTelemetryBatchRequest>,
+    ) -> Result<Response<qc::SubmitTelemetryBatchResponse>, Status> {
+        Ok(Response::new(qc::SubmitTelemetryBatchResponse {
+            success: true,
+        }))
+    }
+}
+
 #[tonic::async_trait]
 impl ClientValidation for ClientValidationService {
     async fn validate_client_version(
@@ -800,17 +882,13 @@ impl Explain for ExplainService {
         // from the store) produce no message, so the response can be shorter
         // than the request — matching the hosted "omit untracked" behavior.
         //
-        // EVENTUAL CONSISTENCY (F3 — intentional, DO NOT make this read
-        // synchronous): the `node_decisions` row for an `execution_decision_id`
-        // is written by the Submit path's capture, which is a deliberate
-        // fire-and-forget async best-effort write (`spawn_capture`; see
-        // `capture_submit` and ADR 0005's "capture is best-effort and
-        // separate"). So a decision id issued only microseconds earlier may not
-        // yet be visible here; such an absent row is simply treated as untracked
-        // and omitted (same as a genuinely unknown id). This is by design —
-        // coupling this read to the capture write would change Submit semantics
-        // for every node. Clients that need the row observe eventual consistency
-        // (the harness polls briefly). Do not add retry/polling to the service.
+        // Submit remains nonblocking, but a returned decision's known capture
+        // must finish before its first Explain reads the persisted evidence.
+        // Unknown and other-organization IDs have no tracked write to await.
+        self.0
+            .captures
+            .wait_for(&org_id, &req.execution_decision_ids)
+            .await;
         let rows = self
             .0
             .store
@@ -829,6 +907,7 @@ impl Explain for ExplainService {
                 continue;
             };
             let node = crate::explain::ExplainNode {
+                display_submitted_at_ms: row.display_submitted_at_ms,
                 execution_decision_id: edid.clone(),
                 decision,
                 execution_type: row.execution_type,
@@ -836,8 +915,15 @@ impl Explain for ExplainService {
                 reason: row.decision_reason(),
                 is_stale: row.is_stale,
                 target_table: row.target_table.clone(),
+                display_target_table: row.target_table.as_deref().zip(row.dialect.as_deref()).map(
+                    |(name, dialect)| {
+                        crate::warehouse::Warehouse::from_dialect(dialect).explain_target_name(name)
+                    },
+                ),
                 clone_source: row.clone_source.clone(),
                 input_tables: row.input_tables(),
+                query_dependencies: serde_json::from_value(row.query_dependencies.clone())
+                    .unwrap_or_default(),
                 tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
                 build_age_ms: row.build_age_ms,
                 skip_rejection_reason: row.skip_rejection_reason,
@@ -859,13 +945,16 @@ impl Explain for ExplainService {
             by_id.insert(edid, node);
         }
 
-        // Preserve the request order, emitting only tracked ids.
-        let messages = req
+        // Hosted emits tracked decisions in ascending decision-ID order,
+        // independently of request order (Databricks baseline + six reversed
+        // batch probes, 2026-11-12). IDs remain opaque to callers.
+        let mut messages: Vec<_> = req
             .execution_decision_ids
             .iter()
             .filter_map(|id| by_id.get(id))
             .map(crate::explain::explain_entry)
             .collect();
+        messages.sort_by(|a, b| a.execution_decision_id.cmp(&b.execution_decision_id));
 
         Ok(Response::new(qc::GetExplainMessagesResponse { messages }))
     }
@@ -913,7 +1002,7 @@ impl SelectorService for SelectorServiceImpl {
 
         // project_id scopes the comparison state (required by the client).
         if req.project_id.is_empty() {
-            return Err(Status::invalid_argument("project_id is required"));
+            return Err(Status::invalid_argument("project_id must be provided"));
         }
 
         // Fetch the recorded comparison state for exactly the submitted nodes,
