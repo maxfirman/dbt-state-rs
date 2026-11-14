@@ -380,3 +380,23 @@ replacement; complete typed duplicate/NULL/DATE/TIMESTAMP checks and zero-RPC
 SELECT-only references cover all13 cells on both hosted and fresh Rust runs.
 See the [bounded report](../docs/reports/databricks-replace-where-2026-11-14.md).
 Whole #148, settings/schema/error boundaries and #138/#140 remain incomplete.
+
+### Databricks key replacement hosted history (#149, 2026-11-14)
+
+`databricks_delete_insert_history.jsonl` retains the entire certified 88-RPC
+hosted attempt byte for byte: twelve ordinary DELETE_INSERT5 submits (six
+BUILD/Confirm, six fresh SKIPs), one FULL1 full-refresh Record acknowledgement,
+twelve Explain responses, and all speculative, validation, telemetry and status
+envelopes. Strict replay of all128 prior corpora plus this entire trace passes
+with76 new assertions, zero gaps, unknown baselines or partial-history allowances.
+
+All13 hosted cells independently check complete typed source, cumulative R and
+selected F bags, ordered BIGINT/STRING/DATE/TIMESTAMP schema and full Delta
+histories. Incoming duplicate keys remain a multiset; absent NULL keys retain
+old NULL rows and selected NULL keys replace them through native `<=>`. Empty
+input retains cumulative rows, and full refresh resets R before ordinary5
+rebuild and reuse. Thirteen isolated State-disabled R references plus one
+pre-DDL literal fractional timestamp probe certify zero State RPCs. The new
+fractional probe proves exact .123/.456/.789/.012 UTC encodings without generic
+normalization. Fresh Rust acceptance remains held pending a separate root grant;
+this hosted fixture does not complete #149 or its #138/#140 dependencies.
