@@ -435,6 +435,9 @@ impl Sql for SqlService {
         if warehouse.invalid_dependency_definition(&raw_req) {
             return Err(Status::invalid_argument("Failed to process SQL"));
         }
+        if warehouse.invalid_source_less_audit_input(&raw_req) {
+            return Err(Status::invalid_argument("Failed to process SQL"));
+        }
         if warehouse.rejects_empty_sql_target(raw_req.target_table.as_deref()) {
             return Err(Status::invalid_argument("Failed to process SQL"));
         }

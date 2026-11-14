@@ -1,0 +1,124 @@
+{
+  "table_fail_first": {
+    "decision": "ready_to_execute",
+    "cached": {
+      "fields": {
+        "should_warn": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "should_error": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "failures": {
+          "kind": {
+            "int_value": 4
+          }
+        }
+      }
+    },
+    "recorded_R_rows": 3,
+    "fresh_F_rows": 3,
+    "raw_returncode": 1,
+    "status": "fail",
+    "ordinary_status": 0,
+    "physical_audit_rows": 3
+  },
+  "table_fail_repeat": {
+    "decision": "skip_execution",
+    "cached": {
+      "fields": {
+        "should_warn": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "should_error": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "failures": {
+          "kind": {
+            "int_value": 4
+          }
+        }
+      }
+    },
+    "recorded_R_rows": 3,
+    "fresh_F_rows": 3,
+    "raw_returncode": 1,
+    "status": "fail",
+    "ordinary_status": 0,
+    "physical_audit_rows": 3
+  },
+  "table_render_pass": {
+    "decision": "skip_execution",
+    "cached": {
+      "fields": {
+        "failures": {
+          "kind": {
+            "int_value": 4
+          }
+        },
+        "should_error": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "should_warn": {
+          "kind": {
+            "bool_value": true
+          }
+        }
+      }
+    },
+    "recorded_R_rows": 3,
+    "fresh_F_rows": 0,
+    "raw_returncode": 1,
+    "status": "fail",
+    "ordinary_status": 0,
+    "physical_audit_rows": 3
+  },
+  "table_render_pass_repeat": {
+    "decision": "skip_execution",
+    "cached": {
+      "fields": {
+        "should_warn": {
+          "kind": {
+            "bool_value": true
+          }
+        },
+        "failures": {
+          "kind": {
+            "int_value": 4
+          }
+        },
+        "should_error": {
+          "kind": {
+            "bool_value": true
+          }
+        }
+      }
+    },
+    "recorded_R_rows": 3,
+    "fresh_F_rows": 0,
+    "raw_returncode": 1,
+    "status": "fail",
+    "ordinary_status": 0,
+    "physical_audit_rows": 3
+  },
+  "table_body_pass_first": {
+    "decision": "invalid_argument_fallback",
+    "cached": null,
+    "recorded_R_rows": 3,
+    "fresh_F_rows": 0,
+    "physical_audit_rows": 0,
+    "ordinary_status": 3,
+    "raw_returncode": 0,
+    "status": "pass"
+  }
+}

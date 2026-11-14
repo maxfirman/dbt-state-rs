@@ -12,6 +12,129 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 
 pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
+/// Extra bounds on #144's source-less ordinary-submit rejection. The shared
+/// relation-read proof deliberately treats literal table functions as reading
+/// no named relation; they are uncharacterized here and must stay untouched.
+/// Only the captured literal/CAST/comparison shapes and derived SELECT/UNION
+/// inputs qualify. This supplies neither SQL equivalence nor audit elimination.
+pub(super) fn literal_audit_query(sql: &str) -> bool {
+    use sqlparser::ast::{
+        BinaryOperator, CastKind, Select, SetOperator, SetQuantifier, Value, Visit, Visitor,
+    };
+    use std::ops::ControlFlow;
+
+    fn literal_set(expr: &SetExpr) -> bool {
+        match expr {
+            SetExpr::Select(_) => true,
+            SetExpr::SetOperation {
+                op: SetOperator::Union,
+                set_quantifier: SetQuantifier::All,
+                left,
+                right,
+            } => literal_set(left) && literal_set(right),
+            _ => false,
+        }
+    }
+
+    struct LiteralAudit;
+    impl Visitor for LiteralAudit {
+        type Break = ();
+
+        fn pre_visit_query(&mut self, query: &sqlparser::ast::Query) -> ControlFlow<()> {
+            if literal_set(&query.body)
+                && query.with.is_none()
+                && query.order_by.is_none()
+                && query.limit_clause.is_none()
+                && query.fetch.is_none()
+                && query.locks.is_empty()
+                && query.for_clause.is_none()
+                && query.settings.is_none()
+                && query.format_clause.is_none()
+                && query.pipe_operators.is_empty()
+            {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+
+        fn pre_visit_select(&mut self, select: &Select) -> ControlFlow<()> {
+            if select.flavor == SelectFlavor::Standard
+                && select.optimizer_hints.is_empty()
+                && select.distinct.is_none()
+                && select.select_modifiers.is_none()
+                && select.top.is_none()
+                && select.exclude.is_none()
+                && select.into.is_none()
+                && select.lateral_views.is_empty()
+                && select.prewhere.is_none()
+                && select.connect_by.is_empty()
+                && matches!(&select.group_by, GroupByExpr::Expressions(e, m) if e.is_empty() && m.is_empty())
+                && select.cluster_by.is_empty()
+                && select.distribute_by.is_empty()
+                && select.sort_by.is_empty()
+                && select.having.is_none()
+                && select.named_window.is_empty()
+                && select.qualify.is_none()
+                && select.value_table_mode.is_none()
+                && select.from.len() <= 1
+                && select.from.iter().all(|table| table.joins.is_empty())
+                && select.projection.iter().all(|item| {
+                    matches!(
+                        item,
+                        SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. }
+                    )
+                })
+            {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+
+        fn pre_visit_table_factor(&mut self, table: &TableFactor) -> ControlFlow<()> {
+            if matches!(table, TableFactor::Derived { .. }) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            let literal = match expr {
+                Expr::Identifier(_) | Expr::Nested(_) => true,
+                Expr::Value(value) => matches!(
+                    value.value,
+                    Value::Number(_, _) | Value::SingleQuotedString(_) | Value::Null
+                ),
+                Expr::Cast {
+                    kind: CastKind::Cast,
+                    format: None,
+                    ..
+                } => true,
+                Expr::BinaryOp {
+                    op: BinaryOperator::Eq | BinaryOperator::And,
+                    ..
+                } => true,
+                _ => false,
+            };
+            if literal {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+    }
+
+    let Ok(statements) = Parser::parse_sql(&DatabricksDialect {}, sql) else {
+        return false;
+    };
+    let [statement @ Statement::Query(_)] = statements.as_slice() else {
+        return false;
+    };
+    statement.visit(&mut LiteralAudit).is_continue()
+}
+
 fn component(value: &str) -> Option<String> {
     let mut chars = value.chars();
     let first = chars.next()?;
