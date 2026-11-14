@@ -22,31 +22,31 @@ class Snapshot:
     predicate:str=P1
 
 # Worked literal snapshots, not output of replacement(), warehouse or State.
-_INITIAL=(('1','a','2026-11-01','2026-11-01T12:00:00.123Z'),
-          ('1','a','2026-11-01','2026-11-01T12:00:00.123Z'),
-          ('2','b-old','2026-11-02','2026-11-02T12:00:00.456Z'),
+_INITIAL=(('1','a','2026-11-01','2026-11-01T12:00:00.000Z'),
+          ('1','a','2026-11-01','2026-11-01T12:00:00.000Z'),
+          ('2','b-old','2026-11-02','2026-11-02T12:00:00.000Z'),
           ('3',None,None,None),('3',None,None,None))
-_SELECTED=(('1','a','2026-11-01','2026-11-01T12:00:00.123Z'),
-           ('1','a','2026-11-01','2026-11-01T12:00:00.123Z'),
+_SELECTED=(('1','a','2026-11-01','2026-11-01T12:00:00.000Z'),
+           ('1','a','2026-11-01','2026-11-01T12:00:00.000Z'),
            ('3',None,None,None),('3',None,None,None))
-_INSIDE=(('1','changed','2026-11-01','2026-11-01T12:00:00.123Z'),
-         ('1','changed','2026-11-01','2026-11-01T12:00:00.123Z'),
-         ('2','b-old','2026-11-02','2026-11-02T12:00:00.456Z'),
+_INSIDE=(('1','changed','2026-11-01','2026-11-01T12:00:00.000Z'),
+         ('1','changed','2026-11-01','2026-11-01T12:00:00.000Z'),
+         ('2','b-old','2026-11-02','2026-11-02T12:00:00.000Z'),
          ('3',None,None,None),('3',None,None,None),('3',None,None,None))
-_INSIDE_F=(('1','changed','2026-11-01','2026-11-01T12:00:00.123Z'),
-           ('1','changed','2026-11-01','2026-11-01T12:00:00.123Z'),
+_INSIDE_F=(('1','changed','2026-11-01','2026-11-01T12:00:00.000Z'),
+           ('1','changed','2026-11-01','2026-11-01T12:00:00.000Z'),
            ('3',None,None,None),('3',None,None,None),('3',None,None,None))
-_REFRESH=(('4','fresh','2026-11-01','2026-11-03T01:02:03.789Z'),
-          ('4','fresh','2026-11-01','2026-11-03T01:02:03.789Z'),
-          ('5','b-new','2026-11-02','2026-11-04T01:02:03.012Z'),('6','null-new',None,None))
-_NEXT=(('4','fresh','2026-11-01','2026-11-03T01:02:03.789Z'),
-       ('4','fresh','2026-11-01','2026-11-03T01:02:03.789Z'),('6','null-new',None,None))
+_REFRESH=(('4','fresh','2026-11-01','2026-11-03T01:02:03.000Z'),
+          ('4','fresh','2026-11-01','2026-11-03T01:02:03.000Z'),
+          ('5','b-new','2026-11-02','2026-11-04T01:02:03.000Z'),('6','null-new',None,None))
+_NEXT=(('4','fresh','2026-11-01','2026-11-03T01:02:03.000Z'),
+       ('4','fresh','2026-11-01','2026-11-03T01:02:03.000Z'),('6','null-new',None,None))
 HISTORY=MappingProxyType({
  'first':Snapshot(_INITIAL,_INITIAL,_INITIAL),
  'steady':Snapshot(_INITIAL,_INITIAL,_SELECTED),
  'inside':Snapshot(_INSIDE,_INSIDE,_INSIDE_F),
  'outside':Snapshot(_INSIDE_F,_INSIDE,_INSIDE_F),
- 'empty':Snapshot((),(('2','b-old','2026-11-02','2026-11-02T12:00:00.456Z'),),()),
+ 'empty':Snapshot((),(('2','b-old','2026-11-02','2026-11-02T12:00:00.000Z'),),()),
  'predicate':Snapshot((),(),(),P2),
  'refresh':Snapshot(_REFRESH,_REFRESH,_REFRESH,P2),
  'next_ordinary':Snapshot(_REFRESH,_NEXT,_NEXT,P2),
@@ -104,10 +104,14 @@ def assert_reference(stdout,stderr,direct,expected,sql,query_log,compiled):
     try:rows=json.loads(stdout,object_pairs_hook=unique_object)
     except (TypeError,ValueError) as error:raise Refused('reference:json') from error
     if not isinstance(rows,list):raise Refused('reference:json-array')
-    actual=[]
+    actual=[];whole_second_rows=0
     for row in rows:
         if not isinstance(row,dict) or list(row)!=['id','v','p','ts']:raise Refused('reference:columns')
         a,v,p,ts=row.values()
+        # Retained pinned147 show/API proof: exact UTC whole seconds denote
+        # exactly zero milliseconds. No offsets, space forms or other precision.
+        if type(ts) is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',ts):
+            ts=ts[:-1]+'.000Z';whole_second_rows+=1
         if (type(a) is not int or abs(a)>2**53-1
                 or (v is not None and type(v) is not str)
                 or (p is not None and (type(p) is not str or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',p)))
@@ -123,7 +127,7 @@ def assert_reference(stdout,stderr,direct,expected,sql,query_log,compiled):
             or not query.rstrip().endswith(';') or normalize(query.rstrip()[:-1])!=normalize(sql)):
         raise Refused('reference:query-sql')
     return {'complete_show_rows':len(rows),'typed_schema':True,'exact_select_only':True,
-            'duplicate_null_multiset':True,'exact_temporal_codec':True}
+            'duplicate_null_multiset':True,'exact_temporal_codec':True,'observed_show_whole_second_rows':whole_second_rows}
 
 
 from databricks_baseline import LeaseScope
@@ -138,6 +142,7 @@ def clearance_contract():
     return {'ticket':148,'catalog':'cdo_demo_db','schema':schema.split('.')[1],
       'schema_id':'6f14be2c-a920-4309-8240-caf8e8df7888','run_ids':runs,
       'max_final_permanent':4,'max_extra_concurrent_persistent':1,
+      'container_counts':{'hosted_before':8,'rust_before':10,'final_permanent':12,'persistent_peak':13},
       'permanent_exact_allowlists':{k:[f'{schema}.rw_{v}_{n}' for n in ('inputs','consumer')] for k,v in runs.items()},
       'persistent_auxiliary_exact_spellings':{k:[f'{schema}.rw_{v}_consumer{s}' for s in ('__dbt_stg','__dbt_backup')] for k,v in runs.items()},
       'session_temporary_unqualified_names':{k:f'rw_{v}_consumer__dbt_tmp' for k,v in runs.items()},
@@ -208,7 +213,7 @@ from databricks_survey import Campaign, check_manifest
 
 
 def ledger():
-    return {'version':1,'ticket':148,'cells':CELLS,
+    return {'version':2,'ticket':148,'cells':CELLS,
             'history':{k:{'source':v.source,'R':v.R,'F':v.F,'predicate':v.predicate} for k,v in HISTORY.items()},
             'schema':SCHEMA,'basis':'independent immutable literal multiset operation history'}
 

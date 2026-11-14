@@ -17,7 +17,7 @@ class PredicateReplacementOracle(unittest.TestCase):
         case=HISTORY['outside']
         self.assertEqual(len(case.R),6)
         self.assertEqual(len(case.F),5)
-        self.assertIn(('2','b-old','2026-11-02','2026-11-02T12:00:00.456Z'),case.R)
+        self.assertIn(('2','b-old','2026-11-02','2026-11-02T12:00:00.000Z'),case.R)
         self.assertFalse(any(r[0]=='2' for r in case.source))
         assert_typed(result(case.R),case.R)
         with self.assertRaisesRegex(Refused,'^physical:rows$'):
@@ -106,6 +106,17 @@ class PredicateReplacementOracle(unittest.TestCase):
         assert_replace_sql(sql,target,temp,predicate)
         for bad in (sql.replace('REPLACE WHERE '+predicate,'REPLACE WHERE p IS NULL'),sql.replace('BY NAME ',''),sql.replace('temporary view','table'),sql.replace(temp,'other'),sql+' DELETE FROM '+target+';'):
             with self.assertRaises(Refused):assert_replace_sql(bad,target,temp,predicate)
+
+    def test_evidenced_whole_second_show_spelling_is_typed_zero_milliseconds(self):
+        import json
+        rows=(('1','a','2026-11-01','2026-11-01T12:00:00.000Z'),)
+        sql=literal_reference(rows)
+        stdout='[{"id":1,"v":"a","p":"2026-11-01","ts":"2026-11-01T12:00:00Z"}]'
+        checks=assert_reference(stdout,'',result(rows),rows,sql,sql+';',sql)
+        self.assertEqual(checks['observed_show_whole_second_rows'],1)
+        for ts in ('2026-11-01 12:00:00','2026-11-01T12:00:00+00:00','2026-11-01T12:00:00.000000Z'):
+            bad=json.dumps([{'id':1,'v':'a','p':'2026-11-01','ts':ts}])
+            with self.assertRaises(Refused):assert_reference(bad,'',result(rows),rows,sql,sql+';',sql)
 
 
 if __name__=='__main__':unittest.main()
