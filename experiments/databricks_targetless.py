@@ -143,6 +143,8 @@ class Targetless(Baseline):
                     managed=managed, methods=dict(Counter(row['method'] for row in calls)),
                     execution_calls=[row for row in calls if row['method'] in (
                         'SubmitEnrichedSQL', 'SubmitEnrichedSQLSpeculative', 'ConfirmExecution', 'RecordExecutions')]))
+                if error:
+                    raise Refused(error)
 
     def run(self):
         # Unlike Baseline.run, this path never initializes schemas or executes SQL.

@@ -79,15 +79,14 @@ The fresh accepted hosted boundary is 15:38:43.321763–15:39:12.390481Z. Both
 leased inventories match exactly before/after, including all preexisting
 objects. This campaign creates no warehouse objects and performs no cleanup.
 
-The same nine selected-show cells also pass against the immutable current-source
-Rust server, with exact declared rows, State-disabled references and identical
+The retained Rust run independently passes the same nine selected-show cells, with exact declared rows, State-disabled references and identical
 18 auxiliary RPCs. Both leased inventories match exactly. No targetless
 execution RPC is reached on either backend.
 
 ## Rust diagnostic replay and guard coverage
 
-An immutable current-source server at `e8e0f8d010215914ddda1f8206fd1c762566b479`
-replays the complete crafted capture through the production public router and
+The retained Rust diagnostic run, attributed to source
+`e8e0f8d010215914ddda1f8206fd1c762566b479` by its source manifests, replays the complete crafted capture through the production public router and
 an isolated Postgres schema. Requests remain unchanged. **All 198 full-response
 or status comparisons differ:** 88 SQL submits return INVALID_ARGUMENT 3,
 `target_table is required for a non-test node`; their 22 confirmations return
@@ -144,7 +143,65 @@ All diagnostic traces remain outside accepted fixtures.
 
 Each campaign retains the executed helper, configuration, binary digests,
 complete capture and certification, per-cell requests/results and inventory
-snapshots. `immutable-current/provenance.json` pins the empty production diff
-and server/probe/proxy binaries; the server SHA-256 is
-`79ecc4ee25bfac7b8b5cb728df39354915f1f274cb4b5838a80511d0e33146e9`.
-`rust-public-replay/full-response-deltas.json` preserves every mismatch.
+snapshots. `rust-public-replay/full-response-deltas.json` preserves every mismatch.
+
+## Package review correction and bounded revalidation
+
+The original server digest claim
+`79ecc4ee25bfac7b8b5cb728df39354915f1f274cb4b5838a80511d0e33146e9`
+is withdrawn as historical executable attribution. Retained
+`immutable-current/dbt-state-server` actually hashes to
+`1eb2ded482cfa5c7d366aff984112af641e88830eaa283d49b3160a450e3d69e`,
+matching its retained provenance entry. The provenance file itself hashes to
+`34d82babce83bdcbd29f0ac742f619550c34910c85205fb3855f9417d4a3f596`;
+its stale `provenance.json` map entry
+`9720ba849e2a86fb233e6cfdc79986497c1b38d4136265c0456fd599dae422ca`
+is a prior-file input digest, not a self digest. Both retained top-level launch
+scripts copy binaries and rewrite that manifest before launch. No historical
+PID/argv/executable-byte receipt was found, so neither digest can be assigned
+to either historical Rust run. Original files and manifests remain unchanged;
+`review-fix/reconciliation.json` records this correction additively.
+
+The 63-file source manifest independently matches this package's production
+and build inputs. That source equivalence, the retained build/gate logs and
+the independently passing observations are distinct from the unavailable
+historical binary receipt. Reinspection confirms all nine retained hosted
+`e3` checks and nine Rust `e5` checks have null errors, exact declared literal
+rows, six managed invocations with 18 auxiliary RPCs, three references with
+zero RPCs, zero execution RPCs and unchanged inventories. The 198 diagnostic
+comparisons remain observations with the historical executable-attribution
+limitation above.
+
+The helper previously caught a dbt `Refused` error and saved it without failing
+the campaign. It now raises that error after saving reachability evidence;
+`run()` retains the failure in its summary before raising. An offline command
+boundary test injects exit 17 and verifies the original error, result and log
+survive and the campaign fails. A second test verifies successful nine-command
+acceptance. These two tests pass; the fault test failed against the original
+helper. No production, fixture or capability-gap change is included.
+
+Fresh review validation uses the unchanged retained binaries after independently
+checking their manifest entries and all 63 production/build source hashes.
+`review-fix/current/source-equivalence.json` records that check, without claiming
+a reconstructed historical build receipt. `launch-receipts.json` records argv,
+PID, prelaunch file digest and `/proc/PID/exe` digest for the server, two proxies,
+two client version checks and 18 selected-show commands; all 23 executable
+receipts match their prelaunch bytes. The new Rust server launch is therefore
+attributed to the `1eb2ded…` executable above. The first local validation attempt
+failed before dbt because the system Python lacked PyYAML; its script and launch
+receipts remain preserved, and the successful retry used the existing isolated
+environment.
+
+Both fresh hosted and Rust runs independently pass all nine literal-row checks,
+with six managed invocations, 18 auxiliary RPCs, three zero-RPC references and
+zero execution RPCs per backend. Certified capture hashes are respectively
+`479f44e9a1bc182f2f25b973faa1a33144432af7ea62d29d749ad725b3ad629b`
+and `f6c4477e6f9ef9a4f1f6d5751dc6cc35a3561c65232d022225699c0e6f2ceea8`.
+The #141 lifecycle owner granted the stable interval and received its completion
+boundary; both inventories remain 100/97 objects before/after. No warehouse
+DDL, DML, object creation or cleanup occurred. `review-fix/current/acceptance.json`
+indexes these checks and confirms all four original immutable-file hashes are
+unchanged. `review-fix/fault-red.log` and `fault-green.log` retain the regression
+checks. Existing workspace/Clippy/conformance gates remain prior source-equivalent
+evidence; broad Cargo gates were not rerun for this helper/report/test-only fix.
+#158 and #132 remain INCOMPLETE, with the absent-target guard retained.
