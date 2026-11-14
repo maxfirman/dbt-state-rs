@@ -68,7 +68,9 @@ retain their external-table and view-ignored branches; relative source ages
 round minutes as captured.
 
 New Databricks identities
-use `dbt-state-databricks-identifiers-v1`; independently captured old-server
+use `dbt-state-databricks-identifiers-v2` (the exact rendered Spark aliases are
+covered by [#159 isolation evidence](reports/databricks-isolation-2026-11-13.md));
+independently captured old-server
 hash bytes must cold-miss, including an old pending execution confirmed after
 upgrade. Existing warehouse versions are unchanged.
 

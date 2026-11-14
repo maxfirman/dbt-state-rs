@@ -47,9 +47,14 @@ pub enum Warehouse {
 impl Warehouse {
     pub fn from_dialect(dialect: &str) -> Self {
         // dbt can append dialect options, for example
-        // "redshift, normalization_strategy = lowercase". Keep the full wire
-        // string in fingerprints. Uncharacterized options cannot inherit the
+        // "redshift, normalization_strategy = lowercase". Uncharacterized
+        // option strings keep their full fingerprint framing and cannot inherit the
         // Snowflake reuse rules merely because the family name matches.
+        // #159 captured this exact Spark option spelling. Other option strings
+        // retain their conservative policy until independently characterized.
+        if dialect == "spark, normalization_strategy = lowercase" {
+            return Self::Databricks;
+        }
         let trimmed = dialect.trim();
         let family = trimmed
             .split(',')
@@ -69,6 +74,105 @@ impl Warehouse {
             }
             "redshift" => Self::Redshift,
             _ => Self::Other,
+        }
+    }
+
+    /// Exact rendered SQL dialect aliases captured in #159. Case, padding and
+    /// arbitrary options are not alias evidence.
+    fn rendered_dialect_alias(dialect: &str) -> Option<&'static str> {
+        match dialect {
+            "databricks" | "spark" | "spark, normalization_strategy = lowercase" => {
+                Some("databricks")
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn rendered_identity_dialect(dialect: &str) -> String {
+        Self::rendered_dialect_alias(dialect)
+            .map(str::to_owned)
+            .unwrap_or_else(|| dialect.to_ascii_lowercase())
+    }
+
+    pub(crate) fn rendered_dialect_aliases(left: &str, right: &str) -> bool {
+        matches!(
+            (Self::rendered_dialect_alias(left), Self::rendered_dialect_alias(right)),
+            (Some(left), Some(right)) if left == right
+        )
+    }
+
+    /// Source-less rendered FULL/VIEW query diagnostics have captured evidence.
+    /// No diagnostic can become a physical reuse/copy candidate.
+    fn permits_literal_query_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self == Self::Databricks
+            && matches!(req.execution_type, 1 | 10)
+            && !req.compare_unrendered_code
+            && req.query_dependencies.is_empty()
+            && self.sql_reads_relation(&req.sql) == Some(false)
+            && req.target_table.as_ref().is_some_and(|target| {
+                !target.is_empty()
+                    && (req.tables.is_empty()
+                        || req.tables.len() == 1
+                            && req.tables[0].name == *target
+                            && req.tables[0].last_modified_epoch.is_some())
+            })
+    }
+
+    pub(crate) fn permits_target_query_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        req.table_namespace.is_none() && self.permits_literal_query_diagnostic(req)
+    }
+
+    pub(crate) fn permits_other_target_query_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self.permits_literal_query_diagnostic(req)
+            && req.tables.len() == 1
+            && (req.execution_type == 10 || req.clone_chain_depth_limit == Some(0))
+    }
+
+    pub(crate) fn permits_absent_scope_definition_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        req.table_namespace
+            .as_deref()
+            .is_some_and(|namespace| !namespace.is_empty())
+            && req.tables.len() == 1
+            && self.permits_literal_query_diagnostic(req)
+    }
+
+    /// Hosted Snowflake quotes backticks as literal identifier characters in
+    /// this crafted three-component metadata spelling. Presentation never
+    /// changes the physical key, persisted raw name or own-input comparison.
+    pub(crate) fn explain_target_name(self, name: &str) -> String {
+        let parts: Vec<_> = name.split('.').collect();
+        if self == Self::Snowflake
+            && parts.len() == 3
+            && parts.iter().all(|part| {
+                part.strip_prefix('`')
+                    .and_then(|p| p.strip_suffix('`'))
+                    .is_some_and(|inner| {
+                        !inner.is_empty()
+                            && inner
+                                .bytes()
+                                .all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    })
+            })
+        {
+            parts
+                .iter()
+                .map(|part| format!("\"{part}\""))
+                .collect::<Vec<_>>()
+                .join(".")
+        } else {
+            name.to_owned()
         }
     }
 
@@ -704,7 +808,7 @@ mod tests {
         {
             let expected: &[u8] = match warehouse {
                 Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1",
-                Warehouse::Databricks => b"dbt-state-databricks-identifiers-v1",
+                Warehouse::Databricks => b"dbt-state-databricks-identifiers-v2",
                 _ => b"dbt-state-sql-v4",
             };
             assert_eq!(warehouse.sql_identity_version(), expected, "{warehouse:?}");

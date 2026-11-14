@@ -107,6 +107,11 @@ pub enum DecisionReason {
     /// A first data test reports only its existing result relation, without
     /// recorded query evidence; the query-analysis section is empty.
     DataTestExistingTargetWithoutHistory,
+    /// Query evidence outside the absent namespace affects only diagnostics.
+    QueryObservedOutsideScope,
+    QueryChangedOutsideScope,
+    /// A source-less FULL result exists elsewhere, but the request forbids copying.
+    ExistingTargetCopyDisabledDiagnostic,
     /// A latest row exists but is not a reuse candidate.
     NoReuseCandidate(NoCandidate),
     /// The reuse candidate recorded a different genuine upstream set.
@@ -136,10 +141,13 @@ pub enum DecisionReason {
 
 impl DecisionReason {
     /// Every decision reason, in declaration order.
-    const ALL: [DecisionReason; 24] = [
+    const ALL: [DecisionReason; 27] = [
         Self::FirstBuild,
         Self::ExistingTargetWithoutHistory,
         Self::DataTestExistingTargetWithoutHistory,
+        Self::QueryObservedOutsideScope,
+        Self::QueryChangedOutsideScope,
+        Self::ExistingTargetCopyDisabledDiagnostic,
         Self::NoReuseCandidate(NoCandidate::IdentityMismatch),
         Self::NoReuseCandidate(NoCandidate::ResolutionContextChanged),
         Self::NoReuseCandidate(NoCandidate::InputBindingChanged),
@@ -171,6 +179,11 @@ impl DecisionReason {
             Self::ExistingTargetWithoutHistory => "existing_target_without_history",
             Self::DataTestExistingTargetWithoutHistory => {
                 "data_test_existing_target_without_history"
+            }
+            Self::QueryObservedOutsideScope => "query_observed_outside_scope",
+            Self::QueryChangedOutsideScope => "query_changed_outside_scope",
+            Self::ExistingTargetCopyDisabledDiagnostic => {
+                "existing_target_copy_disabled_diagnostic"
             }
             Self::NoReuseCandidate(NoCandidate::IdentityMismatch) => {
                 "no_reuse_candidate.identity_mismatch"
@@ -391,6 +404,61 @@ impl DecisionRecord {
             self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
             self.is_stale = older != Reuse::Fresh;
             self.build_age_ms = build_age_ms;
+        }
+        self
+    }
+
+    /// A diagnostic match has no physical result or freshness evidence. The
+    /// decision remains BUILD and retains only its scoped Explain anchors.
+    pub(crate) fn with_namespace_query_diagnostic(mut self, target_present: bool) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(if target_present {
+                REJECTION_LATEST_QUERY_HASH_NOT_MATCH
+            } else {
+                REJECTION_TARGET_TABLE_DOES_NOT_EXIST
+            });
+            self.clone_rejection_reason = Some(REJECTION_TARGET_TABLE_MATCH);
+            self.is_stale = false;
+            self.build_age_ms = None;
+            if !target_present {
+                self.reason = DecisionReason::NoReuseCandidate(NoCandidate::OwnTargetMissing);
+            } else if self.reason == DecisionReason::ExistingTargetWithoutHistory {
+                self.reason = DecisionReason::QueryObservedOutsideScope;
+            }
+        }
+        self
+    }
+
+    /// Only a refused optimization is reported. No external-scope build is
+    /// retained as a physical candidate or freshness/Explain anchor.
+    pub(crate) fn with_other_target_query_diagnostic(mut self, execution_type: i32) -> Self {
+        if self.class == DecisionKind::Build {
+            self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_MISMATCH);
+            self.clone_rejection_reason =
+                Some(if execution_type == ModelExecutionType::View as i32 {
+                    REJECTION_EXECUTION_TYPE_NOT_FULL
+                } else {
+                    REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED
+                });
+            self.is_stale = false;
+            self.build_age_ms = None;
+            if execution_type == ModelExecutionType::Full as i32 {
+                self.reason = DecisionReason::ExistingTargetCopyDisabledDiagnostic;
+                self.description = COPY_DISABLED_DESCRIPTION.into();
+            } else if self.reason == DecisionReason::ExistingTargetWithoutHistory {
+                self.reason = DecisionReason::QueryObservedOutsideScope;
+            }
+        }
+        self
+    }
+
+    /// Keep the scoped BUILD and its rejection codes. An absent-scope
+    /// definition can explain the query comparison, never justify reuse.
+    pub(crate) fn with_changed_absent_scope_definition_diagnostic(mut self) -> Self {
+        if self.class == DecisionKind::Build
+            && self.reason == DecisionReason::ExistingTargetWithoutHistory
+        {
+            self.reason = DecisionReason::QueryChangedOutsideScope;
         }
         self
     }
@@ -2360,6 +2428,18 @@ mod tests {
             (
                 DecisionReason::DataTestExistingTargetWithoutHistory,
                 "data_test_existing_target_without_history",
+            ),
+            (
+                DecisionReason::QueryObservedOutsideScope,
+                "query_observed_outside_scope",
+            ),
+            (
+                DecisionReason::QueryChangedOutsideScope,
+                "query_changed_outside_scope",
+            ),
+            (
+                DecisionReason::ExistingTargetCopyDisabledDiagnostic,
+                "existing_target_copy_disabled_diagnostic",
             ),
             (
                 DecisionReason::NoReuseCandidate(NoCandidate::IdentityMismatch),

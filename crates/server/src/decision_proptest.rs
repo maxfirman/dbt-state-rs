@@ -458,7 +458,9 @@ fn hosted_wire(
         DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
             (DecisionKind::Build, rebuild, Some(2), Some(2))
         }
-        DecisionReason::ExistingTargetWithoutHistory
+        DecisionReason::QueryChangedOutsideScope
+        | DecisionReason::QueryObservedOutsideScope
+        | DecisionReason::ExistingTargetWithoutHistory
         | DecisionReason::DataTestExistingTargetWithoutHistory
         | DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
@@ -477,7 +479,7 @@ fn hosted_wire(
             Some(1),
             Some(10),
         ),
-        DecisionReason::CopyDisabled => (
+        DecisionReason::CopyDisabled | DecisionReason::ExistingTargetCopyDisabledDiagnostic => (
             DecisionKind::Build,
             "model was executed because cloning is disabled",
             Some(1),

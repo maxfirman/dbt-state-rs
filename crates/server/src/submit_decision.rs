@@ -29,7 +29,8 @@ pub use crate::result_copy::ResultCopy;
 use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SeedCopyTarget, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{
-    CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, SeedCopyCandidateQuery, Store,
+    CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, QueryDiagnosticNamespaces,
+    SeedCopyCandidateQuery, Store,
 };
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
@@ -337,6 +338,94 @@ async fn decide_sql(
         }
         (None, Some(clone_rejection_reason)) => record.with_refused_copy(clone_rejection_reason),
         (None, None) => record,
+    };
+    let record = if candidate.is_none()
+        && record.class == DecisionKind::Build
+        && Warehouse::from_dialect(&req.dialect).permits_target_query_diagnostic(req)
+        && matches!(
+            record.reason,
+            decision::DecisionReason::FirstBuild
+                | decision::DecisionReason::ExistingTargetWithoutHistory
+                | decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::IdentityMismatch
+                        | decision::NoCandidate::OwnTargetMissing
+                )
+        )
+        && store
+            .has_target_query_diagnostic(org_id, &evidence.target_table, &req.dialect, |row| {
+                reuse_candidate::older_build_matches(req, &evidence, row)
+                    && row
+                        .input_tables
+                        .iter()
+                        .all(|input| input.name == row.target_table)
+            })
+            .await?
+    {
+        record.with_namespace_query_diagnostic(!freshness.own_target_absent)
+    } else {
+        record
+    };
+    let other_diagnostic = if candidate.is_none()
+        && record.class == DecisionKind::Build
+        && record.reason == decision::DecisionReason::ExistingTargetWithoutHistory
+        && Warehouse::from_dialect(&req.dialect).permits_other_target_query_diagnostic(req)
+    {
+        let namespaces = match req.table_namespace.as_deref() {
+            None => QueryDiagnosticNamespaces::All,
+            Some(namespace) => {
+                QueryDiagnosticNamespaces::Exact(execution::non_blank_namespace(Some(namespace)))
+            }
+        };
+        store
+            .other_target_query_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                namespaces,
+                |row| {
+                    reuse_candidate::older_build_matches(req, &evidence, row)
+                        && row
+                            .input_tables
+                            .iter()
+                            .all(|input| input.name == row.target_table)
+                },
+            )
+            .await?
+    } else {
+        None
+    };
+    let record = if other_diagnostic.is_some() {
+        record.with_other_target_query_diagnostic(req.execution_type)
+    } else {
+        record
+    };
+    if let Some(reference) =
+        other_diagnostic.filter(|_| req.execution_type == ModelExecutionType::Full as i32)
+    {
+        let ids = DecisionIds::mint();
+        write_pending(store, &evidence, &ids).await?;
+        return Ok(Some(SubmitOutcome::ChainLimitExecute {
+            ids,
+            record,
+            source_table: reference.source_name,
+        }));
+    }
+    let record = if candidate.is_none()
+        && record.reason == decision::DecisionReason::ExistingTargetWithoutHistory
+        && Warehouse::from_dialect(&req.dialect).permits_absent_scope_definition_diagnostic(req)
+        && store
+            .absent_scope_query_definition_changed(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                req.execution_type,
+                evidence.node_sql_hash.as_deref(),
+            )
+            .await?
+    {
+        record.with_changed_absent_scope_definition_diagnostic()
+    } else {
+        record
     };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(

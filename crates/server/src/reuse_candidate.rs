@@ -453,7 +453,7 @@ fn identity_matches(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
             && row.node_template_hash == evidence.node_template_hash)
 }
 
-/// Same target, same execution type and exact dialect options, same identity.
+/// Same target, same execution type and evidenced dialect identity.
 /// A row whose recorded schema-abstracted logic differs from the submit's is
 /// rejected even when the SQL hash matches: that is the upgrade invalidation
 /// for rows written under an older namespace identity.
@@ -480,8 +480,11 @@ fn same_identity(
     };
     identity_matches(evidence, row)
         && logic_compatible
-        // Exact on purpose: strict same-target identity, not dialect recognition.
-        && row.dialect == req.dialect
+        // Alias admission requires the rendered identity itself to match; a
+        // template-only match cannot equate uncharacterized dialect options.
+        && (row.dialect == req.dialect
+            || row.node_sql_hash == evidence.node_sql_hash
+                && crate::warehouse::Warehouse::rendered_dialect_aliases(&row.dialect, &req.dialect))
 }
 
 /// Only CLONE-ORIGIN rows are adopted across environments. Ordinary rows are

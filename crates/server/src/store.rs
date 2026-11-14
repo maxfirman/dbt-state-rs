@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 mod history;
 pub use history::CopySourceBuild;
+pub(crate) use history::QueryDiagnosticNamespaces;
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.
@@ -466,7 +467,9 @@ impl Store {
         .bind(&e.node_configs_hash)
         .bind(&e.node_contract_hash)
         .bind(&e.node_unique_id)
-        .bind(&e.table_namespace)
+        .bind(crate::execution::non_blank_namespace(
+            e.table_namespace.as_deref(),
+        ))
         .bind(&e.dialect)
         .bind(input_tables)
         .bind(&e.values_hash)
@@ -748,7 +751,7 @@ impl Store {
         let mut rows: Vec<ExplainDecisionRow> = sqlx::query_as(
             r#"
             SELECT DISTINCT ON (execution_decision_id)
-                   execution_decision_id, decision, execution_type,
+                   execution_decision_id, decision, execution_type, dialect,
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
@@ -802,6 +805,7 @@ impl Store {
 /// its matched `executions` anchor (ticket #30) when one was recorded.
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
+    pub dialect: Option<String>,
     pub execution_decision_id: Option<String>,
     pub decision: String,
     pub execution_type: i32,
@@ -883,6 +887,7 @@ mod tests {
 
     fn decision_row(anchor_node_sql_hash: Option<&str>) -> ExplainDecisionRow {
         ExplainDecisionRow {
+            dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),
             execution_type: 1,

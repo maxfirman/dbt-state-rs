@@ -9,7 +9,7 @@ use sqlparser::dialect::DatabricksDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::Location;
 
-pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-identifiers-v1";
+pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-identifiers-v2";
 
 fn component(value: &str) -> Option<String> {
     let mut chars = value.chars();

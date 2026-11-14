@@ -144,7 +144,10 @@ fn identity(req: &serde_json::Value) -> String {
             req["table_namespace"],
             req["dbt_node_state"]["node_unique_id"]
         )
-    } else if req["dialect"].as_str() == Some("databricks") {
+    } else if matches!(
+        req["dialect"].as_str(),
+        Some("databricks" | "spark" | "spark, normalization_strategy = lowercase")
+    ) {
         // Causal bookkeeping only: the public RPC still receives every original
         // byte and its complete response is compared. The identifier corpus
         // proves these plain, fully qualified spellings share physical history.
@@ -168,7 +171,13 @@ fn identity(req: &serde_json::Value) -> String {
             .filter(|p| p.len() == 3)
             .map(|p| p.join("."))
             .unwrap_or_else(|| raw.into());
-        format!("target|{}|{}", req["table_namespace"], target)
+        // Both wire spellings address the absent physical scope. This only
+        // strengthens causal tracking; requests and full responses stay intact.
+        let namespace = match req["table_namespace"].as_str() {
+            None | Some("") => serde_json::Value::Null,
+            Some(_) => req["table_namespace"].clone(),
+        };
+        format!("target|{}|{}", namespace, target)
     } else {
         format!("target|{}", req["target_table"])
     }
@@ -176,18 +185,46 @@ fn identity(req: &serde_json::Value) -> String {
 
 #[test]
 fn databricks_replay_causality_keeps_distinct_physical_scopes() {
-    let mut first = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
-    let mut second = first.clone();
-    second["target_table"] = "CAT.SCHEMA.TABLE".into();
-    assert_eq!(identity(&first), identity(&second));
-    second["table_namespace"] = "other-connection".into();
-    assert_ne!(identity(&first), identity(&second));
-    second["table_namespace"] = "connection".into();
-    second["target_table"] = "cat.other_schema.table".into();
-    assert_ne!(identity(&first), identity(&second));
-    first["target_table"] = "`cat.schema`.`table`".into();
-    second["target_table"] = "cat.schema.table".into();
-    assert_ne!(identity(&first), identity(&second));
+    let base = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
+    for dialect in [
+        "databricks",
+        "spark",
+        "spark, normalization_strategy = lowercase",
+    ] {
+        let mut request = base.clone();
+        request["dialect"] = dialect.into();
+        request["target_table"] = "CAT.SCHEMA.TABLE".into();
+        assert_eq!(identity(&base), identity(&request));
+        request["table_namespace"] = "other-connection".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["table_namespace"] = "connection".into();
+        request["target_table"] = "cat.other_schema.table".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["target_table"] = "`cat.schema`.`table`".into();
+        assert_ne!(identity(&base), identity(&request));
+        request["target_table"] = base["target_table"].clone();
+        request["table_namespace"] = serde_json::Value::Null;
+        let absent = identity(&request);
+        request["table_namespace"] = "".into();
+        assert_eq!(absent, identity(&request));
+        assert_ne!(identity(&base), identity(&request));
+    }
+    for unsupported in [
+        "Databricks",
+        "spark, normalization_strategy = uppercase",
+        "spark , normalization_strategy = lowercase",
+    ] {
+        let mut request = base.clone();
+        request["dialect"] = unsupported.into();
+        assert_ne!(identity(&base), identity(&request));
+    }
+    // Physical history still exists when SQL/template comparison options
+    // change. Treating those as a new causal scope could hide a mismatch as an
+    // unknown baseline; the production request/response must remain compared.
+    let mut changed_identity = base.clone();
+    changed_identity["compare_unrendered_code"] = true.into();
+    changed_identity["sql"] = "select 160 as changed".into();
+    assert_eq!(identity(&base), identity(&changed_identity));
 }
 
 fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
@@ -658,7 +695,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        79,
+        88,
         "update corpus coverage when adding fixtures"
     );
     let mut total_asserted = 0;

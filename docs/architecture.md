@@ -119,7 +119,13 @@ current row has the submit's identity under another execution type and
 recorded the submit's genuine upstream names, the latest
 row of the submit's type is (`submit_decision::select_sql`, ADR 0007); it is
 never reused. Other upstream names are another identity (#116). A client without a namespace gets an isolated absent-namespace
-scope per family. Data tests select by org, project, warehouse scope and UID.
+scope per family. Empty strings share that physical scope, including legacy
+confirmed and pending rows. Source-less Databricks rejection/Explain reads can
+return query diagnostics from outside a physical reuse scope; those reads
+return only booleans or a name and never feed a reuse/copy candidate, producer
+or freshness anchor. A hosted absent-to-named fallback conflicts with this
+required self-hosted isolation and remains [an explicit incomplete
+contract](reports/databricks-isolation-2026-11-13.md). Data tests select by org, project, warehouse scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.
 
