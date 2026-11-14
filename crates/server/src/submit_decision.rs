@@ -177,6 +177,13 @@ pub async fn speculative_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
+    // Invalid explicit template evidence must not gain a speculative SKIP
+    // that the ordinary adapter rejects. Malformed speculative status policy
+    // is uncharacterized; retain the conservative undecided fallback.
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if warehouse.invalid_template_signature(req) || warehouse.invalid_dependency_definition(req) {
+        return Ok(None);
+    }
     let needs_no_table_evidence = req.execution_type == ModelExecutionType::DbtDataTest as i32
         && req.target_table.as_deref().is_none_or(str::is_empty)
         && req.tables.is_empty();
@@ -369,7 +376,11 @@ async fn decide_sql(
     };
     let other_diagnostic = if candidate.is_none()
         && record.class == DecisionKind::Build
-        && record.reason == decision::DecisionReason::ExistingTargetWithoutHistory
+        && matches!(
+            record.reason,
+            decision::DecisionReason::FirstBuild
+                | decision::DecisionReason::ExistingTargetWithoutHistory
+        )
         && Warehouse::from_dialect(&req.dialect).permits_other_target_query_diagnostic(req)
     {
         let namespaces = match req.table_namespace.as_deref() {
@@ -412,6 +423,29 @@ async fn decide_sql(
             source_table: reference.source_name,
         }));
     }
+    let record = if candidate.is_none()
+        && record.reason == decision::DecisionReason::FirstBuild
+        && Warehouse::from_dialect(&req.dialect).permits_absent_target_history_diagnostic(req)
+        && store
+            .has_other_target_history_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                req.table_namespace.as_deref(),
+                |row| {
+                    reuse_candidate::older_build_matches(req, &evidence, row)
+                        && row
+                            .input_tables
+                            .iter()
+                            .all(|input| input.name == row.target_table)
+                },
+            )
+            .await?
+    {
+        record.with_absent_target_history_diagnostic()
+    } else {
+        record
+    };
     let record = if candidate.is_none()
         && record.reason == decision::DecisionReason::ExistingTargetWithoutHistory
         && Warehouse::from_dialect(&req.dialect).permits_absent_scope_definition_diagnostic(req)

@@ -207,6 +207,36 @@ impl Store {
             }))
     }
 
+    /// Historical same-scope query evidence for an absent FULL target's
+    /// refusal codes only. It never supplies a physical candidate, source,
+    /// producer or freshness/Explain anchor.
+    pub(crate) async fn has_other_target_history_diagnostic(
+        &self,
+        org_id: &str,
+        target_table: &str,
+        dialect: &str,
+        table_namespace: Option<&str>,
+        matches: impl Fn(&ExecutionRow) -> bool,
+    ) -> sqlx::Result<bool> {
+        let mut query = QueryBuilder::new("SELECT ");
+        query.push(ExecutionRow::COLUMNS)
+            .push(" FROM executions WHERE org_id = ").push_bind(org_id)
+            .push(" AND status = 'confirmed' AND warehouse_family = ").push_bind(warehouse_family(dialect))
+            .push(" AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM ")
+            .push_bind(crate::execution::non_blank_namespace(table_namespace))
+            .push(" AND physical_target_key <> ")
+            .push_bind(Warehouse::physical_scope_key(dialect, target_table))
+            .push(" AND last_modified_epoch IS NOT NULL ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 50");
+        let rows = query
+            .build_query_as::<ExecutionRow>()
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| row.into_checked(false).ok())
+            .any(|row| matches(&row)))
+    }
+
     /// Last definition in the absent namespace, solely for the explanation of
     /// a fresh named scope. Never return its execution as physical evidence.
     pub(crate) async fn absent_scope_query_definition_changed(

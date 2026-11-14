@@ -10,7 +10,7 @@ use sqlparser::dialect::DatabricksDialect;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 
-pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v3";
+pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
 fn component(value: &str) -> Option<String> {
     let mut chars = value.chars();
@@ -485,4 +485,83 @@ pub(super) fn cte_formatting_sql(sql: &str, catalog: &str, schema: &str) -> Opti
             .tokenize()
             .ok()?,
     )
+}
+
+/// Explain-only leaf traversal of whole dependency bindings. Physical evidence
+/// is never reordered or rewritten: an unknown/ambiguous/cyclic graph supplies
+/// no display order. Each definition resolves under its own reported defaults.
+pub(super) fn explain_input_order(
+    req: &crate::query_cache::SubmitEnrichedSqlRequest,
+) -> Option<Vec<String>> {
+    fn walk(
+        sql: &str,
+        catalog: &str,
+        schema: &str,
+        dependencies: &[crate::query_cache::QueryDependency],
+        stack: &mut Vec<String>,
+        output: &mut Vec<String>,
+        budget: &mut usize,
+    ) -> Option<()> {
+        // Display enrichment must stay bounded for adversarial dependency
+        // DAGs as well as cycles. Overflow retains the submitted ordering.
+        if stack.len() >= 32 || *budget == 0 {
+            return None;
+        }
+        let statements = Parser::parse_sql(&DatabricksDialect {}, sql).ok()?;
+        let [Statement::Query(query)] = statements.as_slice() else {
+            return None;
+        };
+        if query.with.is_some() {
+            return None;
+        }
+        let mut names = Vec::new();
+        let _ = sqlparser::ast::visit_relations(&statements, |name| {
+            names.push(name.clone());
+            std::ops::ControlFlow::<()>::Continue(())
+        });
+        for name in names {
+            *budget = budget.checked_sub(1)?;
+            let components = parts(&name)?;
+            let qualified = match components.as_slice() {
+                [name] => vec![component(catalog)?, component(schema)?, name.clone()],
+                [schema, name] => vec![component(catalog)?, schema.clone(), name.clone()],
+                [catalog, schema, name] => vec![catalog.clone(), schema.clone(), name.clone()],
+                _ => return None,
+            };
+            let physical = rendered(&qualified);
+            let mut matching = dependencies
+                .iter()
+                .filter(|d| physical_name(&d.name).as_ref() == Some(&physical));
+            if let Some(dependency) = matching.next() {
+                if matching.next().is_some() || stack.contains(&physical) {
+                    return None;
+                }
+                stack.push(physical);
+                walk(
+                    &dependency.query,
+                    &dependency.default_catalog,
+                    &dependency.default_schema,
+                    dependencies,
+                    stack,
+                    output,
+                    budget,
+                )?;
+                stack.pop();
+            } else if !output.contains(&physical) {
+                output.push(physical);
+            }
+        }
+        Some(())
+    }
+    let mut output = Vec::new();
+    walk(
+        &req.sql,
+        &req.default_catalog,
+        req.default_schema.as_deref().unwrap_or(""),
+        &req.query_dependencies,
+        &mut Vec::new(),
+        &mut output,
+        &mut 1024,
+    )?;
+    Some(output)
 }

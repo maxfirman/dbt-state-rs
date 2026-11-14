@@ -553,6 +553,7 @@ fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidenc
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
         && (!req.compare_unrendered_code
+            || evidence.node_template_hash.is_none()
             || evidence
                 .node_body_hash
                 .as_ref()

@@ -313,6 +313,7 @@ fn submit_capture(
         unmatched_execution_id: record.unmatched_execution_id,
         reads_relation: None,
         display_submitted_at_ms: None,
+        template_comparison: None,
     }
 }
 
@@ -327,6 +328,8 @@ fn capture_submit(
     let input = crate::capture::CaptureInput {
         display_submitted_at_ms: crate::warehouse::Warehouse::from_dialect(&req.dialect)
             .explain_submit_clock(now_ms),
+        template_comparison: crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            .template_comparison(req),
         table_namespace: req.table_namespace.clone(),
         target_table: req.target_table.clone(),
         default_schema: req.default_schema.clone(),
@@ -425,9 +428,14 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
         let raw_req = request.into_inner();
-        if crate::warehouse::Warehouse::from_dialect(&raw_req.dialect)
-            .rejects_empty_sql_target(raw_req.target_table.as_deref())
-        {
+        let warehouse = crate::warehouse::Warehouse::from_dialect(&raw_req.dialect);
+        if warehouse.invalid_template_signature(&raw_req) {
+            return Err(Status::internal("Database operation failed"));
+        }
+        if warehouse.invalid_dependency_definition(&raw_req) {
+            return Err(Status::invalid_argument("Failed to process SQL"));
+        }
+        if warehouse.rejects_empty_sql_target(raw_req.target_table.as_deref()) {
             return Err(Status::invalid_argument("Failed to process SQL"));
         }
         let req =
@@ -478,6 +486,12 @@ impl Sql for SqlService {
         let cap_meta = capture_meta_of(&request);
         let now_ms = self.0.clock.now_ms(request.metadata());
         let raw_req = request.into_inner();
+        if crate::warehouse::Warehouse::from_dialect(&raw_req.dialect)
+            .invalid_template_signature(&raw_req)
+        {
+            return Err(Status::internal("Database operation failed"));
+        }
+
         let req =
             crate::warehouse::Warehouse::from_dialect(&raw_req.dialect).resolve_submit(&raw_req);
         // Decided only where the decision needs no table evidence: a data
@@ -785,6 +799,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     unmatched_execution_id: None,
                     reads_relation: None,
                     display_submitted_at_ms: None,
+                    template_comparison: None,
                 },
             );
         }
@@ -908,6 +923,10 @@ impl Explain for ExplainService {
             };
             let node = crate::explain::ExplainNode {
                 display_submitted_at_ms: row.display_submitted_at_ms,
+                template_comparison: row
+                    .template_comparison
+                    .clone()
+                    .and_then(|v| serde_json::from_value(v).ok()),
                 execution_decision_id: edid.clone(),
                 decision,
                 execution_type: row.execution_type,

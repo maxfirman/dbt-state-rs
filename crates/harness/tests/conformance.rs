@@ -720,9 +720,21 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        106,
+        110,
         "update corpus coverage when adding fixtures"
     );
+    // Optional development validation of a retained local Rust capture. This
+    // is supplementary current-source replay, never hosted conformance evidence.
+    // Keep the ordinary credential-free hosted corpus and gap gates unchanged.
+    if let Some(extra) = std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE") {
+        let extra = std::path::PathBuf::from(extra);
+        assert!(extra
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("databricks_"));
+        paths.push(extra);
+    }
     let mut total_asserted = 0;
     let mut explain_entries_asserted = 0usize;
     let mut mismatches = Vec::new();

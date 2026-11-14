@@ -54,7 +54,7 @@ uncharacterized syntax retain exact fallback. Bounded public sequences require
 reuse controls before checking changed values, column names, CTE bindings and
 unsupported syntax; independent old binaries supply frozen v1/v2 histories.
 
-The new versioned contract is `dbt-state-databricks-sql-v3`. Representative genuine
+The #137 contract introduced `dbt-state-databricks-sql-v3`. [#138](databricks-dependency-template-identity.md) now uses v4 for its bounded dependency/template/configuration rules and outer ASCII whitespace. Representative genuine
 rendered-mode v1/v2 frozen histories invalidate, including pending rows confirmed
 after upgrade. Frozen
 bytes come from independently retained old binaries, not a current hash function

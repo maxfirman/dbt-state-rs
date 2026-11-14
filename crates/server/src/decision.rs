@@ -443,11 +443,26 @@ impl DecisionRecord {
             self.is_stale = false;
             self.build_age_ms = None;
             if execution_type == ModelExecutionType::Full as i32 {
-                self.reason = DecisionReason::ExistingTargetCopyDisabledDiagnostic;
-                self.description = COPY_DISABLED_DESCRIPTION.into();
+                if self.reason == DecisionReason::FirstBuild {
+                    self.reason = DecisionReason::ExistingTargetCopyDisabledDiagnostic;
+                    self.description = format!("{COPY_CHAIN_LIMIT_DESCRIPTION}; the prod target reserves room for a dev clone");
+                } else {
+                    self.reason = DecisionReason::ExistingTargetCopyDisabledDiagnostic;
+                    self.description = COPY_DISABLED_DESCRIPTION.into();
+                }
             } else if self.reason == DecisionReason::ExistingTargetWithoutHistory {
                 self.reason = DecisionReason::QueryObservedOutsideScope;
             }
+        }
+        self
+    }
+
+    /// A captured absent-target refusal reports historical query evidence,
+    /// while keeping first-build behavior and no physical optimization source.
+    pub(crate) fn with_absent_target_history_diagnostic(mut self) -> Self {
+        if self.class == DecisionKind::Build && self.reason == DecisionReason::FirstBuild {
+            self.skip_rejection_reason = Some(REJECTION_TARGET_TABLE_MISMATCH);
+            self.clone_rejection_reason = Some(qc::RejectionReason::OutsideTimeTravelWindow as i32);
         }
         self
     }

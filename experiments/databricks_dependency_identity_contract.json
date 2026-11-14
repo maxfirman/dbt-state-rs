@@ -1,0 +1,94 @@
+{
+  "template_first": {
+    "decision": "ready_to_execute",
+    "reference_revision": 0
+  },
+  "template_unchanged": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "template_comment": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "template_projection": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "template_both_changed": {
+    "decision": "ready_to_execute",
+    "reference_revision": 1
+  },
+  "template_false": {
+    "decision": "skip_execution",
+    "reference_revision": 1
+  },
+  "template_true": {
+    "decision": "skip_execution",
+    "reference_revision": 1
+  },
+  "config_first": {
+    "decision": "ready_to_execute",
+    "reference_revision": 0
+  },
+  "config_unchanged": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "config_on_schema_change": {
+    "decision": "ready_to_execute",
+    "reference_revision": 0
+  },
+  "config_tags": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "dependency_first": {
+    "decision": "ready_to_execute",
+    "reference_revision": 0
+  },
+  "dependency_unchanged": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "dependency_actual_swapped": {
+    "decision": "ready_to_execute",
+    "reference_revision": 1
+  },
+  "dependency_swapped_unchanged": {
+    "decision": "skip_execution",
+    "reference_revision": 1
+  },
+  "flags_first": {
+    "decision": "ready_to_execute",
+    "reference_revision": 0
+  },
+  "flags_false_unchanged": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "flags_false_to_true": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "flags_true_projection_after_false_build": {
+    "decision": "ready_to_execute",
+    "reference_revision": 1
+  },
+  "flags_pure_comment": {
+    "decision": "skip_execution",
+    "reference_revision": 1
+  },
+  "flags_true_config_changed": {
+    "decision": "ready_to_execute",
+    "reference_revision": 1
+  },
+  "flags_record_to_true": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  },
+  "flags_projection_after_record": {
+    "decision": "skip_execution",
+    "reference_revision": 0
+  }
+}

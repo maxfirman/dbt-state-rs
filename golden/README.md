@@ -203,3 +203,25 @@ immutable old servers, with v2 pending and confirmed exports and dirty-source
 candidate provenance explicitly retained. SQL-v3 invalidation does not weaken
 current-version NULL-epoch floor controls. Full exact replay/live acceptance is
 required before treating #137 as complete.
+
+
+## Databricks dependency/template identity (#138, 2026-11-14)
+
+Four complete matching fixtures add 308 RPCs: `databricks_dependency_identity`
+(126; original physical history plus complete no-DDL controls),
+`databricks_template_config` (72), `databricks_template_transitions` (60; includes
+two current/superseded refusal diagnostics), and `databricks_template_tests`
+(50; initial within-UID history, malformed-speculative controls and fresh-body
+comment controls). There are no Databricks gaps, field masks, unknown baselines
+or exclusions. The live cross-full-UID reuse conflict is retained outside the
+matching corpus and keeps #138 INCOMPLETE; no native dependency is promoted.
+See the [safe-partial report](../docs/reports/databricks-dependency-template-2026-11-14.md)
+and [UID boundary](../docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).
+
+`golden/upgrade/databricks_identity_v3_{rendered,template,record}.json` contains
+genuine immutable pre138 rendered/template pending+confirmed and Record evidence,
+with successful old public reuse and exact binary/source provenance. The public
+upgrade tests require v4 cold misses and current-version positive controls.
+Supplementary local Rust captures may be replayed with
+`DBT_STATE_EXTRA_REPLAY_CAPTURE=<databricks_*.jsonl>`; they are never presented as
+hosted evidence or added to the ordinary hosted corpus count.

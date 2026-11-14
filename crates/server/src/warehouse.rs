@@ -139,8 +139,27 @@ impl Warehouse {
         req: &crate::query_cache::SubmitEnrichedSqlRequest,
     ) -> bool {
         self.permits_literal_query_diagnostic(req)
-            && req.tables.len() == 1
+            && (req.tables.len() == 1
+                || req.tables.is_empty()
+                    && req.allow_clones == Some(true)
+                    && req.execution_type == 1
+                    && req.clone_chain_depth_limit == Some(0))
             && (req.execution_type == 10 || req.clone_chain_depth_limit == Some(0))
+    }
+
+    pub(crate) fn permits_absent_target_history_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self.permits_literal_query_diagnostic(req)
+            && req.execution_type == crate::query_cache::ModelExecutionType::Full as i32
+            && req.clone_chain_depth_limit == Some(0)
+            && req.allow_clones == Some(true)
+            && req.tables.is_empty()
+            && req
+                .table_namespace
+                .as_deref()
+                .is_some_and(|scope| !scope.is_empty())
     }
 
     pub(crate) fn permits_absent_scope_definition_diagnostic(
@@ -215,6 +234,120 @@ impl Warehouse {
         crate::sql_identity::normalized_sql(self, sql)
     }
 
+    /// Missing node state cannot supply a template identity. Databricks can
+    /// still use exact rendered evidence; explicit empty bodies are errors.
+    pub(crate) fn template_body(
+        self,
+        enabled: bool,
+        state: Option<&crate::query_cache::DbtNodeState>,
+    ) -> Option<&str> {
+        if !enabled {
+            return None;
+        }
+        let body = state.and_then(|s| s.node_body_hash.as_deref());
+        if self == Self::Databricks {
+            state?
+                .node_configs_hash
+                .as_deref()
+                .filter(|signature| !signature.is_empty())?;
+            body.filter(|signature| !signature.is_empty())
+        } else {
+            Some(body.unwrap_or(""))
+        }
+    }
+
+    /// Actual pinned write-only evidence covers managed FULL targets only.
+    pub(crate) fn record_template_body(
+        self,
+        req: &crate::query_cache::SqlExecution,
+    ) -> Option<&str> {
+        if self != Self::Databricks
+            || req.execution_type != crate::query_cache::ModelExecutionType::Full as i32
+            || req
+                .target_table
+                .as_deref()
+                .and_then(databricks::physical_name)
+                .is_none()
+            || !req.query_dependencies.is_empty()
+            || req
+                .tables
+                .iter()
+                .any(|table| Some(table.name.as_str()) != req.target_table.as_deref())
+            || req.dbt_node_state.as_ref().is_some_and(|state| {
+                [
+                    state.node_body_hash.as_deref(),
+                    state.node_configs_hash.as_deref(),
+                    state.node_macros_hash.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|signature| {
+                    signature.len() != 32 || !signature.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            })
+        {
+            return None;
+        }
+        self.template_body(true, req.dbt_node_state.as_ref())
+    }
+
+    pub(crate) fn template_comparison(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> Option<crate::explain::TemplateComparison> {
+        if self != Self::Databricks {
+            return None;
+        }
+        let state = req.dbt_node_state.as_ref();
+        let enabled = req.compare_unrendered_code && state.is_some();
+        let display_upstream_order = if req.query_dependencies.is_empty() {
+            Vec::new()
+        } else {
+            databricks::explain_input_order(req).unwrap_or_default()
+        };
+        if !enabled && display_upstream_order.is_empty() {
+            return None;
+        }
+        Some(crate::explain::TemplateComparison {
+            enabled,
+            display_upstream_order,
+            body: state.and_then(|s| s.node_body_hash.clone()),
+            config: state.and_then(|s| s.node_configs_hash.clone()),
+            macros: state.and_then(|s| s.node_macros_hash.clone()),
+            rendered_hash: crate::fingerprint::sql_logic_hash(
+                &crate::execution::sql_execution(req),
+                None,
+            ),
+        })
+    }
+
+    pub(crate) fn invalid_template_signature(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self == Self::Databricks
+            && req.compare_unrendered_code
+            && req.dbt_node_state.as_ref().is_some_and(|state| {
+                [
+                    state.node_body_hash.as_deref(),
+                    state.node_configs_hash.as_deref(),
+                    state.node_macros_hash.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .any(|signature| {
+                    signature.len() != 32 || !signature.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            })
+    }
+
+    pub(crate) fn invalid_dependency_definition(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self == Self::Databricks && req.query_dependencies.iter().any(|d| d.query.is_empty())
+    }
+
     /// Resolve demonstrated metadata spellings once before history, producer,
     /// freshness and own-target processing. The caller retains its raw request
     /// for wire DDL; SQL text itself remains unmodified.
@@ -226,6 +359,18 @@ impl Warehouse {
             return std::borrow::Cow::Borrowed(req);
         }
         let mut resolved = req.clone();
+        // #138: exact repeated whole bindings add no evidence. Do this before
+        // resolving physical aliases, so mixed spellings or conflicting
+        // definitions/contexts retain the existing ambiguity guard.
+        let mut unique = Vec::new();
+        resolved.query_dependencies.retain(|dependency| {
+            if unique.contains(dependency) {
+                false
+            } else {
+                unique.push(dependency.clone());
+                true
+            }
+        });
         // #140: only exact, known repeated current evidence is redundant.
         // Check raw spellings before resolving aliases; conflicting/unknown
         // entries and the target's own evidence must remain ambiguous.
@@ -358,6 +503,15 @@ impl Warehouse {
             if let Some(normalized) = databricks::cte_formatting_sql(sql, catalog, schema) {
                 return (normalized, catalog.into(), schema.into());
             }
+            // #138's actual Jinja-comment edit emits an extra outer newline
+            // around an otherwise unsupported VALUES query. Strip only SQL
+            // whitespace outside the complete statement; unknown interior
+            // syntax, literals, directives and contexts retain exact bytes.
+            return (
+                sql.trim_matches([' ', '\t', '\r', '\n']).to_owned(),
+                catalog.into(),
+                schema.into(),
+            );
         }
         (self.normalized_sql(sql), catalog.into(), schema.into())
     }
@@ -875,7 +1029,7 @@ mod tests {
         {
             let expected: &[u8] = match warehouse {
                 Warehouse::DuckDb => b"dbt-state-duckdb-sql-v1",
-                Warehouse::Databricks => b"dbt-state-databricks-sql-v3",
+                Warehouse::Databricks => b"dbt-state-databricks-sql-v4",
                 _ => b"dbt-state-sql-v4",
             };
             assert_eq!(warehouse.sql_identity_version(), expected, "{warehouse:?}");

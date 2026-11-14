@@ -86,14 +86,48 @@ pub fn sql_logic_hash_with_version(
     match template {
         Some(body) => {
             field(&mut h, b"template");
-            field(&mut h, body.as_bytes());
+            if Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks {
+                // Hosted controls equate uppercase/lowercase 32-hex body digests.
+                field(&mut h, body.to_ascii_lowercase().as_bytes());
+            } else {
+                field(&mut h, body.as_bytes());
+            }
         }
         None => {
             field(&mut h, b"rendered");
             field(&mut h, sql.as_bytes());
         }
     }
-    extras(&mut h, &req.semantic_extras);
+    if template.is_some() && Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks {
+        // Actual config edits and crafted one-axis controls establish the two
+        // alternatives: rendered SQL + exact runtime extras, or declared body
+        // + exact client config signature. No JSON or hash-string normalization.
+        // Runtime construction enables this branch only with both signatures.
+        field(&mut h, b"declared-config-signature");
+        match req
+            .dbt_node_state
+            .as_ref()
+            .and_then(|state| state.node_configs_hash.as_deref())
+        {
+            Some(signature) if !signature.is_empty() => {
+                field(&mut h, signature.to_ascii_lowercase().as_bytes())
+            }
+            _ => field(&mut h, b""),
+        }
+        match req
+            .dbt_node_state
+            .as_ref()
+            .and_then(|state| state.node_macros_hash.as_deref())
+        {
+            Some(signature) => {
+                field(&mut h, b"macros-present");
+                field(&mut h, signature.as_bytes());
+            }
+            None => field(&mut h, b"macros-absent"),
+        }
+    } else {
+        extras(&mut h, &req.semantic_extras);
+    }
     let mut dependencies: Vec<_> = req
         .query_dependencies
         .iter()
