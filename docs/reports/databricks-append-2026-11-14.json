@@ -1,0 +1,330 @@
+{
+  "scope": "bounded SQL APPEND operation-history partial; whole #146 and dependencies #138/#140 and #132 remain incomplete",
+  "date": "2026-11-14",
+  "client": "official dbt 2.0.11",
+  "warehouse": "Databricks Free Edition serverless Unity Catalog managed Delta",
+  "production_base": "ccdd1b31d3f116091be3f43ca72981b19b392dd2",
+  "production_frozen_source": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+  "production_changed": false,
+  "hosted": {
+    "run": "20261114a146aa",
+    "summary": {
+      "success": true,
+      "failure": null,
+      "invocations": 12,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T193500.135Z_66353981694f4eff9a13bab567216d4b.jsonl",
+          "complete": true,
+          "rows": 75,
+          "sha256": "b1e2b078006d56768f1a8204f76ccd7c9ca48b7e0cc11c24aeefce73660f8ff2",
+          "methods": {
+            "ValidateClientVersion": 11,
+            "SubmitTelemetryBatch": 27,
+            "SubmitEnrichedSQLSpeculative": 10,
+            "SubmitEnrichedSQL": 10,
+            "ConfirmExecution": 5,
+            "GetExplainMessages": 11,
+            "RecordExecutions": 1
+          }
+        }
+      ]
+    },
+    "certified_zero_rpc_references": 11
+  },
+  "rust_clean_retry": {
+    "run": "20261114b146bb",
+    "summary": {
+      "success": true,
+      "failure": null,
+      "invocations": 12,
+      "capture": [
+        {
+          "path": "golden/golden_20261114T201727.834Z_ef2c7995c9764e0e912577b7a485d5cb.jsonl",
+          "complete": true,
+          "rows": 75,
+          "sha256": "42a5296c8bc4a48c9d2e1297a9de74e2f6a91f698b273f47c666b9aca23a4acb",
+          "methods": {
+            "ValidateClientVersion": 11,
+            "SubmitTelemetryBatch": 27,
+            "SubmitEnrichedSQLSpeculative": 10,
+            "SubmitEnrichedSQL": 10,
+            "ConfirmExecution": 5,
+            "GetExplainMessages": 11,
+            "RecordExecutions": 1
+          }
+        }
+      ]
+    },
+    "live_seconds": 169.11,
+    "certified_zero_rpc_references": 11,
+    "physical_response_audit": {
+      "phases": [
+        {
+          "phase": "hosted",
+          "calls": 75,
+          "capture_sha256": "b1e2b078006d56768f1a8204f76ccd7c9ca48b7e0cc11c24aeefce73660f8ff2",
+          "complete_R_F_checks": 11,
+          "zero_RPC_reference_canaries": 11,
+          "peak_extra_persistent": 0,
+          "own_skip_runtimes": [
+            5722,
+            7930,
+            6281,
+            6228,
+            6410
+          ],
+          "full_refresh": {
+            "outcome": {
+              "last_modified_epoch": 1794685032000,
+              "table_type": null,
+              "execution_results": null,
+              "execution_runtime_ms": 3356
+            },
+            "input": {
+              "enriched_sql": {
+                "target_table": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114a146aa_consumer`",
+                "dialect": "databricks",
+                "default_catalog": "cdo_demo_db",
+                "execution_type": 1,
+                "sql": "\nselect id, cast(amount+100 as int) as amount, tag from `cdo_demo_db`.`state_20261114_append146`.`a_20261114a146aa_inputs`",
+                "tables": [
+                  {
+                    "name": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114a146aa_consumer`",
+                    "last_modified_epoch": 1794685008000
+                  },
+                  {
+                    "name": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114a146aa_inputs`",
+                    "last_modified_epoch": 1794684973000
+                  }
+                ],
+                "query_dependencies": [],
+                "semantic_extras": {
+                  "lookback": "1",
+                  "unique_key": "\"id\"",
+                  "on_schema_change": "\"ignore\"",
+                  "file_format": "\"delta\""
+                },
+                "labels": {
+                  "dbt_node_unique_id": "model.survey_20261114a146aa.consumer",
+                  "dbt_node_name": "consumer",
+                  "dbt_node_fqn": "survey_20261114a146aa.consumer"
+                },
+                "dbt_node_state": {
+                  "node_unique_id": "model.survey_20261114a146aa.consumer",
+                  "target_name": "prod",
+                  "project_name": "survey_20261114a146aa",
+                  "resource_type": "model",
+                  "node_hash": "536d4b07709dde6875937ace7046d955",
+                  "node_body_hash": "50bd32c77a02863129c112316f683c48",
+                  "node_configs_hash": "dd0466cb914bfdca78a65ebac7ed66d7",
+                  "node_persisted_descriptions_hash": null,
+                  "node_macros_hash": null,
+                  "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+                  "profile_name": "survey",
+                  "project_id": null,
+                  "node_database_representation": null
+                },
+                "default_schema": "state_20261114_append146",
+                "from_speculative_submit": false,
+                "table_namespace": "f72415cee49eac9b2b28d9ad8e588507"
+              }
+            }
+          },
+          "final_inventory": {
+            "state_20261114_append146": [
+              {
+                "name": "a_20261114a146aa_consumer",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_consumer",
+                "table_type": "MANAGED"
+              },
+              {
+                "name": "a_20261114a146aa_inputs",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_inputs",
+                "table_type": "MANAGED"
+              }
+            ]
+          }
+        },
+        {
+          "phase": "rust-clean-retry/campaign",
+          "calls": 75,
+          "capture_sha256": "42a5296c8bc4a48c9d2e1297a9de74e2f6a91f698b273f47c666b9aca23a4acb",
+          "complete_R_F_checks": 11,
+          "zero_RPC_reference_canaries": 11,
+          "peak_extra_persistent": 0,
+          "own_skip_runtimes": [
+            5689,
+            7425,
+            6163,
+            6162,
+            6184
+          ],
+          "full_refresh": {
+            "outcome": {
+              "last_modified_epoch": 1794687578000,
+              "table_type": null,
+              "execution_results": null,
+              "execution_runtime_ms": 3591
+            },
+            "input": {
+              "enriched_sql": {
+                "target_table": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114b146bb_consumer`",
+                "dialect": "databricks",
+                "default_catalog": "cdo_demo_db",
+                "execution_type": 1,
+                "sql": "\nselect id, cast(amount+100 as int) as amount, tag from `cdo_demo_db`.`state_20261114_append146`.`a_20261114b146bb_inputs`",
+                "tables": [
+                  {
+                    "name": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114b146bb_consumer`",
+                    "last_modified_epoch": 1794687555000
+                  },
+                  {
+                    "name": "`cdo_demo_db`.`state_20261114_append146`.`a_20261114b146bb_inputs`",
+                    "last_modified_epoch": 1794687521000
+                  }
+                ],
+                "query_dependencies": [],
+                "semantic_extras": {
+                  "on_schema_change": "\"ignore\"",
+                  "file_format": "\"delta\"",
+                  "unique_key": "\"id\"",
+                  "lookback": "1"
+                },
+                "labels": {
+                  "dbt_node_unique_id": "model.survey_20261114b146bb.consumer",
+                  "dbt_node_fqn": "survey_20261114b146bb.consumer",
+                  "dbt_node_name": "consumer"
+                },
+                "dbt_node_state": {
+                  "node_unique_id": "model.survey_20261114b146bb.consumer",
+                  "target_name": "prod",
+                  "project_name": "survey_20261114b146bb",
+                  "resource_type": "model",
+                  "node_hash": "f78a00334ca5cd8c511b87429d8a9f93",
+                  "node_body_hash": "ef656b6a1e40e1046454a7cd1c1ef428",
+                  "node_configs_hash": "dd0466cb914bfdca78a65ebac7ed66d7",
+                  "node_persisted_descriptions_hash": null,
+                  "node_macros_hash": null,
+                  "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+                  "profile_name": "survey",
+                  "project_id": null,
+                  "node_database_representation": null
+                },
+                "default_schema": "state_20261114_append146",
+                "from_speculative_submit": false,
+                "table_namespace": "f72415cee49eac9b2b28d9ad8e588507"
+              }
+            }
+          },
+          "final_inventory": {
+            "state_20261114_append146": [
+              {
+                "name": "a_20261114a146aa_consumer",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_consumer",
+                "table_type": "MANAGED"
+              },
+              {
+                "name": "a_20261114a146aa_inputs",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_inputs",
+                "table_type": "MANAGED"
+              },
+              {
+                "name": "a_20261114b146bb_consumer",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_consumer",
+                "table_type": "MANAGED"
+              },
+              {
+                "name": "a_20261114b146bb_inputs",
+                "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_inputs",
+                "table_type": "MANAGED"
+              }
+            ]
+          }
+        }
+      ],
+      "stable_response_comparison": true,
+      "whole_ticket_complete": false
+    },
+    "before_after_source_executable_pins_verified": true
+  },
+  "interrupted_native_attempt": {
+    "status": "interrupted, not accepted",
+    "complete_pre_refresh_cells": 8,
+    "raw_capture_rpc_count": 59,
+    "raw_capture_sha256": "a44183be024acafc58de3bc282dc521a6687cac900c62c9068270c8f8064bd00",
+    "full_refresh_CTAS_committed": true,
+    "full_refresh_record_missing": true,
+    "preserved_separate_unchanged": true,
+    "root_retirement_receipt": {
+      "completed_at": "2026-11-14T20:16:24.358445+00:00",
+      "exact_dropped": {
+        "cdo_demo_db.state_20261114_append146.a_20261114b146bb_consumer": "73e2b9a1-4f90-41b1-a2fb-462a2ecf1449",
+        "cdo_demo_db.state_20261114_append146.a_20261114b146bb_inputs": "fa03a10c-3ecc-4283-93f5-0915612e9c3a"
+      },
+      "all_others_preserved": true,
+      "after_counts": {
+        "state_20261114_append146": 2,
+        "ds_20261112a134ef_ref": 99,
+        "ds_20261112e134ef_ref": 100
+      },
+      "allocation_uuid": "6f14be2c-a920-4309-8240-caf8e8df7888",
+      "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-146-20261114/interrupted-pair-retirement-v2",
+      "authority": "User132 run-owned cleanup; root reviewed interrupted-native proposal and immutable full physical/identity audit; exact two interrupted Rust objects only, host pair protected",
+      "original_interrupted_phase_retained": true
+    }
+  },
+  "validation": {
+    "hosted_public_replay": {
+      "corpora": 124,
+      "seconds": 263.73,
+      "new_fixture_assertions": 64,
+      "new_fixture_complete_explain_trees": 11,
+      "new_fixture_unknown_baselines": 0,
+      "new_fixture_known_gaps": 0,
+      "new_fixture_partial_histories": 0
+    },
+    "supplemental_replay": "unmodified clean Rust75 + all124 hosted corpora passed; supplemental source replay is not hosted conformance evidence",
+    "offline_oracle_tests": 4,
+    "existing_readonly_reference_tests": 5,
+    "focused_harness": "1 passed, 1 live test ignored by default",
+    "strict_focused_clippy": true,
+    "format_check": true,
+    "python_syntax": true,
+    "prior_production_gates_reused": {
+      "source_inputs_compared": 159,
+      "all_identical": true,
+      "workspace_tests": 675,
+      "library_tests": 310,
+      "duckdb_cases": 25,
+      "fresh_full_suite_claimed": false
+    },
+    "supplemental_replay_seconds": 276.17
+  },
+  "footprint": {
+    "schema": "cdo_demo_db.state_20261114_append146",
+    "schema_uuid": "6f14be2c-a920-4309-8240-caf8e8df7888",
+    "permanent_names": 4,
+    "allowed_concurrent_extra_persistent": 1,
+    "observed_extra_persistent_peak": 0,
+    "prior_objects_preserved": true,
+    "root_owned_retirement_only": "exact two interrupted Rust tables, with UUID/owner/rows/history guards",
+    "runner_cleanup": false,
+    "owned_processes_drained": true
+  },
+  "coverage_remaining": [
+    "supported settings/schema evolution",
+    "column-name binding/reordering",
+    "conditional is_incremental selection",
+    "strategy/node-kind transitions",
+    "generated pending/failed/late-confirm histories",
+    "restart/upgrade",
+    "reachable safer replacement"
+  ],
+  "private_archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-146-20261114",
+  "evidence_index": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-146-20261114/evidence-index.json",
+    "files": 2860,
+    "sha256": "7c25338587fa451020fa047e85e8221a93224c92bd829805d761ae8b7e2445dc"
+  }
+}

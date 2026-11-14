@@ -311,3 +311,16 @@ unknown-baseline exemption or production change was needed. See the
 [dated partial evidence](../docs/reports/databricks-merge-2026-11-14.md).
 Native #145 remains incomplete, with #138/#140 dependencies and predicates,
 schema evolution and other required coverage unpromoted.
+
+### Databricks stable-render APPEND history (2026-11-14)
+
+`databricks_append_history.jsonl` retains the complete 75-RPC official-client
+hosted history: stable first/unchanged APPEND, source update plus duplicate
+insert/repeat, source deletion/repeat, projection change/repeat, native FULL
+RecordExecutions, then ordinary APPEND/repeat. It includes complete statuses,
+response fields and 11 nonempty Explain trees. Positive unchanged SKIPs and
+own-runtime echoes are required. No calls are filtered or treated as an unknown
+baseline, partial history or known gap. Complete typed cumulative multiset
+`R` and separate selected `F` References check physical correctness at every
+checkpoint. See [the bounded report](../docs/reports/databricks-append-2026-11-14.md).
+This does not complete whole #146 or promote its blocked dependencies.
