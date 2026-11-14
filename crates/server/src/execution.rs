@@ -184,6 +184,7 @@ pub(crate) struct ExecutionEvidence {
     /// OR `node_template_hash` (template) equals the submit's.
     pub(crate) node_template_hash: Option<String>,
     pub(crate) node_configs_hash: Option<String>,
+    pub(crate) node_macros_hash: Option<String>,
     pub(crate) node_contract_hash: Option<String>,
     pub(crate) node_unique_id: Option<String>,
     pub(crate) table_namespace: Option<String>,
@@ -248,12 +249,11 @@ impl ExecutionEvidence {
         let raw_inputs = sql_inputs(&sql_execution(req));
         let raw_count = req.tables.len();
         let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_submit(req);
-        let body = crate::decision::node_body_hash_of(&req);
         let mut evidence = Self::sql(
             org_id,
             &sql_execution(&req),
-            req.compare_unrendered_code
-                .then(|| body.as_deref().unwrap_or("")),
+            crate::warehouse::Warehouse::from_dialect(&req.dialect)
+                .template_body(req.compare_unrendered_code, req.dbt_node_state.as_ref()),
             !req.compare_unrendered_code && !req.sql.trim().is_empty(),
         );
         evidence.raw_target_table = raw_target;
@@ -267,7 +267,11 @@ impl ExecutionEvidence {
         // Record has no template comparison flag and computes the supplied SQL identity.
         let raw_target = req.target_table.clone();
         let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_record(req);
-        let mut evidence = Self::sql(org_id, &req, None, true);
+        let warehouse = crate::warehouse::Warehouse::from_dialect(&req.dialect);
+        // #138 actual write-only Record retains declared body/config evidence.
+        // A false Submit still does not publish a template alternative.
+        let template = warehouse.record_template_body(&req);
+        let mut evidence = Self::sql(org_id, &req, template, true);
         evidence.raw_target_table = raw_target;
         evidence
     }
@@ -315,6 +319,7 @@ impl ExecutionEvidence {
             node_hash: state.map(|s| s.node_hash.clone()),
             node_body_hash: state.and_then(|s| s.node_body_hash.clone()),
             node_configs_hash: state.and_then(|s| s.node_configs_hash.clone()),
+            node_macros_hash: state.and_then(|s| s.node_macros_hash.clone()),
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,

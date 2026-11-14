@@ -241,7 +241,10 @@ async fn rendered_alias_admission_does_not_equate_changed_sql_through_template_i
         .own_epoch(Some(159))
         .allow_clones(false)
         .compare_unrendered_code()
-        .body("unchanged-template")
+        .body("15915915915915915915915915915915")
+        .node_state(|state| {
+            state.node_configs_hash = Some("01590159015901590159015901590159".into())
+        })
         .sql("select cast(159 as bigint) as id");
     scenario.build(request.clone(), 159).await;
     scenario.expect_skip(request.clone()).await;

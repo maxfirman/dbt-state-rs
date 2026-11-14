@@ -129,6 +129,8 @@ pub struct ExecutionRow {
     pub raw_target_table: Option<String>,
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
+    pub node_configs_hash: Option<String>,
+    pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
     pub node_namespace_logic_hash: Option<String>,
     /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
@@ -180,7 +182,7 @@ impl ExecutionRow {
     }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
-        node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
+        node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
         clone_source_table, clone_source_inputs, display_submitted_at_ms, \
@@ -241,6 +243,8 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             target_table: row.try_get("target_table")?,
             execution_type: row.try_get("execution_type")?,
             node_body_hash: row.try_get("node_body_hash")?,
+            node_configs_hash: row.try_get("node_configs_hash")?,
+            node_macros_hash: row.try_get("node_macros_hash")?,
             node_sql_hash: row.try_get("node_sql_hash")?,
             node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
             node_template_hash: row.try_get("node_template_hash")?,
@@ -468,9 +472,9 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31)
             "#,
         )
         .bind(&e.org_id)
@@ -517,6 +521,7 @@ impl Store {
         .bind(&e.node_project_name)
         .bind(&e.node_target_name)
         .bind(e.display_submitted_at_ms)
+        .bind(&e.node_macros_hash)
         .execute(executor)
         .await?;
         Ok(())
@@ -774,7 +779,7 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms
+                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -825,6 +830,7 @@ impl Store {
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
     pub display_submitted_at_ms: Option<i64>,
+    pub template_comparison: Option<serde_json::Value>,
     pub dialect: Option<String>,
     pub execution_decision_id: Option<String>,
     pub decision: String,
@@ -908,6 +914,7 @@ mod tests {
     fn decision_row(anchor_node_sql_hash: Option<&str>) -> ExplainDecisionRow {
         ExplainDecisionRow {
             display_submitted_at_ms: None,
+            template_comparison: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),

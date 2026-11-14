@@ -28,6 +28,20 @@ use crate::store::{ExecutionRow, InputTable};
 // Markers.
 const MARKER_SUCCESS: i32 = 1;
 const MARKER_FAIL: i32 = 2;
+const MARKER_INFO: i32 = 3;
+
+/// Decision-time template inputs, not a stored Explain tree. The pure renderer
+/// compares them with the same matched/unmatched physical row as the decision.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TemplateComparison {
+    pub enabled: bool,
+    pub display_upstream_order: Vec<String>,
+    pub body: Option<String>,
+    pub config: Option<String>,
+    pub macros: Option<String>,
+    pub rendered_hash: String,
+}
+
 // Badges (only the OBSERVED subset — see docs/explain-catalog.md).
 const BADGE_FRESH: i32 = 1;
 const BADGE_WITHIN_TOLERANCE: i32 = 2;
@@ -47,6 +61,7 @@ const BADGE_TARGET_TABLE_EXISTS: i32 = 8;
 pub struct ExplainNode {
     /// Original submit instant, solely for rendering temporal text.
     pub display_submitted_at_ms: Option<i64>,
+    pub template_comparison: Option<TemplateComparison>,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -304,6 +319,7 @@ enum Shape {
     ExistingTargetWithoutHistory,
     QueryObservedOutsideScope,
     ExistingTargetCopyDisabledDiagnostic,
+    AbsentTargetCopyChainDiagnostic,
     /// Node-query-changed rebuild (catalog SHAPE 7).
     QueryChanged,
     ResolutionContextChanged,
@@ -446,7 +462,11 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
     );
     Some(match (node.decision, reason) {
         (DecisionKind::Build, R::ExistingTargetCopyDisabledDiagnostic) if !upstreams => {
-            Shape::ExistingTargetCopyDisabledDiagnostic
+            if node.own_target_absent() && node.clone_source.is_some() {
+                Shape::AbsentTargetCopyChainDiagnostic
+            } else {
+                Shape::ExistingTargetCopyDisabledDiagnostic
+            }
         }
         (DecisionKind::Build, R::QueryChangedOutsideScope) if !upstreams => Shape::QueryChanged,
         (DecisionKind::Build, R::QueryObservedOutsideScope) if !upstreams => {
@@ -716,6 +736,107 @@ fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
 /// Build the structured tree: fenced by node kind, then shaped by the
 /// persisted decision reason.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let mut displayed = node.clone();
+    if let Some(comparison) = &node.template_comparison {
+        displayed.input_tables.sort_by_key(|input| {
+            comparison
+                .display_upstream_order
+                .iter()
+                .position(|name| name == &input.name)
+                .unwrap_or(usize::MAX)
+        });
+    }
+    let node = &displayed;
+    let mut lines = base_explain_lines(node);
+    let Some(current) = &node.template_comparison else {
+        return lines;
+    };
+    if !current.enabled {
+        return lines;
+    }
+    let Some(prior) = node.anchor.as_ref().or(node.unmatched.as_ref()) else {
+        return lines;
+    };
+    let Some(query) = lines.iter_mut().find(|line| line.text == "query analysis") else {
+        return lines;
+    };
+    // Display compares the original strings even where decoded digest bytes
+    // qualify for reuse (captured uppercase body/config controls).
+    let changed = if current.body != prior.node_body_hash {
+        Some("body")
+    } else if current.macros != prior.node_macros_hash {
+        Some("macros")
+    } else if current.config != prior.node_configs_hash {
+        Some("config")
+    } else {
+        None
+    };
+    let runtime_changed = prior.node_sql_hash.as_deref() != Some(current.rendered_hash.as_str());
+    let mut children = vec![leaf(
+        "the model was compared to state based on its unrendered code",
+        Some(MARKER_INFO),
+        None,
+    )];
+    if let Some(component) = changed {
+        children.push(leaf(
+            format!("the unrendered model {component} {} changed; compiled SQL was used for the cache decision", if component == "macros" { "have" } else { "has" }),
+            Some(MARKER_FAIL), None,
+        ));
+        let rendered = if runtime_changed {
+            query_analysis_changed(node)
+        } else {
+            query_analysis_unchanged(node)
+        };
+        children.extend(rendered.children);
+    } else {
+        children.push(leaf(
+            "the unrendered model code has not changed",
+            Some(MARKER_SUCCESS),
+            None,
+        ));
+        if !node.query_dependencies.is_empty() && runtime_changed {
+            let mut bindings: Vec<_> = node
+                .genuine_upstreams()
+                .iter()
+                .map(|up| section(quote(&up.name), vec![line("external table")]))
+                .collect();
+            bindings.extend(
+                node.query_dependencies
+                    .iter()
+                    .map(|name| section(quote(name), vec![line("view ignored")])),
+            );
+            children.push(section("upstream dependencies", bindings));
+            children.push(leaf(
+                "an upstream model query has changed",
+                Some(MARKER_FAIL),
+                None,
+            ));
+        } else if has_upstream_query_line(node) {
+            children.push(leaf(
+                "upstream model queries have not changed",
+                Some(MARKER_SUCCESS),
+                None,
+            ));
+        }
+    }
+    query.children = children;
+    if changed.is_none()
+        && runtime_changed
+        && !node.query_dependencies.is_empty()
+        && node.decision == DecisionKind::Build
+    {
+        for section in &mut lines {
+            if section.text == "data freshness analysis" {
+                section
+                    .children
+                    .retain(|line| line.text != "upstream data is up to date");
+            }
+        }
+    }
+    lines
+}
+
+fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     // F7 fence (PR #31 round 4): never render an invented tree for an
     // uncharacterized node kind (this also fences data-test EXECUTE/CLONE).
     if !is_characterized(node.execution_type, node.decision) {
@@ -730,6 +851,14 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             section("query analysis", Vec::new()),
             data_freshness_analysis_fresh(node),
         ],
+        Some(Shape::AbsentTargetCopyChainDiagnostic) => {
+            let mut table = first_build_table_analysis(node);
+            table.children[1].text = format!(
+                "the model table could have been cloned from {}, but the maximum number of nested clones has been reached; the prod target reserves room for a dev clone",
+                quote(node.clone_source.as_deref().unwrap_or("")),
+            );
+            vec![table]
+        }
         Some(Shape::ExistingTargetCopyDisabledDiagnostic) => {
             let mut table = table_analysis_exists(node);
             table.children.push(leaf(
@@ -1959,6 +2088,7 @@ mod tests {
     fn node(decision: DecisionKind, et: i32, desc: &str) -> ExplainNode {
         ExplainNode {
             display_submitted_at_ms: None,
+            template_comparison: None,
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,

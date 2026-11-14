@@ -85,6 +85,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         unmatched_execution_id: None,
         reads_relation: None,
         display_submitted_at_ms: None,
+        template_comparison: None,
     }
 }
 

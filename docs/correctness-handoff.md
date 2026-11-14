@@ -584,3 +584,26 @@ local-only and renders no Explain tree.
   (`crates/dbt-tasks-core/src/run_cache/`, `crates/dbt-state/`),
   [Python client](https://github.com/dbt-labs/dbt-state/tree/b0f3030c90dd0766f2d1625b3305829d881fc2ae)
   (`clients/dbt_state/src/dbt_state/run_cache.py`).
+
+
+## Databricks dependency/template safe partial (#138, 2026-11-14)
+
+[#138's report](reports/databricks-dependency-template-2026-11-14.md) records
+whole-binding identity, exact runtime extras versus declared body/config/macro
+signatures, scoped Record evidence, captured errors and template Explain INFO
+lines. New fingerprints use `dbt-state-databricks-sql-v4`; genuine v3 pending and
+confirmed histories invalidate with current-version positive controls. This adds
+no copy eligibility and preserves latest scoped physical history, producers,
+unknown-epoch/external-modification checks and exact template contexts.
+
+**#138 remains INCOMPLETE; no native dependency promotion.** The actual pinned
+client's fresh `test.survey_20261114d138df.template_identity` speculative submit
+reuses after a different full UID's complete confirmed history, with the same
+source-less SQL/body/config and a 3498 ms runtime echo. Both authoritative state
+UID and fallback label differ. Exact backend-row attribution is inferred, not
+exposed, and equal literal rows are not a wrong-row demonstration. The required
+scoped UID floor remains intact, with fresh-UID UNDECIDED/BUILD and within-UID
+positive reuse regressions. The certified four-RPC fresh-UID failure stays
+outside matching fixtures, with no gap, mask or unknown-baseline exemption.
+[Full evidence and limits](reports/databricks-data-test-uid-boundary-2026-11-14.md).
+The existing #132/#140/#158/#159 blockers remain unchanged.

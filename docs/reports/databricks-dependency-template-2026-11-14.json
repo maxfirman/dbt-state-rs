@@ -1,0 +1,368 @@
+{
+  "package": 138,
+  "status": "INCOMPLETE; validated safe partial; no native dependency promotion",
+  "base": "193c9b0feaebbd4fa45a4fba5e2afe328679a6bd",
+  "scope_blocker": "Actual pinned source-less true-template speculative reuse across authoritative full UIDs; strict UID floor retained; no wrong-row claim",
+  "workspace": {
+    "passed": 657,
+    "failed": 0,
+    "ignored": 39,
+    "groups": 83,
+    "hosted_corpora": 110,
+    "supplementary_rust_trace_rpc": 190
+  },
+  "library_no_database": 310,
+  "strict_clippy": "passed workspace/all-targets/features-fuzz/-Dwarnings",
+  "duckdb": {
+    "jobs": 3,
+    "setup_build_seconds": 84.17,
+    "acceptance_seconds": 691.14,
+    "total_seconds": 775.32,
+    "cases": [
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_lag_tolerance_reuse_expiry_and_external_change",
+        "seconds": 43.13,
+        "success": true
+      },
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_durable_table_reuse_and_external_changes",
+        "seconds": 131.06,
+        "success": true
+      },
+      {
+        "target": "duckdb_python",
+        "case": "real_dbt_views_dependency_evidence",
+        "seconds": 133.18,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_function_bindings_prevent_stale_reuse",
+        "seconds": 112.23,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_hidden_rowid_references_rebuild_after_reordering",
+        "seconds": 60.92,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_hook_changes_and_pre_hook_bindings_rebuild",
+        "seconds": 72.39,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_integer_division_rebuilds_after_reordering",
+        "seconds": 54.09,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_named_type_redefinitions_rebuild",
+        "seconds": 58.43,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_permissive_scalar_subqueries_rebuild_after_reordering",
+        "seconds": 45.7,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_nested_floating_casts_rebuild_after_reordering",
+        "seconds": 52.41,
+        "success": true
+      },
+      {
+        "target": "duckdb_identity_python",
+        "case": "real_dbt_sql_formatting_reuses_independently_verified_results",
+        "seconds": 15.88,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_worker_collation_changes_rebuild",
+        "seconds": 49.28,
+        "success": true
+      },
+      {
+        "target": "duckdb_functions_python",
+        "case": "real_dbt_timezone_sensitive_casts_rebuild",
+        "seconds": 57.41,
+        "success": true
+      },
+      {
+        "target": "duckdb_parallel",
+        "case": "real_dbt_parallel_workers_preserve_committed_evidence",
+        "seconds": 50.36,
+        "success": true
+      },
+      {
+        "target": "duckdb_interruptions",
+        "case": "real_dbt_interrupted_work_requires_recovery_before_reuse",
+        "seconds": 101.82,
+        "success": true
+      },
+      {
+        "target": "duckdb_recovery",
+        "case": "real_dbt_reset_and_generation_recovery",
+        "seconds": 187.12,
+        "success": true
+      },
+      {
+        "target": "duckdb_data_tests_python",
+        "case": "real_dbt_stored_failures_use_ordinary_execution",
+        "seconds": 11.36,
+        "success": true
+      },
+      {
+        "target": "duckdb_seeds_python",
+        "case": "real_dbt_seed_reuse_and_change_propagation",
+        "seconds": 122.84,
+        "success": true
+      },
+      {
+        "target": "duckdb_data_tests_python",
+        "case": "real_dbt_complete_cached_data_test_outcomes",
+        "seconds": 80.42,
+        "success": true
+      },
+      {
+        "target": "duckdb_copy_python",
+        "case": "real_dbt_view_graph_copy_chains_and_allowed_staleness",
+        "seconds": 63.97,
+        "success": true
+      },
+      {
+        "target": "duckdb_incremental_python",
+        "case": "real_dbt_incremental_self_reads_require_reuse_proof",
+        "seconds": 63.33,
+        "success": true
+      },
+      {
+        "target": "duckdb_copy_python",
+        "case": "real_dbt_table_copy_and_adoption",
+        "seconds": 160.64,
+        "success": true
+      },
+      {
+        "target": "duckdb_workflow",
+        "case": "real_dbt_fresh_mixed_project_copy_reset_restore_and_file_isolation",
+        "seconds": 71.26,
+        "success": true
+      },
+      {
+        "target": "duckdb_generated",
+        "case": "generated_physical_state_and_oracle_mutations",
+        "seconds": 54.31,
+        "success": true
+      },
+      {
+        "target": "duckdb_incremental_python",
+        "case": "real_dbt_incremental_build_copy_and_adoption",
+        "seconds": 204.18,
+        "success": true
+      }
+    ]
+  },
+  "checks": [
+    {
+      "check": "workspace-current",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--no-fail-fast"
+      ],
+      "returncode": 0,
+      "seconds": 494.94,
+      "log": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/workspace-current-final.log"
+    },
+    {
+      "check": "library-no-db",
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "dbt-state-server",
+        "--lib"
+      ],
+      "returncode": 0,
+      "seconds": 15.62,
+      "log": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/library-no-db-final.log"
+    },
+    {
+      "check": "format",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "returncode": 0,
+      "seconds": 1.89,
+      "log": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/format-final.log"
+    },
+    {
+      "check": "whitespace",
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "returncode": 0,
+      "seconds": 0.02,
+      "log": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/whitespace-final.log"
+    }
+  ],
+  "python_groups": [
+    {
+      "script": "experiments/capture_integrity_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_baseline_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_deferral_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_dependency_identity_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_freshness_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_identity_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_isolation_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_seeds_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_sql_equivalence_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/databricks_survey_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/explain_capture_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/explain_census_test.py",
+      "returncode": 0
+    },
+    {
+      "script": "experiments/trace_validate_test.py",
+      "returncode": 0
+    }
+  ],
+  "fixtures": {
+    "databricks_template_tests.jsonl": {
+      "rows": 50,
+      "sha256": "d2cd8441a75a6d82eb4827d608eade4b9afc3d34e2dd147954a0f320a2c13e75"
+    },
+    "databricks_template_transitions.jsonl": {
+      "rows": 60,
+      "sha256": "0a5c73547f45cdc6a3831562c4ebd0c168a2224434223c47c15a5cb09cf7d017"
+    },
+    "databricks_dependency_identity.jsonl": {
+      "rows": 126,
+      "sha256": "d6f8f2088b54d0f8772c08c0c6199835b5842c820fcea99cb8d62181fef5360b"
+    },
+    "databricks_template_config.jsonl": {
+      "rows": 72,
+      "sha256": "a088a4f4e70d8442ee225e04aa98b8a07a718f5937987e6460f61d10b5bb858b"
+    }
+  },
+  "physical_pre_final_delta": {
+    "success": true,
+    "failure": null,
+    "invocations": 58,
+    "capture": [
+      {
+        "path": "golden/golden_20261114T124446.469Z_eb290fb7194f466aa08d04f254f0c8d5.jsonl",
+        "complete": true,
+        "rows": 190,
+        "sha256": "3e802c8814c8e254946dc691de3d71ff8a96503a68cbf76877b358f49ae380e6",
+        "methods": {
+          "ValidateClientVersion": 27,
+          "SubmitTelemetryBatch": 59,
+          "SubmitEnrichedSQLSpeculative": 23,
+          "SubmitEnrichedSQL": 35,
+          "ConfirmExecution": 10,
+          "GetExplainMessages": 35,
+          "RecordExecutions": 1
+        }
+      }
+    ]
+  },
+  "current_source_no_ddl": {
+    "success": true,
+    "failure": null,
+    "invocations": 8,
+    "capture": [
+      {
+        "path": "golden/golden_20261114T133432.696Z_8941d9af683441b388539dcc892bbfd6.jsonl",
+        "complete": true,
+        "rows": 22,
+        "sha256": "9e26ad72385fa0ae28ec691ab94b3c021c121f9952eeadd661dd92f3b53b02dc",
+        "methods": {
+          "ValidateClientVersion": 4,
+          "SubmitTelemetryBatch": 8,
+          "SubmitEnrichedSQLSpeculative": 4,
+          "SubmitEnrichedSQL": 1,
+          "ConfirmExecution": 1,
+          "GetExplainMessages": 4
+        }
+      }
+    ]
+  },
+  "production_source_delta": {
+    "crates/server/src/decision.rs": {
+      "pre_physical_sha256": "b8a0b5cb17b02aea2d287dec4a58baf0db11e801a94ffcb2b5a2525f0395f8aa",
+      "current_sha256": "4269454763e63555e8fdff2e08f2279f7f64c0b24b7492f5e866b7e1a4d2c802"
+    },
+    "crates/server/src/explain.rs": {
+      "pre_physical_sha256": "54e623534dcaae5a811c37056c58904fec4de371c6816a820e25f3a633af461b",
+      "current_sha256": "ce6d00a059c1699dca94f43cc65dc21d61d76b70be25868ee55defe09956efdd"
+    },
+    "crates/server/src/services.rs": {
+      "pre_physical_sha256": "dbb5b78df0671720cb7350c49166c9ef468375375b1dcb0d70f37e4296012e25",
+      "current_sha256": "f90d5bf82998f68f814fe0b6197452ba7ccb6895d40eaad1de4eacd7af9808b2"
+    },
+    "crates/server/src/submit_decision.rs": {
+      "pre_physical_sha256": "4cec35f95fc71a64cdf86f30cb1a7912107af90090027c7e11c15fc4a027bc69",
+      "current_sha256": "a6b38052b1fbc88f9c9466272c6f4430b10301b63f2811652f1d5576e14dad8d"
+    },
+    "crates/server/src/warehouse/databricks.rs": {
+      "pre_physical_sha256": "988b38f2dbbfb23ca84993304abe959d3ea49601556a585b04b7aed69f976934",
+      "current_sha256": "271fa0e2290999318577873b0dba6b47bc999048ed665da2c0b133011afcbbf5"
+    }
+  },
+  "explain_census": {
+    "trees": 757,
+    "files": 121,
+    "INFO_lines": 59,
+    "empty_or_unspecified_or_unmapped": 0
+  },
+  "report": "docs/reports/databricks-dependency-template-2026-11-14.md"
+}
