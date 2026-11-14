@@ -448,3 +448,27 @@ use; live acceptance runs the production router in an isolated State schema.
 The [dated partial report](reports/databricks-merge-2026-11-14.md) records the
 actual FULL1 Record after CLI refresh and next ordinary MERGE3 rebuild/reuse,
 complete physical checks and coverage still required for whole #145.
+
+`databricks_append.py` adds a bounded #146 stable-render APPEND history with
+independent literal cumulative target `R` and separately selected `F`. It uses
+one freshly allocated single-schema container, two exact new names per backend,
+and a possible one-object persistent native replacement peak. Its dedicated
+allocation scope preserves the existing two-reference-container lease guards.
+No persistent reference graph, cleanup, custom macro or behavior override is
+used. Each checkpoint checks complete typed duplicate/NULL multisets, ordered
+schema, MANAGED/Delta properties, a certified zero-RPC disabled literal `R`
+Reference and a separate selected `F`. Source updates and deletion preserve
+prior target rows until full refresh replaces them; the next ordinary APPEND
+build appends to the refreshed result.
+
+Run hosted first using `--dbt`, `--proxy`, `--probe`, `--live-clearance`,
+`--run-id` and a fresh `--work-dir`. The clearance must name the allocated
+schema UUID/owner/creation evidence, exact phase names and footprint. Promote
+and replay the complete unfiltered capture before the one fresh Rust phase.
+The ignored
+`databricks_append.rs::real_dbt_append_matches_independent_operation_history`
+requires the established `DBT_STATE_DATABRICKS_{PYTHON,DBT,PROXY,PROBE,ARTIFACTS}`
+variables plus `DBT_STATE_DATABRICKS_LIVE_CLEARANCE` and
+`DBT_STATE_DATABRICKS_RUN_ID`. It does not use a two-schema lease.
+See the [dated bounded evidence](reports/databricks-append-2026-11-14.md);
+whole #146, its dependencies and full #132 remain incomplete.
