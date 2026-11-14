@@ -862,6 +862,7 @@ mod tests {
         let ctx = crate::decision::SubmitContext {
             execution_type: req.execution_type,
             input_tables: &ev.input_tables,
+            sql_reads_relation: None,
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
             target_has_prior_build: true,

@@ -557,9 +557,10 @@ impl Warehouse {
     }
 
     /// Whether `sql` reads a relation ([`crate::sql_identity::reads_relation`]),
-    /// parsed in this warehouse's dialect. Explain evidence only: it chooses a
-    /// view's freshness wording (#117), never a decision. `None` when the SQL
-    /// does not parse as one query.
+    /// parsed in this warehouse's dialect. It chooses a view's Explain
+    /// freshness wording (#117) and limits the existing-target-without-history
+    /// reason to captured source-less SQL. `None` when the SQL does not parse
+    /// as one query.
     pub fn sql_reads_relation(self, sql: &str) -> Option<bool> {
         use sqlparser::dialect::{
             BigQueryDialect, DatabricksDialect, DuckDbDialect, GenericDialect, RedshiftSqlDialect,

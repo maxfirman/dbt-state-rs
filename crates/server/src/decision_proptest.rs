@@ -153,6 +153,7 @@ fn ctx<'a>(
     SubmitContext {
         execution_type: 10,
         input_tables: tables,
+        sql_reads_relation: None,
         target_table: target,
         stale_upstream_policy: policy,
         target_has_prior_build: false,
@@ -566,6 +567,7 @@ proptest! {
         let c = SubmitContext {
             execution_type,
             input_tables: &current,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: p,
             // As reuse candidate selection reports it: a rejected latest row
