@@ -532,3 +532,39 @@ is not replaced. Other cells require actual fresh BUILD/Confirm and positive
 speculative reuse with complete payload/runtime/Explain and physical oracles.
 All compile/reference invocations use independent zero-RPC canaries. See the
 [dated status evidence and remaining scope](reports/databricks-audit-hosted-rejection-2026-11-14.md).
+
+### Bounded Databricks predicate replacement (#148)
+
+`experiments/databricks_replace_where.py` runs thirteen native SQL/managed-Delta
+cells per separately cleared backend. It keeps an immutable literal source/R/F
+ledger outside the repository, checks the complete ordered
+BIGINT/STRING/DATE/TIMESTAMP schema and multisets, and executes State-disabled
+SELECT-only literal references with separate zero-RPC canaries. `unique_key`
+does not deduplicate replacement rows. An outside source deletion retains its
+old target row until the destination predicate widens; empty incoming rows
+remove matching target rows. The model's fixed incremental SELECT filter is
+independent of that destination predicate.
+
+The driver requires `--operation-ledger` as well as the pinned tools, exact live
+clearance and fresh run ID. It verifies the ledger digest/content and backend
+clearance before credentials or client execution. Scope is exactly two new
+permanent names per backend, with one reserved persistent auxiliary slot and
+one serialized session-local temporary view. There is no schema allocation,
+cleanup, source reset, macro override or permanent reference object.
+
+Actual pinned replace_where submits and full-refresh Record input both use
+DBT_CUSTOM11. The following ordinary run remains11; its rendered SQL changes
+from the full unfiltered Record SELECT to the steady filtered SELECT. The
+helper's default Record expectation remains FULL1; #148 passes the independently
+observed literal expected_type11. Do not generalize another strategy's mapping.
+The [dated report](reports/databricks-replace-where-2026-11-14.md) preserves the
+initial helper stop, separately cleared continuation and complete90-RPC trace.
+
+The ignored native wrapper is
+`databricks_replace_where.rs::real_dbt_replace_where_matches_independent_operation_history`.
+In addition to the usual native environment it requires
+`DBT_STATE_DATABRICKS_OPERATION_LEDGER`. It retains the actual organization-scoped
+audit clocks before State schema cleanup and writes the capture/clock paths to
+`native-extra-replay-environment.json`. Supplemental strict replay must supply
+that actual sidecar. A byte-identical `databricks_` filename alias satisfies the
+extra-capture basename guard without editing the raw proxy file.
