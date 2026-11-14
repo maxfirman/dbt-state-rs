@@ -144,6 +144,15 @@ class CachedTests(Campaign):
     def expected_result(self, rows):
         return rows, bool(rows), bool(rows)
 
+    def expected_cached_result(self, rows):
+        return self.expected_result(rows)
+
+    def compare_mode(self):
+        return False
+
+    def rendered_query(self, failures):
+        return query(self.a.query_identity or self.a.run_id, failures)
+
     def command_variables(self):
         return []
 
@@ -219,7 +228,7 @@ class CachedTests(Campaign):
         compiled = node.get('compiled_code')
         if compiled is None:
             compiled = next(result.target.glob('compiled/**/literal_outcome.sql')).read_text()
-        if select_only(compiled) != query(self.a.query_identity or self.a.run_id, failures):
+        if select_only(compiled) != self.rendered_query(failures):
             raise Refused('guard:compiled-literal-sql')
         return node
 
@@ -261,7 +270,8 @@ class CachedTests(Campaign):
             raise Refused('oracle:exact-selected-test-result')
         run = runs[0]
         status = run['status']
-        failures, should_error, should_warn = self.expected_result(failures)
+        failures, should_error, should_warn = (self.expected_cached_result(failures) if managed
+                                               else self.expected_result(failures))
         severity = self.test_config()['severity']
         classification = 'fail' if should_error and severity == 'ERROR' else 'warn' if should_warn else 'pass'
         # Raw numerical exits are retained and learned; only this complete logical
@@ -292,14 +302,14 @@ class CachedTests(Campaign):
         self.manifest(compiled, failures)
         # Reference first enforces zero-object reachability before any hosted call.
         self.reference('reference_' + label, failures)
-        direct = self.sql('rows_' + label, query(self.a.query_identity or self.a.run_id, failures))
+        direct = self.sql('rows_' + label, self.rendered_query(failures))
         assert_literal_rows(direct, failures)
         config = self.test_config()
         expected_failures, expected_error, expected_warn = self.expected_result(failures)
         calc = config['fail_calc']
         aggregate = self.sql('aggregate_' + label,
                  f"SELECT {calc} AS failures, {calc} {config['error_if']} AS should_error, {calc} {config['warn_if']} AS should_warn FROM ("
-                 + query(self.a.query_identity or self.a.run_id, failures) + ') AS independently_declared')
+                 + self.rendered_query(failures) + ') AS independently_declared')
         aggregate_schema = [tuple(c.get(k) for k in ('name', 'type_text', 'type_name', 'position'))
                             for c in aggregate['columns']]
         if (aggregate_schema != [('failures', 'BIGINT', 'LONG', 0),
@@ -324,7 +334,7 @@ class CachedTests(Campaign):
             req = row['request']
             if (req.get('execution_type') != 8 or 'target_table' not in req or req['target_table'] is not None
                     or req.get('tables') or req.get('query_dependencies')
-                    or req.get('compare_unrendered_code') is not False
+                    or req.get('compare_unrendered_code') is not self.compare_mode()
                     or (req.get('dbt_node_state') or {}).get('node_unique_id') != self.uid):
                 raise Refused('wire:scope-target-deps-type-mode')
             extras = {key: json.dumps(value) for key, value in self.test_config().items()}
@@ -357,7 +367,7 @@ class CachedTests(Campaign):
             if (type(body['execution_runtime_ms']) is not int
                     or body['execution_runtime_ms'] != self.recorded_runtime):
                 raise Refused('wire:cached-runtime-echo')
-        assert_payload(cached, expected_failures, expected_error, expected_warn)
+        assert_payload(cached, *self.expected_cached_result(failures))
         outcome = self.outcome(result, failures, True)
         if self.contract is not None:
             expected = self.contract[label]

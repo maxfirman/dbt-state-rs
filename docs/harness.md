@@ -415,3 +415,15 @@ elapsed-age checks retain margins and full producer Record histories. Crafted
 local-clock equality tests make no exact hosted-equality claim.
 The [dated report](reports/databricks-policy-2026-11-14.md) states the bounded
 coverage and continuing #138/#140 blockers.
+
+`databricks_cached_template.py` adds the separate five-cell true-template
+failing-cache history: fresh failing BUILD/reuse, render-only fresh pass with
+permitted retained failing R, then body-and-rendering pass BUILD/reuse. It keeps
+the immutable confirmed reference R separate from fresh F, and requires the
+render-only actual request delta to be exactly `sql`. The same zero-object
+boundary, complete payload/runtime/Explain checks and independently recorded
+zero-RPC disabled/compile controls apply. Its observed contract is
+`databricks_cached_template_contract.json`; the ignored
+`real_dbt_true_template_cached_failure_matches_independent_literal_results`
+uses the established pinned dbt/Python/lease/artifact environment. See the
+[dated bounded evidence](reports/databricks-cached-test-template-failure-2026-11-14.md).
