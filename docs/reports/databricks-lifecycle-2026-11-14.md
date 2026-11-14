@@ -93,13 +93,17 @@ and complete cached-payload equality remain asserted.
 
 ## Retained limitations
 
-Crafted FULL/VIEW requests with `target_table: null` expose separate hosted
-logical reuse. Pinned read-only dbt show/operation probes did not send those
-execution RPCs. Their logical qualification and isolation are unresolved; the
-existing non-test absent-target guard remains. Unknown physical epochs cannot
-be copy sources; absent-target histories cannot be relation mappings. These
-diagnostic captures remain archived
-outside the promoted physical fixtures, with no replay exemption or blanket
+Crafted FULL requests with `target_table: null` demonstrate repeated hosted
+logical reuse independently of physical target history. Both FULL and VIEW
+accept targetless submits and null-epoch confirmations, but the retained traces
+contain no repeated targetless VIEW submit or VIEW SKIP; VIEW reuse remains
+uncharacterized. Logical qualification, result scope, isolation and actual-client
+reachability remain incomplete for both FULL and VIEW. Pinned read-only dbt
+show/operation probes did not send those execution RPCs; this does not establish
+general unreachability. The existing non-test absent-target guard remains.
+Unknown physical epochs cannot be copy sources; absent-target histories cannot
+be relation mappings. These diagnostic captures remain archived outside the
+promoted physical fixtures, with no replay exemption or blanket
 acceptance claim.
 
 The parent copied-target rebuild, snapshot deletion and #140 safety blockers
