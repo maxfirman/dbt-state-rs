@@ -1,0 +1,1680 @@
+{
+  "date": "2026-11-14",
+  "ticket": 147,
+  "whole_ticket_complete": false,
+  "dependencies_still_blocked": [
+    138,
+    140
+  ],
+  "scope": "pinned2.0.11 serverless managedDelta SQL fixed-render p-null-safeREPLACEON boundedpartial",
+  "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+  "backends": {
+    "hosted": {
+      "cells": [
+        {
+          "label": "first",
+          "stage": "first",
+          "R": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6832,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "21cfbb9dac7529a6942da88dbedb767334db3039e373969e78760c221d52f529",
+          "physical_sha256": "805187f7fc6b3b3c9fdfffa34bf45a8f93059dbd03c4c66ef381ed8815450c25"
+        },
+        {
+          "label": "unchanged",
+          "stage": "first",
+          "R": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6832,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "0468b3e782e31e8ab43d1cfa221a1e2f02cf0b9a073e63c8354f903583fa449c",
+          "physical_sha256": "805187f7fc6b3b3c9fdfffa34bf45a8f93059dbd03c4c66ef381ed8815450c25"
+        },
+        {
+          "label": "upsert",
+          "stage": "upsert",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 7725,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "6599fd718ba34fb7f27617c74ff0d701af88f287d72d22787c2cdb06bd778e75",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "upsert_repeat",
+          "stage": "upsert",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 7725,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "413431a1e6e465deb6eb3e9ce39c38179a054f899584b045d3f0c3e6b47b0559",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "remove_null",
+          "stage": "remove_null",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 7548,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "d311a85ae12e7df9fcb98f1ef0bea2a5fe7990b9c4a5c2cf13e7a0862e1a8fb6",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "remove_null_repeat",
+          "stage": "remove_null",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 7548,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "bf698e47513f3411d1554b6121f82726c33a58b9f4f65a8ae1e61bc188490c77",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "empty",
+          "stage": "empty",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [],
+          "state": "ready_to_execute",
+          "runtime_ms": 6147,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "702d0497379db8b4b56faf6dc68eb49cd0799baf5542b07981a9d23d7c600c8e",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "empty_repeat",
+          "stage": "empty",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [],
+          "state": "skip_execution",
+          "runtime_ms": 6147,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "4693cf39396f60c5ee06a0d50eaf7459d747d41cb5172c0d7a48390e7725940c",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "restore",
+          "stage": "restore",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6526,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "ce240a254b42c243b8a9d125c3fe839039c22274f97e2b625908f80f2332f2bf",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "restore_repeat",
+          "stage": "restore",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6526,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "b9b079fb78cf73d932a79aa3c826527d5a1d9e33a5eb5fb9772112ccf3074c4f",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "full_refresh",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "FULL1 Record",
+          "runtime_ms": 3736,
+          "client_status": "success",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "cb8985eba63324db9b85f254187d9b28df362b5baad35d02e9f99da834bce893",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "next_ordinary",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6750,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "60d5dabab64c2102ab7112fcf7345b1ce06d003663db7094a3330be6a1d8dec5",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "next_repeat",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6750,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "3c272b49555d650befa34ef2513123a52f83c1319be5d198a060ead06ca1cd79",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        }
+      ],
+      "managed": 13,
+      "parse": 1,
+      "positive_skips": 6,
+      "readonly_refs": 13,
+      "capture_rpcs": 89,
+      "capture_sha256": "964d4896aae9db8d8353602c6f5ab80c4057864e8b156ada0883a503210a5333",
+      "methods": {
+        "ValidateClientVersion": 13,
+        "SubmitTelemetryBatch": 32,
+        "SubmitEnrichedSQLSpeculative": 12,
+        "SubmitEnrichedSQL": 12,
+        "ConfirmExecution": 6,
+        "GetExplainMessages": 13,
+        "RecordExecutions": 1
+      },
+      "delayed_first_upsert_Explain": true
+    },
+    "rust": {
+      "cells": [
+        {
+          "label": "first",
+          "stage": "first",
+          "R": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6962,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "de045fc7787e4fff828f0067aa1999f61047ec98445f7432d9f7fd8e241d8b77",
+          "physical_sha256": "805187f7fc6b3b3c9fdfffa34bf45a8f93059dbd03c4c66ef381ed8815450c25"
+        },
+        {
+          "label": "unchanged",
+          "stage": "first",
+          "R": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "old",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "2",
+              "delete",
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6962,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "b21cfab9448f0d97208c2bd73216ac96057adfbe70c4dceb05d739642520f8eb",
+          "physical_sha256": "805187f7fc6b3b3c9fdfffa34bf45a8f93059dbd03c4c66ef381ed8815450c25"
+        },
+        {
+          "label": "upsert",
+          "stage": "upsert",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 7571,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "9a46a92960865cddacf94cad7f8d8622d58cc5e02d7acc297eabc04d73a3a408",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "upsert_repeat",
+          "stage": "upsert",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 7571,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "ed808b92980bfafd7397e5f058ee8aa611fbb39c8435d9e5aa8ad2792c9e264f",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "remove_null",
+          "stage": "remove_null",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 7389,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "ed01e5d9ae33589695d62f2a279aa16cc8ee6c8a8354ddac937134d077d7e2fc",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "remove_null_repeat",
+          "stage": "remove_null",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 7389,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "a1267358b13afd3cdfa08164b52a519cde4d320321c6063069195a5d6ff8921c",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "empty",
+          "stage": "empty",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [],
+          "state": "ready_to_execute",
+          "runtime_ms": 6663,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "4022572ccb389bdac23b2bd8429da866e96e49ff73b23cfb372a26137b150e81",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "empty_repeat",
+          "stage": "empty",
+          "R": [
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "1",
+              "changed",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "3",
+              null,
+              "2026-11-01",
+              "2026-11-01T13:00:00.000Z"
+            ],
+            [
+              "9",
+              "null-new",
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [],
+          "state": "skip_execution",
+          "runtime_ms": 6663,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "c3191b959f990e98cb106f410274f798ed93fd5534fb959b76697f4872084c28",
+          "physical_sha256": "0f51c231d806ffc09c1ee3ecf28e9b89be89344a78a08754b54bc2722b917880"
+        },
+        {
+          "label": "restore",
+          "stage": "restore",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6587,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "4a2d025c5b2b6b8dee3db1e23ab9b2a68c064d4804a5026322572debb8171eff",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "restore_repeat",
+          "stage": "restore",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6587,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "a33dfbcda22243b339eb507926ab0dd6e24dc2de6f42805bd5cd4cc9b66d5adb",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "full_refresh",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "FULL1 Record",
+          "runtime_ms": 3982,
+          "client_status": "success",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "c64b11a34290b523c2d4e0424dc335aed6003a5ff4774bd661b8e7010034093a",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "next_ordinary",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "ready_to_execute",
+          "runtime_ms": 6570,
+          "client_status": "warn",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "815dd90ec5d92c58424d589f66ca4a5896919945cfbf5742c5ec7f4b9a3d3e32",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        },
+        {
+          "label": "next_repeat",
+          "stage": "refresh",
+          "R": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "F": [
+            [
+              "4",
+              "restored",
+              "2026-11-01",
+              "2026-11-01T12:00:00.000Z"
+            ],
+            [
+              "8",
+              null,
+              null,
+              "2026-11-01T14:00:00.000Z"
+            ]
+          ],
+          "state": "skip_execution",
+          "runtime_ms": 6570,
+          "client_status": "reused",
+          "typed_R_F_schema_partition_delta": true,
+          "reference_rpcs": 0,
+          "observed_extra_persistent": 0,
+          "wire_sha256": "51ae68c4e729225f4f562c0310e83fce2741c3baa2bb01cc1326f112d7dce3e6",
+          "physical_sha256": "01cd93a97fd0328ce83245b3c00716da68c245ac3e4fd190b143cddaf936233d"
+        }
+      ],
+      "managed": 13,
+      "parse": 1,
+      "positive_skips": 6,
+      "readonly_refs": 13,
+      "capture_rpcs": 89,
+      "capture_sha256": "3b69f7884da6677f923ee09ff9d6bb2fb67433a2485de6661b945f4f7bbb78fa",
+      "methods": {
+        "ValidateClientVersion": 13,
+        "SubmitTelemetryBatch": 32,
+        "SubmitEnrichedSQLSpeculative": 12,
+        "SubmitEnrichedSQL": 12,
+        "ConfirmExecution": 6,
+        "GetExplainMessages": 13,
+        "RecordExecutions": 1
+      },
+      "delayed_first_upsert_Explain": false
+    }
+  },
+  "hosted_replay": {
+    "accepted_corpora": 124,
+    "additional_whole_trace": 1,
+    "seconds": 237.79,
+    "asserted": 76,
+    "unknown_baseline": 0,
+    "known_gaps": 0,
+    "partial_history": 0
+  },
+  "native_acceptance": {
+    "seconds": 271.31,
+    "exitcode": 0,
+    "source_manifest": "native-source-freeze.json",
+    "source_manifest_sha256": "7e95bb0000d6588dff9658a3ac7459aae6c15177ad0167342a4d857c87b18c79",
+    "production_basis": "aeb2e54",
+    "clock": "real live clock; no replay header or field mask"
+  },
+  "native_supplemental_replay": {
+    "status": "GREEN",
+    "seconds": 239.88,
+    "tests_passed": 19,
+    "tests_failed": 0,
+    "hosted_corpora": 125,
+    "additional_whole_native_rpcs": 89,
+    "native_asserted": 76,
+    "native_unknown_baseline": 0,
+    "native_known_gaps": 0,
+    "native_partial_history": 0,
+    "sidecar": "/home/maxfirman/.local/state/dbt-state-rs/databricks-147-20261114/clock-recovery/native-replay-clocks.json",
+    "sidecar_sha256": "de793bb5263fb0e4ee0c0e0c5ed27146c164a7193ec0208c319b2c3a3e176653",
+    "exact_original_audit_clocks": 12,
+    "actual_sample_ms": 1794690806996,
+    "later_uuid_ms": 1794690807001,
+    "no_masks_or_replay_gaps": true,
+    "historical_without_sidecar_red_seconds": 238.64,
+    "original_89_unchanged": true
+  },
+  "final_metadata": {
+    "success": true,
+    "scope": "metadata-only final8inventory; zero SQL/StateRPC/dbt/mutations",
+    "protected146four_and_host147two_unchanged": true,
+    "native_uc_ids_match_Delta_creation": {
+      "inputs": "47549f09-dc36-4bdc-8bc2-e374fa31f558",
+      "consumer": "d3d625fa-4867-4cf0-9284-20e305a0d6c3"
+    },
+    "full_cli_metadata_sha256": "ad75450a75bb645293c6467fece0ada73ea1cbaf6197b0e6d00c9b476f87a45d",
+    "final_inventory_count": 8,
+    "peak_transient_allowance": 1,
+    "observed_extra_persistent": 0
+  },
+  "artifact_archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-147-20261114",
+  "production_delta": [],
+  "offline_python_tests": 86,
+  "focused_python_tests": 13,
+  "uncovered": [
+    "multiple partition keys",
+    "unpartitioned/liquid settings",
+    "schema evolution/destination binding",
+    "strategy transitions",
+    "generated/retry/restart lifecycle"
+  ],
+  "no_replay_exception_or_prefix_discard": true,
+  "raw_capture_stops_preserved": true,
+  "future_collector": {
+    "postflight_only": true,
+    "original_native_executable_unchanged": "04b30f65f4492d99c94ac459e6a8551c0d72e3dd0b07456169b4e481566c3531",
+    "original_native_source_files": 617,
+    "new_collector_not_executed_on_original_run": true
+  },
+  "gate_input_proof": {
+    "baseline_receipt": "/home/maxfirman/.local/state/dbt-state-rs/databricks-146-20261114/validation/ticket146-production-gate-reuse.json",
+    "baseline_receipt_sha256": "b16b8f57760dbbe681a335139e36424956c7f37a972ee8b8ee39ce52db9777ae",
+    "base_gate_source": "af6937bee4e1d6f7c5c5422e5fe967100d04fb12",
+    "production_basis": "aeb2e54",
+    "current_parent": "c30dcef357de5c886570e347b42abf9768b18cb9",
+    "production_file_count": 79,
+    "production_inputs": {
+      "crates/harness/src/auth.rs": "a24934531d7fb41bcb9f893fbff2a84bd0d3112a127fdbd427bfb8e3f9e53d08",
+      "crates/harness/src/bin/diff_fuzz.rs": "6b5fa5c52a249afee0337e841bfab46a129c2dd6f62d34b9d45d38c839ab3cfd",
+      "crates/harness/src/bin/record_proxy.rs": "3c2a264f043d30b10239bcefb1dafdb0155d79583e16bf83e241715f72fe7043",
+      "crates/harness/src/bin/state_probe.rs": "40b66050d670ad458f7e0b3f757cae9798884d8ca41ae69aa3a5d3d4206145d2",
+      "crates/harness/src/diff.rs": "c34807a8651ead32e70b4d8f75593ce52c9bb0e2dfe95d63ee64e1de4bc23371",
+      "crates/harness/src/golden.rs": "6d603897d5bdfa727bcbe1ed8a019b52999d69ec911570c5ad7d5d09ac095d3e",
+      "crates/harness/src/lib.rs": "a05c15479efff63b1e4d0c12f2ed7b60fd9a430fe2f5becf3508038bcd180212",
+      "crates/harness/src/proxy_tests.rs": "39a4bb4b272643ea85e736e081f72fc3db0543a2d3278e1bc9885033d3fe95a2",
+      "crates/proto/Cargo.toml": "cf234b4bd92937e1e5c8fc8dfbc88b6f635a8ee7a0d683d6181f7877c4c2b5fc",
+      "crates/proto/build.rs": "7726f226bbb57ebf4bf05acff43c0a293e2e2870c8475279056cec0c7779b843",
+      "crates/proto/src/lib.rs": "917694ddea50317eba7e6f13c7cf0e16ba54974e7a39137cb3928bcbb40405fa",
+      "crates/server/Cargo.toml": "47fb42b16eaf3617b6d7379108bf7e67afabed75d82a81e73ba9490543795fd5",
+      "crates/server/migrations/0001_init.sql": "415592494bcdb93ff7d37fdd000e53e846e78cae1c680be7985eb3e47fde8f8d",
+      "crates/server/migrations/0002_values_hash.sql": "f235340db16d81d3c47f496ac162618ffcb53b65ff3bbbf0bced996f3d5911d3",
+      "crates/server/migrations/0003_ui_domain.sql": "d72f46ec7f4c3dcd81082baa748c733168f5d9aea410f86e843e2e246d71abe8",
+      "crates/server/migrations/0004_honest_log.sql": "98cbb28c571a89a8f8920eaad13ec0cc81e864071d138e37446b4a52762b1135",
+      "crates/server/migrations/0005_query_dependencies.sql": "18c1b03511d48658ec7d1d1a6c28d069f55b30eaf61df6c4fc40fd2da2f94d5c",
+      "crates/server/migrations/0006_node_sql_hash.sql": "c47e58ab9e341ce3727ec6eac9af0ab9d1fa71032357050df19273f82c24c5f6",
+      "crates/server/migrations/0007_execution_results.sql": "272329f22212a8b399c5829dd8345b80e76cae98e3162788ee3a71be237ac8ed",
+      "crates/server/migrations/0008_cross_env_reuse.sql": "eb20de0be838dc7596fae3e19a82157bc82fce9f35ef82260fb194d2c5f6b8ac",
+      "crates/server/migrations/0009_node_states.sql": "16ced674784e5bd3959e6802b5a35201bf6b5631a0e254d21d718b4afdcdedee",
+      "crates/server/migrations/0010_node_state_fqn.sql": "10f2d972c8a68aae4a1799bf310990d18026bbbcc12fe58bdd18be76e36ad29d",
+      "crates/server/migrations/0011_node_template_hash.sql": "b06c1e5f8f5db6cd9857be3adda415f6c4817a31a65384fce63e008895f0eb86",
+      "crates/server/migrations/0012_physical_warehouse_scope.sql": "deb6c70024b681a710e7de609901920657032fbcf613524d9d3f4cdad254a52d",
+      "crates/server/migrations/0013_matched_execution_id.sql": "8303a6061030d606e53c4d015099ffa60522632dc0e9945728003eb962a7826b",
+      "crates/server/migrations/0014_decision_reason.sql": "8428392229c3009a067c0f82427fc939c57c49522025c2e2238f60bfe96474a4",
+      "crates/server/migrations/0015_decision_freshness.sql": "f4b00a606bea395b64408c1c080e96f30ab9df7452a38b1e7a04f0afeba89383",
+      "crates/server/migrations/0016_decision_rejection_codes.sql": "f72f4934919cbecb62b439be917cffc68972bc042e806199e141bc805ace6b31",
+      "crates/server/migrations/0017_decision_unmatched_execution.sql": "ea0c79935f75809d06026e8ec697f9ba6db89b0e474daa48e4fd82fb8d83b794",
+      "crates/server/migrations/0018_copy_source_inputs.sql": "48c7a6c82890ddd9e71b1c987a3b58b1fc9ddc99e886cd5b77a6fc851fda0601",
+      "crates/server/migrations/0019_decision_reads_relation.sql": "ddf9c7938cfcacc3526ed5e2d4fa6f13778ca0e1f501757f30f89abaad006f4d",
+      "crates/server/migrations/0020_physical_relation_key.sql": "cfde0236e39335f2369d7697376b8688c79278cc1c770a1f132e1e0475938036",
+      "crates/server/migrations/0021_named_deferral_scope.sql": "2caca4694b54230e07f012e61a37b82f251585d6902d899d085d944387d35865",
+      "crates/server/migrations/0022_explain_submit_clock.sql": "5352931b857d0c50d8280e5898e1e3249c96553d24e623f0b8933efc8f77ff9d",
+      "crates/server/migrations/0023_template_comparison.sql": "bee220587802b5e7d4fa8c0ae787f31158140872e58e5e2506388c0e462d0295",
+      "crates/server/proptest-regressions/decision_proptest.txt": "13a0fbb88ce6da580a7b92ad5a318516e4d77e7672e651aa348e17ef5da0c5c7",
+      "crates/server/proptest-regressions/sql_norm.txt": "b07ee70cc10ef1b8ffd477e91154ec70e0ae0041f2ba82646b51c63bc8a768b7",
+      "crates/server/src/capture.rs": "99a8bc30587fed609772a462f2ac4c260fdb4f75cd80e67f70a0f4bc47e57a9e",
+      "crates/server/src/config.rs": "6896a830f0ee244fc2a67c33a0a397fd5554be5264f0db0f43dc0176dda9cf41",
+      "crates/server/src/decision.rs": "4269454763e63555e8fdff2e08f2279f7f64c0b24b7492f5e866b7e1a4d2c802",
+      "crates/server/src/decision_proptest.rs": "b9e52905a026cf64dc9d40d59130e5f4ed3dcdd4a7c4c9368da6753e60949b2c",
+      "crates/server/src/execution.rs": "7a5a653fe5e2c3583234ee095b98516b5b45dde435a97ed3d4872ca60e356693",
+      "crates/server/src/explain.rs": "90c43e251dc0aa164f747507753355b1353eb5579c7aaf432defea71b7aa2f35",
+      "crates/server/src/fingerprint.rs": "82e6b79d47d1457aec11583f0a1da3b0a2a3016a6f17600544ef3cfe8248d5d9",
+      "crates/server/src/lib.rs": "e96f80cc6fb5cdae25e69ae5acdb56b17f1ed8ebe71b4a71cafcfa8691320ed5",
+      "crates/server/src/main.rs": "f78b1fc4c1524310dca03fcbaf264e060b3d66e7d55cf3068bcfb4af0d13669d",
+      "crates/server/src/result_copy.rs": "3160291fe79fbb06f00cd23c5b730b50123165694f287f7ad3ad8b3fe220d07d",
+      "crates/server/src/reuse_candidate.rs": "d516c21637dd3af2aa56d9d1fcda5a8e983dbc471fc538bc24165e3b08af39c6",
+      "crates/server/src/selector.rs": "bec277816bccb04065bb44ae37166487238083117fd1b69fa274aa084f2dd0a0",
+      "crates/server/src/services.rs": "ac4a42786546cc82855e6cce0c3ab260a4204032eb953f37df99525e1a736227",
+      "crates/server/src/sql_identity.rs": "a96f67ee24e392580430ed056374214c2426fd57be9e8768cc66c489fad642bc",
+      "crates/server/src/sql_norm.rs": "6a30747f2fc87774393dd4a188cd726a9adde4f2f5af8a8b86893f9b9f26507d",
+      "crates/server/src/store.rs": "0381236a52736027659aa2bd7ed2aa2f181be4a7e357055d4b7642ffcd7edc0a",
+      "crates/server/src/store/history.rs": "77a7b0e99fe2307bee860e51f79355a1b2748d4a0f144367ffa29e6750b10640",
+      "crates/server/src/submit_decision.rs": "a6b38052b1fbc88f9c9466272c6f4430b10301b63f2811652f1d5576e14dad8d",
+      "crates/server/src/warehouse.rs": "4f1d28b21568e2325d7708ad377af9f1b40739d3f53e912f496bef26612e7609",
+      "crates/server/src/warehouse/databricks.rs": "271fa0e2290999318577873b0dba6b47bc999048ed665da2c0b133011afcbbf5",
+      "crates/server/src/warehouse/duckdb.rs": "f3d16989d187fc935ee20730224d3746e9ec345e7f363cf0c1f972d88665e242",
+      "crates/server/src/warehouse/snowflake.rs": "da0c7bf73c67f6cc7a23a1e89de879644ce6e9256e45ed30157595b80a941a14",
+      "crates/server/tests/capture.rs": "dbd20c53a5f689e3e0fd1d340a37e17bdf3666f6e49426b3fb1c0516cc2f688d",
+      "crates/ui/Cargo.toml": "3c6af26432f514a5793e5197861a0bfaa0ca98060736618ee88e7e71f5f7be43",
+      "crates/ui/src/app.rs": "1f40d4bfe759c25b8ffeee9878c67df5b1cd7ef19cf0a81d9b64022f0a4b61dc",
+      "crates/ui/src/app/environments.rs": "f3182c3701bd3a7cfcaa34ad5d2a6a4f5c7e986a479d09d54d56c2cf44e85dc8",
+      "crates/ui/src/app/invocations.rs": "4c1b87788427aa91298ffab6d40b7e8a1d6422379e148530ac839f9d39d2e254",
+      "crates/ui/src/app/projects.rs": "69797187c5c5d0ddaf21814d20942f560e56a42f9411509694f37fdc5042aedf",
+      "crates/ui/src/db.rs": "8352ec2c78c7bc4070b36a74eb799fc5a5d4444fb89469b4085d8485a5bcf838",
+      "crates/ui/src/lineage.rs": "e5c21e12ed7f2c003f4c63f325b8d7291e63d33c5aa94d583d2cb65536dbf9c8",
+      "crates/ui/src/main.rs": "03ab1d80d1f5bc463019008d2493ba42660455dff4381bb99a0afd62e4d6f390",
+      "crates/ui/src/view_helpers.rs": "b1bf813be477bfe6735f6059d454a9b223eb399aa75ede52207973211a528358",
+      "proto/query_cache_protobuf/query_cache/services/client_telemetry_service.proto": "17b2bf78b91a83ff065b3e3e441ea5b63094536ae3e5d3dea36220985b4c5e2b",
+      "proto/query_cache_protobuf/query_cache/services/client_validation_service.proto": "28a95609242ffe8504a1fe8fe64d149371d0e3a0781070d7d696dc0e9530e6b2",
+      "proto/query_cache_protobuf/query_cache/services/clone_service.proto": "f4f767112833585f0f7fc4236cf203dd1e73e7be1af65631a5458ba0b2003466",
+      "proto/query_cache_protobuf/query_cache/services/execution_service.proto": "f8689cd41b6a5b3eab7f63c6fa5824debdc9f7d972c643aae27554f5a4fc0db5",
+      "proto/query_cache_protobuf/query_cache/services/explain_service.proto": "066abaed9da3e1d2397bd1ea536b6abc2c9c0b5884d130fdf5e6c0238b8ec32b",
+      "proto/query_cache_protobuf/query_cache/services/health_service.proto": "c04dbf403d0e4006e52a41011bbb002cb5c43a3d6638b286f856c2e2d168a561",
+      "proto/query_cache_protobuf/query_cache/services/selector_service.proto": "da2ef334979dc2b485fbaf6d7e19b4695c1d334c21c5e4f9d0b276c2d3a69497",
+      "proto/query_cache_protobuf/query_cache/services/sql_service.proto": "49fd24185f183814234447babf7b66267a3ee87a55ce214acb21e4435f184642",
+      "proto/query_cache_protobuf/query_cache/shared.proto": "dfddbbea2bd28fae978341d6df0e3dfcefacb657d889375e091cbd38070f6bcf",
+      "proto/query_cache_protobuf/query_cache/struct.proto": "1f4efd0ebb93a2e0851f40bb3936d4e40708225032160e8bb074d9773dbe5a51"
+    },
+    "production_differences": [],
+    "previous_gate_inputs": 159,
+    "unchanged_gate_inputs": 157,
+    "changed_gate_inputs": {
+      "Cargo.lock": {
+        "previous": "a2e329fab002d4744e98ac0167daa5e6030bdbba70c124a7744dcf0170d5a7c2",
+        "current": "89afeba8109435cb7dcfc5cfabad901668e3326693fad914dd8d24e3e798426b"
+      },
+      "crates/harness/Cargo.toml": {
+        "previous": "40e64c7df7d9ffd271a49276b595a2fc7e941b5887d9be9ef57a71d101a23c38",
+        "current": "9c555d4863b1e0c2d4fce12136e5eea788c3897cef70a67f70dbb9b7e16acc51"
+      }
+    },
+    "test_dependency_caveat": "Cargo.lock and crates/harness/Cargo.toml differ solely by sha2 dev-dependency for the test-only native-clock evidence verifier. Production source/warehouse policy unchanged; no fresh whole workspace or DuckDB run claimed.",
+    "exact_test_dependency_diff": "diff --git a/Cargo.lock b/Cargo.lock\nindex cc646fa..d51279e 100644\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -525,6 +525,7 @@ dependencies = [\n  \"reqwest\",\n  \"serde\",\n  \"serde_json\",\n+ \"sha2 0.10.9\",\n  \"sqlx\",\n  \"thiserror\",\n  \"tokio\",\ndiff --git a/crates/harness/Cargo.toml b/crates/harness/Cargo.toml\nindex 497b962..447d2ae 100644\n--- a/crates/harness/Cargo.toml\n+++ b/crates/harness/Cargo.toml\n@@ -45,6 +45,7 @@ tracing-subscriber.workspace = true\n reqwest.workspace = true\n \n [dev-dependencies]\n+sha2.workspace = true\n dbt-state-server = { path = \"../server\" }\n sqlx.workspace = true\n tokio.workspace = true\n",
+    "production_core_count": 71,
+    "unchanged_harness_source_count": 8
+  },
+  "current_checks": {
+    "python_databricks": {
+      "passed": 86,
+      "seconds": 1.784
+    },
+    "focused_python": 13,
+    "rust_harness": {
+      "passed": 1,
+      "live_ignored": 1,
+      "seconds": 0.1
+    },
+    "full_public_replay": {
+      "passed": 19,
+      "failed": 0,
+      "seconds": 239.88,
+      "hosted_corpora": 125,
+      "native_rpcs": 89
+    },
+    "strict_workspace_all_targets_fuzz_clippy": {
+      "passed": true,
+      "seconds": 78
+    },
+    "fmt": true,
+    "diff_check": true,
+    "fresh_full_workspace_test": false,
+    "fresh_duckdb25": false
+  },
+  "evidence_manifest": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-147-20261114/artifact-manifest.json",
+    "sha256": "36a2133288b16b36179499d925e2545df170ba208e80db01352535a562a09043",
+    "files": 4643
+  }
+}
