@@ -678,3 +678,25 @@ between phases with full identity/actor/history provenance.
 Views, alternate audit schemas, genuine-upstream native audit behavior, external
 modifications, drop/recreation and post-error reuse remain uncovered. #144,
 #143/#138's UID boundary blocker and the wider #132 blockers remain incomplete.
+
+## Databricks predicate replacement bounded partial (#148, 2026-11-14)
+
+The pinned client sends replace_where as DBT_CUSTOM11, including native
+full-refresh Record input. The complete hosted90-RPC history and a fresh Rust
+counterpart cover first→steady→fresh reuse, inside update/duplicate NULL rows,
+outside update/delete retaining the original target row, empty incoming
+replacement, a destination-only predicate widening, and full refresh→ordinary
+SQL transition→fresh reuse. Both backends independently check complete typed
+source/cumulative R/selected F multisets, schema, MANAGED Delta/history, accepted
+runtimes and zero-RPC literal references. The initial helper's FULL1 assumption
+stopped after successful refresh; the original76/source remain preserved, and
+only missing checks and the final two invocations continued under a separate
+grant. No State history or expected rows were fabricated. The [bounded report](reports/databricks-replace-where-2026-11-14.md)
+records whole-trace replay and actual native audit-clock provenance.
+
+This is not whole #148: schema evolution, alternate/empty/invalid predicate
+forms, constraint-error/settings reachability, failure/retry publication and
+broader strategy transitions remain required. No generic full-refresh type
+mapping, unknown temporal encoding or unsupported error policy is inferred.
+#138/#140 remain incomplete; this partial does not promote their dependency
+edges or the full Databricks support claim.
