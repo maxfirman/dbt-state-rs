@@ -25,6 +25,9 @@ pub mod fault;
 /// Raw-SQL legacy, frozen, corrupt and captured State (the only raw writers).
 #[path = "support/legacy.rs"]
 pub mod legacy;
+/// Exact real clock evidence retained for supplemental native replays.
+#[path = "support/native_clock.rs"]
+pub mod native_clock;
 #[path = "support/python.rs"]
 mod python;
 #[path = "support/resources.rs"]
