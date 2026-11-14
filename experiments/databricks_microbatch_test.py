@@ -92,4 +92,59 @@ class WireGuard(unittest.TestCase):
             with self.assertRaises(m.Refused):m.microbatch_submit(changed,source,target,False,('2026-11-01','2026-11-03'),'ready_to_execute')
         with self.assertRaises(m.Refused):m.microbatch_submit(calls+calls,source,target,False,('2026-11-01','2026-11-03'),'ready_to_execute')
 
+
+class UnchangedSkip(unittest.TestCase):
+    def invoke_with_skip(self, response):
+        import json
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        source='cdo_demo_db.state_20261114_append146.mb_20261114a150aa_inputs'
+        target=source.replace('_inputs','_consumer')
+        extras={'unique_key':'"id"','file_format':'"delta"','event_time':'"ts"',
+          'on_schema_change':'"ignore"','lookback':'1',
+          '__microbatch_event_time_start':'2026-11-01T00:00:00+00:00',
+          '__microbatch_event_time_end':'2026-11-03T00:00:00+00:00'}
+        request={'execution_type':6,'dialect':'databricks',
+          'default_catalog':'cdo_demo_db','default_schema':'state_20261114_append146',
+          'compare_unrendered_code':False,'table_namespace':'own','query_dependencies':[],
+          'freshness_tolerance_seconds':0,'stale_upstream_policy':0,'clone_chain_depth_limit':0,
+          'ignore_external_modifications':False,'sql':'select * from '+source,
+          'target_table':target,'tables':[{'name':source,'last_modified_epoch':1},
+          {'name':target,'last_modified_epoch':2}],'labels':{'dbt_node_name':'consumer'},
+          'semantic_extras':extras}
+        calls=[{'method':'SubmitEnrichedSQL','request':request,
+          'response':{'response':{'skip_execution':response}}},
+          {'method':'SubmitEnrichedSQLSpeculative'}]
+        campaign=m.Microbatch.__new__(m.Microbatch)
+        campaign.scope=SimpleNamespace(relation=lambda role,name:source if name=='inputs' else target)
+        campaign.a=SimpleNamespace(run_id='20261114a150aa')
+        campaign.work=Path('/unused-offline-microbatch');campaign.n=1
+        campaign.previous_epochs={source:1,target:2};campaign.confirmed_epoch=2
+        campaign.previous_extras=extras;campaign.last_runtime=9757
+        campaign.dbt=lambda *args:calls
+        campaign.save=lambda *args:None
+        campaign.explain=lambda *args:None
+        campaign.checked_results=lambda *args:None
+        result={'results':[{'status':'reused','unique_id':'model.survey_20261114a150aa.consumer',
+          'relation_name':target,'adapter_response':{},'failures':None,'batch_results':None}]}
+        with patch.object(Path,'read_text',side_effect=[json.dumps(result),'']):
+            campaign.invocation('first_repeat','first','skip_execution')
+
+    def test_actual_nested_nonstale_shape_is_required(self):
+        # Retained134 041/042 place this flag under explained_decision.
+        self.invoke_with_skip({'execution_runtime_ms':9757,'explained_decision':{'is_stale':False}})
+        for response in (
+            {'execution_runtime_ms':9757,'explained_decision':{'is_stale':True}},
+            {'execution_runtime_ms':9757,'explained_decision':{}},
+            {'execution_runtime_ms':9757,'explained_decision':{'is_stale':None}},
+            {'execution_runtime_ms':9757,'explained_decision':{'is_stale':0}},
+            {'execution_runtime_ms':9757,'explained_decision':None},
+            {'execution_runtime_ms':9757},
+            {'execution_runtime_ms':9757,'is_stale':False,'explained_decision':{'is_stale':True}},
+            {'execution_runtime_ms':9757,'is_stale':False,'explained_decision':{}},
+        ):
+            with self.subTest(response=response), self.assertRaisesRegex(m.Refused,'SKIP lacks own'):
+                self.invoke_with_skip(response)
+
 if __name__=='__main__':unittest.main()

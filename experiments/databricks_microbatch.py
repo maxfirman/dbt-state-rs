@@ -323,8 +323,10 @@ class Microbatch(Merge):
         if label in STAGES[1:] and epochs[source]<=self.previous_epochs[source]:raise Refused('changed source epoch failed to advance')
         if expected=='skip_execution':
             response=submits[0]['response']['response'][expected]
+            explained=response.get('explained_decision')
             if (epochs[source]!=self.previous_epochs[source] or epochs[target]!=self.confirmed_epoch
-                    or request['semantic_extras']!=self.previous_extras or response.get('is_stale')
+                    or request['semantic_extras']!=self.previous_extras
+                    or not isinstance(explained,dict) or explained.get('is_stale') is not False
                     or response['execution_runtime_ms']!=self.last_runtime):raise Refused('SKIP lacks own exact unchanged evidence/runtime')
         else:
             confirms=[r for r in calls if r['method']=='ConfirmExecution' and r.get('response',{}).get('success')]
