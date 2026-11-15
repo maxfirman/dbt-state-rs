@@ -1,0 +1,44 @@
+{
+  "ticket": 145,
+  "phase": "settings",
+  "catalog": "cdo_demo_db",
+  "schema": "state_20261114_append146",
+  "schema_id": "6f14be2c-a920-4309-8240-caf8e8df7888",
+  "run_ids": {
+    "hosted": "20261114a145cc",
+    "rust": "20261114b145dd"
+  },
+  "max_final_permanent": 4,
+  "max_extra_concurrent_persistent": 1,
+  "permanent_exact_allowlists": {
+    "hosted": [
+      "cdo_demo_db.state_20261114_append146.ms_20261114a145cc_inputs",
+      "cdo_demo_db.state_20261114_append146.ms_20261114a145cc_consumer"
+    ],
+    "rust": [
+      "cdo_demo_db.state_20261114_append146.ms_20261114b145dd_inputs",
+      "cdo_demo_db.state_20261114_append146.ms_20261114b145dd_consumer"
+    ]
+  },
+  "session_temporary_unqualified_names": {
+    "hosted": "ms_20261114a145cc_consumer__dbt_tmp",
+    "rust": "ms_20261114b145dd_consumer__dbt_tmp"
+  },
+  "persistent_auxiliary_exact_spellings": {
+    "hosted": [
+      "cdo_demo_db.state_20261114_append146.ms_20261114a145cc_consumer__dbt_stg",
+      "cdo_demo_db.state_20261114_append146.ms_20261114a145cc_consumer__dbt_backup"
+    ],
+    "rust": [
+      "cdo_demo_db.state_20261114_append146.ms_20261114b145dd_consumer__dbt_stg",
+      "cdo_demo_db.state_20261114_append146.ms_20261114b145dd_consumer__dbt_backup"
+    ]
+  },
+  "limits": {
+    "managed_per_backend": 12,
+    "disabled_select_only_references_per_backend": 12,
+    "parse_per_backend": 1
+  },
+  "cleanup": false,
+  "schema_allocation": false
+}

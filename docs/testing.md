@@ -331,3 +331,14 @@ capture/replay, owned `cdo_demo_db` relations, actual measured epochs/clocks and
 independent real-warehouse reference executions. There is no scheduled cloud
 job or new credential requirement. This offline gate cannot close #161/#132,
 resolve #140's unknown-evidence policy or establish hosted conformance.
+
+For the bounded #149 DELETE_INSERT seam, run
+`python3 experiments/databricks_delete_insert_test.py` and
+`cargo test -p dbt-state-harness --test databricks_delete_insert`. The ordinary
+test checks independent multiset key replacement, selected/absent NULL keys,
+empty input, duplicates, exact schema/reference/SQL/scope guards, actual nested
+fresh-SKIP flags and a full-refresh kind locked from prior hosted evidence.
+The real-client test is ignored and requires an exact separate grant and fresh
+owned pair. Its native wrapper retains actual audit clocks before State cleanup;
+whole supplemental replay supplies that sidecar. See the
+[dated bounded report](reports/databricks-delete-insert-2026-11-15.md).

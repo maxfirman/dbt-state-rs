@@ -568,3 +568,29 @@ audit clocks before State schema cleanup and writes the capture/clock paths to
 `native-extra-replay-environment.json`. Supplemental strict replay must supply
 that actual sidecar. A byte-identical `databricks_` filename alias satisfies the
 extra-capture basename guard without editing the raw proxy file.
+
+## Bounded Databricks DELETE_INSERT acceptance (#149)
+
+`experiments/databricks_delete_insert.py` requires the original immutable
+operation ledger, exact phase clearance and frozen tools. Ordinary submissions
+are DELETE_INSERT5 and the actual pinned native path is one null-safe
+`INSERT ... REPLACE ON target.id <=> temp.id`, with an unqualified session
+temporary view. Duplicate incoming keys remain a multiset; missing input keys
+retain old rows. No legacy scalar `DELETE ... IN` behavior is substituted.
+
+The hosted phase first executes one literal fractional timestamp SELECT twice,
+through typed API and isolated State-disabled show, before any source/consumer
+DDL. Its six rows prove exact .123/.456/.789/.012 UTC encodings and duplicate
+NULL keys; unknown encodings stop without object creation or coercion. The
+13-cell managed campaign has13 separate zero-RPC R references. Native reuses
+that observed codec proof and requires literal
+`expected_full_refresh_record_execution_type` from the whole hosted history;
+this capture observes FULL1, followed by ordinary5. A changed native kind rejects.
+
+The ignored native wrapper is
+`databricks_delete_insert.rs::real_dbt_delete_insert_matches_independent_operation_history`.
+It uses the standard native environment plus
+`DBT_STATE_DATABRICKS_OPERATION_LEDGER`, saves its actual executable identity,
+and retains all actual org/decision/audit sampled clocks before State schema
+cleanup. Its capture and clock sidecar must pass whole supplemental replay.
+See [the dated evidence and unfinished scope](reports/databricks-delete-insert-2026-11-15.md).
