@@ -1,6 +1,7 @@
 # Databricks freshness evidence
 
-Ticket #140 remains **incomplete**. Its actual-client source-operation and
+Ticket #140 is **complete within its tested bounded scope**, with documented
+conservative differences. Its actual-client source-operation and
 same-logic recorded-rebuild cells have independent physical checks and exact
 public replay. Crafted missing-evidence requests expose a hosted/Safety
 conflict; these are retained diagnostic evidence, not acceptance fixtures or
@@ -83,4 +84,5 @@ checks an actual repeated-source query and explicitly crafted duplicates over
 real warehouse data. Its opt-in test is
 `databricks_freshness_followup::real_dbt_repeated_source_and_crafted_duplicate_match_independent_results`;
 set `DBT_STATE_DATABRICKS_RUN_ID` to a fresh YYYYMMDD plus six hex digits as well
-as the existing live-test environment variables. #140 remains incomplete.
+as the existing live-test environment variables. These observations do not
+establish real changed-data equal epochs or a general metadata-visibility delay.
