@@ -725,3 +725,20 @@ upgrade breadth remain required. Legacy fallback and uncharacterized temporal
 precision are not inferred. #138/#140 stay incomplete and no dependency edge
 or whole Databricks support claim is promoted. See the
 [bounded report](reports/databricks-delete-insert-2026-11-15.md).
+
+
+## Bounded MICROBATCH counterpart (#150, 2026-11-15)
+
+Both pinned hosted and Rust ten-command histories pass independent complete
+source/R/F typed multisets, duplicate/NULL keys, explicit daily half-open bounds,
+source timestamp moves/deletes, overlapping/empty replacements and exact own
+NULL-event-time target-row retention. Each has nine daily batches, five
+Confirms, five fresh own-runtime SKIPs, ten zero-RPC references and full Explain.
+The entire hosted70 and native70 replay exactly; native uses ten actual audit
+clocks retained before schema Drop. The original description-only red remains
+preserved alongside its narrowly reviewed correction.
+
+This does not complete #150 or #138/#140. Full-refresh/Record, implicit scheduling,
+nondefault settings, schema evolution, concurrency/failure/lifecycle/generated
+breadth and isolated Target-only modification policy remain unaccepted. See the
+[bounded report](reports/databricks-microbatch-2026-11-15.md).
