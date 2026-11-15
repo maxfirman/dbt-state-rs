@@ -72,3 +72,10 @@ regressions opt in explicitly; no fixture assertions are relaxed. Ordinary
 FULL submits are separately tested to BUILD with a cross-target source under
 both default and direct-copy opt-in configurations. The production migrations
 and persisted provenance formats are unchanged by this policy switch.
+
+Fresh bounded [physical acceptance](databricks-precopy.md) covers native MERGE
+and source-clock check snapshots, absent and existing development targets,
+copy-to-SKIP adoption and changed-input rebuilds. It preserves complete default
+properties and SCD histories. This is conditional on quiescent sources; the
+unobservable unversioned source race and the other documented limits keep the
+default disabled. It does not enable automatic submit copying or copy chains.

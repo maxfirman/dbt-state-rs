@@ -1,8 +1,10 @@
 # Databricks direct pre-copy: narrow offline implementation, 2026-11-15
 
-This implements the retained native MERGE/check-snapshot direct RegisterClone
-path and narrow adoption. #152 remains open. No new warehouse writes, live dbt
-runs, or local DuckDB execution were performed for this slice.
+This records the initial offline native MERGE/check-snapshot RegisterClone
+implementation. The later [physical acceptance supplement](../databricks-precopy.md)
+adds fresh hosted and native acceptance to the bounded direct-copy scope.
+No warehouse writes, live dbt runs or local DuckDB execution were performed
+for this initial slice; its remaining-work statements below describe that stage.
 
 Primary source: the preserved #134 archive
 `~/.local/state/dbt-state-rs/databricks-134-20261112/zero-lag/golden/golden_20261112T014013.365Z_6728e5f8c1bc48a4884fd9d720a16cd5.jsonl`

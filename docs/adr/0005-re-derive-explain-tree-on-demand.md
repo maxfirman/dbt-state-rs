@@ -264,3 +264,17 @@ does not look up a newer build. This display row never enters reuse selection,
 Lag tolerance or producer evaluation. Other type changes, FULL refresh and
 incomplete evidence keep their existing behavior; ADR 0007's selection rule
 is unchanged. See [the acceptance evidence](../databricks-append.md).
+
+## Databricks pre-copy refusal display (#152, 2026-11-15)
+
+The native MERGE source refresh in `databricks_precopy.jsonl` reports an ordinary
+BUILD and names a refused copy in its table-analysis section. The existing
+`node_decisions.clone_source` presentation slot freezes that other physical name
+at submit time. The diagnostic lookup remains organization/family/namespace
+scoped, selects latest physical state before qualification, and returns a name
+only. It requires the captured direct-input rendered identity, full UID and
+complete current genuine input epoch/producer evidence. It cannot provide a
+candidate or a foreign execution ID. The original own-build
+`matched_execution_id` still anchors query/freshness analysis; the name never
+enters Reuse qualification or automatic copy selection. SNAPSHOT's separate
+1/3 refusal retains its ordinary tree. See [the evidence and limits](../databricks-precopy.md).
