@@ -287,3 +287,127 @@ async fn real_dbt_true_template_cached_failure_matches_independent_literal_resul
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn upstream_cached_outcome_controls_reject_stale_results_and_unscoped_inputs() {
+    let output = std::process::Command::new(
+        std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").unwrap_or_else(|| "python3".into()),
+    )
+    .arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../experiments/databricks_cached_upstream_test.py"
+    ))
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned dbt and Databricks; creates one fresh UUID source table in an owned demo container"]
+async fn real_dbt_cached_upstream_failure_and_recovery_match_independent_results() {
+    let server = support::start_server().await;
+    let output = tokio::process::Command::new(
+        std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").expect("Python with PyYAML"),
+    )
+    .arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../experiments/databricks_cached_upstream.py"
+    ))
+    .arg("--dbt")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_DBT").expect("pinned dbt"))
+    .arg("--proxy")
+    .arg(env!("CARGO_BIN_EXE_record-proxy"))
+    .arg("--probe")
+    .arg(env!("CARGO_BIN_EXE_state-probe"))
+    .arg("--schema-lease")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA_LEASE").expect("explicit lease"))
+    .arg("--schema")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA").expect("owned container"))
+    .arg("--object-id")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_OBJECT_ID").expect("fresh UUID"))
+    .arg("--contract")
+    .arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../experiments/databricks_cached_upstream_contract.json"
+    ))
+    .arg("--run-id")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_RUN_ID").expect("fresh run ID"))
+    .arg("--rust-url")
+    .arg(format!("http://{}", server.addr))
+    .arg("--work-dir")
+    .arg(std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS").expect("fresh retained artifacts"))
+    .output()
+    .await
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn upstream_cached_failure_needs_known_source_epoch_and_full_uid() {
+    let rows: Vec<serde_json::Value> =
+        include_str!("../../../golden/fixtures/databricks_cached_test_upstream.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let failed = rows
+        .iter()
+        .filter(|row| row["method"] == "SubmitEnrichedSQL")
+        .nth(2)
+        .unwrap();
+    let id = &failed["response"]["response"]["ready_to_execute"]["request_id"];
+    let confirmed = rows
+        .iter()
+        .find(|row| row["method"] == "ConfirmExecution" && row["request"]["request_id"] == *id)
+        .unwrap();
+    let request: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(failed["request"].clone()).unwrap();
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(confirmed["request"].clone()).unwrap();
+    let server = support::start_server().await;
+    let scenario = Scenario::connect(&server).await;
+    confirm.request_id = scenario.execute_id(request.clone()).await;
+    let mut execution = qc::execution_client::ExecutionClient::new(scenario.channel());
+    assert!(
+        execution
+            .confirm_execution(confirm.clone())
+            .await
+            .unwrap()
+            .into_inner()
+            .success
+    );
+    assert_eq!(
+        scenario
+            .expect_skip(request.clone())
+            .await
+            .execution_results,
+        confirm.execution_results
+    );
+    let mut unknown = request.clone();
+    unknown.tables[0].last_modified_epoch = None;
+    let mut changed = request.clone();
+    changed.tables[0].last_modified_epoch =
+        Some(request.tables[0].last_modified_epoch.unwrap() + 1_000);
+    let mut other_uid = request.clone();
+    let uid = "test.other_project.literal_outcome";
+    other_uid.dbt_node_state.as_mut().unwrap().node_unique_id = uid.into();
+    other_uid
+        .labels
+        .insert("dbt_node_unique_id".into(), uid.into());
+    for negative in [unknown, changed, other_uid] {
+        scenario.expect_execute(negative).await;
+    }
+    assert_eq!(
+        scenario.expect_skip(request).await.execution_results,
+        confirm.execution_results
+    );
+}

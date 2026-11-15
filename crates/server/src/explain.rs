@@ -998,7 +998,21 @@ fn data_test_execute_freshness(node: &ExplainNode) -> qc::ExplainLine {
     let body = if upstreams.is_empty() {
         leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)
     } else {
-        clone_upstream_dependencies(&upstreams)
+        let children = upstreams
+            .iter()
+            .map(|up| {
+                let mut upstream = clone_upstream_line(up);
+                // Databricks retains the submit clock. Its data-test BUILD
+                // lists relative/UTC times even without a freshness anchor
+                // (databricks_cached_test_upstream.jsonl, #143). Other
+                // warehouses and legacy rows retain their existing display.
+                if node.display_submitted_at_ms.is_some() {
+                    upstream.children[0].text = anchored_rel_time_line(node, up);
+                }
+                upstream
+            })
+            .collect();
+        section("upstream dependencies", children)
     };
     section("data freshness analysis", vec![body])
 }

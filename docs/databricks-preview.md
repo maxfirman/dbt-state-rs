@@ -17,13 +17,21 @@ Each row describes tested cases, not every possible setting of that feature.
 Evidence links point to the preserved archive; production tests and captured
 histories remain in the main tree. Unfinished issues remain open after landing.
 
+On 2026-11-15 the maintainer accepted **documented conservative differences**
+for completing implementation tickets: extra BUILDs or speculative undecided
+responses may preserve UID, namespace and freshness safety instead of matching
+unsafe hosted reuse. A ticket can close when its supported behavior is tested
+and these limits are explicit. Missing features and untested behavior remain
+open. Exact retained fixtures are not weakened, and this does not create a
+full hosted-conformance claim under ADR 0009.
+
 | Area | Tested boundary / remaining work | Evidence | Issues |
 | --- | --- | --- | --- |
 | Tables and views | First build, unchanged reuse, changed logic and independent typed physical results. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-baseline-2026-11-12.md) | #135 |
 | Names and SQL identity | Characterized quoting/context, bounded SQL equivalence; unsupported syntax remains exact. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-sql-equivalence-2026-11-14.md) | #136, #137 |
 | Seeds | Ordinary managed seed contents/configuration and downstream invalidation; copying excluded. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-seeds-2026-11-13.md) | #139 |
 | Freshness and producers | Bounded input/target changes, producer changes, lag and ANY/ALL controls; unknown evidence rebuilds. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-policy-2026-11-14.md) | #140–#142 |
-| Data tests and audits | Bounded complete cached outcomes/configuration/audit errors; UID isolation retained. Broader template/audit parity remains incomplete. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md) | #138, #143, #144 |
+| Data tests and audits | Complete source-less and upstream pass/fail/recovery cached outcomes, configuration and audit errors; UID isolation retained. [Cached-test evidence](databricks-cached-tests.md). Conservative cross-UID template differences are documented; broader audit coverage remains incomplete. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md) | #138, #143, #144 |
 | MERGE and append | Characterized baseline histories and independent results; broad settings/schema evolution/transition matrices deferred. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-merge-2026-11-14.md) | #145, #146 |
 | insert_overwrite | Bounded hosted/Rust replacement history; broader configuration/error coverage deferred. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md) | #147 |
 | replace_where | 13 hosted and 13 Rust checkpoints, complete results and independent references. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md) | #148 |
