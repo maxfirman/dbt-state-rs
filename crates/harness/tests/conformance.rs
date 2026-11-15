@@ -187,6 +187,65 @@ fn identity(req: &serde_json::Value) -> String {
     }
 }
 
+fn clone_source_key(org: &str, request: &serde_json::Value) -> String {
+    let mut source = request.clone();
+    source["target_table"] = source["clone_source_table"].clone();
+    format!("{org}|{}", identity(&source))
+}
+
+#[test]
+fn clone_source_causality_uses_the_submit_physical_scope() {
+    let entries: Vec<diff::GoldenEntry> =
+        include_str!("../../../golden/fixtures/databricks_precopy.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let mut copies = 0;
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.method == "RegisterClone")
+    {
+        let source = entries[..index]
+            .iter()
+            .rev()
+            .find(|e| {
+                e.method == "SubmitEnrichedSQL"
+                    && e.request["target_table"] == entry.request["clone_source_table"]
+            })
+            .unwrap();
+        let org = support::captured_org(entry);
+        let key = format!(
+            "{}|{}",
+            support::captured_org(source),
+            identity(&source.request)
+        );
+        assert_eq!(clone_source_key(org, &entry.request), key);
+        let mut alias = entry.request.clone();
+        alias["clone_source_table"] = alias["clone_source_table"]
+            .as_str()
+            .unwrap()
+            .replace('`', "")
+            .to_ascii_uppercase()
+            .into();
+        assert_eq!(clone_source_key(org, &alias), key);
+        alias["table_namespace"] = "another-connection".into();
+        assert_ne!(clone_source_key(org, &alias), key);
+        assert_ne!(
+            clone_source_key(&format!("{org}-other"), &entry.request),
+            key
+        );
+        let mut other = entry.request.clone();
+        other["dialect"] = "snowflake".into();
+        assert_eq!(
+            clone_source_key(org, &other),
+            format!("{org}|target|{}", other["clone_source_table"])
+        );
+        copies += 1;
+    }
+    assert_eq!(copies, 4);
+}
+
 #[test]
 fn databricks_replay_causality_keeps_distinct_physical_scopes() {
     let base = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
@@ -760,14 +819,9 @@ async fn conformance_replay_all_corpora() {
                     .expect("valid complete native audit clock evidence")
             });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Captures characterize the retained direct-copy implementation; the
-        // preview default is covered separately at the public gRPC seam.
-        let server = if entries.iter().any(|entry| {
-            entry.method == "RegisterClone"
-                && dbt_state_server::warehouse::Warehouse::from_dialect(
-                    entry.request["dialect"].as_str().unwrap_or_default(),
-                ) == dbt_state_server::warehouse::Warehouse::Databricks
-        }) {
+        // Only this positive corpus opts in. RegisterClone request presence
+        // must never switch a default-refusal capture's server policy.
+        let server = if fixture == "databricks_precopy.jsonl" {
             support::start_server_databricks_direct_copy().await
         } else {
             support::start_server().await
@@ -1180,11 +1234,7 @@ async fn conformance_replay_all_corpora() {
                     // confirmed build is in this fixture; a copy of a source
                     // built in an earlier session is an unknown baseline, like a
                     // SKIP without history.
-                    let source_key = format!(
-                        "{}|target|{}",
-                        support::captured_org(e),
-                        e.request["clone_source_table"]
-                    );
+                    let source_key = clone_source_key(support::captured_org(e), &e.request);
                     if hosted_variant == "ready_to_clone"
                         && local_variant == "ready_to_clone"
                         && confirmed.contains(&source_key)
