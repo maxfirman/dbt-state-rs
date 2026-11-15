@@ -699,3 +699,38 @@ async fn failed_clone_clears_adoption_and_unknown_source_inputs_do_not_establish
         sc.expect_execute(adopter).await;
     }
 }
+
+#[tokio::test]
+#[allow(deprecated)] // Both on-wire response mirrors remain part of the contract.
+async fn confirmed_direct_copy_is_not_a_chain_source_even_with_a_larger_limit() {
+    let rows = entries();
+    let server = support::start_server_databricks_direct_copy().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org(support::captured_org(&rows[0]));
+    source(&sc, &rows).await;
+    let request: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+    let granted = sc
+        .register_clone(request.clone())
+        .await
+        .unwrap()
+        .ready_to_clone
+        .unwrap();
+    let mut confirmation: qc::ConfirmExecutionRequest =
+        serde_json::from_value(rows[3].request.clone()).unwrap();
+    confirmation.request_id = granted.request_id;
+    assert!(sc.try_confirm(confirmation.clone()).await.unwrap().success);
+    for depth in [1, 2, 100] {
+        let mut chained = request.clone();
+        chained.clone_source_table = request.target_table.clone();
+        chained.clone_source_last_modified_epoch = confirmation.last_modified_epoch;
+        chained.target_table = "`cdo_demo_db`.`third`.`chain_target`".into();
+        chained.clone_chain_depth_limit = Some(depth);
+        let response = sc.register_clone(chained).await.unwrap();
+        assert!(response.ready_to_clone.is_none(), "depth {depth}");
+        assert!(!matches!(
+            response.response,
+            Some(qc::clone_response::Response::ReadyToCloneV1(_))
+        ));
+    }
+}

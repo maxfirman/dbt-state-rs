@@ -169,6 +169,11 @@ pub async fn start_server_databricks_submit_copy() -> TestServer {
     start_server_with_database(false, None, false, true).await
 }
 
+/// The recovery campaign exercises each independently enabled copy path.
+pub async fn start_server_databricks_copy_recovery() -> TestServer {
+    start_server_with_database(false, None, true, true).await
+}
+
 async fn start_server_with_database(
     require_org_header: bool,
     database: Option<std::sync::Arc<TestDatabase>>,

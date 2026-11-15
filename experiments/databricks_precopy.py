@@ -271,7 +271,7 @@ class Precopy(Baseline):
                     if n['name']=='check' and (cfg.get('updated_at')!='ts' or cfg.get('check_cols')!=['v'] or cfg.get('hard_deletes')!='ignore'):raise Refused('precopy:manifest-snapshot')
                 self.save('preflight/'+label+'.json',manifest)
 
-    def physical(self,label,kind,role,stage,copied,cloned_now):
+    def physical(self,label,kind,role,stage,copied,cloned_now,copy_source_role='prod'):
         completed_checks=[root/'checks'/f'{label}.json' for root in self.prefixes if (root/'checks'/f'{label}.json').exists()]
         if label in self.completed and completed_checks:
             self.save('checks/'+label+'_retained.json',{'original_check':str(completed_checks[0]),'repeated_reference':False})
@@ -297,7 +297,7 @@ class Precopy(Baseline):
         if cloned_now:
             names=[c['name'] for c in history['columns']]
             if not history['rows'] or dict(zip(names,history['rows'][0])).get('operation')!='CLONE':raise Refused('precopy:physical-copy-history')
-            source=self.scope.relation('prod',kind)
+            source=self.scope.relation(copy_source_role,kind)
             source_props=self.sql(label+'_source_properties','SHOW TBLPROPERTIES '+source)
             target_props=self.sql(label+'_target_properties','SHOW TBLPROPERTIES '+target)
             sp=dict(source_props['rows']);tp=dict(target_props['rows'])
@@ -355,7 +355,7 @@ class Precopy(Baseline):
         self.explain(label,submits)
         self.physical(label,kind,role,stage,role=='dev',copy)
 
-    def audit_native(self,label,target,source,copy):
+    def audit_native(self,label,target,source,copy,allow_failed_attempt=False):
         raw=(self.evidence(label)/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         self.save('materialization/'+label+'.sql',raw)
         code=re.sub(r'/\*.*?\*/|--[^\n]*','',raw,flags=re.S)
@@ -383,7 +383,7 @@ class Precopy(Baseline):
                 if not alter or normalize(alter.group(1))!=target:raise Refused('precopy:unapproved-native-alter')
             elif not change or normalize(change.group(1))!=target:raise Refused('precopy:unapproved-native-write')
             writes.append(sql)
-        if len(clones)!=int(copy):raise Refused('precopy:granted-DDL-not-executed')
+        if len(clones)!=int(copy) and not (allow_failed_attempt and not copy and len(clones)==1):raise Refused('precopy:granted-DDL-not-executed')
         self.save('materialization/'+label+'.json',{'writes':writes,'executed_clones':len(clones),'persistent_auxiliary':0,'temporary_allowlist':[temp]})
 
     def baseline(self):
