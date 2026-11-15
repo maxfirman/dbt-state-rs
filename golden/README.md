@@ -398,5 +398,8 @@ input retains cumulative rows, and full refresh resets R before ordinary5
 rebuild and reuse. Thirteen isolated State-disabled R references plus one
 pre-DDL literal fractional timestamp probe certify zero State RPCs. The new
 fractional probe proves exact .123/.456/.789/.012 UTC encodings without generic
-normalization. Fresh Rust acceptance remains held pending a separate root grant;
-this hosted fixture does not complete #149 or its #138/#140 dependencies.
+normalization. A separately cleared fresh Rust counterpart passes all13 cells and complete
+129-corpus-plus-native88 replay using12 independently retained actual audit
+clocks. See the [dated bounded evidence](../docs/reports/databricks-delete-insert-2026-11-15.md).
+This hosted fixture and native counterpart do not complete #149 or its
+#138/#140 dependencies.
