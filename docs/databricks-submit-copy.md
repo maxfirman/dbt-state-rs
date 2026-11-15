@@ -46,6 +46,15 @@ models. Complete schema/bags, Delta history, UC provider/type, executed DDL and
 all default properties were checked. SQL Submit has a single ready_to_clone
 oneof; RegisterClone's duplicate v1 mirror does not apply to this flow.
 
+Rust physical acceptance used production library301de04 for the same twelve
+managed commands and twelve references, followed by all eight controls. Its
+complete whole91 capture retains twenty actual persisted decision clocks. A
+subsequent narrow guard correction preserves ordinary same-target UID/config-only
+reuse; the fixed-metadata native graph did not exercise that changed branch.
+The complete native outputs are replayed on the final library with their actual
+clocks, and focused regressions cover the corrected branch under both switch
+settings. No successful native command or warehouse write was repeated.
+
 The exact primary whole75 corpus is
 [`databricks_submit_copy.jsonl`](../golden/fixtures/databricks_submit_copy.jsonl).
 A separately authorized eight-control phase retains its complete whole91 history

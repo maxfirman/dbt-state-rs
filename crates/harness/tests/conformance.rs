@@ -819,7 +819,7 @@ async fn conformance_replay_all_corpora() {
                     .expect("valid complete native audit clock evidence")
             });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Only this positive corpus opts in. RegisterClone request presence
+        // Only named positive corpora opt in. RegisterClone request presence
         // must never switch a default-refusal capture's server policy.
         let server = if fixture == "databricks_submit_copy.jsonl" {
             support::start_server_databricks_submit_copy().await
