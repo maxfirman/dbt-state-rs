@@ -703,7 +703,7 @@ modifications, drop/recreation and post-error reuse remain uncovered in #144.
 pass/fail/recovery cases and BUILD Explain fix. The #138 UID difference remains
 explicit; broader audit feature gaps still belong to #144.
 
-## Databricks predicate replacement bounded partial (#148, 2026-11-14)
+## Databricks predicate replacement scoped acceptance (#148, 2026-11-15)
 
 The pinned client sends replace_where as DBT_CUSTOM11, including native
 full-refresh Record input. The complete hosted90-RPC history and a fresh Rust
@@ -718,12 +718,24 @@ only missing checks and the final two invocations continued under a separate
 grant. No State history or expected rows were fabricated. The [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md)
 records whole-trace replay and actual native audit-clock provenance.
 
-This is not whole #148: schema evolution, alternate/empty/invalid predicate
-forms, constraint-error/settings reachability, failure/retry publication and
-broader strategy transitions remain required. No generic full-refresh type
-mapping, unknown temporal encoding or unsupported error policy is inferred.
-#138/#140 conservative differences no longer block this slice. Its own
-remaining feature gaps and the full Databricks support claim are unchanged.
+The [schema/predicate supplement](databricks-replace-where.md) adds native
+schema failure/retry with no publication, `append_new_columns` recovery and
+fresh own-runtime reuse. Outside rows survive bounded replacement with NULL
+backfill. Actual out-of-range input fails twice with
+`DELTA_REPLACE_WHERE_MISMATCH.INVARIANT_VIOLATION` and
+`DELTA_VIOLATE_CONSTRAINT_WITH_VALUES`; neither attempt changes the target's
+complete rows/schema/history or sends Confirm/Record. Widening the destination
+predicate recovers and removes the previously retained outside row. Independent
+literal source/target bags, typed schemas, native SQL and State-disabled
+SELECT-only References check every checkpoint.
+
+This completes the original #148 predicate/data, supported additive schema,
+full-refresh and exact-error criteria within the pinned scope. It does not
+claim every predicate expression, column removal/type change, legacy runtime
+mode or all strategy transitions. No generic full-refresh type mapping,
+unknown temporal encoding or unsupported error policy is inferred. Accepted
+UID/namespace/unknown-freshness conservative differences remain explicit and
+never permit unsafe reuse. The full Databricks support claim remains separate.
 
 ## Databricks DELETE_INSERT bounded completion (#149, 2026-11-15)
 

@@ -18,6 +18,23 @@ fn replace_where_history_oracle_rejects_replacement_and_deletion_mistakes() {
 }
 
 #[test]
+fn predicate_recovery_rejects_wrong_retained_rows_and_schema() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_predicate_recovery_test.py"
+        ))
+        .output()
+        .expect("run independent predicate recovery faults");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn replace_where_capture_keeps_custom_refresh_and_sql_identity_transition() {
     let rows: Vec<serde_json::Value> =
         include_str!("../../../golden/fixtures/databricks_replace_where_history.jsonl")
@@ -74,6 +91,17 @@ mod support;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires exact #148 live clearance, pinned dbt and fresh Databricks pair"]
 async fn real_dbt_replace_where_matches_independent_operation_history() {
+    native_replace(false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires pinned dbt and exact fresh Databricks predicate/schema names"]
+async fn real_dbt_predicate_recovery_matches_operation_history() {
+    native_replace(true).await;
+}
+
+async fn native_replace(recovery: bool) {
+    use sha2::{Digest, Sha256};
     let server = support::start_server().await;
     let artifacts = std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS")
         .map(std::path::PathBuf::from)
@@ -85,6 +113,7 @@ async fn real_dbt_replace_where_matches_independent_operation_history() {
         serde_json::to_vec_pretty(&serde_json::json!({
             "pid": std::process::id(),
             "executable": executable,
+            "executable_sha256": format!("{:x}", Sha256::digest(std::fs::read(&executable).unwrap())),
             "address": server.addr.to_string(),
         }))
         .unwrap(),
@@ -94,29 +123,50 @@ async fn real_dbt_replace_where_matches_independent_operation_history() {
         std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").expect("persistent Python with PyYAML"),
     );
     command
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../experiments/databricks_replace_where.py"
-        ))
+        .arg(if recovery {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../experiments/databricks_predicate_recovery.py"
+            )
+        } else {
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../experiments/databricks_replace_where.py"
+            )
+        })
         .arg("--dbt")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_DBT").expect("pinned dbt"))
         .arg("--proxy")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_PROXY").expect("immutable proxy"))
         .arg("--probe")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_PROBE").expect("immutable probe"))
-        .arg("--live-clearance")
-        .arg(std::env::var_os("DBT_STATE_DATABRICKS_LIVE_CLEARANCE").expect("exact live clearance"))
-        .arg("--operation-ledger")
-        .arg(
-            std::env::var_os("DBT_STATE_DATABRICKS_OPERATION_LEDGER")
-                .expect("frozen independent operation ledger"),
-        )
         .arg("--run-id")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_RUN_ID").expect("exact cleared Rust run ID"))
         .arg("--rust-url")
         .arg(format!("http://{}", server.addr))
         .arg("--work-dir")
         .arg(artifacts.join("campaign"));
+    if recovery {
+        command
+            .arg("--schema-lease")
+            .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA_LEASE").expect("exact lease"))
+            .arg("--schema")
+            .arg(std::env::var_os("DBT_STATE_DATABRICKS_SCHEMA").expect("owned schema"))
+            .arg("--object-id")
+            .arg(std::env::var_os("DBT_STATE_DATABRICKS_OBJECT_ID").expect("fresh UUID"));
+    } else {
+        command
+            .arg("--live-clearance")
+            .arg(
+                std::env::var_os("DBT_STATE_DATABRICKS_LIVE_CLEARANCE")
+                    .expect("exact live clearance"),
+            )
+            .arg("--operation-ledger")
+            .arg(
+                std::env::var_os("DBT_STATE_DATABRICKS_OPERATION_LEDGER")
+                    .expect("frozen independent operation ledger"),
+            );
+    }
     let output = command
         .output()
         .await

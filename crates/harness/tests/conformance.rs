@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        135,
+        136,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1293,6 +1293,12 @@ async fn databricks_append_transitions_exact_public_history() {
 #[tokio::test]
 async fn databricks_overwrite_recovery_exact_public_history() {
     exact_native_history("databricks_overwrite_recovery.jsonl", 70, 10, 6).await;
+}
+
+/// Complete hosted predicate/schema failures and recovery, without partial history.
+#[tokio::test]
+async fn databricks_predicate_recovery_exact_public_history() {
+    exact_native_history("databricks_predicate_recovery.jsonl", 70, 10, 7).await;
 }
 
 async fn exact_native_history(
