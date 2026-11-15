@@ -1,5 +1,4 @@
 """Warehouse-free fault probes for the bounded native pre-copy evidence guards."""
-import copy
 import json
 from pathlib import Path
 import tempfile
@@ -10,6 +9,17 @@ from databricks_survey import Refused
 
 
 class PrecopyTests(unittest.TestCase):
+    def test_properties_preserve_every_key_except_valid_new_physical_UUIDs(self):
+        source={'delta.minReaderVersion':'3','clusterByAuto':'true',
+            'io.unitycatalog.tableId':'11111111-1111-4111-8111-111111111111',
+            'delta.rowTracking.materializedRowIdColumnName':'_row-id-col-11111111-1111-4111-8111-111111111111'}
+        target={k:v.replace('11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222') for k,v in source.items()}
+        self.assertEqual(len(p.assert_copy_properties(source,target)['preserved']),2)
+        for key,value in [('delta.minReaderVersion','1'),('clusterByAuto','false'),('io.unitycatalog.tableId','arbitrary'),('delta.rowTracking.materializedRowIdColumnName','_row-id-col-11111111-1111-4111-8111-111111111111')]:
+            wrong=dict(target);wrong[key]=value
+            with self.assertRaises(Refused):p.assert_copy_properties(source,wrong)
+        wrong=dict(target);del wrong['clusterByAuto']
+        with self.assertRaises(Refused):p.assert_copy_properties(source,wrong)
     def test_frozen_scd_oracle_retains_old_null_and_inserted_versions(self):
         rows=p.expected('check','changed')
         self.assertEqual(len(rows),4)
@@ -42,7 +52,7 @@ class PrecopyTests(unittest.TestCase):
         target='cdo_demo_db.dev.fresh';source='cdo_demo_db.prod.fresh'
         ddl='CREATE OR REPLACE TABLE '+target+' SHALLOW CLONE '+source
         with tempfile.TemporaryDirectory() as folder:
-            c=object.__new__(p.Precopy);c.work=Path(folder);c.n=1;c.secrets=[]
+            c=object.__new__(p.Precopy);c.work=Path(folder);c.n=1;c.secrets=[];c.completed=set();c.prefix=None
             path=c.work/'logs/001_copy/query_log.sql';path.parent.mkdir(parents=True)
             path.write_text(ddl+';')
             c.audit_native('copy',target,source,True)

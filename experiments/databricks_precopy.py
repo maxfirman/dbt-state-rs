@@ -98,6 +98,29 @@ def assert_show(stdout,stderr,direct,rows,sql,query_log,compiled):
     return {'complete_string_multiset':True,'exact_select_only':True}
 
 
+def assert_copy_properties(source,target):
+    # New physical tables have distinct UC/row-tracking identifiers. These are
+    # the only observed differences; preserve every other reported property.
+    identities={'io.unitycatalog.tableId':'',
+        'delta.rowTracking.materializedRowIdColumnName':'_row-id-col-',
+        'delta.rowTracking.materializedRowCommitVersionColumnName':'_row-commit-version-col-'}
+    if not source or set(source)!=set(target):raise Refused('precopy:property-keys')
+    for key,value in source.items():
+        if key not in identities:
+            if target[key]!=value:raise Refused('precopy:default-properties-not-preserved')
+        else:
+            prefix=identities[key]
+            for identifier in (value,target[key]):
+                if not identifier.startswith(prefix):raise Refused('precopy:physical-identifier-prefix')
+                text=identifier[len(prefix):]
+                try:parsed=uuid.UUID(text)
+                except ValueError as error:raise Refused('precopy:physical-identifier-UUID') from error
+                if str(parsed)!=text or parsed.version!=4:raise Refused('precopy:physical-identifier-UUID')
+            if target[key]==value:raise Refused('precopy:physical-identifier-not-distinct')
+    return {'preserved':[k for k in source if k not in identities],
+            'distinct_physical_identifiers':[k for k in source if k in identities]}
+
+
 class Precopy(Baseline):
     def __init__(self,args):
         self.phase='rust' if args.rust_url else 'hosted'
@@ -129,11 +152,45 @@ class Precopy(Baseline):
                 for label,role,_,_,_,_ in CELLS:
                     if label in labels:self.commands.append((kind+'_'+label,['run' if kind=='merge' else 'snapshot','--select',kind],role,True))
         self.command_index=0
+        self.source_requests={};self.source_confirms={}
+        self.prefix=Path(args.resume_prefix) if args.resume_prefix else None
+        self.completed=set()
+        if self.prefix:
+            from capture_integrity import verify_capture
+            captures=list((self.prefix/'golden').glob('*.jsonl'))
+            if (self.phase!='hosted' or len(captures)!=1
+                    or digest(captures[0])!='09b538948b4b067c881415ed84064a92d2b5e611dbee6f4dc06621ea50ad7cbe'):
+                raise Refused('precopy:exact-hosted-prefix-only')
+            verify_capture(captures[0])
+            events=json.loads((self.prefix/'operations.json').read_text())
+            self.completed={e['label'] for e in events if e['kind']=='dbt-result' and e['returncode']==0}
+            if self.completed!={c[0] for c in self.commands[:6]}:raise Refused('precopy:prefix-command-set')
+            self.save('retained-prefix.json',{'capture':str(captures[0]),'sha256':digest(captures[0]),
+                'completed_commands':sorted(self.completed),'repeated_successful_commands':0})
 
     def dbt(self,label,command,target='prod',managed=True):
         if self.command_index>=len(self.commands) or (label,command,target,managed)!=self.commands[self.command_index]:raise Refused('precopy:ordered-command-budget')
         self.command_index+=1
+        if label in self.completed:
+            self.n+=1
+            paths=list((self.prefix/'wire').glob('*_'+label+'.json'))
+            if len(paths)!=1:raise Refused('precopy:missing-original-wire')
+            return json.loads(paths[0].read_text())
         return Campaign.dbt(self,label,command,target,managed)
+
+    def evidence(self,label):return self.prefix if label in self.completed else self.work
+
+    def explain(self,label,submits):
+        if label in self.completed and (self.prefix/'wire'/f'{label}_explain.json').exists():return
+        return Baseline.explain(self,label,submits)
+
+    def run(self):
+        result=Baseline.run(self)
+        if self.prefix:
+            from databricks_snapshots_continuation import combine_captures
+            combine_captures(next((self.prefix/'golden').glob('*.jsonl')),
+                next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_precopy_hosted_whole.jsonl')
+        return result
 
     def inventory(self):
         result={}
@@ -160,8 +217,10 @@ class Precopy(Baseline):
         self.save('schema-ownership.json',ownership)
         self.before_inventory=self.inventory()
         for role,schema in SCHEMAS.items():
-            if len(self.before_inventory[schema])+(3 if role=='prod' else 2)>100:raise Refused('precopy:capacity')
-            if any(r['full_name'] in self.scope.allowed for r in self.before_inventory[schema]):raise Refused('precopy:collision')
+            existing={r['full_name'] for r in self.before_inventory[schema] if r['full_name'] in self.scope.allowed}
+            wanted=({self.scope.relation('prod','inputs'),self.scope.relation(role,'merge')} if role=='prod' else {self.scope.relation(role,'merge')}) if self.prefix else set()
+            if len(self.before_inventory[schema])+(3 if role=='prod' else 2)-len(wanted)>100:raise Refused('precopy:capacity')
+            if existing!=wanted:raise Refused('precopy:collision')
         self.save('lease-inventory-before.json',self.before_inventory)
         self.save('warehouse.json',self.sql('warehouse',"SELECT current_version() AS version,current_timezone() AS timezone"))
 
@@ -179,7 +238,7 @@ class Precopy(Baseline):
             for role in ('prod','dev'):
                 label=f'compile_{mode}_{role}'
                 if self.dbt(label,['compile'],role,False):raise Refused('precopy:compile-State-RPC')
-                manifest=json.loads((self.work/'targets'/f'{self.n:03d}_{label}/manifest.json').read_text())
+                manifest=json.loads((self.evidence(label)/'targets'/f'{self.n:03d}_{label}/manifest.json').read_text())
                 check_manifest(self.scope,manifest)
                 if {n['name'] for n in manifest['nodes'].values()}!={'merge','check'}:raise Refused('precopy:manifest-nodes')
                 for n in manifest['nodes'].values():
@@ -191,6 +250,9 @@ class Precopy(Baseline):
                 self.save('preflight/'+label+'.json',manifest)
 
     def physical(self,label,kind,role,stage,copied,cloned_now):
+        if label in self.completed and (self.prefix/'checks'/f'{label}.json').exists():
+            self.save('checks/'+label+'_retained.json',{'original_check':str(self.prefix/'checks'/f'{label}.json'),'repeated_reference':False})
+            return
         target=self.scope.relation(role,kind)
         raw=self.observe(label,target)
         check_schema(raw,NATIVE_SCHEMA if kind=='check' else NATIVE_SCHEMA[:4])
@@ -206,7 +268,7 @@ class Precopy(Baseline):
         history=self.sql(label+'_history','DESCRIBE HISTORY '+target)
         self.save('physical/'+label+'_history.json',history)
         metadata=self.api('get','/api/2.1/unity-catalog/tables/'+target)
-        self.save('physical/'+label+'_uc.json',{k:metadata.get(k) for k in ('full_name','table_type','data_source_format','properties','columns')})
+        self.save('physical/'+label+'_uc.json',{k:metadata.get(k) for k in ('full_name','table_id','table_type','data_source_format','properties','columns')})
         if metadata.get('data_source_format')!='DELTA' or metadata.get('table_type')!=('MANAGED_SHALLOW_CLONE' if copied else 'MANAGED'):
             raise Refused('precopy:independent-UC-provider-type')
         if cloned_now:
@@ -216,8 +278,13 @@ class Precopy(Baseline):
             source_props=self.sql(label+'_source_properties','SHOW TBLPROPERTIES '+source)
             target_props=self.sql(label+'_target_properties','SHOW TBLPROPERTIES '+target)
             sp=dict(source_props['rows']);tp=dict(target_props['rows'])
-            if not sp or any(tp.get(k)!=v for k,v in sp.items()):raise Refused('precopy:default-properties-not-preserved')
-            self.save('copies/'+label+'_properties.json',{'source':sp,'target':tp})
+            check=assert_copy_properties(sp,tp)
+            source_metadata=self.api('get','/api/2.1/unity-catalog/tables/'+source)
+            for props,meta in ((sp,source_metadata),(tp,metadata)):
+                if props.get('io.unitycatalog.tableId')!=meta.get('table_id'):raise Refused('precopy:independent-UC-table-ID')
+                for key in check['distinct_physical_identifiers']:
+                    if props[key]!=meta.get('properties',{}).get(key):raise Refused('precopy:independent-UC-physical-identifiers')
+            self.save('copies/'+label+'_properties.json',{'source':sp,'target':tp,'check':check})
         names=[n for n,_,_,_ in (NATIVE_SCHEMA if kind=='check' else NATIVE_SCHEMA[:4])]
         def cell(v):return 'cast(null as string)' if v is None else "'"+v.replace("'","''")+"'"
         sql='SELECT '+','.join('cast('+n+' as string) AS '+n for n in names)+' FROM VALUES '+','.join('('+','.join(cell(v) for v in row)+')' for row in rows)+' AS declared('+','.join(names)+')'
@@ -239,6 +306,11 @@ class Precopy(Baseline):
             if (not ready or ready!=row['response'].get('response',{}).get('ready_to_clone_v1')
                     or req['clone_source_table'].replace('`','')!=source or req['target_table'].replace('`','')!=target
                     or ready['request_id'] not in confirms):raise Refused('precopy:grant-mirrors-source-confirm')
+            original=self.source_requests[kind]
+            if (req['labels']['dbt_node_unique_id']!=original['dbt_node_state']['node_unique_id']
+                    or req['table_namespace']!=original['table_namespace']
+                    or req['clone_source_last_modified_epoch']!=self.source_confirms[kind]['last_modified_epoch']):
+                raise Refused('precopy:source-UID-namespace-epoch')
             ddl=ready['clone_sqls']
             wanted='\n        CREATE OR REPLACE TABLE '+req['target_table']+' SHALLOW CLONE '+req['clone_source_table']+'\n        '
             if ddl!=[wanted]:raise Refused('precopy:exact-native-DDL')
@@ -248,13 +320,20 @@ class Precopy(Baseline):
         req=submits[0]['request']
         if (req['execution_type']!=(3 if kind=='merge' else 7) or req['compare_unrendered_code'] or req['query_dependencies']
                 or req['target_table'].replace('`','')!=target or not req.get('table_namespace')):raise Refused('precopy:submit-scope')
+        normalized=re.sub(r'\s+',' ',req['sql'].replace('`','')).strip().lower()
+        if normalized!='select * from '+self.scope.relation('prod','inputs'):raise Refused('precopy:actual-direct-single-input')
         if verdict=='ready_to_execute' and submits[0]['response']['response'][verdict]['request_id'] not in confirms:raise Refused('precopy:build-confirm')
+        if role=='prod':
+            self.source_requests[kind]=req
+            self.source_confirms[kind]=confirms[submits[0]['response']['response'][verdict]['request_id']]['request']
+        elif req['dbt_node_state']['node_unique_id']!=self.source_requests[kind]['dbt_node_state']['node_unique_id']:
+            raise Refused('precopy:adoption-fullUID')
         self.audit_native(label,target,source,copy)
         self.explain(label,submits)
         self.physical(label,kind,role,stage,role=='dev',copy)
 
     def audit_native(self,label,target,source,copy):
-        raw=(self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
+        raw=(self.evidence(label)/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         self.save('materialization/'+label+'.sql',raw)
         code=re.sub(r'/\*.*?\*/|--[^\n]*','',raw,flags=re.S)
         relation=r'(`[^`]+`(?:\s*\.\s*`[^`]+`)*|[a-zA-Z_][a-zA-Z_0-9.]*)'
@@ -284,8 +363,10 @@ class Precopy(Baseline):
     def baseline(self):
         self.preflight();self.write_projects('default')
         source=self.scope.relation('prod','inputs')
-        self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
-        self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        if not self.prefix:
+            self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
+            self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        else:assert_source(self.sql('resume_source',source_projection_sql(source)),FIRST)
         for stage in ('initial','changed','always'):
             if stage=='changed':
                 row=CHANGED[0]
@@ -306,6 +387,7 @@ def main():
     parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
+    parser.add_argument('--resume-prefix')
     args=parser.parse_args()
     if args.plan:print(json.dumps(plan(),indent=2));return 0
     return Precopy(args).run()

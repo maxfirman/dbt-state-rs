@@ -1327,7 +1327,7 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks)).await;
+    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks), false).await;
 }
 
 /// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
@@ -1340,7 +1340,7 @@ async fn databricks_precopy_extra_exact_public_history() {
         support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence)).unwrap()
     });
     let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
-    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref()).await;
+    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref(), true).await;
 }
 
 async fn exact_native_history(
@@ -1352,7 +1352,16 @@ async fn exact_native_history(
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures")
         .join(fixture);
-    exact_native_history_at(&path, count, submit_count, build_count, submit_count, None).await;
+    exact_native_history_at(
+        &path,
+        count,
+        submit_count,
+        build_count,
+        submit_count,
+        None,
+        false,
+    )
+    .await;
 }
 
 /// The original native client stopped after a successful ordinary SKIP because
@@ -1368,7 +1377,7 @@ async fn databricks_moving_original_native_prefix_exact_public_history() {
         std::env::var_os("DBT_STATE_DATABRICKS_NATIVE_PREFIX_CLOCKS").unwrap(),
     );
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks)).await;
+    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks), false).await;
 }
 
 #[tokio::test]
@@ -1379,7 +1388,7 @@ async fn databricks_audit_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks)).await;
+    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks), false).await;
 }
 
 async fn exact_native_history_at(
@@ -1389,13 +1398,11 @@ async fn exact_native_history_at(
     build_count: usize,
     explain_count: usize,
     native_clocks: Option<&support::native_clock::NativeClocks>,
+    databricks_direct_copy: bool,
 ) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = if entries
-        .iter()
-        .any(|entry| entry.method == "RegisterClone" && entry.request["dialect"] == "databricks")
-    {
+    let server = if databricks_direct_copy {
         support::start_server_databricks_direct_copy().await
     } else {
         support::start_server().await
