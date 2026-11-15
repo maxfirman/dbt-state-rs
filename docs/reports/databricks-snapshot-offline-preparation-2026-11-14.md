@@ -118,3 +118,59 @@ its frozen literal multiset as well as the existing dynamic oracle. Missing or
 changed files, historical business/interval/MD5 faults, missing/extra cells,
 wrong run IDs and disagreement with the dynamic oracle stop the run. No live
 claim or new primary hosted evidence is introduced by these offline literals.
+
+## Stopped first hosted invocation and bounded continuation preparation
+
+The first hosted attempt on 2026-11-15 used canonical `4dc06d5` with its complete
+672-file/tool freeze. The independent before-proxy/DDL Statement API projection
+passed UTC six-digit timestamp and `unix_micros` agreement. Disabled parse and
+first managed snapshot CLI succeeded; its ordinary type7 Build and Confirm were
+accepted. The runner then stopped before Explain, physical comparison or native
+reference because its RPC allowlist omitted successful telemetry and the pinned
+client's source-only, unknown-epoch speculative submit returning `undecided`.
+The complete seven-record attempt is retained unchanged, SHA256
+`f2f8331d18a9f30f3da80a10e5488693a6172904dda8b096e597ee5b8dccefd5`.
+Exactly three run-owned managed objects remained; no retry or cleanup occurred.
+This is a runner defect, not a new hosted mismatch or completed snapshot slice.
+
+The public `snapshot_submit` guard now admits successful canonical telemetry and
+at most one preceding, source-only speculative request with NULL epoch and exact
+`undecided` response. Its other request fields must match the ordinary submit.
+All RPC service identities, status codes and request/response envelopes remain
+validated; unknown methods, missing/failed status, speculative reuse/refusal,
+duplicate speculative calls and malformed telemetry stop. Ordinary submits
+still require current known positive source/target epochs and exact causal
+Confirm or own-runtime non-stale Skip evidence. The retained actual seven calls
+were the failing characterization before this narrow change and now pass.
+
+The separate hosted-only continuation entrypoint is a concrete offline proposal,
+not live authority. Its mandatory grant-bound anchor pins all original artifacts,
+CLI success, full capture certificate, actual codec, first request/decision IDs,
+source epoch1794710691000, Confirm epoch1794710706000/runtime8782, namespace and
+UID, plus the complete original 672-file source archive and frozen executables.
+The original first responses are read only for local postprocessing; they are
+never sent to State. Fresh-run defaults still reject occupied targets.
+
+Before starting its new proxy or invoking any dbt command, the continuation
+requires the exact original three managed objects, same allocation UUID/owner/
+creation and absent reference target. Both complete typed source contents and
+Delta histories must match their original create/insert query identities; the
+managed source epoch must still match its original submit. The complete first
+managed SCD rows/schema/properties/history must match the frozen literal ledger,
+native CTAS query identity and exact own Confirm target epoch. Any difference
+stops before further mutation. It then requests the missing Explain using the
+original decision ID, runs the first State-disabled native reference snapshot,
+and continues the same shared loop for the remaining eleven managed/reference
+pairs. There is no repeated parse, first managed execution, source CREATE or
+initial INSERT. Exactly23 CLI calls remain (11managed,12native references), with
+5Confirms,6Skips,12Explain requests and one new permanent target; no persistent
+auxiliary, cleanup, clone, Record or generated clock mode is allowed.
+
+After a complete physical pass and proxy drain, the original complete seven raw
+lines and the separately certified continuation session are concatenated byte
+exactly in actual chronology into a derived replay artifact with a composition
+receipt. Both original raw sources and certificates remain separate. All130
+existing hosted corpora plus this entire combined history must pass strict public
+gRPC replay before fixture promotion or a separate Rust grant. A stopped attempt,
+its prefix or an incomplete continuation is not promoted. Full#151 and every
+required blocker/follow-up remain open.

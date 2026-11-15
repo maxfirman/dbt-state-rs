@@ -126,7 +126,13 @@ class SnapshotHistory(unittest.TestCase):
           'target_table':target,'labels':{'dbt_node_name':'consumer'},'tolerate_nondeterminism':True}
         calls=[{'method':'SubmitEnrichedSQL','request':request,
                 'response':{'response':{'skip_execution':{'execution_runtime_ms':42,'explained_decision':{'is_stale':False}}}}}]
+        for call in calls:
+            call['status']={'code':0};call['service']={'SubmitEnrichedSQL':'SQL','ConfirmExecution':'Execution'}[call['method']]
         snapshot_submit(calls,source,target,True,'skip_execution',42)
+        speculative=deepcopy(calls[0]);speculative['method']='SubmitEnrichedSQLSpeculative'
+        speculative['request']['tables']=[{'name':source,'last_modified_epoch':None}]
+        speculative['response']={'response':{'undecided':{}}}
+        snapshot_submit([speculative,*calls],source,target,True,'skip_execution',42)
         for fault in ('epoch','runtime','bool-runtime','clock','extra','tables','strategy','lag','stale','missing-stale','misleading-top-level'):
             value=deepcopy(calls);r=value[0]['request']
             if fault=='epoch':r['tables'][0]['last_modified_epoch']=None
@@ -207,8 +213,28 @@ class SnapshotHistory(unittest.TestCase):
         calls=[{'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'ready_to_execute':{'request_id':'pending'}}}},
           {'method':'ConfirmExecution','request':{'request_id':'pending','last_modified_epoch':20,'execution_runtime_ms':5617,'failed_to_clone':False},
            'response':{'success':True,'request_id':'pending'}}]
+        for call in calls:
+            call['status']={'code':0};call['service']={'SubmitEnrichedSQL':'SQL','ConfirmExecution':'Execution'}[call['method']]
         snapshot_submit(calls,source,target,False,'ready_to_execute')
         from copy import deepcopy
+        spec=deepcopy(calls[0]);spec['method']='SubmitEnrichedSQLSpeculative';spec['request']['tables'][0]['last_modified_epoch']=None;spec['response']={'response':{'undecided':{}}}
+        telemetry={'service':'ClientTelemetry','method':'SubmitTelemetryBatch','status':{'code':0},'request':{'events':[{'event_order':0}]},'response':{'success':True}}
+        native=[telemetry,spec,*calls]
+        snapshot_submit(native,source,target,False,'ready_to_execute')
+        for fault in ('status','missing-status','bool-status','unknown','telemetry','spec-decision','spec-epoch','spec-source','extra-spec','wrong-service','refusal'):
+            bad=deepcopy(native)
+            if fault=='status':bad[0]['status']['code']=13
+            if fault=='missing-status':bad[0].pop('status')
+            if fault=='bool-status':bad[0]['status']['code']=False
+            if fault=='unknown':bad[0]['method']='UnrecognizedRPC'
+            if fault=='wrong-service':bad[0]['service']='SQL'
+            if fault=='refusal':bad[2]['response']=None;bad[2]['status']['code']=3
+            if fault=='telemetry':bad[0]['response']['success']=False
+            if fault=='spec-decision':bad[1]['response']={'response':{'skip_execution':{}}}
+            if fault=='spec-epoch':bad[1]['request']['tables'][0]['last_modified_epoch']=1
+            if fault=='spec-source':bad[1]['request']['tables'][0]['name']='other'
+            if fault=='extra-spec':bad.insert(1,bad[1])
+            with self.subTest(fault=fault),self.assertRaises(Refused):snapshot_submit(bad,source,target,False,'ready_to_execute')
         for fault in ('foreign-response','foreign-request','unacknowledged','unknown-epoch','failed-clone','runtime'):
             bad=deepcopy(calls)
             if fault=='foreign-response':bad[1]['response']['request_id']='other'
@@ -295,5 +321,63 @@ class SnapshotHistory(unittest.TestCase):
                     with patch('databricks_snapshots.Campaign.__init__') as initialize:
                         with self.assertRaises(Refused):Snapshots(args)
                         initialize.assert_not_called()
+
+    def test_continuation_budget_skips_only_original_parse_and_first_managed(self):
+        from databricks_snapshots_continuation import ContinuationGuard, SnapshotContinuation
+        from databricks_snapshots import CELLS
+        guard=ContinuationGuard()
+        self.assertEqual(len(guard.expected),23)
+        for label,command,managed in [('inventory',['parse'],False),('first',['snapshot','--select','consumer'],True)]:
+            with self.assertRaises(Refused):guard.admit(label,command,managed)
+        guard.admit('first_reference',['snapshot','--select','reference'],False)
+        for label,_,_ in CELLS[1:]:
+            guard.admit(label,['snapshot','--select','consumer'],True)
+            guard.admit(label+'_reference',['snapshot','--select','reference'],False)
+        with self.assertRaises(Refused):guard.admit('extra',['snapshot','--select','consumer'],True)
+        runner=object.__new__(SnapshotContinuation);runner.bootstrap_complete=False
+        with self.assertRaises(Refused):runner.prepare_initial()
+        with self.assertRaises(Refused):runner.dbt('first_reference',['snapshot','--select','reference'],managed=False)
+        with self.assertRaises(Refused):runner.source_change('upsert')
+        runner.bootstrap_complete=True;runner.anchor_consumed=False;runner.guard=ContinuationGuard();runner.original_calls=['original']
+        self.assertEqual(runner.managed_calls('first'),['original'])
+        with self.assertRaises(Refused):runner.managed_calls('first')
+
+    def test_continuation_requires_exact_three_objects_and_unchanged_physical_epochs(self):
+        from databricks_snapshots_continuation import check_resume_inventory,history_epoch,continuation_contract
+        from databricks_snapshots import SnapshotScope,clearance_contract
+        from copy import deepcopy
+        contract=clearance_contract();scope=SnapshotScope(contract['run_ids']['hosted'],contract)
+        objects=[{'full_name':n,'table_type':'MANAGED'} for n in continuation_contract()['preexisting_names']]
+        check_resume_inventory(scope,objects,objects)
+        for bad in (objects[:-1],objects+[{'full_name':continuation_contract()['required_absent'],'table_type':'MANAGED'}]):
+            with self.assertRaises(Refused):check_resume_inventory(scope,bad,objects)
+        history={'columns':[{'name':'version','type_name':'LONG'},{'name':'timestamp','type_name':'TIMESTAMP'},{'name':'queryHistoryStatementId','type_name':'STRING'}],
+                 'rows':[['1','2026-11-15T02:44:51.000Z','insert'],['0','2026-11-15T02:44:40.000Z','create']]}
+        self.assertEqual(history_epoch(history,['create','insert'],1794710691000),1794710691000)
+        for fault in ('query','version','extra','time','epoch','schema'):
+            bad=deepcopy(history);epoch=1794710691000
+            if fault=='query':bad['rows'][0][2]='other'
+            if fault=='version':bad['rows'][0][0]='2'
+            if fault=='extra':bad['rows'].append(bad['rows'][0])
+            if fault=='time':bad['rows'][0][1]='2026-11-15T02:44:51Z'
+            if fault=='epoch':epoch+=1000
+            if fault=='schema':bad['columns'][1]['type_name']='STRING'
+            with self.subTest(fault=fault),self.assertRaises(Refused):history_epoch(bad,['create','insert'],epoch)
+
+    def test_whole_capture_requires_complete_chronological_byte_exact_sessions(self):
+        from databricks_snapshots_continuation import combine_captures
+        import tempfile,json
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            def write(name,stamp,code=0):
+                path=Path(folder)/name;path.write_text(json.dumps({'recorded_at':stamp,'status':{'code':code}})+'\n')
+                Path(str(path)+'.capture.json').write_text(json.dumps({'complete':True,'failed':False,'started':1,'recorded':1}))
+                return path
+            first=write('first.jsonl','2026-11-15T02:44:55.000000001Z');second=write('second.jsonl','2026-11-15T03:00:00.000000001Z')
+            output=Path(folder)/'whole.jsonl';receipt=combine_captures(first,second,output)
+            self.assertEqual(output.read_bytes(),first.read_bytes()+second.read_bytes());self.assertEqual(receipt['records'],2)
+            with self.assertRaises(Refused):combine_captures(second,first,Path(folder)/'backwards.jsonl')
+            failed=write('failed.jsonl','2026-11-15T03:00:00.000000001Z',13)
+            with self.assertRaises(Refused):combine_captures(first,failed,Path(folder)/'failed-whole.jsonl')
 
 if __name__=='__main__':unittest.main()
