@@ -125,9 +125,9 @@ class SnapshotHistory(unittest.TestCase):
           'tables':[{'name':source,'last_modified_epoch':10},{'name':target,'last_modified_epoch':20}],
           'target_table':target,'labels':{'dbt_node_name':'consumer'},'tolerate_nondeterminism':True}
         calls=[{'method':'SubmitEnrichedSQL','request':request,
-                'response':{'response':{'skip_execution':{'execution_runtime_ms':42}}}}]
+                'response':{'response':{'skip_execution':{'execution_runtime_ms':42,'explained_decision':{'is_stale':False}}}}}]
         snapshot_submit(calls,source,target,True,'skip_execution',42)
-        for fault in ('epoch','runtime','bool-runtime','clock','extra','tables','strategy','lag'):
+        for fault in ('epoch','runtime','bool-runtime','clock','extra','tables','strategy','lag','stale','missing-stale','misleading-top-level'):
             value=deepcopy(calls);r=value[0]['request']
             if fault=='epoch':r['tables'][0]['last_modified_epoch']=None
             if fault=='runtime':value[0]['response']['response']['skip_execution']['execution_runtime_ms']=41
@@ -137,6 +137,10 @@ class SnapshotHistory(unittest.TestCase):
             if fault=='tables':r['tables'].append(r['tables'][0])
             if fault=='strategy':r['execution_type']=3
             if fault=='lag':r['freshness_tolerance_seconds']=10
+            if fault=='stale':value[0]['response']['response']['skip_execution']['explained_decision']['is_stale']=True
+            if fault=='missing-stale':value[0]['response']['response']['skip_execution'].pop('explained_decision')
+            if fault=='misleading-top-level':
+                skip=value[0]['response']['response']['skip_execution'];skip['is_stale']=False;skip['explained_decision']['is_stale']=True
             with self.subTest(fault=fault),self.assertRaises(Refused):snapshot_submit(value,source,target,True,'skip_execution',42)
 
     def test_native_snapshot_guard_rejects_other_target_cleanup_and_sql_strategy(self):
@@ -244,5 +248,52 @@ class SnapshotHistory(unittest.TestCase):
             if fault=='changed':bad['rows'][0][0]='2'
             if fault=='schema':bad['columns'][0]['type_name']='STRING'
             with self.subTest(fault=fault),self.assertRaises(Refused):assert_same_history(history,bad)
+
+    def test_reviewed_literal_ledger_refuses_disagreeing_dynamic_oracle(self):
+        from databricks_snapshots import read_result_ledger, clearance_contract
+        from pathlib import Path
+        from unittest.mock import patch
+        import hashlib
+        path=Path(__file__).with_name('databricks_snapshot_results.json')
+        grant=clearance_contract();grant['result_ledger_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+        for phase,run in grant['run_ids'].items():
+            self.assertEqual(len(read_result_ledger(path,grant,phase,run)),12)
+        execute=Ledger.execute
+        def wrong_history(ledger,source,statement):
+            source=tuple((r[0],'wrong-derived-business',r[2],r[3]) for r in source)
+            return execute(ledger,source,statement)
+        with patch.object(Ledger,'execute',wrong_history),self.assertRaises(Refused):
+            read_result_ledger(path,grant,'hosted',grant['run_ids']['hosted'])
+
+    def test_runner_rejects_missing_or_disagreeing_frozen_SCD_before_initialization(self):
+        from databricks_snapshots import Snapshots, clearance_contract, operation_manifest
+        from types import SimpleNamespace
+        from pathlib import Path
+        from copy import deepcopy
+        from unittest.mock import patch
+        import json, hashlib, tempfile
+        original=json.loads(Path(__file__).with_name('databricks_snapshot_results.json').read_text())
+        for phase in ('hosted','rust'):
+            for fault in ('missing','digest','business','interval','hash','missing-cell','extra-cell','wrong-run'):
+                with self.subTest(phase=phase,fault=fault),tempfile.TemporaryDirectory() as folder:
+                    result=Path(folder)/'results.json';grant_path=Path(folder)/'grant.json'
+                    value=deepcopy(original)
+                    if fault=='business':value['cells']['upsert']['managed'][0][1]='wrong-old-business'
+                    if fault=='interval':value['cells']['upsert']['managed'][0][7]=None
+                    if fault=='hash':value['cells']['first']['independent_reference'][0][4]='wrong'
+                    if fault=='missing-cell':del value['cells']['delete']
+                    if fault=='extra-cell':value['cells']['extra']=value['cells']['first']
+                    if fault=='wrong-run':value['run_ids'][phase]='20261114ffffff'
+                    result.write_text(json.dumps(value))
+                    grant=clearance_contract();grant.update(status='LIVE CLEARED #151 timestamp-ignore',authorized_phases=[phase],result_ledger_sha256=hashlib.sha256(result.read_bytes()).hexdigest())
+                    if fault=='digest':result.write_text(result.read_text()+' ')
+                    if fault=='missing':result.unlink()
+                    operation=Path(folder)/'operation.json';operation.write_text(json.dumps(operation_manifest()))
+                    grant.update(source_sha256={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in Path(__file__).parent.glob('databricks_*.py')},operation_manifest_sha256=hashlib.sha256(json.dumps(operation_manifest(),sort_keys=True,separators=(',',':')).encode()).hexdigest(),operation_ledger_sha256=hashlib.sha256(operation.read_bytes()).hexdigest(),allocation={'receipt':str(operation),'receipt_sha256':hashlib.sha256(operation.read_bytes()).hexdigest()})
+                    grant_path.write_text(json.dumps(grant))
+                    args=SimpleNamespace(live_clearance=grant_path,run_id=grant['run_ids'][phase],rust_url='http://127.0.0.1:1' if phase=='rust' else None,result_ledger=result,operation_ledger=operation)
+                    with patch('databricks_snapshots.Campaign.__init__') as initialize:
+                        with self.assertRaises(Refused):Snapshots(args)
+                        initialize.assert_not_called()
 
 if __name__=='__main__':unittest.main()
