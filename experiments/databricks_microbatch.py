@@ -77,7 +77,7 @@ def clearance_contract():
         'managed_dbt_commands_per_backend':10,'reference_dbt_commands_per_backend':10,
         'manual_target_insert_per_backend':1,'target_nullability_uc_get_per_backend':1,
         'manual_target_inspection_sql_per_backend':5},
-      'manual_target_insert':{'before_cell':'update','row':target_null,
+      'manual_target_insert':{'before_cell':'update','row':list(target_null),
         'exact_targets':{k:f'{namespace}.mb_{v}_consumer' for k,v in runs.items()},
         'nullable_guard':'ts TIMESTAMP nullable is exactly true; MANAGED DELTA exact full_name',
         'exact_insert_sql':{k:f'INSERT INTO {namespace}.mb_{v}_consumer '+literal_reference((target_null,)) for k,v in runs.items()},

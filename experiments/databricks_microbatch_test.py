@@ -29,6 +29,13 @@ class Windows(unittest.TestCase):
         self.assertFalse(m.in_window(('8','x',None,'2026-11-03T00:00:00.000Z'),'2026-11-01','2026-11-03'))
 
 class TargetNullPlan(unittest.TestCase):
+    def test_frozen_json_clearance_is_usable_by_both_exact_scopes(self):
+        import json
+        contract=json.loads(json.dumps(m.clearance_contract()))
+        for run in contract['run_ids'].values():
+            scope=m.MicrobatchScope(run,contract)
+            self.assertEqual(len(scope.permanent),2)
+
     def test_manual_null_row_is_retained_in_every_later_literal_R_not_F(self):
         for stage in ('update','shifted','overlap','empty'):
             case=m.HISTORY[stage]
