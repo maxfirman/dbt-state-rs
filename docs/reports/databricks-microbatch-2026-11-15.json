@@ -465,7 +465,17 @@
     "result": "GREEN",
     "seconds": 253.19,
     "log": "replay/current130-plus-entire-native70-green.log",
-    "sha256": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a"
+    "sha256": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a",
+    "command_attribution": {
+      "receipt": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/native-replay-command-manual-transcription.json",
+      "SHA256": "72dc816c5b3be7b8e9961c56e5c654d5f22ee9328b69bf73072b264caf998ac5",
+      "kind": "MANUAL SOURCE-TOOLCALL TRANSCRIPTION; not contemporaneous process provenance",
+      "session": 18676,
+      "initial_chunk": "11ec3d",
+      "completed_chunk": "b10f32",
+      "exit_code": 0,
+      "inherited_environment": "unsnapshotted"
+    }
   },
   "native_actual_clocks": {
     "before_State_schema_Drop": true,
@@ -476,7 +486,6 @@
     "replay_clock_only_supplemental_test": true
   },
   "full_production_gates_reused_with_hash_proof": {
-    "all64_production_protocol_Cargo_inputs_identical": true,
     "fresh_workspace_passed": 698,
     "fresh_server_library_passed": 310,
     "fresh_DuckDB_passed": 25,
@@ -484,7 +493,12 @@
     "fmt": "GREEN",
     "fresh_Python": 149,
     "hosted_corpora": 130,
-    "not_rerun_for_helper_report_only_change": true
+    "not_rerun_for_helper_report_only_change": true,
+    "selected_gate_files_identical": 64,
+    "exact_selector": "name.startswith(('crates/server/', 'crates/proto/', 'proto/')) or name in ('Cargo.toml', 'Cargo.lock')",
+    "scope": "server crate including tests/regression seeds, proto crate, vendored proto definitions and root Cargo manifests; not a production-only file count",
+    "selector_proof": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/server-proto-workspace-cargo-64-proof.json",
+    "selector_proof_SHA256": "9e4c9ca6cca501a5924aa13bb0f91ddf2fa2ff920dc9c689495c7224717a4ec1"
   },
   "current_focused_checks": {
     "related_Python": 57,
@@ -496,9 +510,10 @@
     "fmt": "GREEN"
   },
   "evidence_index": {
-    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/evidence-index.json",
-    "files": 2903,
-    "SHA256": "fb524cfa53b32e094a9d79c2895133fbfc5fd3dbe1321f182d46df30f36634ce"
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/evidence-index-v2.json",
+    "files": 2905,
+    "SHA256": "b98d07e583cf4b747dd9a652ab8a5078cf5b170550f1b3a02dc4434d2eaab183",
+    "original2903_index_preserved": true
   },
   "evidence_SHA256": {
     "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/hosted-audit-receipt.json": "4b3caf71c6727092f9cb7d753140df3fc041903e759bb98a95053208c0b43063",
@@ -513,7 +528,9 @@
     "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-exit-receipt.json": "dfb30d6f3a6cee8c139c3b38a2bd15eac14172a4c575dac9be987c19d8f6fae1",
     "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/frozen/freeze.json": "e4d7564bc7ff2b88e9f162987f9977eb7f881176ca14dba61c591db0279b2cda",
     "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/review150-native-independent.json": "2014688441c2a923e5e355d6f88cebd0c9d155bf2d2094b279cd6e868a7e664f",
-    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/current130-plus-entire-native70-green.log": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a"
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/current130-plus-entire-native70-green.log": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/server-proto-workspace-cargo-64-proof.json": "9e4c9ca6cca501a5924aa13bb0f91ddf2fa2ff920dc9c689495c7224717a4ec1",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/native-replay-command-manual-transcription.json": "72dc816c5b3be7b8e9961c56e5c654d5f22ee9328b69bf73072b264caf998ac5"
   },
   "remaining": [
     "full-refresh/Record",
@@ -537,5 +554,10 @@
     "all_prior18_preserved": true,
     "unexpected_persistent_objects": 0,
     "quota_refresh_claim": "root reported18/100 with explicit cached timestamp; not instant fresh quota"
+  },
+  "previous_evidence_index": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/evidence-index.json",
+    "files": 2903,
+    "SHA256": "fb524cfa53b32e094a9d79c2895133fbfc5fd3dbe1321f182d46df30f36634ce"
   }
 }
