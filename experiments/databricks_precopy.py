@@ -56,7 +56,7 @@ def plan():
 
 
 def expected(kind,stage):
-    if kind=='merge':return FIRST if stage=='first' else CHANGED
+    if kind in ('merge','full'):return FIRST if stage=='first' else CHANGED
     ledger=Ledger('check','ignore',source_updated_at=True).execute(FIRST,'first')
     if stage=='changed':ledger=ledger.execute(CHANGED,'changed')
     return ledger.rows({})
