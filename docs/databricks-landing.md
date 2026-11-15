@@ -1,5 +1,10 @@
 # Databricks preview landing plan
 
+**Historical plan, completed:** PR [#164](https://github.com/maxfirman/dbt-state-rs/pull/164)
+landed the preview and closed #132. The plan below records that landing scope,
+not current outstanding gates. Subsequent implementation and conservative
+completion decisions are tracked in the [current feature matrix](databricks-preview.md).
+
 Revised on 2026-11-15 after the maintainer authorized consolidation and a
 smaller initial goal. This plan replaces full completion of every #132 child
 as the prerequisite for landing PR #164. The original acceptance criteria

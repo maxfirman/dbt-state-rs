@@ -15,7 +15,8 @@ intended workflow. Treat the copy opt-in as unsupported experimental work.
 
 Each row describes tested cases, not every possible setting of that feature.
 Evidence links point to the preserved archive; production tests and captured
-histories remain in the main tree. Unfinished issues remain open after landing.
+histories remain in the main tree. The matrix records bounded evidence and
+compatibility limits; completed tickets do not imply full ADR 0009 conformance.
 
 On 2026-11-15 the maintainer accepted **documented conservative differences**
 for completing implementation tickets: extra BUILDs or speculative undecided
@@ -39,6 +40,9 @@ full hosted-conformance claim under ADR 0009.
 | delete+insert | Completed bounded scalar-key replacement/input/full-refresh behavior: 13 hosted and 13 Rust checkpoints, duplicate/NULL/empty bags and exact Explain. Composite keys and broader settings/schema cases are unverified. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md) | #149 |
 | Microbatch | Fixed/shifted/overlapping/empty windows, implicit real-UTC scheduling, lookback 0/1/2, independent cumulative results and required reuse. Single-batch configured predicates tested; configured multiple-batch predicates retain an explicit pinned-client capability limit. | [Evidence](databricks-microbatch.md) | #150 |
 | Snapshots | Bounded timestamp/ignore and check/ignore with explicit source `updated_at=ts`: full SCD references, NULL/unchecked-column retention, ignored deletes/reappearance, older/equal/µsecond times and valid FULL→SNAPSHOT adoption. Generated-clock and `new_record` modes remain outside support. | [Scope and evidence](databricks-snapshots.md) | #151 |
+| Direct Result copy | Separate default-off RegisterClone opt-in: MERGE and source-clock check snapshots, absent/existing targets, adoption, changed-input rebuilds and full default properties/SCD histories. Quiescent sources only. | [Evidence](databricks-precopy.md) | #152 |
+| SQL-submit Result copy | Separate default-off FULL opt-in: absent/existing targets, exact qualified projection, cached reuse, negative controls and frozen provenance. Ordinary MERGE still builds. | [Evidence and differences](databricks-submit-copy.md) | #153 |
+| Copy failure and recovery | Automatic FULL/direct MERGE source removal/modification, post-copy mutations, guarded retry, independent complete results and later reuse. Chains stay refused; stale direct sources conservatively refuse where hosted grants before repair. | [Evidence and differences](databricks-copy-recovery.md) | #154 |
 | State selectors | All ten pinned-client criteria, first/unchanged and changed-component/data baselines, client graph expansion; two-model graph. | [Evidence](databricks-selectors.md) | #156 |
 | Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155, #157 |
 | History, isolation and upgrades | Verified physical failure/retry/restart, request-scope isolation/concurrent projects and genuine SQL/seed/copy upgrades. Targetless logical reuse and physical two-warehouse checks are not claimed. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md) | #158–#160 |
@@ -69,14 +73,15 @@ exact fixture assertions remain unchanged.
 
 - Automatic Databricks submit-time Result copy is disabled by default. A bounded
   [FULL SQL-submit experiment](databricks-submit-copy.md) has exact hosted
-  lifecycle and negative safety coverage. Direct RegisterClone is
-  disabled by default until physical acceptance is completed (#152–#154).
-  Narrow opt-in copy/adoption remains outside preview support and has public
-  protocol/safety tests, not a complete physical safety claim. Disabling the
+  lifecycle and negative safety coverage. Direct RegisterClone has separate
+  [physical acceptance](databricks-precopy.md). Both switches remain disabled
+  by default: the opt-ins are experimental, with only the linked bounded claims.
+  Neither establishes universal physical/concurrency safety. Disabling an
   opt-in does not invalidate previously recorded copy history.
-- Preserve org/warehouse/namespace/full-UID isolation even where hosted reuses
-  across those boundaries. Extra BUILDs or speculative undecided responses are
-  accepted preview differences. Targetless qualification remains conservative.
+- Preserve org/warehouse/namespace isolation and full-UID isolation for cached
+  data tests even where hosted reuses across those boundaries. Ordinary models
+  and snapshots use their scoped physical identity, not a universal UID rule.
+  Extra BUILDs or speculative undecided responses are accepted preview differences. Targetless qualification remains conservative.
 - Unknown/conflicting freshness evidence cannot justify reuse. The crafted
   omitted-source hosted SKIP that retained stale rows is not reproduced.
 - FULL/seed replacement over existing shallow-clone targets fails in the
@@ -107,13 +112,13 @@ upgrade fixtures remain under `golden/`. External raw execution artifacts stay
 at their original retained locations; repository reports are not substitutes
 for those artifacts.
 
-The pre-consolidation production baseline `45e94c3` passed709 workspace tests,
-including10 direct-copy tests, and CI build/tests plus strict formatting/Clippy.
-The existing131-corpus whole replay passed separately before final direct-path
-guard strengthening. These counts describe that source, not future edits.
-Final landing checks are recorded on the PR. Local/integration-PR real-dbt
-DuckDB acceptance is deferred until after landing by maintainer request.
+The [acceptance report](databricks-acceptance.md) records environment, runtime
+switches, source attribution, regression commands and the bounded release claim.
+Per-feature pages retain their actual native revisions and replay provenance;
+there is no claim of a uniform final-revision live campaign. Local slow DuckDB
+acceptance remains deferred; normal main CI provides post-merge real-dbt coverage.
 
-The [landing plan](databricks-landing.md) governs this preview. #132 tracks
-landing; #162 and the unfinished children track the future full verified-support
-claim. ADR0009 remains the standard for that larger claim.
+The [landing plan](databricks-landing.md) records the completed initial preview
+landing in PR #164 and closure of #132. The subsequent follow-ups implement
+bounded tested slices under the accepted conservative completion policy.
+ADR0009 remains the standard for the distinct, unfulfilled full-conformance claim.

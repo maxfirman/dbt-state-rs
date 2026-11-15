@@ -94,20 +94,16 @@ jobs:
           path: artifacts/databricks-generated
           retention-days: 14
 
-      # Temporarily skip slow DuckDB acceptance on the Databricks integration PRs.
-      # Other PRs, main, and manual/scheduled runs keep their existing coverage.
       - uses: astral-sh/setup-uv@v6
-        if: github.event_name != 'pull_request' || (github.head_ref != 'integrate/databricks-132' && github.head_ref != 'integrate/databricks-followups')
         with:
           version: '0.8.22'
           python-version: '3.12'
           enable-cache: true
           cache-dependency-glob: integrations/duckdb/uv.lock
       - name: All fixed real-dbt cases and bounded generation (four seeds, four episodes)
-        if: github.event_name != 'pull_request' || (github.head_ref != 'integrate/databricks-132' && github.head_ref != 'integrate/databricks-followups')
         run: ./scripts/duckdb-ci.sh --jobs 4
       - name: Retain logs, timing, seeds and replayable traces
-        if: always() && (github.event_name != 'pull_request' || (github.head_ref != 'integrate/databricks-132' && github.head_ref != 'integrate/databricks-followups'))
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: duckdb-acceptance
