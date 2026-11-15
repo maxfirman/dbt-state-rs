@@ -274,3 +274,25 @@ and cannot establish exact native relative-age fidelity.
 The exact five-row regression and its independent clock evidence are documented
 in `crates/harness/tests/fixtures/native-clock147.md`. Native supplementary
 results remain local replay evidence, separate from hosted conformance.
+
+For the bounded #148 predicate replacement seam, run
+`python3 experiments/databricks_replace_where_test.py` and
+`cargo test -p dbt-state-harness --test databricks_replace_where`. The ordinary
+tests check independent cumulative history, duplicate/NULL retention, typed
+schema/reference faults, exact scope/wire/SQL guards, and the complete hosted
+Record11→ordinary11 SQL transition. The real-client test is ignored and needs
+an exact separate grant, fresh owned pair and frozen tools/ledger. Its native
+capture must retain actual audit clocks before State cleanup and pass complete
+supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
+header is used. See the [bounded report](reports/databricks-replace-where-2026-11-14.md).
+
+For the bounded #149 DELETE_INSERT seam, run
+`python3 experiments/databricks_delete_insert_test.py` and
+`cargo test -p dbt-state-harness --test databricks_delete_insert`. The ordinary
+test checks independent multiset key replacement, selected/absent NULL keys,
+empty input, duplicates, exact schema/reference/SQL/scope guards, actual nested
+fresh-SKIP flags and a full-refresh kind locked from prior hosted evidence.
+The real-client test is ignored and requires an exact separate grant and fresh
+owned pair. Its native wrapper retains actual audit clocks before State cleanup;
+whole supplemental replay supplies that sidecar. See the
+[dated bounded report](reports/databricks-delete-insert-2026-11-15.md).

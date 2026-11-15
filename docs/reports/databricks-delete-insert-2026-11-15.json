@@ -1,0 +1,1669 @@
+{
+  "status": "validated safe partial; no whole149/dependency/Databricks completion claim",
+  "report_date": "2026-11-15",
+  "live_campaign_date": "2026-11-14",
+  "whole_ticket_complete": false,
+  "blocked_dependencies": [
+    138,
+    140
+  ],
+  "production_changed": false,
+  "canonical_base": "a54f4da3fcacbf17d57cc3dd9559a6b1ef9c1a30",
+  "actual_hosted_frozen_source_commit": "8a796294894da84871bdf8807084814144899ce6",
+  "actual_native_frozen_source_commit": "d95a94d07a8270cfe5c14679564e33f345985c52",
+  "post_use_helper_correction_commit": "f24c7a0",
+  "accepted_hosted_corpora_on_this_branch": 129,
+  "scope": {
+    "dbt": "2.0.11",
+    "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+    "warehouse": "configured Databricks Free Edition serverless SQL warehouse / Unity Catalog / SQL / MANAGED Delta",
+    "new_warehouse_runtime_version_query": false,
+    "ordinary_execution_type": 5,
+    "independently_observed_and_native_locked_full_refresh_kind": 1,
+    "legacy_fallback_tested": false,
+    "native_composite_key_tested": false,
+    "compare_unrendered_code": false,
+    "lag_tolerance_seconds": 0,
+    "pre_clone": "never",
+    "schema_change_setting": "ignore"
+  },
+  "archive": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114",
+  "archive_index": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/evidence-index-v1.json",
+  "archive_index_sha256": "4cfbf34da5728d8f52a81d66a1590860d7ab239e26d2c88581c41d0d7aa8a12a",
+  "archive_files": 4022,
+  "operation_ledger_sha256": "ace0a361bdd87c5676959367939ef957ef99ded675c3757f0637756753080a2f",
+  "immutable_operation_ledger": {
+    "version": 1,
+    "ticket": 149,
+    "schema": [
+      [
+        "id",
+        "BIGINT",
+        "LONG",
+        0
+      ],
+      [
+        "v",
+        "STRING",
+        "STRING",
+        1
+      ],
+      [
+        "p",
+        "DATE",
+        "DATE",
+        2
+      ],
+      [
+        "ts",
+        "TIMESTAMP",
+        "TIMESTAMP",
+        3
+      ]
+    ],
+    "predicate": "p = DATE '2026-11-01' OR p IS NULL",
+    "keys": [
+      "id"
+    ],
+    "cells": [
+      [
+        "first",
+        "first",
+        "ready_to_execute"
+      ],
+      [
+        "first_repeat",
+        "first",
+        "skip_execution"
+      ],
+      [
+        "update",
+        "update",
+        "ready_to_execute"
+      ],
+      [
+        "update_repeat",
+        "update",
+        "skip_execution"
+      ],
+      [
+        "remove_null",
+        "remove_null",
+        "ready_to_execute"
+      ],
+      [
+        "remove_null_repeat",
+        "remove_null",
+        "skip_execution"
+      ],
+      [
+        "restore_null",
+        "restore_null",
+        "ready_to_execute"
+      ],
+      [
+        "restore_null_repeat",
+        "restore_null",
+        "skip_execution"
+      ],
+      [
+        "empty",
+        "empty",
+        "ready_to_execute"
+      ],
+      [
+        "empty_repeat",
+        "empty",
+        "skip_execution"
+      ],
+      [
+        "full_refresh",
+        "refresh",
+        "record"
+      ],
+      [
+        "next_ordinary",
+        "next",
+        "ready_to_execute"
+      ],
+      [
+        "next_repeat",
+        "next",
+        "skip_execution"
+      ]
+    ],
+    "history": {
+      "first": {
+        "source": [
+          [
+            "1",
+            "old-a",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "old-b",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "R": [
+          [
+            "1",
+            "old-a",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "old-b",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "F": [
+          [
+            "1",
+            "old-a",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "old-b",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ]
+      },
+      "update": {
+        "source": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ]
+        ],
+        "R": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "F": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ]
+        ]
+      },
+      "remove_null": {
+        "source": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "R": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            null,
+            "old-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "F": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ]
+        ]
+      },
+      "restore_null": {
+        "source": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "new-null",
+            null,
+            null
+          ]
+        ],
+        "R": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "new-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "F": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            null,
+            "new-null",
+            null,
+            null
+          ]
+        ]
+      },
+      "empty": {
+        "source": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "R": [
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "1",
+            "new-one",
+            "2026-11-01",
+            "2026-11-01T12:00:00.123Z"
+          ],
+          [
+            "4",
+            "new-four",
+            "2026-11-01",
+            "2026-11-04T12:00:00.012Z"
+          ],
+          [
+            "2",
+            "old-two",
+            "2026-11-01",
+            "2026-11-02T12:00:00.456Z"
+          ],
+          [
+            null,
+            "new-null",
+            null,
+            null
+          ],
+          [
+            "3",
+            "old-three",
+            "2026-11-01",
+            "2026-11-03T12:00:00.789Z"
+          ]
+        ],
+        "F": []
+      },
+      "refresh": {
+        "source": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "R": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "F": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ]
+      },
+      "next": {
+        "source": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "R": [
+          [
+            "2",
+            "new-two",
+            "2026-11-02",
+            "2026-11-02T12:00:00.456Z"
+          ]
+        ],
+        "F": []
+      }
+    },
+    "basis": "independent immutable literal multiset key-replacement history; NULL-safe <=>"
+  },
+  "hosted": {
+    "managed_invocations": 13,
+    "disabled_parse": 1,
+    "cumulative_R_references": 13,
+    "codec_preflight_show": 1,
+    "certified_zero_RPC_canaries": 14,
+    "capture": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/hosted/golden/golden_20261114T233239.857Z_bbb156986c19450bb61e771b6ab11412.jsonl",
+    "capture_sha256": "6c58d7781f8ed63335413f9e4665fa95b080815fa1b58cf02049d71e8272a3f0",
+    "RPCs": 88,
+    "all_RPC_status_codes": 0,
+    "method_counts": {
+      "ValidateClientVersion": 13,
+      "SubmitTelemetryBatch": 32,
+      "SubmitEnrichedSQLSpeculative": 12,
+      "SubmitEnrichedSQL": 12,
+      "ConfirmExecution": 6,
+      "GetExplainMessages": 12,
+      "RecordExecutions": 1
+    },
+    "six_positive_fresh_SKIPs": true,
+    "six_successful_Confirms": true,
+    "one_FULL1_Record_acknowledged": true,
+    "client_statuses": {
+      "success": 7,
+      "reused": 6
+    },
+    "Explain_trees": 12,
+    "complete_typed_source_R_F_schema_Delta_histories": true,
+    "cells": [
+      {
+        "label": "first",
+        "stage": "first",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 6,
+        "R_count": 6,
+        "F_count": 6,
+        "own_cached_or_confirmed_runtime_ms": 6751,
+        "source_Delta_versions": [
+          0,
+          1
+        ],
+        "target_Delta_versions": [
+          0
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "first_repeat",
+        "stage": "first",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 6,
+        "R_count": 6,
+        "F_count": 6,
+        "own_cached_or_confirmed_runtime_ms": 6751,
+        "source_Delta_versions": [
+          0,
+          1
+        ],
+        "target_Delta_versions": [
+          0
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "update",
+        "stage": "update",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 6,
+        "R_count": 7,
+        "F_count": 5,
+        "own_cached_or_confirmed_runtime_ms": 9205,
+        "source_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "update_repeat",
+        "stage": "update",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 6,
+        "R_count": 7,
+        "F_count": 5,
+        "own_cached_or_confirmed_runtime_ms": 9205,
+        "source_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "remove_null",
+        "stage": "remove_null",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 4,
+        "R_count": 7,
+        "F_count": 3,
+        "own_cached_or_confirmed_runtime_ms": 7944,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "remove_null_repeat",
+        "stage": "remove_null",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 4,
+        "R_count": 7,
+        "F_count": 3,
+        "own_cached_or_confirmed_runtime_ms": 7944,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "restore_null",
+        "stage": "restore_null",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 5,
+        "R_count": 6,
+        "F_count": 4,
+        "own_cached_or_confirmed_runtime_ms": 6867,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "restore_null_repeat",
+        "stage": "restore_null",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 5,
+        "R_count": 6,
+        "F_count": 4,
+        "own_cached_or_confirmed_runtime_ms": 6867,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "empty",
+        "stage": "empty",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 6,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6129,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "empty_repeat",
+        "stage": "empty",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 1,
+        "R_count": 6,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6129,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "full_refresh",
+        "stage": "refresh",
+        "ordinary_decision": "record",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 1,
+        "own_cached_or_confirmed_runtime_ms": 3490,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "next_ordinary",
+        "stage": "next",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6030,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "next_repeat",
+        "stage": "next",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6030,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "persistent_auxiliary_peak": 0
+      }
+    ],
+    "final_inventory": {
+      "state_20261114_append146": [
+        {
+          "name": "a_20261114a146aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114a146aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114b146bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114b146bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114a149aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114a149aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114a149aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114a149aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114a147aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114a147aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114a147aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114a147aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114b147bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114b147bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114b147bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114b147bb_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114a148aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114a148aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114a148aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114a148aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114b148bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114b148bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114b148bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114b148bb_inputs",
+          "table_type": "MANAGED"
+        }
+      ]
+    }
+  },
+  "Rust_native": {
+    "managed_invocations": 13,
+    "disabled_parse": 1,
+    "cumulative_R_references": 13,
+    "codec_preflight_show": 0,
+    "certified_zero_RPC_canaries": 13,
+    "capture": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/rust/campaign/golden/golden_20261114T235113.818Z_56cad56104ff43d884e2c9912ae6ccd3.jsonl",
+    "capture_sha256": "e9fda0a8fbfa4b10802f5280d719f43f841952c2318281e727bc1344f6f3f9bb",
+    "RPCs": 88,
+    "all_RPC_status_codes": 0,
+    "method_counts": {
+      "ValidateClientVersion": 13,
+      "SubmitTelemetryBatch": 32,
+      "SubmitEnrichedSQLSpeculative": 12,
+      "SubmitEnrichedSQL": 12,
+      "ConfirmExecution": 6,
+      "GetExplainMessages": 12,
+      "RecordExecutions": 1
+    },
+    "six_positive_fresh_SKIPs": true,
+    "six_successful_Confirms": true,
+    "one_FULL1_Record_acknowledged": true,
+    "client_statuses": {
+      "success": 7,
+      "reused": 6
+    },
+    "Explain_trees": 12,
+    "complete_typed_source_R_F_schema_Delta_histories": true,
+    "cells": [
+      {
+        "label": "first",
+        "stage": "first",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 6,
+        "R_count": 6,
+        "F_count": 6,
+        "own_cached_or_confirmed_runtime_ms": 6881,
+        "source_Delta_versions": [
+          0,
+          1
+        ],
+        "target_Delta_versions": [
+          0
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "first_repeat",
+        "stage": "first",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 6,
+        "R_count": 6,
+        "F_count": 6,
+        "own_cached_or_confirmed_runtime_ms": 6881,
+        "source_Delta_versions": [
+          0,
+          1
+        ],
+        "target_Delta_versions": [
+          0
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "update",
+        "stage": "update",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 6,
+        "R_count": 7,
+        "F_count": 5,
+        "own_cached_or_confirmed_runtime_ms": 10387,
+        "source_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "update_repeat",
+        "stage": "update",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 6,
+        "R_count": 7,
+        "F_count": 5,
+        "own_cached_or_confirmed_runtime_ms": 10387,
+        "source_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "remove_null",
+        "stage": "remove_null",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 4,
+        "R_count": 7,
+        "F_count": 3,
+        "own_cached_or_confirmed_runtime_ms": 6644,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "remove_null_repeat",
+        "stage": "remove_null",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 4,
+        "R_count": 7,
+        "F_count": 3,
+        "own_cached_or_confirmed_runtime_ms": 6644,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "restore_null",
+        "stage": "restore_null",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 5,
+        "R_count": 6,
+        "F_count": 4,
+        "own_cached_or_confirmed_runtime_ms": 6648,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "restore_null_repeat",
+        "stage": "restore_null",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 5,
+        "R_count": 6,
+        "F_count": 4,
+        "own_cached_or_confirmed_runtime_ms": 6648,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "empty",
+        "stage": "empty",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 6,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6147,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "empty_repeat",
+        "stage": "empty",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 1,
+        "R_count": 6,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 6147,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "full_refresh",
+        "stage": "refresh",
+        "ordinary_decision": "record",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 1,
+        "own_cached_or_confirmed_runtime_ms": 3566,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "next_ordinary",
+        "stage": "next",
+        "ordinary_decision": "ready_to_execute",
+        "client_status": "success",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 5999,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "persistent_auxiliary_peak": 0
+      },
+      {
+        "label": "next_repeat",
+        "stage": "next",
+        "ordinary_decision": "skip_execution",
+        "client_status": "reused",
+        "source_count": 1,
+        "R_count": 1,
+        "F_count": 0,
+        "own_cached_or_confirmed_runtime_ms": 5999,
+        "source_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "target_Delta_versions": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "persistent_auxiliary_peak": 0
+      }
+    ],
+    "final_inventory": {
+      "state_20261114_append146": [
+        {
+          "name": "a_20261114a146aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114a146aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114a146aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114b146bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "a_20261114b146bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.a_20261114b146bb_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114a149aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114a149aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114a149aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114a149aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114b149bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114b149bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "di_20261114b149bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.di_20261114b149bb_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114a147aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114a147aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114a147aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114a147aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114b147bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114b147bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "io_20261114b147bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.io_20261114b147bb_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114a148aa_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114a148aa_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114a148aa_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114a148aa_inputs",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114b148bb_consumer",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114b148bb_consumer",
+          "table_type": "MANAGED"
+        },
+        {
+          "name": "rw_20261114b148bb_inputs",
+          "full_name": "cdo_demo_db.state_20261114_append146.rw_20261114b148bb_inputs",
+          "table_type": "MANAGED"
+        }
+      ]
+    }
+  },
+  "fractional_codec": {
+    "purpose": "codec discovery only, not State policy",
+    "logical_literal_SELECT": 1,
+    "typed_API_executions": 1,
+    "disabled_show_executions": 1,
+    "State_RPCs": 0,
+    "new_objects": 0,
+    "before_source_consumer_DDL": true,
+    "exact_fractions": [
+      ".123Z",
+      ".456Z",
+      ".789Z",
+      ".012Z"
+    ],
+    "duplicate_NULL_rows": 2,
+    "observed_receipt": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/hosted/temporal-codec-preflight/observed.json",
+    "observed_receipt_sha256": "408aacd1d4dd87cb5b77ff9df4678d42cf511919c1bf9c95236e71690bc81fab",
+    "zero_whole_second_rows_in_fractional_probe": true,
+    "unknown_encoding_stops": true,
+    "generic_normalization": false
+  },
+  "clock": {
+    "native_actual_sampled_audit_rows": 12,
+    "all_ordinary_submit_and_Explain_IDs_match": true,
+    "retained_before_TestServer_Drop": true,
+    "capture_sha256": "e9fda0a8fbfa4b10802f5280d719f43f841952c2318281e727bc1344f6f3f9bb",
+    "sidecar": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/rust/native-replay-clocks.json",
+    "sidecar_sha256": "ed4f95100fff5dee8570d7b033c3cc176e1d5023caacff7bca57b8cd6690e068",
+    "provenance": {
+      "source": "persisted_audit",
+      "schema": "difftest_a470e3c2e65f4c1a9d4197a0c3e25d5e"
+    },
+    "live_fake_clock_header_present": false,
+    "original_capture_mutated": false
+  },
+  "full_refresh_host_contract": {
+    "zero_based_original_entry": 72,
+    "one_based_original_line": 73,
+    "kind": 1,
+    "epoch": 1794699386000,
+    "runtime_ms": 3490,
+    "records_stored": 1,
+    "complete_original_input_outcome_ack": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/host-observed-native-contract.json",
+    "contract_sha256": "e1861e78f10559a0da918138a2699173527150a926a3246db0efec4e7af5f215",
+    "generic_Record_kind_acceptance": false
+  },
+  "post_use_guard_correction": {
+    "post_use_helper_only": true,
+    "actual_hosted_source": "8a796294894da84871bdf8807084814144899ce6",
+    "actual_native_source": "d95a94d07a8270cfe5c14679564e33f345985c52",
+    "correction": "Check literal false at skip_execution.explained_decision.is_stale; previous frozen inline get looked at skip payload level. No production or capture mutation, no live rerun.",
+    "retained_ordinary_submits_pass_new_guard": 24,
+    "all_retained_explicit_false_fresh_SKIP_flags": 12,
+    "TDD": "stale=true/missing/wronglevel three failures RED before fix;16 own+31 prior tests GREEN after fix",
+    "current_driver_sha256": "b5db4ec712373c742617c58f2aa4f60c95a0a08d26620fc3e95f3512aba8661f",
+    "current_tests_sha256": "780583e7177ecc8ccda77350897a6c5665b848af8c7cb79e165da85a3b8abbaa"
+  },
+  "fresh_validation": {
+    "whole_hosted": {
+      "prior_corpora": 128,
+      "entire_extra_RPCs": 88,
+      "non_Explain_assertions": 76,
+      "Explain_trees": 12,
+      "seconds": 233.41,
+      "test_passed": 1,
+      "filtered": 18
+    },
+    "whole_native": {
+      "hosted_corpora": 129,
+      "entire_native_RPCs": 88,
+      "actual_audit_clock_rows": 12,
+      "non_Explain_assertions": 76,
+      "Explain_trees": 12,
+      "seconds": 253.76,
+      "test_passed": 1,
+      "filtered": 18
+    },
+    "remaining_conformance_guards": {
+      "passed": 18,
+      "filtered": 1,
+      "seconds": 9.87
+    },
+    "new_gaps_unknown_baselines_partial_history_masks": 0,
+    "Python_passed": 47,
+    "own_Python_passed": 16,
+    "credential_free_Rust_wrapper": {
+      "passed": 1,
+      "ignored_live_test": 1
+    },
+    "separate_opt_in_native_live": {
+      "passed": 1,
+      "filtered": 1,
+      "seconds": 279.29
+    },
+    "strict_workspace_all_targets_fuzz_Clippy": true,
+    "fmt_whitespace": true,
+    "independent_retained_cell_audit": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/final-receipts/ticket149-independent-retained-cell-audit.json",
+    "independent_audit_sha256": "095e29e3586a60a1743c477a6c74b07b7cd903e6d27facce5b1e10b11a38f24f"
+  },
+  "reused_root_gates_not_fresh_149_runs": {
+    "workspace": 681,
+    "database_free_library": 310,
+    "DuckDB": 25,
+    "input_proof": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/final-receipts/ticket149-production-DuckDB-inputhash-proof.json",
+    "input_proof_sha256": "79ac0ea6a4f66db8fb61744d53d56c9749f426c54bfe67a0c19fd88da18e0f17",
+    "production_input_hashes_matched": 68,
+    "DuckDB_input_hashes_matched": 57,
+    "current_lock_matches_canonical148": true,
+    "resolved_packages_versions_sources_checksums_unchanged": true
+  },
+  "source_tool_provenance": {
+    "hosted_tracked_inputs_unchanged_through_child": 646,
+    "native_tracked_inputs_unchanged_through_child": 647,
+    "phase_tools_each": 5,
+    "hosted_source_freeze_sha256": "2a0ab346a3ba7022e11cd0d068f0dbaaefba2db9d21e7fcbd3dd9490357b8faf",
+    "native_source_freeze_sha256": "cbd4d141b43d9ced817181dad47ccd6a3700780313f7408f4d09929e0e50b8c2",
+    "hosted_grant_sha256": "d19a6efcdd63555fca80425f318361840d09e53f10018b4563ceb177e7d7c4e2",
+    "native_grant_sha256": "11425ed495449b83d51a3cc7b12ccb546104c10e46ca87f6e2ed88a3d9db3c4b",
+    "hosted_actual_PID": 216232,
+    "hosted_proxy_PID": 216406,
+    "native_actual_PID": 258989,
+    "native_proxy_PID": 259141,
+    "native_running_executable_receipt": "/home/maxfirman/.local/state/dbt-state-rs/databricks-149-20261114/rust/running-server-process.json",
+    "native_running_executable_receipt_sha256": "ec202085e42f598b7a7f645632dbb2e52131c233c76aac3da2cc9fdd4fdfd935",
+    "all_phase_processes_and_recorders_exited": true
+  },
+  "Explain_census": {
+    "tracked_trees": 990,
+    "tracked_files": 140,
+    "new_DELETE_INSERT_EXECUTE": 6,
+    "new_DELETE_INSERT_SKIP": 6,
+    "new_vocabulary": false,
+    "new_empty_or_unspecified": 0
+  },
+  "warehouse_final": {
+    "scope": "149 campaign container only; later separate root-controlled operations are not claimed unchanged",
+    "container": "cdo_demo_db.state_20261114_append146",
+    "container_uuid": "6f14be2c-a920-4309-8240-caf8e8df7888",
+    "protected_permanent_objects": 12,
+    "new_permanent_objects": 4,
+    "final_permanent_inventory": 16,
+    "reserved_persistent_auxiliary_peak": 1,
+    "reserved_total_peak": 17,
+    "observed_persistent_auxiliary_peak": 0,
+    "session_temporary_peak": 1,
+    "hosted_capacity_GetQuota_stale_count": 10,
+    "hosted_capacity_actual_inventory": 12,
+    "native_capacity_GetQuota_stale_count": 12,
+    "native_capacity_actual_inventory": 14,
+    "quota_limit": 100,
+    "new_warehouse_schema_allocations_by149": 0,
+    "warehouse_cleanup_by149": false,
+    "prior_objects_read_as_model_data_or_written": false,
+    "feature_or_macro_override": false,
+    "local_isolated_State_schema_dropped_after_actual_clock_retention": true
+  },
+  "remaining": [
+    "138/140 dependency blockers",
+    "alternate/empty/invalid/composite native key reachability",
+    "predicate settings/aliases",
+    "schema evolution and identifier binding changes",
+    "warehouse failures/atomicity/retry publication",
+    "broader node-kind/strategy transitions",
+    "generated/restart/upgrade breadth",
+    "legacy fallback and uncharacterized temporal precision"
+  ]
+}

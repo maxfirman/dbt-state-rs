@@ -532,3 +532,65 @@ is not replaced. Other cells require actual fresh BUILD/Confirm and positive
 speculative reuse with complete payload/runtime/Explain and physical oracles.
 All compile/reference invocations use independent zero-RPC canaries. See the
 [dated status evidence and remaining scope](reports/databricks-audit-hosted-rejection-2026-11-14.md).
+
+### Bounded Databricks predicate replacement (#148)
+
+`experiments/databricks_replace_where.py` runs thirteen native SQL/managed-Delta
+cells per separately cleared backend. It keeps an immutable literal source/R/F
+ledger outside the repository, checks the complete ordered
+BIGINT/STRING/DATE/TIMESTAMP schema and multisets, and executes State-disabled
+SELECT-only literal references with separate zero-RPC canaries. `unique_key`
+does not deduplicate replacement rows. An outside source deletion retains its
+old target row until the destination predicate widens; empty incoming rows
+remove matching target rows. The model's fixed incremental SELECT filter is
+independent of that destination predicate.
+
+The driver requires `--operation-ledger` as well as the pinned tools, exact live
+clearance and fresh run ID. It verifies the ledger digest/content and backend
+clearance before credentials or client execution. Scope is exactly two new
+permanent names per backend, with one reserved persistent auxiliary slot and
+one serialized session-local temporary view. There is no schema allocation,
+cleanup, source reset, macro override or permanent reference object.
+
+Actual pinned replace_where submits and full-refresh Record input both use
+DBT_CUSTOM11. The following ordinary run remains11; its rendered SQL changes
+from the full unfiltered Record SELECT to the steady filtered SELECT. The
+helper's default Record expectation remains FULL1; #148 passes the independently
+observed literal expected_type11. Do not generalize another strategy's mapping.
+The [dated report](reports/databricks-replace-where-2026-11-14.md) preserves the
+initial helper stop, separately cleared continuation and complete90-RPC trace.
+
+The ignored native wrapper is
+`databricks_replace_where.rs::real_dbt_replace_where_matches_independent_operation_history`.
+In addition to the usual native environment it requires
+`DBT_STATE_DATABRICKS_OPERATION_LEDGER`. It retains the actual organization-scoped
+audit clocks before State schema cleanup and writes the capture/clock paths to
+`native-extra-replay-environment.json`. Supplemental strict replay must supply
+that actual sidecar. A byte-identical `databricks_` filename alias satisfies the
+extra-capture basename guard without editing the raw proxy file.
+
+## Bounded Databricks DELETE_INSERT acceptance (#149)
+
+`experiments/databricks_delete_insert.py` requires the original immutable
+operation ledger, exact phase clearance and frozen tools. Ordinary submissions
+are DELETE_INSERT5 and the actual pinned native path is one null-safe
+`INSERT ... REPLACE ON target.id <=> temp.id`, with an unqualified session
+temporary view. Duplicate incoming keys remain a multiset; missing input keys
+retain old rows. No legacy scalar `DELETE ... IN` behavior is substituted.
+
+The hosted phase first executes one literal fractional timestamp SELECT twice,
+through typed API and isolated State-disabled show, before any source/consumer
+DDL. Its six rows prove exact .123/.456/.789/.012 UTC encodings and duplicate
+NULL keys; unknown encodings stop without object creation or coercion. The
+13-cell managed campaign has13 separate zero-RPC R references. Native reuses
+that observed codec proof and requires literal
+`expected_full_refresh_record_execution_type` from the whole hosted history;
+this capture observes FULL1, followed by ordinary5. A changed native kind rejects.
+
+The ignored native wrapper is
+`databricks_delete_insert.rs::real_dbt_delete_insert_matches_independent_operation_history`.
+It uses the standard native environment plus
+`DBT_STATE_DATABRICKS_OPERATION_LEDGER`, saves its actual executable identity,
+and retains all actual org/decision/audit sampled clocks before State schema
+cleanup. Its capture and clock sidecar must pass whole supplemental replay.
+See [the dated evidence and unfinished scope](reports/databricks-delete-insert-2026-11-15.md).

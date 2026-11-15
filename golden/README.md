@@ -360,3 +360,46 @@ or physical-execution claim. Separate fresh Rust counterparts verify the bounded
 five/three-cell contracts, including native fallback and physical F after the
 expected error; these fixtures do not complete #144 or its #143/#138 dependencies. See the
 [dated evidence and scope](../docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
+
+### Databricks predicate replacement history (#148, 2026-11-14)
+
+`databricks_replace_where_history.jsonl` is the complete90-RPC real-client
+history: twelve ordinary DBT_CUSTOM11 submits (seven BUILD/Confirm, five fresh
+SKIPs), one type11 full-refresh Record acknowledgement, twelve Explain responses,
+and all speculative, validation, telemetry and status envelopes. The full-refresh
+record contains the unfiltered SELECT; the following ordinary type11 build has
+the steady filtered SELECT. This is a SQL identity transition, not a kind change.
+
+The separately certified original76 and continuation14 files are concatenated
+byte for byte. A helper expecting FULL1 stopped after the successful native
+full refresh; the separately cleared continuation verified it and completed only
+the final two managed invocations. The raw stopped summary and source are
+preserved. No original cell, source DML or refresh was rerun. Independent
+cumulative R and selected F differ after outside-source deletion and empty
+replacement; complete typed duplicate/NULL/DATE/TIMESTAMP checks and zero-RPC
+SELECT-only references cover all13 cells on both hosted and fresh Rust runs.
+See the [bounded report](../docs/reports/databricks-replace-where-2026-11-14.md).
+Whole #148, settings/schema/error boundaries and #138/#140 remain incomplete.
+
+### Databricks key replacement hosted history (#149, 2026-11-14)
+
+`databricks_delete_insert_history.jsonl` retains the entire certified 88-RPC
+hosted attempt byte for byte: twelve ordinary DELETE_INSERT5 submits (six
+BUILD/Confirm, six fresh SKIPs), one FULL1 full-refresh Record acknowledgement,
+twelve Explain responses, and all speculative, validation, telemetry and status
+envelopes. Strict replay of all128 prior corpora plus this entire trace passes
+with76 new assertions, zero gaps, unknown baselines or partial-history allowances.
+
+All13 hosted cells independently check complete typed source, cumulative R and
+selected F bags, ordered BIGINT/STRING/DATE/TIMESTAMP schema and full Delta
+histories. Incoming duplicate keys remain a multiset; absent NULL keys retain
+old NULL rows and selected NULL keys replace them through native `<=>`. Empty
+input retains cumulative rows, and full refresh resets R before ordinary5
+rebuild and reuse. Thirteen isolated State-disabled R references plus one
+pre-DDL literal fractional timestamp probe certify zero State RPCs. The new
+fractional probe proves exact .123/.456/.789/.012 UTC encodings without generic
+normalization. A separately cleared fresh Rust counterpart passes all13 cells and complete
+129-corpus-plus-native88 replay using12 independently retained actual audit
+clocks. See the [dated bounded evidence](../docs/reports/databricks-delete-insert-2026-11-15.md).
+This hosted fixture and native counterpart do not complete #149 or its
+#138/#140 dependencies.

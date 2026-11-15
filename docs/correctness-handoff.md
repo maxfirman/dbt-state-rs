@@ -678,3 +678,50 @@ between phases with full identity/actor/history provenance.
 Views, alternate audit schemas, genuine-upstream native audit behavior, external
 modifications, drop/recreation and post-error reuse remain uncovered. #144,
 #143/#138's UID boundary blocker and the wider #132 blockers remain incomplete.
+
+## Databricks predicate replacement bounded partial (#148, 2026-11-14)
+
+The pinned client sends replace_where as DBT_CUSTOM11, including native
+full-refresh Record input. The complete hosted90-RPC history and a fresh Rust
+counterpart cover first→steady→fresh reuse, inside update/duplicate NULL rows,
+outside update/delete retaining the original target row, empty incoming
+replacement, a destination-only predicate widening, and full refresh→ordinary
+SQL transition→fresh reuse. Both backends independently check complete typed
+source/cumulative R/selected F multisets, schema, MANAGED Delta/history, accepted
+runtimes and zero-RPC literal references. The initial helper's FULL1 assumption
+stopped after successful refresh; the original76/source remain preserved, and
+only missing checks and the final two invocations continued under a separate
+grant. No State history or expected rows were fabricated. The [bounded report](reports/databricks-replace-where-2026-11-14.md)
+records whole-trace replay and actual native audit-clock provenance.
+
+This is not whole #148: schema evolution, alternate/empty/invalid predicate
+forms, constraint-error/settings reachability, failure/retry publication and
+broader strategy transitions remain required. No generic full-refresh type
+mapping, unknown temporal encoding or unsupported error policy is inferred.
+#138/#140 remain incomplete; this partial does not promote their dependency
+edges or the full Databricks support claim.
+
+## Databricks DELETE_INSERT safe partial (#149, 2026-11-15)
+
+The complete real-client hosted88-RPC history and a fresh Rust counterpart
+cover stable first/ordinary SQL, non-NULL replacement with duplicate keys,
+absent NULL keys retaining old rows, selected NULL keys replacing old NULL
+rows through native `<=>`, empty input retaining cumulative R, and native
+FULL1 full refresh followed by ordinary5 rebuild/reuse. Both backends verify
+complete typed source/R/F multisets, ordered schema, MANAGED Delta and full
+histories, full statuses, own confirmed runtimes and zero-RPC literal references.
+Whole hosted and native histories replay exactly, including12 Explain trees
+each; native uses independently retained actual handler audit clocks.
+
+Final offline review corrected a validation-helper lookup to require literal
+`skip_execution.explained_decision.is_stale=false`. All12 raw SKIP flags were
+independently rechecked as false; original captures and executed frozen sources
+remain unchanged. No production policy or live execution was modified or rerun.
+
+This is not whole #149: alternate/empty/invalid/composite key reachability,
+predicate settings, schema evolution and binding changes, failure/atomicity/
+retry publication, other node-kind/strategy transitions and generated/restart/
+upgrade breadth remain required. Legacy fallback and uncharacterized temporal
+precision are not inferred. #138/#140 stay incomplete and no dependency edge
+or whole Databricks support claim is promoted. See the
+[bounded report](reports/databricks-delete-insert-2026-11-15.md).
