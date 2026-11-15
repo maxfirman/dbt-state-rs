@@ -496,7 +496,7 @@ fn same_identity(
 /// (see correctness-handoff.md "Open hosted questions").
 ///
 /// A client-requested copy is also adopted when the submit, read in the copy
-/// source's schema ([`rehomed_logic_matches`]), has the logic the copy
+/// source's schema by the shared copy lifecycle, has the logic the copy
 /// inherited.
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,

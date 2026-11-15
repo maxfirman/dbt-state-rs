@@ -591,7 +591,8 @@ impl Store {
                 LEFT JOIN LATERAL (
                     SELECT source.id, source.last_modified_epoch
                     FROM executions source
-                    WHERE source.org_id = pending_copy.org_id
+                    WHERE proof.body IS NOT NULL
+                      AND source.org_id = pending_copy.org_id
                       AND source.warehouse_family = pending_copy.warehouse_family
                       AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(pending_copy.table_namespace, '')
                       AND to_jsonb(source.physical_target_key) = proof.body->'source_physical_key'
