@@ -58,8 +58,8 @@ The server library was based on `801cddd`; the subsequent #143 change affects
 only data-test Explain display, with MERGE behavior unchanged.
 
 The strict public replay passed the branch's original 131 corpora plus the new
-MERGE history (132 total), including all twelve new Explain trees. The separate
-#143 fixture joins the mandatory corpus when its branch is merged. Six Python
+MERGE history (132 total), including all twelve new Explain trees. The merged #143
+fixture brings the final mandatory set to 133; CI verifies that combined set. Six Python
 fault probes and both credential-free MERGE harness tests pass. Final native
 and Reference guards were also checked against all 24 retained hosted/Rust
 cells; this is offline validation of the original raw executions.

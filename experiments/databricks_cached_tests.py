@@ -105,13 +105,13 @@ class CachedTests(Campaign):
         if args.query_identity and not re.fullmatch(r'\d{8}[a-f0-9]{6}', args.query_identity):
             raise Refused('query identity must use the run-ID alphabet')
         self.lease = json.loads(Path(args.schema_lease).read_text())
-        super().__init__(args, NoObjectScope(args.run_id, self.lease))
+        super().__init__(args, self.build_scope(args))
         self.uid = 'test.cached_' + args.run_id + '.literal_outcome'
         self.audit_schema = self.scope.schema('prod') + '_dbt_test__audit'
         self.cells = []
         self.before_inventory = None
         self.contract = json.loads(Path(args.contract).read_text()) if args.contract else None
-        for name in ('proxy', 'probe'):
+        for name in (() if getattr(self, 'reuse_binaries', False) else ('proxy', 'probe')):
             owned = self.work / 'bin' / name
             owned.parent.mkdir(exist_ok=True)
             shutil.copy2(getattr(args, name), owned)
@@ -132,6 +132,32 @@ class CachedTests(Campaign):
             'oracle': {'pass': [0, False, False], 'fail': [3, True, True]},
             'config': {'store_failures': False, 'compare_unrendered_code': False,
                        'severity': 'ERROR', 'error_if': '> 0', 'warn_if': '> 0', 'fail_calc': 'count(*)'}})
+
+    def build_scope(self, args):
+        return NoObjectScope(args.run_id, self.lease)
+
+    def setup_campaign(self):
+        pass
+
+    def before_cell(self, label):
+        pass
+
+    def assert_rows(self, actual, failures):
+        assert_literal_rows(actual, failures)
+
+    def request_inputs(self, req, speculative=False):
+        return not req.get('tables') and not req.get('query_dependencies')
+
+    def manifest_inputs(self, manifest, node):
+        return not manifest.get('sources') and not node['depends_on']['nodes']
+
+    def compiled_sql(self, sql):
+        return select_only(sql)
+
+    def verify_inventory(self, after):
+        canonical = lambda inventory: {s: sorted(rows, key=lambda r: r['full_name']) for s, rows in inventory.items()}
+        if canonical(after) != canonical(self.before_inventory):
+            raise Refused('guard:exact-inventory-changed')
 
     @staticmethod
     def plan():
@@ -211,12 +237,11 @@ class CachedTests(Campaign):
     def manifest(self, result, failures):
         manifest = json.loads((result.target / 'manifest.json').read_text())
         nodes = manifest.get('nodes', {})
-        if (set(nodes) != {self.uid} or manifest.get('sources')
-                or manifest.get('unit_tests')):
+        if set(nodes) != {self.uid} or manifest.get('unit_tests'):
             raise Refused('guard:selected-source-less-singular-test')
         node = nodes[self.uid]
         config = node['config']
-        if (node['resource_type'] != 'test' or node['depends_on']['nodes']
+        if (node['resource_type'] != 'test' or not self.manifest_inputs(manifest, node)
                 or config.get('store_failures') is not False
                 or config.get('store_failures_as') != 'ephemeral'
                 or config.get('materialized') != 'test'
@@ -228,7 +253,7 @@ class CachedTests(Campaign):
         compiled = node.get('compiled_code')
         if compiled is None:
             compiled = next(result.target.glob('compiled/**/literal_outcome.sql')).read_text()
-        if select_only(compiled) != self.rendered_query(failures):
+        if self.compiled_sql(compiled) != self.rendered_query(failures):
             raise Refused('guard:compiled-literal-sql')
         return node
 
@@ -294,6 +319,7 @@ class CachedTests(Campaign):
         self.save('references/' + label + '.json', outcome)
 
     def cell(self, label, failures, decision):
+        self.before_cell(label)
         self.write_test(failures)
         with reference_canary(self, label + '_compile') as endpoint:
             compiled = self.command(label + '_compile', 'compile', False, endpoint)
@@ -303,7 +329,7 @@ class CachedTests(Campaign):
         # Reference first enforces zero-object reachability before any hosted call.
         self.reference('reference_' + label, failures)
         direct = self.sql('rows_' + label, self.rendered_query(failures))
-        assert_literal_rows(direct, failures)
+        self.assert_rows(direct, failures)
         config = self.test_config()
         expected_failures, expected_error, expected_warn = self.expected_result(failures)
         calc = config['fail_calc']
@@ -333,7 +359,7 @@ class CachedTests(Campaign):
                 continue
             req = row['request']
             if (req.get('execution_type') != 8 or 'target_table' not in req or req['target_table'] is not None
-                    or req.get('tables') or req.get('query_dependencies')
+                    or not self.request_inputs(req, row['method'] == 'SubmitEnrichedSQLSpeculative')
                     or req.get('compare_unrendered_code') is not self.compare_mode()
                     or (req.get('dbt_node_state') or {}).get('node_unique_id') != self.uid):
                 raise Refused('wire:scope-target-deps-type-mode')
@@ -387,6 +413,7 @@ class CachedTests(Campaign):
             self.save('lease-inventory-before.json', self.before_inventory)
             self.audit_absent()
             self.start()
+            self.setup_campaign()
             for step in self.plan():
                 self.cell(*step)
             success = True
@@ -405,9 +432,7 @@ class CachedTests(Campaign):
                 try:
                     after = self.inventory()
                     self.save('lease-inventory-after.json', after)
-                    canonical = lambda inventory: {s: sorted(rows, key=lambda r: r['full_name']) for s, rows in inventory.items()}
-                    if canonical(after) != canonical(self.before_inventory):
-                        raise Refused('guard:exact-inventory-changed')
+                    self.verify_inventory(after)
                 except Exception as error:
                     failure = (failure + '; ' if failure else '') + self.clean(str(error))
             self.save('summary.json', {'success': success and failure is None and bool(certified)

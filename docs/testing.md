@@ -66,6 +66,12 @@ The [experimental Databricks preview](databricks-preview.md) uses the explicitly
 revised [landing plan](databricks-landing.md). Full completion of the original
 Databricks feature inventory is deferred; no full-conformance claim is made.
 Safety floors and exact retained regression assertions still apply.
+The maintainer subsequently accepted documented conservative differences for
+feature-ticket completion: extra BUILDs/undecided responses preserve safety
+when hosted would reuse across UID/namespace or unknown freshness boundaries.
+Missing implementation and untested behavior are not waived. Classify these
+limits in the [preview matrix](databricks-preview.md); keep exact captured
+regressions and the stricter full-conformance claim distinct.
 
 Two questions need different evidence (GLOSSARY: Hosted conformance, Reuse safety):
 
