@@ -1330,6 +1330,19 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
     exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks)).await;
 }
 
+/// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
+#[tokio::test]
+#[ignore = "requires whole #152 physical acceptance capture; native also requires audit clocks"]
+async fn databricks_precopy_extra_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let clocks = std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").map(|evidence| {
+        support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence)).unwrap()
+    });
+    let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
+    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref()).await;
+}
+
 async fn exact_native_history(
     fixture: &str,
     count: usize,
@@ -1379,7 +1392,14 @@ async fn exact_native_history_at(
 ) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = support::start_server().await;
+    let server = if entries
+        .iter()
+        .any(|entry| entry.method == "RegisterClone" && entry.request["dialect"] == "databricks")
+    {
+        support::start_server_databricks_direct_copy().await
+    } else {
+        support::start_server().await
+    };
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
@@ -1390,6 +1410,31 @@ async fn exact_native_history_at(
     let mut explained = 0;
     for (i, entry) in entries.iter().enumerate() {
         match entry.method.as_str() {
+            "RegisterClone" => {
+                let response = qc::clone_client::CloneClient::new(ch.clone())
+                    .register_clone(support::captured_request(
+                        serde_json::from_value::<qc::CloneRequest>(entry.request.clone()).unwrap(),
+                        entry,
+                    ))
+                    .await
+                    .unwrap()
+                    .into_captured(entry);
+                let actual = serde_json::to_value(&response).unwrap();
+                if let Some(ready) = &response.ready_to_clone {
+                    requests.insert(
+                        entry.response["ready_to_clone"]["request_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                        ready.request_id.clone(),
+                    );
+                }
+                assert_eq!(
+                    normalize_ids(actual),
+                    normalize_ids(entry.response.clone()),
+                    "RegisterClone entry {i}"
+                );
+            }
             "SubmitEnrichedSQL" => {
                 let response = sql
                     .submit_enriched_sql(captured_submit_request(

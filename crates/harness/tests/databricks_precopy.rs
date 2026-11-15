@@ -12,6 +12,112 @@ fn entries() -> Vec<GoldenEntry> {
         .collect()
 }
 
+#[test]
+fn precopy_native_evidence_guards_reject_faults() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_precopy_test.py"
+        ))
+        .output()
+        .expect("run warehouse-free native evidence guards");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires exact #152 physical pre-copy clearance, pinned dbt and fresh objects"]
+async fn real_dbt_precopy_physical_adoption() {
+    use sha2::{Digest, Sha256};
+    let server = support::start_server_databricks_direct_copy().await;
+    let artifacts = std::path::PathBuf::from(
+        std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS").expect("fresh native artifact root"),
+    );
+    std::fs::create_dir_all(&artifacts).unwrap();
+    let executable = std::env::current_exe().unwrap();
+    std::fs::write(artifacts.join("running-server-process.json"), serde_json::to_vec_pretty(&serde_json::json!({
+        "pid":std::process::id(), "executable":executable,
+        "executable_sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable).unwrap())),
+        "argv":std::env::args().collect::<Vec<_>>(), "address":server.addr.to_string(), "direct_copy_opt_in":true
+    })).unwrap()).unwrap();
+    let mut command = tokio::process::Command::new(
+        std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").expect("Python with PyYAML"),
+    );
+    command.arg(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../experiments/databricks_precopy.py"
+    ));
+    for (flag, variable) in [
+        ("dbt", "DBT"),
+        ("proxy", "PROXY"),
+        ("probe", "PROBE"),
+        ("live-clearance", "LIVE_CLEARANCE"),
+        ("operation-ledger", "OPERATION_LEDGER"),
+        ("schema-lease", "SCHEMA_LEASE"),
+        ("run-id", "RUN_ID"),
+    ] {
+        command.arg(format!("--{flag}")).arg(
+            std::env::var_os(format!("DBT_STATE_DATABRICKS_{variable}"))
+                .expect("exact cleared native input"),
+        );
+    }
+    command
+        .arg("--rust-url")
+        .arg(format!("http://{}", server.addr))
+        .arg("--work-dir")
+        .arg(artifacts.join("campaign"));
+    let argv = std::iter::once(
+        command
+            .as_std()
+            .get_program()
+            .to_string_lossy()
+            .into_owned(),
+    )
+    .chain(
+        command
+            .as_std()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned()),
+    )
+    .collect::<Vec<_>>();
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = command.spawn().expect("spawn cleared native child");
+    std::fs::write(
+        artifacts.join("native-child-process.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({"pid":child.id(),"argv":argv})).unwrap(),
+    )
+    .unwrap();
+    let output = child.wait_with_output().await.expect("drain native child");
+    std::fs::write(artifacts.join("native-child.stdout"), &output.stdout).unwrap();
+    std::fs::write(artifacts.join("native-child.stderr"), &output.stderr).unwrap();
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+    let captures = std::fs::read_dir(artifacts.join("campaign/golden"))
+        .expect("child capture; inspect retained stderr on early failure")
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|s| s == "jsonl"))
+        .collect::<Vec<_>>();
+    assert_eq!(captures.len(), 1, "one complete native session");
+    support::native_clock::retain(
+        &server,
+        &captures[0],
+        &artifacts.join("native-replay-clocks.json"),
+    )
+    .await
+    .expect("retain actual decision audit clocks before State cleanup");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 async fn source(sc: &Scenario, rows: &[GoldenEntry]) {
     let req: qc::SubmitEnrichedSqlRequest =
         serde_json::from_value(rows[0].request.clone()).unwrap();
