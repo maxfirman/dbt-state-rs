@@ -422,6 +422,8 @@ assertions and zero new gaps, unknown baselines or partial-history allowances.
 The [dated description correction report](../docs/reports/databricks-microbatch-description-2026-11-15.md)
 records diagnosis, byteexact admission and uniform current-source gates.
 Admission certifies this bounded hosted history. The fresh Rust physical
-counterpart remains pending; this fixture does not complete whole #150 or its
+counterpart now passes the same ten cells and whole supplemental replay with
+actual pre-Drop audit clocks; see the [bounded hosted/native report](../docs/reports/databricks-microbatch-2026-11-15.md).
+This fixture does not complete whole #150 or its
 #138/#140 dependencies, nor independently characterize Target-only external
 modification policy.
