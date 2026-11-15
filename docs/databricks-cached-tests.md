@@ -3,9 +3,18 @@
 The bounded dbt 2.0.11 serverless Unity Catalog/managed Delta coverage for #143
 includes the existing source-less passing/failing, configuration and template
 histories, plus a genuine upstream data-change history captured on 2026-11-15.
-This closes the missing upstream case; **#143 remains incomplete under ADR 0009
-because the cross-full-UID true-template hosted reuse conflict in #138 remains**.
-The Rust full-UID isolation floor is unchanged. Audit objects are separately #144.
+This completes #143's ordinary/speculative cached-outcome scope under the
+maintainer's 2026-11-15 decision to accept documented conservative differences.
+The known #138 cross-full-UID true-template difference remains: hosted can reuse
+another UID's result while Rust returns UNDECIDED/BUILD and preserves its full-UID
+isolation floor. This is an accepted conservative difference, not exact hosted
+parity or a full Databricks support claim. Audit objects are separately #144.
+
+Existing complete public histories cover [source-less pass/fail](../golden/fixtures/databricks_cached_test_results.jsonl),
+[configuration/threshold changes](../golden/fixtures/databricks_cached_test_thresholds.jsonl)
+and [true-template cached failures](../golden/fixtures/databricks_cached_test_template_failure.jsonl).
+Their native hosted/Rust Reference executions and limitations remain in the
+[archived reports](databricks-preview.md#evidence-and-maintenance).
 
 The new workload is one singular test, `store_failures: false`, rendered-code
 comparison, zero Lag tolerance, over one fresh owned Delta source. The SQL stays
@@ -45,9 +54,11 @@ were made for the fix.
 Credential-free public gRPC controls additionally reject reuse after an unknown
 or changed source epoch and under another full UID, with a positive original
 scope control. Existing source-less restart/org/namespace and complete payload
-controls remain. Unit tests are not treated as cached data tests: no native
-unit-test caching was characterized here; the [protocol inventory](protocol.md)
-and [known limitation](correctness-handoff.md) remain explicit.
+controls remain. Unit tests are accounted for separately from cached data tests:
+the [protocol inventory](protocol.md#state-selectors-selectorservicegetstateselection)
+does not record them as cached workloads. Hosted unit-test reuse remains
+[uncharacterized](correctness-handoff.md); this work adds no unit-test caching
+or native unit-test support claim.
 
 Use `experiments/databricks_cached_upstream.py` with the existing cached-test
 runner arguments plus `--schema` and a fresh UUID `--object-id`; run hosted first,
