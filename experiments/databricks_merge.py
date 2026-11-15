@@ -131,7 +131,7 @@ class Merge(ActualFreshness):
                   'session_temporary':self.scope.temporary,'persistent_peak_with_phase':len(inventory[self.scope.schema('prod')])+3})
 
     def audit_native(self,label,target_existed):
-        path=self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql'
+        path=getattr(self,'native_log_path',self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql')
         raw=path.read_text()
         self.save('materialization/'+label+'.sql',raw)
         text=re.sub(r'/\*.*?\*/','',raw,flags=re.S)
@@ -145,14 +145,15 @@ class Merge(ActualFreshness):
             sql=sql.strip()
             if not re.match(r'(?i)^(create|drop|alter|merge|insert|update|delete)\b',sql):continue
             create=re.match(r'(?is)^create\s+(?:or\s+replace\s+)?(temporary\s+view|table|view)\s+'+relation,sql)
-            rename=re.match(r'(?is)^alter\s+table\s+'+relation+r'\s+rename\s+to\s+'+relation,sql)
+            rename=re.match(r'(?is)^alter\s+(?:table|'+('view' if getattr(self,'native_target_kind','table') == 'view' else 'table')+r')\s+'+relation+r'\s+rename\s+to\s+'+relation,sql)
             drop=re.match(r'(?is)^drop\s+(table|view)\s+(?:if\s+exists\s+)?'+relation,sql)
             if create:
                 kind,name=create.group(1).lower(),normalize(create.group(2))
                 if kind=='temporary view':
                     if name!=self.scope.temporary or '.' in name:raise Refused('unapproved session temporary DDL')
                 else:
-                    if kind!='table' or name not in ({target}|self.scope.auxiliary) or name.endswith('__dbt_backup'):
+                    if (kind != ('view' if name in {target,target+'__dbt_stg'} and getattr(self,'native_target_kind','table') == 'view' else 'table')
+                            or name not in ({target}|self.scope.auxiliary) or name.endswith('__dbt_backup')):
                         raise Refused('unapproved persistent native CREATE')
                     active.add(name)
             elif rename:

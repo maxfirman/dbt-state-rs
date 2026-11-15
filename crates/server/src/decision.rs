@@ -335,7 +335,8 @@ pub struct DecisionRecord {
     /// build in scope, which did not have the workload's identity. Explain
     /// judges the SHAPE 7 freshness listing against it (VERIFIED LIVE
     /// 2026-11-11, explain_rebuild_reason_gaps.jsonl `r40q`). `None`
-    /// otherwise.
+    /// otherwise. Also stores the separately characterized Databricks
+    /// APPEND/MERGE display basis; it never replaces the judged matched ID.
     pub unmatched_execution_id: Option<i64>,
     sealed: (),
 }
@@ -514,6 +515,29 @@ impl DecisionRecord {
         if self.class == DecisionKind::Build && self.matched_execution_id.is_none() {
             self.unmatched_execution_id = unmatched.map(|build| build.id);
         }
+        self
+    }
+
+    /// Native Databricks APPEND/MERGE transitions always BUILD. Their response
+    /// reports current physical input drift before the execution-type mismatch.
+    /// Preserve the judged submit-type anchor and inputs; keep the latest row
+    /// separately for Explain presentation, never as a reuse candidate.
+    pub(crate) fn with_incremental_transition_display(
+        mut self,
+        latest: &ExecutionRow,
+        drifted: bool,
+    ) -> Self {
+        debug_assert_eq!(self.class, DecisionKind::Build);
+        self.reason = DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged);
+        self.description = DESC_EXECUTE.into();
+        let code = if drifted {
+            REJECTION_NO_SUITABLE_MATCH_FOUND
+        } else {
+            REJECTION_EXECUTION_TYPE_MISMATCH
+        };
+        self.skip_rejection_reason = Some(code);
+        self.clone_rejection_reason = Some(code);
+        self.unmatched_execution_id = Some(latest.id);
         self
     }
 

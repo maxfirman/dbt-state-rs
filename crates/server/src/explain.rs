@@ -102,7 +102,9 @@ pub struct ExplainNode {
     /// A rebuild without a matched build: the latest build in scope, which
     /// did not have the workload's identity (migration 0017). The SHAPE 7
     /// freshness listing is judged against it. `None` otherwise, and for a
-    /// rebuild recorded before the migration.
+    /// rebuild recorded before the migration. For the bounded Databricks
+    /// APPEND/MERGE transition this is the separate physical display basis,
+    /// while `anchor` retains the rejected submit-type build.
     pub unmatched: Option<ExecutionRow>,
     /// For a view: whether its SQL reads a relation (migration 0019). Client
     /// 2.0.11 reports no upstreams for a view, so this alone tells a view
@@ -974,7 +976,24 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::InputBindingChanged) => input_binding_changed_tree(node),
         Some(Shape::CopyLogicChanged) => copy_logic_changed_tree(node),
         Some(Shape::UpstreamOutdated) => execute_outdated_tree(node),
-        Some(Shape::OwnTargetModified) => skip_tree(node),
+        Some(Shape::OwnTargetModified) => {
+            // #146: display the latest physical APPEND/MERGE inputs while the
+            // persisted matched anchor remains the rejected submit-type build.
+            let transition = node.reason
+                == Some(DecisionReason::NoReuseCandidate(
+                    NoCandidate::ExecutionTypeChanged,
+                ))
+                && node.unmatched.as_ref().is_some_and(|row| {
+                    crate::warehouse::Warehouse::from_dialect(&row.dialect)
+                        == crate::warehouse::Warehouse::Databricks
+                        && matches!((node.execution_type, row.execution_type), (2, 3) | (3, 2))
+                });
+            if transition {
+                skip_tree(&judged_against_unmatched(node))
+            } else {
+                skip_tree(node)
+            }
+        }
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::SeedCopy { over }) => seed_copy_tree(node, over),
         Some(Shape::CopyOver) => copy_over_tree(node),
@@ -1607,10 +1626,25 @@ fn has_outdated_upstream(node: &ExplainNode) -> bool {
 /// `no_reuse_candidate.identity_mismatch` (see [`shape`]).
 fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let judged = judged_against_unmatched(node);
+    // Native #146 table→view: the client reports no genuine inputs, and
+    // hosted leaves this section empty. Same-kind views and other warehouses
+    // keep their existing freshness display.
+    let table_to_view = node.execution_type == ModelExecutionType::View as i32
+        && node.reads_relation == Some(true)
+        && node.genuine_upstreams().is_empty()
+        && node.unmatched.as_ref().is_some_and(|row| {
+            row.execution_type == ModelExecutionType::Full as i32
+                && crate::warehouse::Warehouse::from_dialect(&row.dialect)
+                    == crate::warehouse::Warehouse::Databricks
+        });
     vec![
         table_analysis_exists(node),
         query_analysis_changed(node),
-        data_freshness_analysis_fresh(&judged),
+        if table_to_view {
+            section("data freshness analysis", Vec::new())
+        } else {
+            data_freshness_analysis_fresh(&judged)
+        },
     ]
 }
 

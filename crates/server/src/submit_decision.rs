@@ -463,6 +463,7 @@ async fn decide_sql(
     } else {
         record
     };
+    let record = incremental_transition_display(&evidence, &selection, &freshness, record);
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
         record,
@@ -471,6 +472,59 @@ async fn decide_sql(
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
     settle(store, &evidence, record, candidate).await.map(Some)
+}
+
+/// Decorate only an already forced BUILD, after all eligibility, freshness and
+/// copy decisions. Unknown epochs/producers, other policies/types and external
+/// target modifications retain the ordinary conservative result.
+fn incremental_transition_display(
+    evidence: &ExecutionEvidence,
+    selection: &Selection,
+    freshness: &Freshness<'_>,
+    record: DecisionRecord,
+) -> DecisionRecord {
+    let Some(latest) = selection.transition_display.as_ref() else {
+        return record;
+    };
+    if record.class != DecisionKind::Build
+        || !matches!(
+            record.reason,
+            decision::DecisionReason::NoReuseCandidate(
+                decision::NoCandidate::ExecutionTypeChanged
+                    | decision::NoCandidate::OwnTargetModified
+            )
+        )
+        || freshness.tolerance_ms != 0
+        || freshness.stale_upstream_policy != decision::StaleUpstreamPolicy::Any
+        || latest.clone_source_table.is_some()
+        || evidence
+            .input_tables
+            .iter()
+            .chain(&latest.input_tables)
+            .filter(|input| input.name != evidence.target_table)
+            .any(|input| input.producer != Producer::NoBuild)
+        || !latest.last_modified_epoch.is_some_and(|epoch| {
+            epoch > 0
+                && evidence.input_tables.iter().any(|t| {
+                    t.name == evidence.target_table && t.last_modified_epoch == Some(epoch)
+                })
+        })
+    {
+        return record;
+    }
+    let ctx = context(evidence, selection, freshness, Some(latest));
+    let upstreams = decision::upstream_freshness(&ctx, latest).upstreams;
+    if upstreams.is_empty()
+        || upstreams.iter().any(|up| {
+            up.unprovable
+                || up.producer_changed
+                || up.anchor_epoch <= 0
+                || !up.current_epoch.is_some_and(|epoch| epoch > 0)
+        })
+    {
+        return record;
+    }
+    record.with_incremental_transition_display(latest, upstreams.iter().any(|up| up.drifted))
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own

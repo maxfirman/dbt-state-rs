@@ -249,3 +249,18 @@ since replaced by `explain_happy_history.jsonl`;
 (executions), `0003_ui_domain.sql` (node_decisions);
 `crates/server/src/decision.rs::evaluate_freshness`;
 `crates/server/src/services.rs::ExplainService`.
+
+## Databricks incremental transition display (#146, 2026-11-15)
+
+The native dbt 2.0.11 APPEND/MERGE history
+`databricks_append_transitions.jsonl` characterizes a narrow exception to the
+NULL-unmatched rule above. An already forced BUILD keeps the rejected
+submit-type build in `matched_execution_id` and its original decision-time
+inputs. With zero Lag tolerance, ANY policy, known source-only evidence and an
+unchanged current target, `unmatched_execution_id` separately identifies the
+latest physical build used to display the transition's input freshness. Both
+IDs are captured at submit time and fetched within the organization; Explain
+does not look up a newer build. This display row never enters reuse selection,
+Lag tolerance or producer evaluation. Other type changes, FULL refresh and
+incomplete evidence keep their existing behavior; ADR 0007's selection rule
+is unchanged. See [the acceptance evidence](../databricks-append.md).
