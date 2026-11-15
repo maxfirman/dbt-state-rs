@@ -14,6 +14,11 @@ and its shape is selected from the persisted Decision reason
 separate output, listed in [protocol.md](protocol.md).
 
 Source fixtures (`golden/fixtures/`):
+- `databricks_precopy.jsonl`: fourteen native MERGE/check-snapshot trees after
+  absent/existing-target State copies, reuse and changed-input builds. MERGE's
+  production-source refresh adds a captured chain-zero refusal table line;
+  its query/freshness sections retain the own-build anchor. SNAPSHOT's 1/3
+  refusal keeps its ordinary tree. [Bounded evidence](databricks-precopy.md).
 - `databricks_delete_insert_history.jsonl`: twelve actual-client DELETE_INSERT5
   decisions, six BUILD and six fresh SKIP trees. NULL-safe key replacement retains
   absent keys and duplicate rows, replaces selected NULL keys and preserves rows
@@ -259,19 +264,19 @@ other reason is in [Decision reason coverage](#decision-reason-coverage). The ev
 capture metadata. The current table includes the Databricks identity, freshness,
 deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-14) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-15) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 248 (135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 252 (132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (21 client 2.0.11, 4 crafted), SKIP 15 (14 client 2.0.11, 1 crafted) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 12 (12 client 2.0.11) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 26 (22 client 2.0.11, 4 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 250 (135 crafted, 113 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 253 (133 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 29 (25 client 2.0.11, 4 crafted), SKIP 19 (18 client 2.0.11, 1 crafted) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 36 (34 client 2.0.11, 2 crafted), SKIP 22 (22 client 2.0.11) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 32 (28 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 17 (11 client 2.0.11, 6 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 39 (33 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 37 (31 client 2.0.11, 6 crafted), SKIP 28 (27 client 2.0.11, 1 crafted) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 39 (37 client 2.0.11, 2 crafted), SKIP 48 (42 client 2.0.11, 5 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
-| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 106 (92 crafted, 14 client 2.0.11), SKIP 39 (30 crafted, 8 client 2.0.11, 1 client 2.0.6) |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 24 (20 client 2.0.11, 4 crafted), SKIP 14 (13 client 2.0.11, 1 crafted) |
+| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 107 (92 crafted, 15 client 2.0.11), SKIP 40 (30 crafted, 9 client 2.0.11, 1 client 2.0.6) |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 31 (27 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -389,28 +394,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 990 trees in the
+Line counts from the [census](#explain-tree-census) over the 1118 trees in the
 tracked fixtures (2026-11-15). A line without a marker or badge is "none"
-(5385 lines without a marker, 6438 without a badge). Only an explicit `0` is
+(6169 lines without a marker, 7353 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 2692 lines |
-| ExplainMarker | FAIL (2) | ✅ 598 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 3044 lines |
+| ExplainMarker | FAIL (2) | ✅ 687 lines |
 | ExplainMarker | INFO (3) | ✅ 66 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 990 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 823 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 128 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `databricks_delete_insert_history.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 626 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1118 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 922 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 152 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `databricks_delete_insert_history.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 709 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 38 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 14 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 433 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 198 lines |
+| ExplainBadge | FRESH (1) | ✅ 495 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 240 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 43 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 990 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1118 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 990 tracked trees: 560 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
+1. Origins across the 1118 tracked trees: 688 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -430,34 +435,34 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-15 (990 trees in 140 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-15 (1118 trees in 151 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 252 | 132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 248 | 135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | SKIP | 253 | 133 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 250 | 135 crafted, 113 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
-| APPEND | SKIP | 15 | 14 client 2.0.11, 1 crafted |
-| APPEND | EXECUTE | 25 | 21 client 2.0.11, 4 crafted |
-| MERGE | SKIP | 12 | 12 client 2.0.11 |
-| MERGE | EXECUTE | 25 | 23 client 2.0.11, 2 crafted |
-| INSERT_OVERWRITE | SKIP | 13 | 12 client 2.0.11, 1 crafted |
-| INSERT_OVERWRITE | EXECUTE | 26 | 22 client 2.0.11, 4 crafted |
+| APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
+| APPEND | EXECUTE | 29 | 25 client 2.0.11, 4 crafted |
+| MERGE | SKIP | 22 | 22 client 2.0.11 |
+| MERGE | EXECUTE | 36 | 34 client 2.0.11, 2 crafted |
+| INSERT_OVERWRITE | SKIP | 17 | 16 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | EXECUTE | 32 | 28 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |
 | DELETE_INSERT | EXECUTE | 25 | 23 client 2.0.11, 2 crafted |
-| MICROBATCH | SKIP | 6 | 6 client 2.0.11 |
-| MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
-| SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 17 | 11 client 2.0.11, 6 crafted |
-| DBT_DATA_TEST | SKIP | 39 | 33 client 2.0.11, 5 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
+| MICROBATCH | SKIP | 16 | 16 client 2.0.11 |
+| MICROBATCH | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
+| SNAPSHOT | SKIP | 28 | 27 client 2.0.11, 1 crafted |
+| SNAPSHOT | EXECUTE | 37 | 31 client 2.0.11, 6 crafted |
+| DBT_DATA_TEST | SKIP | 48 | 42 client 2.0.11, 5 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 39 | 37 client 2.0.11, 2 crafted |
 | VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
 | VALUES | EXECUTE | 13 | 8 client 2.0.11, 5 crafted |
 | VALUES | CLONE | 3 | 3 client 2.0.11 |
-| VIEW | SKIP | 39 | 30 crafted, 8 client 2.0.11, 1 client 2.0.6 |
-| VIEW | EXECUTE | 106 | 92 crafted, 14 client 2.0.11 |
-| DBT_CUSTOM | SKIP | 14 | 13 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | EXECUTE | 24 | 20 client 2.0.11, 4 crafted |
+| VIEW | SKIP | 40 | 30 crafted, 9 client 2.0.11, 1 client 2.0.6 |
+| VIEW | EXECUTE | 107 | 92 crafted, 15 client 2.0.11 |
+| DBT_CUSTOM | SKIP | 17 | 16 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | EXECUTE | 31 | 27 client 2.0.11, 4 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
@@ -841,7 +846,12 @@ The second `«FQN»` is the equivalent, persisted as the decision's copy
 source. Client 2.0.6 sent `clone_chain_depth_limit: 0` alone, and hosted
 answered the same codes with "model was executed because the maximum number
 of nested clones has been reached" (`clone_submit_allow_clones_false.jsonl`,
-no Explain; Decision reason `copy_chain_limit`). That reason renders nothing.
+no Explain; Decision reason `copy_chain_limit`). That Snowflake case renders nothing.
+Databricks 2.0.11 now has one captured existing-target MERGE case:
+`databricks_precopy.jsonl` entry 68 reports the table exists, then
+`but it's old. We would have cloned from «FQN», but the maximum number of nested clones has been reached`
+[FAIL]. Its remaining query and freshness sections are the ordinary own-anchor
+outdated tree; the other name is frozen presentation evidence only.
 A seed gets the same codes with its ordinary description, and the same tree
 with the seed noun, or another one over its existing table
 ([SEED](#seed), copy disallowed).
@@ -1516,7 +1526,7 @@ there is no cell.
 | `no_reuse_candidate.failed_reuse_qualification` ⁱ | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
 | `dependency_set_changed` | U | U | U | U | U | U | U | — |
-| `copy_chain_limit` ᵐ | U | — | — ᵏ | — | — | — | — | LO ˢ |
+| `copy_chain_limit` ᵐ | U | MERGE L (#152); APPEND — | — ᵏ | — | — | — | — | LO ˢ |
 | `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | L ˢ |
 | `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | L ˢ |
 
@@ -1637,8 +1647,11 @@ last ones were settled.
   Snowflake this server tracks no copy chain depth, and the only setting
   found in the 2.0.11 binary that forbids copies is the profile's
   `allow_clones`, which sends both fields (the local client source predates
-  them). So no 2.0.11 path to `copy_chain_limit` is known. Its tree is
-  uncaptured and it renders nothing. DuckDB can record it at its copy depth
+  them). That Snowflake tree is uncaptured and renders nothing. Databricks
+  2.0.11 `databricks_precopy.jsonl` captures the existing-target MERGE refusal
+  with `is_defer_to_profile: true` and chain limit zero: the old own result
+  stays the freshness anchor and the refused other name is presentation only.
+  Other Databricks chain cases remain uncaptured. DuckDB can record it at its copy depth
   limit (local-only). DuckDB, which hosted
   does not engage, still copies delete+insert under its pinned contract and
   can record both reasons for it; they render nothing (local-only).
@@ -1676,7 +1689,8 @@ Explain selects a shape from the persisted decision class, Decision reason
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
-| any | every other reason (local-only reasons, `copy_chain_limit`, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
+| EXECUTE | `copy_chain_limit` for the captured Databricks MERGE with an existing Target relation, own anchor, proven upstream drift and frozen refused copy name | ordinary own-anchor outdated tree plus the captured table refusal line (#152) |
+| any | every other reason (local-only reasons, `copy_chain_limit` outside the captured scope, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
 1. Every model kind with or without upstreams, VIEW without, when the
    decision recorded whether its SQL reads a relation

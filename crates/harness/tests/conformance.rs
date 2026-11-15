@@ -187,6 +187,65 @@ fn identity(req: &serde_json::Value) -> String {
     }
 }
 
+fn clone_source_key(org: &str, request: &serde_json::Value) -> String {
+    let mut source = request.clone();
+    source["target_table"] = source["clone_source_table"].clone();
+    format!("{org}|{}", identity(&source))
+}
+
+#[test]
+fn clone_source_causality_uses_the_submit_physical_scope() {
+    let entries: Vec<diff::GoldenEntry> =
+        include_str!("../../../golden/fixtures/databricks_precopy.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let mut copies = 0;
+    for (index, entry) in entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.method == "RegisterClone")
+    {
+        let source = entries[..index]
+            .iter()
+            .rev()
+            .find(|e| {
+                e.method == "SubmitEnrichedSQL"
+                    && e.request["target_table"] == entry.request["clone_source_table"]
+            })
+            .unwrap();
+        let org = support::captured_org(entry);
+        let key = format!(
+            "{}|{}",
+            support::captured_org(source),
+            identity(&source.request)
+        );
+        assert_eq!(clone_source_key(org, &entry.request), key);
+        let mut alias = entry.request.clone();
+        alias["clone_source_table"] = alias["clone_source_table"]
+            .as_str()
+            .unwrap()
+            .replace('`', "")
+            .to_ascii_uppercase()
+            .into();
+        assert_eq!(clone_source_key(org, &alias), key);
+        alias["table_namespace"] = "another-connection".into();
+        assert_ne!(clone_source_key(org, &alias), key);
+        assert_ne!(
+            clone_source_key(&format!("{org}-other"), &entry.request),
+            key
+        );
+        let mut other = entry.request.clone();
+        other["dialect"] = "snowflake".into();
+        assert_eq!(
+            clone_source_key(org, &other),
+            format!("{org}|target|{}", other["clone_source_table"])
+        );
+        copies += 1;
+    }
+    assert_eq!(copies, 4);
+}
+
 #[test]
 fn databricks_replay_causality_keeps_distinct_physical_scopes() {
     let base = serde_json::json!({"dialect":"databricks","target_table":"`cat`.`schema`.`table`","table_namespace":"connection"});
@@ -724,7 +783,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        139,
+        140,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -760,14 +819,9 @@ async fn conformance_replay_all_corpora() {
                     .expect("valid complete native audit clock evidence")
             });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Captures characterize the retained direct-copy implementation; the
-        // preview default is covered separately at the public gRPC seam.
-        let server = if entries.iter().any(|entry| {
-            entry.method == "RegisterClone"
-                && dbt_state_server::warehouse::Warehouse::from_dialect(
-                    entry.request["dialect"].as_str().unwrap_or_default(),
-                ) == dbt_state_server::warehouse::Warehouse::Databricks
-        }) {
+        // Only this positive corpus opts in. RegisterClone request presence
+        // must never switch a default-refusal capture's server policy.
+        let server = if fixture == "databricks_precopy.jsonl" {
             support::start_server_databricks_direct_copy().await
         } else {
             support::start_server().await
@@ -1180,11 +1234,7 @@ async fn conformance_replay_all_corpora() {
                     // confirmed build is in this fixture; a copy of a source
                     // built in an earlier session is an unknown baseline, like a
                     // SKIP without history.
-                    let source_key = format!(
-                        "{}|target|{}",
-                        support::captured_org(e),
-                        e.request["clone_source_table"]
-                    );
+                    let source_key = clone_source_key(support::captured_org(e), &e.request);
                     if hosted_variant == "ready_to_clone"
                         && local_variant == "ready_to_clone"
                         && confirmed.contains(&source_key)
@@ -1327,7 +1377,27 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks)).await;
+    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks), false).await;
+}
+
+/// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
+#[tokio::test]
+async fn databricks_precopy_exact_public_history() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_precopy.jsonl");
+    exact_native_history_at(&path, 90, 14, 10, 14, None, true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires whole #152 physical acceptance capture; native also requires audit clocks"]
+async fn databricks_precopy_extra_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let clocks = std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").map(|evidence| {
+        support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence)).unwrap()
+    });
+    let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
+    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref(), true).await;
 }
 
 async fn exact_native_history(
@@ -1339,7 +1409,16 @@ async fn exact_native_history(
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures")
         .join(fixture);
-    exact_native_history_at(&path, count, submit_count, build_count, submit_count, None).await;
+    exact_native_history_at(
+        &path,
+        count,
+        submit_count,
+        build_count,
+        submit_count,
+        None,
+        false,
+    )
+    .await;
 }
 
 /// The original native client stopped after a successful ordinary SKIP because
@@ -1355,7 +1434,7 @@ async fn databricks_moving_original_native_prefix_exact_public_history() {
         std::env::var_os("DBT_STATE_DATABRICKS_NATIVE_PREFIX_CLOCKS").unwrap(),
     );
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks)).await;
+    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks), false).await;
 }
 
 #[tokio::test]
@@ -1366,7 +1445,7 @@ async fn databricks_audit_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks)).await;
+    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks), false).await;
 }
 
 async fn exact_native_history_at(
@@ -1376,10 +1455,15 @@ async fn exact_native_history_at(
     build_count: usize,
     explain_count: usize,
     native_clocks: Option<&support::native_clock::NativeClocks>,
+    databricks_direct_copy: bool,
 ) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = support::start_server().await;
+    let server = if databricks_direct_copy {
+        support::start_server_databricks_direct_copy().await
+    } else {
+        support::start_server().await
+    };
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());
@@ -1390,6 +1474,31 @@ async fn exact_native_history_at(
     let mut explained = 0;
     for (i, entry) in entries.iter().enumerate() {
         match entry.method.as_str() {
+            "RegisterClone" => {
+                let response = qc::clone_client::CloneClient::new(ch.clone())
+                    .register_clone(support::captured_request(
+                        serde_json::from_value::<qc::CloneRequest>(entry.request.clone()).unwrap(),
+                        entry,
+                    ))
+                    .await
+                    .unwrap()
+                    .into_captured(entry);
+                let actual = serde_json::to_value(&response).unwrap();
+                if let Some(ready) = &response.ready_to_clone {
+                    requests.insert(
+                        entry.response["ready_to_clone"]["request_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned(),
+                        ready.request_id.clone(),
+                    );
+                }
+                assert_eq!(
+                    normalize_ids(actual),
+                    normalize_ids(entry.response.clone()),
+                    "RegisterClone entry {i}"
+                );
+            }
             "SubmitEnrichedSQL" => {
                 let response = sql
                     .submit_enriched_sql(captured_submit_request(
