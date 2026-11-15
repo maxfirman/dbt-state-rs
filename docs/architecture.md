@@ -162,13 +162,14 @@ insufficient. Existing stricter dialect subsets remain unchanged until separatel
 characterized; this grammar does not enable new Snowflake/DuckDB transformations.
 
 For example, this is an admissible multi-input/CTE/aggregate shape without
-assuming the types of `id` in either physical input:
+assuming the types of `id` in either physical input. Explicit builtin names
+establish function binding without unavailable session search-path metadata:
 
 ```sql
 WITH orders AS (
-  SELECT COUNT(*) AS n FROM c.raw.orders WHERE id IS NOT NULL
+  SELECT system.builtin.count(*) AS n FROM c.raw.orders WHERE id IS NOT NULL
 ), payments AS (
-  SELECT COUNT(*) AS n FROM c.raw.payments WHERE id IS NOT NULL
+  SELECT system.builtin.count(*) AS n FROM c.raw.payments WHERE id IS NOT NULL
 )
 SELECT orders.n AS order_count, payments.n AS payment_count
 FROM orders LEFT JOIN payments ON orders.n = payments.n
@@ -187,6 +188,16 @@ Even explicit numeric CAST syntax is insufficient when conversion may depend on
 unknown source types or error modes. These refusals do not prevent the example
 or exact same-target reuse. #184 must test both admission and these refusals;
 new effect rules require positive dialect evidence, not presumed session defaults.
+
+Databricks SQL and Runtime 19+ resolve unqualified routines through a session
+search path that can place temporary functions before builtins. A bare name such
+as `count` therefore does not establish builtin identity. New copy proofs accept
+explicit `system.builtin` qualification for the checked aggregates; otherwise
+function resolution is opaque without supplied evidence. Older runtime builtin-first
+precedence is not a universal adapter rule. Parameterless context functions such
+as `current_user`, `current_date` and `current_timestamp` also cannot be assumed
+to be ordinary columns when physical column metadata is unknown. See the primary
+[function/name resolution rules](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-name-resolution).
 
 #### Context, node kind and observations
 
