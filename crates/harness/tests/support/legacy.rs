@@ -213,8 +213,9 @@ pub async fn seed_captured_node_state(db: &impl Db, state: &CapturedNodeState) {
 /// Returns (old surrogate id, newly allocated surrogate id).
 pub async fn import_complete_execution(db: &impl Db, row: &serde_json::Value) -> (i64, i64) {
     // Source 3021560 exported these 34 columns. Reject subsets rather than
-    // silently claiming that defaults are historical evidence. Later nullable
-    // columns (e.g. node_macros_hash) are left to the current schema's defaults.
+    // silently claiming that defaults are historical evidence. Additional exported
+    // columns are imported too; only columns absent from that historical schema
+    // use current migration defaults.
     const OLD_COLUMNS: &[&str] = &[
         "id",
         "org_id",
@@ -252,9 +253,8 @@ pub async fn import_complete_execution(db: &impl Db, row: &serde_json::Value) ->
         "display_submitted_at_ms",
     ];
     let object = row.as_object().expect("complete old row object");
-    assert_eq!(
-        object.len(),
-        OLD_COLUMNS.len(),
+    assert!(
+        object.len() >= OLD_COLUMNS.len(),
         "complete historical export"
     );
     assert!(OLD_COLUMNS.iter().all(|key| object.contains_key(*key)));
@@ -273,7 +273,11 @@ pub async fn import_complete_execution(db: &impl Db, row: &serde_json::Value) ->
         .cloned()
         .collect();
     // Only the surrogate PK and the two generated lookup keys may be omitted.
-    assert_eq!(imported.len(), OLD_COLUMNS.len() - 3);
+    assert_eq!(
+        imported.len(),
+        object.len() - 3,
+        "all historical columns recognized"
+    );
     let names = imported
         .iter()
         .map(|c| format!("\"{c}\""))
@@ -310,4 +314,24 @@ pub async fn import_complete_execution(db: &impl Db, row: &serde_json::Value) ->
         "historical semantic fields preserved"
     );
     (old_id, new_id)
+}
+
+/// Restore chronological complete rows, remapping only surrogate source IDs.
+/// Producer logic identities, epochs, context, UUIDs and every other semantic
+/// field remain verbatim. A referenced source must precede its copy.
+pub async fn import_complete_history(db: &impl Db, rows: &[serde_json::Value]) {
+    let mut ids = std::collections::HashMap::new();
+    for original in rows {
+        let mut row = original.clone();
+        if let Some(source_id) = row["direct_copy_provenance"]["source_execution_id"].as_i64() {
+            row["direct_copy_provenance"]["source_execution_id"] = serde_json::json!(ids
+                .get(&source_id)
+                .expect("import original source before copy"));
+        }
+        let (old, new) = import_complete_execution(db, &row).await;
+        assert!(
+            ids.insert(old, new).is_none(),
+            "one historical row per surrogate ID"
+        );
+    }
 }

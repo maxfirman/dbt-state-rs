@@ -80,3 +80,57 @@ source chains, lifecycle breadth and Explain acceptance remain open. Automatic
 submit Result copy (#153) stays disabled; #154 and copied FULL/seed replacement
 and snapshot new_record blockers are unaffected. Local DuckDB validation is
 explicitly deferred until after landing by the maintainer.
+
+## Persisted-history upgrade coverage (#160, 2026-11-15)
+
+`golden/upgrade/databricks_copy_v1_45e94c3.json` freezes six complete
+36-column `row_to_json(executions)` exports from clean historical commit
+`45e94c3e33a6fccfbaf79efb1a143b794f0ddb33`: each native MERGE/check-snapshot
+source, pending copy and confirmed copy. These are historical **local-server**
+rows produced by replaying the causal native requests above, not hosted stored
+rows or a new Warehouse execution. Before direct-copy support in `20d7685`,
+Databricks RegisterClone refused this protocol; no fictitious pre-support copy
+has been constructed. The fixture includes the original rendered fingerprints,
+versioned copy provenance, source context/full UID, input epochs, timestamps,
+NULLs and source links. Its input `producer: null` genuinely means no recorded
+producer; it is preserved, not replaced with a current identity or omitted.
+
+The small exporter records source commit, executable digests, pinned toolchain,
+build command, native-fixture digest and its own digest. Reproduce after building
+the historical checkout with the fixture's command, then run from this checkout:
+
+```bash
+python3 golden/upgrade/freeze_databricks_copy.py \
+  --historical-source /tmp/dbt-state-160-historical \
+  --bin-dir /home/maxfirman/.cache/dbt-state-152-target/debug
+```
+
+This uses only an isolated Postgres schema and a local server; it sends no
+Warehouse or hosted requests. Do not overwrite the historical executables with
+a current build before exporting. Original historical public calls establish
+SKIP / SKIP / changed-input BUILD for both node kinds. Current upgrade tests
+import every semantic column, allocating fresh surrogate IDs and remapping
+only `direct_copy_provenance.source_execution_id` to the restored source.
+A prior current-protocol allocation forces IDs to differ; fingerprints, producer
+identities, epochs, context and transport UUIDs remain verbatim. Generated
+lookup columns are recomputed by current migrations.
+
+`databricks_legacy_history` now covers these copy histories alongside the existing
+genuine v3 SQL Submit/Confirm/Record and v2 seed histories. Both confirmed copies
+and old pending copies confirmed after upgrade retain compatible reuse with new
+copy grants OFF, reject changed SQL/config/full UID/org/namespace/input evidence,
+and preserve source input freshness even for a change before copy time. Missing
+epoch publication remains pending and permits a valid retry; duplicate outcomes,
+failed copying, pending source writes and a newer source are handled conservatively.
+Explicitly labelled storage faults cover NULL/malformed/unknown-version/unknown
+identity/missing-source/missing-UID/missing-producer evidence. They are not genuine
+historical output. A damaged latest copy hides valid older history at the same
+epoch, rebuilds, then reuses its newly confirmed current result. Explain responses
+are checked for the observed builds and skips.
+
+Validation: all six `databricks_legacy_history` tests pass (30.07s, two test
+threads); formatting and diff whitespace checks pass. No production policy
+changed. This completes the bounded persisted-history
+upgrade matrix for #160; it does not establish fresh physical copy acceptance
+for #152 or full Databricks support for #162. Existing physical copy/concurrency
+limitations above remain open.
