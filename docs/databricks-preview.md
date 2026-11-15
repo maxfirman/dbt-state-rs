@@ -30,7 +30,8 @@ histories remain in the main tree. Unfinished issues remain open after landing.
 | delete+insert | 13 hosted and 13 Rust checkpoints; duplicate/NULL/empty input, replacement and full refresh cases. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md) | #149 |
 | Microbatch | 10 checkpoints per backend, daily windows and independent references; broader settings deferred. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md) | #150 |
 | Snapshots | Timestamp/ignore:12 managed and12 native reference checkpoints per backend. Older timestamps/nonzero-microsecond SCD hashes and other modes remain unverified. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-timestamp-ignore-2026-11-15.md) | #151 |
-| Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry; full selector breadth deferred. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155–#157 |
+| State selectors | All ten pinned-client criteria, first/unchanged and changed-component/data baselines, client graph expansion; two-model graph. | [Evidence](databricks-selectors.md) | #156 |
+| Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155, #157 |
 | History, isolation and upgrades | Bounded failure/retry/restart, namespace/isolation and genuine legacy-history cases; full matrices remain open. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md) | #158–#160 |
 
 ## Deliberate limitations
@@ -51,7 +52,7 @@ histories remain in the main tree. Unfinished issues remain open after landing.
 - Snapshot `new_record` deletes produced NULL business values in State-disabled
   controls. This mode is outside the preview; ordinary dbt execution cannot
   make that client/warehouse behavior safe.
-- Complete selector coverage, all incremental settings/schema transitions,
+- Broader selector node-kind/graph combinations, all incremental settings/schema transitions,
   all snapshot modes, broad generated/live testing and full upgrade parity are
   follow-ups, not preview release claims. Precise descriptions/Explain/error
   parity outside retained regression cases is also unfinished.
