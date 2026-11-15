@@ -497,6 +497,44 @@ async fn decide_sql(
         record.reason = decision::DecisionReason::ExistingTargetWithoutHistory;
         record.description = decision::DESC_EXECUTE.into();
     }
+    // #151: a fresh same-query snapshot under another name affects only
+    // refusal codes. Never promote that relation to a reuse/copy candidate or
+    // replace the submit's own freshness/Explain anchor.
+    if record.class == DecisionKind::Build
+        && matches!(
+            record.reason,
+            decision::DecisionReason::FirstBuild | decision::DecisionReason::UpstreamOutdated
+        )
+        && Warehouse::from_dialect(&req.dialect).permits_snapshot_refusal_diagnostic(req)
+        && evidence
+            .input_tables
+            .iter()
+            .filter(|input| input.name != evidence.target_table)
+            .all(|input| input.producer == Producer::NoBuild)
+        && store
+            .other_target_query_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                QueryDiagnosticNamespaces::Exact(req.table_namespace.as_deref()),
+                |row| {
+                    reuse_candidate::older_build_matches(req, &evidence, row)
+                        && row.last_modified_epoch.is_some_and(|epoch| epoch > 0)
+                        && row
+                            .input_tables
+                            .iter()
+                            .filter(|input| input.name != row.target_table)
+                            .eq(evidence
+                                .input_tables
+                                .iter()
+                                .filter(|input| input.name != evidence.target_table))
+                },
+            )
+            .await?
+            .is_some()
+    {
+        record = record.with_refused_copy(decision::REJECTION_EXECUTION_TYPE_NOT_FULL);
+    }
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
         record,

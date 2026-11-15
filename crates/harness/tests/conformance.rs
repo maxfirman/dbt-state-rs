@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        138,
+        139,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1311,6 +1311,23 @@ async fn databricks_moving_windows_exact_public_history() {
 #[tokio::test]
 async fn databricks_audit_upstream_exact_public_history() {
     exact_native_history("databricks_audit_upstream.jsonl", 81, 12, 6).await;
+}
+
+/// Complete hosted source-clock check and timestamp precision/adoption history.
+#[tokio::test]
+async fn databricks_snapshot_modes_exact_public_history() {
+    exact_native_history("databricks_snapshot_modes.jsonl", 126, 17, 12).await;
+}
+
+#[tokio::test]
+#[ignore = "requires retained #151 native capture and exact audit clocks"]
+async fn databricks_snapshot_modes_native_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let evidence =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
+    let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
+    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks)).await;
 }
 
 async fn exact_native_history(

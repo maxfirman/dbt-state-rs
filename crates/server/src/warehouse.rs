@@ -147,6 +147,61 @@ impl Warehouse {
             && (req.execution_type == 10 || req.clone_chain_depth_limit == Some(0))
     }
 
+    /// #151 reports a refused same-query snapshot optimization. This only
+    /// admits a diagnostic lookup; physical copy eligibility stays disabled.
+    pub(crate) fn permits_snapshot_refusal_diagnostic(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        if self != Self::Databricks
+            || req.execution_type != crate::query_cache::ModelExecutionType::Snapshot as i32
+            || req.compare_unrendered_code
+            || !req.tolerate_nondeterminism
+            || req.ignore_external_modifications
+            || !req.query_dependencies.is_empty()
+            || req.freshness_tolerance_seconds != 0
+            || req.stale_upstream_policy != 0
+            || req.allow_clones != Some(true)
+            || req.clone_chain_depth_limit != Some(0)
+            || req.semantic_extras.len() != 1
+            || req.semantic_extras.get("unique_key").map(String::as_str) != Some("\"id\"")
+            || req
+                .table_namespace
+                .as_deref()
+                .is_none_or(|ns| ns.trim().is_empty())
+            || req
+                .dbt_node_state
+                .as_ref()
+                .is_none_or(|state| state.resource_type != "snapshot")
+        {
+            return false;
+        }
+        let Some(target) = req
+            .target_table
+            .as_deref()
+            .and_then(databricks::physical_name)
+        else {
+            return false;
+        };
+        let Some(resolved) = databricks::resolved_sql(
+            &req.sql,
+            &req.default_catalog,
+            req.default_schema.as_deref().unwrap_or(""),
+        ) else {
+            return false;
+        };
+        if resolved.input == target || !(1..=2).contains(&req.tables.len()) {
+            return false;
+        }
+        let mut names = std::collections::HashSet::new();
+        req.tables.iter().all(|table| {
+            table.last_modified_epoch.is_some_and(|epoch| epoch > 0)
+                && databricks::physical_name(&table.name).is_some_and(|name| {
+                    (name == target || name == resolved.input) && names.insert(name)
+                })
+        }) && names.contains(&resolved.input)
+    }
+
     pub(crate) fn permits_absent_target_history_diagnostic(
         self,
         req: &crate::query_cache::SubmitEnrichedSqlRequest,

@@ -83,7 +83,7 @@ class CallGuard:
         self.index+=1
 
 
-def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None):
+def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None,node_name='consumer'):
     allowed={'ValidateClientVersion':'ClientValidation','SubmitEnrichedSQL':'SQL','ConfirmExecution':'Execution','SubmitTelemetryBatch':'ClientTelemetry','SubmitEnrichedSQLSpeculative':'SQL'}
     if any(c['method'] not in allowed for c in calls):raise Refused('unexpected snapshot RPC')
     for call in calls:
@@ -115,7 +115,7 @@ def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None
             or any(type(t.get('last_modified_epoch')) is not int or t['last_modified_epoch']<=0 for t in tables)):
         raise Refused('snapshot lacks bounded strategy/complete known physical evidence')
     if set(row.get('response',{}).get('response',{}))!={expected}:raise Refused('unexpected snapshot decision')
-    decisions(calls,expected)
+    decisions(calls,expected,names=(node_name,))
     speculative=[c for c in calls if c['method']=='SubmitEnrichedSQLSpeculative']
     if len(speculative)>1:raise Refused('multiple snapshot speculative submits')
     if speculative:
