@@ -182,6 +182,7 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
     pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
+    pub(crate) submit_copy_provenance: Option<crate::databricks_submit_copy::Provenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
     /// The unrendered-template logic hash, set only in `compare_unrendered_code`
     /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
@@ -289,6 +290,7 @@ impl ExecutionEvidence {
             direct_copy_provenance: (copy && template.is_none())
                 .then(|| crate::result_copy::direct_copy_provenance(req))
                 .flatten(),
+            submit_copy_provenance: None,
             node_namespace_logic_hash: copy
                 .then(|| crate::fingerprint::copy_logic_hash(req))
                 .flatten(),
@@ -333,6 +335,7 @@ impl ExecutionEvidence {
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
             direct_copy_provenance: None,
+            submit_copy_provenance: None,
             node_namespace_logic_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),
@@ -420,6 +423,25 @@ impl ExecutionEvidence {
     pub(crate) fn copied_from(&self, source_table: &str) -> Self {
         Self {
             clone_source_table: Some(source_table.to_owned()),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) fn submit_copied_from(&self, source: &crate::store::ExecutionRow) -> Self {
+        Self {
+            clone_source_table: Some(source.target_table.clone()),
+            input_tables: crate::databricks_submit_copy::inputs(source),
+            raw_input_tables: None,
+            submit_copy_provenance: Some(crate::databricks_submit_copy::Provenance {
+                version: 1,
+                source_execution_id: source.id,
+                source_epoch: source.last_modified_epoch.expect("qualified source epoch"),
+                source_physical_key: crate::warehouse::Warehouse::physical_scope_key(
+                    &source.dialect,
+                    &source.target_table,
+                ),
+                published: false,
+            }),
             ..self.clone()
         }
     }

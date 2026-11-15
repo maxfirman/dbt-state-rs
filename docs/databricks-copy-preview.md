@@ -6,7 +6,9 @@ returns successful gRPC transport with `unable_to_clone`, decision `1`
 and no deprecated `ready_to_clone_v1` mirror. This uses the existing
 copy-disabled response shape; it is a local preview policy, not a claim that
 hosted Databricks returns that refusal. No copy execution is published.
-Ordinary SQL and seed submits retain their existing no-automatic-copy policy.
+Ordinary SQL and seed submits retain their default no-automatic-copy policy.
+A separate bounded [experimental SQL-submit opt-in](databricks-submit-copy.md)
+is available for FULL models.
 Other warehouses retain their existing policies.
 
 ## Pinned client configuration
@@ -78,4 +80,5 @@ and source-clock check snapshots, absent and existing development targets,
 copy-to-SKIP adoption and changed-input rebuilds. It preserves complete default
 properties and SCD histories. This is conditional on quiescent sources; the
 unobservable unversioned source race and the other documented limits keep the
-default disabled. It does not enable automatic submit copying or copy chains.
+default disabled. It does not enable automatic submit copying or copy chains. The separate
+[SQL-submit switch](databricks-submit-copy.md) controls the bounded FULL path.

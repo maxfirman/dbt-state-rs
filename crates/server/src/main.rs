@@ -14,7 +14,8 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState::connect(&config.database_url)
         .await?
         .with_require_org_header(config.require_org_header)
-        .with_databricks_direct_copy(config.databricks_direct_copy);
+        .with_databricks_direct_copy(config.databricks_direct_copy)
+        .with_databricks_submit_copy(config.databricks_submit_copy);
     if config.require_org_header {
         tracing::info!("x-organization-id header is REQUIRED (multi-tenant mode)");
     }

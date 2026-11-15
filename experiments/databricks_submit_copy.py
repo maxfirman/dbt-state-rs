@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+"""#153 ordinary-submit copy discovery: pinned native dbt, never RegisterClone.
+
+Shares #152's physical bag, properties, independent reference and executed-DDL
+checks. The exact plan must be cleared before any API or native command.
+"""
+import argparse
+import copy
+import subprocess
+import time
+import json
+from pathlib import Path
+import re
+import uuid
+
+from databricks_baseline import Baseline, LeaseScope
+from databricks_precopy import Precopy, SCHEMAS, SCHEMA_IDS, FIRST, CHANGED, digest
+from databricks_snapshot_oracle import assert_source, source_projection_sql
+from databricks_snapshots import literal_source
+from databricks_survey import Campaign, Scope, Refused, check_manifest
+
+OBJECTS={'hosted':'80615b233ac140e48993d85c06bfc823','rust':'038ae03354ba416883666b11c796a13d'}
+RUNS={'hosted':'20261115e153aa','rust':'20261115f153bb'}
+# Source refresh precedes overwrite, so no ordinary FULL rebuild of a clone.
+CELLS=(('source','prod','first','ready_to_execute'),
+       ('absent','dev','first','ready_to_clone'),
+       ('repeat','dev','first','skip_execution'),
+       ('source_changed','prod','changed','ready_to_execute'),
+       ('existing','dev','changed','ready_to_clone'),
+       ('existing_repeat','dev','changed','skip_execution'))
+
+
+def plan():
+    return {'ticket':153,'catalog':'cdo_demo_db','schemas':SCHEMAS,'schema_ids':SCHEMA_IDS,
+        'run_ids':RUNS,'objects':OBJECTS,'cells':CELLS,
+        'source':{'first':FIRST,'changed':CHANGED},
+        'names':{phase:[f'cdo_demo_db.{SCHEMAS[role]}.p153_{oid}_{name}'
+            for role,names in (('prod',('inputs','full','merge')),('dev',('full','merge')))
+            for name in names] for phase,oid in OBJECTS.items()},
+        'managed_per_backend':12,'compile_per_backend':2,'readonly_show_per_backend':12,
+        'source_writes':['CREATE','INSERT','UPDATE id=1','INSERT id=3'],
+        'permanent_per_backend':5,'temporary_peak':1,'new_schemas':0,'cleanup':False,
+        'profile':{'prod':{'allow_clones':False,'defer_to_target':None},
+                   'dev':{'allow_clones':True,'defer_to_target':'prod'}},
+        'state':{'pre_clone':'never','lag_tolerance':'0s'},
+        'crafted_controls_per_backend':{'ordinary_submits':8,'Explain':8,'Confirm':0,'DDL':0,'native_commands':0},
+        'scope':'FULL and MERGE; exact SELECT-star single current physical input; quiescent Delta',
+        'expected_unproven':'FULL must grant; MERGE may BUILD as a measured node-kind negative.',
+        'excluded':['RegisterClone','chains','physical concurrent source changes',
+                    'ordinary FULL rebuild of cloned relation','snapshots','general SQL/templates/dependencies']}
+
+
+def observed_verdict(kind,wanted,response):
+    allowed={wanted}
+    if kind=='merge' and wanted=='ready_to_clone':allowed.add('ready_to_execute')
+    if len(response)!=1 or next(iter(response)) not in allowed:
+        raise Refused('submit-copy:observed-'+','.join(response)+'-expected-'+wanted)
+    return next(iter(response))
+
+
+def assert_boundary_verdict(phase,label,verdict):
+    if label.startswith('baseline'):
+        if verdict!='skip_execution':raise Refused('submit-copy:unchanged-control-not-SKIP')
+    elif phase=='rust' and verdict!='ready_to_execute':
+        raise Refused('submit-copy:native-negative-must-BUILD-'+label)
+
+
+class SubmitScope(LeaseScope):
+    profile_roles=('prod','dev')
+
+    def __init__(self,run,lease,phase):
+        Scope.__init__(self,run)
+        if run!=RUNS[phase]:raise Refused('submit-copy:exact-run')
+        for value in OBJECTS.values():
+            if len(value)!=32 or uuid.UUID(value).hex!=value or uuid.UUID(value).version!=4:
+                raise Refused('submit-copy:UUID4')
+        owned=set()
+        for evidence in lease['source_evidence']:
+            if digest(evidence['path'])!=evidence['sha256']:raise Refused('submit-copy:ownership-digest')
+            receipt=json.loads(Path(evidence['path']).read_text())
+            for role,schema in SCHEMAS.items():
+                if receipt.get(schema)=={'full_name':'cdo_demo_db.'+schema,'schema_id':SCHEMA_IDS[role],'owner':'max.firman@gmail.com'}:owned.add(schema)
+        if not set(SCHEMAS.values())<=owned:raise Refused('submit-copy:owned-containers')
+        self.roles=SCHEMAS;self.schemas=set(SCHEMAS.values())
+        self.relation_prefix='p153_'+OBJECTS[phase]+'_'
+        self.allowed=set(plan()['names'][phase])
+
+
+class SubmitCopy(Precopy):
+    def __init__(self,args):
+        self.phase='rust' if args.rust_url else 'hosted'
+        grant=json.loads(Path(args.live_clearance).read_text())
+        self.lease=json.loads(Path(args.schema_lease).read_text())
+        scope=SubmitScope(args.run_id,self.lease,self.phase)
+        if (grant.get('status')!='LIVE CLEARED #153 ordinary submit-copy'
+                or self.phase not in grant['authorized_phases']
+                or json.loads(Path(args.operation_ledger).read_text())!=json.loads(json.dumps(plan()))
+                or digest(args.operation_ledger)!=grant['operation_sha256']
+                or grant['source_sha256']!={p:digest(Path(__file__).parent/p) for p in grant['source_sha256']}):
+            raise Refused('submit-copy:exact-reviewed-plan-and-source')
+        Campaign.__init__(self,args,scope)
+        import yaml
+        profile=yaml.safe_load((self.profiles/'profiles.yml').read_text())
+        for role,output in profile['survey']['outputs'].items():
+            for key in list(output):
+                if key not in {'type','host','http_path','catalog','schema','token','threads'}:del output[key]
+            output['threads']=1;output['allow_clones']=role=='dev'
+            if role=='dev':output['defer_to_target']='prod'
+        self.save('profiles/profiles.yml',profile)
+        self.save('submit-copy-plan.json',plan());self.save('live-clearance.json',grant)
+        self.save('submit-copy-runner.py',Path(__file__).read_text())
+        self.save('binary-provenance.json',{k:{'path':str(Path(getattr(args,k)).resolve()),'sha256':digest(getattr(args,k))} for k in ('dbt','proxy','probe')})
+        self.commands=[('compile_'+role,['compile'],role,False) for role in ('prod','dev')]
+        for stage in ('first','changed'):
+            for kind in ('full','merge'):
+                self.commands.extend((kind+'_'+label,['run','--select',kind],role,True)
+                    for label,role,revision,_ in CELLS if revision==stage)
+        self.command_index=0;self.source_requests={};self.source_confirms={}
+        self.boundaries_only=args.boundaries_only
+        self.prefix=Path(args.resume_prefix) if args.resume_prefix else None
+        self.completed=set();self.prefixes=[];self.cloned_kinds=set()
+        if self.boundaries_only:
+            if self.phase!='hosted' or not self.prefix:raise Refused('submit-copy:boundaries-original-hosted-history')
+            whole=self.prefix/'databricks_submit_copy_hosted_whole.jsonl'
+            if digest(whole)!='95ec99adac4e2ca2047626581c2581c031456abe1de4c30a2c59134e5acd243a':raise Refused('submit-copy:whole75-anchor')
+            from capture_integrity import verify_capture
+            entries=verify_capture(whole)
+            self.boundary_base=[e['request'] for e in entries if e['method']=='SubmitEnrichedSQL' and e['request']['labels']['dbt_node_name']=='full'][-1]
+            self.save('retained-prefix.json',{'capture':str(whole),'sha256':digest(whole),'repeated_successful_commands':0})
+        elif self.prefix:
+            from capture_integrity import verify_capture
+            captures=list((self.prefix/'golden').glob('*.jsonl'))
+            if (self.phase!='hosted' or len(captures)!=1
+                    or digest(captures[0])!='2d763fb49e0ca33d0865c0452b157ea964e065cdfe5bca60b0df502ab39667c2'):
+                raise Refused('submit-copy:exact-original-hosted-prefix')
+            verify_capture(captures[0])
+            events=json.loads((self.prefix/'operations.json').read_text())
+            self.completed={e['label'] for e in events if e['kind']=='dbt-result' and e['returncode']==0}
+            if self.completed!={c[0] for c in self.commands[:7]}:raise Refused('submit-copy:prefix-command-set')
+            writes={e['label'] for e in events if e['kind']=='sql' and e.get('state')=='SUCCEEDED'}
+            if not {'create_source','initial_source'}<=writes or {'change_source','insert_source'}&writes:
+                raise Refused('submit-copy:prefix-source-operations')
+            self.prefixes=[self.prefix]
+            self.save('retained-prefix.json',{'capture':str(captures[0]),'sha256':digest(captures[0]),
+                'completed_commands':sorted(self.completed),'repeated_successful_commands':0})
+
+    def run(self):
+        result=Baseline.run(self)
+        if self.prefix:
+            from databricks_snapshots_continuation import combine_captures
+            original=(self.prefix/'databricks_submit_copy_hosted_whole.jsonl') if self.boundaries_only else next((self.prefix/'golden').glob('*.jsonl'))
+            combine_captures(original,
+                next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_submit_copy_hosted_whole.jsonl')
+        return result
+
+    def init_schemas(self):
+        ownership={}
+        for role,schema in SCHEMAS.items():
+            metadata=self.api('get','/api/2.1/unity-catalog/schemas/cdo_demo_db.'+schema)
+            if metadata.get('schema_id')!=SCHEMA_IDS[role] or metadata.get('owner')!='max.firman@gmail.com':raise Refused('submit-copy:schema-owner')
+            ownership[schema]={k:metadata[k] for k in ('full_name','schema_id','owner')}
+        self.save('schema-ownership.json',ownership)
+        self.before_inventory=self.inventory()
+        for schema,rows in self.before_inventory.items():
+            wanted={name for name in self.scope.allowed if name.split('.')[1]==schema}
+            present={r['full_name'] for r in rows if r['full_name'] in wanted}
+            required=wanted if self.prefix else set()
+            if present!=required:raise Refused('submit-copy:collision-or-missing-prefix-object')
+            if len(rows)+len(wanted)-len(required)>100:raise Refused('submit-copy:capacity')
+            if any(r['name'].startswith(self.scope.relation_prefix) and r['full_name'] not in wanted for r in rows):raise Refused('submit-copy:unlisted-prefix-object')
+        self.save('lease-inventory-before.json',self.before_inventory)
+        self.save('warehouse.json',self.sql('warehouse',"SELECT current_version() AS version,current_timezone() AS timezone"))
+
+    def preflight(self):
+        self.setup_project();(self.project/'models/sources.yml').unlink()
+        source=self.scope.relation('prod','inputs')
+        for kind in ('full','merge'):
+            cfg="materialized='table'" if kind=='full' else "materialized='incremental',incremental_strategy='merge',unique_key='id'"
+            self.save('project/models/'+kind+'.sql',"{{ config(alias='"+self.scope.relation_prefix+kind+"',"+cfg+",state={'lag_tolerance':'0s','pre_clone':'never'}) }}\nselect * from "+source+'\n')
+        for role in ('prod','dev'):
+            label='compile_'+role
+            if self.dbt(label,['compile'],role,False):raise Refused('submit-copy:compile-State-RPC')
+            manifest=json.loads((self.evidence(label)/'targets'/f'{self.n:03d}_{label}/manifest.json').read_text())
+            check_manifest(self.scope,manifest)
+            if {n['name'] for n in manifest['nodes'].values()}!={'full','merge'}:raise Refused('submit-copy:manifest-nodes')
+            for n in manifest['nodes'].values():
+                self.scope.check('.'.join((n['database'],n['schema'],n['alias'])))
+                cfg=n['config']
+                if (cfg.get('pre-hook') or cfg.get('post-hook') or n.get('depends_on',{}).get('nodes')
+                        or cfg.get('state',{}).get('pre_clone')!='never'):raise Refused('submit-copy:manifest-contract')
+            self.save('preflight/'+label+'.json',manifest)
+
+    def invocation(self,kind,cell):
+        label,role,stage,verdict=cell;label=kind+'_'+label
+        calls=self.dbt(label,['run','--select',kind],role)
+        if any(c['method']=='RegisterClone' for c in calls):raise Refused('submit-copy:unexpected-RegisterClone')
+        if any(c.get('status',{}).get('code')!=0 for c in calls):raise Refused('submit-copy:RPC-status')
+        submits=[c for c in calls if c['method']=='SubmitEnrichedSQL']
+        if len(submits)!=1:raise Refused('submit-copy:one-ordinary-submit')
+        row=submits[0];req=row['request'];response=row['response']['response']
+        self.save('observed/'+label+'.json',{'request':req,'response':row['response']})
+        verdict=observed_verdict(kind,verdict,response)
+        target=self.scope.relation(role,kind);source=self.scope.relation('prod',kind)
+        if (req['execution_type']!=(1 if kind=='full' else 3) or req['compare_unrendered_code'] or req['query_dependencies']
+                or req['target_table'].replace('`','')!=target or not req.get('table_namespace')
+                or req['allow_clones']!=(role=='dev') or req['clone_chain_depth_limit']!=(1 if role=='dev' else 0)):
+            raise Refused('submit-copy:actual-wire-contract')
+        if re.sub(r'\s+',' ',req['sql'].replace('`','')).strip().lower()!='select * from '+self.scope.relation('prod','inputs'):
+            raise Refused('submit-copy:actual-single-input')
+        confirms={c['request']['request_id']:c for c in calls if c['method']=='ConfirmExecution' and c['response'].get('success') is True}
+        ready=response[verdict];copy=verdict=='ready_to_clone'
+        if verdict!='skip_execution' and ready['request_id'] not in confirms:raise Refused('submit-copy:missing-confirm')
+        if copy:
+            # SQL Submit has one ready_to_clone oneof; the duplicate v1 mirror
+            # exists only on RegisterClone, which this campaign forbids.
+            wanted='\n        CREATE OR REPLACE TABLE '+req['target_table']+' SHALLOW CLONE '+ready['clone_source']+'\n        '
+            if (ready['clone_sqls']!=[wanted] or ready['clone_source'].replace('`','')!=source
+                    or ready['clone_target']!=req['target_table']
+                    or ready['clone_required_last_modified_epoch']!=self.source_confirms[kind]['last_modified_epoch']
+                    or ready['execution_runtime_ms']!=self.source_confirms[kind]['execution_runtime_ms']):raise Refused('submit-copy:exact-grant-DDL-source-history')
+            self.save('copies/'+label+'.json',{'request':req,'response':row['response'],'confirmation':confirms[ready['request_id']]})
+        if role=='prod':
+            self.source_requests[kind]=req;self.source_confirms[kind]=confirms[ready['request_id']]['request']
+        elif req['dbt_node_state']['node_unique_id']!=self.source_requests[kind]['dbt_node_state']['node_unique_id']:
+            raise Refused('submit-copy:fullUID')
+        if copy:self.cloned_kinds.add(kind)
+        if kind=='full':self.boundary_base=req
+        self.audit_native(label,target,source,copy)
+        self.explain(label,submits)
+        self.physical(label,kind,role,stage,role=='dev' and kind in self.cloned_kinds,copy)
+
+    def baseline(self):
+        if self.boundaries_only:
+            self.boundaries();return
+        self.preflight()
+        source=self.scope.relation('prod','inputs')
+        if not self.prefix:
+            self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
+            self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        else:assert_source(self.sql('resume_source',source_projection_sql(source)),FIRST)
+        for stage in ('first','changed'):
+            if stage=='changed':
+                row=CHANGED[0]
+                self.sql('change_source',f"UPDATE {source} SET v='{row[1]}',p=DATE '{row[2]}',ts=TIMESTAMP '{row[3]}' WHERE id=1")
+                self.sql('insert_source','INSERT INTO '+source+' VALUES '+literal_source((CHANGED[2],)))
+                assert_source(self.sql('changed_source',source_projection_sql(source)),CHANGED)
+            for kind in ('full','merge'):
+                for cell in CELLS:
+                    if cell[2]==stage:self.invocation(kind,cell)
+        if self.command_index!=len(self.commands):raise Refused('submit-copy:incomplete-command-budget')
+        self.boundaries()
+
+    def boundaries(self):
+        def physical(stage):
+            result={}
+            for role,name in (('prod','inputs'),('prod','full'),('dev','full')):
+                target=self.scope.relation(role,name)
+                bag=self.observe('boundary_'+stage+'_'+role+'_'+name,target)
+                projection=self.sql('boundary_'+stage+'_'+role+'_'+name+'_projection',source_projection_sql(target))
+                assert_source(projection,CHANGED)
+                history=self.sql('boundary_'+stage+'_'+role+'_'+name+'_history','DESCRIBE HISTORY '+target)
+                result[target]={'complete_typed_bag':bag,'history':history}
+            self.save('boundary/'+stage+'_physical.json',result)
+            return result
+        before=physical('before')
+        base=copy.deepcopy(self.boundary_base)
+        source=self.scope.relation('prod','inputs')
+        target=self.scope.relation('dev','full')
+        cases=[]
+        for label in ('baseline_before','logic','config','upstream_drift','upstream_unknown','volatile','own_external','baseline_after'):
+            req=copy.deepcopy(base)
+            if label=='logic':req['sql']+=' where id = 1'
+            if label=='config':req['semantic_extras']['on_schema_change']='"fail"'
+            if label in ('upstream_drift','upstream_unknown','own_external'):
+                wanted=target if label=='own_external' else source
+                tables=[t for t in req['tables'] if t['name'].replace('`','')==wanted]
+                if len(tables)!=1 or not tables[0]['last_modified_epoch']:raise Refused('submit-copy:boundary-input')
+                tables[0]['last_modified_epoch']=None if label=='upstream_unknown' else tables[0]['last_modified_epoch']+1000
+            if label=='volatile':
+                req['sql']=req['sql'].replace('select * from','select *, rand() AS noise from')
+                req['tolerate_nondeterminism']=False
+            lo=len(self.wire())
+            result=subprocess.run([self.a.probe,'submit'],input=json.dumps(req),
+                env=dict(self.env,PROBE_URL='http://'+self.env['RUN_CACHE_API_URL']),text=True,capture_output=True,timeout=60)
+            self.save('boundary/'+label+'.json',{'kind':'crafted-protocol-control' if not label.startswith('baseline') else 'unchanged-native-request-control',
+                'request':req,'returncode':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+            time.sleep(.1)
+            submits=[r for r in self.wire()[lo:] if r['method']=='SubmitEnrichedSQL']
+            if result.returncode or len(submits)!=1:raise Refused('submit-copy:boundary-call')
+            response=submits[0]['response']['response'];verdict=next(iter(response))
+            assert_boundary_verdict(self.phase,label,verdict)
+            if label.startswith('baseline'):
+                runtime=response[verdict]['execution_runtime_ms']
+                if label=='baseline_before':baseline_runtime=runtime
+                elif runtime!=baseline_runtime:raise Refused('submit-copy:baseline-runtime-changed')
+            cases.append({'label':label,'verdict':verdict,'explained_decision':response[verdict]['explained_decision']})
+            self.save('boundary/observations.json',cases)
+            self.explain('boundary_'+label,submits)
+        after=physical('after')
+        if before!=after:raise Refused('submit-copy:protocol-controls-changed-physical-history')
+        self.save('boundary/checks.json',{'complete_typed_bags_and_history_unchanged':True,'no_DDL_or_Confirm':True,'ordinary_submits':8,'Explain':8})
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--plan',action='store_true')
+    for key in ('dbt','proxy','probe','work-dir','schema-lease','live-clearance','operation-ledger','run-id'):parser.add_argument('--'+key)
+    parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
+    parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
+    parser.add_argument('--rust-url')
+    parser.add_argument('--resume-prefix')
+    parser.add_argument('--boundaries-only',action='store_true')
+    args=parser.parse_args()
+    if args.plan:print(json.dumps(plan(),indent=2));return 0
+    return SubmitCopy(args).run()
+
+
+if __name__=='__main__':raise SystemExit(main())

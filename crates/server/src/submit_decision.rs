@@ -152,6 +152,16 @@ pub async fn submit_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
+    submit_sql_with_policy(store, org_id, req, now_ms, false).await
+}
+
+pub(crate) async fn submit_sql_with_policy(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    now_ms: i64,
+    databricks_submit_copy: bool,
+) -> sqlx::Result<SubmitOutcome> {
     record_node_state(
         store,
         org_id,
@@ -159,9 +169,16 @@ pub async fn submit_sql(
         req.target_table.as_deref(),
     )
     .await;
-    Ok(decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
-        .await?
-        .expect("an ordinary submit is always decided"))
+    Ok(decide_sql(
+        store,
+        org_id,
+        req,
+        now_ms,
+        Mode::Ordinary,
+        databricks_submit_copy,
+    )
+    .await?
+    .expect("an ordinary submit is always decided"))
 }
 
 /// Decide a `SubmitEnrichedSQLSpeculative` submission (#103). A speculative
@@ -192,7 +209,7 @@ pub async fn speculative_sql(
     if !needs_no_table_evidence {
         return Ok(None);
     }
-    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly).await?;
+    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly, false).await?;
     if outcome.is_some() {
         record_node_state(
             store,
@@ -223,6 +240,7 @@ async fn decide_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
     mode: Mode,
+    databricks_submit_copy: bool,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
     evidence.display_submitted_at_ms =
@@ -258,13 +276,13 @@ async fn decide_sql(
     let mut refused_copy = None;
     if copy_considered {
         match result_copy_fallback(
+            databricks_submit_copy,
             store,
             org_id,
             req,
             &evidence,
             &freshness,
-            None,
-            selection.rejected.as_ref(),
+            (None, selection.rejected.as_ref()),
         )
         .await?
         {
@@ -291,13 +309,13 @@ async fn decide_sql(
     // `fd_sn`; crafted, explain_rebuild_tolerance_line.jsonl `s2`, `i2`).
     if let (Some(own), true) = (&candidate, rebuilds_for_freshness(&record)) {
         match result_copy_fallback(
+            databricks_submit_copy,
             store,
             org_id,
             req,
             &evidence,
             &freshness,
-            Some(own),
-            Some(own),
+            (Some(own), Some(own)),
         )
         .await?
         {
@@ -536,6 +554,25 @@ async fn decide_sql(
             .is_some()
     {
         record = record.with_refused_copy(decision::REJECTION_EXECUTION_TYPE_NOT_FULL);
+    }
+    if record.class == DecisionKind::Build
+        && !matches!(
+            record.reason,
+            decision::DecisionReason::NoReuseCandidate(decision::NoCandidate::OwnTargetModified)
+        )
+        && result_copy::submit_refusal_scope(req, &evidence)
+        && store
+            .other_target_query_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                QueryDiagnosticNamespaces::Exact(req.table_namespace.as_deref()),
+                |row| result_copy::submit_refusal_matches(req, &evidence, row),
+            )
+            .await?
+            .is_some()
+    {
+        record = record.with_refused_copy(decision::REJECTION_NO_SUITABLE_MATCH_FOUND);
     }
     let direct_diagnostic = if record.class == DecisionKind::Build
         && record.reason == decision::DecisionReason::UpstreamOutdated
@@ -1159,14 +1196,27 @@ enum CopyFallback {
 /// other relations and is copied without that judgment, as verified earlier
 /// (clone_fallback_stale_source, clone_fallback_zero_tolerance).
 async fn result_copy_fallback(
+    databricks_submit_copy: bool,
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     freshness: &Freshness<'_>,
-    own: Option<&ExecutionRow>,
-    anchor: Option<&ExecutionRow>,
+    judgement: (Option<&ExecutionRow>, Option<&ExecutionRow>),
 ) -> sqlx::Result<CopyFallback> {
+    let (own, anchor) = judgement;
+    if Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks {
+        return databricks_result_copy(
+            store,
+            org_id,
+            req,
+            evidence,
+            databricks_submit_copy,
+            freshness,
+            anchor,
+        )
+        .await;
+    }
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(CopyFallback::Ordinary);
     };
@@ -1278,6 +1328,69 @@ async fn result_copy_fallback(
             Ok(CopyFallback::Ordinary)
         }
     }
+}
+
+/// Databricks never takes the generic unjudged cross-input path. Its source
+/// is read with a pending-write barrier, and its build inputs are frozen into
+/// both the pending copy and its publication proof.
+async fn databricks_result_copy(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    enabled: bool,
+    freshness: &Freshness<'_>,
+    anchor: Option<&ExecutionRow>,
+) -> sqlx::Result<CopyFallback> {
+    if !enabled || !crate::databricks_submit_copy::request_admits(req, evidence) {
+        return Ok(CopyFallback::Ordinary);
+    }
+    let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
+        return Ok(CopyFallback::Ordinary);
+    };
+    for candidate in copy_candidates(store, org_id, req, &lookup).await? {
+        let Some(source) = store
+            .current_direct_copy_source(
+                org_id,
+                &candidate.target_table,
+                lookup.table_namespace,
+                &req.dialect,
+            )
+            .await?
+        else {
+            continue;
+        };
+        if !crate::databricks_submit_copy::source_admits(evidence, &source) {
+            continue;
+        }
+        let Some((reuse, age)) = judge_equivalent(evidence, freshness, source.clone()) else {
+            continue;
+        };
+        let equivalent = CloneEquivalent {
+            source_table: source.target_table.clone(),
+            execution_type: source.execution_type,
+            table_type: None,
+            last_modified_epoch: source.last_modified_epoch,
+            execution_runtime_ms: source.execution_runtime_ms,
+            copy_depth: 0,
+        };
+        if let SubmitCopyPlan::Copy(copy) = result_copy::plan_submit(req, equivalent) {
+            let ids = DecisionIds::mint();
+            write_pending(store, &evidence.submit_copied_from(&source), &ids).await?;
+            return Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
+                ids,
+                copy,
+                record: DecisionRecord::result_copy_judged(
+                    anchor.or(Some(&source)),
+                    reuse,
+                    freshness.tolerance_ms,
+                    age,
+                    &evidence.input_tables,
+                ),
+            })));
+        }
+    }
+    Ok(CopyFallback::Ordinary)
 }
 
 /// How fresh a same-upstream equivalent would be if reused for this submit,

@@ -797,3 +797,17 @@ Confirm; it does not grant automatic namespace copy eligibility. Unobserved
 physical source races, broader copy/lifecycle/Explain and fresh independent
 warehouse acceptance remain unresolved. See the
 [bounded implementation report](reports/databricks-direct-precopy-2026-11-15.md).
+
+## Databricks automatic submit copy bounded (#153, 2026-11-15)
+
+A separate default-off experimental path supports deterministic fully-qualified
+SELECT-star FULL models over one exact current source. Its new versioned identity
+binds UID, client signatures, exact SQL/config and output catalog/name; source
+inputs/build age and publication provenance remain frozen. Invalid origins cannot
+fall through strict SQL or namespace adoption. MERGE is measured to BUILD1/6.
+The independently completed whole75 primary history replays exactly, while the
+separately authorized whole91 controls retain explicit hosted RAND rewrite and
+unknown-epoch display-clock limits. No runtime-field masks or replay gaps are
+added. Quiescent managed-Delta scope, unsupported chains/failure lifecycle and
+unobservable unversioned physical source races keep full ADR0009 unresolved.
+See [scope and evidence](databricks-submit-copy.md).

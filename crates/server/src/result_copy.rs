@@ -748,6 +748,39 @@ pub(crate) fn direct_refusal_scope(
         }
 }
 
+/// #153's measured ordinary MERGE submit reports a fresh equivalent as 1/6.
+/// Reuse the exact direct-input diagnostic proof, without granting any copy.
+fn submit_refusal_reading(
+    req: &qc::SubmitEnrichedSqlRequest,
+) -> Option<qc::SubmitEnrichedSqlRequest> {
+    if req.execution_type != ModelExecutionType::Merge as i32
+        || req.is_defer_to_profile
+        || req.clone_chain_depth_limit != Some(1)
+    {
+        return None;
+    }
+    let mut reading = req.clone();
+    reading.is_defer_to_profile = true;
+    reading.clone_chain_depth_limit = Some(0);
+    Some(reading)
+}
+
+pub(crate) fn submit_refusal_scope(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+) -> bool {
+    submit_refusal_reading(req).is_some_and(|reading| direct_refusal_scope(&reading, evidence))
+}
+
+pub(crate) fn submit_refusal_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &crate::store::ExecutionRow,
+) -> bool {
+    submit_refusal_reading(req)
+        .is_some_and(|reading| direct_refusal_matches(&reading, evidence, row))
+}
+
 pub(crate) fn direct_refusal_matches(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
