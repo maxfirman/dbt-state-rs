@@ -230,6 +230,15 @@ impl Warehouse {
         (self == Self::Databricks).then_some(now_ms)
     }
 
+    /// Hosted #150 reports generic rebuild text for MICRO when both its
+    /// Target and a genuine source advanced. The caller must establish the
+    /// captured known-positive evidence, matching identity and zero Lag/ANY;
+    /// this chooses wording only and grants no reuse qualification.
+    pub(crate) fn modified_target_uses_upstream_description(self, execution_type: i32) -> bool {
+        self == Self::Databricks
+            && execution_type == crate::query_cache::ModelExecutionType::Microbatch as i32
+    }
+
     pub fn normalized_sql(self, sql: &str) -> String {
         crate::sql_identity::normalized_sql(self, sql)
     }
