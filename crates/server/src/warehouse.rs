@@ -10,7 +10,7 @@
 //! ([`snowflake`], [`duckdb`]); the other variants get conservative defaults
 //! (ADR 0004: shared machinery with explicit warehouse rules).
 
-mod databricks;
+pub(crate) mod databricks;
 mod duckdb;
 mod snowflake;
 

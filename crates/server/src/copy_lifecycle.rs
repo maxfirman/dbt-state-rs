@@ -65,7 +65,7 @@ impl SourceSnapshot {
     }
     fn submit_provenance(&self) -> Provenance {
         Provenance {
-            version: 1,
+            version: 2,
             source_execution_id: self.id,
             source_epoch: self.epoch.expect("qualified source epoch"),
             source_physical_key: self.key.clone(),
@@ -110,7 +110,8 @@ pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow)
         .filter(|t| physical(&t.name) != physical(&evidence.target_table))
         .collect();
     let recorded = inputs(source);
-    source.org_id == evidence.org_id
+    crate::execution::non_blank_namespace(evidence.table_namespace.as_deref()).is_some()
+        && source.org_id == evidence.org_id
         && source.table_namespace == evidence.table_namespace
         && Warehouse::from_dialect(&source.dialect).family_key(&source.dialect)
             == Warehouse::from_dialect(&evidence.dialect).family_key(&evidence.dialect)
@@ -122,13 +123,38 @@ pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow)
         && source.node_namespace_logic_hash.is_some()
         && source.node_unique_id == evidence.node_unique_id
         && physical(&source.target_table) != physical(&evidence.target_table)
-        && current.len() == 1
-        && recorded.len() == 1
-        && physical(&current[0].name) == physical(&recorded[0].name)
-        && current[0].last_modified_epoch.is_some_and(|e| e > 0)
-        && current[0].last_modified_epoch == recorded[0].last_modified_epoch
-        && current[0].producer == Producer::NoBuild
-        && recorded[0].producer == Producer::NoBuild
+        && source
+            .analyzed_copy_proof
+            .as_ref()
+            .is_some_and(|p| p.version == 2)
+        && source.analyzed_copy_proof == evidence.analyzed_copy_proof
+        && matching_inputs(&current, &recorded)
+}
+
+fn matching_inputs(current: &[&InputTable], recorded: &[InputTable]) -> bool {
+    fn keyed<'a>(
+        inputs: impl Iterator<Item = &'a InputTable>,
+    ) -> Option<std::collections::BTreeMap<String, (i64, &'a Producer)>> {
+        let mut out = std::collections::BTreeMap::new();
+        for t in inputs {
+            let epoch = t.last_modified_epoch.filter(|e| *e > 0)?;
+            if matches!(t.producer, Producer::Unrecorded) {
+                return None;
+            }
+            let entry = (epoch, &t.producer);
+            if out
+                .insert(physical(&t.name), entry)
+                .is_some_and(|old| old != entry)
+            {
+                return None;
+            }
+        }
+        Some(out)
+    }
+    let Some(current) = keyed(current.iter().copied()) else {
+        return false;
+    };
+    keyed(recorded.iter()).is_some_and(|recorded| recorded == current)
 }
 
 /// An invalid publication cannot regain reuse via its strict SQL hash or the
@@ -144,7 +170,7 @@ pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool
         return true;
     }
     row.submit_copy_provenance.as_ref().is_some_and(|p| {
-        p.version == 1
+        p.version == 2
             && p.published
             && p.source_epoch > 0
             && p.source_execution_id > 0
@@ -152,7 +178,12 @@ pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool
                 .clone_source_table
                 .as_ref()
                 .is_some_and(|s| physical(s) == p.source_physical_key)
-    }) && evidence.node_namespace_logic_hash.is_some()
+    }) && row
+        .analyzed_copy_proof
+        .as_ref()
+        .is_some_and(|p| p.version == 2)
+        && row.analyzed_copy_proof == evidence.analyzed_copy_proof
+        && evidence.node_namespace_logic_hash.is_some()
         && evidence.node_namespace_logic_hash == row.node_namespace_logic_hash
         && evidence.node_unique_id == row.node_unique_id
 }

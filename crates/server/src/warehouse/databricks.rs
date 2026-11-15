@@ -754,3 +754,255 @@ pub(super) fn explain_input_order(
     )?;
     Some(output)
 }
+
+/// Checked effects only; symbolic columns are handled by the shared binder.
+/// Only the explicit system.builtin namespace proves routine resolution; bare
+/// names can be shadowed by SESSION PATH. COUNT is BIGINT; MIN/MAX preserve
+/// numeric input. Arithmetic and casts
+/// are admitted only for in-range literal expressions, so ANSI overflow and
+/// coercion settings cannot change the outcome. SUM(0) cannot overflow.
+pub(crate) fn expression_effect(
+    e: &sqlparser::ast::Expr,
+    child: &impl Fn(&sqlparser::ast::Expr) -> Option<crate::analyzed_workload::query::Scalar>,
+) -> Option<crate::analyzed_workload::query::Scalar> {
+    use crate::analyzed_workload::query::Scalar;
+    use sqlparser::ast::*;
+    match e {
+        Expr::Value(v) => match &v.value {
+            Value::Number(s, false) if s.parse::<i64>().is_ok() => Some(Scalar::Integer),
+            Value::Boolean(_) => Some(Scalar::Boolean),
+            Value::Null => Some(Scalar::Null),
+            _ => None,
+        },
+        Expr::BinaryOp { left, op, right } => {
+            let l = child(left)?;
+            let r = child(right)?;
+            match op {
+                BinaryOperator::And | BinaryOperator::Or if l == Scalar::Boolean && r == l => {
+                    Some(Scalar::Boolean)
+                }
+                BinaryOperator::Eq
+                | BinaryOperator::NotEq
+                | BinaryOperator::Lt
+                | BinaryOperator::LtEq
+                | BinaryOperator::Gt
+                | BinaryOperator::GtEq
+                    if l == r && matches!(l, Scalar::Integer | Scalar::Boolean) =>
+                {
+                    Some(Scalar::Boolean)
+                }
+                BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+                    if l == Scalar::Integer
+                        && r == Scalar::Integer
+                        && literal_integer(e).is_some() =>
+                {
+                    Some(Scalar::Integer)
+                }
+                _ => None,
+            }
+        }
+        Expr::UnaryOp { op, expr } => match op {
+            UnaryOperator::Not if child(expr)? == Scalar::Boolean => Some(Scalar::Boolean),
+            UnaryOperator::Plus | UnaryOperator::Minus
+                if child(expr) == Some(Scalar::Integer) && literal_integer(e).is_some() =>
+            {
+                Some(Scalar::Integer)
+            }
+            _ => None,
+        },
+        Expr::Cast {
+            kind: CastKind::Cast,
+            expr,
+            data_type,
+            format: None,
+        } => {
+            child(expr)?;
+            let v = literal_integer(expr)?;
+            match data_type {
+                DataType::Int(None) | DataType::Integer(None) if i32::try_from(v).is_ok() => {
+                    Some(Scalar::Integer)
+                }
+                DataType::BigInt(None) => Some(Scalar::Integer),
+                DataType::Decimal(ExactNumberInfo::PrecisionAndScale(p, s))
+                    if *p <= 38
+                        && *s >= 0
+                        && (*s as u64) <= *p
+                        && v.to_string().trim_start_matches('-').len() as u64
+                            <= p - (*s as u64) =>
+                {
+                    Some(Scalar::Decimal(*p, *s))
+                }
+                _ => None,
+            }
+        }
+        Expr::Case {
+            operand: None,
+            conditions,
+            else_result,
+            ..
+        } => {
+            let mut result = else_result
+                .as_ref()
+                .map(|e| child(e))
+                .unwrap_or(Some(Scalar::Null))?;
+            for arm in conditions {
+                if child(&arm.condition)? != Scalar::Boolean {
+                    return None;
+                }
+                let value = child(&arm.result)?;
+                if result == Scalar::Null {
+                    result = value;
+                } else if value != Scalar::Null && value != result {
+                    return None;
+                }
+            }
+            // Unknown branches might hide incompatible warehouse types.
+            (result != Scalar::Unknown).then_some(result)
+        }
+        Expr::Function(f) => {
+            if f.name.0.len() != 3
+                || f.uses_odbc_syntax
+                || f.parameters != FunctionArguments::None
+                || !f.within_group.is_empty()
+                || f.filter.is_some()
+                || f.null_treatment.is_some()
+                || f.over.is_some()
+            {
+                return None;
+            }
+            let resolved = f
+                .name
+                .0
+                .iter()
+                .map(|p| match p {
+                    ObjectNamePart::Identifier(i) if i.quote_style.is_none() => {
+                        Some(i.value.to_ascii_lowercase())
+                    }
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            if resolved[0] != "system" || resolved[1] != "builtin" {
+                return None;
+            }
+            let ObjectNamePart::Identifier(n) = &f.name.0[2] else {
+                return None;
+            };
+            if n.quote_style.is_some() {
+                return None;
+            }
+            let FunctionArguments::List(args) = &f.args else {
+                return None;
+            };
+            if args.duplicate_treatment.is_some()
+                || !args.clauses.is_empty()
+                || args.args.len() != 1
+            {
+                return None;
+            }
+            let FunctionArg::Unnamed(arg) = &args.args[0] else {
+                return None;
+            };
+            match (n.value.to_ascii_lowercase().as_str(), arg) {
+                ("count", FunctionArgExpr::Wildcard) => Some(Scalar::Integer),
+                ("count", FunctionArgExpr::Expr(e)) => {
+                    child(e)?;
+                    Some(Scalar::Integer)
+                }
+                ("min" | "max", FunctionArgExpr::Expr(e)) if child(e)? == Scalar::Integer => {
+                    Some(Scalar::Integer)
+                }
+                ("sum", FunctionArgExpr::Expr(e))
+                    if child(e)? == Scalar::Integer && literal_integer(e) == Some(0) =>
+                {
+                    Some(Scalar::Integer)
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+fn literal_integer(e: &sqlparser::ast::Expr) -> Option<i64> {
+    use sqlparser::ast::*;
+    match e {
+        Expr::Value(v) => match &v.value {
+            Value::Number(n, false) => n.parse().ok(),
+            _ => None,
+        },
+        Expr::Nested(e) => literal_integer(e),
+        Expr::Cast { expr, .. } => literal_integer(expr),
+        Expr::UnaryOp {
+            op: UnaryOperator::Plus,
+            expr,
+        } => literal_integer(expr),
+        Expr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr,
+        } => literal_integer(expr)?
+            .checked_neg()
+            .filter(|v| i32::try_from(*v).is_ok()),
+        Expr::BinaryOp { left, op, right } => {
+            let l = literal_integer(left)?;
+            let r = literal_integer(right)?;
+            match op {
+                BinaryOperator::Plus => l.checked_add(r).filter(|v| i32::try_from(*v).is_ok()),
+                BinaryOperator::Minus => l.checked_sub(r).filter(|v| i32::try_from(*v).is_ok()),
+                BinaryOperator::Multiply => l.checked_mul(r).filter(|v| i32::try_from(*v).is_ok()),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Copy analysis uses the same checked ASCII/backtick identifier meaning as
+/// physical State history. Defaults participate only when resolution needs them.
+pub(crate) fn copy_identifier(id: &sqlparser::ast::Ident) -> Option<String> {
+    if !matches!(id.quote_style, None | Some('`')) {
+        return None;
+    }
+    component(&id.value)
+}
+pub(crate) fn copy_components(name: &sqlparser::ast::ObjectName) -> Option<Vec<String>> {
+    name.0
+        .iter()
+        .map(|p| match p {
+            sqlparser::ast::ObjectNamePart::Identifier(i) => copy_identifier(i),
+            _ => None,
+        })
+        .collect()
+}
+pub(crate) fn copy_relation(
+    name: &sqlparser::ast::ObjectName,
+    catalog: &str,
+    schema: &str,
+) -> Option<String> {
+    let names = copy_components(name)?;
+    let resolved = match names.as_slice() {
+        [t] => vec![component(catalog)?, component(schema)?, t.clone()],
+        [s, t] => vec![component(catalog)?, s.clone(), t.clone()],
+        [c, s, t] => vec![c.clone(), s.clone(), t.clone()],
+        _ => return None,
+    };
+    Some(resolved.join("."))
+}
+pub(crate) fn copy_name(sql: &str) -> Option<sqlparser::ast::ObjectName> {
+    use sqlparser::{dialect::DatabricksDialect, parser::Parser, tokenizer::Token};
+    let mut parser = Parser::new(&DatabricksDialect {}).try_with_sql(sql).ok()?;
+    let name = parser.parse_object_name(false).ok()?;
+    (parser.peek_token().token == Token::EOF).then_some(name)
+}
+pub(crate) fn copy_query(sql: &str) -> Option<Box<sqlparser::ast::Query>> {
+    use sqlparser::{ast::Statement, dialect::DatabricksDialect, parser::Parser};
+    let mut statements = Parser::parse_sql(&DatabricksDialect {}, sql).ok()?;
+    if statements.len() != 1 {
+        return None;
+    }
+    match statements.pop()? {
+        Statement::Query(q) => Some(q),
+        _ => None,
+    }
+}

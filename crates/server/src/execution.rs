@@ -60,6 +60,7 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
+    pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
@@ -165,6 +166,9 @@ impl ExecutionEvidence {
         Self {
             node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
             node_sql_hash: Some(analysis.rendered_hash),
+            analyzed_copy_proof: (copy && template.is_none())
+                .then_some(analysis.copy_proof)
+                .flatten(),
             // Template mode cannot establish direct equivalence, even when
             // missing signatures leave no usable template alternative.
             direct_copy_provenance: (copy && template.is_none())
@@ -211,6 +215,7 @@ impl ExecutionEvidence {
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
+            analyzed_copy_proof: None,
             direct_copy_provenance: None,
             submit_copy_provenance: None,
             node_namespace_logic_hash: None,
@@ -537,7 +542,33 @@ mod tests {
             let analysis = crate::analyzed_workload::analyze(&request);
             assert_eq!(serde_json::json!(analysis.rendered_hash), case["rendered"]);
             assert_eq!(serde_json::json!(analysis.template_hash), case["template"]);
-            assert_eq!(serde_json::json!(analysis.copy_hash), case["copy"]);
+            if request.dialect == "databricks"
+                && request.execution_type == 1
+                && !case["copy"].is_null()
+            {
+                // Explicit v1 -> v2 persistence transition. The old fixture is
+                // immutable; the new literal pins framing, not SQL semantics.
+                assert_ne!(serde_json::json!(analysis.copy_hash), case["copy"]);
+                assert_eq!(analysis.copy_proof.as_ref().unwrap().version, 2);
+                assert_eq!(
+                    analysis.copy_hash.as_deref(),
+                    Some("7b07b39a37199cae7ec0a599467f3a11294ed0861c58cba184731ac6eda2eb7c")
+                );
+            } else if request.dialect == "databricks"
+                && request.execution_type == 1
+                && request.query_dependencies.len() == 1
+            {
+                // This frozen formerly opaque case now proves a complete
+                // input -> SELECT id FROM leaf definition and leaf binding.
+                assert!(case["copy"].is_null());
+                assert_eq!(analysis.copy_proof.as_ref().unwrap().version, 2);
+                assert_eq!(
+                    analysis.copy_hash.as_deref(),
+                    Some("f954aed9a1d7758f9dc5c6df7701730b805d18eb95980d4afd75d265a8cc2476")
+                );
+            } else {
+                assert_eq!(serde_json::json!(analysis.copy_hash), case["copy"]);
+            }
             assert_eq!(
                 serde_json::json!(analysis.direct_provenance),
                 case["direct"]

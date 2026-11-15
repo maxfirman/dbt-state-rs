@@ -14,7 +14,33 @@ fn physical(name: &str) -> String {
     Warehouse::physical_scope_key("databricks", name)
 }
 
-pub(crate) use crate::analyzed_workload::databricks_v1::identity;
+pub(crate) fn identity(req: &qc::SqlExecution) -> Option<String> {
+    identity_from_proof(req, crate::analyzed_workload::query::proof(req).as_ref())
+}
+pub(crate) fn identity_from_proof(
+    req: &qc::SqlExecution,
+    proof: Option<&crate::analyzed_workload::query::CopyProof>,
+) -> Option<String> {
+    if req.execution_type != 1
+        || req.semantic_extras.len() != 2
+        || req.semantic_extras.get("lookback").map(String::as_str) != Some("1")
+        || req
+            .semantic_extras
+            .get("on_schema_change")
+            .map(String::as_str)
+            != Some("\"ignore\"")
+    {
+        return None;
+    }
+    proof.map(auto_identity)
+}
+pub(crate) fn auto_identity(p: &crate::analyzed_workload::query::CopyProof) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(format!(
+        "databricks-submit-copy-v2:{}",
+        p.identity
+    )))
+}
 
 pub(crate) fn request_admits(
     req: &qc::SubmitEnrichedSqlRequest,
@@ -89,6 +115,7 @@ mod tests {
             table_namespace: e.table_namespace.clone(),
             node_unique_id: e.node_unique_id.clone(),
             node_namespace_logic_hash: e.node_namespace_logic_hash.clone(),
+            analyzed_copy_proof: e.analyzed_copy_proof.clone(),
             last_modified_epoch: Some(200),
             input_tables: e
                 .input_tables
@@ -124,6 +151,7 @@ mod tests {
             "dependency",
             "self",
             "unqualified",
+            "resource_type",
         ] {
             let mut q = req.clone();
             match fault {
@@ -143,6 +171,9 @@ mod tests {
                 "dependency" => q.query_dependencies.push(qc::QueryDependency::default()),
                 "self" => q.target_table = Some("`cdo`.`raw`.`input`".into()),
                 "unqualified" => q.sql = "select * from input".into(),
+                "resource_type" => {
+                    q.dbt_node_state.as_mut().unwrap().resource_type = "snapshot".into()
+                }
                 _ => unreachable!(),
             }
             assert_ne!(
@@ -307,6 +338,24 @@ mod tests {
                 .unwrap()
                 .candidate
                 .is_some()
+        );
+        // Neither legacy nor unknown origin domains can adopt a current
+        // namespace hash, even when strict SQL also matches.
+        for version in [1, 255] {
+            let mut legacy = row.clone();
+            legacy.submit_copy_provenance.as_mut().unwrap().version = version;
+            assert!(crate::reuse_candidate::for_model(&req, &e, Some(legacy))
+                .unwrap()
+                .candidate
+                .is_none());
+        }
+        let mut missing_analysis = row.clone();
+        missing_analysis.analyzed_copy_proof = None;
+        assert!(
+            crate::reuse_candidate::for_model(&req, &e, Some(missing_analysis))
+                .unwrap()
+                .candidate
+                .is_none()
         );
         // Injected storage fault: a direct-style row carrying the valid FULL
         // auto hash. Native direct v1 remains MERGE/snapshot only.

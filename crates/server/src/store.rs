@@ -135,6 +135,7 @@ pub struct ExecutionRow {
     pub node_configs_hash: Option<String>,
     pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub node_namespace_logic_hash: Option<String>,
@@ -190,7 +191,7 @@ impl ExecutionRow {
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, \
+        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -251,6 +252,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             node_configs_hash: row.try_get("node_configs_hash")?,
             node_macros_hash: row.try_get("node_macros_hash")?,
             node_sql_hash: row.try_get("node_sql_hash")?,
+            analyzed_copy_proof: row
+                .try_get::<Option<serde_json::Value>, _>("analyzed_copy_proof")?
+                .and_then(|v| serde_json::from_value(v).ok()),
             direct_copy_provenance: row
                 .try_get::<Option<serde_json::Value>, _>("direct_copy_provenance")?
                 .and_then(|value| serde_json::from_value(value).ok()),
@@ -483,9 +487,9 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33,$34)
             "#,
         )
         .bind(&e.org_id)
@@ -535,6 +539,7 @@ impl Store {
         .bind(&e.node_macros_hash)
         .bind(e.direct_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize direct provenance")))
         .bind(e.submit_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize submit provenance")))
+        .bind(e.analyzed_copy_proof.as_ref().map(|p| serde_json::to_value(p).expect("serialize analyzed proof")))
         .execute(executor)
         .await?;
         Ok(())
@@ -607,7 +612,7 @@ impl Store {
             ), publication AS (
                 SELECT id,
                     bool_or(kind = 'direct' AND source_current) AS direct_current,
-                    -- Automatic v1 copy additionally requires a completion
+                    -- Automatic copy additionally requires a completion
                     -- epoch no earlier than its source; direct v1 did not.
                     bool_or(kind = 'submit' AND source_current
                         AND $3::bigint >= source_epoch) AS submit_current

@@ -552,3 +552,262 @@ async fn auto_copy_identity_does_not_change_ordinary_physical_reuse() {
         }
     }
 }
+
+/// Contract example: null checks preserve symbolic input types; COUNT produces
+/// checked integer outputs, including the nullable right side of LEFT JOIN.
+#[tokio::test]
+async fn analyzed_full_two_count_ctes_copy_confirm_and_reuse() {
+    let server = support::start_server_databricks_submit_copy().await;
+    let sc = Scenario::connect(&server).await.org("analyzed-two-counts");
+    let (mut src, mut built, mut target, mut copied) = shapes();
+    let sql = "WITH orders AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.orders WHERE id IS NOT NULL), payments AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.payments WHERE id IS NOT NULL) SELECT orders.n AS order_count, payments.n AS payment_count FROM orders LEFT JOIN payments ON orders.n = payments.n";
+    for req in [&mut src, &mut target] {
+        req.sql = sql.into();
+        req.tables = vec![
+            qc::TableModifiedInfo {
+                name: "cdo.raw.orders".into(),
+                last_modified_epoch: Some(100),
+            },
+            qc::TableModifiedInfo {
+                name: "cdo.raw.payments".into(),
+                last_modified_epoch: Some(101),
+            },
+        ];
+    }
+    built.request_id = sc.execute_id(src).await;
+    assert!(sc.try_confirm(built).await.unwrap().success);
+    let grant = sc.expect_clone(target.clone()).await;
+    copied.request_id = grant.request_id;
+    let epoch = copied.last_modified_epoch;
+    assert!(sc.try_confirm(copied).await.unwrap().success);
+    assert_eq!(
+        sc.verdict(after_copy(target, epoch)).await,
+        "skip_execution"
+    );
+}
+
+#[tokio::test]
+async fn analyzed_full_checked_forms_and_opaque_effects() {
+    let server = support::start_server_databricks_submit_copy().await;
+    // Expected decisions come from the contract's effect rules, not hashes.
+    for (index, (sql, admits)) in [
+        ("SELECT COUNT(*) AS n FROM cdo.raw.input",false),
+        ("SELECT -CAST(-2147483648 AS INT) AS overflow FROM cdo.raw.input",false),
+        ("SELECT CAST(1 AS DECIMAL(38,37)) * CAST(1 AS DECIMAL(38,37)) AS contextual FROM cdo.raw.input",false),
+        ("SELECT CAST(1 AS DECIMAL(4,0)) AS exact_decimal FROM cdo.raw.input",true),
+        ("SELECT 'hello' AS text FROM cdo.raw.input",false),
+        ("SELECT id FROM cdo.raw.input GROUP BY 1",false),
+        ("SELECT 2147483647 + 1 AS overflow FROM cdo.raw.input",false),
+        ("SELECT custom.count(*) AS n FROM cdo.raw.input",false),
+        ("SELECT current_user AS who FROM cdo.raw.input",false),
+        ("SELECT id FROM cdo.raw.input WHERE id IS NOT NULL",true),
+        ("SELECT i.id AS item, CASE WHEN i.id IS NULL THEN 0 ELSE 1 END AS present FROM cdo.raw.input AS i",true),
+        ("SELECT CAST(2 AS BIGINT) + 3 AS five, system.builtin.COUNT(*) AS n FROM cdo.raw.input GROUP BY CAST(2 AS BIGINT) + 3 HAVING system.builtin.COUNT(*) > 0",true),
+        ("SELECT system.builtin.MIN(CAST(1 AS BIGINT)) AS low, system.builtin.MAX(CAST(2 AS INT)) AS high, system.builtin.SUM(CAST(0 AS BIGINT)) AS zero FROM cdo.raw.input",true),
+        ("SELECT system.builtin.COUNT(id) AS n FROM cdo.raw.input",true),
+        ("SELECT system.builtin.SUM(id) AS total FROM cdo.raw.input",false),
+        ("SELECT CAST(id AS BIGINT) AS numeric_id FROM cdo.raw.input",false),
+        ("SELECT id + 1 AS next_id FROM cdo.raw.input",false),
+        ("SELECT id FROM cdo.raw.input WHERE id = 1",false),
+        ("SELECT system.builtin.COUNT(*) OVER () AS n FROM cdo.raw.input",false),
+        ("SELECT mystery(id) AS n FROM cdo.raw.input",false),
+        ("SELECT RAND() AS n FROM cdo.raw.input",false),
+        ("SELECT CAST('2026-01-01' AS TIMESTAMP) AS n FROM cdo.raw.input",false),
+        ("SELECT system.builtin.COUNT(DISTINCT id) AS n FROM cdo.raw.input",false),
+        ("SELECT id + 1 FROM cdo.raw.input",false),
+        ("SELECT id FROM cdo.raw.input UNION ALL SELECT id FROM cdo.raw.input",false),
+        ("WITH RECURSIVE q AS (SELECT id FROM cdo.raw.input) SELECT id FROM q",false),
+        ("SELECT -CAST(9223372036854775807 AS INT) AS bad FROM cdo.raw.input",false),
+    ].into_iter().enumerate() {
+        let org=format!("checked-{index}");
+        let sc=Scenario::connect(&server).await.org(&org);
+        let (mut src,mut built,mut target,mut copied)=shapes();
+        src.sql=sql.into();target.sql=sql.into();
+        src.tables=vec![qc::TableModifiedInfo{name:"cdo.raw.input".into(),last_modified_epoch:Some(100)}];
+        target.tables=src.tables.clone();
+        built.request_id=sc.execute_id(src).await;
+        assert!(sc.try_confirm(built).await.unwrap().success);
+        if admits {
+            copied.request_id=sc.expect_clone(target.clone()).await.request_id;
+            let epoch=copied.last_modified_epoch;
+            assert!(sc.try_confirm(copied).await.unwrap().success,"{sql}");
+            sc.expect_skip(after_copy(target,epoch)).await;
+        } else {
+            assert_eq!(sc.verdict(target).await,"ready_to_execute","{sql}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn analyzed_full_dependency_bindings_retain_context_and_definition() {
+    let server = support::start_server_databricks_submit_copy().await;
+    let sc = Scenario::connect(&server).await.org("bound-dependencies");
+    let (mut src, mut built, mut target, mut copied) = shapes();
+    for req in [&mut src, &mut target] {
+        req.tables = vec![qc::TableModifiedInfo {
+            name: "cdo.raw.input".into(),
+            last_modified_epoch: Some(100),
+        }];
+        req.sql="SELECT a.n AS an, b.n AS bn FROM cdo.views.a AS a INNER JOIN cdo.views.b AS b ON a.n = b.n".into();
+        req.query_dependencies = vec![
+            qc::QueryDependency {
+                name: "cdo.views.a".into(),
+                query: "SELECT system.builtin.COUNT(*) AS n FROM input WHERE id IS NOT NULL".into(),
+                default_catalog: "cdo".into(),
+                default_schema: "raw".into(),
+                ..Default::default()
+            },
+            qc::QueryDependency {
+                name: "cdo.views.b".into(),
+                query: "SELECT system.builtin.COUNT(id) AS n FROM input".into(),
+                default_catalog: "cdo".into(),
+                default_schema: "raw".into(),
+                ..Default::default()
+            },
+        ];
+    }
+    built.request_id = sc.execute_id(src).await;
+    assert!(sc.try_confirm(built).await.unwrap().success);
+    for fault in [
+        "swap",
+        "context",
+        "missing_leaf",
+        "uid",
+        "extra_input",
+        "cycle",
+    ] {
+        let mut changed = target.clone();
+        match fault {
+            "swap" => {
+                let a = changed.query_dependencies[0].query.clone();
+                changed.query_dependencies[0].query = changed.query_dependencies[1].query.clone();
+                changed.query_dependencies[1].query = a;
+            }
+            "context" => changed.query_dependencies[0].default_schema = "other".into(),
+            "missing_leaf" => changed.tables.clear(),
+            "uid" => changed
+                .dbt_node_state
+                .as_mut()
+                .unwrap()
+                .node_unique_id
+                .push('x'),
+            "extra_input" => changed.tables.push(qc::TableModifiedInfo {
+                name: "cdo.raw.extra".into(),
+                last_modified_epoch: Some(100),
+            }),
+            "cycle" => changed.query_dependencies[0].query = "SELECT n FROM cdo.views.a".into(),
+            _ => unreachable!(),
+        }
+        assert_eq!(sc.verdict(changed).await, "ready_to_execute", "{fault}");
+    }
+    copied.request_id = sc.expect_clone(target.clone()).await.request_id;
+    let epoch = copied.last_modified_epoch;
+    assert!(sc.try_confirm(copied).await.unwrap().success);
+    sc.expect_skip(after_copy(target, epoch)).await;
+}
+
+#[tokio::test]
+async fn analyzed_full_multiple_inputs_keep_recorded_build_producers() {
+    let server = support::start_server_databricks_submit_copy().await;
+    let sc = Scenario::connect(&server).await.org("multiple-producers");
+    let (mut producer, mut producer_confirm, _, _) = shapes();
+    producer.target_table = Some("cdo.raw.orders".into());
+    producer.sql = "SELECT 1 AS id".into();
+    producer.tables.clear();
+    producer.dbt_node_state.as_mut().unwrap().node_unique_id = "model.project.orders".into();
+    producer_confirm.last_modified_epoch = Some(100);
+    producer_confirm.request_id = sc.execute_id(producer.clone()).await;
+    assert!(
+        sc.try_confirm(producer_confirm.clone())
+            .await
+            .unwrap()
+            .success
+    );
+    let (mut src, mut built, mut target, mut copied) = shapes();
+    for req in [&mut src, &mut target] {
+        req.sql="SELECT a.id AS order_id, b.id AS payment_id FROM cdo.raw.orders AS a LEFT JOIN cdo.raw.payments AS b ON TRUE".into();
+        req.tables = vec![
+            qc::TableModifiedInfo {
+                name: "cdo.raw.orders".into(),
+                last_modified_epoch: Some(100),
+            },
+            qc::TableModifiedInfo {
+                name: "cdo.raw.payments".into(),
+                last_modified_epoch: Some(101),
+            },
+        ];
+    }
+    built.request_id = sc.execute_id(src).await;
+    assert!(sc.try_confirm(built).await.unwrap().success);
+    // An existing target observation is separate from the two read inputs.
+    let mut old = target.clone();
+    old.sql = "SELECT 7 AS id".into();
+    old.tables.clear();
+    let mut old_confirm = copied.clone();
+    old_confirm.request_id = sc.execute_id(old).await;
+    assert!(sc.try_confirm(old_confirm).await.unwrap().success);
+    target = after_copy(target, copied.last_modified_epoch);
+    copied.request_id = sc.expect_clone(target.clone()).await.request_id;
+    assert!(sc.try_confirm(copied).await.unwrap().success);
+    sc.expect_skip(target.clone()).await;
+    // Same observed epoch, different producer definition: never reuse its
+    // consumer's old result, even with a newly empty output.
+    producer.sql = "SELECT 2 AS id".into();
+    producer_confirm.request_id = sc.execute_id(producer).await;
+    assert!(sc.try_confirm(producer_confirm).await.unwrap().success);
+    target
+        .tables
+        .retain(|t| Some(&t.name) != target.target_table.as_ref());
+    let parts: Vec<_> = target.target_table.as_deref().unwrap().split('.').collect();
+    target.target_table = Some(format!("{}.`third`.{}", parts[0], parts[2]));
+    target.default_schema = Some("third".into());
+    assert_eq!(sc.verdict(target).await, "ready_to_execute");
+}
+
+#[tokio::test]
+async fn analyzed_full_legacy_ordinary_strict_reuse_survives_but_copy_v1_is_cold() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../golden/upgrade/databricks_auto_copy_v1_727f6a3.json"
+    ))
+    .unwrap();
+    for pending in [false, true] {
+        let server = support::start_server_databricks_submit_copy().await;
+        let sc = Scenario::connect(&server).await.org("legacy-auto-v1");
+        support::legacy::import_complete_history(
+            &server,
+            &[
+                fixture["source"].clone(),
+                fixture[if pending {
+                    "pending_copy"
+                } else {
+                    "confirmed_copy"
+                }]
+                .clone(),
+            ],
+        )
+        .await;
+        let src: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(fixture["source_request"].clone()).unwrap();
+        let source_epoch = fixture["source"]["last_modified_epoch"].as_i64();
+        sc.expect_skip(after_copy(src, source_epoch)).await;
+        let target: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(fixture["target_request"].clone()).unwrap();
+        let confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(fixture["confirm"].clone()).unwrap();
+        if pending {
+            assert!(sc.try_confirm(confirm.clone()).await.unwrap().success);
+        }
+        // Real v1 hashes and origin proof, including a v1 pending row that
+        // confirms after upgrade, cannot grant v2 adoption or a source chain.
+        assert_eq!(
+            sc.verdict(after_copy(target.clone(), confirm.last_modified_epoch))
+                .await,
+            "ready_to_execute"
+        );
+        let mut third = target;
+        let parts: Vec<_> = third.target_table.as_deref().unwrap().split('.').collect();
+        third.target_table = Some(format!("{}.`third`.{}", parts[0], parts[2]));
+        third.default_schema = Some("third".into());
+        assert_eq!(sc.verdict(third).await, "ready_to_execute");
+    }
+}
