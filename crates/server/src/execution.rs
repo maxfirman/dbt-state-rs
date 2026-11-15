@@ -100,6 +100,9 @@ fn unnamed_audit_relation(req: &qc::SqlExecution) -> Option<&str> {
     }
     let schema = req.default_schema.as_deref()?;
     let warehouse = crate::warehouse::Warehouse::from_dialect(&req.dialect);
+    if warehouse == crate::warehouse::Warehouse::Databricks {
+        return warehouse.unread_test_audit(req);
+    }
     let mut qualifying = req.tables.iter().filter(|t| {
         warehouse
             .relation_in_schema(&t.name, &req.default_catalog, schema)
@@ -679,6 +682,139 @@ pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
 mod tests {
     use super::*;
     use crate::query_cache::ModelExecutionType;
+
+    fn databricks_audit() -> qc::SqlExecution {
+        qc::SqlExecution {
+            dialect: "databricks".into(),
+            default_catalog: "cdo_demo_db".into(),
+            default_schema: Some("audit".into()),
+            execution_type: ModelExecutionType::DbtDataTest as i32,
+            sql: "SELECT id, v FROM `cdo_demo_db`.`prod`.`inputs` WHERE v < 0".into(),
+            semantic_extras: HashMap::from([("store_failures".into(), "true".into())]),
+            tables: vec![
+                qc::TableModifiedInfo {
+                    name: "`cdo_demo_db`.`prod`.`inputs`".into(),
+                    last_modified_epoch: Some(100),
+                },
+                qc::TableModifiedInfo {
+                    name: "`cdo_demo_db`.`audit`.`configured_alias`".into(),
+                    last_modified_epoch: Some(200),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn databricks_audit_requires_positive_direct_read_proof() {
+        let request = databricks_audit();
+        assert_eq!(sql_inputs(&request).len(), 1);
+        assert_eq!(sql_inputs(&request)[0].name, request.tables[0].name);
+        for sql in [
+            "SELECT id, v FROM cdo_demo_db.audit.configured_alias WHERE v < 0",
+            "WITH s AS (SELECT id,v FROM cdo_demo_db.prod.inputs) SELECT id,v FROM s WHERE v < 0",
+            "SELECT id,v FROM (SELECT id,v FROM cdo_demo_db.prod.inputs) s WHERE v < 0",
+            "SELECT id,v FROM cdo_demo_db.prod.inputs WHERE v < (SELECT v FROM cdo_demo_db.audit.configured_alias)",
+            "SELECT id, mystery(v) FROM cdo_demo_db.prod.inputs WHERE v < 0",
+            "SELECT id,v FROM cdo_demo_db.prod.inputs WHERE mystery(v) < 0",
+            "SELECT id,v FROM mystery() WHERE v < 0",
+            "SELECT id,v FROM cdo_demo_db.prod.inputs JOIN cdo_demo_db.audit.configured_alias USING (id) WHERE v < 0",
+        ] {
+            let mut changed = request.clone();
+            changed.sql = sql.into();
+            assert_eq!(sql_inputs(&changed).len(), 2, "{sql}");
+        }
+        for changed in [
+            {
+                let mut r = request.clone();
+                r.query_dependencies.push(qc::QueryDependency {
+                    name: "v".into(),
+                    query: "SELECT * FROM cdo_demo_db.audit.configured_alias".into(),
+                    ..Default::default()
+                });
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.tables.push(qc::TableModifiedInfo {
+                    name: "cdo_demo_db.audit.second".into(),
+                    last_modified_epoch: Some(100),
+                });
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.tables[1] = r.tables[0].clone();
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.tables[1].name = "cdo_demo_db.foreign.configured_alias".into();
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.tables[1].name = "cdo_demo_db.audit.`quoted.dot`".into();
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.execution_type = ModelExecutionType::Full as i32;
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.semantic_extras.clear();
+                r
+            },
+            {
+                let mut r = request.clone();
+                r.default_schema = None;
+                r
+            },
+        ] {
+            assert_eq!(sql_inputs(&changed).len(), changed.tables.len());
+        }
+        let mut same_schema = request;
+        same_schema.tables[0].name = "cdo_demo_db.audit.genuine".into();
+        same_schema.sql = "SELECT id,v FROM cdo_demo_db.audit.genuine WHERE v < 0".into();
+        assert_eq!(sql_inputs(&same_schema)[0].name, same_schema.tables[0].name);
+        same_schema.tables[0].last_modified_epoch = None;
+        assert_eq!(sql_inputs(&same_schema)[0].last_modified_epoch, None);
+    }
+
+    #[test]
+    fn databricks_pinned_transitive_view_reports_never_prove_an_audit_output() {
+        let rows = include_str!("../../../golden/fixtures/databricks_identifiers.jsonl");
+        let submit = rows
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|row| {
+                row["method"] == "SubmitEnrichedSQL"
+                    && row["request"]["query_dependencies"]
+                        .as_array()
+                        .is_some_and(|deps| !deps.is_empty())
+            })
+            .unwrap();
+        let request: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(submit["request"].clone()).unwrap();
+        let mut execution = sql_execution(&request);
+        execution.execution_type = ModelExecutionType::DbtDataTest as i32;
+        execution.target_table = None;
+        execution
+            .semantic_extras
+            .insert("store_failures".into(), "true".into());
+        execution.default_schema = Some("audit".into());
+        execution.tables[1].name = "cdo_demo_db.audit.alias".into();
+        // The pinned client reports the base leaf and publishes the direct view
+        // as a definition; the view itself is not a physical input table.
+        assert_eq!(sql_inputs(&execution).len(), 2);
+        execution.query_dependencies.clear();
+        // Even an incomplete definition list cannot turn the nonmatching base
+        // leaf into the directly parsed view name.
+        execution.sql = format!("{} WHERE v < 0", execution.sql.trim());
+        assert_eq!(sql_inputs(&execution).len(), 2);
+    }
 
     const TARGET: &str = "\"DB\".\"DEV\".\"M\"";
     const UPSTREAM: &str = "\"DB\".\"DEV\".\"UP\"";

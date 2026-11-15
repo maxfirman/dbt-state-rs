@@ -167,6 +167,11 @@ class CachedTests(Campaign):
     def test_config(self):
         return {'severity': 'ERROR', 'error_if': '> 0', 'warn_if': '> 0', 'fail_calc': 'count(*)'}
 
+    def semantic_extras(self):
+        extras = {key: json.dumps(value) for key, value in self.test_config().items()}
+        extras.update(store_failures='false', store_failures_as='"ephemeral"')
+        return extras
+
     def expected_result(self, rows):
         return rows, bool(rows), bool(rows)
 
@@ -363,9 +368,7 @@ class CachedTests(Campaign):
                     or req.get('compare_unrendered_code') is not self.compare_mode()
                     or (req.get('dbt_node_state') or {}).get('node_unique_id') != self.uid):
                 raise Refused('wire:scope-target-deps-type-mode')
-            extras = {key: json.dumps(value) for key, value in self.test_config().items()}
-            extras.update(store_failures='false', store_failures_as='"ephemeral"')
-            if req.get('semantic_extras') != extras:
+            if req.get('semantic_extras') != self.semantic_extras():
                 raise Refused('wire:actual-test-config')
             namespace = req.get('table_namespace')
             if not namespace or (hasattr(self, 'namespace') and namespace != self.namespace):
