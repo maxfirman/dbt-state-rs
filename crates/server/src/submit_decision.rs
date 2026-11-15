@@ -463,7 +463,40 @@ async fn decide_sql(
     } else {
         record
     };
-    let record = incremental_transition_display(&evidence, &selection, &freshness, record);
+    let mut record = incremental_transition_display(&evidence, &selection, &freshness, record);
+    // #150: a failed native batch can leave a physical target without a
+    // confirmed State build. Report its known existence, without inventing a
+    // query/freshness anchor or admitting the partial result for reuse.
+    if Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks
+        && req.execution_type == ModelExecutionType::Microbatch as i32
+        && record.class == DecisionKind::Build
+        && record.reason == decision::DecisionReason::FirstBuild
+        && !selection.target_has_prior_build
+        && !req.compare_unrendered_code
+        && req.query_dependencies.is_empty()
+        && req
+            .table_namespace
+            .as_ref()
+            .is_some_and(|ns| !ns.is_empty())
+        && freshness.sql_reads_relation == Some(true)
+        && freshness.tolerance_ms == 0
+        && freshness.stale_upstream_policy == decision::StaleUpstreamPolicy::Any
+        && !freshness.own_target_absent
+        && evidence.input_tables.len() == 2
+        && evidence
+            .input_tables
+            .iter()
+            .filter(|input| input.name != evidence.target_table)
+            .count()
+            == 1
+        && evidence.input_tables.iter().all(|input| {
+            input.last_modified_epoch.is_some_and(|epoch| epoch > 0)
+                && (input.name == evidence.target_table || input.producer == Producer::NoBuild)
+        })
+    {
+        record.reason = decision::DecisionReason::ExistingTargetWithoutHistory;
+        record.description = decision::DESC_EXECUTE.into();
+    }
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
         record,

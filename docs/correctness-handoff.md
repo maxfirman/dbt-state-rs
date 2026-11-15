@@ -776,10 +776,16 @@ The entire hosted70 and native70 replay exactly; native uses ten actual audit
 clocks retained before schema Drop. The original description-only red remains
 preserved alongside its narrowly reviewed correction.
 
-This does not complete #150. Accepted #138/#140 differences do not block it.
-Full-refresh/Record, implicit scheduling,
-nondefault settings, schema evolution, concurrency/failure/lifecycle/generated
-breadth and isolated Target-only modification policy remain unaccepted. See the
+The [real-clock/lookback supplement](databricks-microbatch.md) adds implicit
+UTC daily scheduling, lookback0/2, required unchanged reuse, and actual
+single-batch custom predicates with independent retained/replaced results.
+Configured multiple-batch predicates expose a pinned-client limitation:
+the native macro accumulates contradictory batch bounds, causing a failed
+command without Confirm. The whole failed attempt and same-graph recovery
+remain replayed; no adapter workaround or invented freshness anchor is used.
+This distinguishes supported bounded #150 behavior from that explicit client
+capability limit. Broader full-refresh/Record, schema/concurrency/lifecycle and
+isolated Target-only modification combinations are not claimed. See the
 [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
 
 ## Databricks direct pre-copy partial (#152, 2026-11-15)

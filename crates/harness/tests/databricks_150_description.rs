@@ -288,3 +288,105 @@ async fn adjacent_evidence_keeps_existing_descriptions() {
         assert_eq!(decision.clone_rejection_reason, Some(6), "{case}");
     }
 }
+#[tokio::test]
+async fn unconfirmed_microbatch_target_display_requires_current_positive_scoped_evidence() {
+    let rows: Vec<serde_json::Value> =
+        include_str!("../../../golden/fixtures/databricks_moving_windows.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+    let original: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[10]["request"].clone()).unwrap();
+    let server = support::start_server().await;
+    let channel = support::channel(server.addr).await;
+    let mut sql = qc::sql_client::SqlClient::new(channel.clone());
+    let mut explain = qc::explain_client::ExplainClient::new(channel);
+    for case in [
+        "positive",
+        "absent",
+        "unknown",
+        "zero",
+        "negative",
+        "unknown_source",
+        "zero_source",
+        "snowflake",
+        "duckdb",
+        "merge",
+        "lag",
+        "all",
+    ] {
+        let mut request = original.clone();
+        request.table_namespace = Some(format!("unconfirmed-{case}"));
+        let target = request.target_table.clone().unwrap();
+        match case {
+            "absent" => request.tables.retain(|t| t.name != target),
+            "unknown" | "zero" | "negative" => request
+                .tables
+                .iter_mut()
+                .filter(|t| t.name == target)
+                .for_each(|t| {
+                    t.last_modified_epoch = match case {
+                        "unknown" => None,
+                        "zero" => Some(0),
+                        _ => Some(-1),
+                    }
+                }),
+            "unknown_source" | "zero_source" => request
+                .tables
+                .iter_mut()
+                .filter(|t| t.name != target)
+                .for_each(|t| {
+                    t.last_modified_epoch = if case == "unknown_source" {
+                        None
+                    } else {
+                        Some(0)
+                    }
+                }),
+            "snowflake" | "duckdb" => request.dialect = case.into(),
+            "merge" => request.execution_type = 3,
+            "lag" => request.freshness_tolerance_seconds = 1,
+            "all" => request.stale_upstream_policy = 1,
+            _ => {}
+        }
+        let response = sql.submit_enriched_sql(request).await.unwrap().into_inner();
+        let qc::submit_sql_response::Response::ReadyToExecute(build) = response.response.unwrap()
+        else {
+            panic!("unconfirmed physical result must BUILD: {case}")
+        };
+        let decision = build.explained_decision.unwrap();
+        assert_eq!(
+            (
+                decision.decision,
+                decision.skip_rejection_reason,
+                decision.clone_rejection_reason,
+                decision.is_stale
+            ),
+            (1, Some(6), Some(6), false),
+            "{case}"
+        );
+        assert_eq!(
+            decision.decision_description,
+            if case == "positive" {
+                "model was executed because either its query didn't match or its upstream data is out of date"
+            } else {
+                "model was executed because its table did not exist"
+            },
+            "{case}"
+        );
+        let messages = explain
+            .get_explain_messages(qc::GetExplainMessagesRequest {
+                execution_decision_ids: vec![build.execution_decision_id.unwrap()],
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let text = serde_json::to_string(&messages).unwrap();
+        if case == "positive" {
+            assert!(text.contains("the model table exists already"));
+            assert!(!text.contains("upstream data is up to date"));
+            assert!(!text.contains("no updates since"));
+        } else {
+            assert!(text.contains("the model table does not exist"), "{case}");
+        }
+    }
+}
