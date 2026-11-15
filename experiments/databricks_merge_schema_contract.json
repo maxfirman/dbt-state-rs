@@ -1,0 +1,46 @@
+{
+  "ticket": 145,
+  "phase": "schema-recovery",
+  "catalog": "cdo_demo_db",
+  "schema": "state_20261114_append146",
+  "schema_id": "6f14be2c-a920-4309-8240-caf8e8df7888",
+  "run_ids": {
+    "hosted": "20261115a145ee",
+    "rust": "20261115b145ff"
+  },
+  "max_final_permanent": 4,
+  "max_extra_concurrent_persistent": 1,
+  "permanent_exact_allowlists": {
+    "hosted": [
+      "cdo_demo_db.state_20261114_append146.me_20261115a145ee_inputs",
+      "cdo_demo_db.state_20261114_append146.me_20261115a145ee_consumer"
+    ],
+    "rust": [
+      "cdo_demo_db.state_20261114_append146.me_20261115b145ff_inputs",
+      "cdo_demo_db.state_20261114_append146.me_20261115b145ff_consumer"
+    ]
+  },
+  "session_temporary_unqualified_names": {
+    "hosted": "me_20261115a145ee_consumer__dbt_tmp",
+    "rust": "me_20261115b145ff_consumer__dbt_tmp"
+  },
+  "persistent_auxiliary_exact_spellings": {
+    "hosted": [
+      "cdo_demo_db.state_20261114_append146.me_20261115a145ee_consumer__dbt_stg",
+      "cdo_demo_db.state_20261114_append146.me_20261115a145ee_consumer__dbt_backup"
+    ],
+    "rust": [
+      "cdo_demo_db.state_20261114_append146.me_20261115b145ff_consumer__dbt_stg",
+      "cdo_demo_db.state_20261114_append146.me_20261115b145ff_consumer__dbt_backup"
+    ]
+  },
+  "limits": {
+    "managed_per_backend": 8,
+    "disabled_select_only_references_per_backend": 8,
+    "parse_per_backend": 1,
+    "rpcs_per_backend": 80,
+    "ordinary_submits_per_backend": 8
+  },
+  "cleanup": false,
+  "schema_allocation": false
+}
