@@ -52,14 +52,21 @@ class PrecopyTests(unittest.TestCase):
         target='cdo_demo_db.dev.fresh';source='cdo_demo_db.prod.fresh'
         ddl='CREATE OR REPLACE TABLE '+target+' SHALLOW CLONE '+source
         with tempfile.TemporaryDirectory() as folder:
-            c=object.__new__(p.Precopy);c.work=Path(folder);c.n=1;c.secrets=[];c.completed=set();c.prefix=None
+            c=object.__new__(p.Precopy);c.work=Path(folder);c.n=1;c.secrets=[];c.completed=set();c.prefix=None;c.prefixes=[]
             path=c.work/'logs/001_copy/query_log.sql';path.parent.mkdir(parents=True)
             path.write_text(ddl+';')
             c.audit_native('copy',target,source,True)
+            path.write_text('ALTER\nTABLE '+target+' CLUSTER BY NONE;')
+            c.audit_native('copy',target,source,False)
             for bad in (ddl.replace(source,'cdo_demo_db.prod.old'),ddl+'; DROP TABLE '+target,
                         ddl.replace(target,target+'__dbt_stg'),'SELECT 1'):
                 path.write_text(bad+';')
                 with self.assertRaises(Refused):c.audit_native('copy',target,source,True)
+            for bad in ('ALTER TABLE '+target+' RENAME TO old',
+                        'ALTER TABLE cdo_demo_db.prod.old CLUSTER BY NONE',
+                        'ALTER TABLE '+target+' CLUSTER BY (id)'):
+                path.write_text(bad+';')
+                with self.assertRaisesRegex(Refused,'unapproved-native-alter'):c.audit_native('copy',target,source,False)
 
 
 if __name__=='__main__':unittest.main()

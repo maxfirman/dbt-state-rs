@@ -155,16 +155,29 @@ class Precopy(Baseline):
         self.source_requests={};self.source_confirms={}
         self.prefix=Path(args.resume_prefix) if args.resume_prefix else None
         self.completed=set()
+        self.prefixes=[]
         if self.prefix:
             from capture_integrity import verify_capture
-            captures=list((self.prefix/'golden').glob('*.jsonl'))
-            if (self.phase!='hosted' or len(captures)!=1
-                    or digest(captures[0])!='09b538948b4b067c881415ed84064a92d2b5e611dbee6f4dc06621ea50ad7cbe'):
-                raise Refused('precopy:exact-hosted-prefix-only')
-            verify_capture(captures[0])
-            events=json.loads((self.prefix/'operations.json').read_text())
+            current=self.prefix
+            while current:
+                self.prefixes.insert(0,current)
+                if len(self.prefixes)>2:raise Refused('precopy:too-many-prefixes')
+                anchor=current/'retained-prefix.json'
+                current=Path(json.loads(anchor.read_text())['capture']).parent.parent if anchor.exists() else None
+            hashes=['09b538948b4b067c881415ed84064a92d2b5e611dbee6f4dc06621ea50ad7cbe',
+                    '93a68c52a9abd45ab125c80b8eef6c446d105ac8924e3ca57c3e61992108e7a7']
+            events=[]
+            for root,sha in zip(self.prefixes,hashes):
+                captures=list((root/'golden').glob('*.jsonl'))
+                if self.phase!='hosted' or len(captures)!=1 or digest(captures[0])!=sha:raise Refused('precopy:exact-hosted-prefix-only')
+                verify_capture(captures[0]);events+=json.loads((root/'operations.json').read_text())
             self.completed={e['label'] for e in events if e['kind']=='dbt-result' and e['returncode']==0}
-            if self.completed!={c[0] for c in self.commands[:6]}:raise Refused('precopy:prefix-command-set')
+            count=6 if len(self.prefixes)==1 else 11
+            if self.completed!={c[0] for c in self.commands[:count]}:raise Refused('precopy:prefix-command-set')
+            if len(self.prefixes)==2:
+                writes={e['label'] for e in events if e['kind']=='sql' and e.get('state')=='SUCCEEDED'}
+                if not {'create_source','initial_source','change_source','insert_source'}<=writes:raise Refused('precopy:missing-completed-source-writes')
+            captures=list((self.prefix/'golden').glob('*.jsonl'))
             self.save('retained-prefix.json',{'capture':str(captures[0]),'sha256':digest(captures[0]),
                 'completed_commands':sorted(self.completed),'repeated_successful_commands':0})
 
@@ -173,23 +186,30 @@ class Precopy(Baseline):
         self.command_index+=1
         if label in self.completed:
             self.n+=1
-            paths=list((self.prefix/'wire').glob('*_'+label+'.json'))
+            paths=[path for root in self.prefixes for path in (root/'wire').glob('*_'+label+'.json')]
             if len(paths)!=1:raise Refused('precopy:missing-original-wire')
             return json.loads(paths[0].read_text())
         return Campaign.dbt(self,label,command,target,managed)
 
-    def evidence(self,label):return self.prefix if label in self.completed else self.work
+    def evidence(self,label):
+        if label not in self.completed:return self.work
+        roots=[root for root in self.prefixes if list((root/'wire').glob('*_'+label+'.json'))]
+        if len(roots)!=1:raise Refused('precopy:ambiguous-original-evidence')
+        return roots[0]
 
     def explain(self,label,submits):
-        if label in self.completed and (self.prefix/'wire'/f'{label}_explain.json').exists():return
+        if label in self.completed and any((root/'wire'/f'{label}_explain.json').exists() for root in self.prefixes):return
         return Baseline.explain(self,label,submits)
 
     def run(self):
         result=Baseline.run(self)
         if self.prefix:
             from databricks_snapshots_continuation import combine_captures
-            combine_captures(next((self.prefix/'golden').glob('*.jsonl')),
-                next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_precopy_hosted_whole.jsonl')
+            old=next((self.prefixes[0]/'golden').glob('*.jsonl'))
+            for root in self.prefixes[1:]:
+                intermediate=self.work/'combined-prefix.jsonl'
+                combine_captures(old,next((root/'golden').glob('*.jsonl')),intermediate);old=intermediate
+            combine_captures(old,next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_precopy_hosted_whole.jsonl')
         return result
 
     def inventory(self):
@@ -218,7 +238,9 @@ class Precopy(Baseline):
         self.before_inventory=self.inventory()
         for role,schema in SCHEMAS.items():
             existing={r['full_name'] for r in self.before_inventory[schema] if r['full_name'] in self.scope.allowed}
-            wanted=({self.scope.relation('prod','inputs'),self.scope.relation(role,'merge')} if role=='prod' else {self.scope.relation(role,'merge')}) if self.prefix else set()
+            wanted=({name for name in self.scope.allowed if name.split('.')[1]==schema}
+                    if len(self.prefixes)==2 else
+                    ({self.scope.relation('prod','inputs'),self.scope.relation(role,'merge')} if role=='prod' else {self.scope.relation(role,'merge')})) if self.prefix else set()
             if len(self.before_inventory[schema])+(3 if role=='prod' else 2)-len(wanted)>100:raise Refused('precopy:capacity')
             if existing!=wanted:raise Refused('precopy:collision')
         self.save('lease-inventory-before.json',self.before_inventory)
@@ -250,8 +272,9 @@ class Precopy(Baseline):
                 self.save('preflight/'+label+'.json',manifest)
 
     def physical(self,label,kind,role,stage,copied,cloned_now):
-        if label in self.completed and (self.prefix/'checks'/f'{label}.json').exists():
-            self.save('checks/'+label+'_retained.json',{'original_check':str(self.prefix/'checks'/f'{label}.json'),'repeated_reference':False})
+        completed_checks=[root/'checks'/f'{label}.json' for root in self.prefixes if (root/'checks'/f'{label}.json').exists()]
+        if label in self.completed and completed_checks:
+            self.save('checks/'+label+'_retained.json',{'original_check':str(completed_checks[0]),'repeated_reference':False})
             return
         target=self.scope.relation(role,kind)
         raw=self.observe(label,target)
@@ -355,6 +378,9 @@ class Precopy(Baseline):
                     clones.append(sql)
             elif drop:
                 if drop.group(1).lower()!='view' or normalize(drop.group(2))!=temp:raise Refused('precopy:unapproved-native-drop')
+            elif re.match(r'(?i)^alter\b',sql):
+                alter=re.fullmatch(r'(?is)alter\s+table\s+'+relation+r'\s+cluster\s+by\s+none',sql)
+                if not alter or normalize(alter.group(1))!=target:raise Refused('precopy:unapproved-native-alter')
             elif not change or normalize(change.group(1))!=target:raise Refused('precopy:unapproved-native-write')
             writes.append(sql)
         if len(clones)!=int(copy):raise Refused('precopy:granted-DDL-not-executed')
@@ -366,9 +392,9 @@ class Precopy(Baseline):
         if not self.prefix:
             self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
             self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
-        else:assert_source(self.sql('resume_source',source_projection_sql(source)),FIRST)
+        else:assert_source(self.sql('resume_source',source_projection_sql(source)),CHANGED if len(self.prefixes)==2 else FIRST)
         for stage in ('initial','changed','always'):
-            if stage=='changed':
+            if stage=='changed' and len(self.prefixes)<2:
                 row=CHANGED[0]
                 self.sql('change_source',f"UPDATE {source} SET v='{row[1]}',p=DATE '{row[2]}',ts=TIMESTAMP '{row[3]}' WHERE id=1")
                 self.sql('insert_source','INSERT INTO '+source+' VALUES '+literal_source((CHANGED[2],)))
