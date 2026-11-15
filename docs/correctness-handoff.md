@@ -37,7 +37,7 @@ Do not weaken these without new evidence.
   `crates/harness/tests/concurrency.rs`). A legacy confirmed unknown epoch is a
   conservative physical cold miss, including for copies and with external
   modification tolerance; delivery alone cannot prove safe recovery
-  ([#158 evidence](reports/databricks-lifecycle-2026-11-14.md)).
+  ([#158 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md)).
 - **Target relation as built.** Reuse needs exactly one known epoch for the
   target relation with `current_epoch <= confirmed_epoch` (a later epoch is
   accepted only with `ignore_external_modifications`). Missing, duplicated
@@ -252,7 +252,7 @@ server keeps the conservative behavior described.
   time. Deferral now independently reads confirmed execution history: fresh
   Snowflake/Databricks protocol captures and actual Databricks failed attempts
   prove that unconfirmed attempts are not deferrable (2026-11-13; #155,
-  [report](reports/databricks-deferral-2026-11-13.md)). This supersedes the
+  [report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md)). This supersedes the
   earlier shared selector/deferral timing assumption. Hosted selector failure
   timing remains unobserved.
 - **Wildcard views.** Column evidence for `SELECT *` over views with added or
@@ -387,20 +387,20 @@ The #155 crafted protocol diagnostic using Databricks backticks as Snowflake
 Target relation metadata is unresolved: hosted accepts it and resolves each
 component as a doublequoted identifier containing literal backticks; this
 server returns the submitted spelling. The dated
-[deferral report](reports/databricks-deferral-2026-11-13.md) retains the exact
+[deferral report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) retains the exact
 failed replay and original capture. The scoped fixtures use each warehouse's
 own quoting; this diagnostic has no replay exemption and establishes no
 cross-dialect spelling compatibility.
 
 New Databricks #140 missing-evidence diagnostics remain **blocking**, not
-accepted replay exceptions ([dated evidence](reports/databricks-freshness-2026-11-12.md)).
+accepted replay exceptions ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-2026-11-12.md)).
 Hosted SKIPs a crafted request that omits a source still read by its SQL;
 independent warehouse reads prove the cached target is stale. Missing recorded
 epochs also SKIP hosted, and missing/current epoch Explain differs. The server
 keeps conservative freshness checks. The bounded normalization of identical
 known current duplicates is integrated for Databricks rendered FULL submits
 without query dependencies and with a supported physical Target relation
-([follow-up report](reports/databricks-freshness-followup-2026-11-14.md)).
+([follow-up report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md)).
 Conflicting or unknown epochs, mixed physical aliases, duplicate Target relation
 evidence and recorded/legacy duplicates remain outside that normalization;
 ambiguous freshness evidence remains unresolved. Snowflake audit rules are
@@ -418,7 +418,7 @@ result scope, isolation and actual-client reachability remain incomplete for
 both FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
 Pinned read-only dbt show/operation probes did not send those execution RPCs;
 this does not establish general unreachability. These complete diagnostic
-histories remain archived, without a replay exemption or overall support claim ([report](reports/databricks-lifecycle-2026-11-14.md)).
+histories remain archived, without a replay exemption or overall support claim ([report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md)).
 
 Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
@@ -478,7 +478,7 @@ invalid target/epoch pairs in RecordExecutions reject the whole batch in
 An absent target with an outcome epoch is also invalid; this does not settle
 absent-target, null-epoch FULL/VIEW logical reuse (#158). Raw legacy confirmed
 physical rows with NULL epochs still prevent physical reuse and copying, even
-after later valid deliveries ([lifecycle report](reports/databricks-lifecycle-2026-11-14.md)).
+after later valid deliveries ([lifecycle report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md)).
 
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
@@ -572,7 +572,7 @@ local-only and renders no Explain tree.
   TLS and identity mapping are deployment work. The UI reads one configured
   organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
-  ([dated evidence](reports/databricks-client-auxiliary-2026-11-12.md)) without
+  ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`
   has no characterized contract and remains unimplemented.
 - **Health** always reports `SERVING`; it is not a database readiness check.
@@ -596,7 +596,7 @@ local-only and renders no Explain tree.
 
 ## Databricks dependency/template safe partial (#138, 2026-11-14)
 
-[#138's report](reports/databricks-dependency-template-2026-11-14.md) records
+[#138's report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-dependency-template-2026-11-14.md) records
 whole-binding identity, exact runtime extras versus declared body/config/macro
 signatures, scoped Record evidence, captured errors and template Explain INFO
 lines. New fingerprints use `dbt-state-databricks-sql-v4`; genuine v3 pending and
@@ -613,7 +613,7 @@ exposed, and equal literal rows are not a wrong-row demonstration. The required
 scoped UID floor remains intact, with fresh-UID UNDECIDED/BUILD and within-UID
 positive reuse regressions. The certified four-RPC fresh-UID failure stays
 outside matching fixtures, with no gap, mask or unknown-baseline exemption.
-[Full evidence and limits](reports/databricks-data-test-uid-boundary-2026-11-14.md).
+[Full evidence and limits](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).
 The existing #132/#140/#158/#159 blockers remain unchanged.
 
 ## Databricks partition replacement bounded partial (#147, 2026-11-14)
@@ -627,7 +627,7 @@ retaining old R, restoration, FULL1 Record and subsequent ordinary type4 rebuild
 and reuse. The entire hosted fixture replays without Databricks gaps. A helper
 INSERT INTO TABLE parser stop and its separately cleared continuation preserve
 every original RPC and successful physical write; delayed first Explain timing
-is retained rather than masked. See the [dated report](reports/databricks-insert-overwrite-2026-11-14.md).
+is retained rather than masked. See the [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md).
 
 This does not establish multiple partition keys, unpartitioned/liquid settings,
 column reordering/missing/new/type/schema-policy evolution, strategy/node-kind
@@ -649,7 +649,7 @@ settings/schema/lifecycle/dependency blockers remain incomplete.
 
 ## Databricks audit ordinary-submit partial (#144, 2026-11-14)
 
-[Bounded primary evidence](reports/databricks-audit-hosted-rejection-2026-11-14.md)
+[Bounded primary evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-audit-hosted-rejection-2026-11-14.md)
 records aliased and default-name source-less native audit-table histories.
 Both BUILD/Confirm a complete failing result and positively reuse it; a later
 body-changing pass reaches ordinary INVALID_ARGUMENT 3, `Failed to process SQL`,
@@ -691,7 +691,7 @@ source/cumulative R/selected F multisets, schema, MANAGED Delta/history, accepte
 runtimes and zero-RPC literal references. The initial helper's FULL1 assumption
 stopped after successful refresh; the original76/source remain preserved, and
 only missing checks and the final two invocations continued under a separate
-grant. No State history or expected rows were fabricated. The [bounded report](reports/databricks-replace-where-2026-11-14.md)
+grant. No State history or expected rows were fabricated. The [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md)
 records whole-trace replay and actual native audit-clock provenance.
 
 This is not whole #148: schema evolution, alternate/empty/invalid predicate
@@ -724,7 +724,7 @@ retry publication, other node-kind/strategy transitions and generated/restart/
 upgrade breadth remain required. Legacy fallback and uncharacterized temporal
 precision are not inferred. #138/#140 stay incomplete and no dependency edge
 or whole Databricks support claim is promoted. See the
-[bounded report](reports/databricks-delete-insert-2026-11-15.md).
+[bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
 
 
 ## Bounded MICROBATCH counterpart (#150, 2026-11-15)
@@ -741,7 +741,7 @@ preserved alongside its narrowly reviewed correction.
 This does not complete #150 or #138/#140. Full-refresh/Record, implicit scheduling,
 nondefault settings, schema evolution, concurrency/failure/lifecycle/generated
 breadth and isolated Target-only modification policy remain unaccepted. See the
-[bounded report](reports/databricks-microbatch-2026-11-15.md).
+[bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
 
 ## Databricks direct pre-copy partial (#152, 2026-11-15)
 

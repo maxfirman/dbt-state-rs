@@ -17,7 +17,9 @@ CLONE, recording outcomes so later runs can reuse them.
   traffic replay; it is not yet a fully conformant drop-in replacement (see
   [open questions and known divergences](docs/correctness-handoff.md)).
 - **Warehouse scope:** Snowflake is the characterized hosted warehouse, DuckDB
-  has a separately tested local workflow, and other dialects use conservative
+  has a separately tested local workflow, and Databricks has an
+  [experimental preview](docs/databricks-preview.md) with bounded tested
+  behavior and explicit limitations. Other dialects use conservative
   same-target reuse.
 
 ## Quick start

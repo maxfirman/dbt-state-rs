@@ -48,28 +48,24 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [0007](adr/0007-lag-tolerance-and-upstream-producers.md) | Freshness against recorded upstream epochs and producers, gated by Lag tolerance. |
 | [0008](adr/0008-store-failures-audit-relation-by-elimination.md) | Recognize an aliased `store_failures` audit relation as the one unnamed table in the test's schema. |
 
+## Databricks preview
+
+- [Preview coverage and limitations](databricks-preview.md): the entry point
+  for users, with configuration, archived evidence and follow-up scope.
+- [Copy configuration](databricks-copy-preview.md): default-off Databricks
+  copying and pinned-client settings.
+- [Landing plan](databricks-landing.md): revised preview release gates.
+- [Evidence manifest](databricks-evidence.tsv): archived report/scaffold paths
+  and hashes; golden fixtures and reproduction drivers remain in the tree.
+- [Table/view details](databricks-baseline.md),
+  [identifiers](databricks-identifiers.md),
+  [SQL equivalence](databricks-sql-equivalence.md),
+  [freshness](databricks-freshness.md) and
+  [dependency/template identity](databricks-dependency-template-identity.md):
+  implementation details for maintainers.
+
 ## Other
 
-- [Databricks table/view acceptance](databricks-baseline.md): isolated hosted
-  replay and real-client Rust runs with independent complete physical results;
-  [dated evidence](reports/databricks-baseline-2026-11-12.md).
-- [Databricks auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md):
-  pinned-client inventory, exact public replay, real-client hosted/Rust checks.
 - [golden/README.md](../golden/README.md): the golden fixture corpus.
 - [agents/](agents/): agent instructions for the issue tracker, triage labels
   and domain docs.
-
-- [Databricks audit hosted rejection](reports/databricks-audit-hosted-rejection-2026-11-14.md):
-  bounded #144 ordinary error-status fidelity from complete native and causal
-  diagnostic histories, with fresh Rust fallback/physical checks; broader audit
-  scope and dependencies remain incomplete.
-
-- [Databricks DELETE_INSERT bounded acceptance](reports/databricks-delete-insert-2026-11-15.md):
-  complete hosted/Rust key-replacement history, duplicate/NULL/empty-input
-  multiset checks, full refresh and actual native Explain clocks; #149 remains
-  incomplete outside this safe partial.
-
-- [Databricks MICROBATCH bounded acceptance](reports/databricks-microbatch-2026-11-15.md):
-  hosted/native ten-command event-time replacement history, independent cumulative
-  and selected multisets, target NULL retention and actual-clock whole replay;
-  broader #150 and #138/#140 remain incomplete.

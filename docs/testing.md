@@ -62,6 +62,11 @@ fixture is promoted.
 
 ## Evidence rules and release gate
 
+The [experimental Databricks preview](databricks-preview.md) uses the explicitly
+revised [landing plan](databricks-landing.md). Full completion of the original
+Databricks feature inventory is deferred; no full-conformance claim is made.
+Safety floors and exact retained regression assertions still apply.
+
 Two questions need different evidence (GLOSSARY: Hosted conformance, Reuse safety):
 
 - **Reuse safety**: can a SKIP or CLONE serve the wrong physical result? Offline
@@ -292,7 +297,7 @@ Record11→ordinary11 SQL transition. The real-client test is ignored and needs
 an exact separate grant, fresh owned pair and frozen tools/ledger. Its native
 capture must retain actual audit clocks before State cleanup and pass complete
 supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
-header is used. See the [bounded report](reports/databricks-replace-where-2026-11-14.md).
+header is used. See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
 
 `cargo test -p dbt-state-harness --test databricks_generated` is an ordinary,
 credential-free generated **modeled Reuse safety** gate. It uses public
@@ -349,4 +354,4 @@ fresh-SKIP flags and a full-refresh kind locked from prior hosted evidence.
 The real-client test is ignored and requires an exact separate grant and fresh
 owned pair. Its native wrapper retains actual audit clocks before State cleanup;
 whole supplemental replay supplies that sidecar. See the
-[dated bounded report](reports/databricks-delete-insert-2026-11-15.md).
+[dated bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).

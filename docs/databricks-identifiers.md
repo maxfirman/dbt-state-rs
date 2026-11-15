@@ -2,7 +2,7 @@
 
 The #136 campaign characterizes identifiers through the pinned dbt 2.0.11
 client and production gRPC router, with independent Databricks physical checks.
-The [dated evidence report](reports/databricks-identifiers-2026-11-13.md)
+The [dated evidence report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-identifiers-2026-11-13.md)
 records exact capture digests and validation. This extends the
 [table/view baseline](databricks-baseline.md); broader #132 copy/snapshot
 blockers remain unchanged.
@@ -70,7 +70,7 @@ round minutes as captured.
 
 Current Databricks SQL identities use `dbt-state-databricks-sql-v3`, building on
 the earlier identifier-v1 and rendered Spark-alias-v2 rules (the aliases are
-covered by [#159 isolation evidence](reports/databricks-isolation-2026-11-13.md)).
+covered by [#159 isolation evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md)).
 Representative rendered-mode v1/v2 frozen histories cold-miss, including an old
 pending execution confirmed after upgrade. Existing `compare_unrendered_code`
 template alternatives can still qualify under the preserved policy. Other

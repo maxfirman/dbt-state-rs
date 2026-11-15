@@ -19,31 +19,31 @@ Source fixtures (`golden/fixtures/`):
   absent keys and duplicate rows, replaces selected NULL keys and preserves rows
   on empty input; FULL1 Record precedes ordinary5 rebuild/reuse. Record mints no
   decision. No vocabulary or fence is introduced;
-  [bounded #149 evidence](reports/databricks-delete-insert-2026-11-15.md).
+  [bounded #149 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
 - `databricks_replace_where_history.jsonl`: twelve actual-client DBT_CUSTOM11
   decisions, seven BUILD and five fresh SKIP trees. Predicate replacement retains
   outside rows, replaces duplicates and NULLs, handles empty incoming rows and
   a destination-only predicate change, then records full refresh as type11 before
   ordinary type11 rebuild/reuse. Record mints no decision. No vocabulary or fence
-  is introduced; [bounded #148 evidence](reports/databricks-replace-where-2026-11-14.md).
+  is introduced; [bounded #148 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
 - `databricks_audit_{aliased,default}_error_history.jsonl`: six actual-client
   source-less audit-table first-build/speculative-reuse trees, including four
   template INFO lines. Complete ordinary-error and synthetic-control statuses
   are retained; no error is assigned an invented Explain tree. The histories
-  preserve original native failures; [bounded #144 evidence](reports/databricks-audit-hosted-rejection-2026-11-14.md).
+  preserve original native failures; [bounded #144 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
 - `databricks_cached_test_results.jsonl`: four actual-client source-less
   pass/fail first-build and speculative-reuse trees, complete typed outcomes
-  and successful computation confirmations; [bounded #143 evidence](reports/databricks-cached-test-results-2026-11-14.md).
+  and successful computation confirmations; [bounded #143 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md).
 - `databricks_freshness_{identical_current,missing_current,both_missing}.jsonl`:
   three complete crafted histories; identical known current duplicates SKIP,
   unknown current epochs BUILD with submit-frozen display defaults.
   `databricks_explain_identity_submit_clock.jsonl` retains the complete
   actual-client causal baseline and identity-change rebuild, including
   confirmation before Explain. See
-  [bounded follow-up evidence](reports/databricks-freshness-followup-2026-11-14.md).
+  [bounded follow-up evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md).
 - `databricks_isolation_*.jsonl`: nine exact scope, rendered-alias,
   rejection/confirmation and concurrent-client histories, 378 RPCs and 157
-  complete Explain trees; [dated partial evidence](reports/databricks-isolation-2026-11-13.md).
+  complete Explain trees; [dated partial evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md).
 - `explain_happy_history.jsonl`: history-bearing model/view/data-test SKIPs.
 - `explain_clone_history.jsonl`: CLONE with the copy source built in-window.
 - `explain_tolerance_history.jsonl`: within-tolerance SKIP and upstream-OUTDATED
@@ -57,7 +57,7 @@ Source fixtures (`golden/fixtures/`):
 - `databricks_managed_seeds.jsonl`: complete pinned 2.0.11 managed-seed initial,
   content/type/delimiter/quoting change and required unchanged reuse trees, with
   unchanged-SQL downstream producer changes; 20 first-call Explain responses.
-  [Seed evidence](reports/databricks-seeds-2026-11-13.md).
+  [Seed evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-seeds-2026-11-13.md).
 - `lag_copy_candidates.jsonl`: CLONE over an existing Target relation, anchored
   CLONE listing, absent-target rebuilds.
 - `lag_dropped_targets.jsonl`: stale CLONE into a dropped Target relation.
@@ -462,12 +462,12 @@ Tracked fixtures, 2026-11-15 (990 trees in 140 files, none empty; INFO catalogue
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
 
-The three [actual freshness histories](reports/databricks-freshness-actual-2026-11-14.md)
+The three [actual freshness histories](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-actual-2026-11-14.md)
 add 18 client 2.0.11 FULL trees: 11 EXECUTE and seven SKIP, including the
 repeated unchanged Explain. They introduce no new markers, badges or vocabulary;
 all request/response/status histories replay exactly without new gaps.
 
-The [bounded target lifecycle history](reports/databricks-target-lifecycle-2026-11-14.md)
+The [bounded target lifecycle history](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-target-lifecycle-2026-11-14.md)
 adds 46 client 2.0.11 FULL trees: 21 EXECUTE and 25 SKIP. Its literal upstream
 views are reported as query dependencies, not physical freshness inputs. When
 only their definitions change, query analysis keeps the outer model query
@@ -1721,7 +1721,7 @@ first-build tree). #80, #82 and #87 are accepted divergences
 ([correctness-handoff.md](correctness-handoff.md#accepted-divergences)): the
 server keeps its conservative rebuilds, so their keyed gaps stay.
 
-The [bounded producer/policy history](reports/databricks-policy-2026-11-14.md)
+The [bounded producer/policy history](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-policy-2026-11-14.md)
 adds 29 actual client 2.0.11 FULL trees with complete producer Record histories
 and exact ANY/ALL lag responses. Separate complete crafted duration controls
 add 50 FULL trees. Those controls establish Databricks display-only whole-second

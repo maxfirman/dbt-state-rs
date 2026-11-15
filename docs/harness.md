@@ -298,11 +298,11 @@ complete typed physical results and failed artifacts, and requires clean
 capture certification. The Snowflake runner's guards are unchanged.
 
 Commands, evidence and the copy/snapshot blockers are recorded in the
-[2026-11-12 capability report](reports/databricks-capabilities-2026-11-12.md).
+[2026-11-12 capability report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-capabilities-2026-11-12.md).
 The runner's credential-free guard/comparison tests run under ordinary
 `cargo test --workspace`. This survey makes no Rust support claim.
 
-The [actual freshness follow-up](reports/databricks-freshness-actual-2026-11-14.md)
+The [actual freshness follow-up](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-actual-2026-11-14.md)
 adds a zero-object Reference execution for the evidenced three-column FULL
 SELECT contract. `databricks_reference_pilot.py` runs an isolated, State-disabled
 `dbt show --inline … --limit -1 --output json`, compares full duplicate/NULL rows
@@ -351,9 +351,9 @@ run_results and successful computation confirmations. `--rust-url` requires
 `--contract` from the observed hosted outcomes. The ignored
 `real_dbt_cached_failures_match_independent_literal_results` test uses the
 production router and the existing `DBT_STATE_DATABRICKS_{PYTHON,DBT,SCHEMA_LEASE,ARTIFACTS}`
-environment variables. See the [dated evidence and remaining scope](reports/databricks-cached-test-results-2026-11-14.md).
+environment variables. See the [dated evidence and remaining scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md).
 
-The bounded [target lifecycle slice](reports/databricks-target-lifecycle-2026-11-14.md)
+The bounded [target lifecycle slice](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-target-lifecycle-2026-11-14.md)
 uses `databricks_target_lifecycle_campaign.py` with those same baseline arguments.
 It allocates one fresh source/consumer pair per backend and runs a serial table
 history plus an explicitly admitted continuation on the same names and State
@@ -392,7 +392,7 @@ contract; set `DBT_STATE_DATABRICKS_CONFIG_THROUGH=sum_v`,
 `DBT_STATE_DATABRICKS_CONFIG_CONTRACT=<repo>/experiments/databricks_cached_thresholds_contract.json`
 for the complete observed matrix. Always use a fresh artifact directory and
 an isolated server store; pin the launch source and executable hashes before
-actual use. See the [configuration evidence](reports/databricks-cached-test-configuration-2026-11-14.md).
+actual use. See the [configuration evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-configuration-2026-11-14.md).
 
 The bounded `databricks_policy_actual.py` campaign uses four exact fresh
 production-role names (`p_<run>_{inputs,producer_a,producer_b,consumer}`) and zero
@@ -413,7 +413,7 @@ an immutable operation-derived reference R; a later SKIP checks R while a
 separate direct typed/State-disabled-show reference computes current F. Actual
 elapsed-age checks retain margins and full producer Record histories. Crafted
 local-clock equality tests make no exact hosted-equality claim.
-The [dated report](reports/databricks-policy-2026-11-14.md) states the bounded
+The [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-policy-2026-11-14.md) states the bounded
 coverage and continuing #138/#140 blockers.
 
 `databricks_cached_template.py` adds the separate five-cell true-template
@@ -426,7 +426,7 @@ zero-RPC disabled/compile controls apply. Its observed contract is
 `databricks_cached_template_contract.json`; the ignored
 `real_dbt_true_template_cached_failure_matches_independent_literal_results`
 uses the established pinned dbt/Python/lease/artifact environment. See the
-[dated bounded evidence](reports/databricks-cached-test-template-failure-2026-11-14.md).
+[dated bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-template-failure-2026-11-14.md).
 
 `databricks_merge.py` runs the bounded SQL MERGE history with two exact fresh
 production-role names, no persistent Reference objects, and an explicit
@@ -445,7 +445,7 @@ It requires the pinned `DBT_STATE_DATABRICKS_DBT`, persistent
 `DBT_STATE_DATABRICKS_LIVE_CLEARANCE`, `DBT_STATE_DATABRICKS_RUN_ID` and a fresh
 `DBT_STATE_DATABRICKS_ARTIFACTS` directory. Pin source/executable identity before
 use; live acceptance runs the production router in an isolated State schema.
-The [dated partial report](reports/databricks-merge-2026-11-14.md) records the
+The [dated partial report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-merge-2026-11-14.md) records the
 actual FULL1 Record after CLI refresh and next ordinary MERGE3 rebuild/reuse,
 complete physical checks and coverage still required for whole #145.
 
@@ -470,7 +470,7 @@ The ignored
 requires the established `DBT_STATE_DATABRICKS_{PYTHON,DBT,PROXY,PROBE,ARTIFACTS}`
 variables plus `DBT_STATE_DATABRICKS_LIVE_CLEARANCE` and
 `DBT_STATE_DATABRICKS_RUN_ID`. It does not use a two-schema lease.
-See the [dated bounded evidence](reports/databricks-append-2026-11-14.md);
+See the [dated bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-append-2026-11-14.md);
 whole #146, its dependencies and full #132 remain incomplete.
 
 `databricks_insert_overwrite.py` adds the bounded #147 SQL partition replacement
@@ -493,7 +493,7 @@ retained names, cleanup or new schemas. Hosted capture and complete exact public
 replay precede the ignored
 `databricks_insert_overwrite.rs::real_dbt_insert_overwrite_matches_independent_operation_history`.
 Use the same pinned-client/tool/artifact/clearance/run-ID environment variables
-as APPEND. The [dated evidence](reports/databricks-insert-overwrite-2026-11-14.md)
+as APPEND. The [dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md)
 records the two preserved helper guard stops, root-reviewed continuation and
 whole chronological fixture. Whole #147, settings/schema/lifecycle coverage and
 #138/#140 dependencies remain incomplete.
@@ -531,7 +531,7 @@ empty result F is checked independently; the prior confirmed failing State R
 is not replaced. Other cells require actual fresh BUILD/Confirm and positive
 speculative reuse with complete payload/runtime/Explain and physical oracles.
 All compile/reference invocations use independent zero-RPC canaries. See the
-[dated status evidence and remaining scope](reports/databricks-audit-hosted-rejection-2026-11-14.md).
+[dated status evidence and remaining scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
 
 ### Bounded Databricks predicate replacement (#148)
 
@@ -557,7 +557,7 @@ DBT_CUSTOM11. The following ordinary run remains11; its rendered SQL changes
 from the full unfiltered Record SELECT to the steady filtered SELECT. The
 helper's default Record expectation remains FULL1; #148 passes the independently
 observed literal expected_type11. Do not generalize another strategy's mapping.
-The [dated report](reports/databricks-replace-where-2026-11-14.md) preserves the
+The [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md) preserves the
 initial helper stop, separately cleared continuation and complete90-RPC trace.
 
 The ignored native wrapper is
@@ -593,7 +593,7 @@ It uses the standard native environment plus
 `DBT_STATE_DATABRICKS_OPERATION_LEDGER`, saves its actual executable identity,
 and retains all actual org/decision/audit sampled clocks before State schema
 cleanup. Its capture and clock sidecar must pass whole supplemental replay.
-See [the dated evidence and unfinished scope](reports/databricks-delete-insert-2026-11-15.md).
+See [the dated evidence and unfinished scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
 
 
 ### Bounded MICROBATCH history (#150)
@@ -615,4 +615,4 @@ The ignored `databricks_microbatch.rs` native wrapper uses the standard native
 environment plus `DBT_STATE_DATABRICKS_OPERATION_LEDGER`. It retains actual
 org/decision-scoped audit clocks before State schema Drop and saves both capture
 and clock replay bindings. Its entire capture must pass supplemental replay
-with those exact clocks. [Dated results and remaining scope](reports/databricks-microbatch-2026-11-15.md).
+with those exact clocks. [Dated results and remaining scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).

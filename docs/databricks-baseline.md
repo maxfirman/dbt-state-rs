@@ -3,9 +3,9 @@
 The #135 baseline uses the two #132-confirmed seams: hosted captures replayed
 through the production gRPC router with isolated Postgres history, and the
 pinned real dbt client running against that router and Databricks. It is one
-table/view lifecycle slice; the [capability survey](reports/databricks-capabilities-2026-11-12.md)
+table/view lifecycle slice; the [capability survey](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-capabilities-2026-11-12.md)
 and its copy/snapshot blockers remain separate.
-The [2026-11-12 evidence report](reports/databricks-baseline-2026-11-12.md)
+The [2026-11-12 evidence report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-baseline-2026-11-12.md)
 records the completed hosted/Rust runs, exact capture hashes and validation.
 
 [The runner](../experiments/databricks_baseline.py) extends the survey's guarded
