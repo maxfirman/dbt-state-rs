@@ -309,6 +309,15 @@ capture must retain actual audit clocks before State cleanup and pass complete
 supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
 header is used. See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
 
+For #150's moving-window supplement, run
+`python3 experiments/databricks_moving_windows_test.py` and
+`cargo test -p dbt-state-harness --test databricks_microbatch --test databricks_150_description`.
+These check independent cumulative bags and guarded no-history BUILD display.
+The ordinary conformance gate includes the whole hosted77 history; the ignored
+native test requires pinned tools and exact owned names. Original native33 and
+public-hydrated/native50 retain distinct actual-clock evidence and are replayed
+independently. [Scope and attribution](databricks-microbatch.md).
+
 `cargo test -p dbt-state-harness --test databricks_generated` is an ordinary,
 credential-free generated **modeled Reuse safety** gate. It uses public
 SubmitEnrichedSQL, ConfirmExecution and GetExplainMessages with isolated

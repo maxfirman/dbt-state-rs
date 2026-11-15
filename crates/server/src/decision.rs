@@ -101,8 +101,9 @@ pub enum Reuse {
 pub enum DecisionReason {
     /// State history holds no latest row for the workload's output in scope.
     FirstBuild,
-    /// A source-less SQL submit reports a known existing Target relation, but
-    /// State has no confirmed evidence about its query.
+    /// A SQL submit reports a known existing Target relation, but State has no
+    /// confirmed evidence about its query. Characterized for source-less SQL
+    /// and bounded Databricks microbatch failure recovery (#150).
     ExistingTargetWithoutHistory,
     /// A first data test reports only its existing result relation, without
     /// recorded query evidence; the query-analysis section is empty.

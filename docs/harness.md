@@ -633,3 +633,14 @@ environment plus `DBT_STATE_DATABRICKS_OPERATION_LEDGER`. It retains actual
 org/decision-scoped audit clocks before State schema Drop and saves both capture
 and clock replay bindings. Its entire capture must pass supplemental replay
 with those exact clocks. [Dated results and remaining scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
+
+The `databricks_moving_windows.py` supplement uses the existing evidenced
+`--schema-lease`, owned `--schema`, exact UUID `--object-id` and guarded
+`--utc-day`. Its independent ledger checks source/R/F, default multi-batch
+lookback0/2, single-batch predicates and mandatory reuse. The native wrapper is
+`real_dbt_moving_windows_match_independent_operation_history`, adding
+`DBT_STATE_DATABRICKS_UTC_DAY`. The optional
+`DBT_STATE_DATABRICKS_NATIVE_PREFIX` is narrowly bounded to the retained native33
+interruption: genuine public history hydration, no repeated managed command,
+and independently replayed sessions. It is not a warehouse reset or a general
+history import API. [Evidence and capability limit](databricks-microbatch.md).

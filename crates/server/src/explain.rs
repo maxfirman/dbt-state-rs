@@ -487,9 +487,18 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             Shape::QueryObservedOutsideScope
         }
         (DecisionKind::Build, R::ExistingTargetWithoutHistory)
-            if !upstreams
+            if (!upstreams
                 && (!matches!(kind, Some(ModelExecutionType::View))
-                    || view_reads_no_relation(node)) =>
+                    || view_reads_no_relation(node)))
+                || (kind == Some(ModelExecutionType::Microbatch)
+                    && !node.own_target_absent()
+                    && node.anchor.is_none()
+                    && node.unmatched.is_none()
+                    && node.input_tables.len() == 2
+                    && node
+                        .input_tables
+                        .iter()
+                        .all(|input| input.last_modified_epoch.is_some_and(|epoch| epoch > 0))) =>
         {
             Shape::ExistingTargetWithoutHistory
         }
@@ -940,7 +949,14 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::ExistingTargetWithoutHistory) => vec![
             table_analysis_exists(node),
             section("query analysis", Vec::new()),
-            data_freshness_analysis_fresh(node),
+            if node.genuine_upstreams().is_empty() {
+                data_freshness_analysis_fresh(node)
+            } else {
+                // #150: a partial physical result has no confirmed build to
+                // judge freshness against. List current source timestamps,
+                // without badges, a freshness summary or a fabricated anchor.
+                unanchored_data_freshness_analysis(node)
+            },
         ],
         Some(Shape::AbsentTargetCopyChainDiagnostic) => {
             let mut table = first_build_table_analysis(node);
@@ -1001,18 +1017,18 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
-        Some(Shape::DataTestExecute) => vec![data_test_execute_freshness(node)],
+        Some(Shape::DataTestExecute) => vec![unanchored_data_freshness_analysis(node)],
         Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
             section("query analysis", Vec::new()),
-            data_test_execute_freshness(node),
+            unanchored_data_freshness_analysis(node),
         ],
     }
 }
 
-/// A data test that executes: its tested upstreams from the decision-time
-/// inputs, without verdicts, or `no upstream dependencies` for a test that
-/// reads none (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
-fn data_test_execute_freshness(node: &ExplainNode) -> qc::ExplainLine {
+/// Decision-time upstreams without a freshness verdict: an executing data
+/// test, or the bounded Databricks microbatch with no confirmed build (#150).
+/// No upstreams renders `no upstream dependencies` (explain_rebuild_reason_gaps).
+fn unanchored_data_freshness_analysis(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     let body = if upstreams.is_empty() {
         leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)

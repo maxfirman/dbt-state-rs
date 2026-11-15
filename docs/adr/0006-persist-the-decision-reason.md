@@ -56,6 +56,11 @@ costs one column and keeps the decision engine pure.
 - Stored strings are persisted state: never reword an existing value. Adding a
   reason adds a new string.
 - A client-requested copy (RegisterClone) records `result_copy`.
+- The bounded Databricks microbatch recovery (#150) records
+  `existing_target_without_history` when positive current target evidence
+  follows a failed command with no confirmed build. It keeps BUILD and no
+  matched/unmatched anchor. Explain lists current source timestamps without
+  freshness verdicts; physical existence does not establish reusable history.
 - The dropped-own-target (`no_reuse_candidate.own_target_changed_or_missing`)
   and no-build-anchor (`no_build_anchor`) reasons keep today's SHAPE-7
   rendering, flagged in `explain.rs::shape` and `docs/explain-catalog.md` as

@@ -91,7 +91,7 @@ fn captured_submit_request<T>(
     native_clocks: Option<&support::native_clock::NativeClocks>,
 ) -> tonic::Request<T> {
     let mut request = support::captured_request(body, entry);
-    if fixture.starts_with("databricks_") {
+    if fixture.starts_with("databricks_") || native_clocks.is_some() {
         let at = native_clocks.map_or_else(
             || databricks_decision_time(entry).expect("evidenced Databricks decision clock"),
             |clocks| clocks.submit_clock(entry),
@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        136,
+        137,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1301,6 +1301,12 @@ async fn databricks_predicate_recovery_exact_public_history() {
     exact_native_history("databricks_predicate_recovery.jsonl", 70, 10, 7).await;
 }
 
+/// Whole failed predicate attempt plus same-graph real-clock recovery and reuse.
+#[tokio::test]
+async fn databricks_moving_windows_exact_public_history() {
+    exact_native_history("databricks_moving_windows.jsonl", 77, 11, 6).await;
+}
+
 async fn exact_native_history(
     fixture: &str,
     count: usize,
@@ -1310,6 +1316,34 @@ async fn exact_native_history(
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures")
         .join(fixture);
+    exact_native_history_at(&path, count, submit_count, build_count, submit_count, None).await;
+}
+
+/// The original native client stopped after a successful ordinary SKIP because
+/// an incidental speculative probe was absent. Assert every actually captured
+/// RPC and its four Explain calls using the independently retained audit clocks.
+#[tokio::test]
+#[ignore = "requires retained original native33 capture and actual audit clocks"]
+async fn databricks_moving_original_native_prefix_exact_public_history() {
+    let path = std::path::PathBuf::from(
+        std::env::var_os("DBT_STATE_DATABRICKS_NATIVE_PREFIX_CAPTURE").unwrap(),
+    );
+    let evidence = std::path::PathBuf::from(
+        std::env::var_os("DBT_STATE_DATABRICKS_NATIVE_PREFIX_CLOCKS").unwrap(),
+    );
+    let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
+    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks)).await;
+}
+
+async fn exact_native_history_at(
+    path: &std::path::Path,
+    count: usize,
+    submit_count: usize,
+    build_count: usize,
+    explain_count: usize,
+    native_clocks: Option<&support::native_clock::NativeClocks>,
+) {
+    let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
     let server = support::start_server().await;
     let ch = support::channel(server.addr).await;
@@ -1331,7 +1365,7 @@ async fn exact_native_history(
                         .unwrap(),
                         entry,
                         fixture,
-                        None,
+                        native_clocks,
                     ))
                     .await
                     .unwrap()
@@ -1378,7 +1412,7 @@ async fn exact_native_history(
                     ch.clone(),
                     entry,
                     i,
-                    &path,
+                    path,
                     &decisions,
                     &[],
                     &mut seen_gaps,
@@ -1398,7 +1432,7 @@ async fn exact_native_history(
     assert_eq!(requests.len(), build_count);
     assert!(seen_gaps.is_empty());
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    assert_eq!(explained, submit_count);
+    assert_eq!(explained, explain_count);
 }
 
 /// Synthetic safety controls use captured request shapes, not hosted policy
