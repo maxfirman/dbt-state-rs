@@ -23,7 +23,7 @@ from databricks_survey import Campaign, Refused, Scope, check_manifest
 
 SCHEMA='ds_20261112a134ef_prod'
 SCHEMA_ID='59559b89-efa8-4ed7-b106-1394c2718cc3'
-OBJECTS={'hosted':'c948f761eba4495ea9d3592b46916c4d','rust':'dd2962a732824adba62a5f1539154aca4'}
+OBJECTS={'hosted':'c948f761eba4495ea9d3592b46916c4d','rust':'dd2962a732824adba62a5f1539154aca'}
 RUNS={'hosted':'20261115a151cc','rust':'20261115b151dd'}
 T0='2026-11-01 12:00:00.123450'
 T1='2026-11-02 12:00:00.654321'

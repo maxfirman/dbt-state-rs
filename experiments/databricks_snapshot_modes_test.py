@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Exact source-clock SCD supplements and focused oracle fault probes."""
 from collections import Counter
-from copy import deepcopy
 import unittest
-from databricks_snapshot_modes import SOURCE, CELLS, histories, plan, assert_source_clock_sql
+from databricks_snapshot_modes import SOURCE, CELLS, OBJECTS, histories, plan, assert_source_clock_sql
 from databricks_snapshot_oracle import Ledger, assert_history
 from databricks_survey import Refused
 
@@ -55,6 +54,8 @@ class SourceClockSnapshots(unittest.TestCase):
         self.assertEqual(sum(c[4] for c in CELLS),8)
         self.assertEqual(len(CELLS),17)
         for rows in histories().values():self.assertEqual(len({r[4] for r in rows}),len(rows))
+        import uuid
+        for value in OBJECTS.values():self.assertEqual(uuid.UUID(value).hex,value)
         for names in plan()['names'].values():self.assertEqual(len(set(names)),5)
 
 

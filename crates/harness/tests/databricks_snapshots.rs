@@ -124,6 +124,14 @@ async fn run_snapshot_campaign(modes: bool) {
         .await
         .expect("drain exact snapshot child");
     println!("{}", String::from_utf8_lossy(&output.stdout));
+    std::fs::write(artifacts.join("native-child.stdout"), &output.stdout).unwrap();
+    std::fs::write(artifacts.join("native-child.stderr"), &output.stderr).unwrap();
+    assert!(
+        artifacts.join("campaign/golden").is_dir(),
+        "snapshot child omitted capture (status {}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
     // Postflight evidence for future runs; the proxy capture stays unchanged.
     let captures: Vec<_> = std::fs::read_dir(artifacts.join("campaign/golden"))
         .expect("read drained native capture directory")
