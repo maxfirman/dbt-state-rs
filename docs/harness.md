@@ -566,6 +566,17 @@ observed literal expected_type11. Do not generalize another strategy's mapping.
 The [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md) preserves the
 initial helper stop, separately cleared continuation and complete90-RPC trace.
 
+The schema/predicate supplement `databricks_predicate_recovery.py` uses a fresh
+UUID pair and the source-evidenced existing-schema lease pattern. Four actual
+configs compile before DDL. Ten managed cells cover schema fail/retry, additive
+recovery and out-of-range input failure/retry followed by predicate widening.
+Each cell has complete source/target history and two State-disabled SELECT-only
+References. Run its ignored wrapper
+`real_dbt_predicate_recovery_matches_operation_history` with the same schema
+lease/schema/object-ID variables as MERGE recovery. Hosted capture and complete
+exact public replay precede a fresh production-router Rust run. See
+[scoped acceptance](databricks-replace-where.md).
+
 The ignored native wrapper is
 `databricks_replace_where.rs::real_dbt_replace_where_matches_independent_operation_history`.
 In addition to the usual native environment it requires
