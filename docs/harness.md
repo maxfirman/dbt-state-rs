@@ -495,8 +495,14 @@ replay precede the ignored
 Use the same pinned-client/tool/artifact/clearance/run-ID environment variables
 as APPEND. The [dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md)
 records the two preserved helper guard stops, root-reviewed continuation and
-whole chronological fixture. Whole #147, settings/schema/lifecycle coverage and
-#138/#140 dependencies remain incomplete.
+whole chronological fixture. The [scoped acceptance](databricks-insert-overwrite.md)
+adds `databricks_overwrite_recovery.py`: two partition keys, schema failure/retry,
+additive recovery, complementary replacement and empty-input retention. Its
+fresh UUID pairs use the source-evidenced lease pattern, with three native
+compiles before DDL and two zero-RPC SELECT-only References per managed cell.
+Run the new `real_dbt_composite_overwrite_matches_operation_history` wrapper
+with the MERGE recovery schema-lease/schema/object-ID variables. Complete hosted
+replay precedes fresh Rust execution; no existing names are rerun or cleaned.
 
 For supplemental native replay, retain the exact audit-clock sidecar before the
 test State schema is dropped. The147 wrapper calls
