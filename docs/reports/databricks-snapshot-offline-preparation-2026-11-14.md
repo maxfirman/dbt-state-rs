@@ -174,3 +174,26 @@ existing hosted corpora plus this entire combined history must pass strict publi
 gRPC replay before fixture promotion or a separate Rust grant. A stopped attempt,
 its prefix or an incomplete continuation is not promoted. Full#151 and every
 required blocker/follow-up remain open.
+
+## Bounded hosted timestamp-ignore acceptance (2026-11-15)
+
+The separately cleared continuation completed23new CLI invocations and all
+missing physical checks. Total12managed snapshots,12independent State-disabled
+NATIVE references,6Confirms,6fresh own-runtime Skips and12Explains passed. Both
+sources, every complete SCD row/null/ordered type/property/history and all known
+epoch/runtime floors matched the reviewed contract. The original7 and complete
+continuation77 retain separate raw files/certificates and compose byte-exact84
+records, SHA256 `06ff6d582bbd0e08f6e2746a7bdac8bb777cc3fee9c07a27b7353b55acf9fc8e`.
+Strict public replay of all130prior corpora plus this ENTIRE84 passed253.22s,
+1passed/18filtered,72new payload assertions plus12Explains, zero new gaps,
+unknown baselines or partial histories. Exact argv, explicit environment/unsets,
+source/capture/composition/tool/PID/test-executable/exit/log bindings were recorded
+contemporaneously; unrelated inherited environment is labelled unsnapshotted.
+The complete hosted84 is now admitted as the131st corpus; the stopped prefix
+is not admitted separately. No production change or fresh broad698/310/25gate
+claim is made. Current production inputs remain byte-identical to canonical4b0.
+
+Fresh Rust acceptance is still held for a separate fresh four-table graph,
+current source/tool freeze and root inventory/capacity/grant. Its standard fresh
+Snapshots path must not reuse first IDs or continuation bootstrapping. All earlier
+full-ticket blockers and untested required scope remain open.

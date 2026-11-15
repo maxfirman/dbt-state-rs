@@ -427,3 +427,32 @@ actual pre-Drop audit clocks; see the [bounded hosted/native report](../docs/rep
 This fixture does not complete whole #150 or its
 #138/#140 dependencies, nor independently characterize Target-only external
 modification policy.
+
+### Databricks bounded timestamp-ignore snapshot history (#151, 2026-11-15)
+
+`databricks_snapshot_timestamp_ignore_history.jsonl` is the entire certified
+84-record pinned2.0.11 hosted history, SHA256
+`06ff6d582bbd0e08f6e2746a7bdac8bb777cc3fee9c07a27b7353b55acf9fc8e`.
+Original7 and continuation77 records are concatenated byte for byte in actual
+chronology, retaining both original certificates and the composition receipt
+externally. The first managed snapshot and Confirm succeeded before a runner
+RPC allowlist stopped postprocessing. The separately cleared continuation first
+validated both complete sources and the first target SCD/schema/history/query
+IDs/epochs, then collected its Explain/reference and remaining11 pairs without
+repeating parse, first execution, source CREATE or initial INSERT.
+
+The entire history contains12 ordinary SNAPSHOT7 submits,6Build/Confirm,6fresh
+own-runtime Skips,12full Explain responses and all speculative/validation/
+telemetry/status envelopes. All12 managed results and12 independent State-disabled
+NATIVE snapshot references match complete frozen literal SCD histories, typed
+source bags and Delta histories. BeforeDDL UTC6microsecond projection and
+`unix_micros` were checked against an independent literal. Strict public replay
+of all130 prior corpora plus ENTIRE84 passes253.22s:72payload assertions plus
+12Explains, with zero new gaps, unknown baselines or partial-history allowances.
+The original prefix is not separately admitted and no status field is removed.
+
+This admits only bounded hosted timestamp/ignore evidence. The fresh Rust graph
+remains separately held pending its source/tool freeze, inventory/capacity and
+root grant. Full#151, check/invalidate clocks, the State-disabled `new_record`
+NULL-business-column blocker and#138/#140 remain open. See the
+[preparation and bounded evidence](../docs/reports/databricks-snapshot-offline-preparation-2026-11-14.md).
