@@ -1,0 +1,1077 @@
+{
+  "version": 1,
+  "ticket": 145,
+  "phase": "schema-recovery",
+  "run_ids": {
+    "hosted": "20261115a145ee",
+    "rust": "20261115b145ff"
+  },
+  "source_operations": {
+    "first": [
+      "CREATE TABLE S (id BIGINT, amount INT, tag STRING) USING DELTA",
+      "INSERT INTO S VALUES (1,10,'one'),(2,20,'retained')"
+    ],
+    "schema_fail": [
+      "ALTER TABLE S ADD COLUMNS (note STRING)",
+      "INSERT OVERWRITE TABLE S VALUES (1,11,'one-new','n1'),(3,30,'three','n3')"
+    ],
+    "next_delta": [
+      "INSERT OVERWRITE TABLE S VALUES (3,31,'three-new',CAST(NULL AS STRING)),(4,40,'four','n4')"
+    ]
+  },
+  "basis": "independent literal source/R/F bags; synthetic offline validation is not hosted evidence",
+  "cells": {
+    "first": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "fail",
+      "body": 0,
+      "outcome": "build",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "first_repeat": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "fail",
+      "body": 0,
+      "outcome": "reuse",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "schema_fail": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "fail",
+      "body": 1,
+      "outcome": "expected_schema_failure",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "schema_fail_retry": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "10",
+            "one"
+          ],
+          [
+            "2",
+            "20",
+            "retained"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "fail",
+      "body": 1,
+      "outcome": "expected_schema_failure",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "recover_append": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "2",
+            "20",
+            "retained",
+            null
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "append_new_columns",
+      "body": 1,
+      "outcome": "build",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "recover_repeat": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "2",
+            "20",
+            "retained",
+            null
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "3",
+            "30",
+            "three",
+            "n3"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "append_new_columns",
+      "body": 1,
+      "outcome": "reuse",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "next_delta": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "2",
+            "20",
+            "retained",
+            null
+          ],
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "append_new_columns",
+      "body": 1,
+      "outcome": "build",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    },
+    "next_repeat": {
+      "source": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "R": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "1",
+            "11",
+            "one-new",
+            "n1"
+          ],
+          [
+            "2",
+            "20",
+            "retained",
+            null
+          ],
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "F": {
+        "schema": [
+          [
+            "id",
+            "BIGINT",
+            "LONG",
+            0
+          ],
+          [
+            "amount",
+            "INT",
+            "INT",
+            1
+          ],
+          [
+            "tag",
+            "STRING",
+            "STRING",
+            2
+          ],
+          [
+            "note",
+            "STRING",
+            "STRING",
+            3
+          ]
+        ],
+        "rows": [
+          [
+            "3",
+            "31",
+            "three-new",
+            null
+          ],
+          [
+            "4",
+            "40",
+            "four",
+            "n4"
+          ]
+        ],
+        "all_columns_nullable": true
+      },
+      "config": "append_new_columns",
+      "body": 1,
+      "outcome": "reuse",
+      "hosted_status_decision_SQL": "UNKNOWN"
+    }
+  }
+}
