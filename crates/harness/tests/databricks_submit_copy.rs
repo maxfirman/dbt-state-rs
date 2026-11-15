@@ -18,6 +18,13 @@ async fn real_dbt_copy_recovery() {
     native_copy_campaign(server, "databricks_copy_recovery.py", true).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires exact #186 shared-copy clearance, pinned dbt and fresh objects"]
+async fn real_dbt_shared_copy_analysis_acceptance() {
+    let server = support::start_server_databricks_copy_recovery().await;
+    native_copy_campaign(server, "databricks_shared_copy.py", true).await;
+}
+
 async fn native_copy_campaign(server: support::TestServer, script: &str, direct_copy: bool) {
     use sha2::{Digest, Sha256};
     let artifacts = std::path::PathBuf::from(
@@ -158,6 +165,7 @@ fn native_evidence_guards() {
     for script in [
         "databricks_submit_copy_test.py",
         "databricks_copy_recovery_test.py",
+        "databricks_shared_copy_test.py",
     ] {
         let output = std::process::Command::new("python3")
             .arg(

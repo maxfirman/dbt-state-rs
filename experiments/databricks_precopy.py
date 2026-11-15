@@ -289,22 +289,26 @@ class Precopy(Baseline):
                     if n['name']=='check' and (cfg.get('updated_at')!='ts' or cfg.get('check_cols')!=['v'] or cfg.get('hard_deletes')!='ignore'):raise Refused('precopy:manifest-snapshot')
                 self.save('preflight/'+label+'.json',manifest)
 
-    def physical(self,label,kind,role,stage,copied,cloned_now,copy_source_role='prod',copy_repaired=False):
+    def physical(self,label,kind,role,stage,copied,cloned_now,copy_source_role='prod',copy_repaired=False,*,expected_rows=None,native_schema=None):
         completed_checks=[root/'checks'/f'{label}.json' for root in self.prefixes if (root/'checks'/f'{label}.json').exists()]
         if label in self.completed and completed_checks:
             self.save('checks/'+label+'_retained.json',{'original_check':str(completed_checks[0]),'repeated_reference':False})
             return
         target=self.scope.relation(role,kind)
         raw=self.observe(label,target)
-        check_schema(raw,NATIVE_SCHEMA if kind=='check' else NATIVE_SCHEMA[:4])
+        schema=native_schema if native_schema is not None else (NATIVE_SCHEMA if kind=='check' else NATIVE_SCHEMA[:4])
+        rows=expected(kind,stage) if expected_rows is None else expected_rows
+        check_schema(raw,schema)
         props=json.loads((self.work/'physical'/f'{label}_properties.json').read_text())
         values={r[0]:r[1] for r in props['rows']}
         if values.get('Type')!='MANAGED' or values.get('Provider','').lower()!='delta':raise Refused('precopy:physical-managed-delta')
-        projection=self.sql(label+'_lossless',projection_sql(target) if kind=='check' else source_projection_sql(target))
-        if kind=='check':actual=decode_projection(projection)
+        timestamped=any(n=='ts' for n,_,_,_ in schema)
+        projection=self.sql(label+'_lossless',projection_sql(target) if kind=='check' else source_projection_sql(target) if timestamped else 'SELECT * FROM '+target)
+        if kind=='check':actual=decode_projection(projection,schema)
+        elif timestamped:
+            assert_source(projection,rows,schema);actual=[r[:4] for r in projection['rows']]
         else:
-            assert_source(projection,expected(kind,stage));actual=[r[:4] for r in projection['rows']]
-        rows=expected(kind,stage)
+            check_schema(projection,schema);actual=projection['rows']
         if Counter(map(tuple,actual))!=Counter(map(tuple,rows)):raise Refused('precopy:complete-physical-bag')
         history=self.sql(label+'_history','DESCRIBE HISTORY '+target)
         self.save('physical/'+label+'_history.json',history)
@@ -325,7 +329,7 @@ class Precopy(Baseline):
                 for key in check['distinct_physical_identifiers']:
                     if props[key]!=meta.get('properties',{}).get(key):raise Refused('precopy:independent-UC-physical-identifiers')
             self.save('copies/'+label+'_properties.json',{'source':sp,'target':tp,'check':check})
-        names=[n for n,_,_,_ in (NATIVE_SCHEMA if kind=='check' else NATIVE_SCHEMA[:4])]
+        names=[n for n,_,_,_ in schema]
         def cell(v):return 'cast(null as string)' if v is None else "'"+v.replace("'","''")+"'"
         sql='SELECT '+','.join('cast('+n+' as string) AS '+n for n in names)+' FROM VALUES '+','.join('('+','.join(cell(v) for v in row)+')' for row in rows)+' AS declared('+','.join(names)+')'
         direct=self.sql(label+'_independent_literal',sql)
