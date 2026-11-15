@@ -6,6 +6,7 @@ clone, schema creation, or cleanup. Every observation has a State-disabled dbt
 Reference execution plus independently declared complete typed rows/aggregate.
 """
 from collections import Counter
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -191,6 +192,32 @@ class UpstreamTests(CachedTests):
                     and row['response']['response'] != {'undecided': {}}):
                 raise Refused('upstream:unknown-epoch-speculation-must-stay-undecided')
         return result
+
+    def check_build_explain(self, submit, messages):
+        body = submit['response']['response']
+        if 'ready_to_execute' not in body:
+            return
+        epoch = submit['request']['tables'][0]['last_modified_epoch']
+        absolute = datetime.fromtimestamp(epoch / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            lines = messages[0]['explain_lines']
+            text = lines[0]['children'][0]['children'][0]['children'][0]['text']
+        except (KeyError, IndexError, TypeError):
+            raise Refused('upstream:complete-BUILD-Explain') from None
+        if not re.fullmatch(r'last updated: (?:now|.+ ago), ' + re.escape(absolute) + r' UTC', text):
+            raise Refused('upstream:BUILD-Explain-relative-and-absolute-time')
+        def line(text, children=()):
+            return {'text': text, 'marker': None, 'badge': None, 'children': list(children)}
+        expected = [line('data freshness analysis', [line('upstream dependencies',
+                    [line(self.quoted_source, [line(text)])])])]
+        if len(messages) != 1 or lines != expected:
+            raise Refused('upstream:complete-BUILD-Explain')
+
+    def explain(self, label, submits):
+        super().explain(label, submits)
+        rows = json.loads((self.work / 'wire' / (label + '_explain.json')).read_text())
+        messages = next(row['response']['messages'] for row in rows if row['method'] == 'GetExplainMessages')
+        self.check_build_explain(submits[0], messages)
 
     def verify_inventory(self, after):
         for schema, rows in self.before_inventory.items():

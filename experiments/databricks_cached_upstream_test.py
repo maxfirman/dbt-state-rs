@@ -72,6 +72,21 @@ class UpstreamCachedControls(unittest.TestCase):
         runner.api = lambda *args: next(pages)
         self.assertEqual(runner.inventory(), {'ds_20261112a134ef_prod': []})
 
+    def test_build_explain_rejects_raw_epoch_instead_of_hosted_temporal_shape(self):
+        runner = self.runner()
+        def line(text, children=()):
+            return {'text': text, 'marker': None, 'badge': None, 'children': list(children)}
+        def messages(text):
+            return [{'explain_lines': [line('data freshness analysis', [line('upstream dependencies',
+                     [line(runner.quoted_source, [line(text)])])])]}]
+        submit = {'request': {'tables': [{'last_modified_epoch': 1794750940000}]},
+                  'response': {'response': {'ready_to_execute': {}}}}
+        runner.check_build_explain(submit, messages('last updated: 9 seconds ago, 2026-11-15 13:55:40 UTC'))
+        for text in ('last updated: 1794750940000 (UTC)',
+                     'last updated: 9 seconds ago, 2026-11-15 13:55:41 UTC'):
+            with self.assertRaises(Refused):
+                runner.check_build_explain(submit, messages(text))
+
     def test_scope_is_one_uuid_in_digest_verified_container(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'ownership.json'

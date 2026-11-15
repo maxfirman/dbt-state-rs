@@ -67,6 +67,8 @@ owned names are `t143_0b04ca9a77314896b84e62749ff28549_inputs` and
 `t143_db1fbe412f284b9aacb09ca8fc46cbdb_inputs`. Two earlier stopped attempts
 remain in sibling `hosted`/`hosted-2`, with both created tables preserved.
 Final exact client-probe/pagination/speculation guards were strengthened after
-live execution; the original twelve native/reference query logs per successful
-backend were revalidated offline against those final guards. Live runner
-snapshots and original captures are retained unchanged.
+live execution; the original twelve native/reference query logs per backend
+were revalidated offline against those guards. A new BUILD Explain guard rejects
+raw epochs and wrong absolute times; offline it accepts the original hosted
+trees and reproduces all three original Rust mismatches. Future live summary
+success requires this check. Live snapshots and captures stay unchanged.
