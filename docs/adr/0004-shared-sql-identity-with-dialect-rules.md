@@ -30,3 +30,38 @@ Evidence: current [SQL normalization](../../crates/server/src/sql_norm.rs),
 [DuckDB identifier rules](https://duckdb.org/docs/2.0/sql/dialect/keywords_and_identifiers).
 
 Current rules: [DuckDB SQL identity and result copies](../duckdb-identity-and-copy.md).
+
+## Shared analyzed workload amendment (#181, 2026-11-15)
+
+Extend the existing seam to Databricks through one analyzed workload and one
+copy qualification/provenance lifecycle. The [architecture contract](../architecture.md#shared-analyzed-workload-contract-181186)
+specifies the small interface, first grammar, responsibility replacements and
+compatibility gate. This is a staged implementation decision: #183 extracts
+without changing bytes or behavior; #184/#185 broaden Databricks analysis with
+new versioned copy identities. It does not claim those stages have shipped.
+
+Keep a structural representation with explicit reference-to-definition bindings,
+node-kind/configuration evidence and context/function effects. Raw SQL and strict
+exact fallback survive opaque analysis. Physical references and logical copy
+identity are distinct; State history, physical observations, producers and
+wall-clock build age are separate decision inputs. The adapter can establish
+identifier and function semantics but cannot manufacture column types, a catalog
+or missing session settings. Unknown proof refuses cross-target adoption.
+
+We choose structural equivalence over query optimization: no algebraic rewrites,
+arbitrary schema removal or universal logical plan. This permits useful FULL
+projections, filters, joins, CTEs and checked aggregation while keeping semantic
+uncertainty visible. The same analysis serves already-supported direct MERGE and
+check snapshots; their accumulated result still requires matching node-kind and
+configuration evidence. Permission to attempt clone DDL never proves permission
+to SKIP afterward.
+
+The shared lifecycle replaces parallel analyzers, identity framing and
+publication/adoption checks; it is not a new facade over permanent duplicates.
+Dialect adapters retain their characterized identity bytes, naming, observation
+semantics and copy execution capabilities. Snowflake/DuckDB keep current policy;
+Databricks v2 copy proofs cold-miss incompatible legacy evidence, including
+pending v1 rows confirmed after upgrade. Ordinary strict identities are unaffected.
+Both Databricks switches stay default off, positive chains remain unsupported,
+and the documented conservative stale-source refusal is retained even where
+hosted grants. Unversioned physical copy races remain outside this decision.

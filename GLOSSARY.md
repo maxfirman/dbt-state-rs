@@ -25,6 +25,16 @@ incremental model or data test. Each incremental strategy is a distinct node
 kind.
 _Avoid_: Execution type (except when naming the wire field), materialization
 
+**Analyzed workload**:
+A workload's query structure, bound inputs, node kind and configuration, together
+with what is known or unknown about the context affecting its result.
+_Avoid_: Logical plan (when implying a complete warehouse analysis)
+
+**Logical copy identity**:
+The identity of a workload's transformation and result semantics used to compare
+results across Target relations; it preserves the bindings of inputs to definitions.
+_Avoid_: SQL identity (when omitting node kind, configuration or bindings)
+
 **Result copy**:
 A new target relation populated from an eligible existing result rather than
 by executing the model's transformation again; required relation properties
