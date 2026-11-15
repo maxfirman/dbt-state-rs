@@ -3,7 +3,9 @@
 The experimental opt-in supports the tested quiescent dbt 2.0.11 MERGE and
 check-snapshot development pre-copy flow on serverless Unity Catalog managed
 Delta. Defaults remain [copy-disabled](databricks-copy-preview.md). Automatic
-submit copying (#153) and copy chains/failure recovery (#154) remain separate.
+submit copying has its [separate switch](databricks-submit-copy.md).
+The [copy recovery supplement](databricks-copy-recovery.md) tests source removal,
+modification, chain refusals and later history; positive chains remain unsupported.
 This is bounded physical acceptance, not the full ADR 0009 conformance claim.
 
 ## Tested flow

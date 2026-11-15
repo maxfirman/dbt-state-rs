@@ -788,15 +788,15 @@ capability limit. Broader full-refresh/Record, schema/concurrency/lifecycle and
 isolated Target-only modification combinations are not claimed. See the
 [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
 
-## Databricks direct pre-copy partial (#152, 2026-11-15)
+## Databricks direct pre-copy bounded (#152, 2026-11-15)
 
 The narrow native MERGE/check-snapshot RegisterClone/adoption path now has
 credential-free public gRPC coverage. Its versioned direct provenance freezes
 source inputs/producers and guards State-recorded source replacement before
-Confirm; it does not grant automatic namespace copy eligibility. Unobserved
-physical source races, broader copy/lifecycle/Explain and fresh independent
-warehouse acceptance remain unresolved. See the
-[bounded implementation report](reports/databricks-direct-precopy-2026-11-15.md).
+Confirm; it does not grant automatic namespace copy eligibility. Its fresh
+physical MERGE/check-snapshot acceptance is documented in
+[direct pre-copy](databricks-precopy.md). Unobserved physical source races and
+broader copying remain outside that quiescent scope.
 
 ## Databricks automatic submit copy bounded (#153, 2026-11-15)
 
@@ -808,6 +808,22 @@ fall through strict SQL or namespace adoption. MERGE is measured to BUILD1/6.
 The independently completed whole75 primary history replays exactly, while the
 separately authorized whole91 controls retain explicit hosted RAND rewrite and
 unknown-epoch display-clock limits. No runtime-field masks or replay gaps are
-added. Quiescent managed-Delta scope, unsupported chains/failure lifecycle and
+added. Quiescent managed-Delta scope, unsupported positive chains and
 unobservable unversioned physical source races keep full ADR0009 unresolved.
 See [scope and evidence](databricks-submit-copy.md).
+
+## Databricks copy recovery bounded (#154, 2026-11-15)
+
+The [serialized recovery supplement](databricks-copy-recovery.md) retains the
+entire hosted151 history: source removal, chain refusals, target modification,
+the exact FULL platform failure and retry, automatic client-checked fallback,
+and direct source rejection/build. Independent full results, properties and
+later history are checked through the real client; native whole replay requires
+all actual decision audit clocks. Positive chains and physical races stay excluded.
+
+The complete hosted boundary pins nine differing local payloads: entries26/30,
+115/119,127/128,129/133 and141. These are BUILD/Explain presentation and the
+conservative stale direct-source refusal; its raw hosted confirmation gets
+NotFound without publishing anything. No response field or timestamp is masked,
+no pending row is invented, and existing exact corpora remain unchanged.
+This accepted conservative behavior is distinct from full ADR0009 conformance.

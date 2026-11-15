@@ -77,5 +77,7 @@ As with direct pre-copy, an external physical source change during unversioned
 SHALLOW CLONE is unobservable at Confirm. These managed, serialized experiments
 require quiescent sources and do not establish universal concurrency safety.
 FULL/seed ordinary replacement of an existing managed shallow clone has a pinned
-client/platform failure even with State disabled. Chains and failed-copy fallback
-remain separate work. This bounded feature is not full ADR0009 conformance.
+client/platform failure even with State disabled. The
+[copy recovery supplement](databricks-copy-recovery.md) establishes actual
+source-epoch/missing-source fallback, chain refusal and subsequent native history;
+positive chains remain unsupported. This bounded feature is not full ADR0009 conformance.
