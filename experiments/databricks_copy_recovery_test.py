@@ -6,11 +6,49 @@ import unittest
 import uuid
 
 from databricks_copy_recovery import (CopyRecovery, FIRST, OBJECTS, RUNS, SCHEMAS,
-    RecoveryScope, cells, guarded_metadata, mutations, plan)
+    RecoveryScope, cells, direct_grant, guarded_metadata, mutations, plan)
 from databricks_survey import Refused
+from databricks_precopy import assert_clone_history, assert_copy_properties
 
 
 class RecoveryGuards(unittest.TestCase):
+    def test_repair_property_transition_is_explicit_and_bounded(self):
+        source={'clusterByAuto':'true','delta.enableRowTracking':'true'}
+        target={'clusterByAuto':'false','delta.enableRowTracking':'true'}
+        with self.assertRaises(Refused):assert_copy_properties(source,target)
+        check=assert_copy_properties(source,target,True)
+        self.assertEqual(check['preserved'],['delta.enableRowTracking'])
+        self.assertEqual(check['explicit_property_transition']['clusterByAuto']['target'],'false')
+        for changed in ({'clusterByAuto':'true','delta.enableRowTracking':'true'},
+                {'clusterByAuto':'false','delta.enableRowTracking':'false'},
+                {'clusterByAuto':'false'}):
+            with self.assertRaises(Refused):assert_copy_properties(source,changed,True)
+
+    def test_exact_native_clone_merge_cluster_repair_history(self):
+        import json
+        source='cdo_demo_db.owned.out'
+        history={'columns':[{'name':n} for n in ('version','operation','operationParameters')],
+            'rows':[['2','CLUSTER BY',json.dumps({'oldClusteringColumns':'','newClusteringColumns':'','clusterByAuto':'false'})],
+                    ['1','MERGE','{}'],['0','CLONE',json.dumps({'source':source,'sourceVersion':'1','isShallow':'true'})]]}
+        assert_clone_history(history,source,True)
+        with self.assertRaisesRegex(Refused,'physical-copy-history'):assert_clone_history(history,source)
+        for field,value in [('version','3'),('operation','WRITE'),('source','cdo_demo_db.foreign.out'),('isShallow','false'),('clusterByAuto','true')]:
+            changed=copy.deepcopy(history)
+            if field in ('version','operation'):changed['rows'][1][0 if field=='version' else 1]=value
+            else:
+                row=changed['rows'][0 if field=='clusterByAuto' else 2]
+                parameters=json.loads(row[2]);parameters[field]=value;row[2]=json.dumps(parameters)
+            with self.subTest(field=field),self.assertRaises(Refused):assert_clone_history(changed,source,True)
+
+    def test_legacy_top_level_refusal_and_exact_grant_mirrors(self):
+        self.assertIsNone(direct_grant({'ready_to_clone':None,
+            'unable_to_clone':{'explained_decision':{'clone_rejection_reason':10}},'response':None}))
+        ready={'request_id':'opaque'}
+        self.assertEqual(direct_grant({'ready_to_clone':ready,'response':{'ready_to_clone_v1':ready}}),ready)
+        for response in ({'ready_to_clone':ready,'response':None},
+                {'ready_to_clone':None,'response':{'ready_to_clone_v1':ready}}):
+            with self.assertRaisesRegex(Refused,'direct-mirrors'):direct_grant(response)
+
     def test_exact_fresh_graph_and_budget(self):
         p=plan()
         self.assertEqual(sum(len(cells(k)) for k in ('full','merge')),25)

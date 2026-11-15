@@ -732,5 +732,48 @@ async fn confirmed_direct_copy_is_not_a_chain_source_even_with_a_larger_limit() 
             response.response,
             Some(qc::clone_response::Response::ReadyToCloneV1(_))
         ));
+        if depth == 1 {
+            assert_eq!(
+                response
+                    .unable_to_clone
+                    .unwrap()
+                    .explained_decision
+                    .unwrap()
+                    .clone_rejection_reason,
+                Some(10),
+                "captured native chain-limit refusal"
+            );
+        }
+    }
+    for case in ["unknown_epoch", "missing_uid", "empty_uid"] {
+        let mut chained = request.clone();
+        chained.clone_source_table = request.target_table.clone();
+        chained.clone_source_last_modified_epoch = confirmation.last_modified_epoch;
+        chained.target_table = "`cdo_demo_db`.`third`.`chain_target`".into();
+        chained.clone_chain_depth_limit = Some(1);
+        match case {
+            "unknown_epoch" => chained.clone_source_last_modified_epoch = None,
+            "missing_uid" => {
+                chained.labels.remove("dbt_node_unique_id");
+            }
+            "empty_uid" => {
+                chained
+                    .labels
+                    .insert("dbt_node_unique_id".into(), "".into());
+            }
+            _ => unreachable!(),
+        }
+        let response = sc.register_clone(chained).await.unwrap();
+        assert!(response.ready_to_clone.is_none());
+        assert_eq!(
+            response
+                .unable_to_clone
+                .unwrap()
+                .explained_decision
+                .unwrap()
+                .clone_rejection_reason,
+            Some(5),
+            "{case}"
+        );
     }
 }

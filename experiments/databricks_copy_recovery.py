@@ -22,6 +22,13 @@ RUNS={'hosted':'20261115a154aa','rust':'20261115b154bb'}
 MODES=('normal','reverse','repair')
 
 
+def direct_grant(response):
+    ready=response.get('ready_to_clone')
+    mirror=(response.get('response') or {}).get('ready_to_clone_v1')
+    if ready!=mirror:raise Refused('recovery:direct-mirrors')
+    return ready
+
+
 def mutations():
     result=[]
     for kind in ('full','merge'):
@@ -107,6 +114,72 @@ class CopyRecovery(Precopy):
         self.commands += [(kind+'_'+label,['run','--select',kind],role,True) for kind in ('full','merge') for label,role,_ in cells(kind)]
         self.command_index=0;self.drops=0;self.updates=0;self.mutation_index=0;self.shallow=set()
         self.confirmed={};self.uids={};self.namespace=None;self.created_ids={};self.expected={}
+        self.original_events=[];self.completed_mutations=set()
+        if args.resume_prefix:
+            from capture_integrity import verify_capture
+            self.prefix=Path(args.resume_prefix);current=self.prefix
+            while current:
+                self.prefixes.insert(0,current)
+                if len(self.prefixes)>3:raise Refused('recovery:too-many-prefixes')
+                receipt=current/'retained-prefix.json'
+                current=Path(json.loads(receipt.read_text())['capture']).parent.parent if receipt.exists() else None
+            hashes=['72c0399dc1f64d9478c1be95e843188460dd366721d7ed09b9b7860bd68a0ea3',
+                '0319ed4142271357a89f5458c7334725a41a53758f9b4fc96e62f539b1fd013f',
+                '73493435fa42692ecf2bc3a0a54a81dd49aa3fb5c6ff9aab84fdbb80f517b232']
+            for root,sha in zip(self.prefixes,hashes):
+                captures=list((root/'golden').glob('*.jsonl'))
+                if self.phase!='hosted' or len(captures)!=1 or digest(captures[0])!=sha:raise Refused('recovery:exact-original-hosted-prefix')
+                verify_capture(captures[0])
+                self.original_events+=json.loads((root/'operations.json').read_text())
+            results=[e for e in self.original_events if e['kind']=='dbt-result']
+            count={1:13,2:24,3:28}[len(self.prefixes)]
+            if [(e['label'],e['returncode']) for e in results]!=[(c[0],int(i==12)) for i,c in enumerate(self.commands[:count])]:
+                raise Refused('recovery:exact-prefix-command-results')
+            self.completed={e['label'] for e in results}
+            writes=[e['label'] for e in self.original_events if e['kind']=='sql' and e.get('state')=='SUCCEEDED'
+                and re.match(r'(?i)^(CREATE|INSERT|UPDATE|DROP) ',e['statement'])]
+            completed_count={1:2,2:8,3:11}[len(self.prefixes)]
+            if writes!=['create_source','initial_source']+[m[0] for m in mutations()[:completed_count]]:
+                raise Refused('recovery:exact-prefix-mutations')
+            self.completed_mutations=set(writes[2:])
+            self.save('retained-prefix.json',{'capture':str(captures[0]),'sha256':digest(captures[0]),
+                'repeated_native_commands':0,'repeated_source_or_result_writes':0})
+
+    def dbt(self,label,command,target='prod',managed=True):
+        calls=super().dbt(label,command,target,managed)
+        if label in self.completed and label=='full_target_modified':
+            raise Refused('retained native replacement error; do not rerun')
+        return calls
+
+    def run(self):
+        # Precopy.run supplies its old #152 output name; use the same exact
+        # chronological concatenation without changing either capture.
+        result=Baseline.run(self)
+        if self.prefix:
+            from databricks_snapshots_continuation import combine_captures
+            old=next((self.prefixes[0]/'golden').glob('*.jsonl'))
+            for index,root in enumerate(self.prefixes[1:],1):
+                combined=self.work/f'combined-prefix-{index}.jsonl'
+                combine_captures(old,next((root/'golden').glob('*.jsonl')),combined);old=combined
+            combine_captures(old,
+                next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_copy_recovery_hosted_whole.jsonl')
+        return result
+
+    def mutation_evidence(self,label):
+        roots=[root for root in self.prefixes if (root/'mutations'/f'{label}_before.json').exists()]
+        if len(roots)!=1:raise Refused('recovery:exact-mutation-evidence')
+        return roots[0]
+
+    def created_metadata(self,label,target):
+        retained=[json.loads(path.read_text())['full_metadata'] for root in self.prefixes
+            if (path:=root/'physical'/f'{label}_created_ID.json').exists()]
+        if retained:
+            ids={guarded_metadata(meta,target) for meta in retained}
+            if len(ids)!=1:raise Refused('recovery:inconsistent-retained-created-ID')
+            return retained[-1]
+        if label in self.completed and ({'merge_chain':2,'merge_source_modified':3}.get(label)!=len(self.prefixes)
+                or not (self.work/'checks'/f'{label}.json').exists()):raise Refused('recovery:missing-retained-created-ID')
+        return self.api('get','/api/2.1/unity-catalog/tables/'+target)
 
     def configure(self,mode):
         import yaml
@@ -128,6 +201,24 @@ class CopyRecovery(Precopy):
     def init_schemas(self):
         # Identical owner/ID/paged-inventory/collision/capacity checks to #153.
         from databricks_submit_copy import SubmitCopy
+        if self.prefix:
+            previous=json.loads((self.prefix/'lease-inventory-after.json').read_text())
+            # The shared check's prefix mode requires every planned object.
+            # This exact causal prefix has only input + FULL prod/dev so far.
+            required={r['full_name'] for rows in previous.values() for r in rows if r['full_name'] in self.scope.allowed}
+            planned=self.scope.allowed
+            self.scope.allowed=required
+            try:result=SubmitCopy.init_schemas(self)
+            finally:self.scope.allowed=planned
+            for schema,rows in self.before_inventory.items():
+                if any(r not in rows for r in previous[schema]):raise Refused('recovery:prefix-object-preservation')
+                missing=sum(name.split('.')[1]==schema and name not in required for name in planned)
+                if len(rows)+missing>100:raise Refused('recovery:continuation-capacity')
+            # Final preservation checks concern older graphs. The current
+            # phase's named results may be removed by its exact test ledger.
+            self.before_inventory={schema:[r for r in rows if r['full_name'] not in planned]
+                for schema,rows in self.before_inventory.items()}
+            return result
         return SubmitCopy.init_schemas(self)
 
     def preflight(self):
@@ -137,7 +228,7 @@ class CopyRecovery(Precopy):
             for role in ('prod','dev'):
                 label='compile_'+mode+'_'+role
                 if self.dbt(label,['compile'],role,False):raise Refused('recovery:compile-State-RPC')
-                manifest=json.loads((self.work/'targets'/f'{self.n:03d}_{label}/manifest.json').read_text())
+                manifest=json.loads((self.evidence(label)/'targets'/f'{self.n:03d}_{label}/manifest.json').read_text())
                 check_manifest(self.scope,manifest)
                 if {n['name'] for n in manifest['nodes'].values()}!={'full','merge'}:raise Refused('recovery:manifest-nodes')
                 for n in manifest['nodes'].values():
@@ -153,6 +244,17 @@ class CopyRecovery(Precopy):
                 or (label,kind,role,operation)!=mutations()[self.mutation_index]):raise Refused('recovery:ordered-mutation-budget')
         self.mutation_index+=1
         target=self.scope.relation(role,kind)
+        if label in self.completed_mutations:
+            original=self.mutation_evidence(label)
+            before=json.loads((original/'mutations'/f'{label}_before.json').read_text())
+            if guarded_metadata(before['metadata'],target)!=self.created_ids[target]:raise Refused('recovery:retained-created-ID-mismatch')
+            if operation=='drop':
+                self.drops+=1;self.shallow.discard(target);del self.created_ids[target];del self.expected[target]
+            else:
+                self.updates+=1
+                self.expected[target]=json.loads((original/'mutations'/f'{label}_after.json').read_text())['expected_complete_bag']
+            self.save('mutations/'+label+'_retained.json',{'original':str(original/'mutations'/f'{label}_before.json'),'repeated_write':False})
+            return
         meta=self.api('get','/api/2.1/unity-catalog/tables/'+target)
         table_id=guarded_metadata(meta,target)
         if self.created_ids.get(target)!=table_id:raise Refused('recovery:created-ID-mismatch')
@@ -193,19 +295,32 @@ class CopyRecovery(Precopy):
         try:calls=self.dbt(label,['run','--select',kind],role)
         except Refused:
             if label!='full_target_modified':raise
-            events=[e for e in self.events if e['kind']=='dbt-result' and e['label']==label]
+            events=[e for e in self.original_events+self.events if e['kind']=='dbt-result' and e['label']==label]
             if len(events)!=1 or events[0]['returncode']==0:raise
-            log=(self.work/'dbt'/f'{self.n:03d}_{label}.log').read_text()
-            if not re.search(r'(?i)(shallow.clone|managedshallowclone|managed_shallow_clone)',log):raise
-            calls=json.loads((self.work/'wire'/f'{self.n:03d}_{label}.json').read_text())
+            log=(self.evidence(label)/'dbt'/f'{self.n:03d}_{label}.log').read_text()
+            if ('[CLUSTER_BY_AUTO_UNSUPPORTED_TABLE_TYPE_ERROR]' not in log
+                    or 'Database Error in model '+target.rsplit('.',1)[-1] not in log):raise
+            calls=json.loads((self.evidence(label)/'wire'/f'{self.n:03d}_{label}.json').read_text())
             if any(c['method']=='ConfirmExecution' for c in calls):raise Refused('recovery:failed-replacement-confirmed')
             submits=[c for c in calls if c['method']=='SubmitEnrichedSQL']
             if len(submits)!=1 or set(submits[0]['response']['response'])!={'ready_to_execute'}:raise Refused('recovery:failed-replacement-must-BUILD')
+            req=submits[0]['request']
+            if (req['target_table'].replace('`','')!=target or req['execution_type']!=1
+                    or req['allow_clones'] or req['clone_chain_depth_limit']!=0
+                    or req['table_namespace']!=self.namespace or req['query_dependencies'] or req['compare_unrendered_code']
+                    or req['dbt_node_state']['node_unique_id']!=self.uids[kind]):raise Refused('recovery:failed-replacement-active-scope')
+            old_checks=[root/'checks'/f'{label}.json' for root in self.prefixes if (root/'checks'/f'{label}.json').exists()]
+            if old_checks:
+                check=json.loads(old_checks[0].read_text())
+                if check.get('native_replacement_failed') is not True or check.get('no_Confirm') is not True:raise Refused('recovery:retained-failure-check')
+                self.save('checks/'+label+'_retained.json',{'original_check':str(old_checks[0]),'repeated_failed_command':False})
+                return
             self.audit_native(label,target,source,False)
             self.explain(label,submits)
             expected=[list(r) for r in FIRST];expected[0][1]='recovery_sentinel_wrong'
             assert_source(self.sql(label+'_retained_corruption',source_projection_sql(target)),expected)
-            before=json.loads((self.work/'mutations/full_modify_target_after.json').read_text())
+            original=self.mutation_evidence('full_modify_target') if label in self.completed else self.work
+            before=json.loads((original/'mutations/full_modify_target_after.json').read_text())
             after_history=self.sql(label+'_after_failure_history','DESCRIBE HISTORY '+target)
             if after_history!=before['history']:raise Refused('recovery:failed-replacement-changed-history')
             if guarded_metadata(self.api('get','/api/2.1/unity-catalog/tables/'+target),target)!=self.created_ids[target]:
@@ -228,7 +343,7 @@ class CopyRecovery(Precopy):
         confirms={c['request']['request_id']:c for c in calls if c['method']=='ConfirmExecution' and c['response'].get('success') is True}
         if verdict!='skip_execution' and response[verdict]['request_id'] not in confirms:raise Refused('recovery:unconfirmed-success')
         clones=[c for c in calls if c['method']=='RegisterClone']
-        direct=[c['response']['ready_to_clone'] for c in clones if c['response'].get('ready_to_clone')]
+        direct=[ready for c in clones if (ready:=direct_grant(c['response']))]
         for c in clones:
             cr=c['request']
             if (kind!='merge' or cr['clone_source_table'].replace('`','')!=source
@@ -240,8 +355,6 @@ class CopyRecovery(Precopy):
             if cell[0]=='source_modified' and (not cr['clone_source_last_modified_epoch']
                     or cr['clone_source_last_modified_epoch']==self.confirmed[source]['last_modified_epoch']):
                 raise Refused('recovery:physical-source-change-unobserved')
-            if c['response'].get('ready_to_clone')!=c['response'].get('response',{}).get('ready_to_clone_v1') and c['response'].get('ready_to_clone'):
-                raise Refused('recovery:direct-mirrors')
         ready=direct or ([response[verdict]] if verdict=='ready_to_clone' else [])
         for grant in ready:
             if (grant['clone_source'].replace('`','')!=source or grant['clone_target'].replace('`','')!=target
@@ -272,8 +385,9 @@ class CopyRecovery(Precopy):
         self.audit_native(label,target,source,bool(successful),allow_failed_attempt=bool(failed))
         self.explain(label,submits)
         if successful:self.shallow.add(target)
-        self.physical(label,kind,role,'first',target in self.shallow,bool(successful),'dev' if mode=='reverse' else 'prod')
-        meta=self.api('get','/api/2.1/unity-catalog/tables/'+target)
+        repaired=bool(direct and successful and verdict=='ready_to_execute')
+        self.physical(label,kind,role,'first',target in self.shallow,bool(successful),'dev' if mode=='reverse' else 'prod',repaired)
+        meta=self.created_metadata(label,target)
         table_id=guarded_metadata(meta,target)
         if target in self.created_ids and self.created_ids[target]!=table_id:raise Refused('recovery:unexpected-ID-replacement')
         self.created_ids[target]=table_id
@@ -289,8 +403,9 @@ class CopyRecovery(Precopy):
     def baseline(self):
         self.preflight()
         source=self.scope.relation('prod','inputs')
-        self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
-        self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        if not self.prefix:
+            self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
+            self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
         assert_source(self.sql('source_check',source_projection_sql(source)),FIRST)
         for kind in ('full','merge'):
             for cell in cells(kind):
@@ -316,6 +431,7 @@ def main():
     parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
+    parser.add_argument('--resume-prefix')
     args=parser.parse_args()
     if args.plan:print(json.dumps(plan(),indent=2));return 0
     return CopyRecovery(args).run()
