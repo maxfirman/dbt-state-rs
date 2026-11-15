@@ -902,7 +902,13 @@ async fn actual_v1_direct_history_cold_misses_after_upgrade() {
         let confirm: qc::ConfirmExecutionRequest =
             serde_json::from_value(fixture["confirm"].clone()).unwrap();
         if pending {
-            assert!(sc.try_confirm(confirm).await.unwrap().success);
+            let before = support::rows::complete_execution(&server, &confirm.request_id).await;
+            assert!(sc.try_confirm(confirm.clone()).await.unwrap().success);
+            let after = support::rows::complete_execution(&server, &confirm.request_id).await;
+            assert_eq!(
+                after["direct_copy_provenance"], before["direct_copy_provenance"],
+                "Confirm retains the old version and complete origin bytes"
+            );
         }
         let adopter: qc::SubmitEnrichedSqlRequest =
             serde_json::from_value(fixture["target_request"].clone()).unwrap();
