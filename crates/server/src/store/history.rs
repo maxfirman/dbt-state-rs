@@ -504,6 +504,8 @@ impl Store {
 
     /// Latest physical source, before qualification. Incompatible/unknown
     /// latest state must never expose an older eligible source.
+    /// Any pending write is a barrier: submission IDs cannot establish which
+    /// write will physically complete last.
     pub(crate) async fn current_direct_copy_source(
         &self,
         org_id: &str,
@@ -515,7 +517,7 @@ impl Store {
         query
             .push("SELECT ")
             .push(ExecutionRow::COLUMNS)
-            .push(" FROM current_state WHERE (table_type IS NULL OR upper(table_type) IN ('DELTA', 'DELTA TABLE')) AND NOT EXISTS (SELECT 1 FROM executions pending WHERE pending.org_id = current_state.org_id AND pending.warehouse_family = current_state.warehouse_family AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(current_state.table_namespace, '') AND pending.physical_target_key = current_state.physical_target_key AND pending.status = 'pending' AND pending.id > current_state.id)");
+            .push(" FROM current_state WHERE (table_type IS NULL OR upper(table_type) IN ('DELTA', 'DELTA TABLE')) AND NOT EXISTS (SELECT 1 FROM executions pending WHERE pending.org_id = current_state.org_id AND pending.warehouse_family = current_state.warehouse_family AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(current_state.table_namespace, '') AND pending.physical_target_key = current_state.physical_target_key AND pending.status = 'pending')");
         query
             .build_query_as::<ExecutionRow>()
             .fetch_optional(&self.pool)

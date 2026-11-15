@@ -603,7 +603,7 @@ impl Store {
                                     AND pending.warehouse_family = executions.warehouse_family
                                     AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
                                     AND to_jsonb(pending.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
-                                    AND pending.status = 'pending' AND pending.id > current_source.id
+                                    AND pending.status = 'pending'
                               )
                         ) THEN NULL
                     ELSE direct_copy_provenance END,

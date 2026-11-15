@@ -189,6 +189,65 @@ async fn native_confirmed_copy_adopts_exact_source_identity_and_inputs() {
     assert_eq!(actual, rows[4].response);
 }
 
+#[tokio::test]
+async fn earlier_submitted_pending_source_blocks_registration() {
+    let rows = entries();
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org(support::captured_org(&rows[0]));
+    let mut earlier: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[0].request.clone()).unwrap();
+    earlier.sql.push_str(" where id > 0");
+    let _earlier_pending = sc.execute_id(earlier).await;
+    source(&sc, &rows).await;
+    // Submission order cannot prove completion order. The earlier pending
+    // write may replace the current source while the warehouse copies it.
+    let req: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+    assert!(sc
+        .register_clone(req)
+        .await
+        .unwrap()
+        .ready_to_clone
+        .is_none());
+}
+
+#[tokio::test]
+async fn template_mode_without_signatures_cannot_establish_direct_adoption() {
+    let rows = entries();
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org(support::captured_org(&rows[0]));
+    let mut request: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[0].request.clone()).unwrap();
+    request.compare_unrendered_code = true;
+    request.dbt_node_state.as_mut().unwrap().node_body_hash = None;
+    request.dbt_node_state.as_mut().unwrap().node_configs_hash = None;
+    let id = sc.execute_id(request).await;
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(rows[1].request.clone()).unwrap();
+    confirm.request_id = id;
+    assert!(sc.try_confirm(confirm).await.unwrap().success);
+    let copy: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+    let ready = sc
+        .register_clone(copy)
+        .await
+        .unwrap()
+        .ready_to_clone
+        .unwrap();
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(rows[3].request.clone()).unwrap();
+    confirm.request_id = ready.request_id;
+    assert!(sc.try_confirm(confirm).await.unwrap().success);
+    let mut adopter: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[4].request.clone()).unwrap();
+    adopter.compare_unrendered_code = true;
+    adopter.dbt_node_state.as_mut().unwrap().node_body_hash = None;
+    adopter.dbt_node_state.as_mut().unwrap().node_configs_hash = None;
+    sc.expect_execute(adopter).await;
+}
+
 fn assert_native_response(actual: impl serde::Serialize, expected: &serde_json::Value) {
     fn remap(actual: &mut serde_json::Value, expected: &serde_json::Value) {
         if let (Some(actual), Some(expected)) = (actual.as_object_mut(), expected.as_object()) {
@@ -295,6 +354,7 @@ async fn adoption_uses_source_input_epoch_even_when_input_changed_before_copy() 
         "own_epoch",
         "unknown_input",
         "template",
+        "template_without_signatures",
     ] {
         let mut request = adopter.clone();
         match case {
@@ -331,6 +391,12 @@ async fn adoption_uses_source_input_epoch_even_when_input_changed_before_copy() 
                     .last_modified_epoch = None
             }
             "template" => request.compare_unrendered_code = true,
+            "template_without_signatures" => {
+                request.compare_unrendered_code = true;
+                let state = request.dbt_node_state.as_mut().unwrap();
+                state.node_body_hash = None;
+                state.node_configs_hash = None;
+            }
             _ => unreachable!(),
         }
         sc.expect_execute(request).await;

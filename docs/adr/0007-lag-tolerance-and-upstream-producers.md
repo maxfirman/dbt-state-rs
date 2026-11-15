@@ -203,8 +203,8 @@ changes before the copy, rather than synthesizing a baseline at the copy epoch.
 Snowflake and DuckDB retain their existing copy-age rule.
 
 Confirm clears this adoption evidence when the latest scoped source ID/epoch
-changed after registration, a newer source write remains pending, or the client
-reports failed cloning. Registration likewise refuses a source with a newer
+changed after registration, any source write remains pending, or the client
+reports failed cloning. Registration likewise refuses a source with any
 pending write. Unknown
 versions, legacy NULL, unsupported SQL/template/dependency shapes and missing
 source input epochs/producers never authorize direct adoption. The nullable

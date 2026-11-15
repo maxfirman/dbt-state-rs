@@ -34,8 +34,8 @@ whole hosted conformance corpus. Only opaque transport IDs are remapped.
   producers still rebuild with large lag tolerance. Changed SQL/config/full UID,
   physical input, target epoch, unknown input epoch and template mode rebuild.
 - Confirm atomically removes adoption evidence if the latest scoped source ID or
-  epoch differs from registration, or a newer source write remains pending.
-  Registration also refuses a source with a newer pending write. Failed cloning removes it. Legacy NULL,
+  epoch differs from registration, or any source write remains pending.
+  Registration also refuses a source with any pending write. Failed cloning removes it. Legacy NULL,
   malformed payloads and unknown versions cannot establish direct equivalence.
   Existing Snowflake/DuckDB namespace-copy semantics remain separate.
 
@@ -49,6 +49,16 @@ Explicit incompatible source types and retention properties remain unsupported.
 
 ## Validation and remaining work
 
+Single-reviewer follow-up found and fixed two safety gaps: pending source writes
+are barriers regardless of submission order (an earlier submit can finish later),
+and template mode without usable signatures cannot establish direct provenance.
+Two new public regressions failed against the original compiled server with the
+exact unwanted grant/SKIP, establishing the RED baseline for these corrections.
+The final-source direct-copy suite passes all ten tests (8.94s). The reviewer
+ran `cargo test --workspace -- --skip conformance` on final source: 709 passed,
+zero failed, 56 ignored, one whole-corpus replay filtered out. All four crates
+were rebuilt; no ignored real-dbt cases ran. Formatting and diff checks pass.
+
 The original direct case was RED with UNIMPLEMENTED before history; the adoption
 case then was RED with BUILD instead of the native SKIP. Eight focused public
 gRPC/Postgres tests now pass (11.14s). Existing hosted corpus replay passes all
@@ -56,7 +66,7 @@ gRPC/Postgres tests now pass (11.14s). Existing hosted corpus replay passes all
 Databricks-specific pending-source strengthening, which the final focused tests
 exercise. Existing corpora contain no Databricks RegisterClone calls. Strict
 server/harness Clippy with all targets and fuzz enabled, formatting and diff
-whitespace checks pass. The reviewer owns the final broader Rust gate cycle. Exact commands, source/file/tool hashes and final
+whitespace checks pass. The final broader Rust gate is recorded above. Original commands, source/file/tool hashes and
 replay/lint outcomes are in the compact external
 `/tmp/dbt-state-132-context/ticket152-implementation-checkpoint.md` manifest.
 

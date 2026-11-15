@@ -281,8 +281,9 @@ impl ExecutionEvidence {
         Self {
             node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
             node_sql_hash: Some(crate::fingerprint::sql_logic_hash(req, None)),
-            direct_copy_provenance: template
-                .is_none()
+            // Template mode cannot establish direct equivalence, even when
+            // missing signatures leave no usable template alternative.
+            direct_copy_provenance: (copy && template.is_none())
                 .then(|| crate::result_copy::direct_copy_provenance(req))
                 .flatten(),
             node_namespace_logic_hash: copy
