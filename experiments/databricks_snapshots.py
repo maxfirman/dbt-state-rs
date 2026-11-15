@@ -84,6 +84,20 @@ class CallGuard:
 
 
 def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None):
+    allowed={'ValidateClientVersion':'ClientValidation','SubmitEnrichedSQL':'SQL','ConfirmExecution':'Execution','SubmitTelemetryBatch':'ClientTelemetry','SubmitEnrichedSQLSpeculative':'SQL'}
+    if any(c['method'] not in allowed for c in calls):raise Refused('unexpected snapshot RPC')
+    for call in calls:
+        if (call.get('service')!=allowed[call['method']] or not isinstance(call.get('request'),dict)
+                or not isinstance(call.get('response'),dict)):
+            raise Refused('snapshot RPC service or request/response envelope differs')
+        if type(call.get('status',{}).get('code')) is not int or call['status']['code']!=0:
+            raise Refused('snapshot RPC failed or omitted status')
+        if call['method']=='SubmitTelemetryBatch' and (call.get('response')!={'success':True}
+                or not isinstance(call.get('request',{}).get('events'),list) or not call['request']['events']):
+            raise Refused('snapshot telemetry failed or malformed')
+        if call['method']=='ValidateClientVersion' and (call.get('response')!={'is_supported':True}
+                or call.get('request')!={'dbt_run_cache_version':'2.0.11'}):
+            raise Refused('snapshot client validation failed')
     submits=[c for c in calls if c['method']=='SubmitEnrichedSQL']
     if len(submits)!=1:raise Refused('one ordinary snapshot submit required')
     row=submits[0];request=row['request']
@@ -102,8 +116,15 @@ def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None
         raise Refused('snapshot lacks bounded strategy/complete known physical evidence')
     if set(row.get('response',{}).get('response',{}))!={expected}:raise Refused('unexpected snapshot decision')
     decisions(calls,expected)
-    allowed={'ValidateClientVersion','SubmitEnrichedSQL','ConfirmExecution'}
-    if any(c['method'] not in allowed for c in calls):raise Refused('unexpected snapshot RPC')
+    speculative=[c for c in calls if c['method']=='SubmitEnrichedSQLSpeculative']
+    if len(speculative)>1:raise Refused('multiple snapshot speculative submits')
+    if speculative:
+        spec=speculative[0];req=spec.get('request',{})
+        if (spec.get('response')!={'response':{'undecided':{}}}
+                or {k:v for k,v in req.items() if k!='tables'}!={k:v for k,v in request.items() if k!='tables'}
+                or req.get('tables')!=[{'name':next(t['name'] for t in tables if physical(t['name'])==source),'last_modified_epoch':None}]
+                or calls.index(spec)>=calls.index(row)):
+            raise Refused('snapshot speculative submit differs from bounded undecided source evidence')
     confirms=[c for c in calls if c['method']=='ConfirmExecution']
     if expected=='skip_execution':
         skip=row['response']['response'][expected]
@@ -351,7 +372,7 @@ class Snapshots(Baseline):
             elif label=='reinsert':self.sql(label+'_'+name,f'INSERT INTO {source} VALUES '+literal_source((SOURCE['reinsert'][1],)))
             elif label=='same_timestamp':self.sql(label+'_'+name,f"UPDATE {source} SET v='equal_time_new_value' WHERE id=1")
 
-    def baseline(self):
+    def prepare_initial(self):
         self.setup_project();self.save('project/models/sources.yml',{'version':2,'sources':[]})
         self.write_snapshots()
         self.dbt('inventory',['parse'],managed=False)
@@ -373,6 +394,14 @@ class Snapshots(Baseline):
             source=self.scope.relation('prod',name)
             self.sql('create_'+name,f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
             self.sql('initial_'+name,f'INSERT INTO {source} VALUES '+literal_source(SOURCE['first']))
+    def managed_calls(self,label):
+        return self.dbt(label,['snapshot','--select','consumer'])
+
+    def evidence_root(self,label):
+        return self.work
+
+    def baseline(self):
+        self.prepare_initial()
         managed=Ledger('timestamp','ignore');reference=Ledger('timestamp','ignore');previous_epochs=None;last_runtime=None;latest_confirmed_epoch=None;previous_request=None;previous_history=None
         for label,stage,expected in CELLS:
             self.source_change(label)
@@ -384,9 +413,9 @@ class Snapshots(Baseline):
             if expected=='ready_to_execute':managed=managed.execute(source_rows,label)
             reference=reference.execute(source_rows,label+'_reference')
             self.save('expected/'+label+'.json',self.frozen_results[label])
-            calls=self.dbt(label,['snapshot','--select','consumer'])
-            index=self.n
-            status=json.loads((self.work/'targets'/f'{index:03d}_{label}'/'run_results.json').read_text())
+            calls=self.managed_calls(label)
+            index=2 if label=='first' and self.evidence_root(label)!=self.work else self.n
+            status=json.loads((self.evidence_root(label)/'targets'/f'{index:03d}_{label}'/'run_results.json').read_text())
             self.save('client-status/'+label+'.json',assert_status(status,'snapshot.survey_'+self.a.run_id+'.consumer',self.scope.relation('prod','consumer'),expected=='skip_execution'))
             row=snapshot_submit(calls,self.scope.relation('prod','inputs'),self.scope.relation('prod','consumer'),label!='first',expected,last_runtime)
             request=row['request']
@@ -411,7 +440,7 @@ class Snapshots(Baseline):
                 assert_reuse_evidence(request,previous_request,source,self.scope.relation('prod','consumer'),latest_confirmed_epoch)
             previous_request=request
             previous_epochs=epochs
-            query=(self.work/'logs'/f'{index:03d}_{label}'/'query_log.sql').read_text()
+            query=(self.evidence_root(label)/'logs'/f'{index:03d}_{label}'/'query_log.sql').read_text()
             native=assert_native_sql(query,self.scope.relation('prod','consumer'),self.scope.relation_prefix+'consumer__dbt_tmp',label=='first',expected=='skip_execution')
             self.save('materialization/'+label+'.json',native)
             self.explain(label+'_tree',[row])
@@ -436,7 +465,7 @@ class Snapshots(Baseline):
                 self.save('physical/'+label+'_'+source_name+'_complete.json',complete)
                 self.save('physical/'+label+'_'+source_name+'_history.json',self.sql(label+'_'+source_name+'_history','DESCRIBE HISTORY '+source))
             self.save('inventory/'+label+'.json',after)
-        if self.guard.index!=25:raise Refused('snapshot call budget incomplete')
+        if self.guard.index!=len(self.guard.expected):raise Refused('snapshot call budget incomplete')
 
 
 def main():
