@@ -16,6 +16,19 @@ class PlanTests(unittest.TestCase):
         with self.assertRaises(Refused):
             validate_plan(plan)
 
+    def test_invalid_source_history_is_refused_before_any_live_setup(self):
+        for literal, operations in [
+            (False, [{'K':0}]), (False, [{'Update':10}]),
+            (True, [{'Literal':10}]), (False, [{'Delete':99}]),
+            (False, [{'Insert':[3,12]}, 'Observe', {'Insert':[3,13]}]),
+        ]:
+            all_ops = ['Observe','Observe'] + operations
+            plan = {'version':1,'seed':0,'literal':literal,'operations':[
+                {'op':op,'required':'SKIP' if i and op == 'Observe' else 'BUILD',
+                 'depends_on':i-1 if i else None} for i,op in enumerate(all_ops)]}
+            with self.subTest(operations=operations), self.assertRaises(Refused):
+                validate_plan(plan)
+
 
 if __name__ == '__main__':
     unittest.main()

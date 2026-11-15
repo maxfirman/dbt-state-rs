@@ -18,13 +18,14 @@ def operation(step):
 
 
 def validate_plan(plan):
-    if (set(plan) != {'version','seed','literal','operations'} or plan['version'] != 1
+    if (not isinstance(plan, dict) or set(plan) != {'version','seed','literal','operations'} or type(plan['version']) is not int or plan['version'] != 1
             or type(plan['seed']) is not int or not 0 <= plan['seed'] < 2**64
             or type(plan['literal']) is not bool):
         raise Refused('generated:plan-header')
     steps = plan['operations']
     if not isinstance(steps, list) or not 2 <= len(steps) <= 44:
         raise Refused('generated:plan-bound')
+    keys, query_value = {1:10, 2:None}, 10 if plan['literal'] else 0
     for i, step in enumerate(steps):
         if (not isinstance(step, dict) or set(step) != {'op','required','depends_on'}
                 or step['depends_on'] != (i-1 if i else None)):
@@ -43,6 +44,22 @@ def validate_plan(plan):
                          and name in (('Literal',) if plan['literal'] else ('Delete','Update','K')))
             if not valid:
                 raise Refused('generated:operation')
+            if name == 'Insert':
+                if value[0] in keys:
+                    raise Refused('generated:duplicate-insert')
+                keys[value[0]] = value[1]
+            elif name == 'Delete':
+                if value not in keys:
+                    raise Refused('generated:missing-delete')
+                del keys[value]
+            elif name == 'Update':
+                if 1 not in keys or keys[1] == value:
+                    raise Refused('generated:no-op-update')
+                keys[1] = value
+            elif name in ('K','Literal'):
+                if query_value == value:
+                    raise Refused('generated:no-op-query')
+                query_value = value
         expected = 'SKIP' if i and op == 'Observe' else 'BUILD'
         if step['required'] != expected or (i < 2 and op != 'Observe'):
             raise Refused('generated:decision-contract')
