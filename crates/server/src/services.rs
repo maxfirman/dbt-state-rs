@@ -664,6 +664,19 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
+        // Preview excludes Databricks Result copy. Use the normal no-copy
+        // response so the client can build, before source lookup or publication.
+        if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            == crate::warehouse::Warehouse::Databricks
+            && !self.0.databricks_direct_copy
+        {
+            return Ok(Response::new(unable_to_clone_response(
+                req.clone_source_table,
+                req.target_table,
+                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
+            )));
+        }
+
         // Plan the client-requested copy (see `result_copy`): reject ineligible
         // requests before any read, fetch the history the plan needs, then plan.
         let refuse = |refusal| match refusal {

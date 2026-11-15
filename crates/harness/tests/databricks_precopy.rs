@@ -29,10 +29,71 @@ async fn source(sc: &Scenario, rows: &[GoldenEntry]) {
     );
 }
 
+/// Preview policy refuses even a source that qualifies for the isolated copy path.
+#[tokio::test]
+async fn preview_defaults_to_no_databricks_copy_grants() {
+    let rows = entries();
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server)
+        .await
+        .org(support::captured_org(&rows[0]));
+    source(&sc, &rows).await;
+    let req: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+    let response = sc.register_clone(req).await.unwrap();
+    assert!(
+        response.ready_to_clone.is_none(),
+        "preview must not grant copy DDL"
+    );
+    assert!(
+        response.response.is_none(),
+        "deprecated copy grant must also be absent"
+    );
+    let refusal = response.unable_to_clone.expect("normal no-copy response");
+    assert_eq!(
+        refusal.explained_decision.unwrap().clone_rejection_reason,
+        Some(10)
+    );
+
+    // The caller can continue via ordinary SubmitEnrichedSQL after refusal.
+    // The absent target has no copied result and must be built normally.
+    let mut submit: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[4].request.clone()).unwrap();
+    submit
+        .tables
+        .retain(|table| Some(&table.name) != submit.target_table.as_ref());
+    assert_eq!(sc.verdict(submit).await, "ready_to_execute");
+}
+
+#[tokio::test]
+async fn ordinary_databricks_full_submit_never_automatically_copies() {
+    let rows = entries();
+    // Even direct-copy opt-in cannot expand ordinary-submit copy policy.
+    for direct_copy in [false, true] {
+        let server = if direct_copy {
+            support::start_server_databricks_direct_copy().await
+        } else {
+            support::start_server().await
+        };
+        let sc = Scenario::connect(&server)
+            .await
+            .org(support::captured_org(&rows[0]));
+        let mut submit: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(rows[0].request.clone()).unwrap();
+        submit.execution_type = qc::ModelExecutionType::Full as i32;
+        let id = sc.execute_id(submit.clone()).await;
+        let mut confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[1].request.clone()).unwrap();
+        confirm.request_id = id;
+        assert!(sc.try_confirm(confirm).await.unwrap().success);
+        submit.target_table = Some(rows[2].request["target_table"].as_str().unwrap().into());
+        assert_eq!(sc.verdict(submit).await, "ready_to_execute");
+    }
+}
+
 #[tokio::test]
 async fn native_default_format_precopy_returns_exact_hosted_ddl() {
     for rows in entries().chunks(8) {
-        let server = support::start_server().await;
+        let server = support::start_server_databricks_direct_copy().await;
         let sc = Scenario::connect(&server)
             .await
             .org(support::captured_org(&rows[0]));
@@ -63,7 +124,7 @@ async fn native_default_format_precopy_returns_exact_hosted_ddl() {
 #[tokio::test]
 async fn direct_precopy_requires_current_source_in_exact_scope() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -163,7 +224,7 @@ async fn direct_precopy_requires_current_source_in_exact_scope() {
 #[tokio::test]
 async fn native_confirmed_copy_adopts_exact_source_identity_and_inputs() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -192,7 +253,7 @@ async fn native_confirmed_copy_adopts_exact_source_identity_and_inputs() {
 #[tokio::test]
 async fn earlier_submitted_pending_source_blocks_registration() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -215,7 +276,7 @@ async fn earlier_submitted_pending_source_blocks_registration() {
 #[tokio::test]
 async fn template_mode_without_signatures_cannot_establish_direct_adoption() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -273,7 +334,7 @@ fn assert_native_response(actual: impl serde::Serialize, expected: &serde_json::
 #[tokio::test]
 async fn native_merge_and_snapshot_copy_adoption_repeat_and_changed_input() {
     for rows in entries().chunks(8) {
-        let server = support::start_server().await;
+        let server = support::start_server_databricks_direct_copy().await;
         let sc = Scenario::connect(&server)
             .await
             .org(support::captured_org(&rows[0]));
@@ -317,7 +378,7 @@ async fn native_merge_and_snapshot_copy_adoption_repeat_and_changed_input() {
 #[tokio::test]
 async fn adoption_uses_source_input_epoch_even_when_input_changed_before_copy() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -407,7 +468,7 @@ async fn adoption_uses_source_input_epoch_even_when_input_changed_before_copy() 
 async fn source_replacement_between_registration_and_confirmation_cannot_be_adopted() {
     for publish_source in [false, true] {
         let rows = entries();
-        let server = support::start_server().await;
+        let server = support::start_server_databricks_direct_copy().await;
         let sc = Scenario::connect(&server)
             .await
             .org(support::captured_org(&rows[0]));
@@ -444,7 +505,7 @@ async fn source_replacement_between_registration_and_confirmation_cannot_be_adop
 #[tokio::test]
 async fn changed_producer_before_copy_cannot_be_hidden_by_copy_age_or_lag() {
     let rows = entries();
-    let server = support::start_server().await;
+    let server = support::start_server_databricks_direct_copy().await;
     let sc = Scenario::connect(&server)
         .await
         .org(support::captured_org(&rows[0]));
@@ -493,7 +554,7 @@ async fn failed_clone_clears_adoption_and_unknown_source_inputs_do_not_establish
         "incompatible_source_type",
     ] {
         let rows = entries();
-        let server = support::start_server().await;
+        let server = support::start_server_databricks_direct_copy().await;
         let sc = Scenario::connect(&server)
             .await
             .org(support::captured_org(&rows[0]));

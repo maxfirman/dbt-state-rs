@@ -760,7 +760,18 @@ async fn conformance_replay_all_corpora() {
                     .expect("valid complete native audit clock evidence")
             });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
-        let server = support::start_server().await;
+        // Captures characterize the retained direct-copy implementation; the
+        // preview default is covered separately at the public gRPC seam.
+        let server = if entries.iter().any(|entry| {
+            entry.method == "RegisterClone"
+                && dbt_state_server::warehouse::Warehouse::from_dialect(
+                    entry.request["dialect"].as_str().unwrap_or_default(),
+                ) == dbt_state_server::warehouse::Warehouse::Databricks
+        }) {
+            support::start_server_databricks_direct_copy().await
+        } else {
+            support::start_server().await
+        };
         let addr = server.addr;
         let ch = support::channel(addr).await;
         let mut sql = SqlClient::new(ch.clone());
