@@ -340,8 +340,16 @@ continuation collected its missing Explain/reference and continued without
 rerunning successful dbt or source writes. The delayed first Explain retains its
 actual elapsed age. No prefix, mask, unknown baseline or Databricks replay gap
 is accepted. The [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md)
-links independent typed R/F/physical checks and fresh Rust acceptance. Whole
-#147/settings/schema/lifecycle coverage and #138/#140 remain incomplete.
+links independent typed R/F/physical checks and fresh Rust acceptance. The
+[partition/schema supplement](../docs/databricks-insert-overwrite.md) records
+the scoped #147 acceptance and its configuration boundaries.
+
+`databricks_overwrite_recovery.jsonl` retains the complete 70-RPC supplement:
+composite STRING partition keys with NULL-safe replacement, duplicate bags,
+schema failure/retry without publication, additive recovery, complementary
+partition replacement, empty-input retention and four required unchanged SKIPs.
+All ten Explain responses, statuses, speculative calls and telemetry remain.
+No replay gap, partial history or unknown-baseline exemption is admitted.
 
 ## Bounded Databricks audit ordinary-error histories (#144, 2026-11-14)
 

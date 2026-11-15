@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        134,
+        135,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1286,8 +1286,24 @@ async fn conformance_replay_all_corpora() {
 /// missing history, partial comparisons or skipped telemetry are admitted.
 #[tokio::test]
 async fn databricks_append_transitions_exact_public_history() {
+    exact_native_history("databricks_append_transitions.jsonl", 97, 14, 7).await;
+}
+
+/// Complete hosted composite partition/schema history, including failed builds.
+#[tokio::test]
+async fn databricks_overwrite_recovery_exact_public_history() {
+    exact_native_history("databricks_overwrite_recovery.jsonl", 70, 10, 6).await;
+}
+
+async fn exact_native_history(
+    fixture: &str,
+    count: usize,
+    submit_count: usize,
+    build_count: usize,
+) {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../golden/fixtures/databricks_append_transitions.jsonl");
+        .join("../../golden/fixtures")
+        .join(fixture);
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
     let server = support::start_server().await;
     let ch = support::channel(server.addr).await;
@@ -1308,7 +1324,7 @@ async fn databricks_append_transitions_exact_public_history() {
                         )
                         .unwrap(),
                         entry,
-                        "databricks_append_transitions.jsonl",
+                        fixture,
                         None,
                     ))
                     .await
@@ -1371,12 +1387,12 @@ async fn databricks_append_transitions_exact_public_history() {
             other => panic!("unexpected RPC in complete transition graph: {other}"),
         }
     }
-    assert_eq!(entries.len(), 97);
-    assert_eq!(decisions.len(), 14);
-    assert_eq!(requests.len(), 7);
+    assert_eq!(entries.len(), count);
+    assert_eq!(decisions.len(), submit_count);
+    assert_eq!(requests.len(), build_count);
     assert!(seen_gaps.is_empty());
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    assert_eq!(explained, 14);
+    assert_eq!(explained, submit_count);
 }
 
 /// Synthetic safety controls use captured request shapes, not hosted policy
