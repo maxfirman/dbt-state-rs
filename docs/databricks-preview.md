@@ -17,6 +17,14 @@ Each row describes tested cases, not every possible setting of that feature.
 Evidence links point to the preserved archive; production tests and captured
 histories remain in the main tree. Unfinished issues remain open after landing.
 
+On 2026-11-15 the maintainer accepted **documented conservative differences**
+for completing implementation tickets: extra BUILDs or speculative undecided
+responses may preserve UID, namespace and freshness safety instead of matching
+unsafe hosted reuse. A ticket can close when its supported behavior is tested
+and these limits are explicit. Missing features and untested behavior remain
+open. Exact retained fixtures are not weakened, and this does not create a
+full hosted-conformance claim under ADR 0009.
+
 | Area | Tested boundary / remaining work | Evidence | Issues |
 | --- | --- | --- | --- |
 | Tables and views | First build, unchanged reuse, changed logic and independent typed physical results. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-baseline-2026-11-12.md) | #135 |
