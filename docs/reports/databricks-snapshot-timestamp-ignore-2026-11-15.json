@@ -316,5 +316,15 @@
       }
     },
     "interpretation": "Source/frozen pairs were verified held through actual child/proxy drain before replay. Later Cargo test-profile cache rebuilds are separate from immutable runtime executable copies."
+  },
+  "observed_timestamp_boundaries": {
+    "equal_timestamp_business_change": "Exercised; no new SCD version",
+    "older_source_timestamps": "Not exercised in the live SOURCE/CELLS; uncharacterized",
+    "actual_SCD_business_timestamp_fraction": ".000000 in every live operation",
+    "nonzero_microsecond_transport_preflight": {
+      "literal": "2026-11-12 01:50:34.797584",
+      "proved": "Separate before-proxy date_format/unix_micros SELECT transport agreement",
+      "does_not_prove": "Nonzero-microsecond SCD or hash semantics; uncharacterized"
+    }
   }
 }
