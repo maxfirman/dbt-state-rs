@@ -106,7 +106,10 @@ def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None
     if any(c['method'] not in allowed for c in calls):raise Refused('unexpected snapshot RPC')
     confirms=[c for c in calls if c['method']=='ConfirmExecution']
     if expected=='skip_execution':
-        runtime=row['response']['response'][expected].get('execution_runtime_ms')
+        skip=row['response']['response'][expected]
+        if skip.get('explained_decision',{}).get('is_stale') is not False:
+            raise Refused('snapshot SKIP requires explicitly non-stale explained decision')
+        runtime=skip.get('execution_runtime_ms')
         if (confirms or type(runtime) is not int or runtime<=0 or runtime!=last_runtime):
             raise Refused('snapshot SKIP lacks its own positive confirmed runtime')
     else:
@@ -205,6 +208,38 @@ def literal_source(rows):
         'DATE '+quote(r[2]),'TIMESTAMP '+quote(r[3])))+')' for r in rows)
 
 
+def read_result_ledger(path,grant,phase,run):
+    """Validate reviewed literal full histories before campaign initialization."""
+    try:
+        raw=Path(path).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=grant.get('result_ledger_sha256'):
+            raise Refused('snapshot complete result ledger digest differs')
+        document=json.loads(raw)
+        if (set(document)!={'version','ticket','strategy','hard_deletes','run_ids','cells'}
+                or document['version']!=1 or document['ticket']!=151
+                or document['strategy']!='timestamp' or document['hard_deletes']!='ignore'
+                or document['run_ids']!=clearance_contract()['run_ids']
+                or document['run_ids']!=grant['run_ids'] or document['run_ids'][phase]!=run
+                or set(document['cells'])!={cell[0] for cell in CELLS}):
+            raise Refused('snapshot complete result ledger scope/cells differ')
+        managed=Ledger('timestamp','ignore');reference=Ledger('timestamp','ignore')
+        for label,stage,expected in CELLS:
+            cell=document['cells'][label]
+            if (set(cell)!={'source','managed','independent_reference'}
+                    or cell['source']!=json.loads(json.dumps(SOURCE[stage]))):
+                raise Refused('snapshot frozen source/result structure differs')
+            source=tuple((r[0],r[1]+'_sql',r[2],r[3]) for r in SOURCE[stage]) if label.startswith('sql_change') else SOURCE[stage]
+            if expected=='ready_to_execute':managed=managed.execute(source,label)
+            reference=reference.execute(source,label+'_reference')
+            # These supplemental derived checks must agree with the reviewed
+            # literals before any credentials, proxy or DDL can be reached.
+            assert_history(cell['managed'],managed,{})
+            assert_history(cell['independent_reference'],reference,{})
+        return document['cells']
+    except (OSError,ValueError,KeyError,TypeError,AttributeError) as error:
+        raise Refused('missing or malformed complete snapshot result ledger') from error
+
+
 class Snapshots(Baseline):
     entrypoint=Path(__file__)
 
@@ -217,12 +252,17 @@ class Snapshots(Baseline):
                 or grant['run_ids'][self.phase]!=args.run_id):raise Refused('no exact snapshot backend authorization')
         if args.rust_url and not re.fullmatch(r'http://127\.0\.0\.1:\d+',args.rust_url):
             raise Refused('Rust URL must be owned literal loopback')
+        self.frozen_results=read_result_ledger(args.result_ledger,grant,self.phase,args.run_id)
         sources={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in self.entrypoint.parent.glob('databricks_*.py')}
         if grant.get('source_sha256')!=sources:
             raise Refused('snapshot helper/source set differs from reviewed freeze')
         manifest=json.dumps(operation_manifest(),sort_keys=True,separators=(',',':')).encode()
         if grant.get('operation_manifest_sha256')!=hashlib.sha256(manifest).hexdigest():
             raise Refused('snapshot operations differ from reviewed ledger')
+        raw=Path(args.operation_ledger).read_bytes()
+        if (hashlib.sha256(raw).hexdigest()!=grant['operation_ledger_sha256']
+                or json.loads(raw)!=json.loads(json.dumps(operation_manifest()))):
+            raise Refused('snapshot independent operation ledger differs')
         receipt=Path(grant['allocation']['receipt'])
         if hashlib.sha256(receipt.read_bytes()).hexdigest()!=grant['allocation']['receipt_sha256']:
             raise Refused('snapshot allocation evidence changed')
@@ -234,9 +274,13 @@ class Snapshots(Baseline):
             profile['survey']['outputs'][role]={k:v for k,v in output.items() if k in {'type','host','http_path','catalog','schema','token','threads'}}
         self.save('profiles/profiles.yml',profile)
         self.save('live-clearance.json',grant)
+        self.save('complete-independent-SCD-ledger.json',Path(args.result_ledger).read_text())
         self.save('operation-manifest.json',operation_manifest());self.save('footprint.json',clearance_contract())
         self.save('source-provenance.json',{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in self.entrypoint.parent.glob('databricks_*.py')})
         self.save('campaign-entrypoint.py',self.entrypoint.read_text())
+        self.save('binary-provenance.json',{name:{'path':str(Path(getattr(args,name)).resolve()),
+                  'sha256':hashlib.sha256(Path(getattr(args,name)).read_bytes()).hexdigest()}
+                  for name in ('dbt','proxy','probe')})
 
     def dbt(self,label,command,target='prod',managed=True):
         self.guard.admit(label,command,managed)
@@ -266,6 +310,10 @@ class Snapshots(Baseline):
         if preflight['rows']!=[['Etc/UTC','2026-11-12 01:50:34.797584',str(micros('2026-11-12 01:50:34.797584'))]]:
             raise Refused('native timezone/lossless projection not yet characterized')
         self.save('lossless-codec-preflight.json',preflight)
+        if self.proxy is not None:raise Refused('temporal preflight must precede State proxy startup')
+        self.save('lossless-codec-State-proof.json',{'transport':'Statement API',
+            'state_proxy_started':False,'State_RPCS':0,'object_writes':0,
+            'proof':'Baseline.run invokes init_schemas before start; no dbt invocation'})
 
     def write_snapshots(self,projected=False):
         for name,source_name in (('consumer','inputs'),('reference','ref_inputs')):
@@ -276,14 +324,17 @@ class Snapshots(Baseline):
                 "{{ config(alias='"+self.scope.relation_prefix+name+"',unique_key='id',strategy='timestamp',updated_at='ts',hard_deletes='ignore',state={'lag_tolerance':'0s'}) }}\n"+
                 'select id,'+v+',p,ts from '+source+'\n{% endsnapshot %}\n')
 
-    def check_physical(self,label,name,ledger):
+    def check_physical(self,label,name,ledger,frozen):
         target=self.scope.relation('prod',name)
         raw=self.observe(label,target);check_schema(raw,NATIVE_SCHEMA)
         properties=json.loads((self.work/'physical'/f'{label}_properties.json').read_text())
         props={r[0]:r[1] for r in properties['rows']}
         if props.get('Type')!='MANAGED' or props.get('Provider','').lower()!='delta':raise Refused('physical:snapshot-properties')
         projection=self.sql(label+'_lossless',projection_sql(target))
-        rows=decode_projection(projection);result=assert_history(rows,ledger,{})
+        rows=decode_projection(projection)
+        if Counter(map(tuple,rows))!=Counter(map(tuple,frozen)):
+            raise Refused('physical snapshot disagrees with complete frozen literal SCD rows')
+        result=assert_history(rows,ledger,{})
         self.save('physical/'+label+'_lossless.json',projection)
         self.save('checks/'+label+'.json',result)
         history=self.sql(label+'_full_history','DESCRIBE HISTORY '+target)
@@ -332,7 +383,7 @@ class Snapshots(Baseline):
             # executes; managed changes only for captured execution decisions.
             if expected=='ready_to_execute':managed=managed.execute(source_rows,label)
             reference=reference.execute(source_rows,label+'_reference')
-            self.save('expected/'+label+'.json',{'managed':managed.rows({}),'reference':reference.rows({}),'source':SOURCE[stage]})
+            self.save('expected/'+label+'.json',self.frozen_results[label])
             calls=self.dbt(label,['snapshot','--select','consumer'])
             index=self.n
             status=json.loads((self.work/'targets'/f'{index:03d}_{label}'/'run_results.json').read_text())
@@ -364,7 +415,7 @@ class Snapshots(Baseline):
             native=assert_native_sql(query,self.scope.relation('prod','consumer'),self.scope.relation_prefix+'consumer__dbt_tmp',label=='first',expected=='skip_execution')
             self.save('materialization/'+label+'.json',native)
             self.explain(label+'_tree',[row])
-            managed_rows,history=self.check_physical(label,'consumer',managed)
+            managed_rows,history=self.check_physical(label,'consumer',managed,self.frozen_results[label]['managed'])
             if expected=='skip_execution':assert_same_history(previous_history,history)
             previous_history=history
             self.dbt(label+'_reference',['snapshot','--select','reference'],managed=False)
@@ -372,7 +423,7 @@ class Snapshots(Baseline):
             self.save('client-status/'+label+'_reference.json',assert_status(status,'snapshot.survey_'+self.a.run_id+'.reference',self.scope.relation('prod','reference'),False))
             query=(self.work/'logs'/f'{self.n:03d}_{label}_reference'/'query_log.sql').read_text()
             self.save('materialization/'+label+'_reference.json',assert_native_sql(query,self.scope.relation('prod','reference'),self.scope.relation_prefix+'reference__dbt_tmp',label=='first'))
-            reference_rows,_=self.check_physical(label+'_reference','reference',reference)
+            reference_rows,_=self.check_physical(label+'_reference','reference',reference,self.frozen_results[label]['independent_reference'])
             if Counter(managed_rows)!=Counter(reference_rows):raise Refused('managed/disabled complete timestamp histories disagree')
             after=self.inventory()
             if any(r not in after[s] for s,prior in self.before_inventory.items() for r in prior):raise Refused('protected inventory changed')
@@ -391,14 +442,14 @@ class Snapshots(Baseline):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan',action='store_true')
-    for key in ('dbt','proxy','probe','work-dir','live-clearance','run-id'):parser.add_argument('--'+key)
+    for key in ('dbt','proxy','probe','work-dir','live-clearance','run-id','operation-ledger','result-ledger'):parser.add_argument('--'+key)
     parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
     args=parser.parse_args()
     if args.plan:
         print(json.dumps({'footprint':clearance_contract(),'operations':operation_manifest()},indent=2));return 0
-    if any(getattr(args,k.replace('-','_')) is None for k in ('dbt','proxy','probe','work-dir','live-clearance','run-id')):
+    if any(getattr(args,k.replace('-','_')) is None for k in ('dbt','proxy','probe','work-dir','live-clearance','run-id','operation-ledger','result-ledger')):
         parser.error('live execution requires every explicit pinned argument and clearance')
     return Snapshots(args).run()
 
