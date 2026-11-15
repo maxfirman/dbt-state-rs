@@ -406,9 +406,10 @@ Databricks #140 missing-evidence diagnostics are an **accepted conservative
 implementation difference**, not a matching hosted replay ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-2026-11-12.md)).
 Hosted SKIPs a crafted request that omits a source still read by its SQL;
 independent warehouse reads prove the cached target is stale. Missing recorded
-epochs also SKIP hosted, and missing/current epoch Explain differs. The server
-keeps conservative freshness checks. The bounded normalization of identical
-known current duplicates is integrated for Databricks rendered FULL submits
+epochs also SKIP hosted. The later follow-up matches missing-current and
+both-missing epoch Explain while retaining conservative freshness checks. The
+bounded normalization of identical known current duplicates is integrated for
+Databricks rendered FULL submits
 without query dependencies and with a supported physical Target relation
 ([follow-up report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md)).
 Conflicting or unknown epochs, mixed physical aliases, duplicate Target relation
@@ -422,10 +423,10 @@ The #158 crafted untargeted FULL/VIEW diagnostic remains **unsupported**. Fresh
 Snowflake and Databricks FULL controls repeatedly reuse the logical outcome
 after a null-epoch confirmation, independently of subsequent physical target
 history. Both FULL and VIEW accept `target_table: null` submits and null-epoch
-confirmations, but the retained traces contain no repeated targetless VIEW
-submit or VIEW SKIP; VIEW reuse remains uncharacterized. Logical qualification,
-result scope, isolation and actual-client reachability remain incomplete for
-both FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
+confirmations. A later [targetless follow-up](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-targetless-2026-11-14.md)
+also captures repeated FULL/VIEW SKIPs. Safe local logical qualification, result
+scope, isolation and actual-client reachability remain incomplete for both
+FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
 Pinned read-only dbt show/operation probes did not send those execution RPCs;
 this does not establish general unreachability. This limitation does not leave
 the tested physical-publication/restart criteria of #158 incomplete. These
