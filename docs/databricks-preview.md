@@ -41,8 +41,29 @@ full hosted-conformance claim under ADR 0009.
 | Snapshots | Timestamp/ignore:12 managed and12 native reference checkpoints per backend. Older timestamps/nonzero-microsecond SCD hashes and other modes remain unverified. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-timestamp-ignore-2026-11-15.md) | #151 |
 | State selectors | All ten pinned-client criteria, first/unchanged and changed-component/data baselines, client graph expansion; two-model graph. | [Evidence](databricks-selectors.md) | #156 |
 | Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155, #157 |
-| History, isolation and upgrades | Bounded failure/retry/restart, namespace/isolation and genuine legacy-history cases; full matrices remain open. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md) | #158–#160 |
+| History, isolation and upgrades | Verified physical failure/retry/restart, request-scope isolation/concurrent projects and genuine SQL/seed/copy upgrades. Targetless logical reuse and physical two-warehouse checks are not claimed. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md) | #158–#160 |
 | Generated table/freshness safety | Four-seed modeled CI traces and explicit seed/plan live replay; four actual hosted/Rust observations per backend with typed independent references. Closed grammar only. | [Evidence](databricks-generated.md) | #161 |
+
+## Completed conservative implementation slices
+
+The original technical criteria below have existing public and native evidence.
+Under the accepted completion policy, their documented conservative differences
+are compatibility limits, not missing implementations. This does not establish
+full ADR 0009 hosted conformance or every configuration/graph combination.
+
+| Tickets | Verified behavior | Explicit remaining limit |
+| --- | --- | --- |
+| #138 | Dependency binding/reordering versus swaps, rendered/template/config/context identity, Record transitions and genuine old-version invalidation. | Fresh UID tests BUILD/return undecided where hosted can reuse another UID. |
+| #140 | Native source DML/schema/metadata and recorded producer changes; observed epoch precision/convergence; crafted equal/missing/delayed boundaries. | Unknown/conflicting/omitted inputs BUILD. Real changed-data equal epochs and general delayed visibility were not observed. |
+| #141 | Drop/recreation/replacement, external DML/DDL, table/view changes and latest A→B→A physical history with independent results. | Unknown freshness follows #140's conservative rules; no new metadata phenomena are inferred. |
+| #142 | ANY/ALL partial/all drift and same/changed producers, native policy-permitted stale/fresh references, deterministic T−1/T/T+1 and zero-tolerance checks. | Exact hosted equality is unobserved; the local tested equality rule and unknown-evidence BUILD remain explicit. |
+| #158 | Failed/incomplete execution, delayed/duplicate Confirm, retry, atomic Record and restart through public calls. | Targetless FULL/VIEW logical reuse is unsupported. Selected show probes do not establish universal client unreachability. |
+| #159 | Org/family/namespace/target collisions, known aliases, latest history and actual concurrent independent owned projects. | None/empty→named namespace fallback is refused; physical two-warehouse collision behavior is not claimed. |
+
+Detailed dated reports remain in the [evidence archive](databricks-evidence.tsv).
+Their strict-era INCOMPLETE headings record the earlier completion policy.
+The current implementation status is this matrix; the original diagnostics and
+exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 

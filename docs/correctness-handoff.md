@@ -17,6 +17,16 @@ When the two conflict, or hosted behavior is unknown, the server chooses reuse
 safety: it builds. Over-execution is a conformance gap; serving a wrong result
 is a defect.
 
+## Databricks implementation completion
+
+The maintainer accepted documented conservative differences on 2026-11-15.
+The tested original slices #138/#140/#141/#142/#158/#159 therefore complete their
+implementation criteria; the [current scope matrix](databricks-preview.md#completed-conservative-implementation-slices)
+records the evidence and limits. Missing features and untested behavior remain
+work. Known hosted differences below are still real; no diagnostic or exact
+fixture was changed, and no full hosted-conformance claim is made. Dated package
+notes use their original evidence bounds, with current completion status above.
+
 ## Reuse invariants
 
 Do not weaken these without new evidence.
@@ -378,8 +388,8 @@ server keeps the conservative behavior described.
   client; older Python client schemas and identity representations differ.
   Supported client versions and warehouses need a pinned matrix.
 - **Proxy fidelity.** The recording proxy forwards client metadata but does not
-  record error responses, trailers or raw bytes, and does not fail on capture
-  loss (`crates/harness/src/bin/record_proxy.rs`).
+  record raw protobuf bytes. It now retains error/status metadata and checks
+  capture completeness (`crates/harness/src/bin/record_proxy.rs`).
 
 ## Known divergences
 
@@ -392,33 +402,35 @@ failed replay and original capture. The scoped fixtures use each warehouse's
 own quoting; this diagnostic has no replay exemption and establishes no
 cross-dialect spelling compatibility.
 
-New Databricks #140 missing-evidence diagnostics remain **blocking**, not
-accepted replay exceptions ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-2026-11-12.md)).
+Databricks #140 missing-evidence diagnostics are an **accepted conservative
+implementation difference**, not a matching hosted replay ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-2026-11-12.md)).
 Hosted SKIPs a crafted request that omits a source still read by its SQL;
 independent warehouse reads prove the cached target is stale. Missing recorded
-epochs also SKIP hosted, and missing/current epoch Explain differs. The server
-keeps conservative freshness checks. The bounded normalization of identical
-known current duplicates is integrated for Databricks rendered FULL submits
+epochs also SKIP hosted. The later follow-up matches missing-current and
+both-missing epoch Explain while retaining conservative freshness checks. The
+bounded normalization of identical known current duplicates is integrated for
+Databricks rendered FULL submits
 without query dependencies and with a supported physical Target relation
 ([follow-up report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md)).
 Conflicting or unknown epochs, mixed physical aliases, duplicate Target relation
 evidence and recorded/legacy duplicates remain outside that normalization;
 ambiguous freshness evidence remains unresolved. Snowflake audit rules are
 unchanged. These captures stay in the durable archive with exact red replay,
-without a Databricks gap or golden exclusion. #140 stays
-incomplete and does not unblock its dependents.
+without a Databricks gap or golden exclusion. The tested conservative behavior
+completes #140 under the accepted policy; it does not prove hosted parity.
 
-The #158 crafted untargeted FULL/VIEW diagnostic remains **blocking**. Fresh
+The #158 crafted untargeted FULL/VIEW diagnostic remains **unsupported**. Fresh
 Snowflake and Databricks FULL controls repeatedly reuse the logical outcome
 after a null-epoch confirmation, independently of subsequent physical target
 history. Both FULL and VIEW accept `target_table: null` submits and null-epoch
-confirmations, but the retained traces contain no repeated targetless VIEW
-submit or VIEW SKIP; VIEW reuse remains uncharacterized. Logical qualification,
-result scope, isolation and actual-client reachability remain incomplete for
-both FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
+confirmations. A later [targetless follow-up](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-targetless-2026-11-14.md)
+also captures repeated FULL/VIEW SKIPs. Safe local logical qualification, result
+scope, isolation and actual-client reachability remain incomplete for both
+FULL and VIEW. The ordinary Rust non-test absent-target guard remains.
 Pinned read-only dbt show/operation probes did not send those execution RPCs;
-this does not establish general unreachability. These complete diagnostic
-histories remain archived, without a replay exemption or overall support claim ([report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md)).
+this does not establish general unreachability. This limitation does not leave
+the tested physical-publication/restart criteria of #158 incomplete. These
+complete diagnostic histories remain archived, without a replay exemption or overall support claim ([report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md)).
 
 Accepted historical corpus divergences are pinned per fixture entry in
 [`golden/replay_gaps.json`](../golden/replay_gaps.json), with its reason and,
@@ -594,7 +606,7 @@ local-only and renders no Explain tree.
   (`clients/dbt_state/src/dbt_state/run_cache.py`).
 
 
-## Databricks dependency/template safe partial (#138, 2026-11-14)
+## Databricks dependency/template identity (#138, evidence 2026-11-14)
 
 [#138's report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-dependency-template-2026-11-14.md) records
 whole-binding identity, exact runtime extras versus declared body/config/macro
@@ -604,7 +616,7 @@ confirmed histories invalidate with current-version positive controls. This adds
 no copy eligibility and preserves latest scoped physical history, producers,
 unknown-epoch/external-modification checks and exact template contexts.
 
-**#138 remains INCOMPLETE; no native dependency promotion.** The actual pinned
+**#138 is complete with a documented conservative UID difference.** The actual pinned
 client's fresh `test.survey_20261114d138df.template_identity` speculative submit
 reuses after a different full UID's complete confirmed history, with the same
 source-less SQL/body/config and a 3498 ms runtime echo. Both authoritative state
@@ -614,7 +626,8 @@ scoped UID floor remains intact, with fresh-UID UNDECIDED/BUILD and within-UID
 positive reuse regressions. The certified four-RPC fresh-UID failure stays
 outside matching fixtures, with no gap, mask or unknown-baseline exemption.
 [Full evidence and limits](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).
-The existing #132/#140/#158/#159 blockers remain unchanged.
+The preview has landed; the conservative #140/#158/#159 boundaries remain
+documented compatibility limits, not shared implementation-ticket blockers.
 
 ## Databricks partition replacement bounded partial (#147, 2026-11-14)
 
@@ -632,8 +645,8 @@ is retained rather than masked. See the [dated report](https://github.com/maxfir
 This does not establish multiple partition keys, unpartitioned/liquid settings,
 column reordering/missing/new/type/schema-policy evolution, strategy/node-kind
 transitions or generated/retry/restart histories. Generic execution types and
-pure composite-key oracle probes are not native coverage. #147 and its #138/#140
-native dependencies remain incomplete; no safety or isolation floor changed.
+pure composite-key oracle probes are not native coverage. #147 retains its own
+feature gaps; #138/#140 conservative differences no longer block it. No safety or isolation floor changed.
 
 The initial supplemental native replay differed by1s in the unchanged Explain:
 the handler sampled1794690806996ms and its UUID was minted5ms later across the
@@ -676,8 +689,10 @@ and host outputs are preserved; root separately retires only owned outputs
 between phases with full identity/actor/history provenance.
 
 Views, alternate audit schemas, genuine-upstream native audit behavior, external
-modifications, drop/recreation and post-error reuse remain uncovered. #144,
-#143/#138's UID boundary blocker and the wider #132 blockers remain incomplete.
+modifications, drop/recreation and post-error reuse remain uncovered in #144.
+#143 cached outcomes are complete, including the later genuine-upstream
+pass/fail/recovery cases and BUILD Explain fix. The #138 UID difference remains
+explicit; broader audit feature gaps still belong to #144.
 
 ## Databricks predicate replacement bounded partial (#148, 2026-11-14)
 
@@ -698,8 +713,8 @@ This is not whole #148: schema evolution, alternate/empty/invalid predicate
 forms, constraint-error/settings reachability, failure/retry publication and
 broader strategy transitions remain required. No generic full-refresh type
 mapping, unknown temporal encoding or unsupported error policy is inferred.
-#138/#140 remain incomplete; this partial does not promote their dependency
-edges or the full Databricks support claim.
+#138/#140 conservative differences no longer block this slice. Its own
+remaining feature gaps and the full Databricks support claim are unchanged.
 
 ## Databricks DELETE_INSERT safe partial (#149, 2026-11-15)
 
@@ -722,9 +737,9 @@ This is not whole #149: alternate/empty/invalid/composite key reachability,
 predicate settings, schema evolution and binding changes, failure/atomicity/
 retry publication, other node-kind/strategy transitions and generated/restart/
 upgrade breadth remain required. Legacy fallback and uncharacterized temporal
-precision are not inferred. #138/#140 stay incomplete and no dependency edge
-or whole Databricks support claim is promoted. See the
-[bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
+precision are not inferred. #138/#140 conservative differences no longer block
+this slice; its remaining feature gaps and full-support claim are unchanged.
+See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
 
 
 ## Bounded MICROBATCH counterpart (#150, 2026-11-15)
@@ -738,7 +753,8 @@ The entire hosted70 and native70 replay exactly; native uses ten actual audit
 clocks retained before schema Drop. The original description-only red remains
 preserved alongside its narrowly reviewed correction.
 
-This does not complete #150 or #138/#140. Full-refresh/Record, implicit scheduling,
+This does not complete #150. Accepted #138/#140 differences do not block it.
+Full-refresh/Record, implicit scheduling,
 nondefault settings, schema evolution, concurrency/failure/lifecycle/generated
 breadth and isolated Target-only modification policy remain unaccepted. See the
 [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
