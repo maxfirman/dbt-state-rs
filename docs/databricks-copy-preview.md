@@ -59,7 +59,10 @@ Databricks or DuckDB campaign was run for this policy change.
 
 `DBT_STATE_EXPERIMENTAL_DATABRICKS_DIRECT_COPY=true` enables only the retained
 narrow `RegisterClone` implementation. It is outside preview support and
-does not enable ordinary-submit copying. The default is false; `1`, `true`
+does not enable ordinary-submit copying. Turning it off prevents new copy
+grants; it does not invalidate existing copy history, and previously recorded
+opt-in copies can still qualify for narrow adoption. That history remains
+outside preview support. The default is false; `1`, `true`
 and `yes` (case insensitive) enable it. Embedded servers opt in through
 `AppState::with_databricks_direct_copy(true)`.
 

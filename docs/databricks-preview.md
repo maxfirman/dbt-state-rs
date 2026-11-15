@@ -35,10 +35,11 @@ histories remain in the main tree. Unfinished issues remain open after landing.
 
 ## Deliberate limitations
 
-- No automatic Databricks submit-time Result copy. Direct RegisterClone and
-  adoption are disabled by default until physical acceptance is completed
-  (#152–#154). The narrow opt-in implementation has public protocol/safety
-  tests, not a complete physical safety claim.
+- No automatic Databricks submit-time Result copy. Direct RegisterClone is
+  disabled by default until physical acceptance is completed (#152–#154).
+  Narrow opt-in copy/adoption remains outside preview support and has public
+  protocol/safety tests, not a complete physical safety claim. Disabling the
+  opt-in does not invalidate previously recorded copy history.
 - Preserve org/warehouse/namespace/full-UID isolation even where hosted reuses
   across those boundaries. Extra BUILDs or speculative undecided responses are
   accepted preview differences. Targetless qualification remains conservative.
