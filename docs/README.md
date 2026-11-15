@@ -68,3 +68,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
   complete hosted/Rust key-replacement history, duplicate/NULL/empty-input
   multiset checks, full refresh and actual native Explain clocks; #149 remains
   incomplete outside this safe partial.
+
+- [Databricks MICROBATCH bounded acceptance](reports/databricks-microbatch-2026-11-15.md):
+  hosted/native ten-command event-time replacement history, independent cumulative
+  and selected multisets, target NULL retention and actual-clock whole replay;
+  broader #150 and #138/#140 remain incomplete.

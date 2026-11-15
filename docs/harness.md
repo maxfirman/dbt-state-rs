@@ -594,3 +594,25 @@ It uses the standard native environment plus
 and retains all actual org/decision/audit sampled clocks before State schema
 cleanup. Its capture and clock sidecar must pass whole supplemental replay.
 See [the dated evidence and unfinished scope](reports/databricks-delete-insert-2026-11-15.md).
+
+
+### Bounded MICROBATCH history (#150)
+
+`experiments/databricks_microbatch.py` consumes an immutable independent R/F
+ledger and exact phase-specific clearance. Ten native CLI invocations produce
+ten whole-command MICROBATCH6 submissions, five builds/nine daily batches and
+five fresh own-runtime SKIPs; the SQL sent to State remains unwindowed, with
+whole-invocation event-time bounds in semantic extras and native default lookback1.
+Ten separate SELECT-only R references retain complete zero-RPC canaries.
+
+The declared source-change cell also inserts one literal NULL-event-time row
+into the exact owned target, only after explicit nullable=true UC metadata,
+MANAGED Delta/full-name/schema and independent before/after typed-result checks.
+The source and target epochs must advance. Later R retains the row while F
+remains the current selected source projection; no Target-only policy is inferred.
+
+The ignored `databricks_microbatch.rs` native wrapper uses the standard native
+environment plus `DBT_STATE_DATABRICKS_OPERATION_LEDGER`. It retains actual
+org/decision-scoped audit clocks before State schema Drop and saves both capture
+and clock replay bindings. Its entire capture must pass supplemental replay
+with those exact clocks. [Dated results and remaining scope](reports/databricks-microbatch-2026-11-15.md).

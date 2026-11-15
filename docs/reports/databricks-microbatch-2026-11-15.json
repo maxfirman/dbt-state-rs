@@ -1,0 +1,563 @@
+{
+  "ticket": 150,
+  "status": "BOUNDED HOSTED/NATIVE MICRO6 ACCEPTANCE GREEN; WHOLE150/138/140 OPEN",
+  "client": "pinned dbt2.0.11",
+  "hosted_source": {
+    "commit": "e1a1eb222bc88dcfd1d0bf457bb6dffd3de5ccb5",
+    "canonical_base": "9e6919c1ae6d82c1c6d127cc5cefc379c27fc500",
+    "input_files": 665,
+    "capture_SHA256": "cdc76f6a3a47188bcb3026885ca14040a14ca53de474a0a75ad6a37ca583e6a0"
+  },
+  "native_source": {
+    "commit": "8933e9ecff8a92d899089a8542dcfc7fe4cf82a4",
+    "canonical_base": "3c12bfe95e2f843ce37c788d64cd18a9b88a8ed3",
+    "input_files": 670,
+    "freeze_sha256": "e4d7564bc7ff2b88e9f162987f9977eb7f881176ca14dba61c591db0279b2cda",
+    "six_executable_copies": {
+      "native-wrapper": {
+        "source": "/tmp/target150/debug/deps/databricks_microbatch-9cc4ad19aedf4e10",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/native-wrapper",
+        "sha256": "ef5f51b3d824e8e984eddf762e33afbe70133bac5b5fb93541f92b6428744fd4"
+      },
+      "record-proxy": {
+        "source": "/tmp/target150/debug/record-proxy",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/record-proxy",
+        "sha256": "97f3b49a87f99653798e6468dd68b366132d8f376f61b6934c59cb45fa101c01"
+      },
+      "state-probe": {
+        "source": "/tmp/target150/debug/state-probe",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/state-probe",
+        "sha256": "c7a5cd2b37e73c4027c16e707b0a4ef9a10a09015984b31b44a3798a21caad2e"
+      },
+      "dbt-2.0.11": {
+        "source": "/tmp/dbt-state-132-context/bin/dbt-2.0.11",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/dbt-2.0.11",
+        "sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+      },
+      "databricks": {
+        "source": "/home/maxfirman/.local/bin/databricks",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/databricks",
+        "sha256": "5bcaecee2332f02efa007789d9ae3b5c3fbcd347a3c0d0b3faee3a37609c436c"
+      },
+      "python3": {
+        "source": "/usr/bin/python3",
+        "frozen": "/tmp/dbt-state-132-context/ticket150-native-final3c-8933e9e/python3",
+        "sha256": "0d64bd6d66d68dac91cdadafc46e22d4f09f22bdc997aaae870f42865b024a3e"
+      }
+    },
+    "capture_SHA256": "f901c711bbbcecade91fe4d1f8af18fa64a1f6531b28f5cd557a983930e7fc9c"
+  },
+  "per_backend_counts": {
+    "managed_CLI": 10,
+    "disabled_parse": 1,
+    "disabled_zero_RPC_R_references": 10,
+    "daily_batches": 9,
+    "ordinary_whole_command_MICRO6_submits": 10,
+    "speculative_submits": 10,
+    "Confirm": 5,
+    "fresh_own_runtime_SKIP": 5,
+    "Record": 0,
+    "manual_own_target_NULL99_INSERT": 1,
+    "extra_strict_nullable_UC_GET": 1,
+    "extra_inspection_SQL": 5
+  },
+  "hosted_cells": {
+    "first": {
+      "R_count": 4,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": false,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 12729
+    },
+    "first_repeat": {
+      "R_count": 4,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": false,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 12729
+    },
+    "update": {
+      "R_count": 5,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 10686
+    },
+    "update_repeat": {
+      "R_count": 5,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 10686
+    },
+    "shifted": {
+      "R_count": 7,
+      "F_count": 5,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 10556
+    },
+    "shifted_repeat": {
+      "R_count": 7,
+      "F_count": 5,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 10556
+    },
+    "overlap": {
+      "R_count": 4,
+      "F_count": 1,
+      "source_count": 4,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 10741
+    },
+    "overlap_repeat": {
+      "R_count": 4,
+      "F_count": 1,
+      "source_count": 4,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 10741
+    },
+    "empty": {
+      "R_count": 3,
+      "F_count": 0,
+      "source_count": 3,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 1
+      },
+      "own_runtime_ms": 5591
+    },
+    "empty_repeat": {
+      "R_count": 3,
+      "F_count": 0,
+      "source_count": 3,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 5591
+    }
+  },
+  "native_cells": {
+    "first": {
+      "R_count": 4,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": false,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 12327
+    },
+    "first_repeat": {
+      "R_count": 4,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": false,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 12327
+    },
+    "update": {
+      "R_count": 5,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 10772
+    },
+    "update_repeat": {
+      "R_count": 5,
+      "F_count": 4,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 10772
+    },
+    "shifted": {
+      "R_count": 7,
+      "F_count": 5,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 9955
+    },
+    "shifted_repeat": {
+      "R_count": 7,
+      "F_count": 5,
+      "source_count": 6,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 9955
+    },
+    "overlap": {
+      "R_count": 4,
+      "F_count": 1,
+      "source_count": 4,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 2
+      },
+      "own_runtime_ms": 10727
+    },
+    "overlap_repeat": {
+      "R_count": 4,
+      "F_count": 1,
+      "source_count": 4,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 10727
+    },
+    "empty": {
+      "R_count": 3,
+      "F_count": 0,
+      "source_count": 3,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 1,
+        "executed_daily_batches": 1
+      },
+      "own_runtime_ms": 5498
+    },
+    "empty_repeat": {
+      "R_count": 3,
+      "F_count": 0,
+      "source_count": 3,
+      "NULL_target_99_present": true,
+      "typed_schema_MANAGED_Delta_full_history": true,
+      "readonly_complete_zeroRPC": true,
+      "counts": {
+        "managed_cli_commands": 1,
+        "ordinary_submit": 1,
+        "speculative_submit": 1,
+        "confirmed_commands": 0,
+        "executed_daily_batches": 0
+      },
+      "own_runtime_ms": 5498
+    }
+  },
+  "target_Delta_versions": {
+    "first": 2,
+    "first_repeat": 2,
+    "update": 5,
+    "update_repeat": 5,
+    "shifted": 7,
+    "shifted_repeat": 7,
+    "overlap": 9,
+    "overlap_repeat": 9,
+    "empty": 10,
+    "empty_repeat": 10
+  },
+  "typed_schema": [
+    [
+      "id",
+      "BIGINT",
+      "LONG",
+      0
+    ],
+    [
+      "v",
+      "STRING",
+      "STRING",
+      1
+    ],
+    [
+      "p",
+      "DATE",
+      "DATE",
+      2
+    ],
+    [
+      "ts",
+      "TIMESTAMP",
+      "TIMESTAMP",
+      3
+    ]
+  ],
+  "capture_methods_per_backend": {
+    "ValidateClientVersion": 10,
+    "SubmitTelemetryBatch": 25,
+    "SubmitEnrichedSQLSpeculative": 10,
+    "SubmitEnrichedSQL": 10,
+    "ConfirmExecution": 5,
+    "GetExplainMessages": 10
+  },
+  "NULL_scope": "Actual exact own-target row99 NULL timestamp retained across declared replacement windows including empty day; no isolated external-target or generic NULL policy inference. Source NULL exclusion is separate.",
+  "temporal_scope": {
+    "prior149_exact_values": [
+      ".123Z",
+      ".456Z",
+      ".789Z",
+      ".012Z"
+    ],
+    "prior149_observed999": false,
+    "same_three_digit_UTC_grammar": true,
+    "routine999_compared_exactly_both_backends": true,
+    "generic_normalization": false
+  },
+  "original_hosted_red": {
+    "seconds": 249.12,
+    "mismatches": "description only ordinary17/Explain21 combined source+target drift; numeric BUILD/codes and complete tree match",
+    "preserved": true
+  },
+  "reviewed_fix": {
+    "canonical": "abe843cde530569e923cf1032a66ba4d59a84a78",
+    "only_description_selection_changed": true,
+    "whole129_plus_entire70_strict_seconds": 249.26,
+    "byteexact_hosted_fixture_admitted": true
+  },
+  "native_strict_replay": {
+    "current_hosted_corpora": 130,
+    "entire_native_RPCs": 70,
+    "asserted_new": 60,
+    "unknown_baselines_new": 0,
+    "gaps_new": 0,
+    "partial_history_new": 0,
+    "result": "GREEN",
+    "seconds": 253.19,
+    "log": "replay/current130-plus-entire-native70-green.log",
+    "sha256": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a",
+    "command_attribution": {
+      "receipt": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/native-replay-command-manual-transcription.json",
+      "SHA256": "72dc816c5b3be7b8e9961c56e5c654d5f22ee9328b69bf73072b264caf998ac5",
+      "kind": "MANUAL SOURCE-TOOLCALL TRANSCRIPTION; not contemporaneous process provenance",
+      "session": 18676,
+      "initial_chunk": "11ec3d",
+      "completed_chunk": "b10f32",
+      "exit_code": 0,
+      "inherited_environment": "unsnapshotted"
+    }
+  },
+  "native_actual_clocks": {
+    "before_State_schema_Drop": true,
+    "sampled_org_scoped_audits": 10,
+    "capture_SHA_bound": true,
+    "clock_SHA256": "1f0f0e3b51d086a756f7fae1f4a477ec6768a1f9ae1cefb5ba815ca370d751e1",
+    "System_clock_live": true,
+    "replay_clock_only_supplemental_test": true
+  },
+  "full_production_gates_reused_with_hash_proof": {
+    "fresh_workspace_passed": 698,
+    "fresh_server_library_passed": 310,
+    "fresh_DuckDB_passed": 25,
+    "strict_workspace_Clippy": "GREEN",
+    "fmt": "GREEN",
+    "fresh_Python": 149,
+    "hosted_corpora": 130,
+    "not_rerun_for_helper_report_only_change": true,
+    "selected_gate_files_identical": 64,
+    "exact_selector": "name.startswith(('crates/server/', 'crates/proto/', 'proto/')) or name in ('Cargo.toml', 'Cargo.lock')",
+    "scope": "server crate including tests/regression seeds, proto crate, vendored proto definitions and root Cargo manifests; not a production-only file count",
+    "selector_proof": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/server-proto-workspace-cargo-64-proof.json",
+    "selector_proof_SHA256": "9e4c9ca6cca501a5924aa13bb0f91ddf2fa2ff920dc9c689495c7224717a4ec1"
+  },
+  "current_focused_checks": {
+    "related_Python": 57,
+    "own_Python": 15,
+    "description_tests": 2,
+    "offline_wrapper": "1pass1liveignored",
+    "native_live_wrapper": "1pass",
+    "focused_strict_Clippy": "GREEN",
+    "fmt": "GREEN"
+  },
+  "evidence_index": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/evidence-index-v2.json",
+    "files": 2905,
+    "SHA256": "b98d07e583cf4b747dd9a652ab8a5078cf5b170550f1b3a02dc4434d2eaab183",
+    "original2903_index_preserved": true
+  },
+  "evidence_SHA256": {
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/hosted-audit-receipt.json": "4b3caf71c6727092f9cb7d753140df3fc041903e759bb98a95053208c0b43063",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/hosted-strict-replay-red-receipt.json": "a05cd56f3136a9a43eb45759def0a09134d392a0103dd5527bb1bc892650717d",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-audit-receipt.json": "2489e5c5e733c6eaff8e7eb372bc26ed395cfeeb188796a1c3b6514be360010e",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-final-receipt.json": "14628f0c73ecbf5429b4fd93a60d748f0afd96b99bb7e4de27467eef6b39abed",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-replay-clocks.json": "1f0f0e3b51d086a756f7fae1f4a477ec6768a1f9ae1cefb5ba815ca370d751e1",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-extra-replay-environment.json": "7162abcb03d1a816ef2d62d19f95f5fe9ce6520a4ffd36cf39a5568ec9df4183",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/supplemental-replay-environment.json": "787fa827d2f99cb27d1d5eb33e3ddb122f29993d69e73cb4b943ef1609758063",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-running-process.json": "a4156b10d8c1ffc97e6b9dd6105023655244bd80fdd8e676fbd9e876863c8096",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-proxy-process.json": "a2f6cf3f36ff8bd4991b1678637f450f02b37b2e7f883e0d725d9403db688b39",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/native-exit-receipt.json": "dfb30d6f3a6cee8c139c3b38a2bd15eac14172a4c575dac9be987c19d8f6fae1",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/native/frozen/freeze.json": "e4d7564bc7ff2b88e9f162987f9977eb7f881176ca14dba61c591db0279b2cda",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/review150-native-independent.json": "2014688441c2a923e5e355d6f88cebd0c9d155bf2d2094b279cd6e868a7e664f",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/current130-plus-entire-native70-green.log": "c1a57b0a1748e67103324f2a53319f703078ac6c7087a40854c9f1d586e8285a",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/final-review-inputs/server-proto-workspace-cargo-64-proof.json": "9e4c9ca6cca501a5924aa13bb0f91ddf2fa2ff920dc9c689495c7224717a4ec1",
+    "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/replay/native-replay-command-manual-transcription.json": "72dc816c5b3be7b8e9961c56e5c654d5f22ee9328b69bf73072b264caf998ac5"
+  },
+  "remaining": [
+    "full-refresh/Record",
+    "implicit moving clock scheduling",
+    "nondefault lookback/settings/predicates",
+    "schema evolution",
+    "concurrency",
+    "partial-batch failure",
+    "lifecycle",
+    "generated acceptance",
+    "dependencies138140"
+  ],
+  "no_more_warehouse_operations": true,
+  "root_is_only_integration_pusher": true,
+  "inventory": {
+    "hosted_before": 16,
+    "hosted_after": 18,
+    "native_before": 18,
+    "native_after": 20,
+    "native_declared_peak": 21,
+    "all_prior18_preserved": true,
+    "unexpected_persistent_objects": 0,
+    "quota_refresh_claim": "root reported18/100 with explicit cached timestamp; not instant fresh quota"
+  },
+  "previous_evidence_index": {
+    "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-150-20261115/evidence-index.json",
+    "files": 2903,
+    "SHA256": "fb524cfa53b32e094a9d79c2895133fbfc5fd3dbe1321f182d46df30f36634ce"
+  }
+}
