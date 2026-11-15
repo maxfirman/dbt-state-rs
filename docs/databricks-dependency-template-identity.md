@@ -1,11 +1,12 @@
 # Databricks dependency, template and configuration identity (#138)
 
-**Safe partial; #138 remains INCOMPLETE for the [cross-UID test boundary](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).**
+**Completed bounded implementation with an accepted conservative [cross-UID test boundary](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).**
 
 This is the bounded contract captured with official dbt 2.0.11 on serverless
 Unity Catalog and managed Delta, 2026-11-14. It adds no Result copy admission.
-Parent #132 support remains blocked by the separately recorded copy, snapshot,
-freshness, logical-target and namespace limitations.
+The preview landed in #132. Copy/snapshot feature gaps and full hosted parity
+remain separate work; the documented UID floor does not block implementation
+completion under the maintainer’s accepted conservative-difference policy.
 
 Rendered identity binds compiled SQL, exact runtime `semantic_extras`, resolution
 context and whole `(dependency name, definition, own catalog, own schema)`
