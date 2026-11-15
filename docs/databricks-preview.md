@@ -33,6 +33,7 @@ histories remain in the main tree. Unfinished issues remain open after landing.
 | State selectors | All ten pinned-client criteria, first/unchanged and changed-component/data baselines, client graph expansion; two-model graph. | [Evidence](databricks-selectors.md) | #156 |
 | Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155, #157 |
 | History, isolation and upgrades | Bounded failure/retry/restart, namespace/isolation and genuine legacy-history cases; full matrices remain open. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md) | #158–#160 |
+| Generated table/freshness safety | Four-seed modeled CI traces and explicit seed/plan live replay; four actual hosted/Rust observations per backend with typed independent references. Closed grammar only. | [Evidence](databricks-generated.md) | #161 |
 
 ## Deliberate limitations
 

@@ -339,13 +339,14 @@ DuckDB's conditions. Artifacts say `generated-modeled-safety`,
 `hosted_verified=false`, `actual_client=false`, `real_warehouse_execution=false`.
 The complete hosted fixture replay remains a separate unchanged gate.
 
-This is a partial #161 slice. A general replay CLI/shrinker, broader grammar and
-an opt-in live generated mode are **unimplemented**. The latter requires a
-separate frozen/authorized plan through pinned dbt 2.0.11, complete hosted
-capture/replay, owned `cdo_demo_db` relations, actual measured epochs/clocks and
-independent real-warehouse reference executions. There is no scheduled cloud
-job or new credential requirement. This offline gate cannot close #161/#132,
-resolve #140's unknown-evidence policy or establish hosted conformance.
+An [opt-in live replay](databricks-generated.md) exports the same bounded plan
+by explicit seed and executes it through pinned dbt, a recording proxy and
+hosted or local Rust State. It verifies complete actual typed results and
+MANAGED/Delta properties against the independent ledger and a State-disabled
+read-only dbt Reference execution. Ordinary CI remains credential-free; no
+cloud schedule is added. Broader grammar and a general shrinker remain future
+extensions. Neither generated mode resolves #140's unknown-evidence policy or
+by itself establishes complete Databricks hosted conformance.
 
 For the bounded #149 DELETE_INSERT seam, run
 `python3 experiments/databricks_delete_insert_test.py` and

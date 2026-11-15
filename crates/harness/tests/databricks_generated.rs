@@ -516,3 +516,47 @@ async fn source_full_history_stays_in_org_named_namespace_and_relation_scope() {
         }
     }
 }
+
+/// Export only the independent semantic plan; this opt-in helper performs no
+/// RPC, database access or warehouse operation.
+#[test]
+#[ignore = "explicit seed/plan export for opt-in live replay"]
+fn export_live_plan() {
+    let seed: u64 = std::env::var("DBT_STATE_GENERATED_SEED")
+        .expect("DBT_STATE_GENERATED_SEED")
+        .parse()
+        .expect("u64 seed");
+    let literal: bool = std::env::var("DBT_STATE_GENERATED_LITERAL")
+        .unwrap_or_else(|_| "false".into())
+        .parse()
+        .expect("boolean literal mode");
+    let output = std::env::var("DBT_STATE_GENERATED_PLAN").expect("new output path");
+    let bytes = serde_json::to_vec_pretty(&json!({
+        "version":1,"seed":seed,"literal":literal,"operations":plan(seed,literal)
+    }))
+    .unwrap();
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output)
+        .expect("plan output must not already exist");
+    file.write_all(&bytes).unwrap();
+}
+
+#[test]
+fn live_replay_input_rejects_arbitrary_sql_before_warehouse_access() {
+    let output = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../experiments/databricks_generated_test.py"
+        ))
+        .output()
+        .expect("credential-free live replay input checks");
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
