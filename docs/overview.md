@@ -43,7 +43,8 @@ Snowflake cross-target Result copy uses the captured schema-abstracted matching
 contract, and a submit is copied only when it is FULL, as hosted 2.0.11 does. DuckDB has its own validated formatting subset and checked copy
 subset ([duckdb.md](duckdb.md)). Databricks has a bounded [experimental preview](databricks-preview.md),
 including characterized SQL identity and same-target reuse; Databricks copying
-is disabled by default. BigQuery copy DDL follows published syntax but remains
+is disabled by default, with separate bounded [SQL-submit](databricks-submit-copy.md)
+and [direct pre-copy](databricks-precopy.md) experiments. BigQuery copy DDL follows published syntax but remains
 unverified against the warehouse; Redshift copies are unsupported. Other
 dialects keep exact rendered SQL for same-target reuse and do no automatic
 cross-target copy.

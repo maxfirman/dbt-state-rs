@@ -15,6 +15,8 @@ pub struct Config {
     pub require_org_header: bool,
     /// Experimental direct copy, excluded from Databricks preview defaults.
     pub databricks_direct_copy: bool,
+    /// Experimental ordinary-submit copy, separately disabled by default.
+    pub databricks_submit_copy: bool,
 }
 
 impl Config {
@@ -26,6 +28,9 @@ impl Config {
                 "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".to_string()
             }),
             databricks_direct_copy: std::env::var("DBT_STATE_EXPERIMENTAL_DATABRICKS_DIRECT_COPY")
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+                .unwrap_or(false),
+            databricks_submit_copy: std::env::var("DBT_STATE_EXPERIMENTAL_DATABRICKS_SUBMIT_COPY")
                 .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
                 .unwrap_or(false),
             require_org_header: std::env::var("DBT_STATE_REQUIRE_ORG_HEADER")

@@ -783,7 +783,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        140,
+        141,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -821,7 +821,9 @@ async fn conformance_replay_all_corpora() {
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
         // Only this positive corpus opts in. RegisterClone request presence
         // must never switch a default-refusal capture's server policy.
-        let server = if fixture == "databricks_precopy.jsonl" {
+        let server = if fixture == "databricks_submit_copy.jsonl" {
+            support::start_server_databricks_submit_copy().await
+        } else if fixture == "databricks_precopy.jsonl" {
             support::start_server_databricks_direct_copy().await
         } else {
             support::start_server().await
@@ -1380,6 +1382,27 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
     exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks), false).await;
 }
 
+/// Whole #153 hosted SQL-copy lifecycle, explicitly opting into submit copy.
+#[tokio::test]
+async fn databricks_submit_copy_exact_public_history() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_submit_copy.jsonl");
+    exact_native_history_with_submit_copy(&path, 75, 12, 8, 12, None, false, true).await;
+}
+
+#[tokio::test]
+#[ignore = "requires complete #153 native capture and retained actual decision clocks"]
+async fn databricks_submit_copy_extra_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let evidence =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
+    let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
+    let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
+    exact_native_history_with_submit_copy(&path, count, 20, 14, 20, Some(&clocks), false, true)
+        .await;
+}
+
 /// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
 #[tokio::test]
 async fn databricks_precopy_exact_public_history() {
@@ -1457,9 +1480,35 @@ async fn exact_native_history_at(
     native_clocks: Option<&support::native_clock::NativeClocks>,
     databricks_direct_copy: bool,
 ) {
+    exact_native_history_with_submit_copy(
+        path,
+        count,
+        submit_count,
+        build_count,
+        explain_count,
+        native_clocks,
+        databricks_direct_copy,
+        false,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn exact_native_history_with_submit_copy(
+    path: &std::path::Path,
+    count: usize,
+    submit_count: usize,
+    build_count: usize,
+    explain_count: usize,
+    native_clocks: Option<&support::native_clock::NativeClocks>,
+    databricks_direct_copy: bool,
+    databricks_submit_copy: bool,
+) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = if databricks_direct_copy {
+    let server = if databricks_submit_copy {
+        support::start_server_databricks_submit_copy().await
+    } else if databricks_direct_copy {
         support::start_server_databricks_direct_copy().await
     } else {
         support::start_server().await
@@ -1518,15 +1567,19 @@ async fn exact_native_history_at(
                     local_submit_edid(&response).unwrap(),
                 );
                 let actual = serde_json::to_value(&response).unwrap();
-                if let Some(hosted) =
-                    entry.response["response"]["ready_to_execute"]["request_id"].as_str()
-                {
+                let pending_id = |value: &serde_json::Value| {
+                    ["ready_to_execute", "ready_to_clone"]
+                        .into_iter()
+                        .find_map(|kind| {
+                            value["response"][kind]["request_id"]
+                                .as_str()
+                                .map(str::to_owned)
+                        })
+                };
+                if let Some(hosted) = pending_id(&entry.response) {
                     requests.insert(
-                        hosted.to_string(),
-                        actual["response"]["ready_to_execute"]["request_id"]
-                            .as_str()
-                            .unwrap()
-                            .to_string(),
+                        hosted,
+                        pending_id(&actual).expect("a pending submit response"),
                     );
                 }
                 if normalize_ids(actual.clone()) != normalize_ids(entry.response.clone()) {

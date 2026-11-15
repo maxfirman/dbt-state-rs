@@ -858,6 +858,9 @@ impl Warehouse {
         match self {
             Self::Snowflake => Some(snowflake::copy_identity()),
             Self::DuckDb => duckdb::copy_identity(req),
+            Self::Databricks => {
+                crate::databricks_submit_copy::identity(req).map(CopyIdentity::DatabricksSubmit)
+            }
             _ => None,
         }
     }
@@ -984,6 +987,15 @@ impl Warehouse {
     pub fn build_time_ms(self, build: &ExecutionRow) -> Option<i64> {
         match self {
             Self::DuckDb => build.confirmed_at_ms,
+            Self::Databricks
+                if build.clone_source_table.is_some() && build.node_sql_hash.is_some() =>
+            {
+                build
+                    .submit_copy_provenance
+                    .as_ref()
+                    .filter(|p| p.version == 1 && p.published && p.source_epoch > 0)
+                    .map(|p| p.source_epoch)
+            }
             _ => build.last_modified_epoch,
         }
     }
@@ -1085,6 +1097,8 @@ impl Warehouse {
 pub(crate) enum CopyIdentity {
     /// The namespace logic identity ([`Warehouse::namespace_identity`]).
     NamespaceLogic,
+    /// Exact bounded Databricks submit identity, separately versioned.
+    DatabricksSubmit(String),
     /// A checked copy graph, framed under `version`.
     CopyGraph {
         version: &'static [u8],

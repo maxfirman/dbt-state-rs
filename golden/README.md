@@ -473,3 +473,16 @@ all131hosted corpora plus its entire84-record capture with12actual audit clocks.
 See the [bounded hosted/native report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-timestamp-ignore-2026-11-15.md). Full#151, check/invalidate clocks, the State-disabled `new_record`
 NULL-business-column blocker and#138/#140 remain open. See the
 [preparation and bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-offline-preparation-2026-11-14.md).
+
+## Databricks automatic SQL-copy supplement
+
+`databricks_submit_copy.jsonl` is the independently completed whole75 primary
+hosted lifecycle, explicitly replayed with the separate experimental submit-copy
+policy. FULL absent/existing SQL copies and adoption, MERGE BUILD negatives,
+actual Confirm and all twelve Explain trees are exact. No RegisterClone occurs.
+The separately authorized crafted controls retain their complete whole91
+history outside the exact corpus in
+`crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl`; safe
+BUILD/noCopy and baseline SKIP are asserted, with explicit volatile rewrite and
+unknown-epoch display-clock limits. No replay masks/gaps were added. See
+[the bounded contract](../docs/databricks-submit-copy.md).

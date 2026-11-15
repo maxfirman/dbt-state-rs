@@ -5,6 +5,9 @@ Shares #152's physical bag, properties, independent reference and executed-DDL
 checks. The exact plan must be cleared before any API or native command.
 """
 import argparse
+import copy
+import subprocess
+import time
 import json
 from pathlib import Path
 import re
@@ -40,6 +43,7 @@ def plan():
         'profile':{'prod':{'allow_clones':False,'defer_to_target':None},
                    'dev':{'allow_clones':True,'defer_to_target':'prod'}},
         'state':{'pre_clone':'never','lag_tolerance':'0s'},
+        'crafted_controls_per_backend':{'ordinary_submits':8,'Explain':8,'Confirm':0,'DDL':0,'native_commands':0},
         'scope':'FULL and MERGE; exact SELECT-star single current physical input; quiescent Delta',
         'expected_unproven':'FULL must grant; MERGE may BUILD as a measured node-kind negative.',
         'excluded':['RegisterClone','chains','physical concurrent source changes',
@@ -52,6 +56,13 @@ def observed_verdict(kind,wanted,response):
     if len(response)!=1 or next(iter(response)) not in allowed:
         raise Refused('submit-copy:observed-'+','.join(response)+'-expected-'+wanted)
     return next(iter(response))
+
+
+def assert_boundary_verdict(phase,label,verdict):
+    if label.startswith('baseline'):
+        if verdict!='skip_execution':raise Refused('submit-copy:unchanged-control-not-SKIP')
+    elif phase=='rust' and verdict!='ready_to_execute':
+        raise Refused('submit-copy:native-negative-must-BUILD-'+label)
 
 
 class SubmitScope(LeaseScope):
@@ -105,9 +116,18 @@ class SubmitCopy(Precopy):
                 self.commands.extend((kind+'_'+label,['run','--select',kind],role,True)
                     for label,role,revision,_ in CELLS if revision==stage)
         self.command_index=0;self.source_requests={};self.source_confirms={}
+        self.boundaries_only=args.boundaries_only
         self.prefix=Path(args.resume_prefix) if args.resume_prefix else None
         self.completed=set();self.prefixes=[];self.cloned_kinds=set()
-        if self.prefix:
+        if self.boundaries_only:
+            if self.phase!='hosted' or not self.prefix:raise Refused('submit-copy:boundaries-original-hosted-history')
+            whole=self.prefix/'databricks_submit_copy_hosted_whole.jsonl'
+            if digest(whole)!='95ec99adac4e2ca2047626581c2581c031456abe1de4c30a2c59134e5acd243a':raise Refused('submit-copy:whole75-anchor')
+            from capture_integrity import verify_capture
+            entries=verify_capture(whole)
+            self.boundary_base=[e['request'] for e in entries if e['method']=='SubmitEnrichedSQL' and e['request']['labels']['dbt_node_name']=='full'][-1]
+            self.save('retained-prefix.json',{'capture':str(whole),'sha256':digest(whole),'repeated_successful_commands':0})
+        elif self.prefix:
             from capture_integrity import verify_capture
             captures=list((self.prefix/'golden').glob('*.jsonl'))
             if (self.phase!='hosted' or len(captures)!=1
@@ -128,7 +148,8 @@ class SubmitCopy(Precopy):
         result=Baseline.run(self)
         if self.prefix:
             from databricks_snapshots_continuation import combine_captures
-            combine_captures(next((self.prefix/'golden').glob('*.jsonl')),
+            original=(self.prefix/'databricks_submit_copy_hosted_whole.jsonl') if self.boundaries_only else next((self.prefix/'golden').glob('*.jsonl'))
+            combine_captures(original,
                 next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_submit_copy_hosted_whole.jsonl')
         return result
 
@@ -203,11 +224,14 @@ class SubmitCopy(Precopy):
         elif req['dbt_node_state']['node_unique_id']!=self.source_requests[kind]['dbt_node_state']['node_unique_id']:
             raise Refused('submit-copy:fullUID')
         if copy:self.cloned_kinds.add(kind)
+        if kind=='full':self.boundary_base=req
         self.audit_native(label,target,source,copy)
         self.explain(label,submits)
         self.physical(label,kind,role,stage,role=='dev' and kind in self.cloned_kinds,copy)
 
     def baseline(self):
+        if self.boundaries_only:
+            self.boundaries();return
         self.preflight()
         source=self.scope.relation('prod','inputs')
         if not self.prefix:
@@ -224,6 +248,57 @@ class SubmitCopy(Precopy):
                 for cell in CELLS:
                     if cell[2]==stage:self.invocation(kind,cell)
         if self.command_index!=len(self.commands):raise Refused('submit-copy:incomplete-command-budget')
+        self.boundaries()
+
+    def boundaries(self):
+        def physical(stage):
+            result={}
+            for role,name in (('prod','inputs'),('prod','full'),('dev','full')):
+                target=self.scope.relation(role,name)
+                bag=self.observe('boundary_'+stage+'_'+role+'_'+name,target)
+                projection=self.sql('boundary_'+stage+'_'+role+'_'+name+'_projection',source_projection_sql(target))
+                assert_source(projection,CHANGED)
+                history=self.sql('boundary_'+stage+'_'+role+'_'+name+'_history','DESCRIBE HISTORY '+target)
+                result[target]={'complete_typed_bag':bag,'history':history}
+            self.save('boundary/'+stage+'_physical.json',result)
+            return result
+        before=physical('before')
+        base=copy.deepcopy(self.boundary_base)
+        source=self.scope.relation('prod','inputs')
+        target=self.scope.relation('dev','full')
+        cases=[]
+        for label in ('baseline_before','logic','config','upstream_drift','upstream_unknown','volatile','own_external','baseline_after'):
+            req=copy.deepcopy(base)
+            if label=='logic':req['sql']+=' where id = 1'
+            if label=='config':req['semantic_extras']['on_schema_change']='"fail"'
+            if label in ('upstream_drift','upstream_unknown','own_external'):
+                wanted=target if label=='own_external' else source
+                tables=[t for t in req['tables'] if t['name'].replace('`','')==wanted]
+                if len(tables)!=1 or not tables[0]['last_modified_epoch']:raise Refused('submit-copy:boundary-input')
+                tables[0]['last_modified_epoch']=None if label=='upstream_unknown' else tables[0]['last_modified_epoch']+1000
+            if label=='volatile':
+                req['sql']=req['sql'].replace('select * from','select *, rand() AS noise from')
+                req['tolerate_nondeterminism']=False
+            lo=len(self.wire())
+            result=subprocess.run([self.a.probe,'submit'],input=json.dumps(req),
+                env=dict(self.env,PROBE_URL='http://'+self.env['RUN_CACHE_API_URL']),text=True,capture_output=True,timeout=60)
+            self.save('boundary/'+label+'.json',{'kind':'crafted-protocol-control' if not label.startswith('baseline') else 'unchanged-native-request-control',
+                'request':req,'returncode':result.returncode,'stdout':result.stdout,'stderr':result.stderr})
+            time.sleep(.1)
+            submits=[r for r in self.wire()[lo:] if r['method']=='SubmitEnrichedSQL']
+            if result.returncode or len(submits)!=1:raise Refused('submit-copy:boundary-call')
+            response=submits[0]['response']['response'];verdict=next(iter(response))
+            assert_boundary_verdict(self.phase,label,verdict)
+            if label.startswith('baseline'):
+                runtime=response[verdict]['execution_runtime_ms']
+                if label=='baseline_before':baseline_runtime=runtime
+                elif runtime!=baseline_runtime:raise Refused('submit-copy:baseline-runtime-changed')
+            cases.append({'label':label,'verdict':verdict,'explained_decision':response[verdict]['explained_decision']})
+            self.save('boundary/observations.json',cases)
+            self.explain('boundary_'+label,submits)
+        after=physical('after')
+        if before!=after:raise Refused('submit-copy:protocol-controls-changed-physical-history')
+        self.save('boundary/checks.json',{'complete_typed_bags_and_history_unchanged':True,'no_DDL_or_Confirm':True,'ordinary_submits':8,'Explain':8})
 
 
 def main():
@@ -234,6 +309,7 @@ def main():
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
     parser.add_argument('--resume-prefix')
+    parser.add_argument('--boundaries-only',action='store_true')
     args=parser.parse_args()
     if args.plan:print(json.dumps(plan(),indent=2));return 0
     return SubmitCopy(args).run()

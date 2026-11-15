@@ -435,17 +435,17 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-15 (1118 trees in 151 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-15 (1130 trees in 152 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 253 | 133 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 250 | 135 crafted, 113 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
-| FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
+| FULL | SKIP | 255 | 135 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 252 | 135 crafted, 115 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | CLONE | 10 | 7 crafted, 2 client 2.0.11, 1 client 2.0.6 |
 | APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
 | APPEND | EXECUTE | 29 | 25 client 2.0.11, 4 crafted |
-| MERGE | SKIP | 22 | 22 client 2.0.11 |
-| MERGE | EXECUTE | 36 | 34 client 2.0.11, 2 crafted |
+| MERGE | SKIP | 24 | 24 client 2.0.11 |
+| MERGE | EXECUTE | 40 | 38 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 17 | 16 client 2.0.11, 1 crafted |
 | INSERT_OVERWRITE | EXECUTE | 32 | 28 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |

@@ -513,6 +513,7 @@ fn same_identity(
         _ => true,
     };
     identity_matches(evidence, row)
+        && crate::databricks_submit_copy::reusable(evidence, row)
         && logic_compatible
         // Alias admission requires the rendered identity itself to match; a
         // template-only match cannot equate uncharacterized dialect options.
@@ -551,6 +552,14 @@ fn copy_logic_matches(
         && crate::result_copy::direct_copy_matches(evidence, row)
     {
         return true;
+    }
+    if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        == crate::warehouse::Warehouse::Databricks
+    {
+        return row.dialect == req.dialect
+            && row.node_sql_hash.is_some()
+            && crate::databricks_submit_copy::reusable(evidence, row)
+            && row.clone_source_table.is_some();
     }
     row.dialect == req.dialect
         && row.clone_source_table.is_some()

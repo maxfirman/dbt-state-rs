@@ -458,9 +458,15 @@ impl Sql for SqlService {
             ));
         }
 
-        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &raw_req, now_ms)
-            .await
-            .map_err(store_status)?;
+        let outcome = crate::submit_decision::submit_sql_with_policy(
+            &self.0.store,
+            &org_id,
+            &raw_req,
+            now_ms,
+            self.0.databricks_submit_copy,
+        )
+        .await
+        .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &outcome, now_ms);
         let response =

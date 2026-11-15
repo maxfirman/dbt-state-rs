@@ -67,7 +67,9 @@ exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 
-- No automatic Databricks submit-time Result copy. Direct RegisterClone is
+- Automatic Databricks submit-time Result copy is disabled by default. A bounded
+  [FULL SQL-submit experiment](databricks-submit-copy.md) has exact hosted
+  lifecycle and negative safety coverage. Direct RegisterClone is
   disabled by default until physical acceptance is completed (#152–#154).
   Narrow opt-in copy/adoption remains outside preview support and has public
   protocol/safety tests, not a complete physical safety claim. Disabling the

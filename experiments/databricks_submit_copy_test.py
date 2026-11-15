@@ -43,6 +43,14 @@ class SubmitCopyTests(unittest.TestCase):
                 ('merge','ready_to_clone',{'ready_to_execute':{},'ready_to_clone':{}})]:
             with self.assertRaises(Refused):p.observed_verdict(kind,wanted,response)
 
+    def test_native_boundary_guard_rejects_copy_and_skip_for_every_negative(self):
+        for label in ('logic','config','upstream_drift','upstream_unknown','volatile','own_external'):
+            p.assert_boundary_verdict('rust',label,'ready_to_execute')
+            for wrong in ('ready_to_clone','skip_execution'):
+                with self.assertRaises(Refused):p.assert_boundary_verdict('rust',label,wrong)
+        for phase in ('hosted','rust'):
+            with self.assertRaises(Refused):p.assert_boundary_verdict(phase,'baseline_before','ready_to_execute')
+
     def test_invocation_rejects_precopy_before_ordinary_response(self):
         c=object.__new__(p.SubmitCopy)
         c.dbt=lambda *args:[{'method':'RegisterClone'}]

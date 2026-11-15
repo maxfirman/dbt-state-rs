@@ -151,23 +151,29 @@ pub async fn start_server_require_org() -> TestServer {
 }
 
 async fn start_server_configured(require_org_header: bool) -> TestServer {
-    start_server_with_database(require_org_header, None, false).await
+    start_server_with_database(require_org_header, None, false, false).await
 }
 
 /// Restart production routers while an external owner retains the same schema.
 pub async fn start_server_on_database(database: std::sync::Arc<TestDatabase>) -> TestServer {
-    start_server_with_database(false, Some(database), false).await
+    start_server_with_database(false, Some(database), false, false).await
 }
 
 /// Retained hosted-copy regressions explicitly enable the excluded optimization.
 pub async fn start_server_databricks_direct_copy() -> TestServer {
-    start_server_with_database(false, None, true).await
+    start_server_with_database(false, None, true, false).await
+}
+
+/// Only explicit positive automatic-copy callers opt into this policy.
+pub async fn start_server_databricks_submit_copy() -> TestServer {
+    start_server_with_database(false, None, false, true).await
 }
 
 async fn start_server_with_database(
     require_org_header: bool,
     database: Option<std::sync::Arc<TestDatabase>>,
     databricks_direct_copy: bool,
+    databricks_submit_copy: bool,
 ) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
@@ -186,7 +192,8 @@ async fn start_server_with_database(
                 let state = database
                     .state(require_org_header)
                     .await
-                    .with_databricks_direct_copy(databricks_direct_copy);
+                    .with_databricks_direct_copy(databricks_direct_copy)
+                    .with_databricks_submit_copy(databricks_submit_copy);
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
                 let addr = listener.local_addr().expect("server address");
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

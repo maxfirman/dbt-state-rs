@@ -155,6 +155,7 @@ pub fn sql_logic_hash_with_version(
 pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
     match Warehouse::from_dialect(&req.dialect).copy_identity(req)? {
         CopyIdentity::NamespaceLogic => Some(namespace_logic_hash(req)),
+        CopyIdentity::DatabricksSubmit(hash) => Some(hash),
         CopyIdentity::CopyGraph { version, graph } => Some(copy_graph_hash(req, version, graph)),
     }
 }
