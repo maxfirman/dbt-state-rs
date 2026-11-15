@@ -177,6 +177,10 @@ def delete_insert_submit(calls,source,target,target_exists,expected):
             or any(type(t.get('last_modified_epoch')) is not int or t['last_modified_epoch']<=0 for t in evidence)
             or normalize(request['target_table'])!=target):raise Refused('delete+insert needs exact known positive epochs')
     if set(submits[0]['response']['response'])!={expected}:raise Refused('unexpected DELETE_INSERT response oneof')
+    if expected=='skip_execution':
+        explained=submits[0]['response']['response'][expected].get('explained_decision')
+        if not isinstance(explained,dict) or explained.get('is_stale') is not False:
+            raise Refused('positive reuse requires explained_decision.is_stale=false')
     decisions(calls,expected)
     if any(r['method'] in ('RecordExecutions','RegisterClone') for r in calls):raise Refused('unexpected ordinary Record/copy')
     if expected=='skip_execution' and any(r['method']=='ConfirmExecution' for r in calls):raise Refused('reuse unexpectedly confirmed')
@@ -412,7 +416,6 @@ class DeleteInsert(Merge):
                 if evidence[source]!=self.previous_epochs[source] or evidence[target]!=self.confirmed_epoch:
                     raise Refused('unchanged positive reuse differs from own confirmed/source epochs')
                 response=submits[0]['response']['response'][expected]
-                if response.get('is_stale'):raise Refused('positive reuse is stale')
                 if response['execution_runtime_ms']!=self.last_runtime:raise Refused('SKIP runtime differs from own confirmed replacement')
             else:
                 confirms=[r for r in calls if r['method']=='ConfirmExecution' and r.get('response',{}).get('success')]

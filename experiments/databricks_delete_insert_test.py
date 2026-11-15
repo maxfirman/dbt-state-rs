@@ -131,6 +131,27 @@ class SubmitControls(unittest.TestCase):
             if fault=='failed-confirm':bad[1]['response']['success']=False
             with self.subTest(fault=fault),self.assertRaises(Refused):delete_insert_submit(bad,source,target,False,'ready_to_execute')
 
+class FreshSkipFlagControls(unittest.TestCase):
+    def test_positive_skip_requires_false_flag_in_actual_explained_decision(self):
+        from copy import deepcopy
+        from databricks_delete_insert import delete_insert_submit
+        from databricks_survey import Refused
+        source='cdo_demo_db.owned.di_inputs';target='cdo_demo_db.owned.di_consumer'
+        request={'dialect':'databricks','execution_type':5,'compare_unrendered_code':False,
+          'table_namespace':'own','query_dependencies':{},'target_table':target,
+          'semantic_extras':{'unique_key':'"id"','on_schema_change':'"ignore"','file_format':'"delta"'},
+          'tables':[{'name':source,'last_modified_epoch':123},{'name':target,'last_modified_epoch':124}],
+          'clone_chain_depth_limit':0,'ignore_external_modifications':False,
+          'freshness_tolerance_seconds':0,'stale_upstream_policy':0,'labels':{'dbt_node_name':'consumer'}}
+        calls=[{'method':'SubmitEnrichedSQL','request':request,'response':{'response':{'skip_execution':{'explained_decision':{'decision':0,'is_stale':False},'execution_runtime_ms':42}}}}]
+        delete_insert_submit(calls,source,target,True,'skip_execution')
+        for fault in ('stale','missing','wrong_level'):
+            bad=deepcopy(calls);skip=bad[0]['response']['response']['skip_execution']
+            if fault=='stale':skip['explained_decision']['is_stale']=True
+            if fault=='missing':skip['explained_decision'].pop('is_stale')
+            if fault=='wrong_level':skip['explained_decision'].pop('is_stale');skip['is_stale']=False
+            with self.subTest(fault=fault),self.assertRaises(Refused):delete_insert_submit(bad,source,target,True,'skip_execution')
+
 class CodecPreflightControls(unittest.TestCase):
     def test_preflight_pins_each_fraction_and_stops_on_precision_or_encoding_loss(self):
         import json
