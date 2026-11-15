@@ -69,10 +69,11 @@ class Bounds:
 
 
 class Ledger:
-    def __init__(self,strategy,hard_deletes,versions=(),statements=()):
+    def __init__(self,strategy,hard_deletes,versions=(),statements=(),source_updated_at=False):
         if strategy not in ('timestamp','check') or hard_deletes not in ('ignore','invalidate'):
             raise Refused('unsupported snapshot strategy/delete mode; new_record blocker remains')
         self.strategy=strategy;self.hard_deletes=hard_deletes
+        self.source_updated_at=source_updated_at
         self.versions=tuple(versions);self.statements=tuple(statements)
 
     def execute(self,source,statement):
@@ -90,7 +91,7 @@ class Ledger:
         clock=Clock(statement)
         for row in rows:
             prior=current.get(row[0]);old=versions[prior] if prior is not None else None
-            when=row[3] if self.strategy=='timestamp' else clock
+            when=row[3] if self.strategy=='timestamp' or self.source_updated_at else clock
             changed=(old is None or (micros(old.start)<micros(row[3]) if self.strategy=='timestamp'
                                    else old.business[1]!=row[1]))
             if changed:
@@ -99,7 +100,7 @@ class Ledger:
         if self.hard_deletes=='invalidate':
             for key,index in current.items():
                 if key not in keys:versions[index]=replace(versions[index],end=clock)
-        return Ledger(self.strategy,self.hard_deletes,versions,self.statements+(statement,))
+        return Ledger(self.strategy,self.hard_deletes,versions,self.statements+(statement,),self.source_updated_at)
 
     def rows(self,assignment):
         def resolve(v):return stamp(assignment[v.statement]) if isinstance(v,Clock) else v

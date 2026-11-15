@@ -385,3 +385,15 @@ fresh exact owned aliases and an observed contract; retain its actual clocks,
 then use `databricks_audit_native_exact_public_history` with
 `DBT_STATE_EXTRA_REPLAY_CAPTURE` and `DBT_STATE_EXTRA_REPLAY_CLOCKS` for exact
 whole-native replay. [Scope, ownership and evidence](databricks-audit-tests.md).
+
+For #151's source-clock snapshot supplement, run
+`python3 experiments/databricks_snapshot_modes_test.py`,
+`cargo test -p dbt-state-harness --test databricks_snapshots`, and
+`conformance::databricks_snapshot_modes_exact_public_history`.
+The complete hosted source-clock/check and timestamp precision/adoption history
+joins the ordinary fixture gate. The ignored native snapshot-modes test requires
+fresh exact owned UUID objects and the frozen operation/ownership grant. Retain
+its actual audit clocks, then run
+`databricks_snapshot_modes_native_exact_public_history` with the extra capture
+and clock sidecar for complete native public replay.
+[Snapshot scope and compatibility limits](databricks-snapshots.md).
