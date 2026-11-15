@@ -185,7 +185,7 @@ epoch/runtime floors matched the reviewed contract. The original7 and complete
 continuation77 retain separate raw files/certificates and compose byte-exact84
 records, SHA256 `06ff6d582bbd0e08f6e2746a7bdac8bb777cc3fee9c07a27b7353b55acf9fc8e`.
 Strict public replay of all130prior corpora plus this ENTIRE84 passed253.22s,
-1passed/18filtered,72new payload assertions plus12Explains, zero new gaps,
+1passed/18filtered,72per-fixture assertions including12Validate, plus12separately checked Explains, zero new gaps,
 unknown baselines or partial histories. Exact argv, explicit environment/unsets,
 source/capture/composition/tool/PID/test-executable/exit/log bindings were recorded
 contemporaneously; unrelated inherited environment is labelled unsnapshotted.
@@ -197,3 +197,12 @@ Fresh Rust acceptance is still held for a separate fresh four-table graph,
 current source/tool freeze and root inventory/capacity/grant. Its standard fresh
 Snapshots path must not reuse first IDs or continuation bootstrapping. All earlier
 full-ticket blockers and untested required scope remain open.
+
+## Fresh Rust bounded acceptance addendum (2026-11-15)
+
+The separately cleared fresh b151bb graph completed all12managed/native-reference
+pairs, all physical/source/history/own-runtime checks and12actual pre-Drop audit
+clocks. All131hosted corpora plus ENTIREnative84 and actualclocks passed257.55s,
+1passed/18filtered; newhistory has0unknown/gaps/partial. See the
+[dated hosted/native report](databricks-snapshot-timestamp-ignore-2026-11-15.md)
+and its JSON provenance index. Full151 and all declared required scope remain open.

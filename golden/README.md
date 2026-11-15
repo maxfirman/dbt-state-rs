@@ -447,12 +447,12 @@ telemetry/status envelopes. All12 managed results and12 independent State-disabl
 NATIVE snapshot references match complete frozen literal SCD histories, typed
 source bags and Delta histories. BeforeDDL UTC6microsecond projection and
 `unix_micros` were checked against an independent literal. Strict public replay
-of all130 prior corpora plus ENTIRE84 passes253.22s:72payload assertions plus
-12Explains, with zero new gaps, unknown baselines or partial-history allowances.
+of all130 prior corpora plus ENTIRE84 passes253.22s:72per-fixture assertions (including12Validate), plus
+12separately checked Explain responses, with zero new gaps, unknown baselines or partial-history allowances.
 The original prefix is not separately admitted and no status field is removed.
 
-This admits only bounded hosted timestamp/ignore evidence. The fresh Rust graph
-remains separately held pending its source/tool freeze, inventory/capacity and
-root grant. Full#151, check/invalidate clocks, the State-disabled `new_record`
+This admits only bounded hosted timestamp/ignore evidence. The separately granted fresh Rust graph now passes the same12cells and
+all131hosted corpora plus its entire84-record capture with12actual audit clocks.
+See the [bounded hosted/native report](../docs/reports/databricks-snapshot-timestamp-ignore-2026-11-15.md). Full#151, check/invalidate clocks, the State-disabled `new_record`
 NULL-business-column blocker and#138/#140 remain open. See the
 [preparation and bounded evidence](../docs/reports/databricks-snapshot-offline-preparation-2026-11-14.md).
