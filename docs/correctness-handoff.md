@@ -737,7 +737,7 @@ unknown temporal encoding or unsupported error policy is inferred. Accepted
 UID/namespace/unknown-freshness conservative differences remain explicit and
 never permit unsafe reuse. The full Databricks support claim remains separate.
 
-## Databricks DELETE_INSERT safe partial (#149, 2026-11-15)
+## Databricks DELETE_INSERT bounded completion (#149, 2026-11-15)
 
 The complete real-client hosted88-RPC history and a fresh Rust counterpart
 cover stable first/ordinary SQL, non-NULL replacement with duplicate keys,
@@ -754,13 +754,15 @@ Final offline review corrected a validation-helper lookup to require literal
 independently rechecked as false; original captures and executed frozen sources
 remain unchanged. No production policy or live execution was modified or rerun.
 
-This is not whole #149: alternate/empty/invalid/composite key reachability,
-predicate settings, schema evolution and binding changes, failure/atomicity/
-retry publication, other node-kind/strategy transitions and generated/restart/
-upgrade breadth remain required. Legacy fallback and uncharacterized temporal
-precision are not inferred. #138/#140 conservative differences no longer block
-this slice; its remaining feature gaps and full-support claim are unchanged.
-See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
+The original #149 replacement/input/full-refresh and complete response/Explain
+criteria are complete in this bounded native scalar-key history. Native SQL is
+NULL-safe `REPLACE ON`, not an assumed legacy DELETE/IN implementation. Current
+completion does not claim alternate/empty/invalid/composite keys, predicate or
+alias settings, schema/name-binding changes, failure/restart/upgrade cross-products
+or generated strategy breadth. Legacy fallback and additional temporal encodings
+remain unverified. These limits stay outside the supported claim; no fixture or
+safety rule changes. See the
+[bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
 
 
 ## Bounded MICROBATCH counterpart (#150, 2026-11-15)
