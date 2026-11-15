@@ -41,9 +41,17 @@ def plan():
                    'dev':{'allow_clones':True,'defer_to_target':'prod'}},
         'state':{'pre_clone':'never','lag_tolerance':'0s'},
         'scope':'FULL and MERGE; exact SELECT-star single current physical input; quiescent Delta',
-        'expected_unproven':'Both absent/existing SQL-copy grants are hypotheses; stop and retain any different observation.',
+        'expected_unproven':'FULL must grant; MERGE may BUILD as a measured node-kind negative.',
         'excluded':['RegisterClone','chains','physical concurrent source changes',
                     'ordinary FULL rebuild of cloned relation','snapshots','general SQL/templates/dependencies']}
+
+
+def observed_verdict(kind,wanted,response):
+    allowed={wanted}
+    if kind=='merge' and wanted=='ready_to_clone':allowed.add('ready_to_execute')
+    if len(response)!=1 or next(iter(response)) not in allowed:
+        raise Refused('submit-copy:observed-'+','.join(response)+'-expected-'+wanted)
+    return next(iter(response))
 
 
 class SubmitScope(LeaseScope):
@@ -97,7 +105,32 @@ class SubmitCopy(Precopy):
                 self.commands.extend((kind+'_'+label,['run','--select',kind],role,True)
                     for label,role,revision,_ in CELLS if revision==stage)
         self.command_index=0;self.source_requests={};self.source_confirms={}
-        self.prefix=None;self.completed=set();self.prefixes=[]
+        self.prefix=Path(args.resume_prefix) if args.resume_prefix else None
+        self.completed=set();self.prefixes=[];self.cloned_kinds=set()
+        if self.prefix:
+            from capture_integrity import verify_capture
+            captures=list((self.prefix/'golden').glob('*.jsonl'))
+            if (self.phase!='hosted' or len(captures)!=1
+                    or digest(captures[0])!='2d763fb49e0ca33d0865c0452b157ea964e065cdfe5bca60b0df502ab39667c2'):
+                raise Refused('submit-copy:exact-original-hosted-prefix')
+            verify_capture(captures[0])
+            events=json.loads((self.prefix/'operations.json').read_text())
+            self.completed={e['label'] for e in events if e['kind']=='dbt-result' and e['returncode']==0}
+            if self.completed!={c[0] for c in self.commands[:7]}:raise Refused('submit-copy:prefix-command-set')
+            writes={e['label'] for e in events if e['kind']=='sql' and e.get('state')=='SUCCEEDED'}
+            if not {'create_source','initial_source'}<=writes or {'change_source','insert_source'}&writes:
+                raise Refused('submit-copy:prefix-source-operations')
+            self.prefixes=[self.prefix]
+            self.save('retained-prefix.json',{'capture':str(captures[0]),'sha256':digest(captures[0]),
+                'completed_commands':sorted(self.completed),'repeated_successful_commands':0})
+
+    def run(self):
+        result=Baseline.run(self)
+        if self.prefix:
+            from databricks_snapshots_continuation import combine_captures
+            combine_captures(next((self.prefix/'golden').glob('*.jsonl')),
+                next((self.work/'golden').glob('*.jsonl')),self.work/'databricks_submit_copy_hosted_whole.jsonl')
+        return result
 
     def init_schemas(self):
         ownership={}
@@ -109,8 +142,11 @@ class SubmitCopy(Precopy):
         self.before_inventory=self.inventory()
         for schema,rows in self.before_inventory.items():
             wanted={name for name in self.scope.allowed if name.split('.')[1]==schema}
-            if len(rows)+len(wanted)>100:raise Refused('submit-copy:capacity')
-            if any(r['full_name'] in wanted or r['name'].startswith(self.scope.relation_prefix) for r in rows):raise Refused('submit-copy:collision')
+            present={r['full_name'] for r in rows if r['full_name'] in wanted}
+            required=wanted if self.prefix else set()
+            if present!=required:raise Refused('submit-copy:collision-or-missing-prefix-object')
+            if len(rows)+len(wanted)-len(required)>100:raise Refused('submit-copy:capacity')
+            if any(r['name'].startswith(self.scope.relation_prefix) and r['full_name'] not in wanted for r in rows):raise Refused('submit-copy:unlisted-prefix-object')
         self.save('lease-inventory-before.json',self.before_inventory)
         self.save('warehouse.json',self.sql('warehouse',"SELECT current_version() AS version,current_timezone() AS timezone"))
 
@@ -142,7 +178,7 @@ class SubmitCopy(Precopy):
         if len(submits)!=1:raise Refused('submit-copy:one-ordinary-submit')
         row=submits[0];req=row['request'];response=row['response']['response']
         self.save('observed/'+label+'.json',{'request':req,'response':row['response']})
-        if set(response)!={verdict}:raise Refused('submit-copy:observed-'+','.join(response)+'-expected-'+verdict)
+        verdict=observed_verdict(kind,verdict,response)
         target=self.scope.relation(role,kind);source=self.scope.relation('prod',kind)
         if (req['execution_type']!=(1 if kind=='full' else 3) or req['compare_unrendered_code'] or req['query_dependencies']
                 or req['target_table'].replace('`','')!=target or not req.get('table_namespace')
@@ -166,15 +202,18 @@ class SubmitCopy(Precopy):
             self.source_requests[kind]=req;self.source_confirms[kind]=confirms[ready['request_id']]['request']
         elif req['dbt_node_state']['node_unique_id']!=self.source_requests[kind]['dbt_node_state']['node_unique_id']:
             raise Refused('submit-copy:fullUID')
+        if copy:self.cloned_kinds.add(kind)
         self.audit_native(label,target,source,copy)
         self.explain(label,submits)
-        self.physical(label,kind,role,stage,role=='dev',copy)
+        self.physical(label,kind,role,stage,role=='dev' and kind in self.cloned_kinds,copy)
 
     def baseline(self):
         self.preflight()
         source=self.scope.relation('prod','inputs')
-        self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
-        self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        if not self.prefix:
+            self.sql('create_source',f'CREATE TABLE {source} (id BIGINT,v STRING,p DATE,ts TIMESTAMP) USING DELTA')
+            self.sql('initial_source','INSERT INTO '+source+' VALUES '+literal_source(FIRST))
+        else:assert_source(self.sql('resume_source',source_projection_sql(source)),FIRST)
         for stage in ('first','changed'):
             if stage=='changed':
                 row=CHANGED[0]
@@ -194,6 +233,7 @@ def main():
     parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
+    parser.add_argument('--resume-prefix')
     args=parser.parse_args()
     if args.plan:print(json.dumps(plan(),indent=2));return 0
     return SubmitCopy(args).run()

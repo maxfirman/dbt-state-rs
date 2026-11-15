@@ -36,6 +36,13 @@ class SubmitCopyTests(unittest.TestCase):
             receipt.write_text('{}')
             with self.assertRaises(Refused):p.SubmitScope(p.RUNS['hosted'],lease,'hosted')
 
+    def test_only_merge_copy_hypotheses_accept_measured_builds(self):
+        self.assertEqual(p.observed_verdict('merge','ready_to_clone',{'ready_to_execute':{}}),'ready_to_execute')
+        for kind,wanted,response in [('full','ready_to_clone',{'ready_to_execute':{}}),
+                ('merge','skip_execution',{'ready_to_execute':{}}),
+                ('merge','ready_to_clone',{'ready_to_execute':{},'ready_to_clone':{}})]:
+            with self.assertRaises(Refused):p.observed_verdict(kind,wanted,response)
+
     def test_invocation_rejects_precopy_before_ordinary_response(self):
         c=object.__new__(p.SubmitCopy)
         c.dbt=lambda *args:[{'method':'RegisterClone'}]
