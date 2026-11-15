@@ -1,5 +1,5 @@
-//! SQL identity policy. Shared parsing/traversal feeds dialect-specific rules;
-//! fingerprint framing and dependency bindings remain in `fingerprint`.
+//! Checked DuckDB strict identity and relation-read proofs. Shared AST traversal
+//! and dependency binding live in `analyzed_workload`.
 use std::ops::ControlFlow;
 
 use sqlparser::ast::{

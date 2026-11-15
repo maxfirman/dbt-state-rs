@@ -41,7 +41,8 @@ pub(crate) use crate::analyzed_workload::inputs::sql_inputs;
 /// The identity and inputs of one execution, as submitted, recorded or
 /// registered as a copy. Reuse candidate selection and Result copy planning
 /// read it; [`ExecutionEvidence::pending`] and [`ExecutionEvidence::confirmed`]
-/// turn it into the row to write. Only the constructors below build it.
+/// turn it into the row to write. Execution and copy-lifecycle constructors
+/// share this evidence type.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionEvidence {
     pub(crate) org_id: String,

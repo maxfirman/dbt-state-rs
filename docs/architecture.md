@@ -51,7 +51,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
 | `fingerprint.rs` | Compatibility exports for the versioned identity implementation in `analyzed_workload/identity.rs`, with the existing fingerprint regressions. |
-| `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
+| `sql_identity.rs` | Checked DuckDB strict identity and relation-read proofs; compatibility exports for shared traversal/binding. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
 | `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |

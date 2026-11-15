@@ -1,5 +1,5 @@
-//! Bounded ordinary-SQL Result copy, separate from RegisterClone provenance.
-//! Only exact fully-qualified SELECT-star over one physical input is eligible.
+//! Request policy for bounded ordinary-SQL Result copy. Identity analysis and
+//! provenance/adoption belong to the shared workload and copy lifecycle modules.
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
 #[cfg(test)]
