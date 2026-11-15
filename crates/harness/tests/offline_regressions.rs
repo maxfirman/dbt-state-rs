@@ -208,7 +208,7 @@ async fn model_submit_without_target_is_invalid_argument_not_a_result_copy() {
     }
     // The rejected submits recorded nothing: the model still skips.
     assert_eq!(sc.verdict(req).await, "skip_execution");
-    // A data test's target is legitimately unset or empty.
+    // A data test may omit its target; a present empty name is malformed.
     let test = data_test("test.p.no_target")
         .catalog("DB")
         .schema("S")
@@ -219,7 +219,9 @@ async fn model_submit_without_target_is_invalid_argument_not_a_result_copy() {
     assert_eq!(sc.verdict(test.clone()).await, "skip_execution");
     let mut empty: qc::SubmitEnrichedSqlRequest = test.into();
     empty.target_table = Some(String::new());
-    assert_eq!(sc.verdict(empty).await, "skip_execution");
+    let error = sc.try_submit(empty).await.unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+    assert_eq!(error.message(), "Failed to process SQL");
 }
 
 #[tokio::test]
@@ -294,9 +296,16 @@ async fn non_finite_protobuf_results_and_duplicate_confirmation_are_lossless() {
             kind: Some(qc::value::Kind::DoubleValue(f64::INFINITY)),
         },
     );
-    for value in [cached.clone(), results(9)] {
-        assert!(sc.confirm(&request_id, outcome().results(value)).await);
-    }
+    assert!(
+        sc.confirm(&request_id, outcome().results(cached.clone()))
+            .await
+    );
+    let duplicate = sc
+        .try_confirm(outcome().results(results(9)).confirm(&request_id))
+        .await
+        .unwrap_err();
+    assert_eq!(duplicate.code(), tonic::Code::Internal);
+    assert_eq!(duplicate.message(), "Database operation failed");
     let r = sc.expect_skip(req).await;
     assert_eq!(r.execution_results, Some(cached));
 }

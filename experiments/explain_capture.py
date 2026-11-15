@@ -53,6 +53,7 @@ from dataclasses import dataclass, field, replace
 sys.modules.setdefault("explain_capture", sys.modules[__name__])
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from decision_rows import DECISION, KIND, minted, variant  # noqa: E402
+from capture_integrity import CaptureIntegrityError, verify_capture  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -522,8 +523,11 @@ def oracle(bound, rows, marks):
 
 
 def trim(rows):
-    kept = [r for r in rows if r.get("method") in REPLAYED_METHODS]
-    dropped = Counter(r.get("method") for r in rows if r.get("method") not in REPLAYED_METHODS)
+    def replayed(row):
+        return (row.get("method") in REPLAYED_METHODS
+                or (row.get("status") or {}).get("code", 0) != 0)
+    kept = [r for r in rows if replayed(r)]
+    dropped = Counter(r.get("method") for r in rows if not replayed(r))
     return kept, dropped
 
 
@@ -587,7 +591,7 @@ class Run:
             self.proxy.wait()
 
     def golden_file(self):
-        files = sorted(f for f in os.listdir(self.golden_dir) if f.startswith("golden_"))
+        files = sorted(f for f in os.listdir(self.golden_dir) if f.startswith("golden_") and f.endswith(".jsonl"))
         if len(files) > 1:
             raise CaptureError(f"more than one golden file in {self.golden_dir}")
         return os.path.join(self.golden_dir, files[0]) if files else None
@@ -801,7 +805,7 @@ def main(argv=None):
             print(f"step {k}: {type(step).__name__}")
             run.run_step(k, step)
             marks.append(len(run.rows()))
-    except (CaptureError, subprocess.CalledProcessError, KeyboardInterrupt) as e:
+    except (CaptureError, subprocess.CalledProcessError, OSError, ValueError, KeyboardInterrupt) as e:
         failure = e
         print(f"STOPPED at step {len(marks)}: {e!r}")
     finally:
@@ -809,14 +813,27 @@ def main(argv=None):
         if not run.keep_project and os.path.isdir(run.project):
             shutil.rmtree(run.project)
     marks += [marks[-1] if marks else 0] * (len(bound.steps) - len(marks))
-    ok = report(bound, run.rows() if os.path.isdir(run.golden_dir) else [], marks, work, run.prior)
+    golden_file = None
+    try:
+        golden_file = run.golden_file() if os.path.isdir(run.golden_dir) else None
+        if not golden_file:
+            raise CaptureIntegrityError("no golden capture produced")
+        rows = verify_capture(golden_file)
+    except (CaptureIntegrityError, CaptureError, OSError, ValueError) as error:
+        failure = failure or error
+        print(f"INCOMPLETE CAPTURE: {error}")
+        try:
+            rows = run.rows() if os.path.isdir(run.golden_dir) else []
+        except (CaptureError, OSError, ValueError):
+            rows = []
+    ok = report(bound, rows, marks, work, run.prior)
     after = shared_status(a.jaffle_shop)
     if after != before:
         print(f"WARNING: {a.jaffle_shop} status changed during the run:\n{after}")
         ok = False
     spent = sum(run.invocations.values())
     print(f"dbt invocations run: {spent} of {p.total} planned ({dict(run.invocations)})")
-    print(f"capture: {run.golden_file() if os.path.isdir(run.golden_dir) else None}")
+    print(f"capture: {golden_file}")
     if failure or not ok:
         return 1
     print("CAPTURE OK")

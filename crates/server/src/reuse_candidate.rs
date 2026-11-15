@@ -148,6 +148,15 @@ pub(crate) fn for_model(
         // The identity under another type, but over other upstream names:
         // another identity on hosted (#116).
         NoCandidate::UpstreamNamesChanged
+    } else if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        .changed_resolution_context(req, &current)
+        .is_some()
+    {
+        NoCandidate::ResolutionContextChanged
+    } else if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        .changed_input_binding(req, &current)
+    {
+        NoCandidate::InputBindingChanged
     } else {
         NoCandidate::IdentityMismatch
     };
@@ -411,7 +420,10 @@ pub(crate) fn older_seed_matches(
 /// The single rule for both the decision (here) and its explanation
 /// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
 pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if is_copy_registration(anchor) && anchor.input_tables.is_empty() {
+    if is_copy_registration(anchor)
+        && anchor.direct_copy_provenance.is_none()
+        && anchor.input_tables.is_empty()
+    {
         let built = anchor.last_modified_epoch;
         anchor.input_tables = current
             .iter()
@@ -444,7 +456,7 @@ fn identity_matches(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
             && row.node_template_hash == evidence.node_template_hash)
 }
 
-/// Same target, same execution type and exact dialect options, same identity.
+/// Same target, same execution type and evidenced dialect identity.
 /// A row whose recorded schema-abstracted logic differs from the submit's is
 /// rejected even when the SQL hash matches: that is the upgrade invalidation
 /// for rows written under an older namespace identity.
@@ -471,8 +483,11 @@ fn same_identity(
     };
     identity_matches(evidence, row)
         && logic_compatible
-        // Exact on purpose: strict same-target identity, not dialect recognition.
-        && row.dialect == req.dialect
+        // Alias admission requires the rendered identity itself to match; a
+        // template-only match cannot equate uncharacterized dialect options.
+        && (row.dialect == req.dialect
+            || row.node_sql_hash == evidence.node_sql_hash
+                && crate::warehouse::Warehouse::rendered_dialect_aliases(&row.dialect, &req.dialect))
 }
 
 /// Only CLONE-ORIGIN rows are adopted across environments. Ordinary rows are
@@ -500,6 +515,12 @@ fn copy_logic_matches(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
+    if row.dialect == req.dialect
+        && row.clone_source_table.is_some()
+        && crate::result_copy::direct_copy_matches(evidence, row)
+    {
+        return true;
+    }
     row.dialect == req.dialect
         && row.clone_source_table.is_some()
         && evidence.node_namespace_logic_hash.is_some()
@@ -541,6 +562,7 @@ fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidenc
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
         && (!req.compare_unrendered_code
+            || evidence.node_template_hash.is_none()
             || evidence
                 .node_body_hash
                 .as_ref()
@@ -582,7 +604,8 @@ fn own_target(req: &qc::SubmitEnrichedSqlRequest, prev: &ExecutionRow) -> OwnTar
     if own.is_empty() {
         return OwnTarget::Missing;
     }
-    if own.len() != 1 || own[0].last_modified_epoch.is_none() {
+    if own.len() != 1 || own[0].last_modified_epoch.is_none() || prev.last_modified_epoch.is_none()
+    {
         return OwnTarget::Ambiguous;
     }
     if req.ignore_external_modifications
@@ -853,6 +876,7 @@ mod tests {
         let ctx = crate::decision::SubmitContext {
             execution_type: req.execution_type,
             input_tables: &ev.input_tables,
+            sql_reads_relation: None,
             target_table: req.target_table.as_deref(),
             stale_upstream_policy: crate::decision::StaleUpstreamPolicy::Any,
             target_has_prior_build: true,
@@ -1467,6 +1491,23 @@ mod tests {
     }
 
     proptest! {
+        #[test]
+        fn unknown_physical_epoch_never_qualifies_even_with_modification_tolerance(
+            current_epoch in any::<i64>(),
+            ignore_external in any::<bool>(),
+        ) {
+            let mut req = model_req("select id from DB.DEV.UP");
+            req.tables[0].last_modified_epoch = Some(current_epoch);
+            req.ignore_external_modifications = ignore_external;
+            let mut row = recorded(&evidence(&req));
+            row.last_modified_epoch = Some(current_epoch);
+            prop_assert!(model(&req, Some(row.clone())).candidate.is_some(),
+                "matching known evidence must qualify before the fault");
+            row.last_modified_epoch = None;
+            prop_assert!(model(&req, Some(row)).candidate.is_none(),
+                "modification tolerance cannot supply missing physical evidence");
+        }
+
         #[test]
         fn prior_build_reported_iff_a_current_row_exists(
             row in prop::option::of(arbitrary_row(evidence(&model_req("select id from DB.DEV.UP")))),

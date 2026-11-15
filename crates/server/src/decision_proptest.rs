@@ -153,6 +153,7 @@ fn ctx<'a>(
     SubmitContext {
         execution_type: 10,
         input_tables: tables,
+        sql_reads_relation: None,
         target_table: target,
         stale_upstream_policy: policy,
         target_has_prior_build: false,
@@ -457,7 +458,11 @@ fn hosted_wire(
         DecisionReason::NoReuseCandidate(NoCandidate::ExecutionTypeChanged) => {
             (DecisionKind::Build, rebuild, Some(2), Some(2))
         }
-        DecisionReason::NoReuseCandidate(_)
+        DecisionReason::QueryChangedOutsideScope
+        | DecisionReason::QueryObservedOutsideScope
+        | DecisionReason::ExistingTargetWithoutHistory
+        | DecisionReason::DataTestExistingTargetWithoutHistory
+        | DecisionReason::NoReuseCandidate(_)
         | DecisionReason::DependencySetChanged
         | DecisionReason::NoBuildAnchor
         | DecisionReason::UpstreamOutdated
@@ -474,7 +479,7 @@ fn hosted_wire(
             Some(1),
             Some(10),
         ),
-        DecisionReason::CopyDisabled => (
+        DecisionReason::CopyDisabled | DecisionReason::ExistingTargetCopyDisabledDiagnostic => (
             DecisionKind::Build,
             "model was executed because cloning is disabled",
             Some(1),
@@ -564,6 +569,7 @@ proptest! {
         let c = SubmitContext {
             execution_type,
             input_tables: &current,
+            sql_reads_relation: None,
             target_table: None,
             stale_upstream_policy: p,
             // As reuse candidate selection reports it: a rejected latest row

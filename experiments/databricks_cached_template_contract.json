@@ -1,0 +1,27 @@
+{
+  "fail_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "fail_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "render_pass": {
+    "decision": "skip_execution",
+    "raw_returncode": 1,
+    "status": "fail"
+  },
+  "body_pass_first": {
+    "decision": "ready_to_execute",
+    "raw_returncode": 0,
+    "status": "pass"
+  },
+  "body_pass_repeat": {
+    "decision": "skip_execution",
+    "raw_returncode": 0,
+    "status": "reused"
+  }
+}

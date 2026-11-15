@@ -21,6 +21,18 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
+python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
+python3 experiments/databricks_isolation_test.py         # offline concurrent campaign ownership/physical-peer gates
+python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates
+python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
+python3 experiments/databricks_readonly_reference_test.py # no-object reference output/SQL fault probes
+python3 experiments/databricks_target_lifecycle_test.py   # same-lifetime continuation admission guards
+python3 experiments/databricks_policy_test.py             # immutable BUILD vs fresh policy reference fault probes
+python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes
+python3 experiments/databricks_sql_equivalence_test.py   # typed oracle sensitivity and separate hosted-history plans
+python3 experiments/databricks_dependency_identity_test.py # exact role ownership and complete-result fault probes
+python3 experiments/databricks_cached_tests_test.py      # no-object cached-failure payload/SQL/exit fault probes
+python3 experiments/databricks_cached_config_test.py     # severity/raw-flags and nonzero threshold/NULL/duplicate outcomes
 ```
 
 `rust-toolchain.toml` pins the Rust version. `cargo test --workspace` does not
@@ -49,6 +61,11 @@ unspecified value, or a tree no submit minted) needs a catalog entry before the
 fixture is promoted.
 
 ## Evidence rules and release gate
+
+The [experimental Databricks preview](databricks-preview.md) uses the explicitly
+revised [landing plan](databricks-landing.md). Full completion of the original
+Databricks feature inventory is deferred; no full-conformance claim is made.
+Safety floors and exact retained regression assertions still apply.
 
 Two questions need different evidence (GLOSSARY: Hosted conformance, Reuse safety):
 
@@ -146,6 +163,14 @@ Postgres.
 
 ## DuckDB acceptance gate
 
+For the Databricks #132 effort, the maintainer explicitly deferred local real-dbt
+DuckDB acceptance until after landing (2026-11-15). Do not run
+`scripts/duckdb-ci.sh` or the ignored real-dbt DuckDB cases as a prerequisite for
+this integration. The integration PR also retains its temporary CI exception;
+other PRs and main keep their existing coverage. Resume DuckDB acceptance after
+landing and retain this deferral in the final validation notes. Targeted Rust and
+protocol tests continue during development.
+
 `./scripts/duckdb-ci.sh` installs the locked Python environment, builds all
 targets once, and runs every fixed real-dbt case plus bounded generated traces
 with independent-oracle mutation probes. Each case gets its own Postgres schema
@@ -180,8 +205,10 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   `RecordExecutions` (sent by client 2.0.11 instead of a submit for an
   incremental run under `--full-refresh`) is driven and its response compared;
   each record counts as confirmed history for its workload.
-  `ResolveDeferredRelations` entries are counted but not driven here;
-  `deferral.rs` covers them.
+  `ResolveDeferredRelations` executes through the same production router and
+  compares the complete mapping, success status and application metadata.
+  Fresh `databricks_deferral{,_scopes}.jsonl` histories have zero unknown
+  baselines/gaps; `deferral.rs` also pins organization and lifecycle safety.
 - `ValidateClientVersion`, speculative submits and `GetExplainMessages` are
   compared too. A speculative submit is compared in full after removing
   opaque IDs, and a speculative SKIP's decision id is correlated for the
@@ -234,3 +261,97 @@ Needs `~/.dbt/dbt_cloud.yml` and uses dbt State metering. Its local side starts
 with empty history and compares decision variants only, so it is discovery,
 not a conformance gate. Failed comparisons and divergences fail the process.
 Promote useful controlled cases into `golden/fixtures/`.
+
+### Native supplementary replay clocks
+
+`DBT_STATE_EXTRA_REPLAY_CAPTURE=/path/databricks_native.jsonl` adds a complete
+native capture to the hosted conformance gate. Native UUIDv7 IDs are minted
+*after* the handler samples its clock: their timestamps do not establish the
+instant saved for relative-age Explain text. Retain that actual clock with
+`support::native_clock::retain(&server, capture, evidence)` in the native test
+wrapper after the proxy drains and before the temporary State schema is dropped.
+The collector reads exact organization-scoped `node_decisions` audit rows; it
+never changes the live request clock or the proxy capture.
+
+Set `DBT_STATE_EXTRA_REPLAY_CLOCKS=/path/native-clocks.json` with the extra
+capture to replay those saved instants. The evidence must match the entire
+capture's SHA-256, cover every ordinary Submit decision once with its original
+organization and ID, and put each sampled clock inside the captured request
+interval. Missing, duplicate, foreign or out-of-interval rows fail validation.
+The sidecar records its persisted-audit schema or reviewed WAL-recovery
+provenance. Its provenance hashes identify independently retained evidence;
+they do not replace review of that evidence. Hosted fixtures keep their existing
+UUID clock path. Without a sidecar, supplemental replay retains that old path
+and cannot establish exact native relative-age fidelity.
+
+The exact five-row regression and its independent clock evidence are documented
+in `crates/harness/tests/fixtures/native-clock147.md`. Native supplementary
+results remain local replay evidence, separate from hosted conformance.
+
+For the bounded #148 predicate replacement seam, run
+`python3 experiments/databricks_replace_where_test.py` and
+`cargo test -p dbt-state-harness --test databricks_replace_where`. The ordinary
+tests check independent cumulative history, duplicate/NULL retention, typed
+schema/reference faults, exact scope/wire/SQL guards, and the complete hosted
+Record11→ordinary11 SQL transition. The real-client test is ignored and needs
+an exact separate grant, fresh owned pair and frozen tools/ledger. Its native
+capture must retain actual audit clocks before State cleanup and pass complete
+supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
+header is used. See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
+
+`cargo test -p dbt-state-harness --test databricks_generated` is an ordinary,
+credential-free generated **modeled Reuse safety** gate. It uses public
+SubmitEnrichedSQL, ConfirmExecution and GetExplainMessages with isolated
+Postgres, four fixed semantic seeds and eight bounded source episodes per seed.
+Its fixed spine covers genuine source INSERT/UPDATE/DELETE, changed literal/k,
+unchanged required reuse, A→B→A latest physical history and source-based org,
+named namespace and Target relation isolation controls. Epochs and request
+metadata are explicitly synthetic; changed data always advances a positive
+epoch. The grammar is FULL=1, zero Lag tolerance, ANY=0, literal cast/VALUES
+and direct source projection with bounded INT addition and NULL propagation.
+
+The virtual managed result R changes only on an effective BUILD. A separate
+fresh reference F is computed from the source ledger and symbolic intent before
+every response; typed row multisets retain duplicates and NULLs. SQL rendering
+has fixed worked controls against the restricted templates. This is a tiny
+relational interpreter, **not Databricks SQL execution**; MANAGED/Delta tags are
+modeled expectations, not measured properties. Missing/equal/delayed changed-data
+epochs, no-op DML, Lag/ALL, copies and other node kinds are excluded from this
+bounded grammar and retain their separate unresolved coverage requirements.
+
+Boundary mutants preserve the raw server response, force wrong SKIP after
+10→17, k or literal changes, and must fail exactly `wrong-skip:rows`. A forced
+BUILD at an unchanged checkpoint leaves R=F but fails
+`required-reuse:decision`; no server IDs or confirmations are fabricated.
+Checker controls reject duplicate loss, NULL substitution, schema type/order,
+absent results and changed modeled properties, and prove BUILD snapshots do not
+alias the mutable source ledger. Transport errors cannot satisfy mutant tests.
+
+Set `DBT_STATE_DATABRICKS_GENERATED_ARTIFACTS=/path` to retain prewritten input
+plans and JSONL request/response/Confirm/Explain, source and binary-source pins,
+R/F, epoch/clock and violation ledgers. Default: a run-nonced directory below
+`$TMPDIR/dbt-state-databricks-generated`. Replay the same semantic plan with the
+same seed using the test command; each invocation uses fresh org/namespace scope.
+CI uploads this gate's artifacts for 14 days even on failure, independently of
+DuckDB's conditions. Artifacts say `generated-modeled-safety`,
+`hosted_verified=false`, `actual_client=false`, `real_warehouse_execution=false`.
+The complete hosted fixture replay remains a separate unchanged gate.
+
+This is a partial #161 slice. A general replay CLI/shrinker, broader grammar and
+an opt-in live generated mode are **unimplemented**. The latter requires a
+separate frozen/authorized plan through pinned dbt 2.0.11, complete hosted
+capture/replay, owned `cdo_demo_db` relations, actual measured epochs/clocks and
+independent real-warehouse reference executions. There is no scheduled cloud
+job or new credential requirement. This offline gate cannot close #161/#132,
+resolve #140's unknown-evidence policy or establish hosted conformance.
+
+For the bounded #149 DELETE_INSERT seam, run
+`python3 experiments/databricks_delete_insert_test.py` and
+`cargo test -p dbt-state-harness --test databricks_delete_insert`. The ordinary
+test checks independent multiset key replacement, selected/absent NULL keys,
+empty input, duplicates, exact schema/reference/SQL/scope guards, actual nested
+fresh-SKIP flags and a full-refresh kind locked from prior hosted evidence.
+The real-client test is ignored and requires an exact separate grant and fresh
+owned pair. Its native wrapper retains actual audit clocks before State cleanup;
+whole supplemental replay supplies that sidecar. See the
+[dated bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).

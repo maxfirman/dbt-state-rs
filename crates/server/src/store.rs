@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 mod history;
 pub use history::CopySourceBuild;
+pub(crate) use history::QueryDiagnosticNamespaces;
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.
@@ -120,12 +121,21 @@ pub(crate) fn logic_identity(
 /// Fields that failed to decode read as empty.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecutionRow {
+    /// Exact execution's org-scoped decision-audit inputs, loaded only for
+    /// Explain. Not an execution column or a candidate/producer identity input.
+    pub explain_comparison: Option<crate::explain::TemplateComparison>,
     pub id: i64,
     pub org_id: String,
     pub target_table: String,
+    /// The persisted source spelling when the Warehouse provides a distinct
+    /// physical spelling for decisions. The SQL column itself stays raw.
+    pub raw_target_table: Option<String>,
     pub execution_type: i32,
     pub node_body_hash: Option<String>,
+    pub node_configs_hash: Option<String>,
+    pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
     pub node_namespace_logic_hash: Option<String>,
     /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
     pub node_template_hash: Option<String>,
@@ -148,6 +158,8 @@ pub struct ExecutionRow {
     pub clone_source_inputs: Option<Vec<String>>,
     /// When the server recorded the confirmation (Unix ms, server clock).
     pub confirmed_at_ms: Option<i64>,
+    /// Original submit clock for Explain only; unknown on legacy/Record rows.
+    pub display_submitted_at_ms: Option<i64>,
     /// Why recorded inputs or cached results could not be decoded, if they
     /// could not. Raised by [`ExecutionRow::into_checked`].
     pub(crate) undecodable: Undecodable,
@@ -174,10 +186,10 @@ impl ExecutionRow {
     }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
-        node_body_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
+        node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, clone_source_inputs, \
+        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -235,7 +247,12 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             target_table: row.try_get("target_table")?,
             execution_type: row.try_get("execution_type")?,
             node_body_hash: row.try_get("node_body_hash")?,
+            node_configs_hash: row.try_get("node_configs_hash")?,
+            node_macros_hash: row.try_get("node_macros_hash")?,
             node_sql_hash: row.try_get("node_sql_hash")?,
+            direct_copy_provenance: row
+                .try_get::<Option<serde_json::Value>, _>("direct_copy_provenance")?
+                .and_then(|value| serde_json::from_value(value).ok()),
             node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
             node_template_hash: row.try_get("node_template_hash")?,
             values_hash: row.try_get("values_hash")?,
@@ -252,12 +269,15 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
                 .try_get::<Option<serde_json::Value>, _>("clone_source_inputs")?
                 .and_then(|v| serde_json::from_value(v).ok()),
             confirmed_at_ms: row.try_get("confirmed_at_ms")?,
+            display_submitted_at_ms: row.try_get("display_submitted_at_ms")?,
             ..ExecutionRow::default()
         };
-        Ok(read.with_encoded_evidence(
+        let mut read = read.with_encoded_evidence(
             row.try_get("input_tables")?,
             row.try_get("execution_results")?,
-        ))
+        );
+        crate::warehouse::Warehouse::from_dialect(&read.dialect).resolve_execution_row(&mut read);
+        Ok(read)
     }
 }
 
@@ -353,10 +373,19 @@ pub struct NodeStateUpsert {
     pub node_macros_hash: Option<String>,
     pub node_contract_hash: Option<String>,
     pub node_database_representation: Option<String>,
-    /// The physical relation this node was built as in `target_name`, used to
-    /// resolve `ResolveDeferredRelations`. The submit/record `target_table`
-    /// (a quoted 3-part FQN). NULL for data tests (empty target).
+    /// Legacy selector snapshot metadata, retained for existing persisted rows.
+    /// Deferral reads confirmed executions with their own logical scope.
+    /// NULL for data tests (empty target).
     pub target_table: Option<String>,
+}
+
+/// Publication result of a correlated confirmation. Existing evidence is immutable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confirmation {
+    Published,
+    AlreadyConfirmed,
+    InvalidOutcome,
+    Missing,
 }
 
 #[derive(Debug)]
@@ -401,7 +430,7 @@ impl Store {
         Self::insert_row(&self.pool, row).await
     }
 
-    /// Insert a batch of fully-confirmed executions AND their selector/deferral
+    /// Insert a batch of fully-confirmed executions AND their selector
     /// `node_states` upserts in a SINGLE transaction. Either everything commits
     /// or nothing does: a failure writing either table rolls back BOTH.
     ///
@@ -409,7 +438,7 @@ impl Store {
     /// committed and THEN best-effort `node_states` upserts ran outside the
     /// transaction, so a logical-state write failure left a durable execution
     /// row with no corresponding selector/deferral state (`records_stored=1`,
-    /// zero logical rows, empty deferral resolution). Writing both in one
+    /// zero selector rows). Writing both in one
     /// transaction makes a successful `RecordExecutions` publish execution and
     /// logical state consistently — a `node_states` fault now rolls the whole
     /// request back and surfaces as an error, rather than a silent partial
@@ -438,7 +467,9 @@ impl Store {
     ) -> sqlx::Result<()> {
         let e = &row.evidence;
         let outcome = row.status.outcome();
-        let input_tables = serde_json::to_value(&e.input_tables).unwrap_or_default();
+        let input_tables =
+            serde_json::to_value(e.raw_input_tables.as_ref().unwrap_or(&e.input_tables))
+                .unwrap_or_default();
         sqlx::query(
             r#"
             INSERT INTO executions (
@@ -447,20 +478,23 @@ impl Store {
                 dialect, input_tables, values_hash, status, request_id,
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
-                execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs
+                execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32)
             "#,
         )
         .bind(&e.org_id)
-        .bind(&e.target_table)
+        .bind(e.raw_target_table.as_deref().unwrap_or(&e.target_table))
         .bind(e.execution_type)
         .bind(&e.node_hash)
         .bind(&e.node_body_hash)
         .bind(&e.node_configs_hash)
         .bind(&e.node_contract_hash)
         .bind(&e.node_unique_id)
-        .bind(&e.table_namespace)
+        .bind(crate::execution::non_blank_namespace(
+            e.table_namespace.as_deref(),
+        ))
         .bind(&e.dialect)
         .bind(input_tables)
         .bind(&e.values_hash)
@@ -490,21 +524,26 @@ impl Store {
                 .as_ref()
                 .map(|names| serde_json::json!(names)),
         )
+        .bind(&e.node_profile_name)
+        .bind(&e.node_project_name)
+        .bind(&e.node_target_name)
+        .bind(e.display_submitted_at_ms)
+        .bind(&e.node_macros_hash)
+        .bind(e.direct_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize direct provenance")))
         .execute(executor)
         .await?;
         Ok(())
     }
 
     /// Mark a pending execution confirmed, recording the outcome. Semantics
-    /// (pinned by tests, mirrors the hosted service's idempotent confirm):
+    /// (pinned by captured public lifecycle controls):
     ///
     ///   * The outcome fields are written ONLY on the pending→confirmed
     ///     transition. A `request_id` that is already confirmed is NOT mutated —
     ///     the first confirm's recorded `last_modified_epoch`/runtime is stable,
     ///     so a late/duplicate confirm cannot silently rewrite skippable history.
-    ///   * Returns `true` when the row exists for this (org, request_id) — whether
-    ///     it was just confirmed OR was already confirmed (idempotent success).
-    ///   * Returns `false` only when no such row exists (unknown request_id).
+    ///   * Distinguishes publication, an immutable already-confirmed row, and
+    ///     an unknown request, so the adapter can preserve hosted statuses.
     ///
     /// Scoped by `org_id` to honor the global org-isolation invariant, even
     /// though `request_id` is a unique server-minted UUID.
@@ -519,7 +558,7 @@ impl Store {
         execution_results: Option<&qc::Struct>,
         failed_to_clone: bool,
         confirmed_at_ms: i64,
-    ) -> sqlx::Result<bool> {
+    ) -> sqlx::Result<Confirmation> {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
             r#"
@@ -536,13 +575,46 @@ impl Store {
                 execution_results = $6,
                 clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
                 clone_source_inputs = CASE WHEN $7 THEN NULL ELSE clone_source_inputs END,
+                -- A registered Databricks copy must still refer to the same
+                -- current physical source at publication. A raced source write
+                -- invalidates adoption evidence, without inventing a hosted
+                -- source-epoch response field or changing Confirm's shape.
+                direct_copy_provenance = CASE
+                    WHEN $7 THEN NULL
+                    WHEN clone_source_table IS NOT NULL AND direct_copy_provenance IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM (
+                                SELECT source.id, source.last_modified_epoch
+                                FROM executions source
+                                WHERE source.org_id = executions.org_id
+                                  AND source.warehouse_family = executions.warehouse_family
+                                  AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
+                                  AND to_jsonb(source.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
+                                  AND source.status = 'confirmed'
+                                ORDER BY source.last_modified_epoch DESC NULLS FIRST,
+                                         source.confirmed_at DESC NULLS LAST, source.id DESC
+                                LIMIT 1
+                            ) current_source
+                            WHERE to_jsonb(current_source.id) = executions.direct_copy_provenance->'source_execution_id'
+                              AND to_jsonb(current_source.last_modified_epoch) = executions.direct_copy_provenance->'source_epoch'
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM executions pending
+                                  WHERE pending.org_id = executions.org_id
+                                    AND pending.warehouse_family = executions.warehouse_family
+                                    AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
+                                    AND to_jsonb(pending.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
+                                    AND pending.status = 'pending'
+                              )
+                        ) THEN NULL
+                    ELSE direct_copy_provenance END,
                 node_namespace_logic_hash = CASE
                     WHEN $7 AND node_sql_hash IS NULL THEN NULL
                     ELSE node_namespace_logic_hash END,
                 confirmed_at = to_timestamp($8::double precision / 1000.0)
             WHERE org_id = $1
-              AND request_id = $2
+              AND request_id = ($2::uuid)::text
               AND status = 'pending'
+              AND ((target_table <> '') = ($3::bigint IS NOT NULL))
             "#,
         )
         .bind(org_id)
@@ -558,15 +630,15 @@ impl Store {
         .rows_affected();
 
         if affected > 0 {
-            return Ok(true);
+            return Ok(Confirmation::Published);
         }
 
-        // No pending row updated: either already confirmed (idempotent success)
+        // No pending row updated: either already confirmed
         // or genuinely unknown. Distinguish without mutating the outcome.
-        let exists: Option<i64> = sqlx::query_scalar(
+        let status: Option<String> = sqlx::query_scalar(
             r#"
-            SELECT id FROM executions
-            WHERE org_id = $1 AND request_id = $2
+            SELECT status FROM executions
+            WHERE org_id = $1 AND request_id = ($2::uuid)::text
             LIMIT 1
             "#,
         )
@@ -574,7 +646,11 @@ impl Store {
         .bind(request_id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(exists.is_some())
+        Ok(match status.as_deref() {
+            Some("pending") => Confirmation::InvalidOutcome,
+            Some(_) => Confirmation::AlreadyConfirmed,
+            None => Confirmation::Missing,
+        })
     }
 
     /// Upsert a node's comparison state for `state:*` selectors (latest wins),
@@ -685,42 +761,39 @@ impl Store {
             .collect())
     }
 
-    /// Resolve each requested `node_unique_id` to the PHYSICAL relation it was
-    /// last built as in the `target_name` env (for `ResolveDeferredRelations`),
-    /// scoped by (org, project_id, target env). Only nodes with a recorded
-    /// physical `target_table` are returned; absent/data-test nodes are simply
-    /// omitted from the map (the client treats an unresolved node as not
-    /// deferrable), matching the hosted empty-when-unknown behavior.
-    ///
-    /// VERIFIED LIVE (experiments/deferral_experiment.sh): the hosted service
-    /// returns `{ node_unique_id -> "CATALOG"."SCHEMA"."OBJECT" }` for upstreams
-    /// built in the defer-to env; the FQN equals the submit `target_table`.
-    pub async fn resolve_deferred_fqns(
+    /// Hosted deferral resolves confirmed outcomes by profile and either a
+    /// stable project ID or project name. A pending or failed execution cannot
+    /// publish a relation. Scope keys are exact wire strings; the request has
+    /// no warehouse/namespace field. Selector state remains independent.
+    pub async fn resolve_confirmed_deferred_fqns(
         &self,
         org_id: &str,
-        project_id: &str,
+        profile_name: &str,
+        project_name: &str,
+        project_id: Option<&str>,
         target_name: &str,
         node_unique_ids: &[String],
     ) -> sqlx::Result<std::collections::HashMap<String, String>> {
-        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String)> = sqlx::query_as(
             r#"
-            SELECT node_unique_id, target_table
-            FROM node_states
-            WHERE org_id = $1 AND project_id = $2 AND target_name = $3
-              AND node_unique_id = ANY($4)
-              AND target_table IS NOT NULL
+            SELECT DISTINCT ON (node_unique_id) node_unique_id, target_table
+            FROM executions
+            WHERE org_id = $1 AND node_profile_name = $2
+              AND (($4::text IS NULL AND node_project_name = $3) OR project_id = $4)
+              AND node_target_name = $5 AND node_unique_id = ANY($6)
+              AND status = 'confirmed' AND target_table <> ''
+            ORDER BY node_unique_id, confirmed_at DESC, id DESC
             "#,
         )
         .bind(org_id)
+        .bind(profile_name)
+        .bind(project_name)
         .bind(project_id)
         .bind(target_name)
         .bind(node_unique_ids)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(|(uid, fqn)| fqn.map(|f| (uid, f)))
-            .collect())
+        Ok(rows.into_iter().collect())
     }
 
     /// Fetch the persisted `node_decisions` rows for the requested
@@ -742,11 +815,11 @@ impl Store {
         let mut rows: Vec<ExplainDecisionRow> = sqlx::query_as(
             r#"
             SELECT DISTINCT ON (execution_decision_id)
-                   execution_decision_id, decision, execution_type,
+                   execution_decision_id, decision, execution_type, dialect,
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation
+                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -770,7 +843,7 @@ impl Store {
         if matched.is_empty() {
             return Ok(rows);
         }
-        let anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
+        let mut anchors: Vec<ExecutionRow> = sqlx::query_as(&format!(
             "SELECT {} FROM executions WHERE org_id = $1 AND id = ANY($2)",
             ExecutionRow::COLUMNS
         ))
@@ -778,6 +851,27 @@ impl Store {
         .bind(&matched)
         .fetch_all(&self.pool)
         .await?;
+        // Only exact execution/request correlations selected above. No older
+        // matching workload, relation or logical identity is consulted.
+        let request_ids: Vec<_> = anchors
+            .iter()
+            .map(|anchor| anchor.request_id.clone())
+            .collect();
+        let comparisons: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT DISTINCT ON (request_id) request_id, template_comparison FROM node_decisions \
+             WHERE org_id = $1 AND request_id = ANY($2) ORDER BY request_id, id DESC",
+        )
+        .bind(org_id)
+        .bind(&request_ids)
+        .fetch_all(&self.pool)
+        .await?;
+        let comparisons: std::collections::HashMap<_, _> = comparisons.into_iter().collect();
+        for anchor in &mut anchors {
+            anchor.explain_comparison = comparisons
+                .get(&anchor.request_id)
+                .and_then(|value| value.clone())
+                .and_then(|value| serde_json::from_value(value).ok());
+        }
         let anchors: std::collections::HashMap<i64, ExecutionRow> =
             anchors.into_iter().map(|a| (a.id, a)).collect();
         for row in &mut rows {
@@ -796,6 +890,9 @@ impl Store {
 /// its matched `executions` anchor (ticket #30) when one was recorded.
 #[derive(sqlx::FromRow)]
 pub struct ExplainDecisionRow {
+    pub display_submitted_at_ms: Option<i64>,
+    pub template_comparison: Option<serde_json::Value>,
+    pub dialect: Option<String>,
     pub execution_decision_id: Option<String>,
     pub decision: String,
     pub execution_type: i32,
@@ -804,6 +901,7 @@ pub struct ExplainDecisionRow {
     pub target_table: Option<String>,
     pub clone_source: Option<String>,
     pub input_tables: serde_json::Value,
+    pub query_dependencies: serde_json::Value,
     /// The matched prior `executions` row id (NULL when the decision matched no
     /// prior build — first-build/fingerprint-miss EXECUTE or CLONE).
     pub matched_execution_id: Option<i64>,
@@ -876,6 +974,9 @@ mod tests {
 
     fn decision_row(anchor_node_sql_hash: Option<&str>) -> ExplainDecisionRow {
         ExplainDecisionRow {
+            display_submitted_at_ms: None,
+            template_comparison: None,
+            dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),
             execution_type: 1,
@@ -884,6 +985,7 @@ mod tests {
             target_table: Some("T".into()),
             clone_source: None,
             input_tables: serde_json::json!([{ "name": "UP", "last_modified_epoch": 5 }]),
+            query_dependencies: serde_json::json!([]),
             matched_execution_id: Some(1),
             decision_reason: Some("reused.fresh".into()),
             freshness_tolerance_ms: None,

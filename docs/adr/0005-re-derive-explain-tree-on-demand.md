@@ -88,6 +88,35 @@ caller already holds this id). Everything else is re-derived.
 
 ## Why re-derive (not persist the tree)
 
+### Explain visibility amendment (Databricks #132)
+
+Submit still schedules capture without waiting for it and capture remains
+best-effort. GetExplainMessages waits for a currently tracked capture of its
+requested decision IDs, scoped to the requesting organization, before reading
+the persisted rows. Unknown IDs and another organization's IDs have no capture
+to await and retain their omission behavior. No polling or generated tree is
+stored. Tracking is in-memory and removed when a task finishes or unwinds;
+capture failures and decisions absent after restart retain the existing
+best-effort persistence semantics.
+
+The Databricks literal-view display also needs the auxiliary comparison for
+its exact matched/unmatched execution. When that evidence is absent, Explain
+waits for the same organization's capture keyed by that execution's request
+UUID, then rereads the requested decisions. Request and decision IDs occupy
+separate tracking domains. The reread is unconditional even if no pending
+capture remains: completion between the first read and registry lookup must
+not preserve a stale snapshot. This is one bounded dependency pass, without
+polling, an organization-wide barrier or a search for older matching builds.
+Genuinely absent, failed, malformed or pre-upgrade audit evidence still uses
+the existing fallback. Submit and Confirm do not wait for audit persistence.
+
+This avoids returning an empty first Explain merely because its successful
+Submit's capture is still running. A public regression delays capture writes
+with a database lock; the original read returned zero messages, while six
+fresh hosted submit→Explain probes each returned the requested message.
+The read may now incur the remaining capture latency, while Submit latency
+and the pure decision engine are unchanged.
+
 Characterization capture (ticket #20,
 `golden/fixtures/explain_snowflake_happy.jsonl`) plus a column-level inventory of
 `node_decisions` / `executions` showed every explain line maps to either a

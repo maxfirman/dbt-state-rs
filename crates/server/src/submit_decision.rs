@@ -29,7 +29,8 @@ pub use crate::result_copy::ResultCopy;
 use crate::result_copy::{self, CloneEquivalent, EquivalentLookup, SeedCopyTarget, SubmitCopyPlan};
 use crate::reuse_candidate::{self, Selection};
 use crate::store::{
-    CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, SeedCopyCandidateQuery, Store,
+    CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, QueryDiagnosticNamespaces,
+    SeedCopyCandidateQuery, Store,
 };
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
@@ -176,6 +177,13 @@ pub async fn speculative_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
+    // Invalid explicit template evidence must not gain a speculative SKIP
+    // that the ordinary adapter rejects. Malformed speculative status policy
+    // is uncharacterized; retain the conservative undecided fallback.
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if warehouse.invalid_template_signature(req) || warehouse.invalid_dependency_definition(req) {
+        return Ok(None);
+    }
     let needs_no_table_evidence = req.execution_type == ModelExecutionType::DbtDataTest as i32
         && req.target_table.as_deref().is_none_or(str::is_empty)
         && req.tables.is_empty();
@@ -215,6 +223,10 @@ async fn decide_sql(
     mode: Mode,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    evidence.display_submitted_at_ms =
+        Warehouse::from_dialect(&req.dialect).explain_submit_clock(now_ms);
+    let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
+    let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
     // Without a reuse candidate the decision never skips
@@ -231,6 +243,7 @@ async fn decide_sql(
     let copy_considered = selection.candidate.is_none()
         && selection.why_no_candidate != Some(decision::NoCandidate::OwnTargetModified);
     let freshness = Freshness {
+        sql_reads_relation: Warehouse::from_dialect(&req.dialect).sql_reads_relation(&req.sql),
         target_table: req.target_table.as_deref(),
         stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
         tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
@@ -309,14 +322,146 @@ async fn decide_sql(
     // are answered LATEST_QUERY_HASH_NOT_MATCH / TARGET_TABLE_MATCH). A
     // refused copy otherwise reports its equivalent where a copy would have
     // been answered.
+    let binding_change = record.reason
+        == decision::DecisionReason::NoReuseCandidate(decision::NoCandidate::InputBindingChanged);
+    if binding_change {
+        record.build_age_ms = selection
+            .unmatched
+            .as_ref()
+            .and_then(|row| Warehouse::from_dialect(&row.dialect).build_time_ms(row))
+            .map(|built| now_ms.saturating_sub(built));
+    }
     let older = older_match(store, &evidence, &freshness, &record, |row| {
         reuse_candidate::older_build_matches(req, &evidence, row)
     })
     .await?;
+    let mut candidate = candidate;
     let record = match (older, refused_copy) {
-        (Some((reuse, build_age_ms)), _) => record.with_older_match(reuse, build_age_ms),
+        (Some((reuse, build_age_ms, older)), _) => {
+            let mut record = record.with_older_match(reuse, build_age_ms);
+            if binding_change {
+                record.matched_execution_id = Some(older.id);
+                candidate = Some(older);
+            }
+            record
+        }
         (None, Some(clone_rejection_reason)) => record.with_refused_copy(clone_rejection_reason),
         (None, None) => record,
+    };
+    let record = if candidate.is_none()
+        && record.class == DecisionKind::Build
+        && Warehouse::from_dialect(&req.dialect).permits_target_query_diagnostic(req)
+        && matches!(
+            record.reason,
+            decision::DecisionReason::FirstBuild
+                | decision::DecisionReason::ExistingTargetWithoutHistory
+                | decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::IdentityMismatch
+                        | decision::NoCandidate::OwnTargetMissing
+                )
+        )
+        && store
+            .has_target_query_diagnostic(org_id, &evidence.target_table, &req.dialect, |row| {
+                reuse_candidate::older_build_matches(req, &evidence, row)
+                    && row
+                        .input_tables
+                        .iter()
+                        .all(|input| input.name == row.target_table)
+            })
+            .await?
+    {
+        record.with_namespace_query_diagnostic(!freshness.own_target_absent)
+    } else {
+        record
+    };
+    let other_diagnostic = if candidate.is_none()
+        && record.class == DecisionKind::Build
+        && matches!(
+            record.reason,
+            decision::DecisionReason::FirstBuild
+                | decision::DecisionReason::ExistingTargetWithoutHistory
+        )
+        && Warehouse::from_dialect(&req.dialect).permits_other_target_query_diagnostic(req)
+    {
+        let namespaces = match req.table_namespace.as_deref() {
+            None => QueryDiagnosticNamespaces::All,
+            Some(namespace) => {
+                QueryDiagnosticNamespaces::Exact(execution::non_blank_namespace(Some(namespace)))
+            }
+        };
+        store
+            .other_target_query_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                namespaces,
+                |row| {
+                    reuse_candidate::older_build_matches(req, &evidence, row)
+                        && row
+                            .input_tables
+                            .iter()
+                            .all(|input| input.name == row.target_table)
+                },
+            )
+            .await?
+    } else {
+        None
+    };
+    let record = if other_diagnostic.is_some() {
+        record.with_other_target_query_diagnostic(req.execution_type)
+    } else {
+        record
+    };
+    if let Some(reference) =
+        other_diagnostic.filter(|_| req.execution_type == ModelExecutionType::Full as i32)
+    {
+        let ids = DecisionIds::mint();
+        write_pending(store, &evidence, &ids).await?;
+        return Ok(Some(SubmitOutcome::ChainLimitExecute {
+            ids,
+            record,
+            source_table: reference.source_name,
+        }));
+    }
+    let record = if candidate.is_none()
+        && record.reason == decision::DecisionReason::FirstBuild
+        && Warehouse::from_dialect(&req.dialect).permits_absent_target_history_diagnostic(req)
+        && store
+            .has_other_target_history_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                req.table_namespace.as_deref(),
+                |row| {
+                    reuse_candidate::older_build_matches(req, &evidence, row)
+                        && row
+                            .input_tables
+                            .iter()
+                            .all(|input| input.name == row.target_table)
+                },
+            )
+            .await?
+    {
+        record.with_absent_target_history_diagnostic()
+    } else {
+        record
+    };
+    let record = if candidate.is_none()
+        && record.reason == decision::DecisionReason::ExistingTargetWithoutHistory
+        && Warehouse::from_dialect(&req.dialect).permits_absent_scope_definition_diagnostic(req)
+        && store
+            .absent_scope_query_definition_changed(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                req.execution_type,
+                evidence.node_sql_hash.as_deref(),
+            )
+            .await?
+    {
+        record.with_changed_absent_scope_definition_diagnostic()
+    } else {
+        record
     };
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
@@ -374,6 +519,7 @@ fn context<'a>(
     SubmitContext {
         execution_type: evidence.execution_type,
         input_tables: &evidence.input_tables,
+        sql_reads_relation: freshness.sql_reads_relation,
         target_table: freshness.target_table,
         stale_upstream_policy: freshness.stale_upstream_policy,
         target_has_prior_build: selection.target_has_prior_build,
@@ -400,6 +546,49 @@ fn decide<'s>(
         if decision::reusable(&ctx, rejected).is_some() {
             record = record.with_absent_target_match();
         }
+        // Hosted #150: with both a modified Target and an independently
+        // advanced source, Databricks MICRO reports the generic rebuild text.
+        // Only decorate the description: qualification, freshness, reason and
+        // Explain's anchor remain unchanged. `rejected` already passed strict
+        // identity and reuse qualification before own-target rejection; copies
+        // are outside this captured ordinary-build cell.
+        if Warehouse::from_dialect(&evidence.dialect)
+            .modified_target_uses_upstream_description(evidence.execution_type)
+            && rejected.clone_source_table.is_none()
+            && evidence.node_sql_hash.is_some()
+            && rejected.node_sql_hash == evidence.node_sql_hash
+            && record.reason
+                == decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::OwnTargetModified,
+                )
+            && ctx.tolerance_ms == 0
+            && ctx.stale_upstream_policy == decision::StaleUpstreamPolicy::Any
+            && rejected.last_modified_epoch.is_some_and(|recorded| {
+                recorded > 0
+                    && evidence.input_tables.iter().any(|input| {
+                        Some(input.name.as_str()) == ctx.target_table
+                            && input
+                                .last_modified_epoch
+                                .is_some_and(|current| current > recorded)
+                    })
+            })
+        {
+            let upstreams = decision::upstream_freshness(&ctx, rejected).upstreams;
+            if upstreams.iter().all(|input| {
+                !input.unprovable
+                    && !input.producer_changed
+                    && input.anchor_epoch > 0
+                    && input.current_epoch.is_some_and(|current| current > 0)
+            }) && upstreams.iter().any(|input| {
+                input.drifted
+                    && input.anchor_epoch > 0
+                    && input
+                        .current_epoch
+                        .is_some_and(|current| current > input.anchor_epoch)
+            }) {
+                record.description = decision::DESC_EXECUTE.into();
+            }
+        }
     }
     (record, candidate)
 }
@@ -417,7 +606,7 @@ async fn older_match(
     freshness: &Freshness<'_>,
     record: &DecisionRecord,
     matches: impl Fn(&ExecutionRow) -> bool,
-) -> sqlx::Result<Option<(decision::Reuse, Option<i64>)>> {
+) -> sqlx::Result<Option<(decision::Reuse, Option<i64>, ExecutionRow)>> {
     use decision::{DecisionReason as R, NoCandidate as N};
     let applies = record.class == DecisionKind::Build
         && !freshness.own_target_absent
@@ -427,7 +616,10 @@ async fn older_match(
                 | R::UpstreamQueryChanged
                 | R::DependencySetChanged
                 | R::NoReuseCandidate(
-                    N::IdentityMismatch | N::UpstreamNamesChanged | N::CopyLogicMismatch
+                    N::IdentityMismatch
+                        | N::UpstreamNamesChanged
+                        | N::CopyLogicMismatch
+                        | N::InputBindingChanged
                 )
         );
     if !applies {
@@ -449,7 +641,8 @@ async fn older_match(
     };
     let selection = Selection::of_candidate(older.clone());
     let ctx = context(evidence, &selection, freshness, Some(&older));
-    Ok(decision::reusable(&ctx, &older).map(|reuse| (reuse, ctx.build_age_ms)))
+    let age = ctx.build_age_ms;
+    Ok(decision::reusable(&ctx, &older).map(|reuse| (reuse, age, older)))
 }
 
 /// Record, on each input the evidence read, which build in State history
@@ -487,6 +680,7 @@ pub(crate) async fn resolve_producers(
 
 /// The freshness parameters of one submission, distilled at the boundary.
 struct Freshness<'a> {
+    sql_reads_relation: Option<bool>,
     target_table: Option<&'a str>,
     stale_upstream_policy: decision::StaleUpstreamPolicy,
     tolerance_ms: i64,
@@ -540,6 +734,7 @@ pub async fn submit_values(
     }
 
     let freshness = Freshness {
+        sql_reads_relation: None,
         target_table: Some(req.target_table.as_str()),
         stale_upstream_policy: decision::StaleUpstreamPolicy::Any,
         tolerance_ms: 0,
@@ -555,7 +750,7 @@ pub async fn submit_values(
     // An older match of the table is reported ahead of a refused copy, as
     // for a SQL submit.
     let (record, refused_copy) = match older {
-        Some((reuse, build_age_ms)) => (record.with_older_match(reuse, build_age_ms), None),
+        Some((reuse, build_age_ms, _)) => (record.with_older_match(reuse, build_age_ms), None),
         None => (record, refused_copy),
     };
     let (record, candidate) = anchor_rejected(record, candidate, selection.rejected);

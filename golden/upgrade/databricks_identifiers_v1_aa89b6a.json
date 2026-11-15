@@ -1,0 +1,126 @@
+{
+  "captured_at": "2026-11-13",
+  "source_revision": "aa89b6a3040938ea772f3cd420871dc4b73e972f",
+  "identity_version": "dbt-state-databricks-identifiers-v1",
+  "server_sha256": "d9cc53c64f8b3fbae300ed625648ffa2b2dcdaf8999c3027039aee92fa5ab84e",
+  "probe_sha256": "3472d2aaad64951cba79b6b6776e23f2493752107ef48be1b8ef405b882f0d73",
+  "request": {
+    "query_dependencies": [],
+    "lenient_dependencies": [],
+    "freshness_tolerance_seconds": 0,
+    "stale_upstream_policy": 0,
+    "compare_unrendered_code": false,
+    "ignore_external_modifications": false,
+    "allow_clones": false,
+    "is_defer_to_profile": false,
+    "defer_enabled": false,
+    "labels": {},
+    "target_table": "`cdo_demo_db`.`frozen_sql_137`.`result`",
+    "dialect": "databricks",
+    "default_catalog": "cdo_demo_db",
+    "default_schema": "frozen_sql_137",
+    "execution_type": 1,
+    "sql": "select id from cdo_demo_db.frozen_sql_137.input",
+    "table_namespace": "frozen-databricks-sql-137",
+    "tolerate_nondeterminism": true,
+    "tables": [
+      {
+        "name": "`cdo_demo_db`.`frozen_sql_137`.`result`",
+        "last_modified_epoch": 159
+      }
+    ],
+    "semantic_extras": {}
+  },
+  "response": {
+    "response": {
+      "ready_to_execute": {
+        "execution_decision_id": "01a1d558-0334-7439-8bdc-3843d7180a04",
+        "explained_decision": {
+          "clone_rejection_reason": 6,
+          "decision": 1,
+          "decision_description": "model was executed because its table did not exist",
+          "is_stale": false,
+          "skip_rejection_reason": 6
+        },
+        "last_modified_query": "",
+        "query_hash_metadata_info": null,
+        "request_id": "01a1d558-0334-7439-8bdc-3842b5b4c684",
+        "transformed_nodes_by_query": {}
+      }
+    }
+  },
+  "confirmation": {
+    "request_id": "01a1d558-0334-7439-8bdc-3842b5b4c684",
+    "last_modified_epoch": 159,
+    "failed_to_clone": false,
+    "table_type": "MANAGED",
+    "execution_runtime_ms": 159,
+    "labels": {},
+    "execution_results": null
+  },
+  "confirm_response": {
+    "request_id": "01a1d558-0334-7439-8bdc-3842b5b4c684",
+    "success": true
+  },
+  "repeat_response": {
+    "response": {
+      "skip_execution": {
+        "execution_decision_id": "01a1d558-03dd-7236-91fb-1d63543d1af6",
+        "execution_results": {
+          "fields": {}
+        },
+        "execution_runtime_ms": 159,
+        "explained_decision": {
+          "clone_rejection_reason": null,
+          "decision": 0,
+          "decision_description": "model was a no-op because both its query and its upstream data are up to date",
+          "is_stale": false,
+          "skip_rejection_reason": null
+        },
+        "transformed_nodes_by_query": {}
+      }
+    }
+  },
+  "rows": [
+    {
+      "id": 1,
+      "org_id": "local",
+      "target_table": "`cdo_demo_db`.`frozen_sql_137`.`result`",
+      "execution_type": 1,
+      "node_hash": null,
+      "node_body_hash": null,
+      "node_configs_hash": null,
+      "node_contract_hash": null,
+      "node_unique_id": null,
+      "table_namespace": "frozen-databricks-sql-137",
+      "dialect": "databricks",
+      "last_modified_epoch": 159,
+      "table_type": "MANAGED",
+      "execution_runtime_ms": 159,
+      "input_tables": [
+        {
+          "name": "`cdo_demo_db`.`frozen_sql_137`.`result`",
+          "last_modified_epoch": 159
+        }
+      ],
+      "status": "confirmed",
+      "request_id": "01a1d558-0334-7439-8bdc-3842b5b4c684",
+      "execution_decision_id": "01a1d558-0334-7439-8bdc-3843d7180a04",
+      "created_at": "2026-11-13T14:37:57.498627+00:00",
+      "confirmed_at": "2026-11-13T14:37:57.516+00:00",
+      "values_hash": null,
+      "node_sql_hash": "9efd366c92c8df6ae3813369c74cedcee4f1eeb0052d8dde1312342c231bbb2f",
+      "execution_results": null,
+      "project_id": null,
+      "node_namespace_logic_hash": null,
+      "clone_source_table": null,
+      "node_template_hash": null,
+      "warehouse_family": "databricks",
+      "clone_source_inputs": null,
+      "physical_target_key": "cdo_demo_db.frozen_sql_137.result",
+      "node_profile_name": null,
+      "node_project_name": null,
+      "node_target_name": null
+    }
+  ]
+}

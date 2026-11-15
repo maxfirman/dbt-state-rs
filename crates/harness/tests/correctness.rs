@@ -1,7 +1,7 @@
 //! Correctness integration tests surfaced by the review (F2/F3/F6).
 //!
 //!   F3  — ConfirmExecution semantics: pending-only outcome write, idempotent
-//!         success on re-confirm, no silent mutation of recorded history, and
+//!         publication on re-confirm, no silent mutation of recorded history, and
 //!         org-scoping of the confirm.
 //!   F2  — Match-key SELECTION (the lookup layer, not just `decide`): namespace
 //!         vs physical precedence, execution_type isolation on the namespace
@@ -24,7 +24,7 @@ use support::{fault, rows, start_server};
 // ---------------------------------------------------------------------------
 
 /// A second confirm of the SAME request_id with DIFFERENT outcome values must
-/// return success=true (idempotent) but MUST NOT overwrite the recorded
+/// return the captured error and MUST NOT overwrite the recorded
 /// last_modified_epoch / runtime from the first confirm. A late/duplicate
 /// confirm cannot silently rewrite skippable history.
 #[tokio::test]
@@ -40,11 +40,13 @@ async fn reconfirm_does_not_mutate_recorded_outcome() {
     // First confirm records epoch=1000, runtime=11.
     assert!(sc.confirm(&rid, built_at(1000).runtime(11)).await);
 
-    // Second confirm with DIFFERENT values must still succeed (idempotent)...
-    assert!(
-        sc.confirm(&rid, built_at(9999).runtime(99)).await,
-        "re-confirming an already-confirmed id must return success=true"
-    );
+    // A conflicting duplicate is rejected and cannot overwrite the outcome.
+    let error = sc
+        .try_confirm(built_at(9999).runtime(99).confirm(&rid))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(error.message(), "Database operation failed");
 
     // ...but the stored outcome must be the FIRST confirm's values.
     let row = rows::execution(&server, &rid).await.expect("row");
@@ -74,10 +76,11 @@ async fn confirm_is_org_scoped() {
     let rid = org_a.execute_id(node.clone()).await;
 
     // Confirm under the WRONG org → must not succeed (row belongs to orgA).
-    assert!(
-        !org_b.confirm(&rid, built_at(1000)).await,
-        "confirm under a different org must not succeed"
-    );
+    let error = org_b
+        .try_confirm(built_at(1000).confirm(&rid))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::NotFound);
 
     // The orgA fingerprint is still unconfirmed → re-submit under orgA executes.
     assert_eq!(
@@ -325,12 +328,10 @@ async fn record_batch_attributes_each_read_to_the_build_that_produced_it() {
     sc.expect_skip(read_v2).await;
 }
 
-/// A batch build without an epoch cannot be shown to have produced what a
-/// consumer read, so the consumer records no build, which is also what a
-/// later submit resolves against that build. It does not keep the earlier
-/// history build as its producer, so the unchanged consumer is reused.
+/// A physical batch build must have a completion epoch. Its invalid outcome
+/// cannot publish either the producer replacement or the consumer beside it.
 #[tokio::test]
-async fn record_batch_build_without_epoch_is_no_producer() {
+async fn record_batch_missing_physical_epoch_rolls_back_consumer() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
     let up = "\"DB\".\"S\".\"NOEPOCH_UP\"";
@@ -341,15 +342,16 @@ async fn record_batch_build_without_epoch_is_no_producer() {
     let consumer = model("\"DB\".\"S\".\"NOEPOCH_M\"")
         .body("h-noepoch-m")
         .upstream(up, 1_000);
-
-    sc.record([
-        upstream.record(outcome().table()),
-        consumer.record(built_at(2_000)),
-    ])
-    .await
-    .expect("record succeeds");
-
-    sc.expect_skip(consumer).await;
+    let error = sc
+        .record([
+            upstream.record(outcome().table()),
+            consumer.record(built_at(2_000)),
+        ])
+        .await
+        .expect_err("missing physical completion epoch rejects the whole batch");
+    assert_eq!(error.code(), tonic::Code::Internal);
+    assert_eq!(error.message(), "Database operation failed");
+    sc.expect_execute(consumer).await;
 }
 
 /// FULL CROSS-STORE ATOMICITY (review #2 finding 5, follow-up). A SUCCESSFUL
@@ -513,10 +515,7 @@ async fn data_tests_do_not_collide_on_shared_body_hash() {
     let r1 = sc.submit(t1.clone()).await;
     assert_eq!(variant(&r1), "ready_to_execute", "first test executes");
     let rid = ready_id(&r1);
-    assert!(
-        sc.confirm(&rid, built_at(100).results(test_results(0)))
-            .await
-    );
+    assert!(sc.confirm(&rid, outcome().results(test_results(0))).await);
 
     // Test #1 now skips (same unique_id).
     assert_eq!(

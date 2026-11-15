@@ -14,10 +14,101 @@ use crate::store::InputTable;
 /// The decision class, as stored in `node_decisions.decision`.
 pub use crate::decision::DecisionKind;
 
+/// Tracks in-flight writes so Explain can observe decisions already returned
+/// to its caller without making Submit wait for UI persistence.
+#[derive(Default)]
+pub(crate) struct CaptureTasks {
+    pending: std::sync::Mutex<
+        std::collections::HashMap<(String, CaptureId), tokio::sync::watch::Receiver<bool>>,
+    >,
+}
+
+// These UUID domains must stay distinct: a request ID is never a decision ID.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum CaptureId {
+    Decision(String),
+    Request(String),
+}
+
+struct CaptureCompletion {
+    tasks: std::sync::Arc<CaptureTasks>,
+    keys: Vec<(String, CaptureId)>,
+    complete: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for CaptureCompletion {
+    fn drop(&mut self) {
+        let mut pending = self.tasks.pending.lock().expect("capture tracking lock");
+        for key in &self.keys {
+            pending.remove(key);
+        }
+        self.complete.send_replace(true);
+    }
+}
+
+impl CaptureTasks {
+    pub(crate) fn spawn(self: &std::sync::Arc<Self>, pool: PgPool, input: CaptureInput) {
+        let keys: Vec<_> = input
+            .execution_decision_id
+            .iter()
+            .map(|id| CaptureId::Decision(id.clone()))
+            .chain(
+                input
+                    .request_id
+                    .iter()
+                    .map(|id| CaptureId::Request(id.clone())),
+            )
+            .map(|id| (input.org_id.clone(), id))
+            .collect();
+        let (complete, receiver) = tokio::sync::watch::channel(false);
+        {
+            let mut pending = self.pending.lock().expect("capture tracking lock");
+            for key in &keys {
+                pending.insert(key.clone(), receiver.clone());
+            }
+        }
+        let completion = CaptureCompletion {
+            tasks: self.clone(),
+            keys,
+            complete,
+        };
+        tokio::spawn(async move {
+            let _completion = completion;
+            capture_decision(&pool, input).await;
+        });
+    }
+
+    pub(crate) async fn wait_for(&self, org_id: &str, ids: &[String]) {
+        self.wait_for_ids(org_id, ids.iter().cloned().map(CaptureId::Decision))
+            .await;
+    }
+
+    pub(crate) async fn wait_for_requests(&self, org_id: &str, ids: &[String]) {
+        self.wait_for_ids(org_id, ids.iter().cloned().map(CaptureId::Request))
+            .await;
+    }
+
+    async fn wait_for_ids(&self, org_id: &str, ids: impl Iterator<Item = CaptureId>) {
+        let receivers: Vec<_> = {
+            let pending = self.pending.lock().expect("capture tracking lock");
+            ids.filter_map(|id| pending.get(&(org_id.to_owned(), id)).cloned())
+                .collect()
+        };
+        for mut receiver in receivers {
+            if !*receiver.borrow() {
+                let _ = receiver.changed().await;
+            }
+        }
+    }
+}
+
 /// Everything needed to record one decision. Built by the service from the
 /// request metadata + the decision record.
 #[derive(Debug, Clone)]
 pub struct CaptureInput {
+    /// Frozen submit clock for Explain display, never physical freshness.
+    pub display_submitted_at_ms: Option<i64>,
+    pub template_comparison: Option<crate::explain::TemplateComparison>,
     // identity / grouping
     pub org_id: String,
     pub external_invocation_id: Option<String>,
@@ -204,10 +295,10 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             execution_runtime_ms, query_dependencies, matched_execution_id,
             decision_reason, freshness_tolerance_ms, build_age_ms,
             skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
-            reads_relation
+            reads_relation, display_submitted_at_ms, template_comparison
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
         "#,
     )
     .bind(&i.org_id)
@@ -243,6 +334,12 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     .bind(i.clone_rejection_reason)
     .bind(i.unmatched_execution_id)
     .bind(i.reads_relation)
+    .bind(i.display_submitted_at_ms)
+    .bind(
+        i.template_comparison
+            .as_ref()
+            .map(|value| serde_json::to_value(value).expect("template evidence")),
+    )
     .execute(pool)
     .await?;
 

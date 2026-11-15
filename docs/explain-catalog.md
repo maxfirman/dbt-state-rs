@@ -3,7 +3,7 @@
 The catalog of record for the structured Explain tree
 (`ExplainMessageEntry` → `ExplainLine` / `ExplainMarker` / `ExplainBadge`) that
 `ExplainService.GetExplainMessages` returns. Every tree is pinned from live
-captures against `api.state.dbt.com` (Snowflake), never inferred. A cell
+captures against `api.state.dbt.com` (Snowflake and the explicitly scoped Databricks captures), never inferred. A cell
 without a capture renders nothing and has a final status
 ([Decision reason coverage](#decision-reason-coverage)).
 
@@ -14,6 +14,36 @@ and its shape is selected from the persisted Decision reason
 separate output, listed in [protocol.md](protocol.md).
 
 Source fixtures (`golden/fixtures/`):
+- `databricks_delete_insert_history.jsonl`: twelve actual-client DELETE_INSERT5
+  decisions, six BUILD and six fresh SKIP trees. NULL-safe key replacement retains
+  absent keys and duplicate rows, replaces selected NULL keys and preserves rows
+  on empty input; FULL1 Record precedes ordinary5 rebuild/reuse. Record mints no
+  decision. No vocabulary or fence is introduced;
+  [bounded #149 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
+- `databricks_replace_where_history.jsonl`: twelve actual-client DBT_CUSTOM11
+  decisions, seven BUILD and five fresh SKIP trees. Predicate replacement retains
+  outside rows, replaces duplicates and NULLs, handles empty incoming rows and
+  a destination-only predicate change, then records full refresh as type11 before
+  ordinary type11 rebuild/reuse. Record mints no decision. No vocabulary or fence
+  is introduced; [bounded #148 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
+- `databricks_audit_{aliased,default}_error_history.jsonl`: six actual-client
+  source-less audit-table first-build/speculative-reuse trees, including four
+  template INFO lines. Complete ordinary-error and synthetic-control statuses
+  are retained; no error is assigned an invented Explain tree. The histories
+  preserve original native failures; [bounded #144 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
+- `databricks_cached_test_results.jsonl`: four actual-client source-less
+  pass/fail first-build and speculative-reuse trees, complete typed outcomes
+  and successful computation confirmations; [bounded #143 evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md).
+- `databricks_freshness_{identical_current,missing_current,both_missing}.jsonl`:
+  three complete crafted histories; identical known current duplicates SKIP,
+  unknown current epochs BUILD with submit-frozen display defaults.
+  `databricks_explain_identity_submit_clock.jsonl` retains the complete
+  actual-client causal baseline and identity-change rebuild, including
+  confirmation before Explain. See
+  [bounded follow-up evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md).
+- `databricks_isolation_*.jsonl`: nine exact scope, rendered-alias,
+  rejection/confirmation and concurrent-client histories, 378 RPCs and 157
+  complete Explain trees; [dated partial evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md).
 - `explain_happy_history.jsonl`: history-bearing model/view/data-test SKIPs.
 - `explain_clone_history.jsonl`: CLONE with the copy source built in-window.
 - `explain_tolerance_history.jsonl`: within-tolerance SKIP and upstream-OUTDATED
@@ -24,6 +54,10 @@ Source fixtures (`golden/fixtures/`):
   (excluded from the generic replay, `CHARACTERIZATION_ONLY` in
   `crates/harness/tests/conformance.rs`).
 - `lag_seed_upstream.jsonl`: seed SKIP, reload and first-load trees.
+- `databricks_managed_seeds.jsonl`: complete pinned 2.0.11 managed-seed initial,
+  content/type/delimiter/quoting change and required unchanged reuse trees, with
+  unchanged-SQL downstream producer changes; 20 first-call Explain responses.
+  [Seed evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-seeds-2026-11-13.md).
 - `lag_copy_candidates.jsonl`: CLONE over an existing Target relation, anchored
   CLONE listing, absent-target rebuilds.
 - `lag_dropped_targets.jsonl`: stale CLONE into a dropped Target relation.
@@ -221,40 +255,23 @@ A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. Inside an open cell, each Decision reason renders only
 where a tracked capture backs it for that node kind; the status of every
 other reason is in [Decision reason coverage](#decision-reason-coverage). The evidence column gives the census tree counts by origin
-(see [Explain tree census](#explain-tree-census)). The real-client trees in the
-tracked fixtures were recorded with `dbt_run_cache_version` 2.0.6, except the
-9 in `explain_snapshot_history.jsonl`, the 4 in `explain_copy_probes.jsonl`
-and `explain_snapshot_register_clone.jsonl`, the 4 in
-`explain_seed_copy_existing.jsonl`, the 11 in
-`explain_data_test_history.jsonl`, the 2 in
-`explain_store_failures_audit.jsonl`, the 4 in
-`explain_store_failures_audit_schema.jsonl` and
-`explain_store_failures_audit_alias.jsonl`, the 7 in
-`explain_rebuild_reason_gaps.jsonl`, the 10 in `explain_custom_history.jsonl`
-and `explain_custom_copy.jsonl`, the 21 in the `explain_incremental_*`
-append/merge fixtures, the 20 in the three insert_overwrite,
-delete+insert and microbatch fixtures, the 5 in
-`explain_incremental_copy_over.jsonl`, the 5 in
-`explain_execution_type_change.jsonl`, the 4 in
-`explain_post_copy_identity.jsonl`, the 18 in
-`explain_freshness_cells.jsonl`, the 10 in
-`explain_copy_logic_mismatch.jsonl`, the 71 in
-`explain_reason_kind_cells.jsonl` and `explain_reason_kind_cells_custom.jsonl`
-and the 10 in `explain_view_reads_no_relation.jsonl`, which come from 2.0.11.
+(see [Explain tree census](#explain-tree-census)). Client versions and crafted-probe origins are counted directly from the
+capture metadata. The current table includes the Databricks identity, freshness,
+deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-11) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-14) |
 |---|---|---|---|---|---|---|
-| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | SKIP 25 (5 client, 20 crafted), EXECUTE 48 (13 client, 35 crafted), CLONE 8 (1 client, 7 crafted) |
-| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 18 (16 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 20 (18 client 2.0.11, 2 crafted) (`explain_incremental_*`, `explain_execution_type_change.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6 (5 client 2.0.11, 1 crafted), EXECUTE 20 (16 client 2.0.11, 4 crafted) (`explain_incremental_insert_overwrite.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 5, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_delete_insert.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | SKIP 6, EXECUTE 19 (17 client 2.0.11, 2 crafted) (`explain_incremental_microbatch.jsonl`, `explain_incremental_copy_over.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | SKIP 13 (12 client 2.0.11, 1 crafted), EXECUTE 15 (11 client 2.0.11, 4 crafted) (`explain_snapshot_history.jsonl`, `explain_copy_probes.jsonl`, `explain_snapshot_register_clone.jsonl`, `explain_post_copy_identity.jsonl`, `explain_freshness_cells.jsonl`, `explain_rebuild_tolerance_line.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells.jsonl`) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | SKIP 15 (11 client 2.0.11, 1 client 2.0.6, 3 crafted), EXECUTE 12 (client 2.0.11) (`explain_data_test_history.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_store_failures_audit*.jsonl`, `explain_malformed_requests.jsonl`) |
-| 9 | VALUES (seed) | characterized (crafted only)² | characterized (live)² | characterized (live)⁸ | S E C | SKIP 2 (1 crafted, 1 client 2.0.11), EXECUTE 8 (5 crafted, 3 client 2.0.11) (`lag_seed_upstream.jsonl`, `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`); CLONE 3 (client 2.0.11, `explain_copy_probes.jsonl`, `explain_seed_copy_existing.jsonl`) |
-| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | SKIP 7 (5 client 2.0.11, 1 client 2.0.6, 1 crafted); EXECUTE 14 (12 client 2.0.11, 2 crafted) (`explain_view_reads_no_relation.jsonl`, `explain_reason_kind_cells.jsonl`, `explain_snapshot_history.jsonl`; `explain_copy_logic_crafted.jsonl` for the crafted ones); CLONE 0 |
-| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | SKIP 9 (8 client 2.0.11, 1 crafted), EXECUTE 15 (13 client 2.0.11, 2 crafted) (`explain_custom_history.jsonl`, `explain_custom_copy.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_malformed_requests.jsonl`, `explain_reason_kind_cells*.jsonl`) |
+| 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 248 (135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6), SKIP 252 (132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 8 (7 crafted, 1 client 2.0.6) |
+| 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (21 client 2.0.11, 4 crafted), SKIP 15 (14 client 2.0.11, 1 crafted) |
+| 3 | MERGE (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 12 (12 client 2.0.11) |
+| 4 | INSERT_OVERWRITE (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 26 (22 client 2.0.11, 4 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
+| 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
+| 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 19 (17 client 2.0.11, 2 crafted), SKIP 6 (6 client 2.0.11) |
+| 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 17 (11 client 2.0.11, 6 crafted), SKIP 13 (12 client 2.0.11, 1 crafted) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 39 (33 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
+| 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 106 (92 crafted, 14 client 2.0.11), SKIP 39 (30 crafted, 8 client 2.0.11, 1 client 2.0.6) |
+| 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 24 (20 client 2.0.11, 4 crafted), SKIP 14 (13 client 2.0.11, 1 crafted) |
 | 0 / other | UNSPECIFIED / unknown | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | unreachable on 2.0.11⁵ | — | none |
 
 1. Per Decision reason in [Decision reason coverage](#decision-reason-coverage).
@@ -372,37 +389,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 322 trees in the
-tracked fixtures (2026-11-12). A line without a marker or badge is "none"
-(1834 lines without a marker, 2120 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 990 trees in the
+tracked fixtures (2026-11-15). A line without a marker or badge is "none"
+(5385 lines without a marker, 6438 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 828 lines |
-| ExplainMarker | FAIL (2) | ✅ 271 lines |
-| ExplainMarker | INFO (3) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 251 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 62 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 206 lines |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 30 lines |
-| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 10 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 128 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 87 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 39 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 322 trees (2026-11-12; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | SUCCESS (1) | ✅ 2692 lines |
+| ExplainMarker | FAIL (2) | ✅ 598 lines |
+| ExplainMarker | INFO (3) | ✅ 66 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 990 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 823 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 128 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `databricks_delete_insert_history.jsonl`) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 626 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 38 lines |
+| ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 14 lines (SHAPE 9 per-upstream query listing only) |
+| ExplainBadge | FRESH (1) | ✅ 433 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 198 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 43 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 990 trees (2026-11-15; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. The 322 trees are 9 real-client trees from client 2.0.6 (2 of them with
-   the version unrecorded), 217 from client 2.0.11 and 96 for crafted
-   `state-probe` requests. 85 of the client 2.0.11 trees explain a
-   real-client decision but were requested with `state-probe`
-   (`explain_reason_kind_cells*.jsonl`, `explain_store_failures_audit_schema.jsonl`,
-   `explain_store_failures_audit_alias.jsonl`, `explain_view_reads_no_relation.jsonl`,
-   `explain_seed_copy_existing.jsonl`, `explain_seed_copy_disabled.jsonl`, `via="probe"` in
-   [harness.md](harness.md#shared-live-capture-driver-experimentsexplain_capturepy)). The removed `explain_snowflake_happy.jsonl` and
-   `explain_clone_deferral.jsonl` captures (client 2.0.6, 179 trees) have none
-   either.
+1. Origins across the 990 tracked trees: 560 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in the Databricks template comparisons below; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -422,37 +430,84 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-12 (322 trees, none empty, no findings):
+Tracked fixtures, 2026-11-15 (990 trees in 140 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 25 | 20 crafted, 3 client 2.0.6, 1 client 2.0.11, 1 client (version unrecorded) |
-| FULL | EXECUTE | 48 | 35 crafted, 11 client 2.0.11, 1 client 2.0.6, 1 client (version unrecorded) |
+| FULL | SKIP | 252 | 132 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 248 | 135 crafted, 111 client 2.0.11, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 8 | 7 crafted, 1 client 2.0.6 |
-| APPEND | SKIP | 9 | 8 client 2.0.11, 1 crafted |
-| APPEND | EXECUTE | 18 | 16 client 2.0.11, 2 crafted |
-| MERGE | SKIP | 6 | client 2.0.11 |
-| MERGE | EXECUTE | 20 | 18 client 2.0.11, 2 crafted |
-| INSERT_OVERWRITE | SKIP | 6 | 5 client 2.0.11, 1 crafted |
-| INSERT_OVERWRITE | EXECUTE | 20 | 16 client 2.0.11, 4 crafted |
-| DELETE_INSERT | SKIP | 5 | client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
-| MICROBATCH | SKIP | 6 | client 2.0.11 |
+| APPEND | SKIP | 15 | 14 client 2.0.11, 1 crafted |
+| APPEND | EXECUTE | 25 | 21 client 2.0.11, 4 crafted |
+| MERGE | SKIP | 12 | 12 client 2.0.11 |
+| MERGE | EXECUTE | 25 | 23 client 2.0.11, 2 crafted |
+| INSERT_OVERWRITE | SKIP | 13 | 12 client 2.0.11, 1 crafted |
+| INSERT_OVERWRITE | EXECUTE | 26 | 22 client 2.0.11, 4 crafted |
+| DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |
+| DELETE_INSERT | EXECUTE | 25 | 23 client 2.0.11, 2 crafted |
+| MICROBATCH | SKIP | 6 | 6 client 2.0.11 |
 | MICROBATCH | EXECUTE | 19 | 17 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 13 | 12 client 2.0.11, 1 crafted |
-| SNAPSHOT | EXECUTE | 15 | 11 client 2.0.11, 4 crafted |
-| DBT_DATA_TEST | SKIP | 15 | 11 client 2.0.11, 3 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 12 | client 2.0.11 |
-| VALUES | SKIP | 2 | 1 crafted, 1 client 2.0.11 |
-| VALUES | EXECUTE | 8 | 5 crafted, 3 client 2.0.11 |
-| VALUES | CLONE | 3 | client 2.0.11 |
-| VIEW | SKIP | 7 | 5 client 2.0.11, 1 client 2.0.6, 1 crafted |
-| VIEW | EXECUTE | 14 | 12 client 2.0.11, 2 crafted |
-| DBT_CUSTOM | SKIP | 9 | 8 client 2.0.11, 1 crafted |
-| DBT_CUSTOM | EXECUTE | 15 | 13 client 2.0.11, 2 crafted |
+| SNAPSHOT | EXECUTE | 17 | 11 client 2.0.11, 6 crafted |
+| DBT_DATA_TEST | SKIP | 39 | 33 client 2.0.11, 5 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
+| VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
+| VALUES | EXECUTE | 13 | 8 client 2.0.11, 5 crafted |
+| VALUES | CLONE | 3 | 3 client 2.0.11 |
+| VIEW | SKIP | 39 | 30 crafted, 8 client 2.0.11, 1 client 2.0.6 |
+| VIEW | EXECUTE | 106 | 92 crafted, 14 client 2.0.11 |
+| DBT_CUSTOM | SKIP | 14 | 13 client 2.0.11, 1 crafted |
+| DBT_CUSTOM | EXECUTE | 24 | 20 client 2.0.11, 4 crafted |
 
 The "client (version unrecorded)" trees are in `explain_tolerance.jsonl`,
 which was trimmed without its ValidateClientVersion row.
+
+The three [actual freshness histories](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-actual-2026-11-14.md)
+add 18 client 2.0.11 FULL trees: 11 EXECUTE and seven SKIP, including the
+repeated unchanged Explain. They introduce no new markers, badges or vocabulary;
+all request/response/status histories replay exactly without new gaps.
+
+The [bounded target lifecycle history](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-target-lifecycle-2026-11-14.md)
+adds 46 client 2.0.11 FULL trees: 21 EXECUTE and 25 SKIP. Its literal upstream
+views are reported as query dependencies, not physical freshness inputs. When
+only their definitions change, query analysis keeps the outer model query
+unchanged, lists each dependency with `view ignored`, and reports
+`an upstream model query has changed`. Initial table→literal-view transition
+has an empty freshness section; replacement of an already recorded literal
+view says `upstream data is up to date`. Unchanged literal-view reuse includes
+both `upstream model queries have not changed` and that freshness line. These
+captured display distinctions add no reuse qualification or missing-epoch rule.
+
+## Databricks template comparison (2026-11-14, #138)
+
+The complete `databricks_template_config`, `databricks_template_transitions`,
+`databricks_template_tests` and `databricks_dependency_identity` fixtures add
+INFO (3): `the model was compared to state based on its unrendered code`.
+The two complete #144 audit histories add four actual-client speculative
+reuse trees with the same INFO line; their ordinary-submit errors have no
+Explain response and add no empty or invented tree. The #143 true-template
+failure history adds another three INFO lines with this same wording.
+A matching body/config/macro declaration follows with SUCCESS (1), no badge:
+`the unrendered model code has not changed`. Otherwise FAIL (2), no badge,
+names the changed `body` or `config` (`has changed`) or `macros` (`have changed`),
+then `; compiled SQL was used for the cache decision`; the compiled-query
+verdict follows. Data tests use this same model wording for the template lines.
+
+The raw comparison signatures and rendered identity are persisted, not the tree.
+Migration 0023 also retains optional macro signatures on executions. The pure
+renderer compares them with the decision's matched/unmatched row; legacy NULL
+comparison evidence supplies no invented template lines. Dependency displays
+follow the root query through whole name/definition/own-context bindings;
+unknown or ambiguous traversal retains the submitted display order. This
+ordering never rewrites physical inputs, producer associations or epochs.
+
+When the unrendered declaration matches but the complete rendered identity
+changes, a dependency-bearing query lists external tables and ignored view
+bindings, followed by `an upstream model query has changed`. A rebuild omits
+the final freshness summary while retaining the full per-upstream timing tree.
+The corpus includes an extra-only compiled change with a matching declared
+config signature; its SKIP still has that changed-query diagnostic. These
+are presentation observations, not a relaxation of dependency/freshness checks.
 
 ## Section structure
 
@@ -1404,7 +1459,7 @@ What this server never renders, each with its final status:
   #101): this server copies only FULL (and, on Snowflake, a seed, #91) on
   submit, and a RegisterClone copy has no Explain message. DuckDB's checked delete+insert copy is local-only.
   Data-test CLONE is out of scope → #68.
-- **Badges and markers** `EB_UNSPECIFIED` (0), `INFO` (3) and
+- **Badges and markers** `EB_UNSPECIFIED` (0) and
   `EM_UNSPECIFIED` (0): never emitted; not observed across the census trees
   ([Observed vocabulary](#observed-vocabulary)).
 - **`Explain.GetUpstreamDependencyChanges`**: unreachable on 2.0.11, the dbt
@@ -1665,3 +1720,10 @@ The hosted d1 and d2 trees use existing shapes (the anchored SKIP tree and the
 first-build tree). #80, #82 and #87 are accepted divergences
 ([correctness-handoff.md](correctness-handoff.md#accepted-divergences)): the
 server keeps its conservative rebuilds, so their keyed gaps stay.
+
+The [bounded producer/policy history](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-policy-2026-11-14.md)
+adds 29 actual client 2.0.11 FULL trees with complete producer Record histories
+and exact ANY/ALL lag responses. Separate complete crafted duration controls
+add 50 FULL trees. Those controls establish Databricks display-only whole-second
+even-tie rounding and minute/hour/day carries, without a warehouse-result or
+exact raw service-time equality claim. All original full trees are retained.

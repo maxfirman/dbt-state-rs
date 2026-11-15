@@ -36,13 +36,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_client(true)
         .type_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .type_attribute(".", "#[serde(rename_all = \"snake_case\")]")
-        // SessionEndRequest.session_duration is a google.protobuf.Duration
-        // (prost_types) that doesn't implement serde. It belongs to the
-        // ClientTelemetry service, which we treat as a no-op and never serialize,
-        // so skip it (defaulting on deserialize).
+        // Capture telemetry durations losslessly. Older fixtures omitted the
+        // field; default preserves their readability without inventing evidence.
         .field_attribute(
             ".com.fivetran.query_cache.SessionEndRequest.session_duration",
-            "#[serde(skip, default)]",
+            "#[serde(with = \"crate::duration_serde\", default)]",
         )
         .compile_protos(&proto_files, &[proto_root])?;
 

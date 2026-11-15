@@ -1,0 +1,140 @@
+{
+  "scope": "Bounded offline #160 SQL/seed upgrade evidence; copy and full #160 remain OPEN.",
+  "old_source_commit": "302156014b182df2f545a4c9bc3d128926bdf11c",
+  "old_source_cargo_lock_sha256": "a2e329fab002d4744e98ac0167daa5e6030bdbba70c124a7744dcf0170d5a7c2",
+  "historical_build_limit": "Retained source/executable manifest pins source and exact binary digests. Original compiler version/build command were not retained in that manifest; no historical rebuild or reproducible-binary claim is made. This slice reuses those exact executables.",
+  "historical_binary_provenance": {
+    "source_commit": "302156014b182df2f545a4c9bc3d128926bdf11c",
+    "artifacts": [
+      {
+        "name": "dbt-state-server",
+        "sha256": "52afbea7916f0ff5bd32fb77fd78f229811ff4d4cfeb19cb6ce7ee5d4dc7ab15",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/dbt-state-server"
+      },
+      {
+        "name": "state-probe",
+        "sha256": "e44baeebe13e1cb09a7d3d31873f04a4e199f63359b101cd788c707f3bb083d3",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/state-probe"
+      },
+      {
+        "name": "record-proxy",
+        "sha256": "00b3ba2537ff6d73afcf8e91f0d3833fe1b40edd746d4e5306bc45c89305a5d4",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/record-proxy"
+      }
+    ]
+  },
+  "sql_exports": [
+    {
+      "fixture": "databricks_identity_v3_template.json",
+      "sha256": "f68d9d2463b2fd8f3040d5a79429a06d9aa865544f45399ab5d4341973665b81",
+      "capture_sha256": "a088a4f4e70d8442ee225e04aa98b8a07a718f5937987e6460f61d10b5bb858b",
+      "capture_original_path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/hosted-identity-complete/golden/golden_20261114T115535.454Z_b7de07c24efa4a7788958304432aa9e6.jsonl",
+      "request_entry_index": 3,
+      "unchanged_entry_index": 11,
+      "database_surrogate_id": 1,
+      "replay_org": "local",
+      "transport_metadata_replayed": false,
+      "confirm_entry_index": 5,
+      "original_confirmation": {
+        "request_id": "01a1d9e9-c86c-7d12-bf17-97a72054eb6f",
+        "last_modified_epoch": 1794657343000,
+        "failed_to_clone": false,
+        "table_type": null,
+        "execution_results": null,
+        "execution_runtime_ms": 5527,
+        "labels": {
+          "dbt_node_name": "template",
+          "dbt_node_fqn": "survey_20261114c138cc.template",
+          "dbt_node_unique_id": "model.survey_20261114c138cc.template"
+        }
+      },
+      "request_id_remapping": {
+        "01a1d9e9-c86c-7d12-bf17-97a72054eb6f": "01a1d9ee-b467-70bd-a2ce-cd9ffdedb993"
+      }
+    },
+    {
+      "fixture": "databricks_identity_v3_rendered.json",
+      "sha256": "494c966cda8c6a5cfdca797c753d353b7d42b0c703cdfa2635c8adc2c1bd6b9f",
+      "capture_sha256": "a088a4f4e70d8442ee225e04aa98b8a07a718f5937987e6460f61d10b5bb858b",
+      "capture_original_path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/hosted-identity-complete/golden/golden_20261114T115535.454Z_b7de07c24efa4a7788958304432aa9e6.jsonl",
+      "request_entry_index": 48,
+      "unchanged_entry_index": 56,
+      "database_surrogate_id": 2,
+      "replay_org": "local",
+      "transport_metadata_replayed": false,
+      "confirm_entry_index": 50,
+      "original_confirmation": {
+        "request_id": "01a1d9eb-5003-7c7f-ba5e-fa7b695df1d2",
+        "last_modified_epoch": 1794657443000,
+        "failed_to_clone": false,
+        "table_type": null,
+        "execution_results": null,
+        "execution_runtime_ms": 5272,
+        "labels": {
+          "dbt_node_unique_id": "model.survey_20261114c138cc.config",
+          "dbt_node_name": "config",
+          "dbt_node_fqn": "survey_20261114c138cc.config"
+        }
+      },
+      "request_id_remapping": {
+        "01a1d9eb-5003-7c7f-ba5e-fa7b695df1d2": "01a1d9ee-b561-77fa-b474-5d965b5da10b"
+      }
+    },
+    {
+      "fixture": "databricks_identity_v3_record.json",
+      "sha256": "30c52bbdcec8ce5f99254fb2d92e74362f3c804231c828853cb55a8a7a28bf65",
+      "capture_sha256": "fe0303122070991fcd75cb9017c3413e31f3446c3731d2071be622cf5bf04812",
+      "capture_original_path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/hosted-transitions/golden/golden_20261114T120300.578Z_64b853902a2c4197ac1dabb8af6a06fa.jsonl",
+      "request_entry_index": 42,
+      "unchanged_entry_index": 47,
+      "database_surrogate_id": 3,
+      "replay_org": "local",
+      "transport_metadata_replayed": false,
+      "request_id_remapping": {},
+      "note": "RecordExecutions allocates local transport UUIDs; no client body remapping. Old projection BUILD differs from hosted SKIP."
+    }
+  ],
+  "seed_fixture": {
+    "fixture": "databricks_seed_v2_3021560.json",
+    "sha256": "e4a8d66c0e6ebacbd2d949f1c6115a6c8198b9c8baf4d50858fc3dcb3bf95acc",
+    "command": [
+      "python",
+      "experiments/databricks_legacy_freeze.py"
+    ],
+    "runner_sha256": "d894422a6668894b2b6b4df4517e450811bf9243689d327075ee2650c9727071"
+  },
+  "import_policy": {
+    "omitted": [
+      "id",
+      "warehouse_family",
+      "physical_target_key"
+    ],
+    "id": "Allocate current sequence surrogate id and return (old id, allocated id); no execution FK references occur in these exports. Producer identities are hash strings, not surrogate IDs. request_id and execution_decision_id remain unchanged. Each episode/status uses a fresh isolated schema.",
+    "generated": "Original generated values remain immutable in fixtures. Current migrations generate current lookup values; no old semantic field is backfilled.",
+    "new_column": "node_macros_hash did not exist in old source; current nullable default stays NULL.",
+    "validation": "Require exact 34-column old export; round-trip every one of 31 imported fields through PostgreSQL and compare to its immutable export, including original timestamps, input JSON, bytes, nulls and all hashes.",
+    "pending": "Import genuine pending row. Apply original confirmation through current public gRPC using its frozen old local request_id. Receipt time naturally becomes current confirm time; no direct timestamp update.",
+    "deletion": "Importer appends only; never deletes executions or capture/audit rows."
+  },
+  "old_source_toolchain_specification": "[toolchain]\nchannel = \"1.98.0\"\nprofile = \"minimal\"\ncomponents = [\"clippy\", \"rustfmt\"]\n",
+  "historical_freeze_runners": [
+    {
+      "path": "/tmp/dbt-state-132-context/identity138-freeze-v3.py",
+      "sha256": "60dd9f6ac7be594709ed72c3b993473d5a9b68724ebbc76c048168aa61a3228c",
+      "command": [
+        "python",
+        "/tmp/dbt-state-132-context/identity138-freeze-v3.py"
+      ],
+      "source": "import hashlib,json,os,shutil,socket,subprocess,time,urllib.parse,uuid\nfrom pathlib import Path\nroot=Path.home()/'.local/state/dbt-state-rs/databricks-138-20261114'\nbinaries=root/'pre138-bin'\nprovenance=json.loads((binaries/'provenance.json').read_text())\nfor a in provenance['artifacts']:assert hashlib.sha256(Path(a['path']).read_bytes()).hexdigest()==a['sha256']\nphase=root/'hosted-identity-complete'\nsummary=json.loads((phase/'summary.json').read_text())\nwire=[json.loads(s) for s in (phase/summary['capture'][0]['path']).read_text().splitlines()]\nsubmits=[r for r in wire if r['method']=='SubmitEnrichedSQL']\nout=root/'frozen-v3';out.mkdir(exist_ok=False)\nshutil.copy2(__file__,out/'freeze-runner.py')\nschema='identity138_freeze_'+uuid.uuid4().hex\nbase='postgres://dbtstate:dbtstate@localhost:55441/dbtstate'\ndef sql(query):return subprocess.check_output(['psql',base,'-At','-v','ON_ERROR_STOP=1','-c',query],text=True).strip()\nsql('CREATE SCHEMA '+schema)\nwith socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]\nenv=dict(os.environ,DATABASE_URL=base+'?'+urllib.parse.urlencode({'options[search_path]':schema}),DBT_STATE_LISTEN='127.0.0.1:'+str(port),RUST_LOG='warn')\nlog=open(out/'server.log','w');server=subprocess.Popen([str(binaries/'dbt-state-server')],env=env,stdout=log,stderr=subprocess.STDOUT)\nops=[]\ntry:\n for _ in range(100):\n  if server.poll() is not None:raise RuntimeError('server exited')\n  with socket.socket() as sock:\n   if sock.connect_ex(('127.0.0.1',port))==0:break\n  time.sleep(.1)\n else:raise RuntimeError('startup failed')\n def rpc(op,request):\n  r=subprocess.run([str(binaries/'state-probe'),op],input=json.dumps(request),env=dict(os.environ,PROBE_URL='http://127.0.0.1:'+str(port)),text=True,capture_output=True,check=True)\n  response=json.loads(r.stdout);ops.append({'method':op,'request':request,'response':response});(out/'operations.json').write_text(json.dumps(ops,indent=2));return response\n for label,index in [('template',0),('rendered',7)]:\n  row=submits[index];request=row['request'];response=rpc('submit',request)\n  rid=response['response']['ready_to_execute']['request_id']\n  pending=json.loads(sql(\"SELECT coalesce(json_agg(row_to_json(e)), '[]') FROM \"+schema+\".executions e WHERE request_id='\"+rid+\"'\"))\n  hostedid=row['response']['response']['ready_to_execute']['request_id']\n  confirm=next(r['request'] for r in wire if r['method']=='ConfirmExecution' and r['request']['request_id']==hostedid)\n  confirm=dict(confirm,request_id=rid);assert rpc('confirm',confirm)['success']\n  confirmed=json.loads(sql(\"SELECT json_agg(row_to_json(e)) FROM \"+schema+\".executions e WHERE request_id='\"+rid+\"'\"))\n  repeat=submits[index+1]['request'];assert 'skip_execution' in rpc('submit',repeat)['response']\n  (out/(label+'.json')).write_text(json.dumps({'provenance':provenance,'request':request,'unchanged_request':repeat,'outcome':confirm,'pending_rows':pending,'rows':confirmed},indent=2))\n print('frozen genuine v3 rendered/template pending+confirmed with positive public reuse')\nfinally:\n server.terminate();server.wait(30);log.close();sql('DROP SCHEMA '+schema+' CASCADE')\n"
+    },
+    {
+      "path": "/tmp/dbt-state-132-context/identity138-freeze-record-v3.py",
+      "sha256": "60acde9daa595c23b5aff0000bec62a1223d6c11f371df525cc2f63be91339c9",
+      "command": [
+        "python",
+        "/tmp/dbt-state-132-context/identity138-freeze-record-v3.py"
+      ],
+      "source": "import hashlib,json,os,shutil,socket,subprocess,time,urllib.parse,uuid\nfrom pathlib import Path\nroot=Path.home()/'.local/state/dbt-state-rs/databricks-138-20261114'\nbinaries=root/'pre138-bin'\nprovenance=json.loads((binaries/'provenance.json').read_text())\nfor a in provenance['artifacts']:assert hashlib.sha256(Path(a['path']).read_bytes()).hexdigest()==a['sha256']\nphase=root/'hosted-identity-complete'\nsummary=json.loads((phase/'summary.json').read_text())\nwire=[json.loads(s) for s in (phase/summary['capture'][0]['path']).read_text().splitlines()]\nsubmits=[r for r in wire if r['method']=='SubmitEnrichedSQL']\nout=root/'frozen-v3-record';out.mkdir(exist_ok=False)\nshutil.copy2(__file__,out/'freeze-runner.py')\nschema='identity138_freeze_'+uuid.uuid4().hex\nbase='postgres://dbtstate:dbtstate@localhost:55441/dbtstate'\ndef sql(query):return subprocess.check_output(['psql',base,'-At','-v','ON_ERROR_STOP=1','-c',query],text=True).strip()\nsql('CREATE SCHEMA '+schema)\nwith socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]\nenv=dict(os.environ,DATABASE_URL=base+'?'+urllib.parse.urlencode({'options[search_path]':schema}),DBT_STATE_LISTEN='127.0.0.1:'+str(port),RUST_LOG='warn')\nlog=open(out/'server.log','w');server=subprocess.Popen([str(binaries/'dbt-state-server')],env=env,stdout=log,stderr=subprocess.STDOUT)\nops=[]\ntry:\n for _ in range(100):\n  if server.poll() is not None:raise RuntimeError('server exited')\n  with socket.socket() as sock:\n   if sock.connect_ex(('127.0.0.1',port))==0:break\n  time.sleep(.1)\n else:raise RuntimeError('startup failed')\n def rpc(op,request):\n  r=subprocess.run([str(binaries/'state-probe'),op],input=json.dumps(request),env=dict(os.environ,PROBE_URL='http://127.0.0.1:'+str(port)),text=True,capture_output=True,check=True)\n  response=json.loads(r.stdout);ops.append({'method':op,'request':request,'response':response});(out/'operations.json').write_text(json.dumps(ops,indent=2));return response\n for label,index in [('template',0),('rendered',7)]:\n  row=submits[index];request=row['request'];response=rpc('submit',request)\n  rid=response['response']['ready_to_execute']['request_id']\n  pending=json.loads(sql(\"SELECT coalesce(json_agg(row_to_json(e)), '[]') FROM \"+schema+\".executions e WHERE request_id='\"+rid+\"'\"))\n  hostedid=row['response']['response']['ready_to_execute']['request_id']\n  confirm=next(r['request'] for r in wire if r['method']=='ConfirmExecution' and r['request']['request_id']==hostedid)\n  confirm=dict(confirm,request_id=rid);assert rpc('confirm',confirm)['success']\n  confirmed=json.loads(sql(\"SELECT json_agg(row_to_json(e)) FROM \"+schema+\".executions e WHERE request_id='\"+rid+\"'\"))\n  repeat=submits[index+1]['request'];assert 'skip_execution' in rpc('submit',repeat)['response']\n  (out/(label+'.json')).write_text(json.dumps({'provenance':provenance,'request':request,'unchanged_request':repeat,'outcome':confirm,'pending_rows':pending,'rows':confirmed},indent=2))\n phase=root/'hosted-transitions'\n summary=json.loads((phase/'summary.json').read_text())\n wire=[json.loads(s) for s in (phase/summary['capture'][0]['path']).read_text().splitlines()]\n record=next(r for r in wire if r['method']=='RecordExecutions')\n assert rpc('record',record['request'])['records_stored']==1\n cells=json.loads((phase/'identity-results.json').read_text())\n unchanged=next(r['request'] for r in cells if r['cell']=='flags_record_to_true')\n assert 'skip_execution' in rpc('submit',unchanged)['response']\n projection=next(r['request'] for r in cells if r['cell']=='flags_projection_after_record')\n assert 'ready_to_execute' in rpc('submit',projection)['response']\n rows=json.loads(sql(\"SELECT json_agg(row_to_json(e)) FROM \"+schema+\".executions e WHERE target_table='\"+record['request']['records'][0]['input']['enriched_sql']['target_table']+\"' AND status='confirmed'\"))\n (out/'record.json').write_text(json.dumps({'provenance':provenance,'record':record,'unchanged_request':unchanged,'projection_request':projection,'rows':rows},indent=2))\n print('genuine v3 Record control: unchanged SKIP, template-only projection BUILD differs from hosted SKIP')\n\nfinally:\n server.terminate();server.wait(30);log.close();sql('DROP SCHEMA '+schema+' CASCADE')\n"
+    }
+  ]
+}

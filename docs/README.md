@@ -48,6 +48,22 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [0007](adr/0007-lag-tolerance-and-upstream-producers.md) | Freshness against recorded upstream epochs and producers, gated by Lag tolerance. |
 | [0008](adr/0008-store-failures-audit-relation-by-elimination.md) | Recognize an aliased `store_failures` audit relation as the one unnamed table in the test's schema. |
 
+## Databricks preview
+
+- [Preview coverage and limitations](databricks-preview.md): the entry point
+  for users, with configuration, archived evidence and follow-up scope.
+- [Copy configuration](databricks-copy-preview.md): default-off Databricks
+  copying and pinned-client settings.
+- [Landing plan](databricks-landing.md): revised preview release gates.
+- [Evidence manifest](databricks-evidence.tsv): archived report/scaffold paths
+  and hashes; golden fixtures and reproduction drivers remain in the tree.
+- [Table/view details](databricks-baseline.md),
+  [identifiers](databricks-identifiers.md),
+  [SQL equivalence](databricks-sql-equivalence.md),
+  [freshness](databricks-freshness.md) and
+  [dependency/template identity](databricks-dependency-template-identity.md):
+  implementation details for maintainers.
+
 ## Other
 
 - [golden/README.md](../golden/README.md): the golden fixture corpus.

@@ -6,12 +6,19 @@ pass proves is in [docs/testing.md](../docs/testing.md#captured-traffic-replay).
 
 ## Layout
 
+`databricks_explain_visibility.jsonl` records a warehouse-free hosted
+submit followed immediately by its first Explain (2026-11-13). The returned
+decision has a complete tree. `explain_visibility.rs` reproduces a local
+capture-lag race at the public gRPC seam and verifies scoped causal visibility
+without client retries. The fixture is the unchanged first pair from a
+certified twelve-RPC campaign; no execution or warehouse mutation is claimed.
+
 - `fixtures/`: the curated, git-tracked corpus. Treat it as read-only test data.
 - `replay_gaps.json`: keyed known divergences for the replay
   ([semantics](../docs/testing.md#goldenreplay_gapsjson)).
 - `upgrade/`: frozen rows from an old server revision (below).
 - Top level: the recording proxy's output directory. `record-proxy` writes
-  `golden_<timestamp>.jsonl` here each session. These files are gitignored
+  `golden_<timestamp>_<session>.jsonl` and a `.capture.json` integrity sidecar here each session. These files are gitignored
   (`/golden/golden_*.jsonl`) and ephemeral. Promote a useful capture by copying
   it into `fixtures/`; do not leave session files at the top level.
 
@@ -26,6 +33,15 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 
 | File | Replay | What it captures; which test pins it |
 |---|---|---|
+| `databricks_isolation_scopes.jsonl` | yes | Complete crafted scope collisions, absent/empty namespace and exact rendered Spark aliases, changed-SQL/latest-history and negative controls; 113 RPCs with full Explain, zero gaps/unknown baselines. [Evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_concurrent_a.jsonl`, `databricks_isolation_concurrent_b.jsonl` | yes | Actual pinned 2.0.11 concurrent independent projects: first build, required reuse and required peer reuse after exact owned cleanup; 15/21 RPCs. [Evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_isolation_{missing_namespace,full_controls,diagnostic_inputs,diagnostic_alias_scopes,diagnostic_identity,refusal_confirmation}.jsonl` | yes | Complete None/empty definition diagnostics, coherent FULL aliases, source metadata and strict literal/context/namespace negatives; refused optimization → Confirm → required reuse and source independence. No gaps/unknown baselines. [Evidence and unresolved scope contract](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). |
+| `databricks_managed_seeds.jsonl` | yes | Complete pinned 2.0.11 managed-seed contents, column types, delimiter and quoting changes; ten required seed/downstream SKIPs, ten confirmations and 20 first-call Explain responses; all 121 RPCs retained. [Seed evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-seeds-2026-11-13.md). |
+| `databricks_lifecycle_client.jsonl` | yes | Complete pinned 2.0.11 failure/retry, recovery and write-only Record/reuse, plus separately labeled crafted publication controls and full Explain; 70 RPCs. [Evidence and open logical-target limitation](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-lifecycle-2026-11-14.md). |
+| `databricks_lifecycle_ordering.jsonl` | yes | Different completion/delivery orders, SQL identities and equal-epoch ties on Snowflake and Databricks, including independent actual Delta contents; 48 RPCs. |
+| `databricks_lifecycle_{confirm,record,null_confirm,null_record_batch,record_boundaries,empty_target,uuid_aliases,uuid_forms,protocol_errors}.jsonl` | yes | Nine complete crafted lifecycle sessions, 127 RPCs: exact errors/details/presence, immutable duplicates, valid retry, atomic rejection and UUID spelling correlation. No gaps or unknown baselines. |
+| `databricks_client_auxiliary.jsonl` | yes | Pinned 2.0.11 validation, session start/end including exact durations and client failure, plus query-preparation telemetry; `client_auxiliary.rs` and generic conformance. [Provenance](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md). |
+| `databricks_table_view_baseline.jsonl` | yes | Complete pinned 2.0.11 managed Delta table/view build, unchanged reuse, changed-query rebuild and subsequent reuse, confirmations, speculative submits, telemetry and full Explain including opposite request orders; no history/gap exceptions. [Runner](../docs/databricks-baseline.md). |
 | `golden_20261008T222744.061Z.jsonl` | yes | Build, confirm and skip lifecycle with speculative submits and version checks; `differential.rs`. |
 | `golden_20261009T083754.534Z.jsonl` | yes | Prod build then dev skip through namespace reuse, with cross-target data-test entries keyed in `replay_gaps.json`; `conformance.rs`. |
 | `golden_20261009T100637.316Z.jsonl` | yes | `RegisterClone` to `ready_to_clone` plus an empty `ResolveDeferredRelations`; `clone.rs::register_clone_matches_real_shape`, `deferred_relations_empty_when_nothing_built`. |
@@ -87,6 +103,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `explain_unknown_epoch.jsonl` | yes | Crafted `state-probe` requests only (`experiments/unknown_epoch_probes.py`, #104): a FULL model whose upstream epoch is unknown at the build, the resubmit or both; hosted SKIPs within the Lag tolerance, keyed as accepted divergences (#113); `conformance.rs`. |
 | `explain_copy_logic_mismatch.jsonl` | yes | Client 2.0.11, `experiments/explain_capture.py copy_logic_mismatch` (#104): rebuilds over a `RegisterClone` pre-step copy after a logic change (five incrementals, a snapshot) or a materialization change (a table: 2 / 2; a view and a custom node: 6 / 6), and a table with a prod equivalent under `allow_clones: false` (1 / 10, "cloning is disabled"); `conformance.rs` RegisterClone and Explain arms. |
 | `explain_copy_logic_crafted.jsonl` | yes | Crafted `state-probe` requests only (`experiments/copy_logic_probes.py`, #104), including `RegisterClone`: a table over an append copy with other logic, every model kind over a copy without upstreams, and every model kind over a dropped copy (`x11`–`x19`); `conformance.rs`. |
+| `rpc_success_and_rejection.jsonl` | yes | Warehouse-free hosted calls (2026-11-12, #133): version validation succeeds; a selector without `project_id` returns `INVALID_ARGUMENT: project_id must be provided`. Status/response metadata and field presence replay in `rpc_capture_replay.rs` and `conformance.rs`; no history exemption. |
 | `explain_malformed_requests.jsonl` | yes | Crafted `state-probe` requests only (`experiments/malformed_requests.py`, #104): a node of each kind whose query dependency is listed twice, built then resubmitted; hosted SKIPs, keyed as accepted divergences (#114). The empty-SQL and empty-dependency probes failed with `INVALID_ARGUMENT` and were not recorded; `conformance.rs`. |
 | `clone_chain_upstream_history.jsonl` | char-only | A copy chain whose consumed upstream copy is externally modified, which rebuilds within tolerance; `lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`. |
 | `clone_chain_upstream_drift.jsonl` | yes | A copied target rebuilds once its upstream advances past the copy's build epoch; `clone_chain_provenance.rs::hosted_clone_rebuilds_when_upstream_advances_past_clone`. |
@@ -124,3 +141,318 @@ hashing code:
 Both tests assert the current server rebuilds instead of reusing these rows.
 Regenerate only from the recorded revision with the `#[ignore]`d
 `zz_capture_prefix_clone_fixture` / `zz_capture_incorrect_clone_fixture` drivers.
+
+`upgrade/databricks_alias_identifiers_v1_aa89b6a.json` freezes genuine
+Submit/Confirm history from clean #136 source `aa89b6a` and records exact server
+and probe digests. `databricks_isolation.rs` rejects its old v1 fingerprint after
+the rendered Spark-alias identity change, including old pending work confirmed
+after a new-version build. The file is an independent historical artifact; do
+not regenerate it using current fingerprint code.
+
+`upgrade/databricks_empty_namespace_v2_4b38371.json` contains genuine pending
+and confirmed rows exported through public Submit/Confirm from the immutable
+pre-normalization v2 server (exact source/provenance digests in the artifact).
+The isolation upgrade regression reads legacy empty strings as the absent
+physical scope, including old pending work confirmed after a newer NULL-scope
+build, without recomputing old hashes.
+
+`upgrade/databricks_null_epoch_v2_5585f53.json` and
+`upgrade/snowflake_null_epoch_5585f53.json` freeze genuine public pending and
+confirmed rows from the immutable pre-#158 server (source and binary provenance
+are pinned in each artifact). Lifecycle upgrade tests require matching known
+evidence to reuse before testing the unknown-epoch floor; they never regenerate
+old hashes from current code. Separate current-version storage-fault controls
+keep that floor meaningful after future identity-version changes. These are
+local upgrade artifacts, not hosted or physical warehouse captures.
+
+## Bounded Databricks freshness follow-up (2026-11-14)
+
+- `databricks_freshness_identical_current.jsonl`: complete four-RPC crafted
+  Submit/Confirm/duplicate Submit/Explain history; only identical known raw
+  current upstream evidence collapses. Source: certified 54-RPC protocol
+  campaign, captured before implementation.
+- `databricks_freshness_missing_current.jsonl` and
+  `databricks_freshness_both_missing.jsonl`: the two complete five-RPC histories
+  from the certified delayed 10-RPC campaign, including repeated Explain after
+  distinct delays. Decisions remain BUILD; display timestamps are frozen at
+  submit, with no synthetic freshness epoch.
+- `databricks_explain_identity_submit_clock.jsonl`: six unmodified RPCs at
+  indices 0/3/5/48/49/51 of #137's certified 179-RPC actual-client SQL discovery
+  capture. They retain client validation, initial build/confirmation, then the
+  identity-change build/confirmation and Explain. Removed calls between the
+  two builds are SKIPs, speculative undecided calls, Explain and telemetry;
+  none publish execution history. This isolates temporal rendering without
+  requiring unmerged SQL equivalence rules.
+
+All four fixtures enter the strict generic replay with zero gaps, exclusions,
+unknown baselines or temporal masks. Full campaigns and unsafe/conflicting
+control captures remain intact in the linked
+[partial report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md);
+they are not replaced by the passing subset. #140 remains incomplete.
+
+
+`databricks_sql_equivalence.jsonl` and `databricks_sql_equivalence_cte.jsonl`
+contain complete179+26-RPC hosted histories for30 actual pinned-dbt SQL cells,
+including17+1 confirmed builds and9+3 required reuses. Captured ordinary comments,
+formatting, table aliases, literal values/spelling, output aliases and CTE scoped
+bindings are checked independently against complete typed physical results in
+State-disabled dbt references. Both sidecar-certified originals and all failed
+controller attempts remain under `~/.local/state/dbt-state-rs/databricks-137-20261113/`.
+The two frozen `databricks_identifiers_v{1,2}_*.json` upgrade fixtures come from
+immutable old servers, with v2 pending and confirmed exports and dirty-source
+candidate provenance explicitly retained. SQL-v3 invalidation does not weaken
+current-version NULL-epoch floor controls. Full exact replay/live acceptance is
+required before treating #137 as complete.
+
+
+## Databricks dependency/template identity (#138, 2026-11-14)
+
+Four complete matching fixtures add 308 RPCs: `databricks_dependency_identity`
+(126; original physical history plus complete no-DDL controls),
+`databricks_template_config` (72), `databricks_template_transitions` (60; includes
+two current/superseded refusal diagnostics), and `databricks_template_tests`
+(50; initial within-UID history, malformed-speculative controls and fresh-body
+comment controls). There are no Databricks gaps, field masks, unknown baselines
+or exclusions. The live cross-full-UID reuse conflict is retained outside the
+matching corpus and keeps #138 INCOMPLETE; no native dependency is promoted.
+See the [safe-partial report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-dependency-template-2026-11-14.md)
+and [UID boundary](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).
+
+`golden/upgrade/databricks_identity_v3_{rendered,template,record}.json` contains
+genuine immutable pre138 rendered/template pending+confirmed and Record evidence,
+with successful old public reuse and exact binary/source provenance. The public
+upgrade tests require v4 cold misses and current-version positive controls.
+Supplementary local Rust captures may be replayed with
+`DBT_STATE_EXTRA_REPLAY_CAPTURE=<databricks_*.jsonl>`; they are never presented as
+hosted evidence or added to the ordinary hosted corpus count.
+
+## Databricks no-object cached failures (#143 partial, 2026-11-14)
+
+`databricks_cached_test_results.jsonl` is one complete 24-RPC actual-client
+history: source-less pass BUILD/unchanged speculative SKIP, then false-mode
+SQL change to failure BUILD/unchanged speculative SKIP, successful computation
+Confirm payloads and all four first-call Explain trees. Failures retain typed
+`3/true/true` and raw client exit 1. No audit object or physical data relation
+is read or written. See the [bounded evidence report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-results-2026-11-14.md).
+#143 remains blocked by #138; no dependency promotion or scope waiver follows.
+
+`databricks_target_lifecycle.jsonl` is the complete 303-RPC hosted #141 bounded
+history: the original fresh table pair followed by its explicitly owned
+same-lifetime continuation. It includes all confirmations, 46 Explain requests,
+actual source preprocessing failure, explicit ignore policy, seeded target
+corruptions and literal upstream-view definitions. It has no replay gaps or
+unknown baseline allowances. Provenance, complete independent references and
+whole-ticket limitations are in
+[`docs/reports/databricks-target-lifecycle-2026-11-14.md`](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-target-lifecycle-2026-11-14.md).
+
+`databricks_cached_test_config.jsonl` adds the complete 24-RPC fresh failing
+ERROR declaration/reuse and severity WARN declaration/reuse. The raw cached
+payload stays `3/true/true`; WARN changes client classification and exit to
+`warn/0`. Only the severity semantic extra changes on the wire. Every first
+call has its full Explain tree, and both reuses preserve confirmed runtime.
+The zero-object runner is `experiments/databricks_cached_config.py`; this is
+additional partial evidence, with #138's UID blocker unchanged.
+
+`databricks_cached_test_thresholds.jsonl` is a fresh complete 72-RPC history
+containing causal ERROR/WARN baselines plus threshold warning (`3/false/true`),
+threshold pass despite nonzero failures (`3/false/false`), NULL-excluding
+`count(v)` warning (`2/false/true`) and duplicate-preserving `sum(v)` failure
+(`4/true/true`). Each declaration builds once and positively reuses once;
+twelve full Explain trees and every computation confirmation are retained.
+All changes affect semantic extras only; the report lists the exact changed
+configuration fields rather than treating each transition as one field.
+
+`databricks_cached_test_template_failure.jsonl` adds a fresh complete 29-RPC
+true-template history: confirmed failing `4/true/true`, unchanged failure reuse,
+render-only fresh pass retaining the immutable failing template reference,
+then body-and-rendering pass BUILD and positive pass reuse. The rendered-only
+request delta is exactly `sql`; full UID, body/config hashes, context and true
+mode remain fixed. Five complete Explain trees, all successful computation
+confirmations, complete typed payloads and runtime echoes are retained. Fresh
+literal references are checked separately from permitted stale template reuse.
+See the [bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-cached-test-template-failure-2026-11-14.md).
+Native #143 remains blocked by #138, with its UID isolation floor unchanged.
+
+## Bounded Databricks producer / policy evidence (#142, 2026-11-14)
+
+`databricks_producer_policy.jsonl` retains the complete 261-RPC lifetime of one
+actual pinned 2.0.11 graph: both initial producer BUILDs/Confirms, consumer
+BUILD/Confirm, positive reuse, all same/changed-logic producer Records, explicit
+consumer Record anchors, ANY/ALL partial/all drift inside/outside positive lag,
+speculative UNDECIDED, telemetry and every ordinary decision's Explain tree.
+The first 30 RPCs include the failed `updates_on:all` configuration candidate;
+the same-name continuation uses the documented `require_fresh_data_from` field
+and proves actual ALL1 on wire. No request or response was filtered, altered,
+masked or exempted. The indexed observed contract and causal part hashes are in
+`experiments/databricks_policy_contract.json`. See the
+[dated evidence report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-policy-2026-11-14.md).
+Native #142 remains blocked by incomplete #138 and #140.
+
+`databricks_gap_duration.jsonl`, `databricks_relative_hour_duration.jsonl` and
+`databricks_relative_minute_duration.jsonl` retain 102/36/12 complete crafted
+public RPCs using only admitted names in fresh synthetic named namespaces.
+Every cell includes causal Record→Submit→Explain. Engineered known epochs
+characterize display rounding only; they make no warehouse/physical-result or
+exact raw service-time equality claim. Whole-second clock bounds distinguish
+minute/hour even ties and unit carries. The original complete trees are
+unfiltered; all display differences are covered by the scoped formatter fix.
+
+## Bounded Databricks MERGE history (#145, 2026-11-14)
+
+`databricks_merge_history.jsonl` retains the complete 75-RPC actual pinned-client
+history: MERGE3 first BUILD/Confirm and unchanged SKIP, unique-key update/insert,
+source deletion with target-row retention, rendered projection change, CLI
+full-refresh FULL1 Record, next ordinary MERGE3 BUILD/Confirm and positive SKIP.
+Every ordinary decision's Explain, speculative call, validation, telemetry and
+causal outcome remains unfiltered. Independent operation-history snapshots,
+complete typed/schema/managed-Delta checks and zero-object State-disabled
+References pass against both hosted and current Rust. No new replay gap,
+unknown-baseline exemption or production change was needed. See the
+[dated partial evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-merge-2026-11-14.md).
+Native #145 remains incomplete, with #138/#140 dependencies and predicates,
+schema evolution and other required coverage unpromoted.
+
+### Databricks stable-render APPEND history (2026-11-14)
+
+`databricks_append_history.jsonl` retains the complete 75-RPC official-client
+hosted history: stable first/unchanged APPEND, source update plus duplicate
+insert/repeat, source deletion/repeat, projection change/repeat, native FULL
+RecordExecutions, then ordinary APPEND/repeat. It includes complete statuses,
+response fields and 11 nonempty Explain trees. Positive unchanged SKIPs and
+own-runtime echoes are required. No calls are filtered or treated as an unknown
+baseline, partial history or known gap. Complete typed cumulative multiset
+`R` and separate selected `F` References check physical correctness at every
+checkpoint. See [the bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-append-2026-11-14.md).
+This does not complete whole #146 or promote its blocked dependencies.
+
+### Databricks null-safe partition replacement history (2026-11-14)
+
+`databricks_insert_overwrite_history.jsonl` contains the entire89-RPC hosted
+history: twelve ordinary type4 submits (six BUILD/Confirm and six positive
+SKIPs), FULL1 Record acknowledgement, thirteen Explain responses and all
+validation/telemetry/status envelopes. Fixed first/steady SELECTs exercise
+represented-partition deletion, exact duplicates, NULL replacement, an absent
+NULL partition, empty F retention, restoration and refresh→ordinary→reuse.
+
+The raw22+67 certified captures are concatenated byte for byte. The initial
+successful upsert stopped in a helper footprint parser; a separately reviewed
+continuation collected its missing Explain/reference and continued without
+rerunning successful dbt or source writes. The delayed first Explain retains its
+actual elapsed age. No prefix, mask, unknown baseline or Databricks replay gap
+is accepted. The [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md)
+links independent typed R/F/physical checks and fresh Rust acceptance. Whole
+#147/settings/schema/lifecycle coverage and #138/#140 remain incomplete.
+
+## Bounded Databricks audit ordinary-error histories (#144, 2026-11-14)
+
+`databricks_audit_aliased_error_history.jsonl` is the entire actual native
+28-RPC failed campaign followed by the separately cleared two historical
+ordinary transport controls. `databricks_audit_default_error_history.jsonl`
+retains the entire no-alias native 18-RPC failed attempt followed by all three
+separately cleared historical/synthetic controls. They are byte-for-byte
+concatenations in causal order, not selected prefixes; original campaign
+summaries and failed labels remain unchanged externally. Complete statuses,
+null error responses, six full Explain trees and the unchanged speculative
+fastpath remain observable. The narrow ordinary source-less audit-input error
+boundary matches every row without a gap, unknown baseline or partial-history
+allowance. C/D/E retain opaque historical hashes and make no native declaration
+or physical-execution claim. Separate fresh Rust counterparts verify the bounded
+five/three-cell contracts, including native fallback and physical F after the
+expected error; these fixtures do not complete #144 or its #143/#138 dependencies. See the
+[dated evidence and scope](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-audit-hosted-rejection-2026-11-14.md).
+
+### Databricks predicate replacement history (#148, 2026-11-14)
+
+`databricks_replace_where_history.jsonl` is the complete90-RPC real-client
+history: twelve ordinary DBT_CUSTOM11 submits (seven BUILD/Confirm, five fresh
+SKIPs), one type11 full-refresh Record acknowledgement, twelve Explain responses,
+and all speculative, validation, telemetry and status envelopes. The full-refresh
+record contains the unfiltered SELECT; the following ordinary type11 build has
+the steady filtered SELECT. This is a SQL identity transition, not a kind change.
+
+The separately certified original76 and continuation14 files are concatenated
+byte for byte. A helper expecting FULL1 stopped after the successful native
+full refresh; the separately cleared continuation verified it and completed only
+the final two managed invocations. The raw stopped summary and source are
+preserved. No original cell, source DML or refresh was rerun. Independent
+cumulative R and selected F differ after outside-source deletion and empty
+replacement; complete typed duplicate/NULL/DATE/TIMESTAMP checks and zero-RPC
+SELECT-only references cover all13 cells on both hosted and fresh Rust runs.
+See the [bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-replace-where-2026-11-14.md).
+Whole #148, settings/schema/error boundaries and #138/#140 remain incomplete.
+
+### Databricks key replacement hosted history (#149, 2026-11-14)
+
+`databricks_delete_insert_history.jsonl` retains the entire certified 88-RPC
+hosted attempt byte for byte: twelve ordinary DELETE_INSERT5 submits (six
+BUILD/Confirm, six fresh SKIPs), one FULL1 full-refresh Record acknowledgement,
+twelve Explain responses, and all speculative, validation, telemetry and status
+envelopes. Strict replay of all128 prior corpora plus this entire trace passes
+with76 new assertions, zero gaps, unknown baselines or partial-history allowances.
+
+All13 hosted cells independently check complete typed source, cumulative R and
+selected F bags, ordered BIGINT/STRING/DATE/TIMESTAMP schema and full Delta
+histories. Incoming duplicate keys remain a multiset; absent NULL keys retain
+old NULL rows and selected NULL keys replace them through native `<=>`. Empty
+input retains cumulative rows, and full refresh resets R before ordinary5
+rebuild and reuse. Thirteen isolated State-disabled R references plus one
+pre-DDL literal fractional timestamp probe certify zero State RPCs. The new
+fractional probe proves exact .123/.456/.789/.012 UTC encodings without generic
+normalization. A separately cleared fresh Rust counterpart passes all13 cells and complete
+129-corpus-plus-native88 replay using12 independently retained actual audit
+clocks. See the [dated bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
+This hosted fixture and native counterpart do not complete #149 or its
+#138/#140 dependencies.
+
+### Databricks bounded microbatch hosted history (#150, 2026-11-15)
+
+`databricks_microbatch_hosted_history.jsonl` retains the entire certified
+70-RPC pinned 2.0.11 hosted campaign byte for byte (SHA-256
+`cdc76f6a3a47188bcb3026885ca14040a14ca53de474a0a75ad6a37ca583e6a0`).
+It contains ten ordinary MICRO6 submits (five BUILD/Confirm and five fresh
+SKIPs), ten complete Explain responses, ten speculative submits and all
+validation/telemetry/status envelopes. Source update and an independent
+Target insertion advance both known epochs; hosted retains the generic
+rebuild description while the complete freshness tree reports the stale source.
+The public gRPC regression `databricks_150_description.rs` pins that exact
+Submit/Confirm/Submit/Explain chain and conservative adjacent evidence guards.
+
+Strict replay of all129 prior corpora plus this entire trace passes with60 new
+assertions and zero new gaps, unknown baselines or partial-history allowances.
+The [dated description correction report](../docs/reports/databricks-microbatch-description-2026-11-15.md)
+records diagnosis, byteexact admission and uniform current-source gates.
+Admission certifies this bounded hosted history. The fresh Rust physical
+counterpart now passes the same ten cells and whole supplemental replay with
+actual pre-Drop audit clocks; see the [bounded hosted/native report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
+This fixture does not complete whole #150 or its
+#138/#140 dependencies, nor independently characterize Target-only external
+modification policy.
+
+### Databricks bounded timestamp-ignore snapshot history (#151, 2026-11-15)
+
+`databricks_snapshot_timestamp_ignore_history.jsonl` is the entire certified
+84-record pinned2.0.11 hosted history, SHA256
+`06ff6d582bbd0e08f6e2746a7bdac8bb777cc3fee9c07a27b7353b55acf9fc8e`.
+Original7 and continuation77 records are concatenated byte for byte in actual
+chronology, retaining both original certificates and the composition receipt
+externally. The first managed snapshot and Confirm succeeded before a runner
+RPC allowlist stopped postprocessing. The separately cleared continuation first
+validated both complete sources and the first target SCD/schema/history/query
+IDs/epochs, then collected its Explain/reference and remaining11 pairs without
+repeating parse, first execution, source CREATE or initial INSERT.
+
+The entire history contains12 ordinary SNAPSHOT7 submits,6Build/Confirm,6fresh
+own-runtime Skips,12full Explain responses and all speculative/validation/
+telemetry/status envelopes. All12 managed results and12 independent State-disabled
+NATIVE snapshot references match complete frozen literal SCD histories, typed
+source bags and Delta histories. BeforeDDL UTC6microsecond projection and
+`unix_micros` were checked against an independent literal. Strict public replay
+of all130 prior corpora plus ENTIRE84 passes253.22s:72per-fixture assertions (including12Validate), plus
+12separately checked Explain responses, with zero new gaps, unknown baselines or partial-history allowances.
+The original prefix is not separately admitted and no status field is removed.
+
+This admits only bounded hosted timestamp/ignore evidence. The separately granted fresh Rust graph now passes the same12cells and
+all131hosted corpora plus its entire84-record capture with12actual audit clocks.
+See the [bounded hosted/native report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-timestamp-ignore-2026-11-15.md). Full#151, check/invalidate clocks, the State-disabled `new_record`
+NULL-business-column blocker and#138/#140 remain open. See the
+[preparation and bounded evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-snapshot-offline-preparation-2026-11-14.md).

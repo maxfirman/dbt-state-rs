@@ -26,6 +26,8 @@ Integration tests create a unique, isolated Postgres schema per test and run the
 migrations into it, so they are independent and repeatable. CI
 (`.github/workflows/ci.yml`) runs the same commands; `duckdb-ci.sh` runs there
 with `--jobs 4`. Validation strategy is in [testing.md](testing.md).
+The current Databricks #132 effort has a maintainer-approved
+[DuckDB acceptance deferral](testing.md#duckdb-acceptance-gate) until after landing.
 
 ## Pre-commit hook
 

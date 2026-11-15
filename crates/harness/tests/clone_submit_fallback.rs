@@ -1562,15 +1562,8 @@ async fn upgrade_rejects_frozen_366be09_clone_fixture_all_cases() {
             // Re-seed the fixture row VERBATIM with a fresh request_id (idempotent
             // across the two template-mode passes). Preserve the original NULL
             // template hash and clone provenance.
-            let rid = format!(
-                "frozen-{}-{}",
-                if template_mode { "t" } else { "r" },
-                if row.target_table.contains("CONF") {
-                    "c"
-                } else {
-                    "p"
-                }
-            );
+            // Fresh correlation IDs must satisfy the public UUID wire contract.
+            let rid = uuid::Uuid::now_v7().to_string();
             legacy::replace_with_frozen_execution(
                 &server,
                 &legacy::FrozenExecution {
@@ -1718,15 +1711,8 @@ async fn upgrade_rejects_frozen_366be09_incorrect_clone_fixture_all_cases() {
             } else {
                 &fx.dev_request_sql_pend
             };
-            let rid = format!(
-                "icc-{}-{}",
-                if template_mode { "t" } else { "r" },
-                if row.target_table.contains("CONF") {
-                    "c"
-                } else {
-                    "p"
-                }
-            );
+            // Fresh correlation IDs must satisfy the public UUID wire contract.
+            let rid = uuid::Uuid::now_v7().to_string();
             legacy::replace_with_frozen_execution(
                 &server,
                 &legacy::FrozenExecution {

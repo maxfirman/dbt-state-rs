@@ -1,0 +1,295 @@
+{
+  "provenance": {
+    "source_commit": "302156014b182df2f545a4c9bc3d128926bdf11c",
+    "artifacts": [
+      {
+        "name": "dbt-state-server",
+        "sha256": "52afbea7916f0ff5bd32fb77fd78f229811ff4d4cfeb19cb6ce7ee5d4dc7ab15",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/dbt-state-server"
+      },
+      {
+        "name": "state-probe",
+        "sha256": "e44baeebe13e1cb09a7d3d31873f04a4e199f63359b101cd788c707f3bb083d3",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/state-probe"
+      },
+      {
+        "name": "record-proxy",
+        "sha256": "00b3ba2537ff6d73afcf8e91f0d3833fe1b40edd746d4e5306bc45c89305a5d4",
+        "path": "/home/maxfirman/.local/state/dbt-state-rs/databricks-138-20261114/pre138-bin/record-proxy"
+      }
+    ]
+  },
+  "record": {
+    "service": "Execution",
+    "method": "RecordExecutions",
+    "recorded_at": "2026-11-14T12:04:37.662378865+00:00",
+    "metadata": [
+      [
+        "x-request-id",
+        "698c02e53a03459692a22639206e0d30"
+      ],
+      [
+        "x-session-id",
+        "7ebec7a3c60346e1802380dce1222883"
+      ],
+      [
+        "x-submitted-at-epoch",
+        "1794657877520"
+      ],
+      [
+        "x-system-user-id",
+        ""
+      ],
+      [
+        "x-os-name",
+        "linux"
+      ],
+      [
+        "x-dbt-invocation-id",
+        "01a1d9f1-e70c-7f90-887d-f2c5595fabf0"
+      ]
+    ],
+    "request": {
+      "records": [
+        {
+          "outcome": {
+            "last_modified_epoch": 1794657877000,
+            "table_type": null,
+            "execution_results": null,
+            "execution_runtime_ms": 3544
+          },
+          "input": {
+            "enriched_sql": {
+              "target_table": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+              "dialect": "databricks",
+              "default_catalog": "cdo_demo_db",
+              "execution_type": 1,
+              "sql": "\nselect cast(id as bigint) id, cast(amount as int) amount, cast(tag as string) tag from values (1,10,'one_20261114f138ff'),(1,10,'one_20261114f138ff'),(2,cast(null as int),cast(null as string)) as declared(id,amount,tag)",
+              "tables": [
+                {
+                  "name": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+                  "last_modified_epoch": 1794657860000
+                }
+              ],
+              "query_dependencies": [],
+              "semantic_extras": {
+                "on_schema_change": "\"ignore\"",
+                "file_format": "\"delta\"",
+                "lookback": "1"
+              },
+              "labels": {
+                "dbt_node_name": "flags",
+                "dbt_node_unique_id": "model.survey_20261114f138ff.flags",
+                "dbt_node_fqn": "survey_20261114f138ff.flags"
+              },
+              "dbt_node_state": {
+                "node_unique_id": "model.survey_20261114f138ff.flags",
+                "target_name": "prod",
+                "project_name": "survey_20261114f138ff",
+                "resource_type": "model",
+                "node_hash": "e3769cb98e5c133ec0f4340f420f9c6d",
+                "node_body_hash": "3567954e0c21f51d8609f9d4cea1e667",
+                "node_configs_hash": "5656e152d931889cea30574f0b0da9d0",
+                "node_persisted_descriptions_hash": null,
+                "node_macros_hash": null,
+                "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+                "profile_name": "survey",
+                "project_id": null,
+                "node_database_representation": null
+              },
+              "default_schema": "ds_20261112e134ef_ref",
+              "from_speculative_submit": false,
+              "table_namespace": "f72415cee49eac9b2b28d9ad8e588507"
+            }
+          }
+        }
+      ]
+    },
+    "response": {
+      "records_stored": 1
+    },
+    "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+        "ascii": [],
+        "binary": []
+      }
+    },
+    "response_metadata": {
+      "ascii": [
+        [
+          "server",
+          "istio-envoy"
+        ],
+        [
+          "strict-transport-security",
+          "max-age=31536000; includeSubDomains"
+        ],
+        [
+          "x-content-type-options",
+          "nosniff"
+        ],
+        [
+          "x-envoy-upstream-service-time",
+          "46"
+        ],
+        [
+          "x-frame-options",
+          "SAMEORIGIN"
+        ]
+      ],
+      "binary": []
+    }
+  },
+  "unchanged_request": {
+    "target_table": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+    "dialect": "databricks",
+    "default_catalog": "cdo_demo_db",
+    "execution_type": 1,
+    "sql": "\nselect cast(id as bigint) id, cast(amount as int) amount, cast(tag as string) tag from values (1,10,'one_20261114f138ff'),(1,10,'one_20261114f138ff'),(2,cast(null as int),cast(null as string)) as declared(id,amount,tag)",
+    "tables": [
+      {
+        "name": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+        "last_modified_epoch": 1794657877000
+      }
+    ],
+    "query_dependencies": [],
+    "semantic_extras": {
+      "file_format": "\"delta\"",
+      "on_schema_change": "\"ignore\"",
+      "lookback": "1"
+    },
+    "freshness_tolerance_seconds": 0,
+    "lenient_dependencies": [],
+    "tolerate_nondeterminism": true,
+    "labels": {
+      "dbt_node_name": "flags",
+      "dbt_node_unique_id": "model.survey_20261114f138ff.flags",
+      "dbt_node_fqn": "survey_20261114f138ff.flags"
+    },
+    "clone_time_travel_limit": null,
+    "clone_table_properties": null,
+    "stale_upstream_policy": 0,
+    "clone_chain_depth_limit": 0,
+    "dbt_node_state": {
+      "node_unique_id": "model.survey_20261114f138ff.flags",
+      "target_name": "prod",
+      "project_name": "survey_20261114f138ff",
+      "resource_type": "model",
+      "node_hash": "e3769cb98e5c133ec0f4340f420f9c6d",
+      "node_body_hash": "3567954e0c21f51d8609f9d4cea1e667",
+      "node_configs_hash": "5656e152d931889cea30574f0b0da9d0",
+      "node_persisted_descriptions_hash": null,
+      "node_macros_hash": null,
+      "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+      "profile_name": "survey",
+      "project_id": null,
+      "node_database_representation": null
+    },
+    "default_schema": "ds_20261112e134ef_ref",
+    "compare_unrendered_code": true,
+    "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+    "ignore_external_modifications": false,
+    "allow_clones": true,
+    "is_defer_to_profile": true,
+    "defer_enabled": true
+  },
+  "projection_request": {
+    "target_table": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+    "dialect": "databricks",
+    "default_catalog": "cdo_demo_db",
+    "execution_type": 1,
+    "sql": "\nselect cast(id as bigint) id, cast(amount as int) amount, cast(tag as string) tag from values (1,17,'one_20261114f138ff'),(1,17,'one_20261114f138ff'),(2,cast(null as int),cast(null as string)) as declared(id,amount,tag)",
+    "tables": [
+      {
+        "name": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+        "last_modified_epoch": 1794657877000
+      }
+    ],
+    "query_dependencies": [],
+    "semantic_extras": {
+      "lookback": "1",
+      "on_schema_change": "\"ignore\"",
+      "file_format": "\"delta\""
+    },
+    "freshness_tolerance_seconds": 0,
+    "lenient_dependencies": [],
+    "tolerate_nondeterminism": true,
+    "labels": {
+      "dbt_node_fqn": "survey_20261114f138ff.flags",
+      "dbt_node_unique_id": "model.survey_20261114f138ff.flags",
+      "dbt_node_name": "flags"
+    },
+    "clone_time_travel_limit": null,
+    "clone_table_properties": null,
+    "stale_upstream_policy": 0,
+    "clone_chain_depth_limit": 0,
+    "dbt_node_state": {
+      "node_unique_id": "model.survey_20261114f138ff.flags",
+      "target_name": "prod",
+      "project_name": "survey_20261114f138ff",
+      "resource_type": "model",
+      "node_hash": "e3769cb98e5c133ec0f4340f420f9c6d",
+      "node_body_hash": "3567954e0c21f51d8609f9d4cea1e667",
+      "node_configs_hash": "5656e152d931889cea30574f0b0da9d0",
+      "node_persisted_descriptions_hash": null,
+      "node_macros_hash": null,
+      "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+      "profile_name": "survey",
+      "project_id": null,
+      "node_database_representation": null
+    },
+    "default_schema": "ds_20261112e134ef_ref",
+    "compare_unrendered_code": true,
+    "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+    "ignore_external_modifications": false,
+    "allow_clones": true,
+    "is_defer_to_profile": true,
+    "defer_enabled": true
+  },
+  "rows": [
+    {
+      "id": 3,
+      "org_id": "local",
+      "target_table": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+      "execution_type": 1,
+      "node_hash": "e3769cb98e5c133ec0f4340f420f9c6d",
+      "node_body_hash": "3567954e0c21f51d8609f9d4cea1e667",
+      "node_configs_hash": "5656e152d931889cea30574f0b0da9d0",
+      "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+      "node_unique_id": "model.survey_20261114f138ff.flags",
+      "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+      "dialect": "databricks",
+      "last_modified_epoch": 1794657877000,
+      "table_type": null,
+      "execution_runtime_ms": 3544,
+      "input_tables": [
+        {
+          "name": "`cdo_demo_db`.`ds_20261112e134ef_ref`.`d_20261114f138ff_flags`",
+          "last_modified_epoch": 1794657860000
+        }
+      ],
+      "status": "confirmed",
+      "request_id": "01a1d9f7-cad2-7290-ba22-e2fa7609b5d9",
+      "execution_decision_id": "01a1d9f7-cad2-7290-ba22-e2fbe7bea27c",
+      "created_at": "2026-11-14T12:10:57.618898+00:00",
+      "confirmed_at": "2026-11-14T12:10:57.618898+00:00",
+      "values_hash": null,
+      "node_sql_hash": "13e836d844cb5f00033b6512725799d5eaf12e78079e8e1409978a23b516ac2d",
+      "execution_results": null,
+      "project_id": null,
+      "node_namespace_logic_hash": null,
+      "clone_source_table": null,
+      "node_template_hash": null,
+      "warehouse_family": "databricks",
+      "clone_source_inputs": null,
+      "physical_target_key": "cdo_demo_db.ds_20261112e134ef_ref.d_20261114f138ff_flags",
+      "node_profile_name": "survey",
+      "node_project_name": "survey_20261114f138ff",
+      "node_target_name": "prod",
+      "display_submitted_at_ms": null
+    }
+  ]
+}

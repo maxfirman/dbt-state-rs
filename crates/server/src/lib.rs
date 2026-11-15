@@ -30,11 +30,14 @@ use crate::store::Store;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub(crate) captures: Arc<capture::CaptureTasks>,
     /// When true, reject requests lacking a non-empty `x-organization-id` header
     /// instead of bucketing them into the default tenant. See `config::Config`.
     pub require_org_header: bool,
     /// The clock decisions measure build age against (ADR 0007).
     pub clock: Clock,
+    /// Experimental direct Databricks Result copy; excluded from preview defaults.
+    pub databricks_direct_copy: bool,
 }
 
 /// The server clock. Lag tolerance compares a reuse candidate's build age on
@@ -80,8 +83,10 @@ impl AppState {
         sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self {
             store: Arc::new(Store::new(pool)),
+            captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            databricks_direct_copy: false,
         })
     }
 
@@ -96,9 +101,18 @@ impl AppState {
     pub fn from_pool(pool: PgPool) -> Self {
         Self {
             store: Arc::new(Store::new(pool)),
+            captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            databricks_direct_copy: false,
         }
+    }
+
+    /// Opt into the narrow experimental Databricks RegisterClone path.
+    /// This does not enable automatic copy on ordinary submits.
+    pub fn with_databricks_direct_copy(mut self, enabled: bool) -> Self {
+        self.databricks_direct_copy = enabled;
+        self
     }
 
     /// Use `clock` for build ages and confirmation receipt times.
@@ -117,6 +131,7 @@ impl AppState {
 /// Build the tonic router with all services registered against `state`.
 /// Shared by the binary and by in-process differential tests.
 pub fn build_router(state: AppState) -> tonic::transport::server::Router {
+    use crate::query_cache::client_telemetry_server::ClientTelemetryServer;
     use crate::query_cache::client_validation_server::ClientValidationServer;
     use crate::query_cache::clone_server::CloneServer;
     use crate::query_cache::execution_server::ExecutionServer;
@@ -124,8 +139,8 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
     use crate::query_cache::selector_service_server::SelectorServiceServer;
     use crate::query_cache::sql_server::SqlServer;
     use crate::services::{
-        ClientValidationService, CloneServiceImpl, ExecutionService, ExplainService,
-        SelectorServiceImpl, SqlService,
+        ClientTelemetryService, ClientValidationService, CloneServiceImpl, ExecutionService,
+        ExplainService, SelectorServiceImpl, SqlService,
     };
 
     tonic::transport::Server::builder()
@@ -134,6 +149,7 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))
         .add_service(CloneServer::new(CloneServiceImpl(state.clone())))
         .add_service(ClientValidationServer::new(ClientValidationService))
+        .add_service(ClientTelemetryServer::new(ClientTelemetryService))
         .add_service(ExplainServer::new(ExplainService(state.clone())))
         .add_service(SelectorServiceServer::new(SelectorServiceImpl(
             state.clone(),
