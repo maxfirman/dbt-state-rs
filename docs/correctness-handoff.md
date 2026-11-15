@@ -700,3 +700,28 @@ broader strategy transitions remain required. No generic full-refresh type
 mapping, unknown temporal encoding or unsupported error policy is inferred.
 #138/#140 remain incomplete; this partial does not promote their dependency
 edges or the full Databricks support claim.
+
+## Databricks DELETE_INSERT safe partial (#149, 2026-11-15)
+
+The complete real-client hosted88-RPC history and a fresh Rust counterpart
+cover stable first/ordinary SQL, non-NULL replacement with duplicate keys,
+absent NULL keys retaining old rows, selected NULL keys replacing old NULL
+rows through native `<=>`, empty input retaining cumulative R, and native
+FULL1 full refresh followed by ordinary5 rebuild/reuse. Both backends verify
+complete typed source/R/F multisets, ordered schema, MANAGED Delta and full
+histories, full statuses, own confirmed runtimes and zero-RPC literal references.
+Whole hosted and native histories replay exactly, including12 Explain trees
+each; native uses independently retained actual handler audit clocks.
+
+Final offline review corrected a validation-helper lookup to require literal
+`skip_execution.explained_decision.is_stale=false`. All12 raw SKIP flags were
+independently rechecked as false; original captures and executed frozen sources
+remain unchanged. No production policy or live execution was modified or rerun.
+
+This is not whole #149: alternate/empty/invalid/composite key reachability,
+predicate settings, schema evolution and binding changes, failure/atomicity/
+retry publication, other node-kind/strategy transitions and generated/restart/
+upgrade breadth remain required. Legacy fallback and uncharacterized temporal
+precision are not inferred. #138/#140 stay incomplete and no dependency edge
+or whole Databricks support claim is promoted. See the
+[bounded report](reports/databricks-delete-insert-2026-11-15.md).

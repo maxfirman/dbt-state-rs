@@ -63,3 +63,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
   bounded #144 ordinary error-status fidelity from complete native and causal
   diagnostic histories, with fresh Rust fallback/physical checks; broader audit
   scope and dependencies remain incomplete.
+
+- [Databricks DELETE_INSERT bounded acceptance](reports/databricks-delete-insert-2026-11-15.md):
+  complete hosted/Rust key-replacement history, duplicate/NULL/empty-input
+  multiset checks, full refresh and actual native Explain clocks; #149 remains
+  incomplete outside this safe partial.
