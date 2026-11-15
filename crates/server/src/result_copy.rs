@@ -623,15 +623,23 @@ pub(crate) fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCop
         .into_iter()
         .filter(|t| !matches!(t, Token::Whitespace(_)))
         .collect();
+    let direct_name = tokens.len() == 8
+        && ([3, 5, 7]
+            .iter()
+            .all(|i| matches!(&tokens[*i], Token::Word(w) if w.quote_style == Some('`')))
+            || [3, 5, 7].iter().all(|i| {
+                matches!(&tokens[*i], Token::Word(w)
+            if w.quote_style.is_none()
+                && w.value.bytes().next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
+                && w.value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
+            }));
     if tokens.len() != 8
         || !matches!(&tokens[0], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("select"))
         || tokens[1] != Token::Mul
         || !matches!(&tokens[2], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("from"))
         || tokens[4] != Token::Period
         || tokens[6] != Token::Period
-        || [3, 5, 7]
-            .iter()
-            .any(|i| !matches!(&tokens[*i], Token::Word(w) if w.quote_style == Some('`')))
+        || !direct_name
     {
         return None;
     }
@@ -699,6 +707,105 @@ pub(crate) fn direct_copy_matches(
             t.last_modified_epoch.is_some()
                 && !matches!(t.producer, crate::store::Producer::Unrecorded)
         })
+}
+
+/// #152's observed is_defer_to_profile + chain-zero wire scope. This proves
+/// only a refused-optimization display, never a candidate or copy grant.
+pub(crate) fn direct_refusal_scope(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+) -> bool {
+    Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks
+        && req.is_defer_to_profile
+        && !req.compare_unrendered_code
+        && req.tolerate_nondeterminism
+        && !req.ignore_external_modifications
+        && req.allow_clones == Some(true)
+        && req.clone_chain_depth_limit == Some(0)
+        && req.freshness_tolerance_seconds == 0
+        && req.stale_upstream_policy == 0
+        && req
+            .table_namespace
+            .as_deref()
+            .is_some_and(|ns| !ns.trim().is_empty())
+        && evidence
+            .direct_copy_provenance
+            .as_ref()
+            .is_some_and(|p| p.version == 1)
+        && req.semantic_extras.get("unique_key").map(String::as_str) == Some("\"id\"")
+        && match req.execution_type {
+            3 => {
+                req.semantic_extras.len() == 3
+                    && req.semantic_extras.get("lookback").map(String::as_str) == Some("1")
+                    && req
+                        .semantic_extras
+                        .get("on_schema_change")
+                        .map(String::as_str)
+                        == Some("\"ignore\"")
+            }
+            7 => req.semantic_extras.len() == 1,
+            _ => false,
+        }
+}
+
+pub(crate) fn direct_refusal_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &crate::store::ExecutionRow,
+) -> bool {
+    let Some(context) = row
+        .direct_copy_provenance
+        .as_ref()
+        .filter(|p| p.version == 1)
+    else {
+        return false;
+    };
+    if !direct_refusal_scope(req, evidence)
+        || row.org_id != evidence.org_id
+        || row.table_namespace != evidence.table_namespace
+        || row.dialect != req.dialect
+        || row.execution_type != req.execution_type
+        || row.clone_source_table.is_some()
+        || row.status != "confirmed"
+        || row.last_modified_epoch.is_none_or(|e| e <= 0)
+        || evidence.node_unique_id.is_none()
+        || row.node_unique_id != evidence.node_unique_id
+    {
+        return false;
+    }
+    let physical = |name: &str| Warehouse::physical_scope_key(&req.dialect, name);
+    let current: Vec<_> = evidence
+        .input_tables
+        .iter()
+        .filter(|i| physical(&i.name) != physical(&evidence.target_table))
+        .collect();
+    if physical(&row.target_table) == physical(&evidence.target_table) {
+        return false;
+    }
+    let recorded: Vec<_> = row
+        .input_tables
+        .iter()
+        .filter(|i| physical(&i.name) != physical(&row.target_table))
+        .collect();
+    if current.len() != 1
+        || recorded.len() != 1
+        || physical(&current[0].name) != physical(&recorded[0].name)
+        || current[0].last_modified_epoch.is_none_or(|e| e <= 0)
+        || current[0].last_modified_epoch != recorded[0].last_modified_epoch
+        || current[0].producer != crate::store::Producer::NoBuild
+        || recorded[0].producer != crate::store::Producer::NoBuild
+    {
+        return false;
+    }
+    // The direct-input gate proves every read fully qualified. Compare this
+    // exact rendered SQL in the other row's retained actual context. Client
+    // config hashes stay mandatory for adoption; this is only a refusal code.
+    let mut reading = crate::execution::sql_execution(req);
+    reading.default_catalog = context.default_catalog.clone();
+    reading.default_schema = context.default_schema.clone();
+    reading.target_table = Some(row.target_table.clone());
+    row.node_sql_hash.as_deref()
+        == Some(crate::fingerprint::sql_logic_hash(&reading, None).as_str())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -863,8 +970,16 @@ pub(crate) fn plan_register(
             }
             if let Some(source) = source {
                 if let Some(mut provenance) = source.direct_copy_provenance {
+                    let own = Warehouse::physical_scope_key(&req.dialect, &source.target_table);
+                    let inputs: Vec<_> = source
+                        .input_tables
+                        .into_iter()
+                        .filter(|input| {
+                            Warehouse::physical_scope_key(&req.dialect, &input.name) != own
+                        })
+                        .collect();
                     if provenance.version == 1
-                        && source.input_tables.iter().all(|t| {
+                        && inputs.iter().all(|t| {
                             t.last_modified_epoch.is_some()
                                 && !matches!(t.producer, crate::store::Producer::Unrecorded)
                         })
@@ -877,11 +992,7 @@ pub(crate) fn plan_register(
                         ));
                         direct = Some(DirectRegistration {
                             provenance,
-                            inputs: source
-                                .input_tables
-                                .into_iter()
-                                .filter(|t| t.name != source.target_table)
-                                .collect(),
+                            inputs,
                             runtime_ms: source.execution_runtime_ms,
                         });
                     }
@@ -915,6 +1026,242 @@ fn register_ddl(req: &qc::CloneRequest) -> Result<Vec<String>, RegisterRefusal> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_refusal_diagnostic_requires_fresh_scoped_rendered_evidence() {
+        let req = qc::SubmitEnrichedSqlRequest {
+            dialect: "databricks".into(),
+            execution_type: 3,
+            sql: "select * from cdo_demo_db.prod.inputs".into(),
+            target_table: Some("`cdo_demo_db`.`prod`.`output`".into()),
+            default_catalog: "cdo_demo_db".into(),
+            default_schema: Some("prod".into()),
+            table_namespace: Some("ns".into()),
+            is_defer_to_profile: true,
+            tolerate_nondeterminism: true,
+            allow_clones: Some(true),
+            clone_chain_depth_limit: Some(0),
+            semantic_extras: [
+                ("unique_key".into(), "\"id\"".into()),
+                ("lookback".into(), "1".into()),
+                ("on_schema_change".into(), "\"ignore\"".into()),
+            ]
+            .into(),
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.project.output".into(),
+                node_configs_hash: Some("current-config".into()),
+                ..Default::default()
+            }),
+            tables: vec![qc::TableModifiedInfo {
+                name: "`cdo_demo_db`.`prod`.`inputs`".into(),
+                last_modified_epoch: Some(10),
+            }],
+            ..Default::default()
+        };
+        let mut evidence = ExecutionEvidence::sql_submit("o", &req);
+        evidence.input_tables[0].producer = crate::store::Producer::NoBuild;
+        let mut dev = req.clone();
+        dev.default_schema = Some("dev".into());
+        dev.target_table = Some("`cdo_demo_db`.`dev`.`output`".into());
+        dev.dbt_node_state.as_mut().unwrap().node_configs_hash = Some("previous-config".into());
+        let dev_evidence = ExecutionEvidence::sql_submit("o", &dev);
+        let row = ExecutionRow {
+            org_id: "o".into(),
+            status: "confirmed".into(),
+            target_table: dev_evidence.target_table,
+            dialect: "databricks".into(),
+            execution_type: 3,
+            table_namespace: Some("ns".into()),
+            node_unique_id: evidence.node_unique_id.clone(),
+            node_sql_hash: dev_evidence.node_sql_hash,
+            direct_copy_provenance: dev_evidence.direct_copy_provenance,
+            last_modified_epoch: Some(20),
+            input_tables: evidence.input_tables.clone(),
+            ..seed_load()
+        };
+        assert!(direct_refusal_matches(&req, &evidence, &row));
+        for fault in [
+            "uid",
+            "namespace",
+            "org",
+            "epoch",
+            "producer",
+            "other-input",
+            "sql",
+            "version",
+            "type",
+            "pending",
+            "own-target",
+        ] {
+            let mut row = row.clone();
+            match fault {
+                "uid" => row.node_unique_id = Some("model.other.output".into()),
+                "namespace" => row.table_namespace = Some("other".into()),
+                "org" => row.org_id = "other".into(),
+                "epoch" => row.input_tables[0].last_modified_epoch = None,
+                "producer" => row.input_tables[0].producer = crate::store::Producer::Unrecorded,
+                "other-input" => row.input_tables[0].name = "cdo_demo_db.other.inputs".into(),
+                "sql" => row.node_sql_hash = Some("other-rendered-query".into()),
+                "version" => row.direct_copy_provenance.as_mut().unwrap().version = 2,
+                "type" => row.execution_type = 7,
+                "pending" => row.status = "pending".into(),
+                "own-target" => row.target_table = evidence.target_table.clone(),
+                _ => unreachable!(),
+            }
+            assert!(!direct_refusal_matches(&req, &evidence, &row), "{fault}");
+        }
+        let mut unsupported = evidence.clone();
+        unsupported.direct_copy_provenance = None;
+        assert!(!direct_refusal_matches(&req, &unsupported, &row));
+        for flag in [
+            "defer",
+            "limit",
+            "template",
+            "namespace",
+            "lag",
+            "policy",
+            "external",
+        ] {
+            let mut req = req.clone();
+            match flag {
+                "defer" => req.is_defer_to_profile = false,
+                "limit" => req.clone_chain_depth_limit = Some(1),
+                "template" => req.compare_unrendered_code = true,
+                "namespace" => req.table_namespace = None,
+                "lag" => req.freshness_tolerance_seconds = 1,
+                "policy" => req.stale_upstream_policy = 1,
+                "external" => req.ignore_external_modifications = true,
+                _ => unreachable!(),
+            }
+            assert!(!direct_refusal_scope(&req, &evidence), "{flag}");
+        }
+    }
+
+    #[test]
+    fn direct_copy_from_rebuilt_source_requires_only_its_genuine_input_evidence() {
+        let source_name = "`cdo_demo_db`.`prod`.`output`";
+        let provenance = DirectCopyProvenance {
+            version: 1,
+            identity: "existing-bound-identity".into(),
+            default_catalog: "cdo_demo_db".into(),
+            default_schema: Some("prod".into()),
+            source_execution_id: None,
+            source_epoch: None,
+            source_physical_key: None,
+        };
+        let source = ExecutionRow {
+            id: 7,
+            target_table: source_name.into(),
+            dialect: "databricks".into(),
+            execution_type: 3,
+            node_unique_id: Some("model.project.output".into()),
+            node_sql_hash: Some("rendered".into()),
+            direct_copy_provenance: Some(provenance),
+            last_modified_epoch: Some(30),
+            input_tables: vec![
+                crate::store::InputTable {
+                    name: "`cdo_demo_db`.`prod`.`inputs`".into(),
+                    last_modified_epoch: Some(7),
+                    producer: crate::store::Producer::NoBuild,
+                },
+                // An incremental's own observed target is deliberately not a
+                // resolved producer or a genuine upstream of its copied result.
+                crate::store::InputTable {
+                    name: source_name.into(),
+                    last_modified_epoch: Some(20),
+                    producer: crate::store::Producer::Unrecorded,
+                },
+            ],
+            ..seed_load()
+        };
+        let request = qc::CloneRequest {
+            dialect: "databricks".into(),
+            execution_type: 3,
+            clone_source_table: source_name.into(),
+            target_table: "`cdo_demo_db`.`dev`.`output`".into(),
+            clone_source_last_modified_epoch: Some(30),
+            labels: [("dbt_node_unique_id".into(), "model.project.output".into())].into(),
+            ..Default::default()
+        };
+        for own_spelling in [source_name, "CDO_DEMO_DB.PROD.OUTPUT"] {
+            let mut current = source.clone();
+            current.input_tables[1].name = own_spelling.into();
+            let plan = plan_register(
+                &request,
+                RegisterHistory::DatabricksSource(Some(Box::new(current))),
+            )
+            .unwrap();
+            let direct = plan
+                .direct
+                .expect("rebuilt source retains adoption evidence");
+            assert_eq!(direct.inputs.len(), 1);
+            assert_eq!(direct.inputs[0].name, source.input_tables[0].name);
+        }
+        for unknown in [false, true] {
+            let mut source = source.clone();
+            if unknown {
+                source.input_tables[0].last_modified_epoch = None;
+            } else {
+                source.input_tables[0].producer = crate::store::Producer::Unrecorded;
+            }
+            assert!(plan_register(
+                &request,
+                RegisterHistory::DatabricksSource(Some(Box::new(source)))
+            )
+            .unwrap()
+            .direct
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn direct_copy_accepts_native_bare_fully_qualified_input_only() {
+        let req = qc::SqlExecution {
+            dialect: "databricks".into(),
+            execution_type: 3,
+            sql: "select * from cdo_demo_db.prod.inputs".into(),
+            default_catalog: "cdo_demo_db".into(),
+            default_schema: Some("prod".into()),
+            target_table: Some("`cdo_demo_db`.`prod`.`output`".into()),
+            tables: vec![qc::TableModifiedInfo {
+                name: "`cdo_demo_db`.`prod`.`inputs`".into(),
+                last_modified_epoch: Some(7),
+            }],
+            dbt_node_state: Some(qc::DbtNodeState {
+                node_unique_id: "model.project.output".into(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let source = direct_copy_provenance(&req).expect("native plain three-part source");
+        let mut dev = req.clone();
+        dev.default_schema = Some("dev".into());
+        dev.target_table = Some("`cdo_demo_db`.`dev`.`output`".into());
+        assert_eq!(
+            direct_copy_provenance(&dev).unwrap().identity,
+            source.identity
+        );
+        for sql in [
+            "select * from prod.inputs",
+            "select * from inputs",
+            "select * from other.prod.inputs",
+            "select * from cdo_demo_db.prod.inputs as alias",
+            "select * from cdo_demo_db.prod.inputs where id=1",
+            "select * from cdo_demo_db.prod.inputs join cdo_demo_db.prod.other using(id)",
+            "select * from cdo_demo_db.prod.inputs; select 1",
+            "select * from cdo_demo_db.prod.\"inputs\"",
+            "select * from cdo_demo_db.`prod`.inputs",
+            "select * from `cdo_demo_db.prod`.`inputs`",
+            "select * from cdo_demo_db.prod.inputs()",
+            "select * from cdo_demo_db.prod.inputs-1",
+        ] {
+            dev.sql = sql.into();
+            assert!(
+                direct_copy_provenance(&dev).is_none(),
+                "unsupported or different physical input: {sql}"
+            );
+        }
+    }
 
     const DEV: &str = "\"DB\".\"DEV\".\"M\"";
     const PROD: &str = "\"DB\".\"PROD\".\"M\"";

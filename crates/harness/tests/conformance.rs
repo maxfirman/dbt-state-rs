@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        139,
+        140,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1331,6 +1331,13 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
 }
 
 /// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
+#[tokio::test]
+async fn databricks_precopy_exact_public_history() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_precopy.jsonl");
+    exact_native_history_at(&path, 90, 14, 10, 14, None, true).await;
+}
+
 #[tokio::test]
 #[ignore = "requires whole #152 physical acceptance capture; native also requires audit clocks"]
 async fn databricks_precopy_extra_exact_public_history() {

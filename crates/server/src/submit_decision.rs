@@ -72,6 +72,8 @@ pub enum SubmitOutcome {
         /// The reuse candidate when freshness forced the rebuild (the Explain
         /// freshness anchor); `None` when no reuse candidate qualified.
         matched_execution: Option<ExecutionRow>,
+        /// Frozen name for a refused copy's Explain only. Never a candidate.
+        refused_copy_source: Option<String>,
         record: DecisionRecord,
     },
     /// Copy an equivalent built under another name into the submit target
@@ -535,6 +537,31 @@ async fn decide_sql(
     {
         record = record.with_refused_copy(decision::REJECTION_EXECUTION_TYPE_NOT_FULL);
     }
+    let direct_diagnostic = if record.class == DecisionKind::Build
+        && record.reason == decision::DecisionReason::UpstreamOutdated
+        && result_copy::direct_refusal_scope(req, &evidence)
+    {
+        store
+            .other_target_query_diagnostic(
+                org_id,
+                &evidence.target_table,
+                &req.dialect,
+                QueryDiagnosticNamespaces::Exact(req.table_namespace.as_deref()),
+                |row| result_copy::direct_refusal_matches(req, &evidence, row),
+            )
+            .await?
+    } else {
+        None
+    };
+    if direct_diagnostic.is_some() {
+        if req.execution_type == ModelExecutionType::Merge as i32 {
+            record = record.with_refused_copy(decision::REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED);
+            record.description = decision::COPY_CHAIN_LIMIT_DESCRIPTION.into();
+            record.reason = decision::DecisionReason::CopyChainLimit;
+        } else {
+            record = record.with_refused_copy(decision::REJECTION_EXECUTION_TYPE_NOT_FULL);
+        }
+    }
     log_decision(&evidence, &record, candidate.is_some(), &req.labels);
     let (record, candidate) = anchor_rejected(
         record,
@@ -542,7 +569,20 @@ async fn decide_sql(
         selection.rejected.or(selection.type_changed),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
-    settle(store, &evidence, record, candidate).await.map(Some)
+    let mut outcome = settle(store, &evidence, record, candidate).await?;
+    if req.execution_type == ModelExecutionType::Merge as i32 {
+        if let (
+            Some(reference),
+            SubmitOutcome::Execute {
+                refused_copy_source,
+                ..
+            },
+        ) = (direct_diagnostic, &mut outcome)
+        {
+            *refused_copy_source = Some(reference.source_name);
+        }
+    }
+    Ok(Some(outcome))
 }
 
 /// Decorate only an already forced BUILD, after all eligibility, freshness and
@@ -1391,6 +1431,7 @@ async fn settle(
             Ok(SubmitOutcome::Execute {
                 ids,
                 matched_execution: candidate,
+                refused_copy_source: None,
                 record,
             })
         }

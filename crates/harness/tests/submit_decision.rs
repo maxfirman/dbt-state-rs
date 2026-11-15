@@ -69,6 +69,7 @@ async fn first_build_executes_and_writes_its_pending_row() {
     let SubmitOutcome::Execute {
         ids,
         matched_execution,
+        refused_copy_source,
         record:
             DecisionRecord {
                 description,
@@ -82,6 +83,7 @@ async fn first_build_executes_and_writes_its_pending_row() {
         panic!("expected Execute, got {outcome:?}");
     };
     assert!(matched_execution.is_none(), "a first build matches nothing");
+    assert!(refused_copy_source.is_none());
     assert_eq!(
         description,
         "model was executed because its table did not exist"

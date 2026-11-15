@@ -283,6 +283,10 @@ fn submit_capture(
         // "<source>"` (F2); for a build whose copy the submit disallowed, the
         // equivalent it could have been copied from.
         clone_source: match outcome {
+            SubmitOutcome::Execute {
+                refused_copy_source,
+                ..
+            } => refused_copy_source.clone(),
             SubmitOutcome::Copy { copy, .. } => {
                 Some(copy.source_table.clone()).filter(|s| !s.is_empty())
             }

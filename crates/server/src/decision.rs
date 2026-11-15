@@ -684,7 +684,7 @@ const RESULT_COPY_DESCRIPTION: &str =
     "an equivalent model exists under another name so we cloned that one";
 pub(crate) const SEED_RESULT_COPY_DESCRIPTION: &str =
     "an equivalent seed exists under another name so we cloned that one";
-const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
+pub(crate) const COPY_CHAIN_LIMIT_DESCRIPTION: &str =
     "model was executed because the maximum number of nested clones has been reached";
 const COPY_DISABLED_DESCRIPTION: &str = "model was executed because cloning is disabled";
 

@@ -360,6 +360,8 @@ enum Shape {
     /// ("but it's old, so we will clone from …"), rendered against the
     /// target's own build (VERIFIED LIVE 2026-11-10, lag_copy_candidates).
     CopyOver,
+    /// Captured Databricks MERGE refusal, judged against its own old build.
+    CopyOverRefused,
     /// CLONE (`vs clone` sections).
     Clone,
     /// The node query unchanged against the latest build, which had another
@@ -475,6 +477,18 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         )
     );
     Some(match (node.decision, reason) {
+        (DecisionKind::Build, R::CopyChainLimit)
+            if kind == Some(ModelExecutionType::Merge)
+                && node.clone_source.is_some()
+                && node.anchor.as_ref().is_some_and(|a| {
+                    crate::warehouse::Warehouse::from_dialect(&a.dialect)
+                        == crate::warehouse::Warehouse::Databricks
+                })
+                && !node.own_target_absent()
+                && has_provably_outdated_upstream(node) =>
+        {
+            Shape::CopyOverRefused
+        }
         (DecisionKind::Build, R::ExistingTargetCopyDisabledDiagnostic) if !upstreams => {
             if node.own_target_absent() && node.clone_source.is_some() {
                 Shape::AbsentTargetCopyChainDiagnostic
@@ -1013,6 +1027,11 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::Seed { changed }) => seed_tree(node, changed),
         Some(Shape::SeedCopy { over }) => seed_copy_tree(node, over),
         Some(Shape::CopyOver) => copy_over_tree(node),
+        Some(Shape::CopyOverRefused) => {
+            let mut tree = execute_outdated_tree(node);
+            tree[0].children.push(leaf(format!("but it's old. We would have cloned from {}, but the maximum number of nested clones has been reached", quote(node.clone_source.as_deref().unwrap_or_default())), Some(MARKER_FAIL), None));
+            tree
+        }
         Some(Shape::Clone) => clone_tree(node),
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
