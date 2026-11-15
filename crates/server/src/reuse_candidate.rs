@@ -55,6 +55,9 @@ pub(crate) struct Selection {
     /// LIVE 2026-11-10/11, explain_snapshot_history.jsonl entry 58,
     /// explain_execution_type_change.jsonl). Never reused.
     pub type_changed: Option<ExecutionRow>,
+    /// Databricks APPEND/MERGE response/Explain basis only. Selection still
+    /// rejects against the submit type's build; this row is never reusable.
+    pub transition_display: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -67,6 +70,7 @@ impl Selection {
             rejected: None,
             unmatched: None,
             type_changed: None,
+            transition_display: None,
         }
     }
 
@@ -78,6 +82,7 @@ impl Selection {
         rejected: None,
         unmatched: None,
         type_changed: None,
+        transition_display: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -117,6 +122,7 @@ impl Selection {
             rejected,
             unmatched,
             type_changed,
+            transition_display: None,
         }
     }
 }
@@ -134,6 +140,8 @@ pub(crate) fn for_model(
     let Some(current) = current else {
         return Ok(Selection::FIRST_BUILD);
     };
+    let transition_display =
+        databricks_append_merge_transition(req, evidence, &current).then(|| current.clone());
     // Same identity, other node kind (#83): hosted's EXECUTION_TYPE_MISMATCH,
     // explained against this row. The caller routes a target that also has
     // a build of the workload's type to `for_model_over_build_of_type`.
@@ -179,13 +187,15 @@ pub(crate) fn for_model(
         unmatched = Some(current);
         None
     };
-    Ok(Selection::of(
+    let mut selected = Selection::of(
         identified,
         unidentified,
         |prev| model_rejection(req, evidence, prev),
         true,
         unmatched,
-    ))
+    );
+    selected.transition_display = transition_display;
+    Ok(selected)
 }
 
 /// Why a model's build with the workload's identity is not a reuse
@@ -230,6 +240,23 @@ pub(crate) fn execution_type_changed(
     latest.execution_type != req.execution_type
         && (same_identity(req, evidence, latest) && same_upstream_names(evidence, latest)
             || is_copy_registration(latest) && copy_logic_matches(req, evidence, latest))
+}
+
+/// Bounded native #146 display characterization, not reuse qualification.
+fn databricks_append_merge_transition(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    latest: &ExecutionRow,
+) -> bool {
+    crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        == crate::warehouse::Warehouse::Databricks
+        && matches!((req.execution_type, latest.execution_type), (2, 3) | (3, 2))
+        && !req.compare_unrendered_code
+        && evidence
+            .node_unique_id
+            .as_deref()
+            .is_some_and(|uid| !uid.is_empty() && latest.node_unique_id.as_deref() == Some(uid))
+        && execution_type_changed(req, evidence, latest)
 }
 
 /// Whether `latest` has the workload's identity under another execution type
@@ -290,8 +317,10 @@ pub(crate) fn for_model_over_build_of_type(
     build: ExecutionRow,
 ) -> sqlx::Result<Selection> {
     debug_assert!(execution_type_changed(req, evidence, &latest));
+    let transition_display =
+        databricks_append_merge_transition(req, evidence, &latest).then(|| latest.clone());
     let build = build.into_checked(false)?;
-    Ok(match model_rejection(req, evidence, &build) {
+    let mut selected = match model_rejection(req, evidence, &build) {
         Some(why) => Selection::of(Some(build), why, |_| Some(why), true, None),
         None => Selection::of(
             None,
@@ -300,7 +329,9 @@ pub(crate) fn for_model_over_build_of_type(
             true,
             Some(latest),
         ),
-    })
+    };
+    selected.transition_display = transition_display;
+    Ok(selected)
 }
 
 /// Data tests: no physical target. `latest` is the latest confirmed outcome

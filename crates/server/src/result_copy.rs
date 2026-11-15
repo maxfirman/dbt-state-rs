@@ -1627,6 +1627,7 @@ mod tests {
             rejected: None,
             unmatched: None,
             type_changed: None,
+            transition_display: None,
         }
     }
 

@@ -724,7 +724,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        133,
+        134,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1280,6 +1280,316 @@ async fn conformance_replay_all_corpora() {
         explain_entries_asserted > 0,
         "the GetExplainMessages replay arm did not assert anything"
     );
+}
+
+/// Fast strict replay of the complete #146 native transition graph. No gaps,
+/// missing history, partial comparisons or skipped telemetry are admitted.
+#[tokio::test]
+async fn databricks_append_transitions_exact_public_history() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_append_transitions.jsonl");
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let server = support::start_server().await;
+    let ch = support::channel(server.addr).await;
+    let mut sql = SqlClient::new(ch.clone());
+    let mut exec = ExecutionClient::new(ch.clone());
+    let mut requests = HashMap::new();
+    let mut decisions = HashMap::new();
+    let mut mismatches = Vec::new();
+    let mut seen_gaps = HashSet::new();
+    let mut explained = 0;
+    for (i, entry) in entries.iter().enumerate() {
+        match entry.method.as_str() {
+            "SubmitEnrichedSQL" => {
+                let response = sql
+                    .submit_enriched_sql(captured_submit_request(
+                        serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(
+                            entry.request.clone(),
+                        )
+                        .unwrap(),
+                        entry,
+                        "databricks_append_transitions.jsonl",
+                        None,
+                    ))
+                    .await
+                    .unwrap()
+                    .into_captured(entry);
+                decisions.insert(
+                    hosted_submit_edid(&entry.response).unwrap(),
+                    local_submit_edid(&response).unwrap(),
+                );
+                let actual = serde_json::to_value(&response).unwrap();
+                if let Some(hosted) =
+                    entry.response["response"]["ready_to_execute"]["request_id"].as_str()
+                {
+                    requests.insert(
+                        hosted.to_string(),
+                        actual["response"]["ready_to_execute"]["request_id"]
+                            .as_str()
+                            .unwrap()
+                            .to_string(),
+                    );
+                }
+                if normalize_ids(actual.clone()) != normalize_ids(entry.response.clone()) {
+                    mismatches.push(format!(
+                        "entry {i}: actual={actual} hosted={}",
+                        entry.response
+                    ));
+                }
+            }
+            "ConfirmExecution" => {
+                let mut request: qc::ConfirmExecutionRequest =
+                    serde_json::from_value(entry.request.clone()).unwrap();
+                request.request_id = requests[&request.request_id].clone();
+                let response = exec
+                    .confirm_execution(support::captured_request(request, entry))
+                    .await
+                    .unwrap()
+                    .into_captured(entry);
+                assert_eq!(
+                    normalize_ids(serde_json::to_value(response).unwrap()),
+                    normalize_ids(entry.response.clone())
+                );
+            }
+            "GetExplainMessages" => {
+                explained += replay_explain_messages(
+                    ch.clone(),
+                    entry,
+                    i,
+                    &path,
+                    &decisions,
+                    &[],
+                    &mut seen_gaps,
+                    &mut mismatches,
+                )
+                .await;
+            }
+            "ValidateClientVersion" | "SubmitTelemetryBatch" | "SubmitEnrichedSQLSpeculative" => {
+                let outcome = diff::replay_rpc(ch.clone(), entry).await.unwrap();
+                entry.compare_outcome(&outcome).unwrap();
+            }
+            other => panic!("unexpected RPC in complete transition graph: {other}"),
+        }
+    }
+    assert_eq!(entries.len(), 97);
+    assert_eq!(decisions.len(), 14);
+    assert_eq!(requests.len(), 7);
+    assert!(seen_gaps.is_empty());
+    assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
+    assert_eq!(explained, 14);
+}
+
+/// Synthetic safety controls use captured request shapes, not hosted policy
+/// claims. The read-only audit seam proves presentation cannot replace the
+/// submit-type anchor or decision-time inputs.
+#[tokio::test]
+async fn databricks_incremental_transition_display_preserves_rejection_lineage() {
+    use support::scenario::{built_at, model, Scenario};
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_append_transitions.jsonl");
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let submits: Vec<_> = entries
+        .iter()
+        .filter(|e| e.method == "SubmitEnrichedSQL")
+        .collect();
+    let confirms: Vec<_> = entries
+        .iter()
+        .filter(|e| e.method == "ConfirmExecution")
+        .collect();
+    for case in [
+        "display",
+        "snowflake",
+        "full",
+        "unknown_kind",
+        "source_unknown",
+        "target_unknown",
+        "target_modified",
+        "lag",
+        "all",
+        "producer",
+        "uid",
+        "template",
+        "namespace",
+        "config",
+    ] {
+        let server = support::start_server().await;
+        let ch = support::channel(server.addr).await;
+        let mut sql = SqlClient::new(ch.clone());
+        let mut exec = ExecutionClient::new(ch);
+        let mut built = Vec::new();
+        for stage in 0..3 {
+            let entry = submits[stage * 2];
+            let mut request: qc::SubmitEnrichedSqlRequest =
+                serde_json::from_value(entry.request.clone()).unwrap();
+            let source = request
+                .tables
+                .iter()
+                .find(|t| t.name.ends_with("inputs`"))
+                .unwrap()
+                .clone();
+            if case == "snowflake" {
+                request.dialect = "snowflake".into();
+            }
+            if stage == 1 {
+                if case == "full" {
+                    request.execution_type = qc::ModelExecutionType::Full as i32;
+                }
+                if case == "unknown_kind" {
+                    request.execution_type = 99;
+                }
+            }
+            if case == "producer" && stage < 2 {
+                let producer = model(&source.name)
+                    .dialect("databricks")
+                    .namespace(request.table_namespace.as_deref().unwrap());
+                assert_eq!(
+                    Scenario::connect(&server)
+                        .await
+                        .record([producer.record(built_at(source.last_modified_epoch.unwrap()))])
+                        .await
+                        .unwrap(),
+                    1
+                );
+            }
+            if stage == 2 {
+                match case {
+                    "source_unknown" => {
+                        request
+                            .tables
+                            .iter_mut()
+                            .find(|t| t.name == source.name)
+                            .unwrap()
+                            .last_modified_epoch = None
+                    }
+                    "target_unknown" => {
+                        request
+                            .tables
+                            .iter_mut()
+                            .find(|t| t.name != source.name)
+                            .unwrap()
+                            .last_modified_epoch = None
+                    }
+                    "target_modified" => {
+                        *request
+                            .tables
+                            .iter_mut()
+                            .find(|t| t.name != source.name)
+                            .unwrap()
+                            .last_modified_epoch
+                            .as_mut()
+                            .unwrap() += 1000
+                    }
+                    "lag" => request.freshness_tolerance_seconds = 3600,
+                    "all" => request.stale_upstream_policy = qc::StaleUpstreamPolicy::All as i32,
+                    "uid" => request
+                        .dbt_node_state
+                        .as_mut()
+                        .unwrap()
+                        .node_unique_id
+                        .push_str("_other"),
+                    "template" => request.compare_unrendered_code = true,
+                    "namespace" => request.table_namespace = Some("another-connection".into()),
+                    "config" => {
+                        request
+                            .semantic_extras
+                            .insert("on_schema_change".into(), "\"append_new_columns\"".into());
+                    }
+                    _ => {}
+                }
+            }
+            let response = sql
+                .submit_enriched_sql(captured_submit_request(
+                    request.clone(),
+                    entry,
+                    "databricks_append_transitions.jsonl",
+                    None,
+                ))
+                .await
+                .unwrap()
+                .into_inner();
+            let qc::submit_sql_response::Response::ReadyToExecute(ready) =
+                response.response.unwrap()
+            else {
+                panic!("{case}: transition reused");
+            };
+            if stage < 2 {
+                let mut confirm: qc::ConfirmExecutionRequest =
+                    serde_json::from_value(confirms[stage].request.clone()).unwrap();
+                confirm.request_id = ready.request_id.clone();
+                assert!(
+                    exec.confirm_execution(confirm)
+                        .await
+                        .unwrap()
+                        .into_inner()
+                        .success
+                );
+                built.push(
+                    support::rows::execution(&server, &ready.request_id)
+                        .await
+                        .unwrap()
+                        .id,
+                );
+            } else {
+                let id = ready.execution_decision_id.unwrap();
+                support::rows::wait_for_decision_capture(&server, "local", &id).await;
+                let rows = server
+                    .state
+                    .store
+                    .fetch_explain_decisions("local", &[id])
+                    .await
+                    .unwrap();
+                let row = &rows[0];
+                let identity_change = matches!(case, "namespace" | "config");
+                let old_anchor = !identity_change && case != "target_unknown";
+                assert_eq!(
+                    row.matched_execution_id,
+                    old_anchor.then_some(built[0]),
+                    "{case}: judged anchor"
+                );
+                assert_eq!(
+                    row.unmatched_execution_id,
+                    matches!(case, "display" | "config").then_some(built[1]),
+                    "{case}: display/latest ID"
+                );
+                let recorded: Vec<dbt_state_server::store::InputTable> =
+                    serde_json::from_value(row.input_tables.clone()).unwrap();
+                let current = recorded
+                    .iter()
+                    .find(|t| t.name.replace('`', "").ends_with("inputs"))
+                    .unwrap();
+                assert_eq!(
+                    current.last_modified_epoch,
+                    if case == "source_unknown" {
+                        None
+                    } else {
+                        source.last_modified_epoch
+                    },
+                    "{case}: immutable decision inputs"
+                );
+                if old_anchor {
+                    let old = row
+                        .matched_execution
+                        .as_ref()
+                        .unwrap()
+                        .input_tables
+                        .iter()
+                        .find(|t| t.name.replace('`', "").ends_with("inputs"))
+                        .unwrap();
+                    assert_eq!(
+                        old.last_modified_epoch,
+                        submits[0].request["tables"][0]["last_modified_epoch"].as_i64(),
+                        "{case}: old baseline"
+                    );
+                }
+                let expected = if case == "display" { 2 } else { 6 };
+                assert_eq!(
+                    ready.explained_decision.unwrap().skip_rejection_reason,
+                    Some(expected),
+                    "{case}: ordinary reason"
+                );
+            }
+        }
+    }
 }
 
 /// Extract the hosted `execution_decision_id` from a captured submit response
