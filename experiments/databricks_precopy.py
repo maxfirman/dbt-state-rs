@@ -41,6 +41,19 @@ CELLS=(('source','prod','first',None,False,'ready_to_execute'),
 def digest(path):return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def assert_clone_history(history,source,repaired=False):
+    names=[c['name'] for c in history['columns']]
+    rows=[dict(zip(names,r)) for r in history['rows']]
+    if not repaired:
+        if not rows or rows[0].get('operation')!='CLONE':raise Refused('precopy:physical-copy-history')
+        return
+    if ([(r.get('version'),r.get('operation')) for r in rows]!=[('2','CLUSTER BY'),('1','MERGE'),('0','CLONE')]
+            or json.loads(rows[0]['operationParameters'])!={'oldClusteringColumns':'','newClusteringColumns':'','clusterByAuto':'false'}):
+        raise Refused('precopy:physical-copy-repair-history')
+    cloned=json.loads(rows[2]['operationParameters'])
+    if cloned!={'source':source,'sourceVersion':'1','isShallow':'true'}:raise Refused('precopy:physical-copy-repair-source')
+
+
 def plan():
     return {'ticket':152,'catalog':'cdo_demo_db','schemas':SCHEMAS,'schema_ids':SCHEMA_IDS,
         'run_ids':RUNS,'objects':OBJECTS,'cells':CELLS,'source':{'first':FIRST,'changed':CHANGED},
@@ -98,15 +111,18 @@ def assert_show(stdout,stderr,direct,rows,sql,query_log,compiled):
     return {'complete_string_multiset':True,'exact_select_only':True}
 
 
-def assert_copy_properties(source,target):
+def assert_copy_properties(source,target,cluster_by_none=False):
     # New physical tables have distinct UC/row-tracking identifiers. These are
     # the only observed differences; preserve every other reported property.
     identities={'io.unitycatalog.tableId':'',
         'delta.rowTracking.materializedRowIdColumnName':'_row-id-col-',
         'delta.rowTracking.materializedRowCommitVersionColumnName':'_row-commit-version-col-'}
     if not source or set(source)!=set(target):raise Refused('precopy:property-keys')
+    if cluster_by_none and (source.get('clusterByAuto'),target.get('clusterByAuto'))!=('true','false'):
+        raise Refused('precopy:repair-clustering-property')
     for key,value in source.items():
         if key not in identities:
+            if cluster_by_none and key=='clusterByAuto':continue
             if target[key]!=value:raise Refused('precopy:default-properties-not-preserved')
         else:
             prefix=identities[key]
@@ -117,8 +133,10 @@ def assert_copy_properties(source,target):
                 except ValueError as error:raise Refused('precopy:physical-identifier-UUID') from error
                 if str(parsed)!=text or parsed.version!=4:raise Refused('precopy:physical-identifier-UUID')
             if target[key]==value:raise Refused('precopy:physical-identifier-not-distinct')
-    return {'preserved':[k for k in source if k not in identities],
+    result={'preserved':[k for k in source if k not in identities and not (cluster_by_none and k=='clusterByAuto')],
             'distinct_physical_identifiers':[k for k in source if k in identities]}
+    if cluster_by_none:result['explicit_property_transition']={'clusterByAuto':{'source':'true','target':'false','reason':'executed ALTER TABLE CLUSTER BY NONE'}}
+    return result
 
 
 class Precopy(Baseline):
@@ -271,7 +289,7 @@ class Precopy(Baseline):
                     if n['name']=='check' and (cfg.get('updated_at')!='ts' or cfg.get('check_cols')!=['v'] or cfg.get('hard_deletes')!='ignore'):raise Refused('precopy:manifest-snapshot')
                 self.save('preflight/'+label+'.json',manifest)
 
-    def physical(self,label,kind,role,stage,copied,cloned_now):
+    def physical(self,label,kind,role,stage,copied,cloned_now,copy_source_role='prod',copy_repaired=False):
         completed_checks=[root/'checks'/f'{label}.json' for root in self.prefixes if (root/'checks'/f'{label}.json').exists()]
         if label in self.completed and completed_checks:
             self.save('checks/'+label+'_retained.json',{'original_check':str(completed_checks[0]),'repeated_reference':False})
@@ -295,13 +313,12 @@ class Precopy(Baseline):
         if metadata.get('data_source_format')!='DELTA' or metadata.get('table_type')!=('MANAGED_SHALLOW_CLONE' if copied else 'MANAGED'):
             raise Refused('precopy:independent-UC-provider-type')
         if cloned_now:
-            names=[c['name'] for c in history['columns']]
-            if not history['rows'] or dict(zip(names,history['rows'][0])).get('operation')!='CLONE':raise Refused('precopy:physical-copy-history')
-            source=self.scope.relation('prod',kind)
+            source=self.scope.relation(copy_source_role,kind)
+            assert_clone_history(history,source,copy_repaired)
             source_props=self.sql(label+'_source_properties','SHOW TBLPROPERTIES '+source)
             target_props=self.sql(label+'_target_properties','SHOW TBLPROPERTIES '+target)
             sp=dict(source_props['rows']);tp=dict(target_props['rows'])
-            check=assert_copy_properties(sp,tp)
+            check=assert_copy_properties(sp,tp,copy_repaired)
             source_metadata=self.api('get','/api/2.1/unity-catalog/tables/'+source)
             for props,meta in ((sp,source_metadata),(tp,metadata)):
                 if props.get('io.unitycatalog.tableId')!=meta.get('table_id'):raise Refused('precopy:independent-UC-table-ID')
@@ -355,7 +372,7 @@ class Precopy(Baseline):
         self.explain(label,submits)
         self.physical(label,kind,role,stage,role=='dev',copy)
 
-    def audit_native(self,label,target,source,copy):
+    def audit_native(self,label,target,source,copy,allow_failed_attempt=False):
         raw=(self.evidence(label)/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         self.save('materialization/'+label+'.sql',raw)
         code=re.sub(r'/\*.*?\*/|--[^\n]*','',raw,flags=re.S)
@@ -383,7 +400,7 @@ class Precopy(Baseline):
                 if not alter or normalize(alter.group(1))!=target:raise Refused('precopy:unapproved-native-alter')
             elif not change or normalize(change.group(1))!=target:raise Refused('precopy:unapproved-native-write')
             writes.append(sql)
-        if len(clones)!=int(copy):raise Refused('precopy:granted-DDL-not-executed')
+        if len(clones)!=int(copy) and not (allow_failed_attempt and not copy and len(clones)==1):raise Refused('precopy:granted-DDL-not-executed')
         self.save('materialization/'+label+'.json',{'writes':writes,'executed_clones':len(clones),'persistent_auxiliary':0,'temporary_allowlist':[temp]})
 
     def baseline(self):

@@ -1,0 +1,331 @@
+[
+  {
+    "entry": 26,
+    "local": {
+      "response": {
+        "ready_to_execute": {
+          "execution_decision_id": "<opaque>",
+          "explained_decision": {
+            "clone_rejection_reason": 7,
+            "decision": 1,
+            "decision_description": "model was executed because its table did not exist",
+            "is_stale": false,
+            "skip_rejection_reason": 4
+          },
+          "last_modified_query": "",
+          "query_hash_metadata_info": null,
+          "request_id": "<opaque>",
+          "transformed_nodes_by_query": {}
+        }
+      }
+    },
+    "method": "SubmitEnrichedSQL"
+  },
+  {
+    "entry": 30,
+    "local": {
+      "messages": [
+        {
+          "decision": 1,
+          "decision_description": "model was executed because its table did not exist",
+          "execution_decision_id": "01a1e0d3-14de-76f8-88da-b03a9093e1b3",
+          "explain_lines": [
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 2,
+                  "text": "the model table does not exist"
+                },
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 2,
+                  "text": "there is no other table that the model could be cloned from"
+                }
+              ],
+              "marker": null,
+              "text": "table analysis (`cdo_demo_db`.`ds_20261112a134ef_prod`.`p154_9b197ef74e7e45a3a608f681e63536d2_full`)"
+            }
+          ]
+        }
+      ]
+    },
+    "method": "GetExplainMessages"
+  },
+  {
+    "entry": 115,
+    "local": {
+      "response": {
+        "ready_to_execute": {
+          "execution_decision_id": "<opaque>",
+          "explained_decision": {
+            "clone_rejection_reason": 6,
+            "decision": 1,
+            "decision_description": "model was executed because either its query didn't match or its upstream data is out of date",
+            "is_stale": false,
+            "skip_rejection_reason": 6
+          },
+          "last_modified_query": "",
+          "query_hash_metadata_info": null,
+          "request_id": "<opaque>",
+          "transformed_nodes_by_query": {}
+        }
+      }
+    },
+    "method": "SubmitEnrichedSQL"
+  },
+  {
+    "entry": 119,
+    "local": {
+      "messages": [
+        {
+          "decision": 1,
+          "decision_description": "model was executed because either its query didn't match or its upstream data is out of date",
+          "execution_decision_id": "01a1e0e4-254d-71d9-af04-f43569cec97a",
+          "explain_lines": [
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": 8,
+                  "children": [],
+                  "marker": 1,
+                  "text": "the model table exists already"
+                }
+              ],
+              "marker": null,
+              "text": "table analysis (`cdo_demo_db`.`ds_20261112a134ef_ref_dbt_test__audit`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge`)"
+            },
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": 4,
+                  "children": [],
+                  "marker": 2,
+                  "text": "the model query has changed"
+                },
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 1,
+                  "text": "upstream model queries have not changed"
+                }
+              ],
+              "marker": null,
+              "text": "query analysis"
+            },
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": null,
+                  "children": [
+                    {
+                      "badge": 1,
+                      "children": [
+                        {
+                          "badge": null,
+                          "children": [],
+                          "marker": null,
+                          "text": "no updates since `cdo_demo_db`.`ds_20261112a134ef_ref_dbt_test__audit`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge` last executed"
+                        },
+                        {
+                          "badge": null,
+                          "children": [],
+                          "marker": null,
+                          "text": "last updated: 20 minutes ago, 2026-11-15 20:06:39 UTC"
+                        }
+                      ],
+                      "marker": null,
+                      "text": "`cdo_demo_db`.`ds_20261112a134ef_prod`.`p154_9b197ef74e7e45a3a608f681e63536d2_inputs`"
+                    }
+                  ],
+                  "marker": null,
+                  "text": "upstream dependencies"
+                },
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 1,
+                  "text": "upstream data is up to date"
+                }
+              ],
+              "marker": null,
+              "text": "data freshness analysis"
+            }
+          ]
+        }
+      ]
+    },
+    "method": "GetExplainMessages"
+  },
+  {
+    "entry": 127,
+    "local": {
+      "ready_to_clone": null,
+      "response": null,
+      "unable_to_clone": {
+        "clone_source": "`cdo_demo_db`.`ds_20261112a134ef_prod`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge`",
+        "clone_target": "`cdo_demo_db`.`ds_20261112a134ef_ref_dbt_test__audit`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge`",
+        "explained_decision": {
+          "clone_rejection_reason": 5,
+          "decision": 1,
+          "decision_description": "",
+          "is_stale": false,
+          "skip_rejection_reason": null
+        }
+      }
+    },
+    "method": "RegisterClone"
+  },
+  {
+    "entry": 128,
+    "local": {
+      "response": null,
+      "status": {
+        "code": 5,
+        "details": [],
+        "message": "Execution request with ID <opaque> not found",
+        "metadata": {
+          "ascii": [],
+          "binary": []
+        }
+      }
+    },
+    "method": "ConfirmExecution"
+  },
+  {
+    "entry": 129,
+    "local": {
+      "response": {
+        "ready_to_execute": {
+          "execution_decision_id": "<opaque>",
+          "explained_decision": {
+            "clone_rejection_reason": 6,
+            "decision": 1,
+            "decision_description": "model was executed because the table was modified after the cached execution",
+            "is_stale": false,
+            "skip_rejection_reason": 6
+          },
+          "last_modified_query": "",
+          "query_hash_metadata_info": null,
+          "request_id": "<opaque>",
+          "transformed_nodes_by_query": {}
+        }
+      }
+    },
+    "method": "SubmitEnrichedSQL"
+  },
+  {
+    "entry": 133,
+    "local": {
+      "messages": [
+        {
+          "decision": 1,
+          "decision_description": "model was executed because the table was modified after the cached execution",
+          "execution_decision_id": "01a1e0e5-344a-79e1-b841-a55f375ac8a1",
+          "explain_lines": [
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": 8,
+                  "children": [],
+                  "marker": 1,
+                  "text": "the model table exists already"
+                }
+              ],
+              "marker": null,
+              "text": "table analysis (`cdo_demo_db`.`ds_20261112a134ef_ref_dbt_test__audit`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge`)"
+            },
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": 5,
+                  "children": [],
+                  "marker": 1,
+                  "text": "the model query has not changed"
+                },
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 1,
+                  "text": "upstream model queries have not changed"
+                }
+              ],
+              "marker": null,
+              "text": "query analysis"
+            },
+            {
+              "badge": null,
+              "children": [
+                {
+                  "badge": null,
+                  "children": [
+                    {
+                      "badge": 1,
+                      "children": [
+                        {
+                          "badge": null,
+                          "children": [],
+                          "marker": null,
+                          "text": "no updates since `cdo_demo_db`.`ds_20261112a134ef_ref_dbt_test__audit`.`p154_9b197ef74e7e45a3a608f681e63536d2_merge` last executed"
+                        },
+                        {
+                          "badge": null,
+                          "children": [],
+                          "marker": null,
+                          "text": "last updated: 21 minutes ago, 2026-11-15 20:06:39 UTC"
+                        }
+                      ],
+                      "marker": null,
+                      "text": "`cdo_demo_db`.`ds_20261112a134ef_prod`.`p154_9b197ef74e7e45a3a608f681e63536d2_inputs`"
+                    }
+                  ],
+                  "marker": null,
+                  "text": "upstream dependencies"
+                },
+                {
+                  "badge": null,
+                  "children": [],
+                  "marker": 1,
+                  "text": "upstream data is up to date"
+                }
+              ],
+              "marker": null,
+              "text": "data freshness analysis"
+            }
+          ]
+        }
+      ]
+    },
+    "method": "GetExplainMessages"
+  },
+  {
+    "entry": 141,
+    "local": {
+      "response": {
+        "ready_to_execute": {
+          "execution_decision_id": "<opaque>",
+          "explained_decision": {
+            "clone_rejection_reason": 6,
+            "decision": 1,
+            "decision_description": "model was executed because its table did not exist",
+            "is_stale": false,
+            "skip_rejection_reason": 1
+          },
+          "last_modified_query": "",
+          "query_hash_metadata_info": null,
+          "request_id": "<opaque>",
+          "transformed_nodes_by_query": {}
+        }
+      }
+    },
+    "method": "SubmitEnrichedSQL"
+  }
+]

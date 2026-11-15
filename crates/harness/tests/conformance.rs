@@ -1403,6 +1403,222 @@ async fn databricks_submit_copy_extra_exact_public_history() {
         .await;
 }
 
+#[tokio::test]
+#[ignore = "requires whole #154 hosted capture, or native capture and actual audit clocks"]
+async fn databricks_copy_recovery_extra_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let clocks = std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").map(|evidence| {
+        support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence)).unwrap()
+    });
+    let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
+    // Hosted grants the externally modified direct source, then MERGE repairs
+    // it. Native conservatively refuses that grant, so it has one less Confirm.
+    let pending = if clocks.is_some() { 13 } else { 14 };
+    exact_native_history_with_submit_copy(
+        &path,
+        count,
+        25,
+        pending,
+        25,
+        clocks.as_ref(),
+        true,
+        true,
+    )
+    .await;
+}
+
+/// Executes every RPC in the retained hosted boundary without granting its
+/// stale direct source or inventing the pending execution it would create.
+#[tokio::test]
+async fn databricks_copy_recovery_complete_hosted_boundary() {
+    use sha2::{Digest, Sha256};
+    let raw = include_bytes!("fixtures/databricks_copy_recovery.jsonl");
+    assert_eq!(
+        format!("{:x}", Sha256::digest(raw)),
+        "873260e5e7a9360ef7672450d71589263a539239f3ca71b265cc78d0598407ae"
+    );
+    let entries: Vec<diff::GoldenEntry> = std::str::from_utf8(raw)
+        .unwrap()
+        .lines()
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/databricks_copy_recovery_local_differences.json"
+    ))
+    .unwrap();
+    let server = support::start_server_databricks_copy_recovery().await;
+    let ch = support::channel(server.addr).await;
+    let mut requests = HashMap::<String, String>::new();
+    let mut decisions = HashMap::<String, String>::new();
+    let mut differences = Vec::new();
+    let mut published = 0;
+    let mut explained = 0;
+    for (i, entry) in entries.iter().enumerate() {
+        let mut replay = entry.clone();
+        if entry.method == "ConfirmExecution" {
+            let id = replay.request["request_id"].as_str().unwrap();
+            if let Some(local) = requests.get(id) {
+                replay.request["request_id"] = local.clone().into();
+            } else {
+                assert_eq!(i, 128, "only the refused copy lacks a pending ID");
+            }
+        }
+        if entry.method == "GetExplainMessages" {
+            for id in replay.request["execution_decision_ids"]
+                .as_array_mut()
+                .unwrap()
+            {
+                *id = decisions[id.as_str().unwrap()].clone().into();
+            }
+        }
+        let before = if i == 128 {
+            Some(sqlx::query_as::<_,(i64,i64)>("SELECT count(*),count(*) FILTER(WHERE status='confirmed') FROM executions WHERE org_id=$1").bind(support::captured_org(entry)).fetch_one(server.state.store.pool()).await.unwrap())
+        } else {
+            None
+        };
+        let mut outcome = if entry.method == "SubmitEnrichedSQL" {
+            let request = captured_submit_request(
+                serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(entry.request.clone())
+                    .unwrap(),
+                entry,
+                "databricks_copy_recovery.jsonl",
+                None,
+            );
+            diff::RpcOutcome::capture(
+                SqlClient::new(ch.clone())
+                    .submit_enriched_sql(request)
+                    .await,
+            )
+            .unwrap()
+        } else {
+            diff::replay_rpc(ch.clone(), &replay).await.unwrap()
+        };
+        if i == 128 {
+            assert_eq!(
+                replay.request["request_id"],
+                entries[127].response["ready_to_clone"]["request_id"]
+            );
+            assert_eq!(outcome.status.code, 5);
+            let id = replay.request["request_id"].as_str().unwrap();
+            assert_eq!(
+                outcome.status.message,
+                format!("Execution request with ID {id} not found")
+            );
+            assert!(outcome.status.details.is_empty());
+            let after=sqlx::query_as::<_,(i64,i64)>("SELECT count(*),count(*) FILTER(WHERE status='confirmed') FROM executions WHERE org_id=$1").bind(support::captured_org(entry)).fetch_one(server.state.store.pool()).await.unwrap();
+            assert_eq!(
+                before.unwrap(),
+                after,
+                "the ungranted copy must publish nothing"
+            );
+            outcome.status.message = outcome.status.message.replace(id, "<opaque>");
+            outcome.status.metadata = outcome.status.metadata.protocol();
+            differences.push(serde_json::json!({"entry":i,"method":entry.method,"local":{"status":outcome.status,"response":outcome.response}}));
+            continue;
+        }
+        assert!(
+            entry.status.as_ref().unwrap().equivalent(&outcome.status),
+            "RPCstatus entry{i}"
+        );
+        assert_eq!(
+            entry.response_metadata.as_ref().unwrap().protocol(),
+            outcome.response_metadata.protocol()
+        );
+        if entry.method == "SubmitEnrichedSQL" {
+            decisions.insert(
+                hosted_submit_edid(&entry.response).unwrap(),
+                hosted_submit_edid(&outcome.response).unwrap(),
+            );
+            for kind in ["ready_to_execute", "ready_to_clone"] {
+                if let Some(id) = entry.response["response"][kind]["request_id"].as_str() {
+                    requests.insert(
+                        id.into(),
+                        outcome.response["response"][kind]["request_id"]
+                            .as_str()
+                            .expect("same pending variant")
+                            .into(),
+                    );
+                }
+            }
+        }
+        if entry.method == "RegisterClone" {
+            if let Some(id) = outcome.response["ready_to_clone"]["request_id"].as_str() {
+                requests.insert(
+                    entry.response["ready_to_clone"]["request_id"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    id.into(),
+                );
+            } else if entry.response["ready_to_clone"].is_object() {
+                assert_eq!(i, 127);
+            }
+        }
+        if entry.method == "ConfirmExecution" {
+            published += 1;
+        }
+        if entry.method == "GetExplainMessages" {
+            let wanted = replay.request["execution_decision_ids"]
+                .as_array()
+                .unwrap()
+                .len();
+            for _ in 0..100 {
+                if outcome.response["messages"].as_array().unwrap().len() == wanted {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                outcome = diff::replay_rpc(ch.clone(), &replay).await.unwrap();
+                assert_eq!(outcome.status.code, 0);
+            }
+            let messages = outcome.response["messages"].as_array_mut().unwrap();
+            assert_eq!(
+                messages.len(),
+                wanted,
+                "every requested decision has complete history"
+            );
+            explained += messages.len();
+            for message in messages {
+                let host = decisions
+                    .iter()
+                    .find(|(_, local)| {
+                        Some(local.as_str()) == message["execution_decision_id"].as_str()
+                    })
+                    .unwrap()
+                    .0;
+                message["execution_decision_id"] = host.clone().into();
+            }
+            assert!(entry.status.as_ref().unwrap().equivalent(&outcome.status));
+            assert_eq!(
+                entry.response_metadata.as_ref().unwrap().protocol(),
+                outcome.response_metadata.protocol()
+            );
+        }
+        let local = normalize_ids(outcome.response);
+        if local != normalize_ids(entry.response.clone()) {
+            differences.push(serde_json::json!({"entry":i,"method":entry.method,"local":local}));
+        }
+    }
+    assert_eq!(
+        (
+            entries.len(),
+            decisions.len(),
+            requests.len(),
+            published,
+            explained
+        ),
+        (151, 25, 13, 12, 25)
+    );
+    let differences = serde_json::Value::Array(differences);
+    if let Some(path) = std::env::var_os("DBT_STATE_COPY_RECOVERY_DIFFERENCES") {
+        std::fs::write(path, serde_json::to_vec_pretty(&differences).unwrap()).unwrap();
+    }
+    assert_eq!(
+        differences, expected,
+        "complete local differences, no ignored responses or fields"
+    );
+}
+
 /// Whole #152 hosted/native campaign, including actual RegisterClone confirms.
 #[tokio::test]
 async fn databricks_precopy_exact_public_history() {
@@ -1506,7 +1722,9 @@ async fn exact_native_history_with_submit_copy(
 ) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = if databricks_submit_copy {
+    let server = if databricks_submit_copy && databricks_direct_copy {
+        support::start_server_databricks_copy_recovery().await
+    } else if databricks_submit_copy {
         support::start_server_databricks_submit_copy().await
     } else if databricks_direct_copy {
         support::start_server_databricks_direct_copy().await

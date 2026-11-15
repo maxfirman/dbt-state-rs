@@ -7,25 +7,43 @@ use support::scenario::Scenario;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires exact #153 ordinary submit-copy clearance, pinned dbt and fresh objects"]
 async fn real_dbt_submit_copy_physical_adoption() {
-    use sha2::{Digest, Sha256};
     let server = support::start_server_databricks_submit_copy().await;
+    native_copy_campaign(server, "databricks_submit_copy.py", false).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires exact #154 recovery clearance, pinned dbt and fresh objects"]
+async fn real_dbt_copy_recovery() {
+    let server = support::start_server_databricks_copy_recovery().await;
+    native_copy_campaign(server, "databricks_copy_recovery.py", true).await;
+}
+
+async fn native_copy_campaign(server: support::TestServer, script: &str, direct_copy: bool) {
+    use sha2::{Digest, Sha256};
     let artifacts = std::path::PathBuf::from(
         std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS").expect("fresh native artifact root"),
     );
     std::fs::create_dir_all(&artifacts).unwrap();
     let executable = std::env::current_exe().unwrap();
-    std::fs::write(artifacts.join("running-server-process.json"), serde_json::to_vec_pretty(&serde_json::json!({
-        "pid":std::process::id(), "executable":executable,
-        "executable_sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable).unwrap())),
-        "argv":std::env::args().collect::<Vec<_>>(), "address":server.addr.to_string(), "submit_copy_opt_in":true
-    })).unwrap()).unwrap();
+    std::fs::write(
+        artifacts.join("running-server-process.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "pid":std::process::id(), "executable":executable,
+            "executable_sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable).unwrap())),
+            "argv":std::env::args().collect::<Vec<_>>(), "address":server.addr.to_string(),
+            "submit_copy_opt_in":true, "direct_copy_opt_in":direct_copy
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     let mut command = tokio::process::Command::new(
         std::env::var_os("DBT_STATE_DATABRICKS_PYTHON").expect("Python with PyYAML"),
     );
-    command.arg(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../experiments/databricks_submit_copy.py"
-    ));
+    command.arg(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../experiments")
+            .join(script),
+    );
     for (flag, variable) in [
         ("dbt", "DBT"),
         ("proxy", "PROXY"),
@@ -137,18 +155,24 @@ fn after_copy(
 
 #[test]
 fn native_evidence_guards() {
-    let output = std::process::Command::new("python3")
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../experiments/databricks_submit_copy_test.py"
-        ))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    for script in [
+        "databricks_submit_copy_test.py",
+        "databricks_copy_recovery_test.py",
+    ] {
+        let output = std::process::Command::new("python3")
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../experiments")
+                    .join(script),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[tokio::test]
@@ -260,6 +284,65 @@ async fn automatic_copy_preserves_org_namespace_uid_and_unknown_input_barriers()
         }
         assert_eq!(sc.verdict(req).await, "ready_to_execute", "{case}");
     }
+}
+
+/// The client sets failed_to_clone only after a successful ordinary fallback.
+/// Its rows then belong to that SQL build, never to the abandoned copy grant.
+#[tokio::test]
+async fn failed_copy_fallback_is_an_ordinary_build_and_retry_cannot_restore_origin() {
+    let server = support::start_server_databricks_submit_copy().await;
+    let sc = Scenario::connect(&server).await.org("fallback");
+    source(&sc).await;
+    let (_, _, target, mut confirmation) = shapes();
+    let grant = sc.expect_clone(target.clone()).await;
+    confirmation.request_id = grant.request_id.clone();
+    confirmation.failed_to_clone = true;
+    confirmation.execution_runtime_ms = Some(154);
+    let epoch = confirmation.last_modified_epoch;
+    // A missing physical outcome cannot publish either the grant or fallback.
+    confirmation.last_modified_epoch = None;
+    assert!(sc.try_confirm(confirmation.clone()).await.is_err());
+    confirmation.last_modified_epoch = epoch;
+    assert!(sc.try_confirm(confirmation.clone()).await.unwrap().success);
+    let retained: (Option<String>, Option<serde_json::Value>, Option<serde_json::Value>, Option<i64>) =
+        sqlx::query_as("SELECT clone_source_table, clone_source_inputs, submit_copy_provenance, execution_runtime_ms FROM executions WHERE org_id='fallback' AND request_id=$1")
+            .bind(&grant.request_id).fetch_one(server.state.store.pool()).await.unwrap();
+    assert_eq!(retained, (None, None, None, Some(154)));
+    let skipped = sc.expect_skip(after_copy(target.clone(), epoch)).await;
+    assert_eq!(skipped.execution_runtime_ms, Some(154));
+    // A duplicate success delivery cannot relabel the fallback as a copy or
+    // replace its measured runtime with the source's cached runtime.
+    confirmation.failed_to_clone = false;
+    confirmation.execution_runtime_ms = Some(9999);
+    assert!(sc.try_confirm(confirmation).await.is_err());
+    assert_eq!(
+        sc.expect_skip(after_copy(target, epoch))
+            .await
+            .execution_runtime_ms,
+        Some(154)
+    );
+}
+
+#[tokio::test]
+async fn a_confirmed_copy_cannot_supply_an_automatic_chain_when_original_is_pending() {
+    let server = support::start_server_databricks_submit_copy().await;
+    let sc = Scenario::connect(&server).await.org("chain");
+    source(&sc).await;
+    let (mut original, _, mut target, mut confirmation) = shapes();
+    confirmation.request_id = sc.expect_clone(target.clone()).await.request_id;
+    assert!(sc.try_confirm(confirmation).await.unwrap().success);
+    // Keep the original out of the candidate set using an actual public
+    // pending write; the only confirmed equivalent left is the copied result.
+    original.sql.push_str(" where id = 1");
+    sc.expect_execute(original).await;
+    target.target_table = Some(
+        target
+            .target_table
+            .unwrap()
+            .replace("ds_20261112a134ef_ref_dbt_test__audit", "third"),
+    );
+    target.default_schema = Some("third".into());
+    sc.expect_execute(target).await;
 }
 
 async fn submit_at(

@@ -988,14 +988,33 @@ pub(crate) fn plan_register(
         }
         RegisterHistory::SourceLogic(logic) => (logic, None),
         RegisterHistory::DatabricksSource(source) => {
-            let eligible = source.as_deref().is_some_and(|source| {
-                source.clone_source_table.is_none()
-                    && source.node_sql_hash.is_some()
-                    && source.execution_type == req.execution_type
+            let same_source = source.as_deref().is_some_and(|source| {
+                source.execution_type == req.execution_type
                     && source.last_modified_epoch == req.clone_source_last_modified_epoch
                     && source.node_unique_id.as_deref()
                         == req.labels.get("dbt_node_unique_id").map(String::as_str)
             });
+            // The captured native reverse-copy attempt reaches a source that
+            // is already a copy, at limit1. Preserve the refusal and report its
+            // measured cause; larger limits still gain no chain permission.
+            if same_source
+                && req.clone_chain_depth_limit == Some(1)
+                && req.clone_source_last_modified_epoch.is_some_and(|e| e > 0)
+                && source.as_deref().is_some_and(|s| {
+                    s.clone_source_table.is_some()
+                        && s.node_unique_id
+                            .as_deref()
+                            .is_some_and(|uid| !uid.is_empty())
+                })
+            {
+                return Err(RegisterRefusal::Reject(
+                    RegisterRejection::ChainLimitExceeded,
+                ));
+            }
+            let eligible = same_source
+                && source.as_deref().is_some_and(|source| {
+                    source.clone_source_table.is_none() && source.node_sql_hash.is_some()
+                });
             if !eligible {
                 return Err(RegisterRefusal::Reject(
                     RegisterRejection::ForcedNotEligible,
@@ -1167,6 +1186,76 @@ mod tests {
                 _ => unreachable!(),
             }
             assert!(!direct_refusal_scope(&req, &evidence), "{flag}");
+        }
+    }
+
+    #[test]
+    fn direct_chain_diagnostic_requires_known_current_identity() {
+        for case in [
+            "measured",
+            "unknown_epoch",
+            "zero_epoch",
+            "missing_uid",
+            "empty_uid",
+            "other_uid",
+            "other_type",
+            "larger_limit",
+        ] {
+            let mut source = ExecutionRow {
+                execution_type: 3,
+                node_unique_id: Some("model.project.out".into()),
+                last_modified_epoch: Some(30),
+                clone_source_table: Some("cdo.prod.out".into()),
+                ..seed_load()
+            };
+            let mut request = qc::CloneRequest {
+                dialect: "databricks".into(),
+                execution_type: 3,
+                clone_source_last_modified_epoch: Some(30),
+                clone_chain_depth_limit: Some(1),
+                labels: [("dbt_node_unique_id".into(), "model.project.out".into())].into(),
+                ..Default::default()
+            };
+            match case {
+                "unknown_epoch" => {
+                    source.last_modified_epoch = None;
+                    request.clone_source_last_modified_epoch = None;
+                }
+                "zero_epoch" => {
+                    source.last_modified_epoch = Some(0);
+                    request.clone_source_last_modified_epoch = Some(0);
+                }
+                "missing_uid" => {
+                    source.node_unique_id = None;
+                    request.labels.clear();
+                }
+                "empty_uid" => {
+                    source.node_unique_id = Some("".into());
+                    request
+                        .labels
+                        .insert("dbt_node_unique_id".into(), "".into());
+                }
+                "other_uid" => {
+                    request
+                        .labels
+                        .insert("dbt_node_unique_id".into(), "model.other.out".into());
+                }
+                "other_type" => request.execution_type = 7,
+                "larger_limit" => request.clone_chain_depth_limit = Some(2),
+                _ => {}
+            }
+            assert_eq!(
+                plan_register(
+                    &request,
+                    RegisterHistory::DatabricksSource(Some(Box::new(source)))
+                ),
+                Err(RegisterRefusal::Reject(if case == "measured" {
+                    RegisterRejection::ChainLimitExceeded
+                } else {
+                    RegisterRejection::ForcedNotEligible
+                })),
+                "{case}"
+            );
         }
     }
 
