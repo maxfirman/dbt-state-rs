@@ -403,3 +403,25 @@ normalization. A separately cleared fresh Rust counterpart passes all13 cells an
 clocks. See the [dated bounded evidence](../docs/reports/databricks-delete-insert-2026-11-15.md).
 This hosted fixture and native counterpart do not complete #149 or its
 #138/#140 dependencies.
+
+### Databricks bounded microbatch hosted history (#150, 2026-11-15)
+
+`databricks_microbatch_hosted_history.jsonl` retains the entire certified
+70-RPC pinned 2.0.11 hosted campaign byte for byte (SHA-256
+`cdc76f6a3a47188bcb3026885ca14040a14ca53de474a0a75ad6a37ca583e6a0`).
+It contains ten ordinary MICRO6 submits (five BUILD/Confirm and five fresh
+SKIPs), ten complete Explain responses, ten speculative submits and all
+validation/telemetry/status envelopes. Source update and an independent
+Target insertion advance both known epochs; hosted retains the generic
+rebuild description while the complete freshness tree reports the stale source.
+The public gRPC regression `databricks_150_description.rs` pins that exact
+Submit/Confirm/Submit/Explain chain and conservative adjacent evidence guards.
+
+Strict replay of all129 prior corpora plus this entire trace passes with60 new
+assertions and zero new gaps, unknown baselines or partial-history allowances.
+The [dated description correction report](../docs/reports/databricks-microbatch-description-2026-11-15.md)
+records diagnosis, byteexact admission and uniform current-source gates.
+Admission certifies this bounded hosted history. The fresh Rust physical
+counterpart remains pending; this fixture does not complete whole #150 or its
+#138/#140 dependencies, nor independently characterize Target-only external
+modification policy.

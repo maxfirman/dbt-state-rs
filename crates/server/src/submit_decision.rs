@@ -546,6 +546,49 @@ fn decide<'s>(
         if decision::reusable(&ctx, rejected).is_some() {
             record = record.with_absent_target_match();
         }
+        // Hosted #150: with both a modified Target and an independently
+        // advanced source, Databricks MICRO reports the generic rebuild text.
+        // Only decorate the description: qualification, freshness, reason and
+        // Explain's anchor remain unchanged. `rejected` already passed strict
+        // identity and reuse qualification before own-target rejection; copies
+        // are outside this captured ordinary-build cell.
+        if Warehouse::from_dialect(&evidence.dialect)
+            .modified_target_uses_upstream_description(evidence.execution_type)
+            && rejected.clone_source_table.is_none()
+            && evidence.node_sql_hash.is_some()
+            && rejected.node_sql_hash == evidence.node_sql_hash
+            && record.reason
+                == decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::OwnTargetModified,
+                )
+            && ctx.tolerance_ms == 0
+            && ctx.stale_upstream_policy == decision::StaleUpstreamPolicy::Any
+            && rejected.last_modified_epoch.is_some_and(|recorded| {
+                recorded > 0
+                    && evidence.input_tables.iter().any(|input| {
+                        Some(input.name.as_str()) == ctx.target_table
+                            && input
+                                .last_modified_epoch
+                                .is_some_and(|current| current > recorded)
+                    })
+            })
+        {
+            let upstreams = decision::upstream_freshness(&ctx, rejected).upstreams;
+            if upstreams.iter().all(|input| {
+                !input.unprovable
+                    && !input.producer_changed
+                    && input.anchor_epoch > 0
+                    && input.current_epoch.is_some_and(|current| current > 0)
+            }) && upstreams.iter().any(|input| {
+                input.drifted
+                    && input.anchor_epoch > 0
+                    && input
+                        .current_epoch
+                        .is_some_and(|current| current > input.anchor_epoch)
+            }) {
+                record.description = decision::DESC_EXECUTE.into();
+            }
+        }
     }
     (record, candidate)
 }
