@@ -1004,6 +1004,14 @@ impl Warehouse {
         }
     }
 
+    /// Bounded affirmative non-read proof for the Databricks audit-output slice.
+    pub(crate) fn unread_test_audit(self, req: &crate::query_cache::SqlExecution) -> Option<&str> {
+        match self {
+            Self::Databricks => databricks::unread_test_audit(req),
+            _ => None,
+        }
+    }
+
     /// The identifier of the reported relation `name` when it is a relation
     /// in `database`.`schema`, each part as dbt spells it in the request, as
     /// the warehouse resolves it (an unquoted identifier folded, a quoted one

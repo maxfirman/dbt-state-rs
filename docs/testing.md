@@ -375,3 +375,13 @@ The real-client test is ignored and requires an exact separate grant and fresh
 owned pair. Its native wrapper retains actual audit clocks before State cleanup;
 whole supplemental replay supplies that sidecar. See the
 [dated bounded report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md).
+
+For #144's genuine-source table/view audits, run
+`python3 experiments/databricks_audit_upstream_test.py`,
+`cargo test -p dbt-state-harness --test databricks_audit_upstream` and the fast
+`conformance::databricks_audit_upstream_exact_public_history` test. The ordinary
+corpus includes its complete hosted81 history. The ignored native test needs
+fresh exact owned aliases and an observed contract; retain its actual clocks,
+then use `databricks_audit_native_exact_public_history` with
+`DBT_STATE_EXTRA_REPLAY_CAPTURE` and `DBT_STATE_EXTRA_REPLAY_CLOCKS` for exact
+whole-native replay. [Scope, ownership and evidence](databricks-audit-tests.md).

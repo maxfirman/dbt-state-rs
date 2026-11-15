@@ -8,7 +8,7 @@ maintainer's 2026-11-15 decision to accept documented conservative differences.
 The known #138 cross-full-UID true-template difference remains: hosted can reuse
 another UID's result while Rust returns UNDECIDED/BUILD and preserves its full-UID
 isolation floor. This is an accepted conservative difference, not exact hosted
-parity or a full Databricks support claim. Audit objects are separately #144.
+parity or a full Databricks support claim. [Audit objects](databricks-audit-tests.md) have separate bounded #144 evidence.
 
 Existing complete public histories cover [source-less pass/fail](../golden/fixtures/databricks_cached_test_results.jsonl),
 [configuration/threshold changes](../golden/fixtures/databricks_cached_test_thresholds.jsonl)

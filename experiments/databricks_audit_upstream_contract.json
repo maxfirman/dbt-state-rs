@@ -1,0 +1,62 @@
+{
+  "table_pass_first": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "view_pass_first": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "table_pass_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  },
+  "view_pass_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  },
+  "table_data_fail": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "ready_to_execute"
+  },
+  "view_data_fail": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "ready_to_execute"
+  },
+  "table_fail_repeat": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "skip_execution"
+  },
+  "view_fail_repeat": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "skip_execution"
+  },
+  "table_data_recover": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "view_data_recover": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "table_recover_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  },
+  "view_recover_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  }
+}

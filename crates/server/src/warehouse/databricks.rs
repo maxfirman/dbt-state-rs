@@ -185,6 +185,72 @@ pub(super) fn physical_name(raw: &str) -> Option<String> {
     Some(rendered(&names?))
 }
 
+/// #144's direct-read proof is separate from SQL identity. A stored-failure
+/// output is the sole reported relation in the test schema other than the
+/// positively resolved input. Unsupported syntax retains every reported input.
+pub(super) fn unread_test_audit(req: &crate::query_cache::SqlExecution) -> Option<&str> {
+    use sqlparser::ast::{BinaryOperator, Value, Visit, Visitor};
+    use std::ops::ControlFlow;
+
+    struct PurePredicate;
+    impl Visitor for PurePredicate {
+        type Break = ();
+        fn pre_visit_expr(&mut self, expr: &Expr) -> ControlFlow<()> {
+            let supported = match expr {
+                Expr::Identifier(_) | Expr::Nested(_) => true,
+                Expr::Value(value) => matches!(value.value, Value::Number(_, _) | Value::Null),
+                Expr::BinaryOp { op, .. } => matches!(
+                    op,
+                    BinaryOperator::Eq
+                        | BinaryOperator::NotEq
+                        | BinaryOperator::Lt
+                        | BinaryOperator::LtEq
+                        | BinaryOperator::Gt
+                        | BinaryOperator::GtEq
+                        | BinaryOperator::And
+                        | BinaryOperator::Or
+                ),
+                _ => false,
+            };
+            if supported {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }
+    }
+    if req.tables.len() != 2 || !req.query_dependencies.is_empty() {
+        return None;
+    }
+    let schema = req.default_schema.as_deref()?;
+    let mut statements = Parser::parse_sql(&DatabricksDialect {}, &req.sql).ok()?;
+    let [Statement::Query(query)] = statements.as_mut_slice() else {
+        return None;
+    };
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return None;
+    };
+    let predicate = select.selection.take()?;
+    if predicate.visit(&mut PurePredicate).is_break() {
+        return None;
+    }
+    // The unchanged identity resolver proves the entire remaining direct SELECT,
+    // including rejection of CTEs, joins, subqueries, UDFs and table functions.
+    let input = resolved_sql(&statements[0].to_string(), &req.default_catalog, schema)?.input;
+    let catalog = component(&req.default_catalog)?;
+    let schema = component(schema)?;
+    let prefix = format!("`{catalog}`.`{schema}`.");
+    let canonical: Vec<_> = req
+        .tables
+        .iter()
+        .map(|t| physical_name(&t.name))
+        .collect::<Option<_>>()?;
+    let source = canonical.iter().position(|name| *name == input)?;
+    let audit = 1 - source;
+    (canonical[audit] != input && canonical[audit].starts_with(&prefix))
+        .then_some(req.tables[audit].name.as_str())
+}
+
 fn byte_offset(sql: &str, at: Location) -> Option<usize> {
     let mut line = 1;
     let mut column = 1;
