@@ -1,0 +1,32 @@
+{
+  "pass_first": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "pass_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  },
+  "data_fail": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "ready_to_execute"
+  },
+  "fail_repeat": {
+    "raw_returncode": 1,
+    "status": "fail",
+    "decision": "skip_execution"
+  },
+  "data_recover": {
+    "raw_returncode": 0,
+    "status": "pass",
+    "decision": "ready_to_execute"
+  },
+  "recover_repeat": {
+    "raw_returncode": 0,
+    "status": "reused",
+    "decision": "skip_execution"
+  }
+}
