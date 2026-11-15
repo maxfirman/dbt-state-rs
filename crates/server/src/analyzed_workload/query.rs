@@ -16,6 +16,13 @@ pub(crate) struct CopyProof {
     pub bindings: Vec<String>,
     pub effects: String,
 }
+impl CopyProof {
+    /// Origin domains share one framing of the same checked logical identity.
+    pub(crate) fn for_origin(&self, domain: &str) -> String {
+        use sha2::{Digest, Sha256};
+        hex::encode(Sha256::digest(format!("{domain}:{}", self.identity)))
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Scalar {
     Unknown,

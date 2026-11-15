@@ -40,9 +40,9 @@ pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
 }
 
 fn complete_inputs(inputs: &[InputTable]) -> bool {
-    inputs
-        .iter()
-        .all(|t| t.last_modified_epoch.is_some() && !matches!(t.producer, Producer::Unrecorded))
+    inputs.iter().all(|t| {
+        t.last_modified_epoch.is_some_and(|e| e > 0) && !matches!(t.producer, Producer::Unrecorded)
+    })
 }
 
 /// A source frozen at planning, never reconstructed from the adopter's reads.
@@ -82,7 +82,18 @@ pub(crate) fn freeze_direct(
 ) -> Option<DirectRegistration> {
     let mut provenance = source.direct_copy_provenance.clone()?;
     let snapshot = SourceSnapshot::new(source, &req.dialect, &req.clone_source_table);
-    if provenance.version != 1 || !complete_inputs(&snapshot.inputs) {
+    if provenance.version != 2
+        || source
+            .analyzed_copy_proof
+            .as_ref()
+            .is_none_or(|p| p.version != 2)
+        || source
+            .analyzed_copy_proof
+            .as_ref()
+            .is_none_or(|p| provenance.identity != p.for_origin("databricks-direct-copy-v2"))
+        || snapshot.epoch.is_none_or(|e| e <= 0)
+        || !complete_inputs(&snapshot.inputs)
+    {
         return None;
     }
     provenance.source_execution_id = Some(snapshot.id);
@@ -90,6 +101,10 @@ pub(crate) fn freeze_direct(
     provenance.source_physical_key = Some(snapshot.key);
     Some(DirectRegistration {
         provenance,
+        proof: source
+            .analyzed_copy_proof
+            .clone()
+            .expect("qualified v2 proof"),
         inputs: snapshot.inputs,
         runtime_ms: snapshot.runtime_ms,
     })
@@ -158,7 +173,8 @@ fn matching_inputs(current: &[&InputTable], recorded: &[InputTable]) -> bool {
 }
 
 /// An invalid publication cannot regain reuse via its strict SQL hash or the
-/// generic namespace-adoption path. Legacy direct-copy rows use v1 separately.
+/// generic namespace-adoption path. Direct registrations are checked by their
+/// distinct origin proof in `direct_copy_matches`.
 pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
     if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks || ordinary(row) {
         return true;
@@ -190,16 +206,39 @@ pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool
 
 /// Immutable direct-copy evidence, distinct from automatic namespace identity.
 /// Unknown versions and legacy NULL cannot authorize adoption. Source context
-/// is retained even though this first subset proves its only read fully qualified.
+/// is retained for the exact rendered refusal diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DirectCopyProvenance {
     pub version: u8,
+    #[serde(default)]
+    pub published: bool,
     pub identity: String,
     pub default_catalog: String,
     pub default_schema: Option<String>,
     pub source_execution_id: Option<i64>,
     pub source_epoch: Option<i64>,
     pub source_physical_key: Option<String>,
+}
+
+/// Frame the shared, once-computed query proof for the distinct direct origin.
+pub(crate) fn direct_provenance(
+    req: &qc::SqlExecution,
+    proof: Option<&crate::analyzed_workload::query::CopyProof>,
+) -> Option<DirectCopyProvenance> {
+    if !matches!(req.execution_type, 3 | 7) {
+        return None;
+    }
+    let proof = proof.filter(|p| p.version == 2)?;
+    Some(DirectCopyProvenance {
+        version: 2,
+        published: false,
+        identity: proof.for_origin("databricks-direct-copy-v2"),
+        default_catalog: req.default_catalog.clone(),
+        default_schema: req.default_schema.clone(),
+        source_execution_id: None,
+        source_epoch: None,
+        source_physical_key: None,
+    })
 }
 
 pub(crate) fn direct_copy_matches(
@@ -212,11 +251,23 @@ pub(crate) fn direct_copy_matches(
     ) else {
         return false;
     };
-    recorded.version == 1
-        && current.version == 1
-        && recorded.source_execution_id.is_some()
-        && recorded.source_epoch.is_some()
-        && recorded.source_physical_key.is_some()
+    recorded.version == 2
+        && current.version == 2
+        && recorded.published
+        && row.submit_copy_provenance.is_none()
+        && row.node_sql_hash.is_none()
+        && row
+            .analyzed_copy_proof
+            .as_ref()
+            .is_some_and(|p| p.version == 2)
+        && row.analyzed_copy_proof == evidence.analyzed_copy_proof
+        && recorded.source_execution_id.is_some_and(|id| id > 0)
+        && recorded.source_epoch.is_some_and(|e| e > 0)
+        && recorded.source_physical_key.as_ref().is_some_and(|key| {
+            row.clone_source_table
+                .as_ref()
+                .is_some_and(|name| physical(name) == *key)
+        })
         && recorded.identity == current.identity
         && row.node_unique_id.is_some()
         && row.node_unique_id == evidence.node_unique_id
@@ -254,6 +305,7 @@ impl ExecutionEvidence {
         evidence.clone_source_table = Some(req.clone_source_table.clone());
         if let Some(direct) = direct {
             evidence.direct_copy_provenance = Some(direct.provenance);
+            evidence.analyzed_copy_proof = Some(direct.proof);
             evidence.input_tables = direct.inputs;
             evidence.inherited_runtime_ms = direct.runtime_ms;
         }
@@ -523,9 +575,7 @@ pub(crate) fn qualify_registration(
         ));
     }
     let eligible = same_source
-        && source.is_some_and(|source| {
-            source.clone_source_table.is_none() && source.node_sql_hash.is_some()
-        });
+        && source.is_some_and(|source| ordinary(source) && source.node_sql_hash.is_some());
     if !eligible {
         return Err(RegisterRefusal::Reject(
             RegisterRejection::ForcedNotEligible,

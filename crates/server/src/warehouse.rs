@@ -993,9 +993,14 @@ impl Warehouse {
                 build
                     .submit_copy_provenance
                     .as_ref()
-                    .filter(|p| p.version == 1 && p.published && p.source_epoch > 0)
+                    .filter(|p| p.version == 2 && p.published && p.source_epoch > 0)
                     .map(|p| p.source_epoch)
             }
+            Self::Databricks if build.clone_source_table.is_some() => build
+                .direct_copy_provenance
+                .as_ref()
+                .filter(|p| p.version == 2 && p.published)
+                .and_then(|p| p.source_epoch.filter(|e| *e > 0)),
             _ => build.last_modified_epoch,
         }
     }

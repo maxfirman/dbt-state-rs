@@ -35,11 +35,7 @@ pub(crate) fn identity_from_proof(
     proof.map(auto_identity)
 }
 pub(crate) fn auto_identity(p: &crate::analyzed_workload::query::CopyProof) -> String {
-    use sha2::{Digest, Sha256};
-    hex::encode(Sha256::digest(format!(
-        "databricks-submit-copy-v2:{}",
-        p.identity
-    )))
+    p.for_origin("databricks-submit-copy-v2")
 }
 
 pub(crate) fn request_admits(

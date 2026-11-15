@@ -43,7 +43,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
-| `analyzed_workload/` | Pure shared Submit/Record analysis: strict/template/copy identities, genuine inputs, shared AST traversal and checked dependency bindings. Warehouse adapters retain dialect policy and legacy v1 domains. |
+| `analyzed_workload/` | Pure shared Submit/Record analysis: strict/template/copy identities, genuine inputs, shared AST traversal and checked dependency bindings. Warehouse adapters retain dialect policy and characterized strict domains. |
 | `copy_lifecycle.rs` | Candidate qualification, frozen copy sources/inputs/producers and subsequent adoption for submit copies and RegisterClone. Distinct legacy origin proofs preserve their characterized eligibility and age rules. |
 | `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
@@ -61,7 +61,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 This is the staged implementation contract. The behavior-preserving #183
 extraction implements the shared placement and lifecycle below; the broader
-Databricks grammar and v2 proofs remain #184/#185 work. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
+Databricks grammar and v2 proofs are implemented by #184/#185. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
 records why it replaces the existing paths. #183 changes placement only;
 #184/#185 introduce new Databricks copy semantics. Both experimental Databricks
 switches remain default off throughout.

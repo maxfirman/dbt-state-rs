@@ -476,7 +476,9 @@ pub(crate) enum RegisterRefusal {
 pub(crate) use crate::copy_lifecycle::DirectCopyProvenance;
 
 #[cfg(test)]
-use crate::analyzed_workload::databricks_v1::direct_copy_provenance;
+fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCopyProvenance> {
+    crate::analyzed_workload::analyze(req).direct_provenance
+}
 
 /// #152's observed is_defer_to_profile + chain-zero wire scope. This proves
 /// only a refused-optimization display, never a candidate or copy grant.
@@ -500,7 +502,7 @@ pub(crate) fn direct_refusal_scope(
         && evidence
             .direct_copy_provenance
             .as_ref()
-            .is_some_and(|p| p.version == 1)
+            .is_some_and(|p| p.version == 2)
         && req.semantic_extras.get("unique_key").map(String::as_str) == Some("\"id\"")
         && match req.execution_type {
             3 => {
@@ -558,7 +560,7 @@ pub(crate) fn direct_refusal_matches(
     let Some(context) = row
         .direct_copy_provenance
         .as_ref()
-        .filter(|p| p.version == 1)
+        .filter(|p| p.version == 2)
     else {
         return false;
     };
@@ -613,6 +615,7 @@ pub(crate) fn direct_refusal_matches(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectRegistration {
     pub provenance: DirectCopyProvenance,
+    pub proof: crate::analyzed_workload::query::CopyProof,
     pub inputs: Vec<crate::store::InputTable>,
     pub runtime_ms: Option<i64>,
 }
@@ -809,7 +812,9 @@ mod tests {
             .into(),
             dbt_node_state: Some(qc::DbtNodeState {
                 node_unique_id: "model.project.output".into(),
-                node_configs_hash: Some("current-config".into()),
+                node_configs_hash: Some("a".repeat(32)),
+                node_body_hash: Some("b".repeat(32)),
+                resource_type: "model".into(),
                 ..Default::default()
             }),
             tables: vec![qc::TableModifiedInfo {
@@ -823,7 +828,7 @@ mod tests {
         let mut dev = req.clone();
         dev.default_schema = Some("dev".into());
         dev.target_table = Some("`cdo_demo_db`.`dev`.`output`".into());
-        dev.dbt_node_state.as_mut().unwrap().node_configs_hash = Some("previous-config".into());
+        dev.dbt_node_state.as_mut().unwrap().node_configs_hash = Some("c".repeat(32));
         let dev_evidence = ExecutionEvidence::sql_submit("o", &dev);
         let row = ExecutionRow {
             org_id: "o".into(),
@@ -862,7 +867,7 @@ mod tests {
                 "producer" => row.input_tables[0].producer = crate::store::Producer::Unrecorded,
                 "other-input" => row.input_tables[0].name = "cdo_demo_db.other.inputs".into(),
                 "sql" => row.node_sql_hash = Some("other-rendered-query".into()),
-                "version" => row.direct_copy_provenance.as_mut().unwrap().version = 2,
+                "version" => row.direct_copy_provenance.as_mut().unwrap().version = 255,
                 "type" => row.execution_type = 7,
                 "pending" => row.status = "pending".into(),
                 "own-target" => row.target_table = evidence.target_table.clone(),
@@ -971,8 +976,15 @@ mod tests {
     fn direct_copy_from_rebuilt_source_requires_only_its_genuine_input_evidence() {
         let source_name = "`cdo_demo_db`.`prod`.`output`";
         let provenance = DirectCopyProvenance {
-            version: 1,
-            identity: "existing-bound-identity".into(),
+            version: 2,
+            published: false,
+            identity: crate::analyzed_workload::query::CopyProof {
+                version: 2,
+                identity: "core".into(),
+                bindings: vec![],
+                effects: "checked".into(),
+            }
+            .for_origin("databricks-direct-copy-v2"),
             default_catalog: "cdo_demo_db".into(),
             default_schema: Some("prod".into()),
             source_execution_id: None,
@@ -987,6 +999,12 @@ mod tests {
             node_unique_id: Some("model.project.output".into()),
             node_sql_hash: Some("rendered".into()),
             direct_copy_provenance: Some(provenance),
+            analyzed_copy_proof: Some(crate::analyzed_workload::query::CopyProof {
+                version: 2,
+                identity: "core".into(),
+                bindings: vec![],
+                effects: "checked".into(),
+            }),
             last_modified_epoch: Some(30),
             input_tables: vec![
                 crate::store::InputTable {
@@ -1045,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_copy_accepts_native_bare_fully_qualified_input_only() {
+    fn direct_copy_uses_shared_proof_and_exact_physical_inputs() {
         let req = qc::SqlExecution {
             dialect: "databricks".into(),
             execution_type: 3,
@@ -1059,6 +1077,9 @@ mod tests {
             }],
             dbt_node_state: Some(qc::DbtNodeState {
                 node_unique_id: "model.project.output".into(),
+                resource_type: "model".into(),
+                node_body_hash: Some("a".repeat(32)),
+                node_configs_hash: Some("b".repeat(32)),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1072,15 +1093,12 @@ mod tests {
             source.identity
         );
         for sql in [
-            "select * from prod.inputs",
             "select * from inputs",
             "select * from other.prod.inputs",
-            "select * from cdo_demo_db.prod.inputs as alias",
             "select * from cdo_demo_db.prod.inputs where id=1",
             "select * from cdo_demo_db.prod.inputs join cdo_demo_db.prod.other using(id)",
             "select * from cdo_demo_db.prod.inputs; select 1",
             "select * from cdo_demo_db.prod.\"inputs\"",
-            "select * from cdo_demo_db.`prod`.inputs",
             "select * from `cdo_demo_db.prod`.`inputs`",
             "select * from cdo_demo_db.prod.inputs()",
             "select * from cdo_demo_db.prod.inputs-1",

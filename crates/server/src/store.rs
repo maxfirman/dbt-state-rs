@@ -639,6 +639,10 @@ impl Store {
                     WHEN $7 THEN NULL
                     WHEN clone_source_table IS NOT NULL AND direct_copy_provenance IS NOT NULL
                         AND NOT publication.direct_current THEN NULL
+                    WHEN clone_source_table IS NOT NULL AND direct_copy_provenance->>'version' = '2'
+                        THEN jsonb_set(direct_copy_provenance, '{published}',
+                            to_jsonb(publication.direct_current AND $3::bigint >=
+                                (direct_copy_provenance->>'source_epoch')::bigint))
                     ELSE direct_copy_provenance END,
                 submit_copy_provenance = CASE
                     WHEN $7 THEN NULL

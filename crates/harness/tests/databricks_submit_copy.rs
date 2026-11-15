@@ -404,6 +404,14 @@ async fn recent_copy_never_renews_old_source_lag_tolerance() {
         Some(Response::SkipExecution(_))
     ));
     repeat.tables[0].last_modified_epoch = Some(11_000);
+    repeat.freshness_tolerance_seconds = 120;
+    assert!(
+        matches!(
+            submit_at(&server, repeat.clone(), 110_000).await.response,
+            Some(Response::SkipExecution(_))
+        ),
+        "source age90s is within120s tolerance; unknown age must not hide the anchor"
+    );
     repeat.freshness_tolerance_seconds = 30;
     assert!(
         matches!(

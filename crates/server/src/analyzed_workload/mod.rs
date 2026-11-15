@@ -3,7 +3,6 @@
 //! input binding and identity framing live here. Opaque copy analysis retains
 //! the strict identity. No State history or I/O enters this module.
 pub(crate) mod binding;
-pub(crate) mod databricks_v1;
 pub mod identity;
 pub(crate) mod inputs;
 pub(crate) mod query;
@@ -30,6 +29,7 @@ pub(crate) fn analyze(req: &qc::SqlExecution) -> AnalyzedWorkload {
     } else {
         identity::copy_logic_hash(req)
     };
+    let direct_provenance = crate::copy_lifecycle::direct_provenance(req, copy_proof.as_ref());
     AnalyzedWorkload {
         copy_proof,
         rendered_hash: identity::sql_logic_hash(req, None),
@@ -37,7 +37,7 @@ pub(crate) fn analyze(req: &qc::SqlExecution) -> AnalyzedWorkload {
             .template_body(true, req.dbt_node_state.as_ref())
             .map(|body| identity::sql_logic_hash(req, Some(body))),
         copy_hash,
-        direct_provenance: databricks_v1::direct_copy_provenance(req),
+        direct_provenance,
         inputs: inputs::sql_inputs(req),
     }
 }

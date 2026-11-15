@@ -13,14 +13,31 @@ This is bounded physical acceptance, not the full ADR 0009 conformance claim.
 Ordinary `dbt run` and `dbt snapshot` use a development profile with
 `defer_to_target: prod`. This is State `RegisterClone`, not `dbt clone` or a
 manually substituted transport. Both source and development runs retain the
-same full UID and exact physical input. The supported SQL is a single
-three-part `SELECT * FROM` input, either entirely backtick-qualified or simple
-unquoted identifiers. Mixed quoting, templates, query dependencies and general
-SQL do not gain adoption eligibility.
+same full UID and exact physical inputs. Direct adoption now consumes the same
+[checked structural query proof](architecture.md#shared-analyzed-workload-contract-181186)
+as automatic FULL copying: projections, null filters, nonrecursive CTEs,
+ordered joins, checked aggregates and complete query-dependency bindings.
+Both paths retain distinct versioned origin identities and entry protocols.
+Templates, uncertain effects and incomplete input/producers remain ineligible.
+The broader forms currently have offline public-protocol coverage; focused
+independent physical acceptance remains #186, not a new native claim here.
 
 The snapshot uses `strategy='check'`, `check_cols=['v']`, `updated_at='ts'`,
 `hard_deletes='ignore'` and a unique non-NULL scalar `id`. MERGE uses the default
-lookback and schema policy with `unique_key='id'`. Both use zero Lag tolerance.
+lookback and schema policy with `unique_key='id'`. Both use zero Lag tolerance in the measured native flow. Exact node-kind,
+semantic extras and body/config/macro/contract signatures bind adoption; opaque
+config hashes establish equality, not the meaning of hidden snapshot options.
+No new incremental strategy or snapshot mode is established by this change.
+
+Direct-v2 registration freezes the persisted shared-v2 proof, source ID/key/epoch,
+genuine input epochs/producers and inherited runtime. Confirm publishes it only
+while that exact physical source remains current with no pending source write;
+a valid completion epoch cannot precede its source. Reuse retains the original
+source build-age anchor for Lag tolerance. DDL permission remains weaker: a
+qualified legacy source can grant DDL without granting subsequent adoption.
+Legacy NULL/v1/unknown proof and pending-v1 copies confirmed after upgrade cold-miss
+v2 adoption; ordinary legacy strict reuse and v1 confirmation meaning survive.
+Failed cloning discards the origin, and duplicate confirmation is immutable.
 
 | Cell, for each node kind | Native result |
 |---|---|
@@ -85,12 +102,13 @@ unobservable: confirmation and adoption contain no new source observation or
 version. This evidence assumes quiescent copy sources. State-recorded pending
 or newer source writes remain barriers; this does not solve physical concurrency.
 
-Adoption still binds provenance version 1, exact full UID, client body/config/
+Adoption binds provenance version 2, exact full UID, client body/config/
 macro/contract evidence, actual source context, latest scoped source ID/epoch,
 and frozen genuine input epochs/producers. A rebuilt source's observed own
 target is excluded before validating and freezing genuine upstreams; unknown
-or Unrecorded genuine input evidence still refuses adoption. No persisted hash
-version, historical backfill or automatic namespace identity changes.
+or Unrecorded genuine input evidence still refuses adoption. New copy semantics
+use versioned origin/core proofs without historical backfill; ordinary strict
+identities are unchanged.
 
 Copied FULL/seed replacement still has the independently observed Unity Catalog
 replacement failure even with State disabled. Snapshot `new_record` retains its

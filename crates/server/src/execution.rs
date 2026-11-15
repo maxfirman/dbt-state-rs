@@ -569,10 +569,34 @@ mod tests {
             } else {
                 assert_eq!(serde_json::json!(analysis.copy_hash), case["copy"]);
             }
-            assert_eq!(
-                serde_json::json!(analysis.direct_provenance),
-                case["direct"]
-            );
+            if request.dialect == "databricks"
+                && (!case["direct"].is_null() || request.sql == "select * from cdo.`raw`.input")
+            {
+                // Reviewed #185 origin transition; preserve every other frozen
+                // field exactly, and keep the actual old-server fixture intact.
+                let mut expected = if case["direct"].is_null() {
+                    serde_json::json!({"default_catalog":"cdo", "default_schema":"dev",
+                        "source_execution_id":null, "source_epoch":null, "source_physical_key":null})
+                } else {
+                    case["direct"].clone()
+                };
+                expected["version"] = serde_json::json!(2);
+                expected["published"] = serde_json::json!(false);
+                expected["identity"] =
+                    serde_json::json!(if request.sql == "select * from cdo.`raw`.input" {
+                        "f935f2593c38aec84a5b6810173b7bbcb219b326168cf87b6f636188ecae4921"
+                    } else if request.sql.contains('`') {
+                        "eb0432b7927899fffb2723af5146e90694a20c5edb3ef55cdad7f14aa4a5db9e"
+                    } else {
+                        "c8faf1f6423f33e3c677901614065d8a299404f64358d1f50104dfc5452c4593"
+                    });
+                assert_eq!(serde_json::json!(analysis.direct_provenance), expected);
+            } else {
+                assert_eq!(
+                    serde_json::json!(analysis.direct_provenance),
+                    case["direct"]
+                );
+            }
         }
     }
 
