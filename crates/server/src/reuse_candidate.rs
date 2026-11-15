@@ -420,7 +420,10 @@ pub(crate) fn older_seed_matches(
 /// The single rule for both the decision (here) and its explanation
 /// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
 pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if is_copy_registration(anchor) && anchor.input_tables.is_empty() {
+    if is_copy_registration(anchor)
+        && anchor.direct_copy_provenance.is_none()
+        && anchor.input_tables.is_empty()
+    {
         let built = anchor.last_modified_epoch;
         anchor.input_tables = current
             .iter()
@@ -512,6 +515,12 @@ fn copy_logic_matches(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
+    if row.dialect == req.dialect
+        && row.clone_source_table.is_some()
+        && crate::result_copy::direct_copy_matches(evidence, row)
+    {
+        return true;
+    }
     row.dialect == req.dialect
         && row.clone_source_table.is_some()
         && evidence.node_namespace_logic_hash.is_some()

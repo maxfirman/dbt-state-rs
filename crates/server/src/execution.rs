@@ -178,6 +178,7 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
+    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
     /// The unrendered-template logic hash, set only in `compare_unrendered_code`
     /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
@@ -280,6 +281,10 @@ impl ExecutionEvidence {
         Self {
             node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
             node_sql_hash: Some(crate::fingerprint::sql_logic_hash(req, None)),
+            direct_copy_provenance: template
+                .is_none()
+                .then(|| crate::result_copy::direct_copy_provenance(req))
+                .flatten(),
             node_namespace_logic_hash: copy
                 .then(|| crate::fingerprint::copy_logic_hash(req))
                 .flatten(),
@@ -323,6 +328,7 @@ impl ExecutionEvidence {
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
+            direct_copy_provenance: None,
             node_namespace_logic_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),

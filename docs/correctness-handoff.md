@@ -742,3 +742,13 @@ This does not complete #150 or #138/#140. Full-refresh/Record, implicit scheduli
 nondefault settings, schema evolution, concurrency/failure/lifecycle/generated
 breadth and isolated Target-only modification policy remain unaccepted. See the
 [bounded report](reports/databricks-microbatch-2026-11-15.md).
+
+## Databricks direct pre-copy partial (#152, 2026-11-15)
+
+The narrow native MERGE/check-snapshot RegisterClone/adoption path now has
+credential-free public gRPC coverage. Its versioned direct provenance freezes
+source inputs/producers and guards State-recorded source replacement before
+Confirm; it does not grant automatic namespace copy eligibility. Unobserved
+physical source races, broader copy/lifecycle/Explain and fresh independent
+warehouse acceptance remain unresolved. See the
+[bounded implementation report](reports/databricks-direct-precopy-2026-11-15.md).

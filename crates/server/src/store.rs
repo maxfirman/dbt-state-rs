@@ -135,6 +135,7 @@ pub struct ExecutionRow {
     pub node_configs_hash: Option<String>,
     pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
     pub node_namespace_logic_hash: Option<String>,
     /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
     pub node_template_hash: Option<String>,
@@ -188,7 +189,7 @@ impl ExecutionRow {
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, clone_source_inputs, display_submitted_at_ms, \
+        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -249,6 +250,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             node_configs_hash: row.try_get("node_configs_hash")?,
             node_macros_hash: row.try_get("node_macros_hash")?,
             node_sql_hash: row.try_get("node_sql_hash")?,
+            direct_copy_provenance: row
+                .try_get::<Option<serde_json::Value>, _>("direct_copy_provenance")?
+                .and_then(|value| serde_json::from_value(value).ok()),
             node_namespace_logic_hash: row.try_get("node_namespace_logic_hash")?,
             node_template_hash: row.try_get("node_template_hash")?,
             values_hash: row.try_get("values_hash")?,
@@ -475,9 +479,9 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32)
             "#,
         )
         .bind(&e.org_id)
@@ -525,6 +529,7 @@ impl Store {
         .bind(&e.node_target_name)
         .bind(e.display_submitted_at_ms)
         .bind(&e.node_macros_hash)
+        .bind(e.direct_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize direct provenance")))
         .execute(executor)
         .await?;
         Ok(())
@@ -570,6 +575,38 @@ impl Store {
                 execution_results = $6,
                 clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
                 clone_source_inputs = CASE WHEN $7 THEN NULL ELSE clone_source_inputs END,
+                -- A registered Databricks copy must still refer to the same
+                -- current physical source at publication. A raced source write
+                -- invalidates adoption evidence, without inventing a hosted
+                -- source-epoch response field or changing Confirm's shape.
+                direct_copy_provenance = CASE
+                    WHEN $7 THEN NULL
+                    WHEN clone_source_table IS NOT NULL AND direct_copy_provenance IS NOT NULL
+                        AND NOT EXISTS (
+                            SELECT 1 FROM (
+                                SELECT source.id, source.last_modified_epoch
+                                FROM executions source
+                                WHERE source.org_id = executions.org_id
+                                  AND source.warehouse_family = executions.warehouse_family
+                                  AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
+                                  AND to_jsonb(source.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
+                                  AND source.status = 'confirmed'
+                                ORDER BY source.last_modified_epoch DESC NULLS FIRST,
+                                         source.confirmed_at DESC NULLS LAST, source.id DESC
+                                LIMIT 1
+                            ) current_source
+                            WHERE to_jsonb(current_source.id) = executions.direct_copy_provenance->'source_execution_id'
+                              AND to_jsonb(current_source.last_modified_epoch) = executions.direct_copy_provenance->'source_epoch'
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM executions pending
+                                  WHERE pending.org_id = executions.org_id
+                                    AND pending.warehouse_family = executions.warehouse_family
+                                    AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
+                                    AND to_jsonb(pending.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
+                                    AND pending.status = 'pending' AND pending.id > current_source.id
+                              )
+                        ) THEN NULL
+                    ELSE direct_copy_provenance END,
                 node_namespace_logic_hash = CASE
                     WHEN $7 AND node_sql_hash IS NULL THEN NULL
                     ELSE node_namespace_logic_hash END,

@@ -591,6 +591,123 @@ pub(crate) enum RegisterRefusal {
     Unsupported(&'static str),
 }
 
+/// Immutable direct-copy evidence, distinct from automatic namespace identity.
+/// Unknown versions and legacy NULL cannot authorize adoption. Source context
+/// is retained even though this first subset proves its only read fully qualified.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DirectCopyProvenance {
+    pub version: u8,
+    pub identity: String,
+    pub default_catalog: String,
+    pub default_schema: Option<String>,
+    pub source_execution_id: Option<i64>,
+    pub source_epoch: Option<i64>,
+    pub source_physical_key: Option<String>,
+}
+
+/// Context-independent identity only for the observed single fully-qualified
+/// SELECT-star input. No general SQL rewriting or cross-target candidate search.
+pub(crate) fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCopyProvenance> {
+    use sha2::{Digest, Sha256};
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    if Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks
+        || !matches!(req.execution_type, 3 | 7)
+        || !req.query_dependencies.is_empty()
+    {
+        return None;
+    }
+    let tokens = Tokenizer::new(&sqlparser::dialect::DatabricksDialect {}, &req.sql)
+        .tokenize()
+        .ok()?;
+    let tokens: Vec<_> = tokens
+        .into_iter()
+        .filter(|t| !matches!(t, Token::Whitespace(_)))
+        .collect();
+    if tokens.len() != 8
+        || !matches!(&tokens[0], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("select"))
+        || tokens[1] != Token::Mul
+        || !matches!(&tokens[2], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("from"))
+        || tokens[4] != Token::Period
+        || tokens[6] != Token::Period
+        || [3, 5, 7]
+            .iter()
+            .any(|i| !matches!(&tokens[*i], Token::Word(w) if w.quote_style == Some('`')))
+    {
+        return None;
+    }
+    let input = format!("{}.{}.{}", tokens[3], tokens[5], tokens[7]);
+    let physical = |name: &str| Warehouse::physical_scope_key(&req.dialect, name);
+    let own = req.target_table.as_deref().map(physical);
+    let inputs: Vec<_> = req
+        .tables
+        .iter()
+        .filter(|t| Some(physical(&t.name)) != own)
+        .collect();
+    if inputs.len() != 1 || physical(&inputs[0].name) != physical(&input) {
+        return None;
+    }
+    let state = req.dbt_node_state.as_ref()?;
+    if state.node_unique_id.is_empty() {
+        return None;
+    }
+    let mut neutral = req.clone();
+    neutral.default_catalog.clear();
+    neutral.default_schema = None;
+    neutral.target_table = None;
+    let identity = crate::fingerprint::sql_logic_hash(&neutral, None);
+    let framed = serde_json::to_vec(&(
+        "databricks-direct-copy-v1",
+        identity,
+        &state.node_unique_id,
+        &state.node_body_hash,
+        &state.node_configs_hash,
+        &state.node_macros_hash,
+        &state.node_contract_hash,
+        physical(&input),
+    ))
+    .ok()?;
+    Some(DirectCopyProvenance {
+        version: 1,
+        identity: hex::encode(Sha256::digest(framed)),
+        default_catalog: req.default_catalog.clone(),
+        default_schema: req.default_schema.clone(),
+        source_execution_id: None,
+        source_epoch: None,
+        source_physical_key: None,
+    })
+}
+
+pub(crate) fn direct_copy_matches(
+    evidence: &ExecutionEvidence,
+    row: &crate::store::ExecutionRow,
+) -> bool {
+    let (Some(current), Some(recorded)) = (
+        &evidence.direct_copy_provenance,
+        &row.direct_copy_provenance,
+    ) else {
+        return false;
+    };
+    recorded.version == 1
+        && current.version == 1
+        && recorded.source_execution_id.is_some()
+        && recorded.source_epoch.is_some()
+        && recorded.source_physical_key.is_some()
+        && recorded.identity == current.identity
+        && row.node_unique_id.is_some()
+        && row.node_unique_id == evidence.node_unique_id
+        && row.input_tables.iter().all(|t| {
+            t.last_modified_epoch.is_some()
+                && !matches!(t.producer, crate::store::Producer::Unrecorded)
+        })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DirectRegistration {
+    pub provenance: DirectCopyProvenance,
+    pub inputs: Vec<crate::store::InputTable>,
+    pub runtime_ms: Option<i64>,
+}
+
 /// What a client-requested copy needs from history before it can be planned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RegisterLookup<'a> {
@@ -601,6 +718,11 @@ pub(crate) enum RegisterLookup<'a> {
         table_namespace: &'a str,
         last_modified_epoch: i64,
         identity: &'a str,
+    },
+    /// Databricks direct pre-copy requires the current scoped source build.
+    DatabricksSource {
+        source: &'a str,
+        table_namespace: &'a str,
     },
     /// Snowflake: the source's logic identity, inherited by the copy so a
     /// later submit for the target can match it.
@@ -613,18 +735,20 @@ pub(crate) enum RegisterLookup<'a> {
 }
 
 /// The lookup result matching the [`RegisterLookup`] that was requested.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum RegisterHistory {
     /// `None`: no eligible source. `Some(logic)`: eligible, carrying the
     /// source's logic identity (itself optional).
     DuckDbIncrementalSource(Option<Option<String>>),
     SourceLogic(Option<String>),
+    DatabricksSource(Option<Box<crate::store::ExecutionRow>>),
     Nothing,
 }
 
 /// A client-requested copy that will be registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RegisterPlan {
+    pub direct: Option<DirectRegistration>,
     pub clone_sqls: Vec<String>,
     /// The source's logic identity, stamped on the copy's pending row. Without
     /// it a later submit for the target falls back to EXECUTE (safe: no skip
@@ -680,6 +804,24 @@ pub(crate) fn register_lookup(
         }
     }
     register_ddl(req)?;
+    if warehouse == Warehouse::Databricks {
+        return match (
+            crate::execution::non_blank_namespace(req.table_namespace.as_deref()),
+            req.clone_source_last_modified_epoch,
+            req.labels
+                .get("dbt_node_unique_id")
+                .filter(|uid| !uid.is_empty()),
+            req.execution_type,
+        ) {
+            (Some(namespace), Some(_), Some(_), 3 | 7) => Ok(RegisterLookup::DatabricksSource {
+                source: &req.clone_source_table,
+                table_namespace: namespace,
+            }),
+            _ => Err(RegisterRefusal::Reject(
+                RegisterRejection::ForcedNotEligible,
+            )),
+        };
+    }
     if warehouse.supports_namespace_reuse() {
         return Ok(RegisterLookup::SourceLogic {
             source: &req.clone_source_table,
@@ -694,6 +836,7 @@ pub(crate) fn plan_register(
     req: &qc::CloneRequest,
     history: RegisterHistory,
 ) -> Result<RegisterPlan, RegisterRefusal> {
+    let mut direct = None;
     let (inherited_ns_logic, required_source_epoch) = match history {
         RegisterHistory::DuckDbIncrementalSource(None) => {
             return Err(RegisterRefusal::Reject(
@@ -704,9 +847,54 @@ pub(crate) fn plan_register(
             (logic, req.clone_source_last_modified_epoch)
         }
         RegisterHistory::SourceLogic(logic) => (logic, None),
+        RegisterHistory::DatabricksSource(source) => {
+            let eligible = source.as_deref().is_some_and(|source| {
+                source.clone_source_table.is_none()
+                    && source.node_sql_hash.is_some()
+                    && source.execution_type == req.execution_type
+                    && source.last_modified_epoch == req.clone_source_last_modified_epoch
+                    && source.node_unique_id.as_deref()
+                        == req.labels.get("dbt_node_unique_id").map(String::as_str)
+            });
+            if !eligible {
+                return Err(RegisterRefusal::Reject(
+                    RegisterRejection::ForcedNotEligible,
+                ));
+            }
+            if let Some(source) = source {
+                if let Some(mut provenance) = source.direct_copy_provenance {
+                    if provenance.version == 1
+                        && source.input_tables.iter().all(|t| {
+                            t.last_modified_epoch.is_some()
+                                && !matches!(t.producer, crate::store::Producer::Unrecorded)
+                        })
+                    {
+                        provenance.source_execution_id = Some(source.id);
+                        provenance.source_epoch = source.last_modified_epoch;
+                        provenance.source_physical_key = Some(Warehouse::physical_scope_key(
+                            &req.dialect,
+                            &req.clone_source_table,
+                        ));
+                        direct = Some(DirectRegistration {
+                            provenance,
+                            inputs: source
+                                .input_tables
+                                .into_iter()
+                                .filter(|t| t.name != source.target_table)
+                                .collect(),
+                            runtime_ms: source.execution_runtime_ms,
+                        });
+                    }
+                }
+            }
+            // This establishes permission to attempt the warehouse DDL, not
+            // post-copy SQL equivalence or freshness. No automatic copy identity.
+            (None, None)
+        }
         RegisterHistory::Nothing => (None, None),
     };
     Ok(RegisterPlan {
+        direct,
         clone_sqls: register_ddl(req)?,
         inherited_ns_logic,
         required_source_epoch,

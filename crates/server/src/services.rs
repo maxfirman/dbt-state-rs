@@ -714,6 +714,17 @@ impl qc::clone_server::Clone for CloneServiceImpl {
                     .await
                     .map_err(store_status)?,
             ),
+            Ok(RegisterLookup::DatabricksSource {
+                source,
+                table_namespace,
+            }) => RegisterHistory::DatabricksSource(
+                self.0
+                    .store
+                    .current_direct_copy_source(&org_id, source, table_namespace, &req.dialect)
+                    .await
+                    .map_err(store_status)?
+                    .map(Box::new),
+            ),
             Ok(RegisterLookup::SourceLogic {
                 source,
                 table_namespace,
@@ -742,12 +753,17 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
-        let evidence = crate::execution::ExecutionEvidence::copy_registration(
+        let mut evidence = crate::execution::ExecutionEvidence::copy_registration(
             &org_id,
             &req,
             plan.inherited_ns_logic,
             source_build.as_ref(),
         );
+        if let Some(direct) = plan.direct {
+            evidence.direct_copy_provenance = Some(direct.provenance);
+            evidence.input_tables = direct.inputs;
+            evidence.inherited_runtime_ms = direct.runtime_ms;
+        }
         self.0
             .store
             .insert_execution(&evidence.pending(&request_id, &execution_decision_id))
@@ -822,6 +838,12 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             execution_decision_id,
         );
 
+        if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            == crate::warehouse::Warehouse::Databricks
+        {
+            // Native RegisterClone leaves this optional string present but empty.
+            ready.execution_decision_id = Some(String::new());
+        }
         if plan.required_source_epoch.is_some() {
             ready.clone_required_last_modified_epoch = plan.required_source_epoch;
         }

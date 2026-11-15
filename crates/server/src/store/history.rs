@@ -502,6 +502,28 @@ impl Store {
         Ok(row.map(|r| r.0))
     }
 
+    /// Latest physical source, before qualification. Incompatible/unknown
+    /// latest state must never expose an older eligible source.
+    pub(crate) async fn current_direct_copy_source(
+        &self,
+        org_id: &str,
+        source: &str,
+        namespace: &str,
+        dialect: &str,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        let mut query = current_physical_state(org_id, Some(namespace), dialect, Some(source));
+        query
+            .push("SELECT ")
+            .push(ExecutionRow::COLUMNS)
+            .push(" FROM current_state WHERE (table_type IS NULL OR upper(table_type) IN ('DELTA', 'DELTA TABLE')) AND NOT EXISTS (SELECT 1 FROM executions pending WHERE pending.org_id = current_state.org_id AND pending.warehouse_family = current_state.warehouse_family AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(current_state.table_namespace, '') AND pending.physical_target_key = current_state.physical_target_key AND pending.status = 'pending' AND pending.id > current_state.id)");
+        query
+            .build_query_as::<ExecutionRow>()
+            .fetch_optional(&self.pool)
+            .await?
+            .map(|row| row.into_checked(true))
+            .transpose()
+    }
+
     /// The clone source's current confirmed build, by its physical target name
     /// within a namespace: what a client-requested copy of it inherits
     /// ([`CopySourceBuild`]). `None` when the source has no confirmed build in

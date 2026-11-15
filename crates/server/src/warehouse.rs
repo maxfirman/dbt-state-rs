@@ -862,16 +862,17 @@ impl Warehouse {
                 Ok(vec![format!("CREATE TABLE {target} CLONE {source}")])
             }
             Self::Databricks => {
-                // Managed Iceberg supports DEEP but not SHALLOW CLONE. A generic
-                // "TABLE" type does not identify the storage format, so only an
-                // explicitly Delta source can use this unverified template.
-                let is_delta = source_table_type
-                    .is_some_and(|kind| kind.to_ascii_uppercase().contains("DELTA"));
-                if !is_delta {
-                    return Err("Databricks shallow clone requires a known Delta source");
+                // Native default-format requests omit source type. This DDL
+                // attempts a warehouse-validated shallow copy; unknown metadata
+                // does not establish Delta identity or authorize adoption.
+                // Explicit incompatible formats remain unsupported.
+                if source_table_type.is_some_and(|kind| {
+                    !matches!(kind.to_ascii_uppercase().as_str(), "DELTA" | "DELTA TABLE")
+                }) {
+                    return Err("Databricks shallow clone source type is not supported");
                 }
                 Ok(vec![format!(
-                    "CREATE TABLE {target} SHALLOW CLONE {source}"
+                    "\n        CREATE OR REPLACE TABLE {target} SHALLOW CLONE {source}\n        "
                 )])
             }
             Self::Redshift | Self::Other => Err("clone DDL is not implemented for this dialect"),
@@ -1351,9 +1352,10 @@ mod tests {
         );
         assert_eq!(
             ddl("databricks", "s", "t", Some("DELTA TABLE")).unwrap(),
-            ["CREATE TABLE t SHALLOW CLONE s"]
+            ["\n        CREATE OR REPLACE TABLE t SHALLOW CLONE s\n        "]
         );
-        for kind in [None, Some("TABLE"), Some("ICEBERG TABLE")] {
+        assert!(ddl("databricks", "s", "t", None).is_ok());
+        for kind in [Some("TABLE"), Some("ICEBERG TABLE")] {
             assert!(ddl("databricks", "s", "t", kind).is_err());
         }
     }

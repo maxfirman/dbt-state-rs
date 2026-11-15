@@ -189,3 +189,29 @@ as well. Neither delivery proves a new warehouse build after the barrier.
 The cold-miss limitation preserves safety without inventing chronology.
 Genuine matching-version frozen histories and current-version storage-fault
 public tests cover both paths.
+
+## Narrow Databricks direct-copy provenance (#152)
+
+The native MERGE and check-snapshot pre-copy captures have no source type or
+format field. A successful warehouse `SHALLOW CLONE` attempt can establish a
+copy without declaring its source provider. This does not authorize a SKIP.
+For the captured single fully-qualified `SELECT * FROM` input, new versioned
+provenance binds exact logic/config/full UID and retains the actual source
+context. RegisterClone freezes that source's recorded input epochs and producers
+onto its pending copy. Adoption judges freshness against those inputs, including
+changes before the copy, rather than synthesizing a baseline at the copy epoch.
+Snowflake and DuckDB retain their existing copy-age rule.
+
+Confirm clears this adoption evidence when the latest scoped source ID/epoch
+changed after registration, a newer source write remains pending, or the client
+reports failed cloning. Registration likewise refuses a source with a newer
+pending write. Unknown
+versions, legacy NULL, unsupported SQL/template/dependency shapes and missing
+source input epochs/producers never authorize direct adoption. The nullable
+migration does not reinterpret old fingerprints or backfill missing evidence.
+
+Unobserved physical source modification during the unversioned DDL remains an
+unresolved protocol boundary: Confirm and the adopter carry no new observation
+of the source relation. This narrow offline implementation is not a completed
+Databricks copy-safety or hosted-conformance claim; see the
+[implementation report](../reports/databricks-direct-precopy-2026-11-15.md).
