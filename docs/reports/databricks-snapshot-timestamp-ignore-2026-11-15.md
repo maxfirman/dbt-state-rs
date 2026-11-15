@@ -12,7 +12,9 @@ valid_from/valid_to/nulls, ordered types/schema, multiplicity, source bags,
 managed Delta properties and full source/target histories match in every cell.
 Cases cover first build/reuse, update+insert/reuse, ignore-delete/reuse,
 reappearance/reuse, equal-timestamp business mutation/reuse and SQL projection
-change/reuse. Equal or older source timestamps do not create SCD versions.
+change/reuse. The observed equal-timestamp business change did not create a new
+SCD version. Older source timestamps were not exercised in these live windows
+and remain uncharacterized.
 A Build does not require a no-op MERGE to advance Delta version.
 
 Every ordinary request is native SNAPSHOT7 with zero lag/ANY, compare_unrendered_code=false, direct
@@ -27,7 +29,10 @@ schema, with at most one exact session temporary view at a time.
 
 Before each fresh window's proxy/DDL, Statement API date_format with six digits
 plus unix_micros and current_timezone proved the independent UTC literal
-2026-11-12 01:50:34.797584 exactly. Actual clock sidecars measure State audit
+2026-11-12 01:50:34.797584 exactly. All business timestamps in the actual SCD
+operations have .000000 fractional seconds. The separate .797584 SELECT proves
+nonzero six-digit transport, not nonzero-microsecond SCD or hash semantics; those
+semantics remain uncharacterized. Actual clock sidecars measure State audit
 decision times only; they are never used to infer warehouse SCD/hash time.
 
 ## Original STOP and exact continuation
