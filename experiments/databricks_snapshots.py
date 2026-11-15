@@ -106,7 +106,10 @@ def snapshot_submit(calls,source,target,target_exists,expected,last_runtime=None
     if any(c['method'] not in allowed for c in calls):raise Refused('unexpected snapshot RPC')
     confirms=[c for c in calls if c['method']=='ConfirmExecution']
     if expected=='skip_execution':
-        runtime=row['response']['response'][expected].get('execution_runtime_ms')
+        skip=row['response']['response'][expected]
+        if skip.get('explained_decision',{}).get('is_stale') is not False:
+            raise Refused('snapshot SKIP requires explicitly non-stale explained decision')
+        runtime=skip.get('execution_runtime_ms')
         if (confirms or type(runtime) is not int or runtime<=0 or runtime!=last_runtime):
             raise Refused('snapshot SKIP lacks its own positive confirmed runtime')
     else:
@@ -223,6 +226,10 @@ class Snapshots(Baseline):
         manifest=json.dumps(operation_manifest(),sort_keys=True,separators=(',',':')).encode()
         if grant.get('operation_manifest_sha256')!=hashlib.sha256(manifest).hexdigest():
             raise Refused('snapshot operations differ from reviewed ledger')
+        raw=Path(args.operation_ledger).read_bytes()
+        if (hashlib.sha256(raw).hexdigest()!=grant['operation_ledger_sha256']
+                or json.loads(raw)!=json.loads(json.dumps(operation_manifest()))):
+            raise Refused('snapshot independent operation ledger differs')
         receipt=Path(grant['allocation']['receipt'])
         if hashlib.sha256(receipt.read_bytes()).hexdigest()!=grant['allocation']['receipt_sha256']:
             raise Refused('snapshot allocation evidence changed')
@@ -237,6 +244,9 @@ class Snapshots(Baseline):
         self.save('operation-manifest.json',operation_manifest());self.save('footprint.json',clearance_contract())
         self.save('source-provenance.json',{p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in self.entrypoint.parent.glob('databricks_*.py')})
         self.save('campaign-entrypoint.py',self.entrypoint.read_text())
+        self.save('binary-provenance.json',{name:{'path':str(Path(getattr(args,name)).resolve()),
+                  'sha256':hashlib.sha256(Path(getattr(args,name)).read_bytes()).hexdigest()}
+                  for name in ('dbt','proxy','probe')})
 
     def dbt(self,label,command,target='prod',managed=True):
         self.guard.admit(label,command,managed)
@@ -266,6 +276,10 @@ class Snapshots(Baseline):
         if preflight['rows']!=[['Etc/UTC','2026-11-12 01:50:34.797584',str(micros('2026-11-12 01:50:34.797584'))]]:
             raise Refused('native timezone/lossless projection not yet characterized')
         self.save('lossless-codec-preflight.json',preflight)
+        if self.proxy is not None:raise Refused('temporal preflight must precede State proxy startup')
+        self.save('lossless-codec-State-proof.json',{'transport':'Statement API',
+            'state_proxy_started':False,'State_RPCS':0,'object_writes':0,
+            'proof':'Baseline.run invokes init_schemas before start; no dbt invocation'})
 
     def write_snapshots(self,projected=False):
         for name,source_name in (('consumer','inputs'),('reference','ref_inputs')):
@@ -391,14 +405,14 @@ class Snapshots(Baseline):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--plan',action='store_true')
-    for key in ('dbt','proxy','probe','work-dir','live-clearance','run-id'):parser.add_argument('--'+key)
+    for key in ('dbt','proxy','probe','work-dir','live-clearance','run-id','operation-ledger'):parser.add_argument('--'+key)
     parser.add_argument('--profiles',default=str(Path.home()/'.dbt/profiles.yml'))
     parser.add_argument('--profile',default='databricks');parser.add_argument('--warehouse',default='47fd3fa312624d91')
     parser.add_argument('--rust-url')
     args=parser.parse_args()
     if args.plan:
         print(json.dumps({'footprint':clearance_contract(),'operations':operation_manifest()},indent=2));return 0
-    if any(getattr(args,k.replace('-','_')) is None for k in ('dbt','proxy','probe','work-dir','live-clearance','run-id')):
+    if any(getattr(args,k.replace('-','_')) is None for k in ('dbt','proxy','probe','work-dir','live-clearance','run-id','operation-ledger')):
         parser.error('live execution requires every explicit pinned argument and clearance')
     return Snapshots(args).run()
 

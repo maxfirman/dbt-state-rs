@@ -11,8 +11,8 @@ refuses that mode; its output is not accepted semantics or a waiver.
 operation ledger and exact proposed names without accessing credentials. A future
 root-reviewed grant must match the entire footprint, operations digest, all
 Databricks helper digests, allocation receipt, container identity and initial
-inventory before initialization. The proposed container is unallocated:
-`cdo_demo_db.state_20261114_snapshot151`. Capacity must be checked independently.
+inventory before initialization. The root later allocated the empty container (allocation only; no test-object grant):
+`cdo_demo_db.state_20261114_snapshot151`. UUID `5bfc5332-ae2e-47ee-bb41-bd93fdd667ff`, owner `max.firman@gmail.com`, created_at `1794700751817`; its immutable private receipt is bound in the current proposal. Capacity and all eight absent names must be checked independently before the first phase, and four hosted objects protected before Rust.
 
 The first phase proposes four independent source/target pairs, two per backend:
 hosted managed and State-disabled native reference, then Rust managed and its
@@ -93,3 +93,13 @@ macros, actual source/target SQL, wire/outcomes and precision limitations are
 indexed in the coordinator's `ticket151-snapshots-preflight.md`. The original
 capability report and known blocker remain authoritative; no stale survey
 success label is promoted.
+
+## Current offline refresh (2026-11-15)
+
+The isolated source includes canonical `9e6919c`; historical freezes remain unchanged.
+SKIP requires nested `explained_decision.is_stale` exactly false, including when a
+misleading top-level field says false. The native wrapper retains its actual
+PID, argv, executable SHA256, child PID/argv and extra-replay environment receipt.
+The complete source/tool freeze and both JSON-to-Scope round trips are separate
+coordinator artifacts. No #151 live call has run. Root must separately grant
+each backend after #150 drains and the current source/tool pins are reviewed.

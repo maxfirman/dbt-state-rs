@@ -125,9 +125,9 @@ class SnapshotHistory(unittest.TestCase):
           'tables':[{'name':source,'last_modified_epoch':10},{'name':target,'last_modified_epoch':20}],
           'target_table':target,'labels':{'dbt_node_name':'consumer'},'tolerate_nondeterminism':True}
         calls=[{'method':'SubmitEnrichedSQL','request':request,
-                'response':{'response':{'skip_execution':{'execution_runtime_ms':42}}}}]
+                'response':{'response':{'skip_execution':{'execution_runtime_ms':42,'explained_decision':{'is_stale':False}}}}}]
         snapshot_submit(calls,source,target,True,'skip_execution',42)
-        for fault in ('epoch','runtime','bool-runtime','clock','extra','tables','strategy','lag'):
+        for fault in ('epoch','runtime','bool-runtime','clock','extra','tables','strategy','lag','stale','missing-stale','misleading-top-level'):
             value=deepcopy(calls);r=value[0]['request']
             if fault=='epoch':r['tables'][0]['last_modified_epoch']=None
             if fault=='runtime':value[0]['response']['response']['skip_execution']['execution_runtime_ms']=41
@@ -137,6 +137,10 @@ class SnapshotHistory(unittest.TestCase):
             if fault=='tables':r['tables'].append(r['tables'][0])
             if fault=='strategy':r['execution_type']=3
             if fault=='lag':r['freshness_tolerance_seconds']=10
+            if fault=='stale':value[0]['response']['response']['skip_execution']['explained_decision']['is_stale']=True
+            if fault=='missing-stale':value[0]['response']['response']['skip_execution'].pop('explained_decision')
+            if fault=='misleading-top-level':
+                skip=value[0]['response']['response']['skip_execution'];skip['is_stale']=False;skip['explained_decision']['is_stale']=True
             with self.subTest(fault=fault),self.assertRaises(Refused):snapshot_submit(value,source,target,True,'skip_execution',42)
 
     def test_native_snapshot_guard_rejects_other_target_cleanup_and_sql_strategy(self):
