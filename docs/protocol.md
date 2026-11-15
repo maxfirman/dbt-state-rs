@@ -61,7 +61,7 @@ application metadata. Session-end duration preserves seconds/nanoseconds and
 optional presence in new captures. Older captures omitted that field; it is
 not reconstructed. The deprecated standalone `RegisterSessionStart` was not
 called and remains unimplemented. OAuth, accounts and billing remain outside
-the self-hosted service. See the dated [auxiliary RPC evidence](reports/databricks-client-auxiliary-2026-11-12.md).
+the self-hosted service. See the dated [auxiliary RPC evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md).
 
 Wire service names must be preserved exactly. The service named `Clone`
 collides with Rust's `std::clone::Clone`; the proto build patches the generated

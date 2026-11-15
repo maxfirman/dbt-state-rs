@@ -74,6 +74,15 @@ Expected first reduction: roughly 10,000-15,000 added lines, chiefly generated
 reports and unfinished scaffolds. This is an estimate, not a deletion quota.
 A smaller, accurate diff matters more than the count.
 
+## Consolidation checkpoint
+
+The pre-cleanup state is published as `archive/databricks-132-evidence` at
+`d4ac553cdd09becb77c7555b143e5f4bedaeb2fb`. The first pass archived67 report and
+unexecuted-scaffold files (19,935 lines), repaired local links, and retained
+golden/upgrade fixtures, production regressions and accepted campaign drivers.
+The [preview matrix](databricks-preview.md) replaces the report inventory;
+[original paths and hashes](databricks-evidence.tsv) preserve attribution.
+
 ## Remaining landing gates
 
 - Finish the cleanup and one user-facing preview matrix, including deployment

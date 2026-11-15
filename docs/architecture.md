@@ -125,7 +125,7 @@ return query diagnostics from outside a physical reuse scope; those reads
 return only booleans or a name and never feed a reuse/copy candidate, producer
 or freshness anchor. A hosted absent-to-named fallback conflicts with this
 required self-hosted isolation and remains [an explicit incomplete
-contract](reports/databricks-isolation-2026-11-13.md). Data tests select by org, project, warehouse scope and UID.
+contract](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). Data tests select by org, project, warehouse scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.
 

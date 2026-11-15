@@ -3,7 +3,7 @@
 The pinned #137 campaigns characterize dbt 2.0.11 on serverless Unity Catalog with
 managed Delta tables. Hosted decisions and independent physical results are
 separate evidence: equal rows alone do not authorize a SQL identity equivalence.
-The [dated acceptance report](reports/databricks-sql-equivalence-2026-11-14.md)
+The [dated acceptance report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-sql-equivalence-2026-11-14.md)
 records the validated slice; it establishes no general Databricks support claim.
 
 Two complete hosted captures contain 30 actual managed dbt invocations, 30 separate

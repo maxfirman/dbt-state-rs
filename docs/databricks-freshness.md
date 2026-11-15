@@ -5,7 +5,7 @@ same-logic recorded-rebuild cells have independent physical checks and exact
 public replay. Crafted missing-evidence requests expose a hosted/Safety
 conflict; these are retained diagnostic evidence, not acceptance fixtures or
 pinned-client reachability claims. No conservative freshness rule is weakened.
-See the [dated report](reports/databricks-freshness-2026-11-12.md).
+See the [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-2026-11-12.md).
 
 The runners reuse the #135 guarded campaign, pinned dbt 2.0.11, owned proxy
 process, complete SQL result reader and schema ownership ledger. Their exact
@@ -74,7 +74,7 @@ relative ages, structure, descriptions and statuses are compared exactly;
 there is no temporal mask or comparator. Other warehouses' replay clocks are
 unchanged. Unanchored copy timestamps remain separate unfinished coverage.
 
-The [2026-11-14 bounded follow-up](reports/databricks-freshness-followup-2026-11-14.md)
+The [2026-11-14 bounded follow-up](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-freshness-followup-2026-11-14.md)
 adds submit-frozen missing-current/both-missing Explain defaults and identical
 known current upstream normalization for rendered FULL submits without query
 dependencies. Unknown/conflicting duplicates and omitted-source evidence retain

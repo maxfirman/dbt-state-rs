@@ -1,6 +1,6 @@
 # Databricks dependency, template and configuration identity (#138)
 
-**Safe partial; #138 remains INCOMPLETE for the [cross-UID test boundary](reports/databricks-data-test-uid-boundary-2026-11-14.md).**
+**Safe partial; #138 remains INCOMPLETE for the [cross-UID test boundary](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-data-test-uid-boundary-2026-11-14.md).**
 
 This is the bounded contract captured with official dbt 2.0.11 on serverless
 Unity Catalog and managed Delta, 2026-11-14. It adds no Result copy admission.
