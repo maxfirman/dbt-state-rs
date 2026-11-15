@@ -1,0 +1,524 @@
+{
+  "source_commit": "eff5727ce66be93a99e8298d6fa63e21662978ab",
+  "cases": [
+    {
+      "copy": "222e34c1013eb8cd81be6c3e9878d9135c27f19e62d4f5407151b78368286531",
+      "direct": null,
+      "rendered": "e72498618e0c4ec5cefdd9c111dedf4368da30ca2412b654071e3a296a2e5834",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "snowflake",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "cbc134fb52f7327630cd0cc9df077b47761a59c059d42bdfccba64766a296e50"
+    },
+    {
+      "copy": "5a03ee0e41c9a4eed5c16e38e6088c0f1a421d42a77385a933d73a8b74e89078",
+      "direct": null,
+      "rendered": "52f465dd01fe00944f7f4929770be86ef2ea0bb28358c6c7b668b06fb456a513",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "snowflake",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [
+          {
+            "default_catalog": "cdo",
+            "default_schema": "raw",
+            "name": "cdo.raw.input",
+            "query": "select id from cdo.raw.leaf"
+          }
+        ],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.leaf"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "7782f933bafc9ebd8744f89828d57c6205f8810586697071b0b2d4273107dbb6"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "3cde03e5165f70b7b5ab83f24ae182b8e3f75cedf542f2f3bdaaf060ad6c25c6",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "duckdb",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "duckdb_copy_contract": "rows-schema-v1",
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "d6be7e189a92ab9a6dbb669dae9cc093f9cf7c4118622878a1da9e004c6d3e81"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "c0a28ccc7f4fa9e4e123afeb76731dedb0e94be7be4328ec49ed0c413a0d9d98",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "duckdb",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [
+          {
+            "default_catalog": "cdo",
+            "default_schema": "raw",
+            "name": "cdo.raw.input",
+            "query": "select id from cdo.raw.leaf"
+          }
+        ],
+        "semantic_extras": {
+          "duckdb_copy_contract": "rows-schema-v1",
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.leaf"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "18826476d727d7d4d699fc31a88cf319f3caff1bd4f17d07727616ec8119d6a7"
+    },
+    {
+      "copy": "307a7c2adfa891290a649dcfb7f83678b540cc9599b814d0e4f0c4d78f42cd47",
+      "direct": null,
+      "rendered": "f5bfb3b16fe9ac64565f296c4db4ff99a28c7b9a53846e2c010af00b36bd105e",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "databricks",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "b5f1633a9ade230a85bcf9644b2f517f63eda3b70c488b03ebedad6245ac54c6"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "41dbcade85a3dba9a5797731c43b26ce18a8a2d4fe79ca0c21bf50c26d85bf9b",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "databricks",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [
+          {
+            "default_catalog": "cdo",
+            "default_schema": "raw",
+            "name": "cdo.raw.input",
+            "query": "select id from cdo.raw.leaf"
+          }
+        ],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.leaf"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "c02392133785ef4b66ace2fac0792a001fc9b4e208ebc1f9fa539c6138be3acb"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "5dc23292492866bb8fbe14270bdcc156314aac0e7a61ba2d8a4a782878cb1512",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "bigquery",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "47a7bdd13ada5985a475a1be4925f090d68b2aed1078f8d50896d34b69f7e2e6"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "45c2862e6e0f07dee7378b381b99ea7f983285cc94279d75b0599d2a35570bd9",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "bigquery",
+        "execution_type": 1,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [
+          {
+            "default_catalog": "cdo",
+            "default_schema": "raw",
+            "name": "cdo.raw.input",
+            "query": "select id from cdo.raw.leaf"
+          }
+        ],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.leaf"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "38123381d82785fc9a0e09082605337ee8e300469ffbd41b1c9afc192bf49e77"
+    },
+    {
+      "copy": null,
+      "direct": {
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "identity": "8331ba54dd59aa73a42fca2adcb40d4d25d5da93926af99f370c311c537a1042",
+        "source_epoch": null,
+        "source_execution_id": null,
+        "source_physical_key": null,
+        "version": 1
+      },
+      "rendered": "f5bfb3b16fe9ac64565f296c4db4ff99a28c7b9a53846e2c010af00b36bd105e",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "databricks",
+        "execution_type": 3,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.raw.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "b5f1633a9ade230a85bcf9644b2f517f63eda3b70c488b03ebedad6245ac54c6"
+    },
+    {
+      "copy": null,
+      "direct": {
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "identity": "a1e5888cbe0475b6a5fa14235ff9d9e55622c7118ee842ff27f87c92efeef95a",
+        "source_epoch": null,
+        "source_execution_id": null,
+        "source_physical_key": null,
+        "version": 1
+      },
+      "rendered": "41e2148dbd6d85877d375cd50deeab2f2dc71350156226fdc8baae31b91067e0",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "databricks",
+        "execution_type": 3,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from `cdo`.`raw`.`input`",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "b5f1633a9ade230a85bcf9644b2f517f63eda3b70c488b03ebedad6245ac54c6"
+    },
+    {
+      "copy": null,
+      "direct": null,
+      "rendered": "160acfdb729d76fba52c213d367e8b33326c3b0bcd35680f2e3c3df7df0a18a4",
+      "request": {
+        "dbt_node_state": {
+          "node_body_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "node_configs_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "node_contract_hash": null,
+          "node_database_representation": null,
+          "node_hash": "",
+          "node_macros_hash": null,
+          "node_persisted_descriptions_hash": null,
+          "node_unique_id": "model.project.out",
+          "profile_name": "",
+          "project_id": null,
+          "project_name": "",
+          "resource_type": "model",
+          "target_name": ""
+        },
+        "default_catalog": "cdo",
+        "default_schema": "dev",
+        "dialect": "databricks",
+        "execution_type": 3,
+        "from_speculative_submit": false,
+        "labels": {},
+        "query_dependencies": [],
+        "semantic_extras": {
+          "lookback": "1",
+          "on_schema_change": "\"ignore\""
+        },
+        "sql": "select * from cdo.`raw`.input",
+        "table_namespace": "warehouse",
+        "tables": [
+          {
+            "last_modified_epoch": 100,
+            "name": "cdo.raw.input"
+          }
+        ],
+        "target_table": "cdo.dev.out"
+      },
+      "template": "b5f1633a9ade230a85bcf9644b2f517f63eda3b70c488b03ebedad6245ac54c6"
+    }
+  ]
+}
