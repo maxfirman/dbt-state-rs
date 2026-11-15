@@ -63,6 +63,11 @@ async fn real_dbt_snapshots_match_independent_operation_history() {
             std::env::var_os("DBT_STATE_DATABRICKS_OPERATION_LEDGER")
                 .expect("frozen independent snapshot ledger"),
         )
+        .arg("--result-ledger")
+        .arg(
+            std::env::var_os("DBT_STATE_DATABRICKS_RESULT_LEDGER")
+                .expect("frozen complete independent SCD result ledger"),
+        )
         .arg("--run-id")
         .arg(std::env::var_os("DBT_STATE_DATABRICKS_RUN_ID").expect("exact cleared Rust run ID"))
         .arg("--rust-url")

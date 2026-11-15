@@ -103,3 +103,18 @@ PID, argv, executable SHA256, child PID/argv and extra-replay environment receip
 The complete source/tool freeze and both JSON-to-Scope round trips are separate
 coordinator artifacts. No #151 live call has run. Root must separately grant
 each backend after #150 drains and the current source/tool pins are reviewed.
+
+## Review correction 151-R1
+
+The runner now requires `--result-ledger` and the grant's exact
+`result_ledger_sha256`. The tracked `databricks_snapshot_results.json` preserves
+the previously reviewed literal complete histories rather than regenerating
+expected output at run time. Its version, ticket, strategy/delete mode, both
+exact phase run IDs, exactly12 cells and complete source/managed/reference rows
+are validated before Campaign initialization (credentials, proxy or DDL).
+The dynamic oracle must agree with every literal history before initialization.
+Each observed managed and independent native reference target is compared to
+its frozen literal multiset as well as the existing dynamic oracle. Missing or
+changed files, historical business/interval/MD5 faults, missing/extra cells,
+wrong run IDs and disagreement with the dynamic oracle stop the run. No live
+claim or new primary hosted evidence is introduced by these offline literals.
