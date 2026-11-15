@@ -162,7 +162,7 @@ pub fn plan(seed: u64, literal: bool) -> Vec<Step> {
             push(op, "BUILD");
             push(Op::Observe, "SKIP");
         }
-        let mut random = seed + 1;
+        let mut random = seed.wrapping_add(1);
         for episode in 0..8 {
             random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
             let n = 11 + (random % 9) as i32;
