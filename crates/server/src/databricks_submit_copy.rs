@@ -150,6 +150,12 @@ pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
         .collect()
 }
 
+/// Ordinary builds have no copy-origin marker, even when their automatic-copy
+/// eligibility hash is populated. A retained proof is also an origin marker.
+pub(crate) fn ordinary(row: &ExecutionRow) -> bool {
+    row.clone_source_table.is_none() && row.submit_copy_provenance.is_none()
+}
+
 /// This is exact freshness, not a copy-age anchor. Unknown epochs/producers,
 /// a different input binding and every copy source are conservatively refused.
 pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
@@ -165,7 +171,7 @@ pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow)
             == Warehouse::from_dialect(&evidence.dialect).family_key(&evidence.dialect)
         && source.execution_type == evidence.execution_type
         && source.status == "confirmed"
-        && source.clone_source_table.is_none()
+        && ordinary(source)
         && source.last_modified_epoch.is_some_and(|e| e > 0)
         && source.node_namespace_logic_hash == evidence.node_namespace_logic_hash
         && source.node_namespace_logic_hash.is_some()
@@ -183,10 +189,13 @@ pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow)
 /// An invalid publication cannot regain reuse via its strict SQL hash or the
 /// generic namespace-adoption path. Legacy direct-copy rows use v1 separately.
 pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
-    if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks
-        || row.clone_source_table.is_none()
-        || row.node_sql_hash.is_none()
-    {
+    if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks || ordinary(row) {
+        return true;
+    }
+    if row.clone_source_table.is_none() {
+        return false;
+    }
+    if row.node_sql_hash.is_none() {
         return true;
     }
     row.submit_copy_provenance.as_ref().is_some_and(|p| {
@@ -339,6 +348,7 @@ mod tests {
             "source_epoch",
             "other_input",
             "own_only",
+            "partial_origin",
         ] {
             let mut bad = s.clone();
             match fault {
@@ -358,6 +368,15 @@ mod tests {
                 "source_epoch" => bad.last_modified_epoch = None,
                 "other_input" => bad.input_tables[0].name = "cdo.other.input".into(),
                 "own_only" => bad.input_tables[0].name = bad.target_table.clone(),
+                "partial_origin" => {
+                    bad.submit_copy_provenance = Some(Provenance {
+                        version: 1,
+                        source_execution_id: bad.id,
+                        source_epoch: 200,
+                        source_physical_key: physical(&bad.target_table),
+                        published: false,
+                    })
+                }
                 _ => unreachable!(),
             }
             assert!(!source_admits(&e, &bad), "{fault}");
@@ -465,6 +484,16 @@ mod tests {
         );
         // Injected storage fault: a direct-style row carrying the valid FULL
         // auto hash. Native direct v1 remains MERGE/snapshot only.
+        let mut partial_origin = row.clone();
+        partial_origin.clone_source_table = None;
+        assert!(!ordinary(&partial_origin));
+        assert!(!reusable(&e, &partial_origin));
+        assert!(
+            crate::reuse_candidate::for_model(&req, &e, Some(partial_origin))
+                .unwrap()
+                .candidate
+                .is_none()
+        );
         let mut direct_style = row.clone();
         direct_style.node_sql_hash = None;
         direct_style.submit_copy_provenance = None;

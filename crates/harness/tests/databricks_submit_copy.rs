@@ -433,3 +433,39 @@ async fn crafted_controls_build_safely_without_claiming_volatile_rewrite_parity(
     }
     assert_eq!(cases, 8);
 }
+
+#[tokio::test]
+async fn auto_copy_identity_does_not_change_ordinary_physical_reuse() {
+    for automatic in [false, true] {
+        let server = if automatic {
+            support::start_server_databricks_submit_copy().await
+        } else {
+            support::start_server().await
+        };
+        let sc = Scenario::connect(&server).await.org("ordinary");
+        source(&sc).await;
+        let (source, source_confirm, target, _) = shapes();
+        for fault in ["uid", "declared_config"] {
+            let mut ordinary = after_copy(source.clone(), source_confirm.last_modified_epoch);
+            let mut other_target = target.clone();
+            for req in [&mut ordinary, &mut other_target] {
+                let state = req.dbt_node_state.as_mut().unwrap();
+                if fault == "uid" {
+                    state.node_unique_id.push('x');
+                } else {
+                    state.node_configs_hash = Some("c".repeat(32));
+                }
+            }
+            assert_eq!(
+                sc.verdict(ordinary).await,
+                "skip_execution",
+                "ordinary {fault},auto={automatic}"
+            );
+            assert_eq!(
+                sc.verdict(other_target).await,
+                "ready_to_execute",
+                "copy still requires {fault},auto={automatic}"
+            );
+        }
+    }
+}

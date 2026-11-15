@@ -505,13 +505,17 @@ fn same_identity(
     evidence: &ExecutionEvidence,
     row: &ExecutionRow,
 ) -> bool {
-    let logic_compatible = match (
-        &row.node_namespace_logic_hash,
-        &evidence.node_namespace_logic_hash,
-    ) {
-        (Some(recorded), Some(current)) => recorded == current,
-        _ => true,
-    };
+    let ordinary_databricks = crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        == crate::warehouse::Warehouse::Databricks
+        && crate::databricks_submit_copy::ordinary(row);
+    let logic_compatible = ordinary_databricks
+        || match (
+            &row.node_namespace_logic_hash,
+            &evidence.node_namespace_logic_hash,
+        ) {
+            (Some(recorded), Some(current)) => recorded == current,
+            _ => true,
+        };
     identity_matches(evidence, row)
         && crate::databricks_submit_copy::reusable(evidence, row)
         && logic_compatible
