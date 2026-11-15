@@ -629,7 +629,7 @@ outside matching fixtures, with no gap, mask or unknown-baseline exemption.
 The preview has landed; the conservative #140/#158/#159 boundaries remain
 documented compatibility limits, not shared implementation-ticket blockers.
 
-## Databricks partition replacement bounded partial (#147, 2026-11-14)
+## Databricks partition replacement scoped acceptance (#147, 2026-11-15)
 
 The pinned serverless client reaches null-safe `REPLACE ON` for a managed Delta
 incremental configured with insert_overwrite and partition_by=['p']. The complete
@@ -642,11 +642,20 @@ INSERT INTO TABLE parser stop and its separately cleared continuation preserve
 every original RPC and successful physical write; delayed first Explain timing
 is retained rather than masked. See the [dated report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-insert-overwrite-2026-11-14.md).
 
-This does not establish multiple partition keys, unpartitioned/liquid settings,
-column reordering/missing/new/type/schema-policy evolution, strategy/node-kind
-transitions or generated/retry/restart histories. Generic execution types and
-pure composite-key oracle probes are not native coverage. #147 retains its own
-feature gaps; #138/#140 conservative differences no longer block it. No safety or isolation floor changed.
+The [native supplement](databricks-insert-overwrite.md) adds composite STRING
+partition keys, NULL in either/both components, schema failure/retry and additive
+recovery, complementary replacement and empty-input retention. Its independent
+cumulative bags distinguish unrepresented siblings from fresh source results.
+Every cell has complete typed/schema/partition/history checks and isolated
+State-disabled literal References. The complete 70-RPC hosted fixture retains
+all ten Explain responses and both failed attempts without publication.
+
+This completes the original #147 partition-settings/schema-evolution acceptance
+within the demonstrated pinned-client scope. It does not establish all column
+removal/type/reordering policies, liquid clustering, legacy cluster overwrite or
+restart scenarios. Broader node-kind transitions and Result copy remain separate
+work. #138/#140 conservative differences no longer block it. No safety or
+isolation floor changed.
 
 The initial supplemental native replay differed by1s in the unchanged Explain:
 the handler sampled1794690806996ms and its UUID was minted5ms later across the
@@ -657,8 +666,8 @@ A test-only hash-bound, org/decision-scoped sidecar now replays the entire origi
 mask, known gap, clock guess or warehouse rerun was used. The historical red is
 retained; live production clock behavior is unchanged. Future147 harness runs
 retain audit clocks postflight before test-schema cleanup. The actual original
-native executable/source snapshots remain separately pinned. Whole147 and its
-settings/schema/lifecycle/dependency blockers remain incomplete.
+native executable/source snapshots remain separately pinned. The new native
+supplement retains postflight audit clocks before its test State schema is removed.
 
 ## Databricks audit ordinary-submit partial (#144, 2026-11-14)
 
