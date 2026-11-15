@@ -158,6 +158,14 @@ Postgres.
 
 ## DuckDB acceptance gate
 
+For the Databricks #132 effort, the maintainer explicitly deferred local real-dbt
+DuckDB acceptance until after landing (2026-11-15). Do not run
+`scripts/duckdb-ci.sh` or the ignored real-dbt DuckDB cases as a prerequisite for
+this integration. The integration PR also retains its temporary CI exception;
+other PRs and main keep their existing coverage. Resume DuckDB acceptance after
+landing and retain this deferral in the final validation notes. Targeted Rust and
+protocol tests continue during development.
+
 `./scripts/duckdb-ci.sh` installs the locked Python environment, builds all
 targets once, and runs every fixed real-dbt case plus bounded generated traces
 with independent-oracle mutation probes. Each case gets its own Postgres schema
