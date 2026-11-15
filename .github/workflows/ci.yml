@@ -62,6 +62,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+      DBT_STATE_DATABRICKS_GENERATED_ARTIFACTS: artifacts/databricks-generated
     steps:
       - uses: actions/checkout@v4
 
@@ -84,6 +85,14 @@ jobs:
         # unit + integration tests, including the conformance replay of the
         # committed golden fixtures against a fresh Postgres.
         run: cargo test --workspace
+
+      - name: Retain generated Databricks modeled-safety traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: databricks-generated-modeled-safety
+          path: artifacts/databricks-generated
+          retention-days: 14
 
       # Temporarily skip slow DuckDB acceptance on the #132 integration PR.
       # Other PRs, main, and manual/scheduled runs keep their existing coverage.

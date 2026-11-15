@@ -285,3 +285,49 @@ an exact separate grant, fresh owned pair and frozen tools/ledger. Its native
 capture must retain actual audit clocks before State cleanup and pass complete
 supplemental replay with `DBT_STATE_EXTRA_REPLAY_CLOCKS`; no live replay clock
 header is used. See the [bounded report](reports/databricks-replace-where-2026-11-14.md).
+
+`cargo test -p dbt-state-harness --test databricks_generated` is an ordinary,
+credential-free generated **modeled Reuse safety** gate. It uses public
+SubmitEnrichedSQL, ConfirmExecution and GetExplainMessages with isolated
+Postgres, four fixed semantic seeds and eight bounded source episodes per seed.
+Its fixed spine covers genuine source INSERT/UPDATE/DELETE, changed literal/k,
+unchanged required reuse, A→B→A latest physical history and source-based org,
+named namespace and Target relation isolation controls. Epochs and request
+metadata are explicitly synthetic; changed data always advances a positive
+epoch. The grammar is FULL=1, zero Lag tolerance, ANY=0, literal cast/VALUES
+and direct source projection with bounded INT addition and NULL propagation.
+
+The virtual managed result R changes only on an effective BUILD. A separate
+fresh reference F is computed from the source ledger and symbolic intent before
+every response; typed row multisets retain duplicates and NULLs. SQL rendering
+has fixed worked controls against the restricted templates. This is a tiny
+relational interpreter, **not Databricks SQL execution**; MANAGED/Delta tags are
+modeled expectations, not measured properties. Missing/equal/delayed changed-data
+epochs, no-op DML, Lag/ALL, copies and other node kinds are excluded from this
+bounded grammar and retain their separate unresolved coverage requirements.
+
+Boundary mutants preserve the raw server response, force wrong SKIP after
+10→17, k or literal changes, and must fail exactly `wrong-skip:rows`. A forced
+BUILD at an unchanged checkpoint leaves R=F but fails
+`required-reuse:decision`; no server IDs or confirmations are fabricated.
+Checker controls reject duplicate loss, NULL substitution, schema type/order,
+absent results and changed modeled properties, and prove BUILD snapshots do not
+alias the mutable source ledger. Transport errors cannot satisfy mutant tests.
+
+Set `DBT_STATE_DATABRICKS_GENERATED_ARTIFACTS=/path` to retain prewritten input
+plans and JSONL request/response/Confirm/Explain, source and binary-source pins,
+R/F, epoch/clock and violation ledgers. Default: a run-nonced directory below
+`$TMPDIR/dbt-state-databricks-generated`. Replay the same semantic plan with the
+same seed using the test command; each invocation uses fresh org/namespace scope.
+CI uploads this gate's artifacts for 14 days even on failure, independently of
+DuckDB's conditions. Artifacts say `generated-modeled-safety`,
+`hosted_verified=false`, `actual_client=false`, `real_warehouse_execution=false`.
+The complete hosted fixture replay remains a separate unchanged gate.
+
+This is a partial #161 slice. A general replay CLI/shrinker, broader grammar and
+an opt-in live generated mode are **unimplemented**. The latter requires a
+separate frozen/authorized plan through pinned dbt 2.0.11, complete hosted
+capture/replay, owned `cdo_demo_db` relations, actual measured epochs/clocks and
+independent real-warehouse reference executions. There is no scheduled cloud
+job or new credential requirement. This offline gate cannot close #161/#132,
+resolve #140's unknown-evidence policy or establish hosted conformance.
