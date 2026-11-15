@@ -43,12 +43,14 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
-| `databricks_submit_copy.rs` | Pure bounded Databricks FULL automatic-copy identity, source qualification and publication/adoption proof; separate from direct RegisterClone v1. |
+| `analyzed_workload/` | Pure shared Submit/Record analysis: strict/template/copy identities, genuine inputs, shared AST traversal and checked dependency bindings. Warehouse adapters retain dialect policy and legacy v1 domains. |
+| `copy_lifecycle.rs` | Candidate qualification, frozen copy sources/inputs/producers and subsequent adoption for submit copies and RegisterClone. Distinct legacy origin proofs preserve their characterized eligibility and age rules. |
+| `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
 | `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
-| `fingerprint.rs` | Versioned SQL/dependency/context, seed and schema-abstracted logic fingerprints shared by Submit and Record. Computes identities only. |
+| `fingerprint.rs` | Compatibility exports for the versioned identity implementation in `analyzed_workload/identity.rs`, with the existing fingerprint regressions. |
 | `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
@@ -57,8 +59,9 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 ### Shared analyzed workload contract (#181–#186)
 
-This is the implementation contract for the next extraction, not a description
-of an analyzer already shipped. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
+This is the staged implementation contract. The behavior-preserving #183
+extraction implements the shared placement and lifecycle below; the broader
+Databricks grammar and v2 proofs remain #184/#185 work. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
 records why it replaces the existing paths. #183 changes placement only;
 #184/#185 introduce new Databricks copy semantics. Both experimental Databricks
 switches remain default off throughout.

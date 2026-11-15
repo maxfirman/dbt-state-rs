@@ -3,6 +3,7 @@
 mod analyzed_workload;
 pub mod capture;
 pub mod config;
+mod copy_lifecycle;
 mod databricks_submit_copy;
 pub mod decision;
 mod execution;

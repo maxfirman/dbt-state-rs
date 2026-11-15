@@ -135,8 +135,8 @@ pub struct ExecutionRow {
     pub node_configs_hash: Option<String>,
     pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
-    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
-    pub(crate) submit_copy_provenance: Option<crate::databricks_submit_copy::Provenance>,
+    pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
+    pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub node_namespace_logic_hash: Option<String>,
     /// Unrendered-template logic hash (NULL outside `compare_unrendered_code`).
     pub node_template_hash: Option<String>,
@@ -567,6 +567,51 @@ impl Store {
         // Transition pending→confirmed, writing the outcome exactly once.
         let affected = sqlx::query(
             r#"
+            WITH frozen_sources AS (
+                SELECT pending_copy.id, proof.kind,
+                    current_source.last_modified_epoch AS source_epoch,
+                    EXISTS (
+                        SELECT 1
+                        WHERE to_jsonb(current_source.id) = proof.body->'source_execution_id'
+                          AND to_jsonb(current_source.last_modified_epoch) = proof.body->'source_epoch'
+                          AND NOT EXISTS (
+                              SELECT 1 FROM executions pending
+                              WHERE pending.org_id = pending_copy.org_id
+                                AND pending.warehouse_family = pending_copy.warehouse_family
+                                AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(pending_copy.table_namespace, '')
+                                AND to_jsonb(pending.physical_target_key) = proof.body->'source_physical_key'
+                                AND pending.status = 'pending'
+                          )
+                    ) AS source_current
+                FROM executions pending_copy
+                CROSS JOIN LATERAL (VALUES
+                    ('direct', pending_copy.direct_copy_provenance),
+                    ('submit', pending_copy.submit_copy_provenance)
+                ) proof(kind, body)
+                LEFT JOIN LATERAL (
+                    SELECT source.id, source.last_modified_epoch
+                    FROM executions source
+                    WHERE source.org_id = pending_copy.org_id
+                      AND source.warehouse_family = pending_copy.warehouse_family
+                      AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(pending_copy.table_namespace, '')
+                      AND to_jsonb(source.physical_target_key) = proof.body->'source_physical_key'
+                      AND source.status = 'confirmed'
+                    ORDER BY source.last_modified_epoch DESC NULLS FIRST,
+                             source.confirmed_at DESC NULLS LAST, source.id DESC
+                    LIMIT 1
+                ) current_source ON TRUE
+                WHERE pending_copy.org_id = $1
+                  AND pending_copy.request_id = ($2::uuid)::text
+                  AND pending_copy.status = 'pending'
+            ), publication AS (
+                SELECT id,
+                    bool_or(kind = 'direct' AND source_current) AS direct_current,
+                    -- Automatic v1 copy additionally requires a completion
+                    -- epoch no earlier than its source; direct v1 did not.
+                    bool_or(kind = 'submit' AND source_current
+                        AND $3::bigint >= source_epoch) AS submit_current
+                FROM frozen_sources GROUP BY id
+            )
             UPDATE executions
             SET status = 'confirmed',
                 last_modified_epoch = $3,
@@ -587,64 +632,19 @@ impl Store {
                 direct_copy_provenance = CASE
                     WHEN $7 THEN NULL
                     WHEN clone_source_table IS NOT NULL AND direct_copy_provenance IS NOT NULL
-                        AND NOT EXISTS (
-                            SELECT 1 FROM (
-                                SELECT source.id, source.last_modified_epoch
-                                FROM executions source
-                                WHERE source.org_id = executions.org_id
-                                  AND source.warehouse_family = executions.warehouse_family
-                                  AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
-                                  AND to_jsonb(source.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
-                                  AND source.status = 'confirmed'
-                                ORDER BY source.last_modified_epoch DESC NULLS FIRST,
-                                         source.confirmed_at DESC NULLS LAST, source.id DESC
-                                LIMIT 1
-                            ) current_source
-                            WHERE to_jsonb(current_source.id) = executions.direct_copy_provenance->'source_execution_id'
-                              AND to_jsonb(current_source.last_modified_epoch) = executions.direct_copy_provenance->'source_epoch'
-                              AND NOT EXISTS (
-                                  SELECT 1 FROM executions pending
-                                  WHERE pending.org_id = executions.org_id
-                                    AND pending.warehouse_family = executions.warehouse_family
-                                    AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
-                                    AND to_jsonb(pending.physical_target_key) = executions.direct_copy_provenance->'source_physical_key'
-                                    AND pending.status = 'pending'
-                              )
-                        ) THEN NULL
+                        AND NOT publication.direct_current THEN NULL
                     ELSE direct_copy_provenance END,
                 submit_copy_provenance = CASE
                     WHEN $7 THEN NULL
                     WHEN submit_copy_provenance IS NULL THEN NULL
-                    ELSE jsonb_set(submit_copy_provenance, '{published}', to_jsonb(EXISTS (
-                        SELECT 1 FROM (
-                            SELECT source.id, source.last_modified_epoch
-                            FROM executions source
-                            WHERE source.org_id = executions.org_id
-                              AND source.warehouse_family = executions.warehouse_family
-                              AND NULLIF(source.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
-                              AND to_jsonb(source.physical_target_key) = executions.submit_copy_provenance->'source_physical_key'
-                              AND source.status = 'confirmed'
-                            ORDER BY source.last_modified_epoch DESC NULLS FIRST,
-                                     source.confirmed_at DESC NULLS LAST, source.id DESC
-                            LIMIT 1
-                        ) current_source
-                        WHERE to_jsonb(current_source.id) = executions.submit_copy_provenance->'source_execution_id'
-                          AND to_jsonb(current_source.last_modified_epoch) = executions.submit_copy_provenance->'source_epoch'
-                          AND $3::bigint >= current_source.last_modified_epoch
-                          AND NOT EXISTS (
-                              SELECT 1 FROM executions pending
-                              WHERE pending.org_id = executions.org_id
-                                AND pending.warehouse_family = executions.warehouse_family
-                                AND NULLIF(pending.table_namespace, '') IS NOT DISTINCT FROM NULLIF(executions.table_namespace, '')
-                                AND to_jsonb(pending.physical_target_key) = executions.submit_copy_provenance->'source_physical_key'
-                                AND pending.status = 'pending'
-                          )
-                    ))) END,
+                    ELSE jsonb_set(submit_copy_provenance, '{published}', to_jsonb(publication.submit_current)) END,
                 node_namespace_logic_hash = CASE
                     WHEN $7 AND node_sql_hash IS NULL THEN NULL
                     ELSE node_namespace_logic_hash END,
                 confirmed_at = to_timestamp($8::double precision / 1000.0)
-            WHERE org_id = $1
+            FROM publication
+            WHERE executions.id = publication.id
+              AND org_id = $1
               AND request_id = ($2::uuid)::text
               AND status = 'pending'
               AND ((target_table <> '') = ($3::bigint IS NOT NULL))

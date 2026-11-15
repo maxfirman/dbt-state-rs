@@ -16,7 +16,7 @@ pub(crate) struct AnalyzedWorkload {
     pub rendered_hash: String,
     pub template_hash: Option<String>,
     pub copy_hash: Option<String>,
-    pub direct_provenance: Option<crate::result_copy::DirectCopyProvenance>,
+    pub direct_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub inputs: Vec<crate::store::InputTable>,
 }
 

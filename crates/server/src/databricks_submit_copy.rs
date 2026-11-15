@@ -2,20 +2,14 @@
 //! Only exact fully-qualified SELECT-star over one physical input is eligible.
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, Producer};
+#[cfg(test)]
+use crate::store::{ExecutionRow, Producer};
+#[cfg(test)]
 use crate::warehouse::Warehouse;
-use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Provenance {
-    pub version: u8,
-    pub source_execution_id: i64,
-    pub source_epoch: i64,
-    pub source_physical_key: String,
-    /// Set atomically at Confirm, only while the recorded source stays current.
-    pub published: bool,
-}
-
+#[cfg(test)]
+use crate::copy_lifecycle::{ordinary, reusable, source_admits, Provenance};
+#[cfg(test)]
 fn physical(name: &str) -> String {
     Warehouse::physical_scope_key("databricks", name)
 }
@@ -42,76 +36,6 @@ pub(crate) fn request_admits(
             .iter()
             .all(|t| t.last_modified_epoch.is_some_and(|e| e > 0))
         && evidence.node_namespace_logic_hash.is_some()
-}
-
-pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
-    row.input_tables
-        .iter()
-        .filter(|t| physical(&t.name) != physical(&row.target_table))
-        .cloned()
-        .collect()
-}
-
-/// Ordinary builds have no copy-origin marker, even when their automatic-copy
-/// eligibility hash is populated. A retained proof is also an origin marker.
-pub(crate) fn ordinary(row: &ExecutionRow) -> bool {
-    row.clone_source_table.is_none() && row.submit_copy_provenance.is_none()
-}
-
-/// This is exact freshness, not a copy-age anchor. Unknown epochs/producers,
-/// a different input binding and every copy source are conservatively refused.
-pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
-    let current: Vec<_> = evidence
-        .input_tables
-        .iter()
-        .filter(|t| physical(&t.name) != physical(&evidence.target_table))
-        .collect();
-    let recorded = inputs(source);
-    source.org_id == evidence.org_id
-        && source.table_namespace == evidence.table_namespace
-        && Warehouse::from_dialect(&source.dialect).family_key(&source.dialect)
-            == Warehouse::from_dialect(&evidence.dialect).family_key(&evidence.dialect)
-        && source.execution_type == evidence.execution_type
-        && source.status == "confirmed"
-        && ordinary(source)
-        && source.last_modified_epoch.is_some_and(|e| e > 0)
-        && source.node_namespace_logic_hash == evidence.node_namespace_logic_hash
-        && source.node_namespace_logic_hash.is_some()
-        && source.node_unique_id == evidence.node_unique_id
-        && physical(&source.target_table) != physical(&evidence.target_table)
-        && current.len() == 1
-        && recorded.len() == 1
-        && physical(&current[0].name) == physical(&recorded[0].name)
-        && current[0].last_modified_epoch.is_some_and(|e| e > 0)
-        && current[0].last_modified_epoch == recorded[0].last_modified_epoch
-        && current[0].producer == Producer::NoBuild
-        && recorded[0].producer == Producer::NoBuild
-}
-
-/// An invalid publication cannot regain reuse via its strict SQL hash or the
-/// generic namespace-adoption path. Legacy direct-copy rows use v1 separately.
-pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
-    if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks || ordinary(row) {
-        return true;
-    }
-    if row.clone_source_table.is_none() {
-        return false;
-    }
-    if row.node_sql_hash.is_none() {
-        return true;
-    }
-    row.submit_copy_provenance.as_ref().is_some_and(|p| {
-        p.version == 1
-            && p.published
-            && p.source_epoch > 0
-            && p.source_execution_id > 0
-            && row
-                .clone_source_table
-                .as_ref()
-                .is_some_and(|s| physical(s) == p.source_physical_key)
-    }) && evidence.node_namespace_logic_hash.is_some()
-        && evidence.node_namespace_logic_hash == row.node_namespace_logic_hash
-        && evidence.node_unique_id == row.node_unique_id
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 //! Frozen v1 adapter: these exact token rules remain until separately versioned.
+use crate::copy_lifecycle::DirectCopyProvenance;
 use crate::query_cache as qc;
-use crate::result_copy::DirectCopyProvenance;
 use crate::warehouse::Warehouse;
 use sha2::{Digest, Sha256};
 fn physical(name: &str) -> String {

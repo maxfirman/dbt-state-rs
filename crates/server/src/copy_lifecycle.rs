@@ -1,0 +1,505 @@
+//! Shared Result copy evidence lifecycle. Protocol lookup/planning stays in
+//! result_copy; source snapshots and adoption live here. Legacy origin formats
+//! remain distinct because direct DDL permission is weaker than adoption proof.
+use crate::execution::ExecutionEvidence;
+use crate::fingerprint::RehomedLogic;
+use crate::query_cache as qc;
+use crate::result_copy::{
+    DirectRegistration, EquivalentLookup, RegisterRefusal, RegisterRejection, RehomedReading,
+};
+use crate::store::CopyCandidate;
+use crate::store::{CopySourceBuild, ExecutionRow, InputTable, Producer};
+use crate::warehouse::Warehouse;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Provenance {
+    pub version: u8,
+    pub source_execution_id: i64,
+    pub source_epoch: i64,
+    pub source_physical_key: String,
+    /// Set atomically at Confirm, only while the recorded source stays current.
+    pub published: bool,
+}
+
+fn physical(name: &str) -> String {
+    Warehouse::physical_scope_key("databricks", name)
+}
+
+fn source_inputs(row: &ExecutionRow, dialect: &str) -> Vec<InputTable> {
+    let own = Warehouse::physical_scope_key(dialect, &row.target_table);
+    row.input_tables
+        .iter()
+        .filter(|t| Warehouse::physical_scope_key(dialect, &t.name) != own)
+        .cloned()
+        .collect()
+}
+
+pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
+    source_inputs(row, "databricks")
+}
+
+fn complete_inputs(inputs: &[InputTable]) -> bool {
+    inputs
+        .iter()
+        .all(|t| t.last_modified_epoch.is_some() && !matches!(t.producer, Producer::Unrecorded))
+}
+
+/// A source frozen at planning, never reconstructed from the adopter's reads.
+struct SourceSnapshot {
+    id: i64,
+    epoch: Option<i64>,
+    key: String,
+    inputs: Vec<InputTable>,
+    runtime_ms: Option<i64>,
+}
+impl SourceSnapshot {
+    fn new(source: &ExecutionRow, dialect: &str, source_table: &str) -> Self {
+        Self {
+            id: source.id,
+            epoch: source.last_modified_epoch,
+            key: Warehouse::physical_scope_key(dialect, source_table),
+            inputs: source_inputs(source, dialect),
+            runtime_ms: source.execution_runtime_ms,
+        }
+    }
+    fn submit_provenance(&self) -> Provenance {
+        Provenance {
+            version: 1,
+            source_execution_id: self.id,
+            source_epoch: self.epoch.expect("qualified source epoch"),
+            source_physical_key: self.key.clone(),
+            published: false,
+        }
+    }
+}
+
+/// DDL may be granted without this proof. Missing/unknown legacy proof only
+/// prevents adoption, preserving the direct registration protocol contract.
+pub(crate) fn freeze_direct(
+    req: &qc::CloneRequest,
+    source: &ExecutionRow,
+) -> Option<DirectRegistration> {
+    let mut provenance = source.direct_copy_provenance.clone()?;
+    let snapshot = SourceSnapshot::new(source, &req.dialect, &req.clone_source_table);
+    if provenance.version != 1 || !complete_inputs(&snapshot.inputs) {
+        return None;
+    }
+    provenance.source_execution_id = Some(snapshot.id);
+    provenance.source_epoch = snapshot.epoch;
+    provenance.source_physical_key = Some(snapshot.key);
+    Some(DirectRegistration {
+        provenance,
+        inputs: snapshot.inputs,
+        runtime_ms: snapshot.runtime_ms,
+    })
+}
+
+/// Ordinary builds have no copy-origin marker, even when their automatic-copy
+/// eligibility hash is populated. A retained proof is also an origin marker.
+pub(crate) fn ordinary(row: &ExecutionRow) -> bool {
+    row.clone_source_table.is_none() && row.submit_copy_provenance.is_none()
+}
+
+/// This is exact freshness, not a copy-age anchor. Unknown epochs/producers,
+/// a different input binding and every copy source are conservatively refused.
+pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
+    let current: Vec<_> = evidence
+        .input_tables
+        .iter()
+        .filter(|t| physical(&t.name) != physical(&evidence.target_table))
+        .collect();
+    let recorded = inputs(source);
+    source.org_id == evidence.org_id
+        && source.table_namespace == evidence.table_namespace
+        && Warehouse::from_dialect(&source.dialect).family_key(&source.dialect)
+            == Warehouse::from_dialect(&evidence.dialect).family_key(&evidence.dialect)
+        && source.execution_type == evidence.execution_type
+        && source.status == "confirmed"
+        && ordinary(source)
+        && source.last_modified_epoch.is_some_and(|e| e > 0)
+        && source.node_namespace_logic_hash == evidence.node_namespace_logic_hash
+        && source.node_namespace_logic_hash.is_some()
+        && source.node_unique_id == evidence.node_unique_id
+        && physical(&source.target_table) != physical(&evidence.target_table)
+        && current.len() == 1
+        && recorded.len() == 1
+        && physical(&current[0].name) == physical(&recorded[0].name)
+        && current[0].last_modified_epoch.is_some_and(|e| e > 0)
+        && current[0].last_modified_epoch == recorded[0].last_modified_epoch
+        && current[0].producer == Producer::NoBuild
+        && recorded[0].producer == Producer::NoBuild
+}
+
+/// An invalid publication cannot regain reuse via its strict SQL hash or the
+/// generic namespace-adoption path. Legacy direct-copy rows use v1 separately.
+pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
+    if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks || ordinary(row) {
+        return true;
+    }
+    if row.clone_source_table.is_none() {
+        return false;
+    }
+    if row.node_sql_hash.is_none() {
+        return true;
+    }
+    row.submit_copy_provenance.as_ref().is_some_and(|p| {
+        p.version == 1
+            && p.published
+            && p.source_epoch > 0
+            && p.source_execution_id > 0
+            && row
+                .clone_source_table
+                .as_ref()
+                .is_some_and(|s| physical(s) == p.source_physical_key)
+    }) && evidence.node_namespace_logic_hash.is_some()
+        && evidence.node_namespace_logic_hash == row.node_namespace_logic_hash
+        && evidence.node_unique_id == row.node_unique_id
+}
+
+/// Immutable direct-copy evidence, distinct from automatic namespace identity.
+/// Unknown versions and legacy NULL cannot authorize adoption. Source context
+/// is retained even though this first subset proves its only read fully qualified.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DirectCopyProvenance {
+    pub version: u8,
+    pub identity: String,
+    pub default_catalog: String,
+    pub default_schema: Option<String>,
+    pub source_execution_id: Option<i64>,
+    pub source_epoch: Option<i64>,
+    pub source_physical_key: Option<String>,
+}
+
+pub(crate) fn direct_copy_matches(
+    evidence: &ExecutionEvidence,
+    row: &crate::store::ExecutionRow,
+) -> bool {
+    let (Some(current), Some(recorded)) = (
+        &evidence.direct_copy_provenance,
+        &row.direct_copy_provenance,
+    ) else {
+        return false;
+    };
+    recorded.version == 1
+        && current.version == 1
+        && recorded.source_execution_id.is_some()
+        && recorded.source_epoch.is_some()
+        && recorded.source_physical_key.is_some()
+        && recorded.identity == current.identity
+        && row.node_unique_id.is_some()
+        && row.node_unique_id == evidence.node_unique_id
+        && complete_inputs(&row.input_tables)
+}
+
+impl ExecutionEvidence {
+    /// A client-requested copy (RegisterClone) of `req.clone_source_table` into
+    /// `req.target_table`. It inherits the source's schema-abstracted logic
+    /// identity, when the source has one, so later submits reuse the copy once
+    /// confirmed. From the source's current build, when it was read
+    /// ([`CopySourceBuild`]), it also inherits the runtime, which hosted
+    /// reports when it reuses the copy, and the names of the upstreams the
+    /// build recorded, for Explain (#93). A copy has no rendered SQL, node
+    /// state or recorded inputs of its own.
+    pub(crate) fn copy_registration(
+        org_id: &str,
+        req: &qc::CloneRequest,
+        inherited_ns_logic: Option<String>,
+        source: Option<&CopySourceBuild>,
+        direct: Option<DirectRegistration>,
+    ) -> Self {
+        let mut evidence = Self::node(
+            org_id,
+            req.target_table.clone(),
+            req.dialect.clone(),
+            req.table_namespace.clone(),
+            req.execution_type,
+            None,
+        );
+        evidence.node_namespace_logic_hash = inherited_ns_logic;
+        evidence.inherited_runtime_ms = source.and_then(|s| s.execution_runtime_ms);
+        evidence.clone_source_inputs = source.map(|s| s.input_names.clone());
+        evidence.node_unique_id = req.labels.get("dbt_node_unique_id").cloned();
+        evidence.clone_source_table = Some(req.clone_source_table.clone());
+        if let Some(direct) = direct {
+            evidence.direct_copy_provenance = Some(direct.provenance);
+            evidence.input_tables = direct.inputs;
+            evidence.inherited_runtime_ms = direct.runtime_ms;
+        }
+        evidence
+    }
+
+    /// The same evidence for a Result copy of `source_table` into this target.
+    pub(crate) fn copied_from(&self, source_table: &str) -> Self {
+        let mut evidence = self.clone();
+        evidence.clone_source_table = Some(source_table.to_owned());
+        evidence
+    }
+
+    pub(crate) fn submit_copied_from(&self, source: &ExecutionRow) -> Self {
+        let snapshot = SourceSnapshot::new(source, &source.dialect, &source.target_table);
+        let provenance = snapshot.submit_provenance();
+        let mut evidence = self.copied_from(&source.target_table);
+        evidence.input_tables = snapshot.inputs;
+        evidence.raw_input_tables = None;
+        evidence.submit_copy_provenance = Some(provenance);
+        evidence
+    }
+}
+
+/// A client-requested copy (RegisterClone) records NO upstream evidence: it
+/// is clone-origin, carries no rendered identity and no inputs. When such a
+/// row is the freshness anchor, the submit's CURRENT inputs stand in as the
+/// recorded set, each recorded at the copy's own build epoch (or at its
+/// current epoch, if earlier), so an upstream counts as drifted exactly when
+/// it is newer than the copy (clone-age anchor, verified live). Their
+/// producers are unrecorded: a copy is never an upstream query change.
+///
+/// Every other row keeps exactly what it recorded. In particular a copy made
+/// by the SQL-submit fallback recorded that submit's inputs; an EMPTY list
+/// there means "no upstreams", and a later submit with upstreams must rebuild.
+///
+/// The single rule for both the decision (here) and its explanation
+/// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
+pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
+    if is_copy_registration(anchor)
+        && anchor.direct_copy_provenance.is_none()
+        && anchor.input_tables.is_empty()
+    {
+        let built = anchor.last_modified_epoch;
+        anchor.input_tables = current
+            .iter()
+            .map(|t| InputTable {
+                name: t.name.clone(),
+                last_modified_epoch: match (t.last_modified_epoch, built) {
+                    (Some(cur), Some(built)) => Some(cur.min(built)),
+                    _ => built,
+                },
+                producer: Producer::Unrecorded,
+            })
+            .collect();
+    }
+}
+
+/// A client-requested copy (RegisterClone): clone-origin with no rendered
+/// identity of its own. A Result copy made on submit records the submit's
+/// identity and is not one.
+pub(crate) fn is_copy_registration(row: &ExecutionRow) -> bool {
+    row.clone_source_table.is_some() && row.node_sql_hash.is_none()
+}
+
+/// Copy adoption without the execution type: a clone-origin row whose logic
+/// identity is the submit's, also read in the copy source's schema for a
+/// client-requested copy.
+pub(crate) fn copy_logic_matches(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    row: &ExecutionRow,
+) -> bool {
+    if row.dialect == req.dialect
+        && row.clone_source_table.is_some()
+        && direct_copy_matches(evidence, row)
+    {
+        return true;
+    }
+    if crate::warehouse::Warehouse::from_dialect(&req.dialect)
+        == crate::warehouse::Warehouse::Databricks
+    {
+        return row.dialect == req.dialect
+            && row.node_sql_hash.is_some()
+            && reusable(evidence, row)
+            && row.clone_source_table.is_some();
+    }
+    row.dialect == req.dialect
+        && row.clone_source_table.is_some()
+        && evidence.node_namespace_logic_hash.is_some()
+        && (row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
+            || is_copy_registration(row) && rehomed_logic_matches(req, row))
+}
+
+/// Whether the submit, with its Target relation's schema read as the copy
+/// source's schema, has the schema-abstracted logic the copy inherited from
+/// its source build (`fingerprint::rehomed_copy_logic_hash`, #93). VERIFIED
+/// LIVE 2026-11-11 (explain_post_copy_identity.jsonl): hosted reuses a
+/// dev-clone pre-step copy whose post-copy submit reads the source build's
+/// fixed prod-schema source, or a view resolved per target over it, which the
+/// request-relative abstraction alone does not match.
+fn rehomed_logic_matches(req: &qc::SubmitEnrichedSqlRequest, row: &ExecutionRow) -> bool {
+    use crate::sql_norm::schema_of_object_name;
+    let (Some(from), Some(to)) = (
+        req.target_table.as_deref().and_then(schema_of_object_name),
+        row.clone_source_table
+            .as_deref()
+            .and_then(schema_of_object_name),
+    ) else {
+        return false;
+    };
+    row.node_namespace_logic_hash.is_some()
+        && crate::fingerprint::rehomed_copy_logic_hash(
+            &crate::execution::sql_execution(req),
+            &from,
+            &to,
+        ) == row.node_namespace_logic_hash
+}
+
+impl RehomedReading {
+    /// `logic`, read by a submit that recorded `input_tables` and builds
+    /// `own_target`, whose schema `from` is read as `logic.schema`.
+    pub(crate) fn new(
+        logic: RehomedLogic,
+        input_tables: &[InputTable],
+        own_target: &str,
+        from: &str,
+    ) -> Self {
+        let from = crate::sql_norm::canonical_schema_key(from);
+        let reads = canonical_reads(input_tables, own_target, Some((&from, &logic.schema)));
+        let schemas: std::collections::BTreeSet<&str> = reads
+            .iter()
+            .filter(|name| name.len() == 3)
+            .map(|name| name[1].as_str())
+            .collect();
+        let covered = logic.named.iter().all(|s| schemas.contains(s.as_str()));
+        Self {
+            reads: covered.then_some(reads),
+            logic,
+        }
+    }
+}
+
+/// `input_tables` other than `own_target`, each as its canonical name
+/// components (`sql_norm::canonical_identifier`), sorted and deduplicated;
+/// with `rehome = Some((from, to))`, a three-part name in canonical schema
+/// `from` is read in `to`. Two spellings of one relation read the same, so
+/// the submit fallback judges a candidate admitted on its reads as a
+/// same-upstream equivalent (PR #127 review).
+pub(crate) fn canonical_reads(
+    input_tables: &[InputTable],
+    own_target: &str,
+    rehome: Option<(&str, &str)>,
+) -> Vec<Vec<String>> {
+    use crate::sql_norm::{canonical_identifier, split_object_name_components};
+    let canonical = |name: &str| -> Vec<String> {
+        split_object_name_components(name)
+            .iter()
+            .map(|c| canonical_identifier(c))
+            .collect()
+    };
+    let own = canonical(own_target);
+    let mut reads: Vec<Vec<String>> = input_tables
+        .iter()
+        .map(|t| canonical(&t.name))
+        .filter(|name| *name != own)
+        .map(|mut name| {
+            if let (Some((from, to)), 3) = (rehome, name.len()) {
+                if name[1] == from {
+                    name[1] = to.to_owned();
+                }
+            }
+            name
+        })
+        .collect();
+    reads.sort();
+    reads.dedup();
+    reads
+}
+
+impl EquivalentLookup<'_> {
+    /// Every logic identity a candidate may have. A reading that could admit
+    /// no candidate ([`Self::admits`]) is not looked up.
+    pub(crate) fn logic_hashes(&self) -> Vec<&str> {
+        std::iter::once(self.node_namespace_logic_hash)
+            .chain(
+                self.rehomed
+                    .iter()
+                    .filter(|r| self.reading_may_admit(r))
+                    .map(|r| r.logic.hash.as_str()),
+            )
+            .collect()
+    }
+
+    /// Whether a lookup that may copy has the reads to verify `reading`.
+    fn reading_may_admit(&self, reading: &RehomedReading) -> bool {
+        self.execution_type.is_none() || reading.reads.is_some()
+    }
+
+    /// Whether `candidate` is an equivalent: it has the submit's logic, or
+    /// the submit's logic read in the schema of the candidate's Target
+    /// relation. The submit so read is the candidate's build request with one
+    /// schema substituted, each dependency name still bound to its definition
+    /// (AGENTS.md invariant 4). A rehomed identity matched by a candidate in
+    /// another schema is not one: that candidate read other relations.
+    ///
+    /// The identity abstracts the schemas a build resolved its references
+    /// in, and a Target relation's schema does not show them: a build into
+    /// the prod schema may have resolved them in another one. So when the
+    /// submit may be copied, the candidate must also have recorded exactly
+    /// the upstream reads of the submit so read, which name each schema that
+    /// reading names (PR #127 review). A lookup that only reports codes
+    /// builds either way and admits on the Target relation's schema.
+    pub(crate) fn admits(&self, candidate: &CopyCandidate) -> bool {
+        use crate::sql_norm::{canonical_schema_key, schema_of_object_name};
+        let Some(hash) = candidate.node_namespace_logic_hash.as_deref() else {
+            return false;
+        };
+        if hash == self.node_namespace_logic_hash {
+            return true;
+        }
+        let Some(schema) = schema_of_object_name(&candidate.target_table) else {
+            return false;
+        };
+        let schema = canonical_schema_key(&schema);
+        self.rehomed.iter().any(|r| {
+            r.logic.hash == hash
+                && r.logic.schema == schema
+                && (self.execution_type.is_none()
+                    || r.reads.as_ref().is_some_and(|reads| {
+                        *reads
+                            == canonical_reads(
+                                &candidate.input_tables,
+                                &candidate.target_table,
+                                None,
+                            )
+                    }))
+        })
+    }
+}
+
+pub(crate) fn qualify_registration(
+    req: &qc::CloneRequest,
+    source: Option<&ExecutionRow>,
+) -> Result<Option<DirectRegistration>, RegisterRefusal> {
+    let same_source = source.is_some_and(|source| {
+        source.execution_type == req.execution_type
+            && source.last_modified_epoch == req.clone_source_last_modified_epoch
+            && source.node_unique_id.as_deref()
+                == req.labels.get("dbt_node_unique_id").map(String::as_str)
+    });
+    // The captured native reverse-copy attempt reaches a source that
+    // is already a copy, at limit1. Preserve the refusal and report its
+    // measured cause; larger limits still gain no chain permission.
+    if same_source
+        && req.clone_chain_depth_limit == Some(1)
+        && req.clone_source_last_modified_epoch.is_some_and(|e| e > 0)
+        && source.is_some_and(|s| {
+            s.clone_source_table.is_some()
+                && s.node_unique_id
+                    .as_deref()
+                    .is_some_and(|uid| !uid.is_empty())
+        })
+    {
+        return Err(RegisterRefusal::Reject(
+            RegisterRejection::ChainLimitExceeded,
+        ));
+    }
+    let eligible = same_source
+        && source.is_some_and(|source| {
+            source.clone_source_table.is_none() && source.node_sql_hash.is_some()
+        });
+    if !eligible {
+        return Err(RegisterRefusal::Reject(
+            RegisterRejection::ForcedNotEligible,
+        ));
+    }
+    let direct = source.and_then(|source| freeze_direct(req, source));
+    Ok(direct)
+}

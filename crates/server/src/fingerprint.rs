@@ -1180,7 +1180,6 @@ mod pinned_values {
     //! Warehouse rules took over copy eligibility and version tags (#49).
     use super::*;
     use crate::query_cache as qc;
-    use std::collections::HashMap;
 
     fn duckdb_copy() -> qc::SqlExecution {
         qc::SqlExecution {

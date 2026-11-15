@@ -1,5 +1,6 @@
 //! Execution evidence and publication shared by Submit, Record and result copies.
-//! Keep identity construction here; `submit_decision` selects candidates and writes
+//! Workload analysis supplies identities and inputs; copy_lifecycle freezes copies.
+//! `submit_decision` selects candidates and writes
 //! Submit's pending rows (its selector writes are best effort), decision remains
 //! pure, and the gRPC adapter owns wire responses. Record publishes its complete
 //! batch and selector state in one transaction.
@@ -9,7 +10,7 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::{logic_identity, CopySourceBuild, InputTable, Producer, Store};
+use crate::store::{logic_identity, InputTable, Producer, Store};
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -35,32 +36,6 @@ fn node_unique_id(
         .map(str::to_owned)
 }
 
-/// Whether `name` is the data test's own audit relation, which a
-/// `store_failures` test writes and the client then reports in `tables`
-/// (#88). Client 2.0.11 (dbt-fusion `collect_table_modified_infos`) always
-/// adds the node's own relation (`node.database()`.`node.schema()`.alias) to
-/// `tables` when it exists; a data test's relation is where it stores its
-/// failures. Like an incremental's read of its own target, that is the test's
-/// own write, not an upstream: hosted neither rebuilds for it nor lists it
-/// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
-///
-/// Recognized only from the request: a data test whose semantic extras set
-/// `store_failures: true`, and a relation that is exactly
-/// `default_catalog`.`default_schema`.`dbt_node_name` under the warehouse's
-/// identifier rules (Snowflake only). Any other table still counts, so a
-/// changed dependency set still rebuilds. `default_schema` is the test's own
-/// schema, also when a schema macro puts it outside the target schema
-/// (VERIFIED LIVE 2026-11-11, explain_store_failures_audit_schema.jsonl, #106).
-/// A test with a configured alias is not named by the request: no request
-/// field carries the alias (explain_store_failures_audit_alias.jsonl). Its
-/// audit relation is recognized by elimination instead
-/// ([`unnamed_audit_relation`], #123, ADR 0008).
-///
-/// The request does not carry the alias, so a relation the test reads can
-/// have exactly that name (a test `orders` aliased `orders_audit` that reads
-/// `orders`). The audit relation is the test's output and never appears in its
-/// SQL, so a name the test's SQL or one of its query dependencies mentions is
-/// always kept as an input.
 pub(crate) use crate::analyzed_workload::inputs::sql_inputs;
 
 /// The identity and inputs of one execution, as submitted, recorded or
@@ -84,8 +59,8 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
-    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
-    pub(crate) submit_copy_provenance: Option<crate::databricks_submit_copy::Provenance>,
+    pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
+    pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
     /// The unrendered-template logic hash, set only in `compare_unrendered_code`
     /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
@@ -209,7 +184,7 @@ impl ExecutionEvidence {
         }
     }
 
-    fn node(
+    pub(crate) fn node(
         org_id: &str,
         target_table: String,
         dialect: String,
@@ -286,64 +261,6 @@ impl ExecutionEvidence {
                 qc::ModelExecutionType::Values as i32,
                 req.dbt_node_state.as_ref(),
             )
-        }
-    }
-
-    /// A client-requested copy (RegisterClone) of `req.clone_source_table` into
-    /// `req.target_table`. It inherits the source's schema-abstracted logic
-    /// identity, when the source has one, so later submits reuse the copy once
-    /// confirmed. From the source's current build, when it was read
-    /// ([`CopySourceBuild`]), it also inherits the runtime, which hosted
-    /// reports when it reuses the copy, and the names of the upstreams the
-    /// build recorded, for Explain (#93). A copy has no rendered SQL, node
-    /// state or recorded inputs of its own.
-    pub(crate) fn copy_registration(
-        org_id: &str,
-        req: &qc::CloneRequest,
-        inherited_ns_logic: Option<String>,
-        source: Option<&CopySourceBuild>,
-    ) -> Self {
-        Self {
-            node_namespace_logic_hash: inherited_ns_logic,
-            inherited_runtime_ms: source.and_then(|s| s.execution_runtime_ms),
-            clone_source_inputs: source.map(|s| s.input_names.clone()),
-            node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
-            clone_source_table: Some(req.clone_source_table.clone()),
-            ..Self::node(
-                org_id,
-                req.target_table.clone(),
-                req.dialect.clone(),
-                req.table_namespace.clone(),
-                req.execution_type,
-                None,
-            )
-        }
-    }
-
-    /// The same evidence for a Result copy of `source_table` into this target.
-    pub(crate) fn copied_from(&self, source_table: &str) -> Self {
-        Self {
-            clone_source_table: Some(source_table.to_owned()),
-            ..self.clone()
-        }
-    }
-
-    pub(crate) fn submit_copied_from(&self, source: &crate::store::ExecutionRow) -> Self {
-        Self {
-            clone_source_table: Some(source.target_table.clone()),
-            input_tables: crate::databricks_submit_copy::inputs(source),
-            raw_input_tables: None,
-            submit_copy_provenance: Some(crate::databricks_submit_copy::Provenance {
-                version: 1,
-                source_execution_id: source.id,
-                source_epoch: source.last_modified_epoch.expect("qualified source epoch"),
-                source_physical_key: crate::warehouse::Warehouse::physical_scope_key(
-                    &source.dialect,
-                    &source.target_table,
-                ),
-                published: false,
-            }),
-            ..self.clone()
         }
     }
 
@@ -605,6 +522,7 @@ pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
 mod tests {
     use super::*;
     use crate::query_cache::ModelExecutionType;
+    use crate::store::CopySourceBuild;
 
     // Frozen from the unmodified eff5727 implementation, before extraction.
     // This is not a production hasher invoked with a historical version tag.
@@ -1385,6 +1303,7 @@ mod tests {
             &clone_request(),
             Some("logic".into()),
             Some(&source),
+            None,
         )
         .pending("req-1", "dec-1");
 
@@ -1423,7 +1342,7 @@ mod tests {
 
     #[test]
     fn copy_registration_without_source_logic_inherits_nothing() {
-        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None);
+        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None, None);
 
         assert_eq!(e.node_namespace_logic_hash, None);
         assert_eq!(e.inherited_runtime_ms, None);

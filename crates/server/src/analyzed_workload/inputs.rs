@@ -1,6 +1,32 @@
 //! Genuine input observations, including the characterized audit-output exclusions.
 use crate::query_cache as qc;
 use crate::store::InputTable;
+/// Whether `name` is the data test's own audit relation, which a
+/// `store_failures` test writes and the client then reports in `tables`
+/// (#88). Client 2.0.11 (dbt-fusion `collect_table_modified_infos`) always
+/// adds the node's own relation (`node.database()`.`node.schema()`.alias) to
+/// `tables` when it exists; a data test's relation is where it stores its
+/// failures. Like an incremental's read of its own target, that is the test's
+/// own write, not an upstream: hosted neither rebuilds for it nor lists it
+/// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
+///
+/// Recognized only from the request: a data test whose semantic extras set
+/// `store_failures: true`, and a relation that is exactly
+/// `default_catalog`.`default_schema`.`dbt_node_name` under the warehouse's
+/// identifier rules (Snowflake only). Any other table still counts, so a
+/// changed dependency set still rebuilds. `default_schema` is the test's own
+/// schema, also when a schema macro puts it outside the target schema
+/// (VERIFIED LIVE 2026-11-11, explain_store_failures_audit_schema.jsonl, #106).
+/// A test with a configured alias is not named by the request: no request
+/// field carries the alias (explain_store_failures_audit_alias.jsonl). Its
+/// audit relation is recognized by elimination instead
+/// ([`unnamed_audit_relation`], #123, ADR 0008).
+///
+/// The request does not carry the alias, so a relation the test reads can
+/// have exactly that name (a test `orders` aliased `orders_audit` that reads
+/// `orders`). The audit relation is the test's output and never appears in its
+/// SQL, so a name the test's SQL or one of its query dependencies mentions is
+/// always kept as an input.
 fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
     if !stores_failures(req) {
         return false;
