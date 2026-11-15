@@ -396,6 +396,7 @@ fn restricted_emitter_and_model_match_worked_symbolic_intent() {
     assert_eq!(execute(&initial(), &Query::Source(3)).rows, expected);
     assert_eq!(reference(&initial(), &Query::Source(3)).rows, expected);
     assert_eq!(plan(2, false).len(), 44);
+    assert_eq!(plan(u64::MAX, false).len(), 44);
     assert_eq!(plan(2, true).len(), 6);
 }
 
