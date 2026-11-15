@@ -432,9 +432,18 @@ records diagnosis, byteexact admission and uniform current-source gates.
 Admission certifies this bounded hosted history. The fresh Rust physical
 counterpart now passes the same ten cells and whole supplemental replay with
 actual pre-Drop audit clocks; see the [bounded hosted/native report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-microbatch-2026-11-15.md).
-This fixture does not complete whole #150 or its
-#138/#140 dependencies, nor independently characterize Target-only external
-modification policy.
+This fixture alone does not cover implicit scheduling or nondefault settings,
+nor independently characterize Target-only external modification policy.
+
+`databricks_moving_windows.jsonl` adds the complete 77-RPC hosted supplement:
+the six-RPC failed configured-predicate attempt and byte-exact 71-RPC same-graph
+continuation. It retains eleven full Explain calls, lookback0/2, actual implicit
+UTC windows, single-batch configured predicates and five required own-runtime
+SKIPs. The failed partial result is never confirmed or reused. Strict public
+replay asserts every captured RPC without new gaps or masks. The native
+interruption/public-hydration sessions and their actual clocks remain separately
+attributed supplemental evidence, not hosted fixtures. See
+[the supported boundary and client limitation](../docs/databricks-microbatch.md).
 
 ### Databricks bounded timestamp-ignore snapshot history (#151, 2026-11-15)
 
