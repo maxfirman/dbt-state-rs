@@ -169,6 +169,19 @@ def validate_failure(error,calls,contract):
         raise Refused('non-schema client failure: discovery STOP')
 
 
+def schema_failure_mode(error,contract):
+    """Classify before any follow-up command; unreviewed schema evidence stops later."""
+    text=str(error);match=re.match(r'^client invocation exited ([1-9][0-9]*);',text)
+    if (not match or int(match[1])==124
+            or not all(word in text.lower() for word in ('schema','source','target','note'))
+            or not any(word in text.lower() for word in ('sync','mismatch','differ'))):
+        raise Refused('unrelated client failure')
+    if contract:
+        validate_failure(error,[],contract)
+        return 'reviewed-schema-failure'
+    return 'unreviewed-schema-discovery'
+
+
 def unchanged_target(before,after):
     same_rows=(before['rows']['columns']==after['rows']['columns']
                and Counter(map(tuple,before['rows']['rows']))==Counter(map(tuple,after['rows']['rows'])))
@@ -329,23 +342,26 @@ class SchemaRecovery(Merge):
         raw=(self.project/'models/consumer.sql').read_bytes()
         if cell.body==1 and hasattr(self,'body_v1') and raw!=self.body_v1:raise Refused('v1 raw body changed')
         if cell.body==1:self.body_v1=raw
-        lo=len(self.wire());error=None
+        lo=len(self.wire());error=None;failure_mode=None
         try:
             self.dbt(label,['run','--select','consumer'])
         except Refused as caught:
             # Only the two explicit failure cells may inspect a nonzero result.
             # Everything else preserves Campaign.dbt's strict success contract.
             if cell.outcome!='expected_schema_failure':raise
+            try:failure_mode=schema_failure_mode(caught,self.clearance.get('schema_failure_contract'))
+            except Refused:raise caught
             error=caught
         calls=self.wire()[lo:]
         path=self.work/'targets'/f'{self.n:03d}_{label}'
-        self.save('discovery/'+label+'.json',{'client_error':str(error) if error else None,'calls':calls,
+        self.save('discovery/'+label+'.json',{'client_error':str(error) if error else None,'failure_mode':failure_mode,'calls':calls,
           'artifacts':{name:(path/name).exists() for name in ('run_results.json','manifest.json')},
           'hosted_policy':'UNKNOWN; no approximate fixture or inferred completion'})
         query=(self.work/'logs'/f'{self.n:03d}_{label}'/'query_log.sql').read_text()
         self.save('materialization/'+label+'.sql',query)
         # Check the physical failure interval even when engagement/status is new.
         if cell.outcome=='expected_schema_failure':
+            if error is None:raise Refused('expected schema failure unexpectedly succeeded; STOP')
             self.checkpoint(label)
             assert_failure_sql(query,source,target,self.scope.temporary)
             submits=[r for r in calls if r['method']=='SubmitEnrichedSQL']

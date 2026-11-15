@@ -24,7 +24,10 @@ allocates no schema and permits no cleanup. A fresh root inventory, capacity,
 allocation identity and separate backend grant are required for any live work.
 
 Campaign and lifecycle failure handling are composed without relaxing successful
-client runs. Failed cells preserve artifacts, complete calls and observed status,
+client runs. Non-client refusals, timeout and unrelated diagnostics are rethrown
+before any follow-up checkpoint or Explain; an unreviewed nonzero schema-mismatch
+diagnostic enters an explicit discovery branch and still stops before recovery.
+Failed cells preserve artifacts, complete calls and observed status,
 then compare unchanged Target rows/schema/properties/full history and prohibit
 Confirm/Record/RegisterClone. Reference execution uses the canonical isolated
 zero-RPC canary with a schema-aware validator and typed literal SQL.
@@ -60,7 +63,7 @@ this preparation. Live settings acceptance, schema/drop/type breadth, refresh
 configuration, ambiguity cases, generated lifecycle, restart/upgrade and native
 identity/freshness dependencies remain required work.
 
-Validation on the preparation branch: 11 focused synthetic probes pass, all 27
+Validation on the preparation branch: 12 focused synthetic probes pass, all 28
 MERGE helper probes pass, the Rust wrapper has one credential-free pass and one
 ignored live test, focused harness-test Clippy passes with warnings denied, and
 workspace formatting passes. No whole-workspace or fresh live acceptance claim

@@ -166,4 +166,41 @@ print('[{"id":1,"amount":11,"tag":"one-new","note":"n1"},{"id":2,"amount":20,"ta
                     checks=m.show_reference(campaign,'synthetic',sql,bag,api(m.C4,bag.rows),validator=m.assert_reference)
                     self.assertTrue(checks['zero_reference_rpcs'])
 
+    def test_invocation_rethrows_unrelated_failures_before_checkpoint_or_explain(self):
+        from types import SimpleNamespace
+        class DiagnosticCheckpoint(Exception):pass
+        class ClientBoundary(m.SchemaRecovery):
+            def wire(self):
+                return ([{'method':'SubmitEnrichedSQL','response':{'response':{'ready_to_execute':{'execution_decision_id':'synthetic'}}}}]
+                        if getattr(self,'attempted',False) else [])
+            def dbt(self,*args):
+                self.attempted=True
+                raise self.client_error
+            def checkpoint(self,label):self.effects.append('checkpoint')
+            def explain(self,*args):
+                self.effects.append('explain')
+                raise DiagnosticCheckpoint()
+        contract={'exit_code':42,'required_diagnostic':'schemas out of sync: source has note; target lacks note'}
+        candidates=[(Refused('proxy unexpectedly stopped'),None,False),
+          (Refused('client invocation exited 124; timeout'),None,False),
+          (Refused('client invocation exited 42; authentication denied'),None,False),
+          (Refused('client invocation exited 42; authentication denied'),contract,False),
+          (Refused('client invocation exited 43; schemas out of sync: source has note; target lacks note'),contract,False),
+          (Refused('client invocation exited 42; schemas out of sync: source has note; target lacks note'),contract,True),
+          (Refused('client invocation exited 43; schemas out of sync: source has note; target lacks note'),None,True)]
+        for error,lock,reaches_diagnostic in candidates:
+            with self.subTest(error=error,contract=lock),tempfile.TemporaryDirectory() as tmp:
+                c=ClientBoundary.__new__(ClientBoundary);c.work=Path(tmp);c.project=Path(tmp)/'project';c.secrets=[]
+                (c.project/'models').mkdir(parents=True);(c.project/'models/consumer.sql').write_text('select id, amount, tag, note from source')
+                c.n=3;c.scope=SimpleNamespace(relation=lambda role,name:name,temporary='tmp');c.effects=[];c.client_error=error
+                c.clearance={'schema_failure_contract':lock} if lock else {}
+                logs=c.work/'logs/003_schema_fail';logs.mkdir(parents=True);(logs/'query_log.sql').write_text('select 1;')
+                if reaches_diagnostic:
+                    with self.assertRaises(DiagnosticCheckpoint):c.invocation('schema_fail')
+                    self.assertEqual(c.effects,['checkpoint','explain'])
+                else:
+                    with self.assertRaises(Refused) as caught:c.invocation('schema_fail')
+                    self.assertIs(caught.exception,error)
+                    self.assertEqual(c.effects,[])
+
 if __name__=='__main__':unittest.main()
