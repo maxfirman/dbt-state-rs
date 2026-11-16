@@ -695,14 +695,12 @@ async fn analyzed_full_dependency_bindings_retain_context_and_definition() {
                         .into(),
                 default_catalog: "cdo".into(),
                 default_schema: "raw".into(),
-                ..Default::default()
             },
             qc::QueryDependency {
                 name: "cdo.views.b".into(),
                 query: "SELECT system.builtin.COUNT(id) AS n FROM input AS i(id)".into(),
                 default_catalog: "cdo".into(),
                 default_schema: "raw".into(),
-                ..Default::default()
             },
         ];
     }
