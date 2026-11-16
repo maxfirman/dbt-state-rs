@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from databricks_shared_copy import (SharedCopy, SOURCE_SCHEMA, FULL_SCHEMA, FIRST,
-    CHANGED, OBJECTS, CELLS, expected, plan)
+    CHANGED, OBJECTS, CELLS, KINDS, queries, sql_contract, expected, plan)
 from databricks_precopy import Precopy
 from databricks_snapshot_oracle import (Ledger, NATIVE_SCHEMA, assert_source,
     assert_history, check_schema, micros, SOURCE_PROJECTION_SCHEMA)
@@ -68,6 +68,94 @@ class SharedCopyGuards(unittest.TestCase):
             if mutation=='null':bad[1][1]='null'
             if mutation=='duplicate':bad.append(bad[0])
             with self.subTest(mutation=mutation),self.assertRaises(Refused):assert_history(bad,ledger,{})
+
+    def coordinator(self,phase='rust'):
+        obj=SharedCopy.__new__(SharedCopy);obj.phase=phase
+        obj.scope=SimpleNamespace(relation=lambda role,name:f'cdo_demo_db.owned_{role}.{name}')
+        obj.sql_queries=queries(obj.scope);obj.namespace=None;obj.source_requests={};obj.confirmed={};obj.shallow=set()
+        obj.configure=lambda mode:None;obj.save=lambda *a:None;obj.audit_native=lambda *a:None
+        obj.explain=lambda *a:None;obj.physical=lambda *a,**kw:None;obj.remember=lambda *a:None
+        return obj
+
+    def calls(self,obj,kind,stage,role,mode):
+        target=obj.scope.relation(role,kind);source=obj.scope.relation('prod',kind)
+        copying=stage=='copy' or (stage=='source_modified' and obj.phase=='hosted')
+        build=stage in ('source','changed','source_modified')
+        verdict='ready_to_clone' if copying and kind=='full' else 'ready_to_execute' if build else 'skip_execution'
+        runtime=100 if stage in ('source','copy','repeat') else 200
+        inputs=[obj.scope.relation('prod','a')]+([] if kind=='check' else [obj.scope.relation('prod','b')])
+        req={'sql':obj.sql_queries[kind],'execution_type':{'full':1,'merge':3,'check':7}[kind],
+            'target_table':target,'query_dependencies':[],'compare_unrendered_code':False,'table_namespace':'space',
+            'allow_clones':role=='dev' and mode!='repair','clone_chain_depth_limit':int(role=='dev' and mode!='repair'),
+            'dbt_node_state':{'node_unique_id':'node.'+kind},'tables':[{'name':n,'last_modified_epoch':5} for n in inputs]}
+        ready={'request_id':'build','execution_runtime_ms':runtime}
+        grant={'request_id':'copy','execution_runtime_ms':100,'clone_required_last_modified_epoch':10,
+            'clone_source':source,'clone_target':target,'clone_sqls':['\n        CREATE OR REPLACE TABLE '+target+' SHALLOW CLONE '+source+'\n        ']}
+        direct=[]
+        if stage=='copy' and kind!='full' or stage=='source_modified':
+            direct=[{'method':'RegisterClone','status':{'code':0},'request':{
+                'clone_source_table':source,'target_table':target,'table_namespace':'space',
+                'labels':{'dbt_node_unique_id':'node.'+kind},'clone_source_last_modified_epoch':11 if stage=='source_modified' else 10},
+                'response':{'ready_to_clone':grant if copying else None,
+                            'response':{'ready_to_clone_v1':grant} if copying else None}}]
+        if verdict=='ready_to_clone':ready=grant
+        submit={'method':'SubmitEnrichedSQL','status':{'code':0},'request':req,'response':{'response':{verdict:ready}}}
+        def confirm(identity,runtime):
+            return {'method':'ConfirmExecution','status':{'code':0},'request':{
+                'request_id':identity,'failed_to_clone':False,'last_modified_epoch':10 if role=='prod' else 20,
+                'execution_runtime_ms':runtime},'response':{'success':True}}
+        confirms=([confirm('copy',None if kind!='full' else 100)] if copying else [])
+        if build:confirms.append(confirm('build',runtime))
+        return direct+[submit]+confirms
+
+    def test_complete_invocation_history_and_hosted_repair_branch(self):
+        for phase in ('rust','hosted'):
+            obj=self.coordinator(phase);observed=[]
+            obj.physical=lambda *a,**kw:observed.append((a,kw))
+            for stage,role,kinds,mode in CELLS:
+                for kind in kinds:
+                    calls=self.calls(obj,kind,stage,role,mode)
+                    obj.dbt=lambda *a,calls=calls:calls
+                    obj.invocation(kind,stage,role,mode)
+            self.assertEqual(len(observed),15)
+            self.assertEqual(observed[-2][1]['copy_repaired'],phase=='hosted')
+            self.assertEqual(observed[-2][1]['expected_rows'],CHANGED)
+            self.assertEqual(observed[11][1]['expected_rows'],expected('merge','changed_repeat'))
+
+    def test_invocation_rejects_wire_and_causal_corruption_before_physical_check(self):
+        for fault in ('sql','type','epoch','UID','runtime','grant','missing_confirm','extra_confirm','failed_copy'):
+            obj=self.coordinator();kind='merge'
+            obj.source_requests[kind]={'dbt_node_state':{'node_unique_id':'node.merge'}}
+            obj.confirmed[obj.scope.relation('prod',kind)]={'last_modified_epoch':10,'execution_runtime_ms':100}
+            calls=self.calls(obj,kind,'copy','dev','copy')
+            submit=next(c for c in calls if c['method']=='SubmitEnrichedSQL')
+            if fault=='sql':submit['request']['sql']+=' WHERE id=1'
+            if fault=='type':submit['request']['execution_type']=1
+            if fault=='epoch':submit['request']['tables'][0]['last_modified_epoch']=None
+            if fault=='UID':submit['request']['dbt_node_state']['node_unique_id']='foreign'
+            if fault=='runtime':calls[0]['request']['clone_source_last_modified_epoch']=99
+            if fault=='grant':calls[0]['response']['ready_to_clone']['clone_sqls']=['DROP TABLE old']
+            if fault=='missing_confirm':calls.pop()
+            if fault=='extra_confirm':
+                extra=copy.deepcopy(calls[-1]);extra['request']['request_id']='extra';calls.append(extra)
+            if fault=='failed_copy':calls[-1]['request']['failed_to_clone']=True
+            obj.dbt=lambda *a:calls
+            obj.physical=lambda *a,**kw:self.fail('invalid wire reached physical acceptance')
+            with self.subTest(fault=fault),self.assertRaises(Refused):obj.invocation(kind,'copy','dev','copy')
+
+    def test_own_runtime_and_modified_source_refusal_cannot_be_faked(self):
+        for fault in ('wrong_runtime','unsafe_grant'):
+            obj=self.coordinator();kind='merge';source=obj.scope.relation('prod',kind);target=obj.scope.relation('dev',kind)
+            obj.source_requests[kind]={'dbt_node_state':{'node_unique_id':'node.merge'}}
+            obj.confirmed[source]={'last_modified_epoch':10,'execution_runtime_ms':100}
+            obj.confirmed[target]={'last_modified_epoch':20,'execution_runtime_ms':200}
+            if fault=='wrong_runtime':calls=self.calls(obj,kind,'repeat','dev','copy');stage='repeat';mode='copy'
+            else:
+                obj.phase='hosted';calls=self.calls(obj,kind,'source_modified','dev','refusal');obj.phase='rust'
+                stage='source_modified';mode='refusal'
+            obj.dbt=lambda *a:calls
+            obj.physical=lambda *a,**kw:self.fail('unsafe reuse reached physical acceptance')
+            with self.subTest(fault=fault),self.assertRaises(Refused):obj.invocation(kind,stage,'dev',mode)
 
     def test_existing_physical_oracle_checks_explicit_FULL_bigint_bag(self):
         # Exercise the existing campaign-facing physical interface with independent

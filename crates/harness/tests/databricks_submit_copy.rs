@@ -22,6 +22,7 @@ async fn real_dbt_copy_recovery() {
 #[ignore = "requires exact #186 shared-copy clearance, pinned dbt and fresh objects"]
 async fn real_dbt_shared_copy_analysis_acceptance() {
     let server = support::start_server_databricks_copy_native().await;
+    assert_eq!(server.state.clock, dbt_state_server::Clock::System);
     native_copy_campaign(server, "databricks_shared_copy.py", true).await;
 }
 
@@ -38,7 +39,8 @@ async fn native_copy_campaign(server: support::TestServer, script: &str, direct_
             "pid":std::process::id(), "executable":executable,
             "executable_sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable).unwrap())),
             "argv":std::env::args().collect::<Vec<_>>(), "address":server.addr.to_string(),
-            "submit_copy_opt_in":true, "direct_copy_opt_in":direct_copy
+            "submit_copy_opt_in":true, "direct_copy_opt_in":direct_copy,
+            "clock":format!("{:?}", server.state.clock)
         }))
         .unwrap(),
     )
