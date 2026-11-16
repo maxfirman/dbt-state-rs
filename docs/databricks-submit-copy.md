@@ -51,11 +51,12 @@ Ordinary source writes persist a separate versioned `analyzed_copy_proof` with
 identity, physical/dependency bindings and checked effect domain. Automatic FULL
 identity wraps that proof in `databricks-submit-copy-v2`; it never reinterprets
 v1 hashes. Confirmed or pending v1 automatic origins cold-miss v2 adoption even
-if confirmed after upgrade. Ordinary legacy strict reuse is unchanged. The direct
-v1 identity and eligibility remain unchanged until their separate migration.
-No old source SQL is reconstructed and no legacy proof is backfilled. Both
-switches remain default off; broader forms have local protocol regressions,
-not a new native/hosted conformance claim.
+if confirmed after upgrade. Direct copying now uses the same shared proof with
+its own `databricks-direct-copy-v2` origin. Ordinary legacy strict reuse is
+unchanged. No old source SQL is reconstructed and no legacy proof is backfilled:
+a fresh ordinary source write must record v2 evidence before broader copying.
+Both switches remain default off. The [focused shared-copy acceptance](databricks-shared-copy.md)
+separates the new evidence from the original native campaigns.
 
 The pending copy freezes the source execution, physical name, epoch and genuine
 input evidence. Confirm checks that source again, including pending writes;

@@ -36,9 +36,11 @@ Current rules: [DuckDB SQL identity and result copies](../duckdb-identity-and-co
 Extend the existing seam to Databricks through one analyzed workload and one
 copy qualification/provenance lifecycle. The [architecture contract](../architecture.md#shared-analyzed-workload-contract-181186)
 specifies the small interface, first grammar, responsibility replacements and
-compatibility gate. This is a staged implementation decision: #183 extracts
-without changing bytes or behavior; #184/#185 broaden Databricks analysis with
-new versioned copy identities. It does not claim those stages have shipped.
+compatibility gate. #183 extracted the shared analysis and copy lifecycle without
+changing identity bytes or behavior; #184/#185 replaced the Databricks analyzers
+and origin framing with shared structural analysis and versioned copy proofs.
+The [focused acceptance matrix](../databricks-shared-copy.md) states the evidence
+and remaining limits.
 
 Keep a structural representation with explicit reference-to-definition bindings,
 node-kind/configuration evidence and context/function effects. Raw SQL and strict
