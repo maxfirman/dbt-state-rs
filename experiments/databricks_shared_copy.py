@@ -170,6 +170,7 @@ class SharedCopy(Precopy):
                     if (cfg.get('pre-hook') or cfg.get('post-hook') or n.get('depends_on',{}).get('nodes')
                             or cfg.get('state',{}).get('pre_clone')!=wanted
                             or n['compiled_code'].strip()!=self.sql_queries[n['name']]):raise Refused('shared-copy:compiled-contract')
+                    if n['name']=='check' and (cfg.get('updated_at')!='ts' or cfg.get('check_cols')!=['v'] or cfg.get('hard_deletes')!='ignore'):raise Refused('shared-copy:compiled-snapshot-config')
                 self.save('preflight/'+label+'.json',manifest)
 
     def remember(self,label,target,rows):

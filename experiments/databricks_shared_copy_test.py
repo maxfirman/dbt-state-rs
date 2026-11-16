@@ -38,6 +38,13 @@ class SharedCopyGuards(unittest.TestCase):
         for op in [('change_a','prod.b','update_a'),('sentinel','prod.merge','sentinel'),('change_a','prod.a','drop')]:
             with self.assertRaisesRegex(Refused,'ordered-mutation-budget'):obj.mutate(*op)
 
+    def test_write_guard_refuses_unlisted_and_out_of_order_SQL_before_API(self):
+        obj=SharedCopy.__new__(SharedCopy);obj.phase='hosted';obj.write_index=0
+        for sql in ('DROP TABLE cdo_demo_db.old.relation','CREATE SCHEMA cdo_demo_db.nope',
+                    "UPDATE cdo_demo_db.owned.a SET v='changed'"):
+            with self.assertRaisesRegex(Refused,'exact-ordered-SQL-write-budget'):obj.sql('unexpected',sql)
+        self.assertEqual(obj.write_index,0)
+
     def test_exact_INT_source_schema_and_microseconds(self):
         columns=[dict(zip(('name','type_text','type_name','position'),c)) for c in SOURCE_SCHEMA[:3]+SOURCE_PROJECTION_SCHEMA[3:]]
         raw={'columns':columns,'rows':[[*r,str(micros(r[3]))] for r in FIRST]}
