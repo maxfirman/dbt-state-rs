@@ -8,8 +8,8 @@ on 2026-11-12 through 2026-11-15 (DBSQL 2026.44 at the capability survey).
 
 The normal server setup is in [development.md](development.md). Use the
 [copy configuration](databricks-copy-preview.md) for this preview: Databricks
-copying is off by default; ordinary same-target execution and reuse are the
-intended workflow. Treat the copy opt-in as unsupported experimental work.
+copying is enabled by default for the bounded shared-analysis subset. Client
+copy controls and the accepted warehouse limitations remain explicit.
 
 ## Coverage and follow-ups
 
@@ -40,8 +40,8 @@ full hosted-conformance claim under ADR 0009.
 | delete+insert | Completed bounded scalar-key replacement/input/full-refresh behavior: 13 hosted and 13 Rust checkpoints, duplicate/NULL/empty bags and exact Explain. Composite keys and broader settings/schema cases are unverified. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-delete-insert-2026-11-15.md) | #149 |
 | Microbatch | Fixed/shifted/overlapping/empty windows, implicit real-UTC scheduling, lookback 0/1/2, independent cumulative results and required reuse. Single-batch configured predicates tested; configured multiple-batch predicates retain an explicit pinned-client capability limit. | [Evidence](databricks-microbatch.md) | #150 |
 | Snapshots | Bounded timestamp/ignore and check/ignore with explicit source `updated_at=ts`: full SCD references, NULL/unchecked-column retention, ignored deletes/reappearance, older/equal/µsecond times and valid FULL→SNAPSHOT adoption. Generated-clock and `new_record` modes remain outside support. | [Scope and evidence](databricks-snapshots.md) | #151 |
-| Direct Result copy | Separate default-off RegisterClone opt-in: MERGE and source-clock check snapshots, absent/existing targets, adoption, changed-input rebuilds and full default properties/SCD histories. Quiescent sources only. | [Evidence](databricks-precopy.md) | #152 |
-| SQL-submit Result copy | Separate default-off FULL opt-in: absent/existing targets, exact qualified projection, cached reuse, negative controls and frozen provenance. Ordinary MERGE still builds. | [Evidence and differences](databricks-submit-copy.md) | #153 |
+| Direct Result copy | Default-on bounded RegisterClone: MERGE and source-clock check snapshots, absent/existing targets, adoption, changed-input rebuilds and full default properties/SCD histories. Quiescent sources only. | [Evidence](databricks-precopy.md) | #152 |
+| SQL-submit Result copy | Default-on bounded FULL: absent/existing targets, checked multi-input SQL, cached reuse, negative controls and frozen provenance. Ordinary MERGE still builds. | [Evidence and differences](databricks-submit-copy.md) | #153 |
 | Copy failure and recovery | Automatic FULL/direct MERGE source removal/modification, post-copy mutations, guarded retry, independent complete results and later reuse. Chains stay refused; stale direct sources conservatively refuse where hosted grants before repair. | [Evidence and differences](databricks-copy-recovery.md) | #154 |
 | State selectors | All ten pinned-client criteria, first/unchanged and changed-component/data baselines, client graph expansion; two-model graph. | [Evidence](databricks-selectors.md) | #156 |
 | Deferral and auxiliary RPCs | Actual pinned-client deferral and validation/telemetry. | [Report](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-deferral-2026-11-13.md) | #155, #157 |
@@ -71,13 +71,10 @@ exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 
-- Automatic Databricks submit-time Result copy is disabled by default. A bounded
-  [FULL SQL-submit experiment](databricks-submit-copy.md) has exact hosted
-  lifecycle and negative safety coverage. Direct RegisterClone has separate
-  [physical acceptance](databricks-precopy.md). Both switches remain disabled
-  by default: the opt-ins are experimental, with only the linked bounded claims.
-  Neither establishes universal physical/concurrency safety. Disabling an
-  opt-in does not invalidate previously recorded copy history.
+- Bounded FULL and direct MERGE/check-snapshot Result copy are enabled by
+  default. [Shared-copy acceptance](databricks-shared-copy.md) states the tested
+  grammar and physical evidence. Client controls remain supported; there are no
+  separate server switches. This does not establish general concurrency safety.
 - Preserve org/warehouse/namespace isolation and full-UID isolation for cached
   data tests even where hosted reuses across those boundaries. Ordinary models
   and snapshots use their scoped physical identity, not a universal UID rule.
@@ -85,8 +82,9 @@ exact fixture assertions remain unchanged.
 - Unknown/conflicting freshness evidence cannot justify reuse. The crafted
   omitted-source hosted SKIP that retained stale rows is not reproduced.
 - FULL/seed replacement over existing shallow-clone targets fails in the
-  tested client/warehouse even with State disabled. Such targets and workflows
-  are outside the preview; do not use copy opt-in to bypass this limitation.
+  tested client/warehouse even with State disabled. This is an accepted cloning
+  limitation, also affecting hosted; the service does not repair the client
+  materialization automatically. See [current policy](databricks-copy-preview.md).
 - Snapshot `new_record` deletes produced NULL business values in State-disabled
   controls. This mode is outside the preview; ordinary dbt execution cannot
   make that client/warehouse behavior safe.

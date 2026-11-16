@@ -67,3 +67,15 @@ pending v1 rows confirmed after upgrade. Ordinary strict identities are unaffect
 Both Databricks switches stay default off, positive chains remain unsupported,
 and the documented conservative stale-source refusal is retained even where
 hosted grants. Unversioned physical copy races remain outside this decision.
+
+## Databricks rollout amendment (2026-11-16)
+
+Following the focused acceptance, enable both bounded Databricks copy paths
+without separate server switches. This supersedes the default-off rollout
+condition above, not its eligibility, identity or provenance rules. Preserve
+hosted-compatible client copy controls. The maintainer accepts unpinned physical
+source races (also present in Snowflake) and the documented Unity Catalog
+shallow-clone FULL rebuild limitation, which also affects hosted/client-only
+execution. Neither blocks cloning acceptance. Keep the limitation and supported
+client workarounds explicit in [current copy policy](../databricks-copy-preview.md);
+do not automatically drop relations or broaden materialization support.

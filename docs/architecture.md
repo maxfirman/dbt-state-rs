@@ -63,8 +63,9 @@ This is the staged implementation contract. The behavior-preserving #183
 extraction implements the shared placement and lifecycle below; the broader
 Databricks grammar and v2 proofs are implemented by #184/#185. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
 records why it replaces the existing paths. #183 changes placement only;
-#184/#185 introduce new Databricks copy semantics. Both experimental Databricks
-switches remain default off throughout.
+#184/#185 introduce new Databricks copy semantics. The initial milestone kept
+both paths default off; the [accepted rollout](databricks-copy-preview.md) now
+enables them without server switches while preserving client copy controls.
 
 The seam has one pure analysis entry, conceptually
 `analyze(&SqlExecution) -> AnalyzedWorkload`, shared by Submit and Record.

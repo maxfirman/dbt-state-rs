@@ -1,35 +1,23 @@
-# Databricks preview: Result copy disabled
+# Databricks Result copy and client controls
 
-The preview grants no Databricks Result copy by default. `RegisterClone`
-returns successful gRPC transport with `unable_to_clone`, decision `1`
-(BUILD), clone rejection reason `10`, empty description, no `ready_to_clone`
-and no deprecated `ready_to_clone_v1` mirror. This uses the existing
-copy-disabled response shape; it is a local preview policy, not a claim that
-hosted Databricks returns that refusal. No copy execution is published.
-Ordinary SQL and seed submits retain their default no-automatic-copy policy.
-A separate bounded [experimental SQL-submit opt-in](databricks-submit-copy.md)
-is available for FULL models.
-Other warehouses retain their existing policies.
+Databricks Result copy is enabled in the normal server configuration. There are
+no Databricks-specific server environment switches or embedded-server toggles.
+Automatic FULL copying and direct MERGE/check-snapshot copying retain their
+[shared eligibility and provenance rules](databricks-shared-copy.md); enabling
+them does not admit arbitrary SQL, new materializations or positive copy chains.
+Seeds are not automatically copied on Databricks.
 
-## Pinned client configuration
+## Client controls
 
-Use dbt **2.0.11**, SHA-256
-`f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31`,
-with pre-copy disabled on the models and snapshots you run. The exact node
-configuration used by existing native Databricks campaigns is:
+Hosted-compatible client controls remain available. To suppress direct pre-copy
+for a model or snapshot, merge this into its existing `state` mapping:
 
 ```jinja
 {{ config(state={'pre_clone': 'never'}) }}
 ```
 
-Merge `pre_clone: never` into any existing `state` mapping so its other
-settings are retained. Native Databricks table/view and incremental runs use this setting; see
-[`databricks_baseline.py`](../experiments/databricks_baseline.py) and
-[`databricks_append.py`](../experiments/databricks_append.py). The retained
-snapshot campaign uses same-target runs and does not independently validate
-a cross-target snapshot refusal fallback.
-For a profile Target that enables cloning, also set `allow_clones: false`
-on that output in `profiles.yml`:
+To disable ordinary submit-time cloning for a profile output, use its existing
+`allow_clones` setting:
 
 ```yaml
 my_profile:
@@ -40,45 +28,34 @@ my_profile:
       allow_clones: false
 ```
 
-The pinned 2.0.11 wire evidence for `allow_clones: false` is retained in
-[`explain_copy_logic_mismatch.jsonl`](../golden/fixtures/explain_copy_logic_mismatch.jsonl)
-and [`explain_seed_copy_disabled.jsonl`](../golden/fixtures/explain_seed_copy_disabled.jsonl):
-ordinary submits carry `allow_clones: false` and `clone_chain_depth_limit: 0`.
-Those configuration captures are Snowflake; the native Databricks campaign
-establishes `pre_clone: never`, rather than assuming that profile setting
-alone suppresses Databricks pre-copy.
+These are distinct client paths: `pre_clone: never` suppresses RegisterClone;
+ordinary SQL submissions still carry their own copy permissions. The pinned
+client's [configuration captures](../golden/fixtures/explain_copy_logic_mismatch.jsonl)
+show `allow_clones: false` and `clone_chain_depth_limit: 0` on ordinary submits.
+The public regressions verify default-on automatic/direct grants and explicit
+client refusal without relaxing source integrity or adoption checks.
 
-The default does **not** return gRPC `UNIMPLEMENTED`. The existing
-[protocol contract](protocol.md#clone-cloneregisterclone) describes the normal
-BUILD fallback for `unable_to_clone` reason `10`. The public gRPC regression
-proves refusal followed by ordinary SQL submit returns BUILD, including when
-the source would qualify for the retained copy path. A native Databricks
-2.0.11 invocation consuming this new local refusal has not been run; use the
-explicit no-pre-copy configuration above for this preview. No new live Cloud,
-Databricks or DuckDB campaign was run for this policy change.
+## Accepted limitations
 
-## Isolated experimental opt-in
+The maintainer accepted these limitations on 2026-11-16; neither is a
+Databricks cloning acceptance blocker:
 
-`DBT_STATE_EXPERIMENTAL_DATABRICKS_DIRECT_COPY=true` enables only the retained
-narrow `RegisterClone` implementation. It is outside preview support and
-does not enable ordinary-submit copying. Turning it off prevents new copy
-grants; it does not invalidate existing copy history, and previously recorded
-opt-in copies can still qualify for narrow adoption. That history remains
-outside preview support. The default is false; `1`, `true`
-and `yes` (case insensitive) enable it. Embedded servers opt in through
-`AppState::with_databricks_direct_copy(true)`.
+- Unity Catalog shallow clones cannot be overwritten by `CREATE OR REPLACE`.
+  The pinned dbt 2.0.11 FULL rebuild uses that statement and can fail with
+  `CLUSTER_BY_AUTO_UNSUPPORTED_TABLE_TYPE_ERROR`. The same failure is observed
+  with hosted State and in State-disabled controls. MERGE repairs update the
+  clone rather than replacing it and pass the retained physical checks.
+  Databricks documents DROP followed by CREATE, or a new name, as alternatives;
+  this service does not automatically drop user relations or rewrite the
+  client's ordinary materialization. See the [recovery evidence](databricks-copy-recovery.md)
+  and [warehouse restriction](https://docs.databricks.com/aws/en/tables/operations/clone-unity-catalog#limitations).
+- Clone SQL remains unpinned, matching captured hosted behavior. A concurrent
+  source change between validation and clone execution is a shared physical
+  race, including Snowflake; general concurrency safety is not claimed.
 
-Existing source qualification, provenance, confirmation and adoption checks
-remain required under opt-in. Exact native copy fixtures and their public
-regressions opt in explicitly; no fixture assertions are relaxed. Ordinary
-FULL submits are separately tested to BUILD with a cross-target source under
-both default and direct-copy opt-in configurations. The production migrations
-and persisted provenance formats are unchanged by this policy switch.
-
-Fresh bounded [physical acceptance](databricks-precopy.md) covers native MERGE
-and source-clock check snapshots, absent and existing development targets,
-copy-to-SKIP adoption and changed-input rebuilds. It preserves complete default
-properties and SCD histories. This is conditional on quiescent sources; the
-unobservable unversioned source race and the other documented limits keep the
-default disabled. It does not enable automatic submit copying or copy chains. The separate
-[SQL-submit switch](databricks-submit-copy.md) controls the bounded FULL path.
+Externally modified sources visible to validation are still refused. Unknown
+bindings/epochs/producers, incompatible identities and invalid publication
+remain ineligible. No persistence or fingerprint versions change in this rollout;
+existing valid v2 history remains reusable and incompatible legacy origins still
+cold-miss. The older experiments used explicit server opt-ins; their retained
+captures and source attribution are historical evidence, not current configuration.

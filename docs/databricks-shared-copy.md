@@ -3,7 +3,7 @@
 The shared analysis and copy lifecycle implement the bounded contract in
 [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md) and
 [architecture](architecture.md#shared-analyzed-workload-contract-181186).
-Both Databricks switches remain default off. This is a scoped reuse-safety
+Databricks copying is enabled by default; [client controls and accepted limitations](databricks-copy-preview.md) apply. This is a scoped reuse-safety
 change; it does not establish arbitrary SQL equivalence or full hosted conformance.
 
 | Contract | Evidence and practical limit |
@@ -12,7 +12,7 @@ change; it does not establish arbitrary SQL equivalence or full hosted conforman
 | Ordered operators, explicit binding and conservative effects | `databricks_submit_copy::analyzed_full_checked_forms_and_opaque_effects` and `analyzed_full_dependency_bindings_retain_context_and_definition` cover supported forms, context and dependency-definition swaps. Named physical columns require complete SQL alias-list presence evidence; unknown column sets cannot establish absence or exclude session-variable fallback. Unsupported or uncertain operations retain ordinary strict fallback. |
 | Current source and complete genuine inputs/producers | Public submit/pre-copy tests cover multiple inputs, changed producers, missing epochs, scoped identity, latest/pending source barriers and own relation existence/modification. `decision_proptest` retains pure freshness invariants. |
 | Freeze, atomic publication, adoption and source build age | Public pre-copy/submit-copy tests cover source replacement, invalid origins, failed fallback, duplicate Confirm and within/outside Lag tolerance. Automatic FULL and direct MERGE/check use one shared proof and lifecycle with distinct entry protocols. |
-| Upgrade and default-off behavior | Actual frozen v1 automatic/direct rows, including pending rows confirmed after upgrade, cold-miss v2 copying. Ordinary legacy strict reuse remains valid. Fresh ordinary source writes establish new v2 evidence; no SQL hydration/backfill. |
+| Upgrade behavior | Actual frozen v1 automatic/direct rows, including pending rows confirmed after upgrade, cold-miss v2 copying. Ordinary legacy strict reuse remains valid. Fresh ordinary source writes establish new v2 evidence; no SQL hydration/backfill. |
 | Existing complete observable histories | The conformance suite retains the existing complete Snowflake/DuckDB and Databricks exact/boundary histories. Reviewed v2 persistence transitions are separate from unchanged wire expectations. |
 | New representative physical grammar | `databricks_shared_copy.py` passed all fifteen hosted and fifteen Rust checkpoints described below, including actual automatic FULL copying and direct MERGE/check adoption, cumulative repair and modified-source refusal. |
 

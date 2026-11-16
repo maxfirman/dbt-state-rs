@@ -458,15 +458,9 @@ impl Sql for SqlService {
             ));
         }
 
-        let outcome = crate::submit_decision::submit_sql_with_policy(
-            &self.0.store,
-            &org_id,
-            &raw_req,
-            now_ms,
-            self.0.databricks_submit_copy,
-        )
-        .await
-        .map_err(store_status)?;
+        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &raw_req, now_ms)
+            .await
+            .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &outcome, now_ms);
         let response =
@@ -673,19 +667,6 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
-
-        // Preview excludes Databricks Result copy. Use the normal no-copy
-        // response so the client can build, before source lookup or publication.
-        if crate::warehouse::Warehouse::from_dialect(&req.dialect)
-            == crate::warehouse::Warehouse::Databricks
-            && !self.0.databricks_direct_copy
-        {
-            return Ok(Response::new(unable_to_clone_response(
-                req.clone_source_table,
-                req.target_table,
-                REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
-            )));
-        }
 
         // Plan the client-requested copy (see `result_copy`): reject ineligible
         // requests before any read, fetch the history the plan needs, then plan.

@@ -152,16 +152,6 @@ pub async fn submit_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
-    submit_sql_with_policy(store, org_id, req, now_ms, false).await
-}
-
-pub(crate) async fn submit_sql_with_policy(
-    store: &Store,
-    org_id: &str,
-    req: &qc::SubmitEnrichedSqlRequest,
-    now_ms: i64,
-    databricks_submit_copy: bool,
-) -> sqlx::Result<SubmitOutcome> {
     record_node_state(
         store,
         org_id,
@@ -169,16 +159,9 @@ pub(crate) async fn submit_sql_with_policy(
         req.target_table.as_deref(),
     )
     .await;
-    Ok(decide_sql(
-        store,
-        org_id,
-        req,
-        now_ms,
-        Mode::Ordinary,
-        databricks_submit_copy,
-    )
-    .await?
-    .expect("an ordinary submit is always decided"))
+    Ok(decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
+        .await?
+        .expect("an ordinary submit is always decided"))
 }
 
 /// Decide a `SubmitEnrichedSQLSpeculative` submission (#103). A speculative
@@ -209,7 +192,7 @@ pub async fn speculative_sql(
     if !needs_no_table_evidence {
         return Ok(None);
     }
-    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly, false).await?;
+    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly).await?;
     if outcome.is_some() {
         record_node_state(
             store,
@@ -240,7 +223,6 @@ async fn decide_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
     mode: Mode,
-    databricks_submit_copy: bool,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
     evidence.display_submitted_at_ms =
@@ -276,7 +258,6 @@ async fn decide_sql(
     let mut refused_copy = None;
     if copy_considered {
         match result_copy_fallback(
-            databricks_submit_copy,
             store,
             org_id,
             req,
@@ -309,7 +290,6 @@ async fn decide_sql(
     // `fd_sn`; crafted, explain_rebuild_tolerance_line.jsonl `s2`, `i2`).
     if let (Some(own), true) = (&candidate, rebuilds_for_freshness(&record)) {
         match result_copy_fallback(
-            databricks_submit_copy,
             store,
             org_id,
             req,
@@ -1196,7 +1176,6 @@ enum CopyFallback {
 /// other relations and is copied without that judgment, as verified earlier
 /// (clone_fallback_stale_source, clone_fallback_zero_tolerance).
 async fn result_copy_fallback(
-    databricks_submit_copy: bool,
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
@@ -1206,16 +1185,7 @@ async fn result_copy_fallback(
 ) -> sqlx::Result<CopyFallback> {
     let (own, anchor) = judgement;
     if Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks {
-        return databricks_result_copy(
-            store,
-            org_id,
-            req,
-            evidence,
-            databricks_submit_copy,
-            freshness,
-            anchor,
-        )
-        .await;
+        return databricks_result_copy(store, org_id, req, evidence, freshness, anchor).await;
     }
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(CopyFallback::Ordinary);
@@ -1338,11 +1308,10 @@ async fn databricks_result_copy(
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
-    enabled: bool,
     freshness: &Freshness<'_>,
     anchor: Option<&ExecutionRow>,
 ) -> sqlx::Result<CopyFallback> {
-    if !enabled || !crate::databricks_submit_copy::request_admits(req, evidence) {
+    if !crate::databricks_submit_copy::request_admits(req, evidence) {
         return Ok(CopyFallback::Ordinary);
     }
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
