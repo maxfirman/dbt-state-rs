@@ -183,13 +183,13 @@ fn native_copy_requests() -> Vec<dbt_state_harness::diff::GoldenEntry> {
 }
 
 #[tokio::test]
-async fn historical_source_survives_upgrade_but_v1_copies_cold_miss_with_grants_off() {
+async fn historical_source_survives_upgrade_but_v1_copies_cold_miss_with_client_copy_disabled() {
     let native = native_copy_requests();
     for episode in copy_fixture()["episodes"].as_array().unwrap() {
         let offset = episode["native_offset"].as_u64().unwrap() as usize;
         let rows = &native[offset..offset + 8];
         for pending in [false, true] {
-            let server = support::start_server().await; // New copy grants default OFF.
+            let server = support::start_server().await;
             let sc = Scenario::connect(&server).await;
             // Allocate a real current row first: restoration must remap source
             // IDs, rather than accidentally working because old IDs start at 1.
@@ -215,13 +215,22 @@ async fn historical_source_survives_upgrade_but_v1_copies_cold_miss_with_grants_
                 last_modified_epoch: episode["source_row"]["last_modified_epoch"].as_i64(),
             });
             sc.expect_skip(source).await;
-            let copy: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
-            assert!(sc
-                .register_clone(copy)
-                .await
-                .unwrap()
-                .ready_to_clone
-                .is_none());
+            let mut copy: qc::CloneRequest =
+                serde_json::from_value(rows[2].request.clone()).unwrap();
+            // Isolate old-copy adoption with the hosted-compatible client control,
+            // rather than the removed server-wide copy gate.
+            copy.clone_chain_depth_limit = Some(0);
+            let refusal = sc.register_clone(copy).await.unwrap();
+            assert!(refusal.ready_to_clone.is_none());
+            assert_eq!(
+                refusal
+                    .unable_to_clone
+                    .unwrap()
+                    .explained_decision
+                    .unwrap()
+                    .clone_rejection_reason,
+                Some(10)
+            );
             let adopter: qc::SubmitEnrichedSqlRequest =
                 serde_json::from_value(rows[4].request.clone()).unwrap();
             if pending {
