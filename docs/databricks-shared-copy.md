@@ -14,7 +14,7 @@ change; it does not establish arbitrary SQL equivalence or full hosted conforman
 | Freeze, atomic publication, adoption and source build age | Public pre-copy/submit-copy tests cover source replacement, invalid origins, failed fallback, duplicate Confirm and within/outside Lag tolerance. Automatic FULL and direct MERGE/check use one shared proof and lifecycle with distinct entry protocols. |
 | Upgrade and default-off behavior | Actual frozen v1 automatic/direct rows, including pending rows confirmed after upgrade, cold-miss v2 copying. Ordinary legacy strict reuse remains valid. Fresh ordinary source writes establish new v2 evidence; no SQL hydration/backfill. |
 | Existing complete observable histories | The conformance suite retains the existing complete Snowflake/DuckDB and Databricks exact/boundary histories. Reviewed v2 persistence transitions are separate from unchanged wire expectations. |
-| New representative physical grammar | `databricks_shared_copy.py` is the bounded #186 acceptance driver; its new native wrapper links the current library with both switches and the production System clock. Execution evidence is recorded separately below. |
+| New representative physical grammar | `databricks_shared_copy.py` passed all fifteen hosted and fifteen Rust checkpoints described below, including actual automatic FULL copying and direct MERGE/check adoption, cumulative repair and modified-source refusal. |
 
 The deleted Databricks token-count and direct SELECT-star analyzers are replaced
 by shared `analyzed_workload` traversal. `CopyProof::for_origin` frames both v2
@@ -39,6 +39,46 @@ types, NULLs/duplicates/microseconds, UC provider/type, Delta history, propertie
 and separate State-disabled native references are required. Successful commands
 are never repeated to repair an incidental guard stop.
 
-The new driver is currently preparation evidence. It is not a completed hosted
-or Rust physical acceptance claim until the complete retained captures and actual
-native clocks have been verified.
+Both campaigns completed on **2026-11-16 UTC**. Each used exactly eight new
+permanent names in the two existing owned schemas, six State-disabled compiles,
+fifteen managed commands and fifteen separate zero-RPC native references. Four
+input CREATE/INSERT operations, one input value/source-clock UPDATE, one owned
+production MERGE sentinel UPDATE and one owned development MERGE DROP executed
+once per backend. No new schema, permanent reference, cleanup or repeated
+successful command was needed. Final paged inventories were 97 production and
+26 development relations; pre-existing relations were preserved.
+
+Both runs copied FULL automatically and MERGE/check through RegisterClone, then
+SKIPped. Independent literal bags, ordered INT/BIGINT/STRING/DATE/TIMESTAMP schemas,
+NULLs/duplicates, microseconds and the complete three-version check SCD history
+passed. After the declared input/policy change, MERGE and snapshot built and
+reused their own results. The modified-source negative caused hosted to clone
+then repair with MERGE; Rust refused the copy, built the correct result and
+then SKIPped. Every checkpoint retained physical results, Delta history, UC
+evidence and relevant properties.
+
+The whole hosted **95-RPC** boundary replays with exactly six reviewed response
+differences: two Explain query badges conservatively reflect changed opaque
+body/config signatures when `pre_clone` switches to `never`; four responses are
+causal consequences of refusing hosted's modified-source copy. The ungranted
+Confirm returns NOT_FOUND and publishes nothing. Beyond existing opaque-ID
+normalization, no field or timestamp is masked and no pending execution is invented. All other complete responses,
+including dependency rows/timestamps, match. The Rust **94-RPC** history replays
+exactly using all fifteen actual persisted audit clocks retained before local
+State schema cleanup. Live requests carried no replay-clock headers; the native
+server asserted the production System clock and both experimental switches.
+
+Source attribution is distinct: hosted ran clean `86b3898`; native ran clean
+`184f85c` (only the replay tests differ). Its current-library executable SHA256
+is `035ed6a1ffbe83e2191832d5a8390553aab0aa64139003f170e344170aa057e6`.
+The subsequent lint/doc followups do not change the production library or driver.
+Complete raw captures, immutable expected bags/ledger, tool/source hashes,
+clearance/ownership receipts and exact replay outputs are retained under
+`~/.local/state/dbt-state-rs/shared-copy-181-20261115/`.
+
+This proves the specified quiescent managed-Delta slice. It does not prove
+unknown physical-column bindings, arbitrary operators/session settings, native
+Build-producer graphs, new strategies/snapshot modes, positive chains, physical
+copy races or ordinary FULL replacement of an existing shallow clone. Public
+protocol/property tests cover producer drift, unknown epochs, invalid publication
+and fallback; those are not additional native feature claims.

@@ -19,8 +19,10 @@ as automatic FULL copying: projections, null filters, nonrecursive CTEs,
 ordered joins, checked aggregates and complete query-dependency bindings.
 Both paths retain distinct versioned origin identities and entry protocols.
 Templates, uncertain effects and incomplete input/producers remain ineligible.
-The broader forms currently have offline public-protocol coverage; focused
-independent physical acceptance remains #186, not a new native claim here.
+The broader CTE/projection MERGE and check-snapshot forms have both public
+protocol coverage and [focused independent physical acceptance](databricks-shared-copy.md).
+Named physical columns require complete SQL table-alias presence evidence;
+this does not establish arbitrary SQL or new node kinds.
 
 The snapshot uses `strategy='check'`, `check_cols=['v']`, `updated_at='ts'`,
 `hard_deletes='ignore'` and a unique non-NULL scalar `id`. MERGE uses the default
