@@ -183,7 +183,7 @@ fn native_copy_requests() -> Vec<dbt_state_harness::diff::GoldenEntry> {
 }
 
 #[tokio::test]
-async fn historical_copy_source_and_pending_or_confirmed_copy_survive_upgrade_with_grants_off() {
+async fn historical_source_survives_upgrade_but_v1_copies_cold_miss_with_grants_off() {
     let native = native_copy_requests();
     for episode in copy_fixture()["episodes"].as_array().unwrap() {
         let offset = episode["native_offset"].as_u64().unwrap() as usize;
@@ -239,12 +239,10 @@ async fn historical_copy_source_and_pending_or_confirmed_copy_survive_upgrade_wi
                 let request: qc::SubmitEnrichedSqlRequest =
                     serde_json::from_value(row.request.clone()).unwrap();
                 if row.response["response"].get("skip_execution").is_some() {
-                    let skipped = sc.expect_skip(request).await;
-                    assert_eq!(
-                        skipped.execution_runtime_ms,
-                        episode["source_row"]["execution_runtime_ms"].as_i64()
-                    );
-                    explain(&sc, skipped.execution_decision_id.as_deref().unwrap(), 0).await;
+                    // v1 pending/confirmed copies retain their historical
+                    // bytes but cannot publish shared-v2 adoption evidence.
+                    let ready = sc.expect_execute(request).await;
+                    explain(&sc, ready.execution_decision_id.as_deref().unwrap(), 1).await;
                 } else {
                     let ready = sc.expect_execute(request.clone()).await;
                     explain(&sc, ready.execution_decision_id.as_deref().unwrap(), 1).await;
@@ -283,7 +281,7 @@ async fn historical_copy_is_not_adopted_across_scope_identity_or_input_changes()
         .await;
         let adopter: qc::SubmitEnrichedSqlRequest =
             serde_json::from_value(native[offset + 4].request.clone()).unwrap();
-        sc.expect_skip(adopter.clone()).await;
+        sc.expect_execute(adopter.clone()).await;
         sc.org("another-org").expect_execute(adopter.clone()).await;
         for case in [
             "missing_namespace",
@@ -340,8 +338,8 @@ async fn historical_copy_is_not_adopted_across_scope_identity_or_input_changes()
             }
             assert_eq!(sc.verdict(changed).await, "ready_to_execute", "{case}");
         }
-        // Negative submissions never replace the confirmed copy's identity.
-        sc.expect_skip(adopter).await;
+        // Pending negative submissions never make legacy adoption eligible.
+        sc.expect_execute(adopter).await;
     }
 }
 
@@ -362,8 +360,8 @@ async fn damaged_latest_copy_identity_cold_misses_without_resurrecting_valid_old
             let server = support::start_server().await;
             let sc = Scenario::connect(&server).await;
             // Explicit storage faults, NOT historical server output. Preserve
-            // a valid older copy at the exact same epoch so a history search
-            // for a matching identity would incorrectly resurrect its SKIP.
+            // an older legacy copy at the exact same epoch. Neither can
+            // be reinterpreted as current shared-v2 evidence.
             let mut damaged = episode["confirmed_copy"].clone();
             damaged["id"] = serde_json::json!(damaged["id"].as_i64().unwrap() + 1000);
             damaged["request_id"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
@@ -481,13 +479,10 @@ async fn old_pending_copy_requires_valid_publication_and_rechecks_its_original_s
                 sc.try_confirm(outcome).await.unwrap_err().code(),
                 tonic::Code::Internal
             );
-            if case == "retry_missing_epoch" {
-                let skipped = sc.expect_skip(request).await;
-                explain(&sc, skipped.execution_decision_id.as_deref().unwrap(), 0).await;
-            } else {
-                let ready = sc.expect_execute(request).await;
-                explain(&sc, ready.execution_decision_id.as_deref().unwrap(), 1).await;
-            }
+            // Even a successful retry keeps its original v1 meaning. It
+            // cannot manufacture v2 proof when confirming after the upgrade.
+            let ready = sc.expect_execute(request).await;
+            explain(&sc, ready.execution_decision_id.as_deref().unwrap(), 1).await;
         }
     }
 }

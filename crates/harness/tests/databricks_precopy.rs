@@ -777,3 +777,273 @@ async fn confirmed_direct_copy_is_not_a_chain_source_even_with_a_larger_limit() 
         );
     }
 }
+
+/// Broader query shape at the existing public direct-copy seam. Expectations
+/// here are protocol/model safety; physical cumulative/SCD acceptance is #186.
+#[tokio::test]
+async fn shared_analyzed_merge_and_check_snapshot_adopt_then_rebuild() {
+    for rows in entries().chunks(8) {
+        let server = support::start_server_databricks_direct_copy().await;
+        let sc = Scenario::connect(&server)
+            .await
+            .org(support::captured_org(&rows[0]));
+        let mut src: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(rows[0].request.clone()).unwrap();
+        // Same structured physical name with a bare catalog and backtick
+        // schema/relation: the shared adapter handles each component.
+        let input = src.tables[0].name.replacen('`', "", 1).replacen('`', "", 1);
+        src.sql = if src.execution_type == 3 {
+            let second = input.replace("`inputs`", "`stats`");
+            src.tables.push(qc::TableModifiedInfo {
+                name: second.clone(),
+                last_modified_epoch: src.tables[0].last_modified_epoch,
+            });
+            format!("WITH a AS (SELECT system.builtin.count(*) AS id FROM {input}), b AS (SELECT system.builtin.count(*) AS v FROM {second}) SELECT a.id AS id, b.v AS v FROM a LEFT JOIN b ON a.id = b.v")
+        } else {
+            format!("WITH a AS (SELECT id, v, ts FROM {input} AS input(id,v,ts) WHERE id IS NOT NULL) SELECT id, v, ts FROM a")
+        };
+        let id = sc.execute_id(src.clone()).await;
+        let mut source_confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[1].request.clone()).unwrap();
+        source_confirm.request_id = id;
+        assert!(sc.try_confirm(source_confirm).await.unwrap().success);
+        let req: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+        let ready = sc
+            .register_clone(req)
+            .await
+            .unwrap()
+            .ready_to_clone
+            .unwrap();
+        let mut confirmation: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[3].request.clone()).unwrap();
+        confirmation.request_id = ready.request_id;
+        assert!(sc.try_confirm(confirmation.clone()).await.unwrap().success);
+        let mut adopter: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(rows[4].request.clone()).unwrap();
+        adopter.sql = src.sql;
+        let own = adopter
+            .tables
+            .iter()
+            .find(|t| Some(&t.name) == adopter.target_table.as_ref())
+            .unwrap()
+            .clone();
+        adopter.tables = src.tables;
+        adopter.tables.push(own);
+        let response = sc.expect_skip(adopter.clone()).await;
+        let components: Vec<_> = input.split('.').collect();
+        let collision = format!(
+            "`{}.{}`.{}",
+            components[0],
+            components[1].trim_matches('`'),
+            components[2]
+        );
+        let mut wrong_binding = adopter.clone();
+        wrong_binding.sql = wrong_binding.sql.replace(&input, &collision);
+        sc.expect_execute(wrong_binding).await;
+        let original: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[1].request.clone()).unwrap();
+        assert_eq!(response.execution_runtime_ms, original.execution_runtime_ms);
+        let mut duplicate = confirmation.clone();
+        duplicate.last_modified_epoch = Some(1);
+        duplicate.execution_runtime_ms = Some(1);
+        duplicate.failed_to_clone = true;
+        assert_eq!(
+            sc.try_confirm(duplicate).await.unwrap_err().code(),
+            tonic::Code::Internal
+        );
+        assert_eq!(
+            sc.expect_skip(adopter.clone()).await.execution_runtime_ms,
+            original.execution_runtime_ms
+        );
+        adopter.tables[0].last_modified_epoch = confirmation.last_modified_epoch.map(|e| e - 1);
+        let id = sc.execute_id(adopter.clone()).await;
+        confirmation.request_id = id;
+        confirmation.last_modified_epoch = confirmation.last_modified_epoch.map(|e| e + 1000);
+        assert!(sc.try_confirm(confirmation.clone()).await.unwrap().success);
+        adopter.tables.last_mut().unwrap().last_modified_epoch = confirmation.last_modified_epoch;
+        sc.expect_skip(adopter).await;
+    }
+}
+
+#[tokio::test]
+async fn actual_v1_direct_history_cold_misses_after_upgrade() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../golden/upgrade/databricks_direct_copy_v1_75a2a34.json"
+    ))
+    .unwrap();
+    for (pending, fault) in [
+        (false, "v1"),
+        (true, "v1"),
+        (false, "null"),
+        (true, "unknown"),
+    ] {
+        let server = support::start_server_databricks_direct_copy().await;
+        let org = fixture["source"]["org_id"].as_str().unwrap();
+        let sc = Scenario::connect(&server).await.org(org);
+        let mut copy = fixture[if pending {
+            "pending_copy"
+        } else {
+            "confirmed_copy"
+        }]
+        .clone();
+        match fault {
+            "null" => copy["direct_copy_provenance"] = serde_json::Value::Null,
+            "unknown" => copy["direct_copy_provenance"]["version"] = serde_json::json!(255),
+            _ => {}
+        }
+        support::legacy::import_complete_history(&server, &[fixture["source"].clone(), copy]).await;
+        let mut src: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(fixture["source_request"].clone()).unwrap();
+        src.tables.push(qc::TableModifiedInfo {
+            name: src.target_table.clone().unwrap(),
+            last_modified_epoch: fixture["source"]["last_modified_epoch"].as_i64(),
+        });
+        sc.expect_skip(src).await;
+        let confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(fixture["confirm"].clone()).unwrap();
+        if pending {
+            let before = support::rows::complete_execution(&server, &confirm.request_id).await;
+            assert!(sc.try_confirm(confirm.clone()).await.unwrap().success);
+            let after = support::rows::complete_execution(&server, &confirm.request_id).await;
+            assert_eq!(
+                after["direct_copy_provenance"], before["direct_copy_provenance"],
+                "Confirm retains the old version and complete origin bytes"
+            );
+        }
+        let adopter: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(fixture["target_request"].clone()).unwrap();
+        sc.expect_execute(adopter).await;
+        let req: qc::CloneRequest = serde_json::from_value(entries()[2].request.clone()).unwrap();
+        // A legacy ordinary source still permits DDL, but has no v2 adoption proof.
+        let ready = sc
+            .register_clone(req)
+            .await
+            .unwrap()
+            .ready_to_clone
+            .unwrap();
+        let mut confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(fixture["confirm"].clone()).unwrap();
+        confirm.request_id = ready.request_id;
+        assert!(sc.try_confirm(confirm).await.unwrap().success);
+        let adopter: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(fixture["target_request"].clone()).unwrap();
+        sc.expect_execute(adopter).await;
+    }
+}
+
+#[tokio::test]
+async fn direct_v2_retains_original_source_age_within_and_outside_lag() {
+    for rows in entries().chunks(8) {
+        let server = support::start_server_databricks_direct_copy().await;
+        let org = support::captured_org(&rows[0]);
+        let sc = Scenario::connect(&server).await.org(org);
+        source(&sc, rows).await;
+        let original: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[1].request.clone()).unwrap();
+        let epoch = original.last_modified_epoch.unwrap();
+        let req: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+        let ready = sc
+            .register_clone(req)
+            .await
+            .unwrap()
+            .ready_to_clone
+            .unwrap();
+        let mut confirm: qc::ConfirmExecutionRequest =
+            serde_json::from_value(rows[3].request.clone()).unwrap();
+        confirm.request_id = ready.request_id;
+        confirm.last_modified_epoch = Some(epoch + 80_000);
+        assert!(sc.try_confirm(confirm.clone()).await.unwrap().success);
+        let mut adopter: qc::SubmitEnrichedSqlRequest =
+            serde_json::from_value(rows[4].request.clone()).unwrap();
+        for t in &mut adopter.tables {
+            t.last_modified_epoch = Some(if Some(&t.name) == adopter.target_table.as_ref() {
+                epoch + 80_000
+            } else {
+                epoch - 1
+            });
+        }
+        for (tolerance, expected) in [(120, "skip_execution"), (30, "ready_to_execute")] {
+            adopter.freshness_tolerance_seconds = tolerance;
+            let mut request = support::request_with_org(adopter.clone(), org);
+            request.metadata_mut().insert(
+                dbt_state_server::REPLAY_NOW_HEADER,
+                (epoch + 90_000).to_string().parse().unwrap(),
+            );
+            let response = qc::sql_client::SqlClient::new(sc.channel())
+                .submit_enriched_sql(request)
+                .await
+                .unwrap()
+                .into_inner();
+            assert_eq!(
+                support::scenario::variant(&response),
+                expected,
+                "source90s vs copy10s, tolerance{tolerance}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_direct_v2_origin_cannot_bypass_proof_through_strict_or_other_origin() {
+    let rows = entries();
+    let server = support::start_server_databricks_direct_copy().await;
+    let org = support::captured_org(&rows[0]);
+    let sc = Scenario::connect(&server).await.org(org);
+    source(&sc, &rows).await;
+    let req: qc::CloneRequest = serde_json::from_value(rows[2].request.clone()).unwrap();
+    let ready = sc
+        .register_clone(req)
+        .await
+        .unwrap()
+        .ready_to_clone
+        .unwrap();
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(rows[3].request.clone()).unwrap();
+    confirm.request_id = ready.request_id.clone();
+    assert!(sc.try_confirm(confirm).await.unwrap().success);
+    let adopter: qc::SubmitEnrichedSqlRequest =
+        serde_json::from_value(rows[4].request.clone()).unwrap();
+    sc.expect_skip(adopter.clone()).await;
+    let copy = support::rows::complete_execution(&server, &ready.request_id).await;
+    assert_eq!(copy["direct_copy_provenance"]["version"], 2);
+    assert_eq!(copy["analyzed_copy_proof"]["version"], 2);
+    assert_eq!(copy["direct_copy_provenance"]["published"], true);
+    let mut changed = adopter.clone();
+    changed.tables[0].last_modified_epoch = changed.tables[0].last_modified_epoch.map(|e| e + 1000);
+    let own_id = sc.execute_id(changed).await;
+    let own = support::rows::complete_execution(&server, &own_id).await;
+    for fault in [
+        "null",
+        "legacy",
+        "unknown",
+        "unpublished",
+        "missing_core",
+        "incompatible_core",
+        "automatic_origin",
+        "strict_bypass",
+    ] {
+        let target_server = support::start_server_databricks_direct_copy().await;
+        let target_sc = Scenario::connect(&target_server).await.org(org);
+        let mut bad = copy.clone();
+        match fault {
+            "null" => bad["direct_copy_provenance"] = serde_json::Value::Null,
+            "legacy" => bad["direct_copy_provenance"]["version"] = serde_json::json!(1),
+            "unknown" => bad["direct_copy_provenance"]["version"] = serde_json::json!(255),
+            "unpublished" => bad["direct_copy_provenance"]["published"] = serde_json::json!(false),
+            "missing_core" => bad["analyzed_copy_proof"] = serde_json::Value::Null,
+            "incompatible_core" => bad["analyzed_copy_proof"]["version"] = serde_json::json!(255),
+            "automatic_origin" => {
+                bad["submit_copy_provenance"] = serde_json::json!({"version":2,"published":true,"source_execution_id":1,"source_epoch":1,"source_physical_key":"wrong"});
+            }
+            "strict_bypass" => {
+                bad["node_sql_hash"] = own["node_sql_hash"].clone();
+                bad["direct_copy_provenance"]["published"] = serde_json::json!(false);
+            }
+            _ => unreachable!(),
+        }
+        // These deliberate persisted-evidence faults retain the actual v2
+        // hashes. They cannot become permission through a different entry path.
+        support::legacy::import_complete_execution(&target_server, &bad).await;
+        target_sc.expect_execute(adopter.clone()).await;
+    }
+}

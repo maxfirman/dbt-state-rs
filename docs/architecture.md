@@ -43,17 +43,290 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
-| `databricks_submit_copy.rs` | Pure bounded Databricks FULL automatic-copy identity, source qualification and publication/adoption proof; separate from direct RegisterClone v1. |
+| `analyzed_workload/` | Pure shared Submit/Record analysis: strict/template/copy identities, genuine inputs, shared AST traversal and checked dependency bindings. Warehouse adapters retain dialect policy and characterized strict domains. |
+| `copy_lifecycle.rs` | Candidate qualification, frozen copy sources/inputs/producers and subsequent adoption for submit copies and RegisterClone. Distinct legacy origin proofs preserve their characterized eligibility and age rules. |
+| `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
 | `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
-| `fingerprint.rs` | Versioned SQL/dependency/context, seed and schema-abstracted logic fingerprints shared by Submit and Record. Computes identities only. |
-| `sql_identity.rs` | Shared SQL parsing/traversal feeding the dialect identity rules. |
+| `fingerprint.rs` | Compatibility exports for the versioned identity implementation in `analyzed_workload/identity.rs`, with the existing fingerprint regressions. |
+| `sql_identity.rs` | Checked DuckDB strict identity and relation-read proofs; compatibility exports for shared traversal/binding. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
 | `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
 | `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Derives warehouse-family and canonical physical lookup keys through the centralized Warehouse naming rules to match generated persisted keys ([ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md)); Reuse qualification, freshness assessment and Result copy policy remain outside storage. |
+
+### Shared analyzed workload contract (#181–#186)
+
+This is the staged implementation contract. The behavior-preserving #183
+extraction implements the shared placement and lifecycle below; the broader
+Databricks grammar and v2 proofs are implemented by #184/#185. [ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)
+records why it replaces the existing paths. #183 changes placement only;
+#184/#185 introduce new Databricks copy semantics. Both experimental Databricks
+switches remain default off throughout.
+
+The seam has one pure analysis entry, conceptually
+`analyze(&SqlExecution) -> AnalyzedWorkload`, shared by Submit and Record.
+The dialect selects its adapter internally. The result contains:
+
+- Existing strict rendered/template identities and raw SQL/context for exact
+  fallback. Analysis failure never substitutes a partially normalized identity.
+- A structural query graph: ordered projections with output names, expression
+  trees, filters, ordered joins and predicates, CTE scopes, grouping and HAVING.
+  It preserves operator/literal/cast syntax wherever no equivalence is proven.
+- Reference bindings: lexical relation occurrence → physical relation key or
+  supplied dependency definition; dependency name → analyzed definition in its
+  own catalog/schema context. Repeated/self-join occurrences remain distinct.
+- Node kind and semantic configuration, context/function effects, and either a
+  versioned copy identity with a complete binding proof or an explicit opaque
+  reason (syntax, binding, context, function or configuration unknown).
+
+These are conceptual fields, not a requirement to add unused public Rust types.
+Keep structural details private to the shared analysis module. Callers need
+identities, bound inputs and the complete/opaque result; they do not walk ASTs.
+Reuse the current `result_copy` lookup/plan interface: a lookup describes the
+scoped evidence needed, the caller reads it, and a pure plan returns a copy or
+refusal. Submit and RegisterClone keep their different protocol requests and
+response shapes. A registration without SQL consumes its source's persisted
+analysis evidence; it cannot reconstruct missing equivalence from a clone grant.
+`ExecutionRow` retains hashes, contexts/provenance and recorded inputs, not a
+reconstructible SQL plan. Persist the versioned identity and binding/effect proof
+needed for registration when the ordinary source is written. Do not hydrate old
+rows from audit SQL, a catalog query or a newly submitted definition.
+One shared copy lifecycle owns qualification, frozen provenance and adoption;
+warehouse adapters supply typed policy/capability choices, not independent
+booleans on every node. Publication checks are performed atomically by the
+store against the plan's frozen source, rather than a second policy engine.
+
+#### First complete grammar and binding rules
+
+The new Databricks copy proof accepts one SELECT query with explicit projections,
+WHERE, ordered INNER/LEFT JOIN ... ON, nonrecursive CTEs, GROUP BY expressions
+and HAVING. CTEs may refer only to earlier definitions; duplicate/shadowed or
+unresolved names refuse proof. Qualified aliases bind in their lexical scope;
+CTE output aliases retain position and spelling under dialect identifier rules.
+Base relations resolve from structured identifiers and supplied defaults, then
+must agree with the genuine reported physical inputs, keeping the separate
+Target relation observation out of that set unless the query actually reads it.
+No suffix-name guesses, splitting
+quoted dots, recursive dependency cycles or silent missing/extra inputs. Conflicting
+duplicate observations/definitions refuse proof; repeated equal observations may
+be deduplicated without losing separate relation occurrences. Supplied
+query dependencies are analyzed recursively in their declared contexts and bound
+to their reference names; exchanging two definitions changes identity. Their
+physical leaf inputs must be covered by the observations. A dependency body is
+client evidence, not a warehouse catalog or a verified view definition. If only
+a view epoch is supplied and its physical leaves lack observations, copy analysis
+is opaque; never invent leaf freshness from the definition or view epoch. Use
+bounded dependency traversal (at most 32 definition levels and 1024 relation
+visits for new analysis), refusing cycles/overflow rather than partial proof.
+
+A qualified `alias.column` binds the column reference to that relation occurrence;
+it does not assert the column exists or infer its type. An unqualified base
+column can bind only with one visible relation; with multiple inputs it needs
+known projected column names from CTE/dependency outputs proving a unique binding,
+including proof that every other visible relation lacks that name. A base relation
+with unknown columns cannot supply that negative proof. Otherwise it is opaque. No correlated subqueries, struct/field interpretation,
+implicit column search through a warehouse catalog, or alias-based GROUP BY/HAVING
+resolution unless the dialect rule proves it unambiguously. Use qualified column
+references and explicit grouping expressions in the first multi-input forms.
+
+Expressions initially include column references, NULL/boolean/numeric/string
+literals, parentheses, explicit CAST, unary signs, `+ - * /`, comparisons
+`= <> < <= > >=`, `AND OR NOT`, `IS [NOT] NULL`, and searched CASE. Approved casts
+are explicit scalar numeric casts (INT, BIGINT, DECIMAL with precision/scale);
+no temporal, locale or string-to-number equivalence is inferred. Checked builtins
+are COUNT(*), COUNT(expr), SUM(expr), MIN(expr), MAX(expr), without DISTINCT,
+FILTER, ORDER BY or windows. The adapter must positively identify builtin
+resolution and the effects of each admitted form. This list is a syntax ceiling,
+not evidence that arbitrary operand types or session settings are harmless.
+Unknown types stay unknown: retain exact typed expression structure, never infer
+numeric columns, commute arithmetic, fold constants, remove casts, reassociate
+joins or change NULL/error/overflow behavior. An operation whose result depends
+on an unestablished setting/type rule is opaque; a successful source build alone
+does not establish that rule. Identity of the same bound physical column can
+preserve its type without discovering it; no type-dependent rewrite follows.
+
+Named physical-column references require presence evidence. Without a column
+set, even `q.missing` may resolve to a session-variable struct field. A complete
+SQL table-alias column list (`FROM c.raw.t AS q(id,v)`) establishes the exposed
+names because Databricks requires its arity to match the relation; it does not
+establish their types. Known CTE/dependency outputs also establish presence.
+Otherwise keep named references opaque; pass-through `*` and qualified builtin
+`COUNT(*)` do not assert a named column. An unqualified name across multiple
+inputs is opaque if any input has an unknown column set. See the primary
+[table alias rule](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-names#table-alias)
+and [name-resolution order](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-name-resolution).
+
+Output column order, names, quoting and duplicate names are semantic. Require
+explicit aliases for computed outputs unless the dialect proves the exact
+warehouse-generated name; a simple column keeps its resolved output name.
+Preserve bags (including duplicates), three-valued predicates, LEFT JOIN null
+extension, grouping keys and aggregate empty/all-NULL behavior. Do not reorder
+projections, joins, predicates or grouping. The existing single-input SELECT-star
+shape remains representable as exact pass-through with unknown column expansion;
+new joins never infer a star expansion or column order. Window/set/recursive/
+dynamic SQL, table functions, correlated queries, unknown/UDF functions and
+unreviewed AST fields initially produce opaque copy analysis. Parse success is
+insufficient. Existing stricter dialect subsets remain unchanged until separately
+characterized; this grammar does not enable new Snowflake/DuckDB transformations.
+
+For example, this is an admissible multi-input/CTE/aggregate shape without
+assuming the types of `id` in either physical input. Explicit builtin names
+establish function binding without unavailable session search-path metadata:
+
+```sql
+WITH orders AS (
+  SELECT system.builtin.count(*) AS n FROM c.raw.orders WHERE id IS NOT NULL
+), payments AS (
+  SELECT system.builtin.count(*) AS n FROM c.raw.payments WHERE id IS NOT NULL
+)
+SELECT orders.n AS order_count, payments.n AS payment_count
+FROM orders LEFT JOIN payments ON orders.n = payments.n
+```
+
+The two inputs bind exactly; IS NOT NULL needs no inferred column type; COUNT(*)
+has the adapter's checked integer output; the equality compares those known
+integer outputs. Numeric literals, lossless in-range integer-literal casts and
+COUNT comparisons also admit a checked GROUP BY/HAVING example without session
+settings. Ordinary explicit projections/pass-through and null predicates retain
+unknown column types symbolically. They need no blanket timezone/ANSI proof.
+In contrast, SUM over an unknown column, string/numeric implicit coercion in a
+join, string/temporal parsing casts and arithmetic with unknown overflow semantics
+stay opaque unless the adapter establishes the needed operand/context rule.
+Even explicit numeric CAST syntax is insufficient when conversion may depend on
+unknown source types or error modes. These refusals do not prevent the example
+or exact same-target reuse. #184 must test both admission and these refusals;
+new effect rules require positive dialect evidence, not presumed session defaults.
+
+Databricks SQL and Runtime 19+ resolve unqualified routines through a session
+search path that can place temporary functions before builtins. A bare name such
+as `count` therefore does not establish builtin identity. New copy proofs accept
+explicit `system.builtin` qualification for the checked aggregates; otherwise
+function resolution is opaque without supplied evidence. Older runtime builtin-first
+precedence is not a universal adapter rule. Parameterless context functions such
+as `current_user`, `current_date` and `current_timestamp` also cannot be assumed
+to be ordinary columns when physical column metadata is unknown. See the primary
+[function/name resolution rules](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-name-resolution).
+
+#### Context, node kind and observations
+
+Physical input identities always retain catalog/schema/relation components.
+For new Databricks identities only the *output* schema can be omitted, and only
+when every read, dependency, column and function is bound independently of that
+schema. Retain output catalog/name and full UID. Unqualified reads resolved using
+a default keep that resolved physical name; do not erase a default used by an
+unresolved reference or function. Session timezone, collation, ANSI/error modes,
+current-user/clock/random effects and function search paths are semantic when an
+expression depends on them. Unavailable relevant context means unknown, not a
+fabricated default. Known pure builtin effects may prove context irrelevant;
+unknown functions cannot. Keep the existing nondeterminism policy and exact
+same-target fallback; do not evaluate/rewrite volatile SQL. Snowflake's captured
+relative-schema map and DuckDB's checked dependency substitutions remain their
+own policies, never arbitrary schema stripping across dialects.
+
+SQL is only one part of a workload. Node kind, execution strategy, exact semantic
+extras and declared body/config/macro/contract signatures remain identity evidence.
+Opaque config signatures can distinguish configurations but cannot explain their
+semantics. FULL automatic copy remains models only, with the existing request,
+relation-property, freshness and chain restrictions, including the current
+rendered-only mode; no new template/seed/view/strategy permission. These full-UID
+and client-signature restrictions belong to Databricks copy, not ordinary model
+reuse or a new universal Snowflake/DuckDB requirement. Direct adoption broadens analysis for already-supported MERGE and
+source-clock check snapshots only: retain the measured unique-key/schema policy
+and `check_cols`/`updated_at`/hard-delete limits in
+[pre-copy acceptance](databricks-precopy.md). Do not infer a whole snapshot or
+incremental result from its current SELECT. Unsupported/missing node-kind or
+configuration evidence refuses new adoption. The existing bounded native
+configuration is the acceptance scope, not proof that every equal hash describes
+one of those configurations.
+
+State history is a separate input, never a field of the parsed query graph.
+The resolved snapshot carries scoped latest rows, current target/source/input
+observations, pending-source barriers, recorded input epochs and Upstream producers,
+and server time/build-age anchors. Physical keys follow
+[ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md);
+raw spellings survive for output. Select current physical history before identity
+([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md)); never resurrect an
+older matching build. Epochs establish only the dialect's observed ordering.
+DuckDB ordinals are not wall-clock instants: use server confirmation receipt time
+for build age. Unknown epochs cannot establish ordering or freshness, and must
+never be filled from submit time, copy time or a guessed timestamp.
+
+For new Databricks FULL copies, all physical leaf inputs must have matching known
+current/recorded epochs and producers. Permit both known NoBuild and recorded
+Build(logic identity), including multiple inputs; Unrecorded, changed producers,
+missing evidence or altered bindings refuse. A current ordinary source must
+match org/family/nonblank namespace, full UID, node kind/config and versioned
+logic, with an unmodified positive source epoch and no pending/newer barrier.
+A source copy never establishes a positive chain. Freeze source ID/key/epoch,
+all genuine input epochs/producers, original build-age anchor and inherited
+runtime before writing pending evidence. Confirm rechecks the frozen source and
+pending barriers in its transaction. Failed cloning publishes ordinary fallback
+only; invalid proof cannot gain adoption through strict SQL or namespace hashes.
+A later copy cannot renew Lag tolerance. Adoption checks the same proof against
+current inputs through `reuse_candidate` and the pure freshness engine.
+Snowflake/DuckDB keep their existing copy-age/chain rules during extraction.
+No request supplies a new physical source observation at Confirm: unversioned
+DDL still requires quiescent sources and does not solve external physical races.
+
+#### Replacement map and compatibility gate
+
+| Existing responsibility / call sites | Shared destination; code that goes away |
+|---|---|
+| `execution::ExecutionEvidence::{sql_submit,sql_record}` → `fingerprint::{sql_logic_hash,copy_logic_hash}` | One analysis result feeds both writes; keep length framing, seed hashing and legacy dialect serialization unchanged. Remove caller-specific repeated identity construction. |
+| `sql_identity::{canonicalized,duckdb_copy_graph}`, `sql_norm`, `warehouse/databricks.rs` parsing | Shared traversal/scopes/binding; retain dialect transformations and identifier rules as adapters. Replace duplicated copy-only walks as their shared equivalent lands; unrelated audit/selector proofs are outside this migration. |
+| Former `databricks_submit_copy::identity` and direct SELECT-star analyzer | Removed by #184/#185. Shared `analyzed_workload` traversal produces one `CopyProof`; `CopyProof::for_origin` frames automatic-v2 and direct-v2 origins. Strict fallback and legacy decoding retain their existing domains. |
+| `result_copy::{submit_lookup,plan_submit,register_lookup,plan_register}`, `databricks_submit_copy::{source_admits,reusable}` | One qualification/provenance implementation behind the existing lookup/plan interface; remove duplicate source/input/origin checks. Preserve refusal diagnostics and distinct DDL-attempt versus adoption permission. |
+| `execution::{submit_copied_from,copy_registration}`, `Store::confirm` | One frozen-copy evidence construction and atomic publication predicate, replacing parallel direct/automatic JSON publication branches; keep version/origin-specific compatibility decoding and confirm-once behavior. |
+| `reuse_candidate::for_model`, `decision::{decide,upstream_freshness}` | Adoption consumes the shared proof, removing duplicated origin bypass logic. Keep latest-row selection, ordinary identity checks, freshness/lag policy and wire descriptions in their current modules. |
+| `warehouse.rs` and dialect adapters | Keep naming, effects/context, observation/build-age semantics, capabilities/DDL and justified legacy policy differences. Remove delegated duplicate analysis/qualification, rather than adding another warehouse flag forest. |
+
+#183 must preserve **all fingerprint bytes and decisions**, including current
+Databricks v1 direct/automatic proofs. Do not bump a tag merely for extraction.
+Preserve confirmed, NULL/unknown-version and pending rows confirmed after upgrade,
+raw physical aliases, cached test payloads, rejection codes, both clone mirrors,
+Explain, source/age anchoring and failed/duplicate-confirm behavior. Frozen bytes
+in `golden/upgrade/` are independent evidence; a production hash helper invoked
+with an older tag is not an old implementation.
+
+#184 uses a distinct `databricks-submit-copy-v2` identity domain; #185 similarly
+uses `databricks-direct-copy-v2` provenance. Version the persisted proof as well
+as its identity framing, including origin, source and age evidence; do not reuse
+v1 fields with v2 meaning. Ordinary strict rendered/template identity stays at its
+current version unless its own semantics change. Legacy ordinary builds can
+still reuse strictly, but cannot supply a v2 copy without persisted v2 evidence.
+Old copy-origin rows lacking the required new proof cold-miss adoption, even if a
+strict/namespace hash happens to match. Preserve their latest-row barrier. Pending
+v1 rows confirmed after upgrade retain v1 bytes/version, never synthesize v2
+proof. Test those cold misses and unknown/NULL/incompatible origins explicitly;
+a new ordinary build is the recovery. These reviewed version transitions are
+the only intended compatibility changes in #184/#185.
+
+The unchanged integration base is `6aa72ef`; its
+[CI run 43763522675](https://github.com/maxfirman/dbt-state-rs/actions/runs/43763522675)
+passed the normal workspace and DuckDB gates. Reuse that baseline; this contract
+change needs documentation/link checks, not another warehouse campaign.
+Use this small comparison gate, not a second permanent engine:
+
+| Responsibility | Existing baseline and old/new requirement |
+|---|---|
+| Complete public history / output fidelity | `conformance.rs::conformance_replay_all_corpora`, exact Databricks submit/pre-copy/native replay tests: same full responses with existing ID/clock handling, gaps unchanged. Compare complete histories from the same fresh store on the pre-extraction and extracted binaries. |
+| Binding / legacy identity | `sql_norm`/`fingerprint` tests, `sql_normalization.rs`, `duckdb_identity.rs`, `duckdb_copy.rs`, `databricks_identity.rs`, `databricks_dependency_identity.rs` and frozen `golden/upgrade/`: identical old hash bytes, selected current rows and upgrade barriers at #183. |
+| Qualification / publication / adoption | `clone_{eligibility,lifecycle,history_provenance,chain_provenance,submit_fallback}.rs`, `databricks_{lifecycle,submit_copy,precopy}.rs`: same selected source, pending/confirmed provenance, frozen inputs/age and outputs, including rollback/failure/retry/duplicate Confirm. Compare persisted evidence as well as public results. |
+| Independent physical/model safety | Existing DuckDB acceptance and Databricks pre-copy/submit-copy native drivers retain complete typed bags/schema/properties/history and actual clock evidence; `decision_proptest.rs` retains pure freshness invariants. These do not independently prove the new grammar. #184/#185 add worked operator/binding negatives and #186 uses the existing native oracles for a small representative broader graph. |
+
+Retain `conformance::databricks_copy_recovery_complete_hosted_boundary` with all
+151 requests and its **nine full differing outputs** at entries
+26, 30, 115, 119, 127, 128, 129, 133, 141. The exact payload snapshot in
+[`databricks_copy_recovery_local_differences.json`](../crates/harness/tests/fixtures/databricks_copy_recovery_local_differences.json)
+and [boundary explanation](databricks-copy-recovery.md#whole-hosted-boundary)
+stay unchanged. In particular, do not imitate the hosted stale-source grant.
+The separate submit-controls volatile/display differences and accepted
+UID/namespace/unknown-freshness floors also remain explicit, not newly masked.
+Temporary old/new comparisons are test tooling removed after extraction parity;
+new semantic forms require independent expectations and version-transition tests.
 
 ### Registered services
 

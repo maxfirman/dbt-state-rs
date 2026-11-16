@@ -174,11 +174,33 @@ pub async fn start_server_databricks_copy_recovery() -> TestServer {
     start_server_with_database(false, None, true, true).await
 }
 
+/// Native acceptance uses the production clock and never accepts replay metadata.
+pub async fn start_server_databricks_copy_native() -> TestServer {
+    start_server_with_database_clock(false, None, true, true, dbt_state_server::Clock::System).await
+}
+
 async fn start_server_with_database(
     require_org_header: bool,
     database: Option<std::sync::Arc<TestDatabase>>,
     databricks_direct_copy: bool,
     databricks_submit_copy: bool,
+) -> TestServer {
+    start_server_with_database_clock(
+        require_org_header,
+        database,
+        databricks_direct_copy,
+        databricks_submit_copy,
+        dbt_state_server::Clock::Replay,
+    )
+    .await
+}
+
+async fn start_server_with_database_clock(
+    require_org_header: bool,
+    database: Option<std::sync::Arc<TestDatabase>>,
+    databricks_direct_copy: bool,
+    databricks_submit_copy: bool,
+    clock: dbt_state_server::Clock,
 ) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
@@ -198,7 +220,8 @@ async fn start_server_with_database(
                     .state(require_org_header)
                     .await
                     .with_databricks_direct_copy(databricks_direct_copy)
-                    .with_databricks_submit_copy(databricks_submit_copy);
+                    .with_databricks_submit_copy(databricks_submit_copy)
+                    .with_clock(clock);
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
                 let addr = listener.local_addr().expect("server address");
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);

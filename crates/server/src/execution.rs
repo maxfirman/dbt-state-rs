@@ -1,5 +1,6 @@
 //! Execution evidence and publication shared by Submit, Record and result copies.
-//! Keep identity construction here; `submit_decision` selects candidates and writes
+//! Workload analysis supplies identities and inputs; copy_lifecycle freezes copies.
+//! `submit_decision` selects candidates and writes
 //! Submit's pending rows (its selector writes are best effort), decision remains
 //! pure, and the gRPC adapter owns wire responses. Record publishes its complete
 //! batch and selector state in one transaction.
@@ -9,7 +10,7 @@
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
 use crate::query_cache as qc;
-use crate::store::{logic_identity, CopySourceBuild, InputTable, Producer, Store};
+use crate::store::{logic_identity, InputTable, Producer, Store};
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -35,135 +36,13 @@ fn node_unique_id(
         .map(str::to_owned)
 }
 
-/// Whether `name` is the data test's own audit relation, which a
-/// `store_failures` test writes and the client then reports in `tables`
-/// (#88). Client 2.0.11 (dbt-fusion `collect_table_modified_infos`) always
-/// adds the node's own relation (`node.database()`.`node.schema()`.alias) to
-/// `tables` when it exists; a data test's relation is where it stores its
-/// failures. Like an incremental's read of its own target, that is the test's
-/// own write, not an upstream: hosted neither rebuilds for it nor lists it
-/// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
-///
-/// Recognized only from the request: a data test whose semantic extras set
-/// `store_failures: true`, and a relation that is exactly
-/// `default_catalog`.`default_schema`.`dbt_node_name` under the warehouse's
-/// identifier rules (Snowflake only). Any other table still counts, so a
-/// changed dependency set still rebuilds. `default_schema` is the test's own
-/// schema, also when a schema macro puts it outside the target schema
-/// (VERIFIED LIVE 2026-11-11, explain_store_failures_audit_schema.jsonl, #106).
-/// A test with a configured alias is not named by the request: no request
-/// field carries the alias (explain_store_failures_audit_alias.jsonl). Its
-/// audit relation is recognized by elimination instead
-/// ([`unnamed_audit_relation`], #123, ADR 0008).
-///
-/// The request does not carry the alias, so a relation the test reads can
-/// have exactly that name (a test `orders` aliased `orders_audit` that reads
-/// `orders`). The audit relation is the test's output and never appears in its
-/// SQL, so a name the test's SQL or one of its query dependencies mentions is
-/// always kept as an input.
-fn is_own_audit_relation(req: &qc::SqlExecution, name: &str) -> bool {
-    if !stores_failures(req) {
-        return false;
-    }
-    let (Some(schema), Some(test)) = (
-        req.default_schema.as_deref(),
-        req.labels.get("dbt_node_name"),
-    ) else {
-        return false;
-    };
-    !mentioned_by_test(req, test)
-        && crate::warehouse::Warehouse::from_dialect(&req.dialect).names_relation(
-            name,
-            &req.default_catalog,
-            schema,
-            test,
-        )
-}
-
-/// The audit relation of a `store_failures` test with a configured alias,
-/// recognized by elimination (#123, ADR 0008): the one reported table in the
-/// test's own schema (`default_catalog`.`default_schema`, under the
-/// warehouse's identifier rules, Snowflake only) that neither the test's SQL
-/// nor any of its query dependencies mentions. Client 2.0.11 reports a table
-/// only when the test's SQL or a view definition it sends as a query
-/// dependency names it, or when it is the node's own relation
-/// (dbt-fusion `collect_table_modified_infos`), so that table is the test's
-/// own write. Hosted SKIPs the unchanged rerun
-/// (explain_store_failures_audit_alias.jsonl entries 9, 10).
-///
-/// `None` when two or more reported tables qualify (counting one the
-/// exact-name rule recognizes): the request is then ambiguous and every
-/// table stays an input.
-fn unnamed_audit_relation(req: &qc::SqlExecution) -> Option<&str> {
-    if !stores_failures(req) {
-        return None;
-    }
-    let schema = req.default_schema.as_deref()?;
-    let warehouse = crate::warehouse::Warehouse::from_dialect(&req.dialect);
-    if warehouse == crate::warehouse::Warehouse::Databricks {
-        return warehouse.unread_test_audit(req);
-    }
-    let mut qualifying = req.tables.iter().filter(|t| {
-        warehouse
-            .relation_in_schema(&t.name, &req.default_catalog, schema)
-            // An identifier with an embedded quote is spelled doubled in SQL,
-            // which the mention check does not read; it stays an input.
-            .is_some_and(|id| !id.is_empty() && !id.contains('"') && !mentioned_by_test(req, &id))
-    });
-    match (qualifying.next(), qualifying.next()) {
-        (Some(only), None) => Some(only.name.as_str()),
-        _ => None,
-    }
-}
-
-/// Whether `req` is a data test whose semantic extras set
-/// `store_failures: true`.
-fn stores_failures(req: &qc::SqlExecution) -> bool {
-    req.execution_type == qc::ModelExecutionType::DbtDataTest as i32
-        && req
-            .semantic_extras
-            .get("store_failures")
-            .and_then(|v| serde_json::from_str::<bool>(v).ok())
-            == Some(true)
-}
-
-/// Whether the test's SQL or any of its query dependencies mentions
-/// `identifier` ([`mentions_identifier`]).
-fn mentioned_by_test(req: &qc::SqlExecution, identifier: &str) -> bool {
-    std::iter::once(req.sql.as_str())
-        .chain(req.query_dependencies.iter().map(|d| d.query.as_str()))
-        .any(|sql| mentions_identifier(sql, identifier))
-}
-
-/// The reported tables that are the execution's inputs: all of them but a
-/// `store_failures` test's own audit relation (#88, #123).
-pub(crate) fn sql_inputs(req: &qc::SqlExecution) -> Vec<InputTable> {
-    let unnamed = unnamed_audit_relation(req);
-    req.tables
-        .iter()
-        .filter(|t| !is_own_audit_relation(req, &t.name) && Some(t.name.as_str()) != unnamed)
-        .map(InputTable::from)
-        .collect()
-}
-
-/// Whether `text` contains `identifier` as a whole word, ignoring ASCII case.
-/// This over-approximates a reference (a comment or string literal also
-/// counts), which only keeps a relation as an input.
-fn mentions_identifier(text: &str, identifier: &str) -> bool {
-    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let (text, identifier) = (text.to_lowercase(), identifier.to_lowercase());
-    !identifier.is_empty()
-        && text.match_indices(&identifier).any(|(at, _)| {
-            let before = text[..at].chars().next_back();
-            let after = text[at + identifier.len()..].chars().next();
-            !before.is_some_and(is_word) && !after.is_some_and(is_word)
-        })
-}
+pub(crate) use crate::analyzed_workload::inputs::sql_inputs;
 
 /// The identity and inputs of one execution, as submitted, recorded or
 /// registered as a copy. Reuse candidate selection and Result copy planning
 /// read it; [`ExecutionEvidence::pending`] and [`ExecutionEvidence::confirmed`]
-/// turn it into the row to write. Only the constructors below build it.
+/// turn it into the row to write. Execution and copy-lifecycle constructors
+/// share this evidence type.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ExecutionEvidence {
     pub(crate) org_id: String,
@@ -181,8 +60,9 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
-    pub(crate) direct_copy_provenance: Option<crate::result_copy::DirectCopyProvenance>,
-    pub(crate) submit_copy_provenance: Option<crate::databricks_submit_copy::Provenance>,
+    pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
+    pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
+    pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
     pub(crate) node_namespace_logic_hash: Option<String>,
     /// The unrendered-template logic hash, set only in `compare_unrendered_code`
     /// mode (NULL otherwise). Reuse matches when EITHER `node_sql_hash` (rendered)
@@ -282,21 +162,22 @@ impl ExecutionEvidence {
     }
 
     fn sql(org_id: &str, req: &qc::SqlExecution, template: Option<&str>, copy: bool) -> Self {
+        let analysis = crate::analyzed_workload::analyze(req);
         Self {
             node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
-            node_sql_hash: Some(crate::fingerprint::sql_logic_hash(req, None)),
+            node_sql_hash: Some(analysis.rendered_hash),
+            analyzed_copy_proof: (copy && template.is_none())
+                .then_some(analysis.copy_proof)
+                .flatten(),
             // Template mode cannot establish direct equivalence, even when
             // missing signatures leave no usable template alternative.
             direct_copy_provenance: (copy && template.is_none())
-                .then(|| crate::result_copy::direct_copy_provenance(req))
+                .then_some(analysis.direct_provenance)
                 .flatten(),
             submit_copy_provenance: None,
-            node_namespace_logic_hash: copy
-                .then(|| crate::fingerprint::copy_logic_hash(req))
-                .flatten(),
-            node_template_hash: template
-                .map(|body| crate::fingerprint::sql_logic_hash(req, Some(body))),
-            input_tables: sql_inputs(req),
+            node_namespace_logic_hash: copy.then_some(analysis.copy_hash).flatten(),
+            node_template_hash: template.and(analysis.template_hash),
+            input_tables: analysis.inputs,
             ..Self::node(
                 org_id,
                 req.target_table.clone().unwrap_or_default(),
@@ -308,7 +189,7 @@ impl ExecutionEvidence {
         }
     }
 
-    fn node(
+    pub(crate) fn node(
         org_id: &str,
         target_table: String,
         dialect: String,
@@ -334,6 +215,7 @@ impl ExecutionEvidence {
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
+            analyzed_copy_proof: None,
             direct_copy_provenance: None,
             submit_copy_provenance: None,
             node_namespace_logic_hash: None,
@@ -385,64 +267,6 @@ impl ExecutionEvidence {
                 qc::ModelExecutionType::Values as i32,
                 req.dbt_node_state.as_ref(),
             )
-        }
-    }
-
-    /// A client-requested copy (RegisterClone) of `req.clone_source_table` into
-    /// `req.target_table`. It inherits the source's schema-abstracted logic
-    /// identity, when the source has one, so later submits reuse the copy once
-    /// confirmed. From the source's current build, when it was read
-    /// ([`CopySourceBuild`]), it also inherits the runtime, which hosted
-    /// reports when it reuses the copy, and the names of the upstreams the
-    /// build recorded, for Explain (#93). A copy has no rendered SQL, node
-    /// state or recorded inputs of its own.
-    pub(crate) fn copy_registration(
-        org_id: &str,
-        req: &qc::CloneRequest,
-        inherited_ns_logic: Option<String>,
-        source: Option<&CopySourceBuild>,
-    ) -> Self {
-        Self {
-            node_namespace_logic_hash: inherited_ns_logic,
-            inherited_runtime_ms: source.and_then(|s| s.execution_runtime_ms),
-            clone_source_inputs: source.map(|s| s.input_names.clone()),
-            node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
-            clone_source_table: Some(req.clone_source_table.clone()),
-            ..Self::node(
-                org_id,
-                req.target_table.clone(),
-                req.dialect.clone(),
-                req.table_namespace.clone(),
-                req.execution_type,
-                None,
-            )
-        }
-    }
-
-    /// The same evidence for a Result copy of `source_table` into this target.
-    pub(crate) fn copied_from(&self, source_table: &str) -> Self {
-        Self {
-            clone_source_table: Some(source_table.to_owned()),
-            ..self.clone()
-        }
-    }
-
-    pub(crate) fn submit_copied_from(&self, source: &crate::store::ExecutionRow) -> Self {
-        Self {
-            clone_source_table: Some(source.target_table.clone()),
-            input_tables: crate::databricks_submit_copy::inputs(source),
-            raw_input_tables: None,
-            submit_copy_provenance: Some(crate::databricks_submit_copy::Provenance {
-                version: 1,
-                source_execution_id: source.id,
-                source_epoch: source.last_modified_epoch.expect("qualified source epoch"),
-                source_physical_key: crate::warehouse::Warehouse::physical_scope_key(
-                    &source.dialect,
-                    &source.target_table,
-                ),
-                published: false,
-            }),
-            ..self.clone()
         }
     }
 
@@ -704,6 +528,75 @@ pub fn sql_execution(req: &qc::SubmitEnrichedSqlRequest) -> qc::SqlExecution {
 mod tests {
     use super::*;
     use crate::query_cache::ModelExecutionType;
+    use crate::store::CopySourceBuild;
+
+    // Frozen from the unmodified eff5727 implementation, before extraction.
+    // This is not a production hasher invoked with a historical version tag.
+    #[test]
+    fn analyzed_workloads_preserve_frozen_execution_identities() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/analysis_eff5727.json")).unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let request: qc::SqlExecution =
+                serde_json::from_value(case["request"].clone()).unwrap();
+            let analysis = crate::analyzed_workload::analyze(&request);
+            assert_eq!(serde_json::json!(analysis.rendered_hash), case["rendered"]);
+            assert_eq!(serde_json::json!(analysis.template_hash), case["template"]);
+            if request.dialect == "databricks"
+                && request.execution_type == 1
+                && !case["copy"].is_null()
+            {
+                // Explicit v1 -> v2 persistence transition. The old fixture is
+                // immutable; the new literal pins framing, not SQL semantics.
+                assert_ne!(serde_json::json!(analysis.copy_hash), case["copy"]);
+                assert_eq!(analysis.copy_proof.as_ref().unwrap().version, 2);
+                assert_eq!(
+                    analysis.copy_hash.as_deref(),
+                    Some("7b07b39a37199cae7ec0a599467f3a11294ed0861c58cba184731ac6eda2eb7c")
+                );
+            } else if request.dialect == "databricks"
+                && request.execution_type == 1
+                && request.query_dependencies.len() == 1
+            {
+                // Reviewed #186 safety correction: SELECT id from a physical
+                // leaf without column-presence evidence may resolve a session
+                // variable. Preserve the original opaque frozen expectation.
+                assert!(case["copy"].is_null());
+                assert!(analysis.copy_proof.is_none());
+                assert!(analysis.copy_hash.is_none());
+            } else {
+                assert_eq!(serde_json::json!(analysis.copy_hash), case["copy"]);
+            }
+            if request.dialect == "databricks"
+                && (!case["direct"].is_null() || request.sql == "select * from cdo.`raw`.input")
+            {
+                // Reviewed #185 origin transition; preserve every other frozen
+                // field exactly, and keep the actual old-server fixture intact.
+                let mut expected = if case["direct"].is_null() {
+                    serde_json::json!({"default_catalog":"cdo", "default_schema":"dev",
+                        "source_execution_id":null, "source_epoch":null, "source_physical_key":null})
+                } else {
+                    case["direct"].clone()
+                };
+                expected["version"] = serde_json::json!(2);
+                expected["published"] = serde_json::json!(false);
+                expected["identity"] =
+                    serde_json::json!(if request.sql == "select * from cdo.`raw`.input" {
+                        "f935f2593c38aec84a5b6810173b7bbcb219b326168cf87b6f636188ecae4921"
+                    } else if request.sql.contains('`') {
+                        "eb0432b7927899fffb2723af5146e90694a20c5edb3ef55cdad7f14aa4a5db9e"
+                    } else {
+                        "c8faf1f6423f33e3c677901614065d8a299404f64358d1f50104dfc5452c4593"
+                    });
+                assert_eq!(serde_json::json!(analysis.direct_provenance), expected);
+            } else {
+                assert_eq!(
+                    serde_json::json!(analysis.direct_provenance),
+                    case["direct"]
+                );
+            }
+        }
+    }
 
     fn databricks_audit() -> qc::SqlExecution {
         qc::SqlExecution {
@@ -1464,6 +1357,7 @@ mod tests {
             &clone_request(),
             Some("logic".into()),
             Some(&source),
+            None,
         )
         .pending("req-1", "dec-1");
 
@@ -1502,7 +1396,7 @@ mod tests {
 
     #[test]
     fn copy_registration_without_source_logic_inherits_nothing() {
-        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None);
+        let e = ExecutionEvidence::copy_registration("org", &clone_request(), None, None, None);
 
         assert_eq!(e.node_namespace_logic_hash, None);
         assert_eq!(e.inherited_runtime_ms, None);

@@ -33,7 +33,9 @@ use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::reuse_candidate::Selection;
-use crate::store::{CopyCandidate, ExecutionRow, InputTable};
+#[cfg(test)]
+use crate::store::InputTable;
+use crate::store::{CopyCandidate, ExecutionRow};
 use crate::warehouse::{IncrementalCopyContract, Warehouse};
 
 // ── Submit fallback ─────────────────────────────────────────────────────────
@@ -71,127 +73,7 @@ pub(crate) struct RehomedReading {
     pub reads: Option<Vec<Vec<String>>>,
 }
 
-impl RehomedReading {
-    /// `logic`, read by a submit that recorded `input_tables` and builds
-    /// `own_target`, whose schema `from` is read as `logic.schema`.
-    pub(crate) fn new(
-        logic: RehomedLogic,
-        input_tables: &[InputTable],
-        own_target: &str,
-        from: &str,
-    ) -> Self {
-        let from = crate::sql_norm::canonical_schema_key(from);
-        let reads = canonical_reads(input_tables, own_target, Some((&from, &logic.schema)));
-        let schemas: std::collections::BTreeSet<&str> = reads
-            .iter()
-            .filter(|name| name.len() == 3)
-            .map(|name| name[1].as_str())
-            .collect();
-        let covered = logic.named.iter().all(|s| schemas.contains(s.as_str()));
-        Self {
-            reads: covered.then_some(reads),
-            logic,
-        }
-    }
-}
-
-/// `input_tables` other than `own_target`, each as its canonical name
-/// components (`sql_norm::canonical_identifier`), sorted and deduplicated;
-/// with `rehome = Some((from, to))`, a three-part name in canonical schema
-/// `from` is read in `to`. Two spellings of one relation read the same, so
-/// the submit fallback judges a candidate admitted on its reads as a
-/// same-upstream equivalent (PR #127 review).
-pub(crate) fn canonical_reads(
-    input_tables: &[InputTable],
-    own_target: &str,
-    rehome: Option<(&str, &str)>,
-) -> Vec<Vec<String>> {
-    use crate::sql_norm::{canonical_identifier, split_object_name_components};
-    let canonical = |name: &str| -> Vec<String> {
-        split_object_name_components(name)
-            .iter()
-            .map(|c| canonical_identifier(c))
-            .collect()
-    };
-    let own = canonical(own_target);
-    let mut reads: Vec<Vec<String>> = input_tables
-        .iter()
-        .map(|t| canonical(&t.name))
-        .filter(|name| *name != own)
-        .map(|mut name| {
-            if let (Some((from, to)), 3) = (rehome, name.len()) {
-                if name[1] == from {
-                    name[1] = to.to_owned();
-                }
-            }
-            name
-        })
-        .collect();
-    reads.sort();
-    reads.dedup();
-    reads
-}
-
-impl EquivalentLookup<'_> {
-    /// Every logic identity a candidate may have. A reading that could admit
-    /// no candidate ([`Self::admits`]) is not looked up.
-    pub(crate) fn logic_hashes(&self) -> Vec<&str> {
-        std::iter::once(self.node_namespace_logic_hash)
-            .chain(
-                self.rehomed
-                    .iter()
-                    .filter(|r| self.reading_may_admit(r))
-                    .map(|r| r.logic.hash.as_str()),
-            )
-            .collect()
-    }
-
-    /// Whether a lookup that may copy has the reads to verify `reading`.
-    fn reading_may_admit(&self, reading: &RehomedReading) -> bool {
-        self.execution_type.is_none() || reading.reads.is_some()
-    }
-
-    /// Whether `candidate` is an equivalent: it has the submit's logic, or
-    /// the submit's logic read in the schema of the candidate's Target
-    /// relation. The submit so read is the candidate's build request with one
-    /// schema substituted, each dependency name still bound to its definition
-    /// (AGENTS.md invariant 4). A rehomed identity matched by a candidate in
-    /// another schema is not one: that candidate read other relations.
-    ///
-    /// The identity abstracts the schemas a build resolved its references
-    /// in, and a Target relation's schema does not show them: a build into
-    /// the prod schema may have resolved them in another one. So when the
-    /// submit may be copied, the candidate must also have recorded exactly
-    /// the upstream reads of the submit so read, which name each schema that
-    /// reading names (PR #127 review). A lookup that only reports codes
-    /// builds either way and admits on the Target relation's schema.
-    pub(crate) fn admits(&self, candidate: &CopyCandidate) -> bool {
-        use crate::sql_norm::{canonical_schema_key, schema_of_object_name};
-        let Some(hash) = candidate.node_namespace_logic_hash.as_deref() else {
-            return false;
-        };
-        if hash == self.node_namespace_logic_hash {
-            return true;
-        }
-        let Some(schema) = schema_of_object_name(&candidate.target_table) else {
-            return false;
-        };
-        let schema = canonical_schema_key(&schema);
-        self.rehomed.iter().any(|r| {
-            r.logic.hash == hash
-                && r.logic.schema == schema
-                && (self.execution_type.is_none()
-                    || r.reads.as_ref().is_some_and(|reads| {
-                        *reads
-                            == canonical_reads(
-                                &candidate.input_tables,
-                                &candidate.target_table,
-                                None,
-                            )
-                    }))
-        })
-    }
-}
+pub(crate) use crate::copy_lifecycle::canonical_reads;
 
 /// Whether the submit fallback applies, and if so what to look up.
 ///
@@ -591,122 +473,11 @@ pub(crate) enum RegisterRefusal {
     Unsupported(&'static str),
 }
 
-/// Immutable direct-copy evidence, distinct from automatic namespace identity.
-/// Unknown versions and legacy NULL cannot authorize adoption. Source context
-/// is retained even though this first subset proves its only read fully qualified.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DirectCopyProvenance {
-    pub version: u8,
-    pub identity: String,
-    pub default_catalog: String,
-    pub default_schema: Option<String>,
-    pub source_execution_id: Option<i64>,
-    pub source_epoch: Option<i64>,
-    pub source_physical_key: Option<String>,
-}
+pub(crate) use crate::copy_lifecycle::DirectCopyProvenance;
 
-/// Context-independent identity only for the observed single fully-qualified
-/// SELECT-star input. No general SQL rewriting or cross-target candidate search.
-pub(crate) fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCopyProvenance> {
-    use sha2::{Digest, Sha256};
-    use sqlparser::tokenizer::{Token, Tokenizer};
-    if Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks
-        || !matches!(req.execution_type, 3 | 7)
-        || !req.query_dependencies.is_empty()
-    {
-        return None;
-    }
-    let tokens = Tokenizer::new(&sqlparser::dialect::DatabricksDialect {}, &req.sql)
-        .tokenize()
-        .ok()?;
-    let tokens: Vec<_> = tokens
-        .into_iter()
-        .filter(|t| !matches!(t, Token::Whitespace(_)))
-        .collect();
-    let direct_name = tokens.len() == 8
-        && ([3, 5, 7]
-            .iter()
-            .all(|i| matches!(&tokens[*i], Token::Word(w) if w.quote_style == Some('`')))
-            || [3, 5, 7].iter().all(|i| {
-                matches!(&tokens[*i], Token::Word(w)
-            if w.quote_style.is_none()
-                && w.value.bytes().next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-                && w.value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
-            }));
-    if tokens.len() != 8
-        || !matches!(&tokens[0], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("select"))
-        || tokens[1] != Token::Mul
-        || !matches!(&tokens[2], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case("from"))
-        || tokens[4] != Token::Period
-        || tokens[6] != Token::Period
-        || !direct_name
-    {
-        return None;
-    }
-    let input = format!("{}.{}.{}", tokens[3], tokens[5], tokens[7]);
-    let physical = |name: &str| Warehouse::physical_scope_key(&req.dialect, name);
-    let own = req.target_table.as_deref().map(physical);
-    let inputs: Vec<_> = req
-        .tables
-        .iter()
-        .filter(|t| Some(physical(&t.name)) != own)
-        .collect();
-    if inputs.len() != 1 || physical(&inputs[0].name) != physical(&input) {
-        return None;
-    }
-    let state = req.dbt_node_state.as_ref()?;
-    if state.node_unique_id.is_empty() {
-        return None;
-    }
-    let mut neutral = req.clone();
-    neutral.default_catalog.clear();
-    neutral.default_schema = None;
-    neutral.target_table = None;
-    let identity = crate::fingerprint::sql_logic_hash(&neutral, None);
-    let framed = serde_json::to_vec(&(
-        "databricks-direct-copy-v1",
-        identity,
-        &state.node_unique_id,
-        &state.node_body_hash,
-        &state.node_configs_hash,
-        &state.node_macros_hash,
-        &state.node_contract_hash,
-        physical(&input),
-    ))
-    .ok()?;
-    Some(DirectCopyProvenance {
-        version: 1,
-        identity: hex::encode(Sha256::digest(framed)),
-        default_catalog: req.default_catalog.clone(),
-        default_schema: req.default_schema.clone(),
-        source_execution_id: None,
-        source_epoch: None,
-        source_physical_key: None,
-    })
-}
-
-pub(crate) fn direct_copy_matches(
-    evidence: &ExecutionEvidence,
-    row: &crate::store::ExecutionRow,
-) -> bool {
-    let (Some(current), Some(recorded)) = (
-        &evidence.direct_copy_provenance,
-        &row.direct_copy_provenance,
-    ) else {
-        return false;
-    };
-    recorded.version == 1
-        && current.version == 1
-        && recorded.source_execution_id.is_some()
-        && recorded.source_epoch.is_some()
-        && recorded.source_physical_key.is_some()
-        && recorded.identity == current.identity
-        && row.node_unique_id.is_some()
-        && row.node_unique_id == evidence.node_unique_id
-        && row.input_tables.iter().all(|t| {
-            t.last_modified_epoch.is_some()
-                && !matches!(t.producer, crate::store::Producer::Unrecorded)
-        })
+#[cfg(test)]
+fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCopyProvenance> {
+    crate::analyzed_workload::analyze(req).direct_provenance
 }
 
 /// #152's observed is_defer_to_profile + chain-zero wire scope. This proves
@@ -731,7 +502,7 @@ pub(crate) fn direct_refusal_scope(
         && evidence
             .direct_copy_provenance
             .as_ref()
-            .is_some_and(|p| p.version == 1)
+            .is_some_and(|p| p.version == 2)
         && req.semantic_extras.get("unique_key").map(String::as_str) == Some("\"id\"")
         && match req.execution_type {
             3 => {
@@ -789,7 +560,7 @@ pub(crate) fn direct_refusal_matches(
     let Some(context) = row
         .direct_copy_provenance
         .as_ref()
-        .filter(|p| p.version == 1)
+        .filter(|p| p.version == 2)
     else {
         return false;
     };
@@ -844,6 +615,7 @@ pub(crate) fn direct_refusal_matches(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DirectRegistration {
     pub provenance: DirectCopyProvenance,
+    pub proof: crate::analyzed_workload::query::CopyProof,
     pub inputs: Vec<crate::store::InputTable>,
     pub runtime_ms: Option<i64>,
 }
@@ -988,68 +760,7 @@ pub(crate) fn plan_register(
         }
         RegisterHistory::SourceLogic(logic) => (logic, None),
         RegisterHistory::DatabricksSource(source) => {
-            let same_source = source.as_deref().is_some_and(|source| {
-                source.execution_type == req.execution_type
-                    && source.last_modified_epoch == req.clone_source_last_modified_epoch
-                    && source.node_unique_id.as_deref()
-                        == req.labels.get("dbt_node_unique_id").map(String::as_str)
-            });
-            // The captured native reverse-copy attempt reaches a source that
-            // is already a copy, at limit1. Preserve the refusal and report its
-            // measured cause; larger limits still gain no chain permission.
-            if same_source
-                && req.clone_chain_depth_limit == Some(1)
-                && req.clone_source_last_modified_epoch.is_some_and(|e| e > 0)
-                && source.as_deref().is_some_and(|s| {
-                    s.clone_source_table.is_some()
-                        && s.node_unique_id
-                            .as_deref()
-                            .is_some_and(|uid| !uid.is_empty())
-                })
-            {
-                return Err(RegisterRefusal::Reject(
-                    RegisterRejection::ChainLimitExceeded,
-                ));
-            }
-            let eligible = same_source
-                && source.as_deref().is_some_and(|source| {
-                    source.clone_source_table.is_none() && source.node_sql_hash.is_some()
-                });
-            if !eligible {
-                return Err(RegisterRefusal::Reject(
-                    RegisterRejection::ForcedNotEligible,
-                ));
-            }
-            if let Some(source) = source {
-                if let Some(mut provenance) = source.direct_copy_provenance {
-                    let own = Warehouse::physical_scope_key(&req.dialect, &source.target_table);
-                    let inputs: Vec<_> = source
-                        .input_tables
-                        .into_iter()
-                        .filter(|input| {
-                            Warehouse::physical_scope_key(&req.dialect, &input.name) != own
-                        })
-                        .collect();
-                    if provenance.version == 1
-                        && inputs.iter().all(|t| {
-                            t.last_modified_epoch.is_some()
-                                && !matches!(t.producer, crate::store::Producer::Unrecorded)
-                        })
-                    {
-                        provenance.source_execution_id = Some(source.id);
-                        provenance.source_epoch = source.last_modified_epoch;
-                        provenance.source_physical_key = Some(Warehouse::physical_scope_key(
-                            &req.dialect,
-                            &req.clone_source_table,
-                        ));
-                        direct = Some(DirectRegistration {
-                            provenance,
-                            inputs,
-                            runtime_ms: source.execution_runtime_ms,
-                        });
-                    }
-                }
-            }
+            direct = crate::copy_lifecycle::qualify_registration(req, source.as_deref())?;
             // This establishes permission to attempt the warehouse DDL, not
             // post-copy SQL equivalence or freshness. No automatic copy identity.
             (None, None)
@@ -1101,7 +812,9 @@ mod tests {
             .into(),
             dbt_node_state: Some(qc::DbtNodeState {
                 node_unique_id: "model.project.output".into(),
-                node_configs_hash: Some("current-config".into()),
+                node_configs_hash: Some("a".repeat(32)),
+                node_body_hash: Some("b".repeat(32)),
+                resource_type: "model".into(),
                 ..Default::default()
             }),
             tables: vec![qc::TableModifiedInfo {
@@ -1115,7 +828,7 @@ mod tests {
         let mut dev = req.clone();
         dev.default_schema = Some("dev".into());
         dev.target_table = Some("`cdo_demo_db`.`dev`.`output`".into());
-        dev.dbt_node_state.as_mut().unwrap().node_configs_hash = Some("previous-config".into());
+        dev.dbt_node_state.as_mut().unwrap().node_configs_hash = Some("c".repeat(32));
         let dev_evidence = ExecutionEvidence::sql_submit("o", &dev);
         let row = ExecutionRow {
             org_id: "o".into(),
@@ -1154,7 +867,7 @@ mod tests {
                 "producer" => row.input_tables[0].producer = crate::store::Producer::Unrecorded,
                 "other-input" => row.input_tables[0].name = "cdo_demo_db.other.inputs".into(),
                 "sql" => row.node_sql_hash = Some("other-rendered-query".into()),
-                "version" => row.direct_copy_provenance.as_mut().unwrap().version = 2,
+                "version" => row.direct_copy_provenance.as_mut().unwrap().version = 255,
                 "type" => row.execution_type = 7,
                 "pending" => row.status = "pending".into(),
                 "own-target" => row.target_table = evidence.target_table.clone(),
@@ -1263,8 +976,15 @@ mod tests {
     fn direct_copy_from_rebuilt_source_requires_only_its_genuine_input_evidence() {
         let source_name = "`cdo_demo_db`.`prod`.`output`";
         let provenance = DirectCopyProvenance {
-            version: 1,
-            identity: "existing-bound-identity".into(),
+            version: 2,
+            published: false,
+            identity: crate::analyzed_workload::query::CopyProof {
+                version: 2,
+                identity: "core".into(),
+                bindings: vec![],
+                effects: "checked".into(),
+            }
+            .for_origin("databricks-direct-copy-v2"),
             default_catalog: "cdo_demo_db".into(),
             default_schema: Some("prod".into()),
             source_execution_id: None,
@@ -1279,6 +999,12 @@ mod tests {
             node_unique_id: Some("model.project.output".into()),
             node_sql_hash: Some("rendered".into()),
             direct_copy_provenance: Some(provenance),
+            analyzed_copy_proof: Some(crate::analyzed_workload::query::CopyProof {
+                version: 2,
+                identity: "core".into(),
+                bindings: vec![],
+                effects: "checked".into(),
+            }),
             last_modified_epoch: Some(30),
             input_tables: vec![
                 crate::store::InputTable {
@@ -1337,7 +1063,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_copy_accepts_native_bare_fully_qualified_input_only() {
+    fn direct_copy_uses_shared_proof_and_exact_physical_inputs() {
         let req = qc::SqlExecution {
             dialect: "databricks".into(),
             execution_type: 3,
@@ -1351,6 +1077,9 @@ mod tests {
             }],
             dbt_node_state: Some(qc::DbtNodeState {
                 node_unique_id: "model.project.output".into(),
+                resource_type: "model".into(),
+                node_body_hash: Some("a".repeat(32)),
+                node_configs_hash: Some("b".repeat(32)),
                 ..Default::default()
             }),
             ..Default::default()
@@ -1364,15 +1093,12 @@ mod tests {
             source.identity
         );
         for sql in [
-            "select * from prod.inputs",
             "select * from inputs",
             "select * from other.prod.inputs",
-            "select * from cdo_demo_db.prod.inputs as alias",
             "select * from cdo_demo_db.prod.inputs where id=1",
             "select * from cdo_demo_db.prod.inputs join cdo_demo_db.prod.other using(id)",
             "select * from cdo_demo_db.prod.inputs; select 1",
             "select * from cdo_demo_db.prod.\"inputs\"",
-            "select * from cdo_demo_db.`prod`.inputs",
             "select * from `cdo_demo_db.prod`.`inputs`",
             "select * from cdo_demo_db.prod.inputs()",
             "select * from cdo_demo_db.prod.inputs-1",

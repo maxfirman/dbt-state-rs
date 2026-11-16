@@ -1,33 +1,27 @@
-//! Bounded ordinary-SQL Result copy, separate from RegisterClone provenance.
-//! Only exact fully-qualified SELECT-star over one physical input is eligible.
+//! Request policy for bounded ordinary-SQL Result copy. Identity analysis and
+//! provenance/adoption belong to the shared workload and copy lifecycle modules.
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, Producer};
+#[cfg(test)]
+use crate::store::{ExecutionRow, Producer};
+#[cfg(test)]
 use crate::warehouse::Warehouse;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct Provenance {
-    pub version: u8,
-    pub source_execution_id: i64,
-    pub source_epoch: i64,
-    pub source_physical_key: String,
-    /// Set atomically at Confirm, only while the recorded source stays current.
-    pub published: bool,
-}
-
+#[cfg(test)]
+use crate::copy_lifecycle::{ordinary, reusable, source_admits, Provenance};
+#[cfg(test)]
 fn physical(name: &str) -> String {
     Warehouse::physical_scope_key("databricks", name)
 }
 
-/// No schema abstraction or SQL normalization. The proven fully-qualified
-/// input makes the output schema irrelevant; all other logic remains exact.
 pub(crate) fn identity(req: &qc::SqlExecution) -> Option<String> {
-    use sqlparser::tokenizer::{Token, Tokenizer};
-    if Warehouse::from_dialect(&req.dialect) != Warehouse::Databricks
-        || req.execution_type != qc::ModelExecutionType::Full as i32
-        || !req.query_dependencies.is_empty()
+    identity_from_proof(req, crate::analyzed_workload::query::proof(req).as_ref())
+}
+pub(crate) fn identity_from_proof(
+    req: &qc::SqlExecution,
+    proof: Option<&crate::analyzed_workload::query::CopyProof>,
+) -> Option<String> {
+    if req.execution_type != 1
         || req.semantic_extras.len() != 2
         || req.semantic_extras.get("lookback").map(String::as_str) != Some("1")
         || req
@@ -38,86 +32,10 @@ pub(crate) fn identity(req: &qc::SqlExecution) -> Option<String> {
     {
         return None;
     }
-    let tokens = Tokenizer::new(&sqlparser::dialect::DatabricksDialect {}, &req.sql)
-        .tokenize()
-        .ok()?;
-    let tokens: Vec<_> = tokens
-        .into_iter()
-        .filter(|t| !matches!(t, Token::Whitespace(_)))
-        .collect();
-    let word = |i: usize, text: &str| matches!(&tokens[i], Token::Word(w) if w.quote_style.is_none() && w.value.eq_ignore_ascii_case(text));
-    let identifier = |i: usize| {
-        matches!(&tokens[i], Token::Word(w)
-        if matches!(w.quote_style, None | Some('`'))
-        && w.value.bytes().next().is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-        && w.value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_'))
-    };
-    if tokens.len() != 8
-        || !word(0, "select")
-        || tokens[1] != Token::Mul
-        || !word(2, "from")
-        || tokens[4] != Token::Period
-        || tokens[6] != Token::Period
-        || ![3, 5, 7].into_iter().all(identifier)
-    {
-        return None;
-    }
-    let input = physical(&format!("{}.{}.{}", tokens[3], tokens[5], tokens[7]));
-    let target = req.target_table.as_deref()?;
-    let target_key = physical(target);
-    let target_parts: Vec<_> = target_key.split('.').collect();
-    if target_parts.len() != 3
-        || !target_parts.iter().all(|p| {
-            p.bytes()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == b'_')
-                && p.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
-        })
-    {
-        return None;
-    }
-    if input == physical(target) {
-        return None;
-    }
-    let inputs: Vec<_> = req
-        .tables
-        .iter()
-        .filter(|t| physical(&t.name) != physical(target))
-        .collect();
-    if inputs.len() != 1 || physical(&inputs[0].name) != input {
-        return None;
-    }
-    let state = req.dbt_node_state.as_ref()?;
-    let signature = |value: &Option<String>| {
-        value
-            .as_ref()
-            .is_some_and(|s| s.len() == 32 && s.bytes().all(|c| c.is_ascii_hexdigit()))
-    };
-    if state.resource_type != "model"
-        || state.node_unique_id.is_empty()
-        || !signature(&state.node_body_hash)
-        || !signature(&state.node_configs_hash)
-    {
-        return None;
-    }
-    let extras: std::collections::BTreeMap<_, _> = req.semantic_extras.iter().collect();
-    let framed = serde_json::to_vec(&(
-        "databricks-submit-copy-v1",
-        &req.dialect,
-        &req.sql,
-        req.execution_type,
-        &req.default_catalog,
-        (target_parts[0], target_parts[2]),
-        extras,
-        &state.node_unique_id,
-        &state.node_body_hash,
-        &state.node_configs_hash,
-        &state.node_macros_hash,
-        &state.node_contract_hash,
-        input,
-    ))
-    .ok()?;
-    Some(hex::encode(Sha256::digest(framed)))
+    proof.map(auto_identity)
+}
+pub(crate) fn auto_identity(p: &crate::analyzed_workload::query::CopyProof) -> String {
+    p.for_origin("databricks-submit-copy-v2")
 }
 
 pub(crate) fn request_admits(
@@ -140,76 +58,6 @@ pub(crate) fn request_admits(
             .iter()
             .all(|t| t.last_modified_epoch.is_some_and(|e| e > 0))
         && evidence.node_namespace_logic_hash.is_some()
-}
-
-pub(crate) fn inputs(row: &ExecutionRow) -> Vec<InputTable> {
-    row.input_tables
-        .iter()
-        .filter(|t| physical(&t.name) != physical(&row.target_table))
-        .cloned()
-        .collect()
-}
-
-/// Ordinary builds have no copy-origin marker, even when their automatic-copy
-/// eligibility hash is populated. A retained proof is also an origin marker.
-pub(crate) fn ordinary(row: &ExecutionRow) -> bool {
-    row.clone_source_table.is_none() && row.submit_copy_provenance.is_none()
-}
-
-/// This is exact freshness, not a copy-age anchor. Unknown epochs/producers,
-/// a different input binding and every copy source are conservatively refused.
-pub(crate) fn source_admits(evidence: &ExecutionEvidence, source: &ExecutionRow) -> bool {
-    let current: Vec<_> = evidence
-        .input_tables
-        .iter()
-        .filter(|t| physical(&t.name) != physical(&evidence.target_table))
-        .collect();
-    let recorded = inputs(source);
-    source.org_id == evidence.org_id
-        && source.table_namespace == evidence.table_namespace
-        && Warehouse::from_dialect(&source.dialect).family_key(&source.dialect)
-            == Warehouse::from_dialect(&evidence.dialect).family_key(&evidence.dialect)
-        && source.execution_type == evidence.execution_type
-        && source.status == "confirmed"
-        && ordinary(source)
-        && source.last_modified_epoch.is_some_and(|e| e > 0)
-        && source.node_namespace_logic_hash == evidence.node_namespace_logic_hash
-        && source.node_namespace_logic_hash.is_some()
-        && source.node_unique_id == evidence.node_unique_id
-        && physical(&source.target_table) != physical(&evidence.target_table)
-        && current.len() == 1
-        && recorded.len() == 1
-        && physical(&current[0].name) == physical(&recorded[0].name)
-        && current[0].last_modified_epoch.is_some_and(|e| e > 0)
-        && current[0].last_modified_epoch == recorded[0].last_modified_epoch
-        && current[0].producer == Producer::NoBuild
-        && recorded[0].producer == Producer::NoBuild
-}
-
-/// An invalid publication cannot regain reuse via its strict SQL hash or the
-/// generic namespace-adoption path. Legacy direct-copy rows use v1 separately.
-pub(crate) fn reusable(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
-    if Warehouse::from_dialect(&row.dialect) != Warehouse::Databricks || ordinary(row) {
-        return true;
-    }
-    if row.clone_source_table.is_none() {
-        return false;
-    }
-    if row.node_sql_hash.is_none() {
-        return true;
-    }
-    row.submit_copy_provenance.as_ref().is_some_and(|p| {
-        p.version == 1
-            && p.published
-            && p.source_epoch > 0
-            && p.source_execution_id > 0
-            && row
-                .clone_source_table
-                .as_ref()
-                .is_some_and(|s| physical(s) == p.source_physical_key)
-    }) && evidence.node_namespace_logic_hash.is_some()
-        && evidence.node_namespace_logic_hash == row.node_namespace_logic_hash
-        && evidence.node_unique_id == row.node_unique_id
 }
 
 #[cfg(test)]
@@ -263,6 +111,7 @@ mod tests {
             table_namespace: e.table_namespace.clone(),
             node_unique_id: e.node_unique_id.clone(),
             node_namespace_logic_hash: e.node_namespace_logic_hash.clone(),
+            analyzed_copy_proof: e.analyzed_copy_proof.clone(),
             last_modified_epoch: Some(200),
             input_tables: e
                 .input_tables
@@ -298,6 +147,7 @@ mod tests {
             "dependency",
             "self",
             "unqualified",
+            "resource_type",
         ] {
             let mut q = req.clone();
             match fault {
@@ -317,6 +167,9 @@ mod tests {
                 "dependency" => q.query_dependencies.push(qc::QueryDependency::default()),
                 "self" => q.target_table = Some("`cdo`.`raw`.`input`".into()),
                 "unqualified" => q.sql = "select * from input".into(),
+                "resource_type" => {
+                    q.dbt_node_state.as_mut().unwrap().resource_type = "snapshot".into()
+                }
                 _ => unreachable!(),
             }
             assert_ne!(
@@ -481,6 +334,24 @@ mod tests {
                 .unwrap()
                 .candidate
                 .is_some()
+        );
+        // Neither legacy nor unknown origin domains can adopt a current
+        // namespace hash, even when strict SQL also matches.
+        for version in [1, 255] {
+            let mut legacy = row.clone();
+            legacy.submit_copy_provenance.as_mut().unwrap().version = version;
+            assert!(crate::reuse_candidate::for_model(&req, &e, Some(legacy))
+                .unwrap()
+                .candidate
+                .is_none());
+        }
+        let mut missing_analysis = row.clone();
+        missing_analysis.analyzed_copy_proof = None;
+        assert!(
+            crate::reuse_candidate::for_model(&req, &e, Some(missing_analysis))
+                .unwrap()
+                .candidate
+                .is_none()
         );
         // Injected storage fault: a direct-style row carrying the valid FULL
         // auto hash. Native direct v1 remains MERGE/snapshot only.

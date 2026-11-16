@@ -1360,7 +1360,7 @@ async fn databricks_result_copy(
         else {
             continue;
         };
-        if !crate::databricks_submit_copy::source_admits(evidence, &source) {
+        if !crate::copy_lifecycle::source_admits(evidence, &source) {
             continue;
         }
         let Some((reuse, age)) = judge_equivalent(evidence, freshness, source.clone()) else {

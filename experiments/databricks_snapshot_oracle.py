@@ -174,8 +174,10 @@ def projection_sql(target):
     return 'SELECT '+','.join(columns)+' FROM '+target
 
 
-def decode_projection(result):
-    check_schema(result,PROJECTION_SCHEMA)
+def decode_projection(result,native_schema=NATIVE_SCHEMA):
+    schema=tuple((n,'STRING','STRING',i) if i in (3,5,6,7) else (n,t,k,i)
+                 for n,t,k,i in native_schema)+PROJECTION_SCHEMA[8:]
+    check_schema(result,schema)
     rows=[]
     for raw in result['rows']:
         if len(raw)!=12:raise Refused('physical:incomplete-lossless-projection')
@@ -196,8 +198,9 @@ def source_projection_sql(source):
     return "SELECT id,v,p,date_format(ts,'yyyy-MM-dd HH:mm:ss.SSSSSS') AS ts,unix_micros(ts) AS ts_us FROM "+source
 
 
-def assert_source(result,expected):
-    check_schema(result,SOURCE_PROJECTION_SCHEMA)
+def assert_source(result,expected,native_schema=NATIVE_SCHEMA[:4]):
+    schema=native_schema[:3]+SOURCE_PROJECTION_SCHEMA[3:]
+    check_schema(result,schema)
     rows=[]
     for row in result['rows']:
         if (len(row)!=5 or type(row[4]) is not str or not re.fullmatch(r'-?\d+',row[4])

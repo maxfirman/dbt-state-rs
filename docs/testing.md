@@ -26,6 +26,7 @@ python3 experiments/databricks_isolation_test.py         # offline concurrent ca
 python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates
 python3 experiments/databricks_baseline_test.py          # offline independent physical-result fault probes
 python3 experiments/databricks_readonly_reference_test.py # no-object reference output/SQL fault probes
+python3 experiments/databricks_shared_copy_test.py       # explicit typed bags/SCD history and bounded copy coordinator faults
 python3 experiments/databricks_target_lifecycle_test.py   # same-lifetime continuation admission guards
 python3 experiments/databricks_policy_test.py             # immutable BUILD vs fresh policy reference fault probes
 python3 experiments/databricks_seeds_test.py             # seed rows/NULLs/duplicates/types/properties fault probes

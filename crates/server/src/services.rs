@@ -776,17 +776,13 @@ impl qc::clone_server::Clone for CloneServiceImpl {
 
         // Persist a pending row so the subsequent ConfirmExecution finalizes the
         // clone into skippable history, keyed on the clone target.
-        let mut evidence = crate::execution::ExecutionEvidence::copy_registration(
+        let evidence = crate::execution::ExecutionEvidence::copy_registration(
             &org_id,
             &req,
             plan.inherited_ns_logic,
             source_build.as_ref(),
+            plan.direct,
         );
-        if let Some(direct) = plan.direct {
-            evidence.direct_copy_provenance = Some(direct.provenance);
-            evidence.input_tables = direct.inputs;
-            evidence.inherited_runtime_ms = direct.runtime_ms;
-        }
         self.0
             .store
             .insert_execution(&evidence.pending(&request_id, &execution_decision_id))

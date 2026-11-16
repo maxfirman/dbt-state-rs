@@ -323,10 +323,12 @@ pub async fn import_complete_history(db: &impl Db, rows: &[serde_json::Value]) {
     let mut ids = std::collections::HashMap::new();
     for original in rows {
         let mut row = original.clone();
-        if let Some(source_id) = row["direct_copy_provenance"]["source_execution_id"].as_i64() {
-            row["direct_copy_provenance"]["source_execution_id"] = serde_json::json!(ids
-                .get(&source_id)
-                .expect("import original source before copy"));
+        for field in ["direct_copy_provenance", "submit_copy_provenance"] {
+            if let Some(source_id) = row[field]["source_execution_id"].as_i64() {
+                row[field]["source_execution_id"] = serde_json::json!(ids
+                    .get(&source_id)
+                    .expect("import original source before copy"));
+            }
         }
         let (old, new) = import_complete_execution(db, &row).await;
         assert!(

@@ -158,3 +158,12 @@ pub async fn wait_for_decision_capture(db: &impl Db, org: &str, id: &str) {
     }
     panic!("decision audit did not pass selective capture hold");
 }
+
+/// Complete persisted execution evidence for upgrade/publication regressions.
+pub async fn complete_execution(db: &impl Db, request_id: &str) -> serde_json::Value {
+    sqlx::query_scalar("SELECT to_jsonb(e) FROM executions e WHERE request_id = $1")
+        .bind(request_id)
+        .fetch_one(db.pool())
+        .await
+        .expect("complete execution evidence")
+}

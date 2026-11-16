@@ -25,7 +25,7 @@ use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::store::{ExecutionRow, InputTable, Producer};
+use crate::store::{ExecutionRow, InputTable};
 
 /// The outcome of reuse candidate selection for one submit.
 #[derive(Debug)]
@@ -436,46 +436,9 @@ pub(crate) fn older_seed_matches(
         && row.node_sql_hash == evidence.node_sql_hash
 }
 
-/// A client-requested copy (RegisterClone) records NO upstream evidence: it
-/// is clone-origin, carries no rendered identity and no inputs. When such a
-/// row is the freshness anchor, the submit's CURRENT inputs stand in as the
-/// recorded set, each recorded at the copy's own build epoch (or at its
-/// current epoch, if earlier), so an upstream counts as drifted exactly when
-/// it is newer than the copy (clone-age anchor, verified live). Their
-/// producers are unrecorded: a copy is never an upstream query change.
-///
-/// Every other row keeps exactly what it recorded. In particular a copy made
-/// by the SQL-submit fallback recorded that submit's inputs; an EMPTY list
-/// there means "no upstreams", and a later submit with upstreams must rebuild.
-///
-/// The single rule for both the decision (here) and its explanation
-/// (`ExplainDecisionRow::anchor`), so the two cannot disagree.
-pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTable]) {
-    if is_copy_registration(anchor)
-        && anchor.direct_copy_provenance.is_none()
-        && anchor.input_tables.is_empty()
-    {
-        let built = anchor.last_modified_epoch;
-        anchor.input_tables = current
-            .iter()
-            .map(|t| InputTable {
-                name: t.name.clone(),
-                last_modified_epoch: match (t.last_modified_epoch, built) {
-                    (Some(cur), Some(built)) => Some(cur.min(built)),
-                    _ => built,
-                },
-                producer: Producer::Unrecorded,
-            })
-            .collect();
-    }
-}
-
-/// A client-requested copy (RegisterClone): clone-origin with no rendered
-/// identity of its own. A Result copy made on submit records the submit's
-/// identity and is not one.
-fn is_copy_registration(row: &ExecutionRow) -> bool {
-    row.clone_source_table.is_some() && row.node_sql_hash.is_none()
-}
+pub(crate) use crate::copy_lifecycle::{
+    adopt_current_inputs, copy_logic_matches, is_copy_registration,
+};
 
 /// Rendered identity, or (only in `compare_unrendered_code` mode, when the
 /// submit carries a template hash) the unrendered-template identity. A
@@ -507,7 +470,7 @@ fn same_identity(
 ) -> bool {
     let ordinary_databricks = crate::warehouse::Warehouse::from_dialect(&req.dialect)
         == crate::warehouse::Warehouse::Databricks
-        && crate::databricks_submit_copy::ordinary(row);
+        && crate::copy_lifecycle::ordinary(row);
     let logic_compatible = ordinary_databricks
         || match (
             &row.node_namespace_logic_hash,
@@ -517,7 +480,7 @@ fn same_identity(
             _ => true,
         };
     identity_matches(evidence, row)
-        && crate::databricks_submit_copy::reusable(evidence, row)
+        && crate::copy_lifecycle::reusable(evidence, row)
         && logic_compatible
         // Alias admission requires the rendered identity itself to match; a
         // template-only match cannot equate uncharacterized dialect options.
@@ -533,7 +496,7 @@ fn same_identity(
 /// (see correctness-handoff.md "Open hosted questions").
 ///
 /// A client-requested copy is also adopted when the submit, read in the copy
-/// source's schema ([`rehomed_logic_matches`]), has the logic the copy
+/// source's schema by the shared copy lifecycle, has the logic the copy
 /// inherited.
 fn adoptable(
     req: &qc::SubmitEnrichedSqlRequest,
@@ -541,60 +504,6 @@ fn adoptable(
     row: &ExecutionRow,
 ) -> bool {
     row.execution_type == req.execution_type && copy_logic_matches(req, evidence, row)
-}
-
-/// [`adoptable`] without the execution type: a clone-origin row whose logic
-/// identity is the submit's, also read in the copy source's schema for a
-/// client-requested copy.
-fn copy_logic_matches(
-    req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &ExecutionEvidence,
-    row: &ExecutionRow,
-) -> bool {
-    if row.dialect == req.dialect
-        && row.clone_source_table.is_some()
-        && crate::result_copy::direct_copy_matches(evidence, row)
-    {
-        return true;
-    }
-    if crate::warehouse::Warehouse::from_dialect(&req.dialect)
-        == crate::warehouse::Warehouse::Databricks
-    {
-        return row.dialect == req.dialect
-            && row.node_sql_hash.is_some()
-            && crate::databricks_submit_copy::reusable(evidence, row)
-            && row.clone_source_table.is_some();
-    }
-    row.dialect == req.dialect
-        && row.clone_source_table.is_some()
-        && evidence.node_namespace_logic_hash.is_some()
-        && (row.node_namespace_logic_hash == evidence.node_namespace_logic_hash
-            || is_copy_registration(row) && rehomed_logic_matches(req, row))
-}
-
-/// Whether the submit, with its Target relation's schema read as the copy
-/// source's schema, has the schema-abstracted logic the copy inherited from
-/// its source build (`fingerprint::rehomed_copy_logic_hash`, #93). VERIFIED
-/// LIVE 2026-11-11 (explain_post_copy_identity.jsonl): hosted reuses a
-/// dev-clone pre-step copy whose post-copy submit reads the source build's
-/// fixed prod-schema source, or a view resolved per target over it, which the
-/// request-relative abstraction alone does not match.
-fn rehomed_logic_matches(req: &qc::SubmitEnrichedSqlRequest, row: &ExecutionRow) -> bool {
-    use crate::sql_norm::schema_of_object_name;
-    let (Some(from), Some(to)) = (
-        req.target_table.as_deref().and_then(schema_of_object_name),
-        row.clone_source_table
-            .as_deref()
-            .and_then(schema_of_object_name),
-    ) else {
-        return false;
-    };
-    row.node_namespace_logic_hash.is_some()
-        && crate::fingerprint::rehomed_copy_logic_hash(
-            &crate::execution::sql_execution(req),
-            &from,
-            &to,
-        ) == row.node_namespace_logic_hash
 }
 
 /// Reuse qualification shared by models and data tests. Runtime volatile
