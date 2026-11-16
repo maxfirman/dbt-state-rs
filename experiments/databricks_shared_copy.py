@@ -40,9 +40,9 @@ CELLS=(('source','prod',KINDS,'copy'),('copy','dev',KINDS,'copy'),
 def queries(scope):
     a=scope.relation('prod','a');b=scope.relation('prod','b')
     return {
-        'full':f'WITH ca AS (SELECT system.builtin.count(id) AS id FROM {a}), cb AS (SELECT system.builtin.count(id) AS n FROM {b}) SELECT ca.id AS id,cb.n AS n FROM ca LEFT JOIN cb ON ca.id = cb.n',
-        'merge':f'WITH base AS (SELECT id,v,p,ts FROM {a} WHERE id IS NOT NULL), stats AS (SELECT system.builtin.count(id) AS n FROM {b}) SELECT base.id AS id,base.v AS v,base.p AS p,base.ts AS ts FROM base INNER JOIN stats ON stats.n > 0',
-        'check':f'WITH base AS (SELECT id,v,p,ts FROM {a} WHERE id IS NOT NULL) SELECT base.id AS id,base.v AS v,base.p AS p,base.ts AS ts FROM base'}
+        'full':f'WITH ca AS (SELECT system.builtin.count(*) AS id FROM {a}), cb AS (SELECT system.builtin.count(b.id) AS n FROM {b} AS b(id)) SELECT ca.id AS id,cb.n AS n FROM ca LEFT JOIN cb ON ca.id = cb.n',
+        'merge':f'WITH base AS (SELECT a.id AS id,a.v AS v,a.p AS p,a.ts AS ts FROM {a} AS a(id,v,p,ts) WHERE a.id IS NOT NULL), stats AS (SELECT system.builtin.count(b.id) AS n FROM {b} AS b(id)) SELECT base.id AS id,base.v AS v,base.p AS p,base.ts AS ts FROM base INNER JOIN stats ON stats.n > 0',
+        'check':f'WITH base AS (SELECT a.id AS id,a.v AS v,a.p AS p,a.ts AS ts FROM {a} AS a(id,v,p,ts) WHERE a.id IS NOT NULL) SELECT base.id AS id,base.v AS v,base.p AS p,base.ts AS ts FROM base'}
 
 
 def expected(kind,stage):

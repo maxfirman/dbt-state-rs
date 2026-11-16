@@ -148,6 +148,17 @@ on an unestablished setting/type rule is opaque; a successful source build alone
 does not establish that rule. Identity of the same bound physical column can
 preserve its type without discovering it; no type-dependent rewrite follows.
 
+Named physical-column references require presence evidence. Without a column
+set, even `q.missing` may resolve to a session-variable struct field. A complete
+SQL table-alias column list (`FROM c.raw.t AS q(id,v)`) establishes the exposed
+names because Databricks requires its arity to match the relation; it does not
+establish their types. Known CTE/dependency outputs also establish presence.
+Otherwise keep named references opaque; pass-through `*` and qualified builtin
+`COUNT(*)` do not assert a named column. An unqualified name across multiple
+inputs is opaque if any input has an unknown column set. See the primary
+[table alias rule](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-names#table-alias)
+and [name-resolution order](https://docs.databricks.com/aws/en/sql/language-manual/sql-ref-name-resolution).
+
 Output column order, names, quoting and duplicate names are semantic. Require
 explicit aliases for computed outputs unless the dialect proves the exact
 warehouse-generated name; a simple column keeps its resolved output name.

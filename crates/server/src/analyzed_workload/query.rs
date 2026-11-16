@@ -82,7 +82,7 @@ impl Analysis<'_> {
             return None;
         }
         let p = parts(name)?;
-        let columns = if p.len() == 1 && ctes.contains_key(&p[0]) {
+        let mut columns = if p.len() == 1 && ctes.contains_key(&p[0]) {
             ctes.get(&p[0])?.clone()
         } else {
             let key = resolve(name, catalog, schema)?;
@@ -124,8 +124,33 @@ impl Analysis<'_> {
             }
         };
         let label = if let Some(a) = alias {
-            if a.at.is_some() || !a.columns.is_empty() {
+            if a.at.is_some() || a.columns.iter().any(|c| c.data_type.is_some()) {
                 return None;
+            }
+            if !a.columns.is_empty() {
+                // Databricks requires a table-alias column list to name every
+                // output column. It proves presence, never the physical types.
+                let mut names = BTreeSet::new();
+                let aliases = a
+                    .columns
+                    .iter()
+                    .map(|c| ident(&c.name))
+                    .collect::<Option<Vec<_>>>()?;
+                if aliases.iter().any(|n| !names.insert(n.clone())) {
+                    return None;
+                }
+                columns = Some(match columns {
+                    Some(cols) => {
+                        if cols.len() != aliases.len() {
+                            return None;
+                        }
+                        aliases
+                            .into_iter()
+                            .zip(cols.into_iter().map(|(_, t)| t))
+                            .collect()
+                    }
+                    None => aliases.into_iter().map(|n| (n, Scalar::Unknown)).collect(),
+                });
             }
             ident(&a.name)?
         } else {
@@ -318,7 +343,9 @@ impl Analysis<'_> {
 }
 fn column(name: &str, cols: &Columns) -> Option<Scalar> {
     match cols {
-        None => Some(Scalar::Unknown),
+        // Without column-presence evidence this name may instead resolve to a
+        // session variable (including a qualified variable struct field).
+        None => None,
         Some(c) => {
             let mut matches = c.iter().filter(|(n, _)| n == name);
             let result = matches.next()?.1.clone();
@@ -334,28 +361,15 @@ fn expression(e: &Expr, scope: &Scope) -> Option<Scalar> {
     match e {
         Expr::Identifier(i) => {
             let n = ident(i)?;
-            if matches!(
-                n.as_str(),
-                "current_user"
-                    | "localtimestamp"
-                    | "current_time"
-                    | "current_date"
-                    | "current_timestamp"
-                    | "session_user"
-                    | "user"
-                    | "current_catalog"
-                    | "current_schema"
-            ) {
-                return None;
-            }
             if scope.len() == 1 {
                 column(&n, scope.values().next()?)
             } else {
-                let mut found = scope.values().map(|c| column(&n, c)).collect::<Vec<_>>();
-                if found.iter().any(|v| matches!(v, Some(Scalar::Unknown))) {
+                // An unknown column set cannot prove absence, even if another
+                // relation has a declared column with this name.
+                if scope.values().any(Option::is_none) {
                     return None;
                 }
-                let mut hits = found.drain(..).flatten();
+                let mut hits = scope.values().filter_map(|c| column(&n, c));
                 let result = hits.next()?;
                 if hits.next().is_some() {
                     None

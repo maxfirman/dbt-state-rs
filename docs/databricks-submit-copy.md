@@ -18,7 +18,9 @@ order, bags and LEFT null extension; there are no algebraic rewrites.
 Unknown physical column types may pass through or participate in null tests.
 Numeric literal casts must be lossless and in range. Arithmetic admits checked
 literal expressions whose intermediate values also fit INT; it does not infer
-numeric physical columns or assume ANSI/timezone defaults. Checked aggregates
+numeric physical columns or assume ANSI/timezone defaults. Named physical
+columns require complete SQL table-alias column lists; unknown column sets may
+resolve missing names to session variables and cannot prove presence. Checked aggregates
 require explicit `system.builtin.count`, `min`, `max` or `sum` resolution. COUNT
 preserves its documented BIGINT result; MIN/MAX require checked integer input;
 SUM currently admits only provably zero integer expressions, avoiding unbounded

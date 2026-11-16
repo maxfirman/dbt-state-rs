@@ -578,7 +578,7 @@ async fn analyzed_full_two_count_ctes_copy_confirm_and_reuse() {
     let server = support::start_server_databricks_submit_copy().await;
     let sc = Scenario::connect(&server).await.org("analyzed-two-counts");
     let (mut src, mut built, mut target, mut copied) = shapes();
-    let sql = "WITH orders AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.orders WHERE id IS NOT NULL), payments AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.payments WHERE id IS NOT NULL) SELECT orders.n AS order_count, payments.n AS payment_count FROM orders LEFT JOIN payments ON orders.n = payments.n";
+    let sql = "WITH orders AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.orders AS o(id) WHERE o.id IS NOT NULL), payments AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.payments AS p(id) WHERE p.id IS NOT NULL) SELECT orders.n AS order_count, payments.n AS payment_count FROM orders LEFT JOIN payments ON orders.n = payments.n";
     for req in [&mut src, &mut target] {
         req.sql = sql.into();
         req.tables = vec![
@@ -609,32 +609,48 @@ async fn analyzed_full_checked_forms_and_opaque_effects() {
     let server = support::start_server_databricks_submit_copy().await;
     // Expected decisions come from the contract's effect rules, not hashes.
     for (index, (sql, admits)) in [
+        ("SELECT missing FROM cdo.raw.input",false),
+        ("SELECT session.missing FROM cdo.raw.input",false),
+        ("SELECT system.session.missing FROM cdo.raw.input",false),
+        ("SELECT missing FROM cdo.raw.input WHERE missing IS NOT NULL",false),
+        ("SELECT q.missing FROM cdo.raw.input AS q WHERE q.missing IS NOT NULL",false),
+        ("SELECT id FROM cdo.raw.input AS q(id INT)",false),
+        ("SELECT `current_user` FROM cdo.raw.input AS q(`current_user`)",true),
+        ("WITH q AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.input) SELECT n FROM q INNER JOIN cdo.raw.input AS physical ON TRUE",false),
+        ("WITH q AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.input) SELECT renamed FROM q AS q(renamed) WHERE renamed > 0",true),
+        ("SELECT missing FROM cdo.raw.input AS q(id)",false),
+        ("SELECT q.missing FROM cdo.raw.input AS q(id)",false),
+        ("SELECT id FROM cdo.raw.input AS q(id,id)",false),
+        ("WITH q AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.input) SELECT q.id FROM q AS q(id,other)",false),
+        ("WITH q AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.input) SELECT q.id FROM q AS q(id)",true),
+        ("SELECT q.missing FROM cdo.raw.input AS q",false),
+        ("SELECT system.builtin.COUNT(missing) AS n FROM cdo.raw.input",false),
         ("SELECT COUNT(*) AS n FROM cdo.raw.input",false),
         ("SELECT -CAST(-2147483648 AS INT) AS overflow FROM cdo.raw.input",false),
         ("SELECT CAST(1 AS DECIMAL(38,37)) * CAST(1 AS DECIMAL(38,37)) AS contextual FROM cdo.raw.input",false),
         ("SELECT CAST(1 AS DECIMAL(4,0)) AS exact_decimal FROM cdo.raw.input",true),
         ("SELECT 'hello' AS text FROM cdo.raw.input",false),
-        ("SELECT id FROM cdo.raw.input GROUP BY 1",false),
+        ("SELECT id FROM cdo.raw.input AS q(id) GROUP BY 1",false),
         ("SELECT 2147483647 + 1 AS overflow FROM cdo.raw.input",false),
         ("SELECT custom.count(*) AS n FROM cdo.raw.input",false),
         ("SELECT current_user AS who FROM cdo.raw.input",false),
-        ("SELECT id FROM cdo.raw.input WHERE id IS NOT NULL",true),
-        ("SELECT i.id AS item, CASE WHEN i.id IS NULL THEN 0 ELSE 1 END AS present FROM cdo.raw.input AS i",true),
+        ("SELECT id FROM cdo.raw.input AS q(id) WHERE id IS NOT NULL",true),
+        ("SELECT i.id AS item, CASE WHEN i.id IS NULL THEN 0 ELSE 1 END AS present FROM cdo.raw.input AS i(id)",true),
         ("SELECT CAST(2 AS BIGINT) + 3 AS five, system.builtin.COUNT(*) AS n FROM cdo.raw.input GROUP BY CAST(2 AS BIGINT) + 3 HAVING system.builtin.COUNT(*) > 0",true),
         ("SELECT system.builtin.MIN(CAST(1 AS BIGINT)) AS low, system.builtin.MAX(CAST(2 AS INT)) AS high, system.builtin.SUM(CAST(0 AS BIGINT)) AS zero FROM cdo.raw.input",true),
-        ("SELECT system.builtin.COUNT(id) AS n FROM cdo.raw.input",true),
-        ("SELECT system.builtin.SUM(id) AS total FROM cdo.raw.input",false),
-        ("SELECT CAST(id AS BIGINT) AS numeric_id FROM cdo.raw.input",false),
-        ("SELECT id + 1 AS next_id FROM cdo.raw.input",false),
-        ("SELECT id FROM cdo.raw.input WHERE id = 1",false),
+        ("SELECT system.builtin.COUNT(id) AS n FROM cdo.raw.input AS q(id)",true),
+        ("SELECT system.builtin.SUM(id) AS total FROM cdo.raw.input AS q(id)",false),
+        ("SELECT CAST(id AS BIGINT) AS numeric_id FROM cdo.raw.input AS q(id)",false),
+        ("SELECT id + 1 AS next_id FROM cdo.raw.input AS q(id)",false),
+        ("SELECT id FROM cdo.raw.input AS q(id) WHERE id = 1",false),
         ("SELECT system.builtin.COUNT(*) OVER () AS n FROM cdo.raw.input",false),
-        ("SELECT mystery(id) AS n FROM cdo.raw.input",false),
+        ("SELECT mystery(id) AS n FROM cdo.raw.input AS q(id)",false),
         ("SELECT RAND() AS n FROM cdo.raw.input",false),
         ("SELECT CAST('2026-01-01' AS TIMESTAMP) AS n FROM cdo.raw.input",false),
-        ("SELECT system.builtin.COUNT(DISTINCT id) AS n FROM cdo.raw.input",false),
-        ("SELECT id + 1 FROM cdo.raw.input",false),
-        ("SELECT id FROM cdo.raw.input UNION ALL SELECT id FROM cdo.raw.input",false),
-        ("WITH RECURSIVE q AS (SELECT id FROM cdo.raw.input) SELECT id FROM q",false),
+        ("SELECT system.builtin.COUNT(DISTINCT id) AS n FROM cdo.raw.input AS q(id)",false),
+        ("SELECT id + 1 FROM cdo.raw.input AS q(id)",false),
+        ("SELECT id FROM cdo.raw.input AS q(id) UNION ALL SELECT id FROM cdo.raw.input AS q(id)",false),
+        ("WITH RECURSIVE q AS (SELECT id FROM cdo.raw.input AS input(id)) SELECT id FROM q",false),
         ("SELECT -CAST(9223372036854775807 AS INT) AS bad FROM cdo.raw.input",false),
     ].into_iter().enumerate() {
         let org=format!("checked-{index}");
@@ -670,14 +686,16 @@ async fn analyzed_full_dependency_bindings_retain_context_and_definition() {
         req.query_dependencies = vec![
             qc::QueryDependency {
                 name: "cdo.views.a".into(),
-                query: "SELECT system.builtin.COUNT(*) AS n FROM input WHERE id IS NOT NULL".into(),
+                query:
+                    "SELECT system.builtin.COUNT(*) AS n FROM input AS i(id) WHERE i.id IS NOT NULL"
+                        .into(),
                 default_catalog: "cdo".into(),
                 default_schema: "raw".into(),
                 ..Default::default()
             },
             qc::QueryDependency {
                 name: "cdo.views.b".into(),
-                query: "SELECT system.builtin.COUNT(id) AS n FROM input".into(),
+                query: "SELECT system.builtin.COUNT(id) AS n FROM input AS i(id)".into(),
                 default_catalog: "cdo".into(),
                 default_schema: "raw".into(),
                 ..Default::default()
@@ -743,7 +761,7 @@ async fn analyzed_full_multiple_inputs_keep_recorded_build_producers() {
     );
     let (mut src, mut built, mut target, mut copied) = shapes();
     for req in [&mut src, &mut target] {
-        req.sql="SELECT a.id AS order_id, b.id AS payment_id FROM cdo.raw.orders AS a LEFT JOIN cdo.raw.payments AS b ON TRUE".into();
+        req.sql="SELECT a.id AS order_id, b.id AS payment_id FROM cdo.raw.orders AS a(id) LEFT JOIN cdo.raw.payments AS b(id) ON TRUE".into();
         req.tables = vec![
             qc::TableModifiedInfo {
                 name: "cdo.raw.orders".into(),

@@ -558,14 +558,12 @@ mod tests {
                 && request.execution_type == 1
                 && request.query_dependencies.len() == 1
             {
-                // This frozen formerly opaque case now proves a complete
-                // input -> SELECT id FROM leaf definition and leaf binding.
+                // Reviewed #186 safety correction: SELECT id from a physical
+                // leaf without column-presence evidence may resolve a session
+                // variable. Preserve the original opaque frozen expectation.
                 assert!(case["copy"].is_null());
-                assert_eq!(analysis.copy_proof.as_ref().unwrap().version, 2);
-                assert_eq!(
-                    analysis.copy_hash.as_deref(),
-                    Some("f954aed9a1d7758f9dc5c6df7701730b805d18eb95980d4afd75d265a8cc2476")
-                );
+                assert!(analysis.copy_proof.is_none());
+                assert!(analysis.copy_hash.is_none());
             } else {
                 assert_eq!(serde_json::json!(analysis.copy_hash), case["copy"]);
             }

@@ -800,7 +800,7 @@ async fn shared_analyzed_merge_and_check_snapshot_adopt_then_rebuild() {
             });
             format!("WITH a AS (SELECT system.builtin.count(*) AS id FROM {input}), b AS (SELECT system.builtin.count(*) AS v FROM {second}) SELECT a.id AS id, b.v AS v FROM a LEFT JOIN b ON a.id = b.v")
         } else {
-            format!("WITH a AS (SELECT id, v, ts FROM {input} WHERE id IS NOT NULL) SELECT id, v, ts FROM a")
+            format!("WITH a AS (SELECT id, v, ts FROM {input} AS input(id,v,ts) WHERE id IS NOT NULL) SELECT id, v, ts FROM a")
         };
         let id = sc.execute_id(src.clone()).await;
         let mut source_confirm: qc::ConfirmExecutionRequest =
