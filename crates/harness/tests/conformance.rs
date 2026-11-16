@@ -1428,6 +1428,56 @@ async fn databricks_copy_recovery_extra_exact_public_history() {
     .await;
 }
 
+#[tokio::test]
+#[ignore = "requires complete #186 hosted capture and independently reviewed whole difference receipt"]
+async fn databricks_shared_copy_complete_hosted_boundary() {
+    use sha2::{Digest, Sha256};
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let receipt: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(std::env::var_os("DBT_STATE_SHARED_COPY_EXPECTED").unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        format!("{:x}", Sha256::digest(std::fs::read(&path).unwrap())),
+        receipt["capture_sha256"]
+    );
+    let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
+    let index = |name: &str| receipt[name].as_u64().map(|n| n as usize);
+    let counts = receipt["counts"].as_array().unwrap();
+    assert_eq!(counts.len(), 5);
+    let output =
+        std::env::var_os("DBT_STATE_SHARED_COPY_DIFFERENCES").map(std::path::PathBuf::from);
+    complete_hosted_copy_boundary(
+        &entries,
+        receipt["differences"].clone(),
+        "databricks_shared_copy.jsonl",
+        index("refused_register"),
+        index("refused_confirm"),
+        (
+            counts[0].as_u64().unwrap() as usize,
+            counts[1].as_u64().unwrap() as usize,
+            counts[2].as_u64().unwrap() as usize,
+            counts[3].as_u64().unwrap() as usize,
+            counts[4].as_u64().unwrap() as usize,
+        ),
+        output.as_deref(),
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "requires complete #186 native capture and retained actual decision clocks"]
+async fn databricks_shared_copy_native_exact_public_history() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CAPTURE").unwrap());
+    let evidence =
+        std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
+    let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
+    let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
+    exact_native_history_with_submit_copy(&path, count, 15, 9, 15, Some(&clocks), true, true).await;
+}
+
 /// Executes every RPC in the retained hosted boundary without granting its
 /// stale direct source or inventing the pending execution it would create.
 #[tokio::test]
@@ -1447,6 +1497,30 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
         "fixtures/databricks_copy_recovery_local_differences.json"
     ))
     .unwrap();
+    let output =
+        std::env::var_os("DBT_STATE_COPY_RECOVERY_DIFFERENCES").map(std::path::PathBuf::from);
+    complete_hosted_copy_boundary(
+        &entries,
+        expected,
+        "databricks_copy_recovery.jsonl",
+        Some(127),
+        Some(128),
+        (151, 25, 13, 12, 25),
+        output.as_deref(),
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_hosted_copy_boundary(
+    entries: &[diff::GoldenEntry],
+    expected: serde_json::Value,
+    fixture: &str,
+    refused_register: Option<usize>,
+    refused_confirm: Option<usize>,
+    expected_counts: (usize, usize, usize, usize, usize),
+    output: Option<&std::path::Path>,
+) {
     let server = support::start_server_databricks_copy_recovery().await;
     let ch = support::channel(server.addr).await;
     let mut requests = HashMap::<String, String>::new();
@@ -1461,7 +1535,11 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
             if let Some(local) = requests.get(id) {
                 replay.request["request_id"] = local.clone().into();
             } else {
-                assert_eq!(i, 128, "only the refused copy lacks a pending ID");
+                assert_eq!(
+                    Some(i),
+                    refused_confirm,
+                    "only the refused copy lacks a pending ID"
+                );
             }
         }
         if entry.method == "GetExplainMessages" {
@@ -1472,7 +1550,7 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
                 *id = decisions[id.as_str().unwrap()].clone().into();
             }
         }
-        let before = if i == 128 {
+        let before = if Some(i) == refused_confirm {
             Some(sqlx::query_as::<_,(i64,i64)>("SELECT count(*),count(*) FILTER(WHERE status='confirmed') FROM executions WHERE org_id=$1").bind(support::captured_org(entry)).fetch_one(server.state.store.pool()).await.unwrap())
         } else {
             None
@@ -1482,7 +1560,7 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
                 serde_json::from_value::<qc::SubmitEnrichedSqlRequest>(entry.request.clone())
                     .unwrap(),
                 entry,
-                "databricks_copy_recovery.jsonl",
+                fixture,
                 None,
             );
             diff::RpcOutcome::capture(
@@ -1494,10 +1572,10 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
         } else {
             diff::replay_rpc(ch.clone(), &replay).await.unwrap()
         };
-        if i == 128 {
+        if Some(i) == refused_confirm {
             assert_eq!(
                 replay.request["request_id"],
-                entries[127].response["ready_to_clone"]["request_id"]
+                entries[refused_register.unwrap()].response["ready_to_clone"]["request_id"]
             );
             assert_eq!(outcome.status.code, 5);
             let id = replay.request["request_id"].as_str().unwrap();
@@ -1552,7 +1630,7 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
                     id.into(),
                 );
             } else if entry.response["ready_to_clone"].is_object() {
-                assert_eq!(i, 127);
+                assert_eq!(Some(i), refused_register);
             }
         }
         if entry.method == "ConfirmExecution" {
@@ -1607,10 +1685,10 @@ async fn databricks_copy_recovery_complete_hosted_boundary() {
             published,
             explained
         ),
-        (151, 25, 13, 12, 25)
+        expected_counts
     );
     let differences = serde_json::Value::Array(differences);
-    if let Some(path) = std::env::var_os("DBT_STATE_COPY_RECOVERY_DIFFERENCES") {
+    if let Some(path) = output {
         std::fs::write(path, serde_json::to_vec_pretty(&differences).unwrap()).unwrap();
     }
     assert_eq!(
