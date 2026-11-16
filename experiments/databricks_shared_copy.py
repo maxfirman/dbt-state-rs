@@ -127,7 +127,11 @@ class SharedCopy(Precopy):
             'dirty':subprocess.check_output(['git','status','--porcelain'],cwd=Path(__file__).parent,text=True),
             'source_sha256':grant['source_sha256']})
 
-    init_schemas=SubmitCopy.init_schemas
+    def init_schemas(self):
+        SubmitCopy.init_schemas(self)
+        warehouse=json.loads((self.work/'warehouse.json').read_text())
+        if len(warehouse.get('rows',[]))!=1 or warehouse['rows'][0][1] not in ('UTC','Etc/UTC'):
+            raise Refused('shared-copy:UTC-required-before-DDL')
 
     def sql(self,label,statement):
         if re.match(r'(?i)^\s*(CREATE|INSERT|UPDATE|DROP|ALTER|DELETE|MERGE)\b',statement):
@@ -241,7 +245,8 @@ class SharedCopy(Precopy):
         for c in direct:
             cr=c['request']
             if (kind=='full' or cr['clone_source_table'].replace('`','')!=source or cr['target_table'].replace('`','')!=target
-                    or cr['table_namespace']!=self.namespace or cr['labels']['dbt_node_unique_id']!=req['dbt_node_state']['node_unique_id']):raise Refused('shared-copy:direct-scope')
+                    or cr['table_namespace']!=self.namespace or cr['clone_chain_depth_limit']!=1
+                    or cr['labels']['dbt_node_unique_id']!=req['dbt_node_state']['node_unique_id']):raise Refused('shared-copy:direct-scope')
             epoch=cr['clone_source_last_modified_epoch']
             if not epoch or (epoch==self.confirmed[source]['last_modified_epoch'])==(stage=='source_modified'):raise Refused('shared-copy:source-epoch')
         for g in grants:
@@ -259,6 +264,7 @@ class SharedCopy(Precopy):
         if verdict!='skip_execution' and response[verdict]['request_id'] not in confirms:raise Refused('shared-copy:ordinary-confirm')
         if stage=='copy':
             if len(successful)!=1 or len(direct)!=int(kind!='full') or verdict!=('ready_to_clone' if kind=='full' else 'skip_execution'):raise Refused('shared-copy:copy-adoption')
+            if response[verdict]['execution_runtime_ms']!=self.confirmed[source]['execution_runtime_ms']:raise Refused('shared-copy:adopted-source-runtime')
         elif stage.endswith('repeat') or stage=='repeat':
             if verdict!='skip_execution' or grants or direct or response[verdict]['execution_runtime_ms']!=self.confirmed[target]['execution_runtime_ms']:raise Refused('shared-copy:own-repeat-runtime')
         elif stage=='source_modified':

@@ -45,6 +45,16 @@ class SharedCopyGuards(unittest.TestCase):
             with self.assertRaisesRegex(Refused,'exact-ordered-SQL-write-budget'):obj.sql('unexpected',sql)
         self.assertEqual(obj.write_index,0)
 
+    def test_timezone_guard_stops_before_baseline_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            obj=SharedCopy.__new__(SharedCopy);obj.work=Path(tmp)
+            for zone in ('Etc/UTC','UTC','Europe/London'):
+                (obj.work/'warehouse.json').write_text(json.dumps({'rows':[['actual-version',zone]]}))
+                with patch('databricks_shared_copy.SubmitCopy.init_schemas'):
+                    if zone=='Europe/London':
+                        with self.assertRaisesRegex(Refused,'UTC-required-before-DDL'):obj.init_schemas()
+                    else:obj.init_schemas()
+
     def test_exact_INT_source_schema_and_microseconds(self):
         columns=[dict(zip(('name','type_text','type_name','position'),c)) for c in SOURCE_SCHEMA[:3]+SOURCE_PROJECTION_SCHEMA[3:]]
         raw={'columns':columns,'rows':[[*r,str(micros(r[3]))] for r in FIRST]}
@@ -95,7 +105,7 @@ class SharedCopyGuards(unittest.TestCase):
         if stage=='copy' and kind!='full' or stage=='source_modified':
             direct=[{'method':'RegisterClone','status':{'code':0},'request':{
                 'clone_source_table':source,'target_table':target,'table_namespace':'space',
-                'labels':{'dbt_node_unique_id':'node.'+kind},'clone_source_last_modified_epoch':11 if stage=='source_modified' else 10},
+                'labels':{'dbt_node_unique_id':'node.'+kind},'clone_chain_depth_limit':1,'clone_source_last_modified_epoch':11 if stage=='source_modified' else 10},
                 'response':{'ready_to_clone':grant if copying else None,
                             'response':{'ready_to_clone_v1':grant} if copying else None}}]
         if verdict=='ready_to_clone':ready=grant
@@ -123,7 +133,7 @@ class SharedCopyGuards(unittest.TestCase):
             self.assertEqual(observed[11][1]['expected_rows'],expected('merge','changed_repeat'))
 
     def test_invocation_rejects_wire_and_causal_corruption_before_physical_check(self):
-        for fault in ('sql','type','epoch','UID','runtime','grant','missing_confirm','extra_confirm','failed_copy'):
+        for fault in ('sql','type','epoch','UID','source_epoch','adopted_runtime','depth','grant','missing_confirm','extra_confirm','failed_copy'):
             obj=self.coordinator();kind='merge'
             obj.source_requests[kind]={'dbt_node_state':{'node_unique_id':'node.merge'}}
             obj.confirmed[obj.scope.relation('prod',kind)]={'last_modified_epoch':10,'execution_runtime_ms':100}
@@ -133,7 +143,9 @@ class SharedCopyGuards(unittest.TestCase):
             if fault=='type':submit['request']['execution_type']=1
             if fault=='epoch':submit['request']['tables'][0]['last_modified_epoch']=None
             if fault=='UID':submit['request']['dbt_node_state']['node_unique_id']='foreign'
-            if fault=='runtime':calls[0]['request']['clone_source_last_modified_epoch']=99
+            if fault=='source_epoch':calls[0]['request']['clone_source_last_modified_epoch']=99
+            if fault=='depth':calls[0]['request']['clone_chain_depth_limit']=2
+            if fault=='adopted_runtime':submit['response']['response']['skip_execution']['execution_runtime_ms']=999
             if fault=='grant':calls[0]['response']['ready_to_clone']['clone_sqls']=['DROP TABLE old']
             if fault=='missing_confirm':calls.pop()
             if fault=='extra_confirm':

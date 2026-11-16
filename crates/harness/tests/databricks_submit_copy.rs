@@ -610,6 +610,10 @@ async fn analyzed_full_checked_forms_and_opaque_effects() {
     // Expected decisions come from the contract's effect rules, not hashes.
     for (index, (sql, admits)) in [
         ("SELECT missing FROM cdo.raw.input",false),
+        ("SELECT session.id FROM cdo.raw.input AS session(id)",true),
+        ("SELECT session FROM cdo.raw.input AS q(session)",true),
+        ("SELECT only_a FROM cdo.raw.input AS a(only_a) INNER JOIN cdo.raw.input AS b(other) ON TRUE",true),
+        ("SELECT id FROM cdo.raw.input AS a(id) INNER JOIN cdo.raw.input AS b(id) ON TRUE",false),
         ("SELECT session.missing FROM cdo.raw.input",false),
         ("SELECT system.session.missing FROM cdo.raw.input",false),
         ("SELECT missing FROM cdo.raw.input WHERE missing IS NOT NULL",false),
