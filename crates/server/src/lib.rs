@@ -39,10 +39,6 @@ pub struct AppState {
     pub require_org_header: bool,
     /// The clock decisions measure build age against (ADR 0007).
     pub clock: Clock,
-    /// Experimental direct Databricks Result copy; excluded from preview defaults.
-    pub databricks_direct_copy: bool,
-    /// Experimental bounded ordinary-submit Databricks Result copy.
-    pub databricks_submit_copy: bool,
 }
 
 /// The server clock. Lag tolerance compares a reuse candidate's build age on
@@ -91,8 +87,6 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
-            databricks_direct_copy: false,
-            databricks_submit_copy: false,
         })
     }
 
@@ -110,22 +104,7 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
-            databricks_direct_copy: false,
-            databricks_submit_copy: false,
         }
-    }
-
-    /// Opt into the narrow experimental Databricks RegisterClone path.
-    /// This does not enable automatic copy on ordinary submits.
-    pub fn with_databricks_direct_copy(mut self, enabled: bool) -> Self {
-        self.databricks_direct_copy = enabled;
-        self
-    }
-
-    /// Opt into the bounded experimental FULL copy on ordinary SQL submits.
-    pub fn with_databricks_submit_copy(mut self, enabled: bool) -> Self {
-        self.databricks_submit_copy = enabled;
-        self
     }
 
     /// Use `clock` for build ages and confirmation receipt times.

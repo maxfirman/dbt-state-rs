@@ -25,7 +25,8 @@ full. Current complete inventory and the two-object capacity bound still apply.
 No schemas are created. Each phase collision-checks and
 owns exactly two fresh UUID-named tables inside `cdo_demo_db`; reference `dbt show`
 creates no objects. All preexisting inventory is retained. Clone is disabled via
-`pre_clone: never`; leave experimental direct-copy grants off on the server.
+`pre_clone: never` and the client copy permissions used by the retained graph.
+No server copy switch exists; [current policy](databricks-copy-preview.md) applies.
 
 ```sh
 python3 experiments/databricks_generated.py \

@@ -46,7 +46,8 @@ disable the optimization. Do not reproduce unsafe hosted SKIPs for parity.
 
 The State-disabled snapshot new_record delete behavior and shallow-clone
 FULL/seed replacement failures remain documented client/warehouse limitations;
-those workflows are excluded from the preview. Namespace-crossing, cross-UID
+the FULL replacement failure is an accepted cloning limitation, while snapshot
+new_record remains excluded. See [current policy](databricks-copy-preview.md). Namespace-crossing, cross-UID
 speculative reuse and unresolved targetless reuse remain conservatively
 restricted. Lack of full compatibility is acceptable; silently claiming safe
 support for an unresolved path is not.

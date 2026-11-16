@@ -16,20 +16,12 @@ managed Delta. The initial capability survey observed DBSQL 2026.44; later
 campaigns do not establish that every execution used that same runtime version.
 Other clients, deployments and storage formats remain unverified.
 
-Use the normal [server setup](development.md) and
-[no-copy client configuration](databricks-copy-preview.md) for the ordinary
-preview. Two independent server switches default to false:
-
-| Switch | Experimental scope |
-| --- | --- |
-| `DBT_STATE_EXPERIMENTAL_DATABRICKS_DIRECT_COPY=true` | RegisterClone for the bounded MERGE and explicit-source-clock check-snapshot subset. |
-| `DBT_STATE_EXPERIMENTAL_DATABRICKS_SUBMIT_COPY=true` | Automatic FULL SQL-submit copy for the exact qualified projection subset. |
-
-Both require the linked eligibility/provenance rules and quiescent sources.
-Neither enables general SQL copying or positive copy chains. Turning a switch
-off stops new grants; valid previously confirmed copy history can still be
-reused. Embedded-server configuration and exact client settings are in the
-[direct](databricks-precopy.md) and [submit](databricks-submit-copy.md) evidence.
+Use the normal [server setup](development.md). Databricks copy is enabled by
+default for the bounded shared-analysis subset; the two historical experimental
+server switches have been removed. [Current client controls and accepted limits](databricks-copy-preview.md)
+replace the original no-copy preview configuration. Original 2026-11-15 copy
+campaigns explicitly enabled their then-default-off server paths; their source
+attribution and captured assertions remain unchanged.
 
 ## Acceptance evidence and attribution
 
@@ -144,7 +136,7 @@ scheduled/manual generated run is a separate gate, not claimed by a main run.
   hosted grants a copy before an ordinary MERGE repair. This is an intentional
   refusal followed by ordinary execution, rather than exact hosted grant parity;
   unsafe source eligibility is not expanded to reproduce that optimization.
-- Copy switches remain experimental and default off. Unversioned SHALLOW CLONE
+- Copy is enabled by default with accepted limitations. Unversioned SHALLOW CLONE
   cannot expose every external source race at confirmation. Quiescent, serialized
   experiments do not prove general concurrency safety or copy chains.
 - Ordinary FULL/seed replacement over an existing shallow-clone target can fail

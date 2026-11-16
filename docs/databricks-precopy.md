@@ -1,9 +1,9 @@
 # Databricks direct State pre-copy
 
-The experimental opt-in supports the tested quiescent dbt 2.0.11 MERGE and
+Default-on direct Result copy supports the tested dbt 2.0.11 MERGE and
 check-snapshot development pre-copy flow on serverless Unity Catalog managed
-Delta. Defaults remain [copy-disabled](databricks-copy-preview.md). Automatic
-submit copying has its [separate switch](databricks-submit-copy.md).
+Delta. [Client controls and accepted limitations](databricks-copy-preview.md) apply. Automatic
+FULL submit copying has its [own request policy](databricks-submit-copy.md).
 The [copy recovery supplement](databricks-copy-recovery.md) tests source removal,
 modification, chain refusals and later history; positive chains remain unsupported.
 This is bounded physical acceptance, not the full ADR 0009 conformance claim.
@@ -116,9 +116,9 @@ Copied FULL/seed replacement still has the independently observed Unity Catalog
 replacement failure even with State disabled. Snapshot `new_record` retains its
 independent NULL business-column client defect. Other formats, retention
 properties, general SQL, other incremental strategies/snapshot modes, chains
-and concurrent source modification are not accepted by this evidence. Default
-refusal followed by a native cross-target build remains distinct from this
-explicit opt-in campaign. Keep `pre_clone: never` for the supported preview.
+are not established by this evidence. Unpinned physical source races and the
+FULL rebuild restriction are accepted limitations; see [current policy](databricks-copy-preview.md).
+The original campaign used an explicit server opt-in, which has since been removed.
 
 Live artifacts are retained under
 `~/.local/state/dbt-state-rs/databricks-152-20261115/`. The hosted 14- and 30-RPC

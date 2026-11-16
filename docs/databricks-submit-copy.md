@@ -1,10 +1,8 @@
 # Experimental Databricks copy on SQL submission
 
-`DBT_STATE_EXPERIMENTAL_DATABRICKS_SUBMIT_COPY=true` separately enables a bounded
-ordinary `SubmitEnrichedSQL` Result copy. The default is false. Embedded servers
-use `AppState::with_databricks_submit_copy(true)`. The direct-copy switch continues
-to enable only RegisterClone. Disabling either switch prevents new grants, while
-valid previously confirmed copy history can still qualify for reuse.
+Ordinary `SubmitEnrichedSQL` Result copy is enabled by default for the bounded
+FULL subset below. There is no separate server switch. Hosted-compatible client
+copy permissions remain effective; see [client controls and accepted limitations](databricks-copy-preview.md).
 
 The v2 checked subset is FULL models with explicit projections, null predicates,
 searched CASE, ordered INNER/LEFT joins, nonrecursive CTEs and grouping/HAVING
@@ -57,7 +55,7 @@ if confirmed after upgrade. Direct copying now uses the same shared proof with
 its own `databricks-direct-copy-v2` origin. Ordinary legacy strict reuse is
 unchanged. No old source SQL is reconstructed and no legacy proof is backfilled:
 a fresh ordinary source write must record v2 evidence before broader copying.
-Both switches remain default off. The [focused shared-copy acceptance](databricks-shared-copy.md)
+Both copy paths are enabled by default. The [focused shared-copy acceptance](databricks-shared-copy.md)
 separates the new evidence from the original native campaigns.
 
 The pending copy freezes the source execution, physical name, epoch and genuine

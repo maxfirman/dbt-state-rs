@@ -7,26 +7,26 @@ use support::scenario::Scenario;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires exact #153 ordinary submit-copy clearance, pinned dbt and fresh objects"]
 async fn real_dbt_submit_copy_physical_adoption() {
-    let server = support::start_server_databricks_submit_copy().await;
-    native_copy_campaign(server, "databricks_submit_copy.py", false).await;
+    let server = support::start_server().await;
+    native_copy_campaign(server, "databricks_submit_copy.py").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires exact #154 recovery clearance, pinned dbt and fresh objects"]
 async fn real_dbt_copy_recovery() {
-    let server = support::start_server_databricks_copy_recovery().await;
-    native_copy_campaign(server, "databricks_copy_recovery.py", true).await;
+    let server = support::start_server().await;
+    native_copy_campaign(server, "databricks_copy_recovery.py").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires exact #186 shared-copy clearance, pinned dbt and fresh objects"]
 async fn real_dbt_shared_copy_analysis_acceptance() {
-    let server = support::start_server_databricks_copy_native().await;
+    let server = support::start_server_native().await;
     assert_eq!(server.state.clock, dbt_state_server::Clock::System);
-    native_copy_campaign(server, "databricks_shared_copy.py", true).await;
+    native_copy_campaign(server, "databricks_shared_copy.py").await;
 }
 
-async fn native_copy_campaign(server: support::TestServer, script: &str, direct_copy: bool) {
+async fn native_copy_campaign(server: support::TestServer, script: &str) {
     use sha2::{Digest, Sha256};
     let artifacts = std::path::PathBuf::from(
         std::env::var_os("DBT_STATE_DATABRICKS_ARTIFACTS").expect("fresh native artifact root"),
@@ -39,7 +39,7 @@ async fn native_copy_campaign(server: support::TestServer, script: &str, direct_
             "pid":std::process::id(), "executable":executable,
             "executable_sha256":format!("{:x}",Sha256::digest(std::fs::read(&executable).unwrap())),
             "argv":std::env::args().collect::<Vec<_>>(), "address":server.addr.to_string(),
-            "submit_copy_opt_in":true, "direct_copy_opt_in":direct_copy,
+            "databricks_copy":"enabled",
             "clock":format!("{:?}", server.state.clock)
         }))
         .unwrap(),
@@ -186,23 +186,26 @@ fn native_evidence_guards() {
 }
 
 #[tokio::test]
-async fn automatic_copy_remains_separate_and_disabled_by_default() {
-    for direct in [false, true] {
-        let server = if direct {
-            support::start_server_databricks_direct_copy().await
-        } else {
-            support::start_server().await
-        };
+async fn automatic_copy_enabled_by_default_and_honors_client_controls() {
+    for (allow_clones, chain_limit, expected) in [
+        (Some(true), Some(1), "ready_to_clone"),
+        (Some(false), Some(1), "ready_to_execute"),
+        (None, None, "ready_to_execute"),
+        (Some(true), Some(0), "ready_to_execute"),
+    ] {
+        let server = support::start_server().await;
         let sc = Scenario::connect(&server).await.org("scope");
         source(&sc).await;
-        let (_, _, req, _) = shapes();
-        assert_eq!(sc.verdict(req).await, "ready_to_execute");
+        let (_, _, mut req, _) = shapes();
+        req.allow_clones = allow_clones;
+        req.clone_chain_depth_limit = chain_limit;
+        assert_eq!(sc.verdict(req).await, expected);
     }
 }
 
 #[tokio::test]
 async fn pending_and_replaced_sources_block_grants_and_invalidate_publication() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     for case in [
         "pending_before",
         "latest_before",
@@ -252,7 +255,7 @@ async fn pending_and_replaced_sources_block_grants_and_invalidate_publication() 
 
 #[tokio::test]
 async fn automatic_copy_preserves_org_namespace_uid_and_unknown_input_barriers() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("owner");
     source(&sc).await;
     let (_, _, original, _) = shapes();
@@ -300,7 +303,7 @@ async fn automatic_copy_preserves_org_namespace_uid_and_unknown_input_barriers()
 /// Its rows then belong to that SQL build, never to the abandoned copy grant.
 #[tokio::test]
 async fn failed_copy_fallback_is_an_ordinary_build_and_retry_cannot_restore_origin() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("fallback");
     source(&sc).await;
     let (_, _, target, mut confirmation) = shapes();
@@ -335,7 +338,7 @@ async fn failed_copy_fallback_is_an_ordinary_build_and_retry_cannot_restore_orig
 
 #[tokio::test]
 async fn a_confirmed_copy_cannot_supply_an_automatic_chain_when_original_is_pending() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("chain");
     source(&sc).await;
     let (mut original, _, mut target, mut confirmation) = shapes();
@@ -389,7 +392,7 @@ async fn confirm_at(server: &support::TestServer, req: qc::ConfirmExecutionReque
 #[tokio::test]
 async fn recent_copy_never_renews_old_source_lag_tolerance() {
     use qc::submit_sql_response::Response;
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let (mut src, mut src_confirm, mut target, mut copy_confirm) = shapes();
     src.tables[0].last_modified_epoch = Some(10_000);
     target.tables[0].last_modified_epoch = Some(10_000);
@@ -444,7 +447,7 @@ async fn crafted_controls_build_safely_without_claiming_volatile_rewrite_parity(
             .map(|s| serde_json::from_str(s).unwrap())
             .collect();
     assert_eq!(entries.len(), 91);
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("controls");
     let mut pending = std::collections::HashMap::new();
     for entry in &entries[..75] {
@@ -537,37 +540,31 @@ async fn crafted_controls_build_safely_without_claiming_volatile_rewrite_parity(
 
 #[tokio::test]
 async fn auto_copy_identity_does_not_change_ordinary_physical_reuse() {
-    for automatic in [false, true] {
-        let server = if automatic {
-            support::start_server_databricks_submit_copy().await
-        } else {
-            support::start_server().await
-        };
-        let sc = Scenario::connect(&server).await.org("ordinary");
-        source(&sc).await;
-        let (source, source_confirm, target, _) = shapes();
-        for fault in ["uid", "declared_config"] {
-            let mut ordinary = after_copy(source.clone(), source_confirm.last_modified_epoch);
-            let mut other_target = target.clone();
-            for req in [&mut ordinary, &mut other_target] {
-                let state = req.dbt_node_state.as_mut().unwrap();
-                if fault == "uid" {
-                    state.node_unique_id.push('x');
-                } else {
-                    state.node_configs_hash = Some("c".repeat(32));
-                }
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("ordinary");
+    source(&sc).await;
+    let (source, source_confirm, target, _) = shapes();
+    for fault in ["uid", "declared_config"] {
+        let mut ordinary = after_copy(source.clone(), source_confirm.last_modified_epoch);
+        let mut other_target = target.clone();
+        for req in [&mut ordinary, &mut other_target] {
+            let state = req.dbt_node_state.as_mut().unwrap();
+            if fault == "uid" {
+                state.node_unique_id.push('x');
+            } else {
+                state.node_configs_hash = Some("c".repeat(32));
             }
-            assert_eq!(
-                sc.verdict(ordinary).await,
-                "skip_execution",
-                "ordinary {fault},auto={automatic}"
-            );
-            assert_eq!(
-                sc.verdict(other_target).await,
-                "ready_to_execute",
-                "copy still requires {fault},auto={automatic}"
-            );
         }
+        assert_eq!(
+            sc.verdict(ordinary).await,
+            "skip_execution",
+            "ordinary {fault}"
+        );
+        assert_eq!(
+            sc.verdict(other_target).await,
+            "ready_to_execute",
+            "copy still requires {fault}"
+        );
     }
 }
 
@@ -575,7 +572,7 @@ async fn auto_copy_identity_does_not_change_ordinary_physical_reuse() {
 /// checked integer outputs, including the nullable right side of LEFT JOIN.
 #[tokio::test]
 async fn analyzed_full_two_count_ctes_copy_confirm_and_reuse() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("analyzed-two-counts");
     let (mut src, mut built, mut target, mut copied) = shapes();
     let sql = "WITH orders AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.orders AS o(id) WHERE o.id IS NOT NULL), payments AS (SELECT system.builtin.COUNT(*) AS n FROM cdo.raw.payments AS p(id) WHERE p.id IS NOT NULL) SELECT orders.n AS order_count, payments.n AS payment_count FROM orders LEFT JOIN payments ON orders.n = payments.n";
@@ -606,7 +603,7 @@ async fn analyzed_full_two_count_ctes_copy_confirm_and_reuse() {
 
 #[tokio::test]
 async fn analyzed_full_checked_forms_and_opaque_effects() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     // Expected decisions come from the contract's effect rules, not hashes.
     for (index, (sql, admits)) in [
         ("SELECT missing FROM cdo.raw.input",false),
@@ -678,7 +675,7 @@ async fn analyzed_full_checked_forms_and_opaque_effects() {
 
 #[tokio::test]
 async fn analyzed_full_dependency_bindings_retain_context_and_definition() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("bound-dependencies");
     let (mut src, mut built, mut target, mut copied) = shapes();
     for req in [&mut src, &mut target] {
@@ -746,7 +743,7 @@ async fn analyzed_full_dependency_bindings_retain_context_and_definition() {
 
 #[tokio::test]
 async fn analyzed_full_multiple_inputs_keep_recorded_build_producers() {
-    let server = support::start_server_databricks_submit_copy().await;
+    let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("multiple-producers");
     let (mut producer, mut producer_confirm, _, _) = shapes();
     producer.target_table = Some("cdo.raw.orders".into());
@@ -809,7 +806,7 @@ async fn analyzed_full_legacy_ordinary_strict_reuse_survives_but_copy_v1_is_cold
     ))
     .unwrap();
     for pending in [false, true] {
-        let server = support::start_server_databricks_submit_copy().await;
+        let server = support::start_server().await;
         let sc = Scenario::connect(&server).await.org("legacy-auto-v1");
         support::legacy::import_complete_history(
             &server,

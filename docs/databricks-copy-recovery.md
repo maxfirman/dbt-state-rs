@@ -2,7 +2,8 @@
 
 This dbt 2.0.11 supplement tests serialized FULL SQL-submit copies and MERGE
 RegisterClone pre-copies on serverless Unity Catalog managed Delta. Both
-experimental switches remain off by default. Positive copy chains, snapshots'
+historical experimental switches were off by default during this capture;
+[current copy policy](databricks-copy-preview.md) now enables both paths. Positive copy chains, snapshots'
 failure recovery and concurrent physical source changes are outside this scope.
 This is bounded physical acceptance, not full ADR 0009 hosted conformance.
 

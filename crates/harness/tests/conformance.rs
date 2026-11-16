@@ -819,15 +819,7 @@ async fn conformance_replay_all_corpora() {
                     .expect("valid complete native audit clock evidence")
             });
         let fixture = path.file_name().unwrap().to_string_lossy().into_owned();
-        // Only named positive corpora opt in. RegisterClone request presence
-        // must never switch a default-refusal capture's server policy.
-        let server = if fixture == "databricks_submit_copy.jsonl" {
-            support::start_server_databricks_submit_copy().await
-        } else if fixture == "databricks_precopy.jsonl" {
-            support::start_server_databricks_direct_copy().await
-        } else {
-            support::start_server().await
-        };
+        let server = support::start_server().await;
         let addr = server.addr;
         let ch = support::channel(addr).await;
         let mut sql = SqlClient::new(ch.clone());
@@ -1379,15 +1371,15 @@ async fn databricks_snapshot_modes_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks), false).await;
+    exact_native_history_at(&path, 126, 17, 12, 17, Some(&clocks)).await;
 }
 
-/// Whole #153 hosted SQL-copy lifecycle, explicitly opting into submit copy.
+/// Whole #153 hosted SQL-copy lifecycle through the default server.
 #[tokio::test]
 async fn databricks_submit_copy_exact_public_history() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures/databricks_submit_copy.jsonl");
-    exact_native_history_with_submit_copy(&path, 75, 12, 8, 12, None, false, true).await;
+    exact_native_history_at(&path, 75, 12, 8, 12, None).await;
 }
 
 #[tokio::test]
@@ -1399,8 +1391,7 @@ async fn databricks_submit_copy_extra_exact_public_history() {
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
     let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
-    exact_native_history_with_submit_copy(&path, count, 20, 14, 20, Some(&clocks), false, true)
-        .await;
+    exact_native_history_at(&path, count, 20, 14, 20, Some(&clocks)).await;
 }
 
 #[tokio::test]
@@ -1415,17 +1406,7 @@ async fn databricks_copy_recovery_extra_exact_public_history() {
     // Hosted grants the externally modified direct source, then MERGE repairs
     // it. Native conservatively refuses that grant, so it has one less Confirm.
     let pending = if clocks.is_some() { 13 } else { 14 };
-    exact_native_history_with_submit_copy(
-        &path,
-        count,
-        25,
-        pending,
-        25,
-        clocks.as_ref(),
-        true,
-        true,
-    )
-    .await;
+    exact_native_history_at(&path, count, 25, pending, 25, clocks.as_ref()).await;
 }
 
 #[tokio::test]
@@ -1475,7 +1456,7 @@ async fn databricks_shared_copy_native_exact_public_history() {
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
     let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
-    exact_native_history_with_submit_copy(&path, count, 15, 9, 15, Some(&clocks), true, true).await;
+    exact_native_history_at(&path, count, 15, 9, 15, Some(&clocks)).await;
 }
 
 /// Executes every RPC in the retained hosted boundary without granting its
@@ -1521,7 +1502,7 @@ async fn complete_hosted_copy_boundary(
     expected_counts: (usize, usize, usize, usize, usize),
     output: Option<&std::path::Path>,
 ) {
-    let server = support::start_server_databricks_copy_recovery().await;
+    let server = support::start_server().await;
     let ch = support::channel(server.addr).await;
     let mut requests = HashMap::<String, String>::new();
     let mut decisions = HashMap::<String, String>::new();
@@ -1702,7 +1683,7 @@ async fn complete_hosted_copy_boundary(
 async fn databricks_precopy_exact_public_history() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures/databricks_precopy.jsonl");
-    exact_native_history_at(&path, 90, 14, 10, 14, None, true).await;
+    exact_native_history_at(&path, 90, 14, 10, 14, None).await;
 }
 
 #[tokio::test]
@@ -1714,7 +1695,7 @@ async fn databricks_precopy_extra_exact_public_history() {
         support::native_clock::NativeClocks::load(&path, std::path::Path::new(&evidence)).unwrap()
     });
     let count = diff::load_golden(path.to_str().unwrap()).unwrap().len();
-    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref(), true).await;
+    exact_native_history_at(&path, count, 14, 10, 14, clocks.as_ref()).await;
 }
 
 async fn exact_native_history(
@@ -1726,16 +1707,7 @@ async fn exact_native_history(
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures")
         .join(fixture);
-    exact_native_history_at(
-        &path,
-        count,
-        submit_count,
-        build_count,
-        submit_count,
-        None,
-        false,
-    )
-    .await;
+    exact_native_history_at(&path, count, submit_count, build_count, submit_count, None).await;
 }
 
 /// The original native client stopped after a successful ordinary SKIP because
@@ -1751,7 +1723,7 @@ async fn databricks_moving_original_native_prefix_exact_public_history() {
         std::env::var_os("DBT_STATE_DATABRICKS_NATIVE_PREFIX_CLOCKS").unwrap(),
     );
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks), false).await;
+    exact_native_history_at(&path, 33, 5, 3, 4, Some(&clocks)).await;
 }
 
 #[tokio::test]
@@ -1762,7 +1734,7 @@ async fn databricks_audit_native_exact_public_history() {
     let evidence =
         std::path::PathBuf::from(std::env::var_os("DBT_STATE_EXTRA_REPLAY_CLOCKS").unwrap());
     let clocks = support::native_clock::NativeClocks::load(&path, &evidence).unwrap();
-    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks), false).await;
+    exact_native_history_at(&path, 81, 12, 6, 12, Some(&clocks)).await;
 }
 
 async fn exact_native_history_at(
@@ -1772,43 +1744,10 @@ async fn exact_native_history_at(
     build_count: usize,
     explain_count: usize,
     native_clocks: Option<&support::native_clock::NativeClocks>,
-    databricks_direct_copy: bool,
-) {
-    exact_native_history_with_submit_copy(
-        path,
-        count,
-        submit_count,
-        build_count,
-        explain_count,
-        native_clocks,
-        databricks_direct_copy,
-        false,
-    )
-    .await;
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn exact_native_history_with_submit_copy(
-    path: &std::path::Path,
-    count: usize,
-    submit_count: usize,
-    build_count: usize,
-    explain_count: usize,
-    native_clocks: Option<&support::native_clock::NativeClocks>,
-    databricks_direct_copy: bool,
-    databricks_submit_copy: bool,
 ) {
     let fixture = path.file_name().unwrap().to_str().unwrap();
     let entries = diff::load_golden(path.to_str().unwrap()).unwrap();
-    let server = if databricks_submit_copy && databricks_direct_copy {
-        support::start_server_databricks_copy_recovery().await
-    } else if databricks_submit_copy {
-        support::start_server_databricks_submit_copy().await
-    } else if databricks_direct_copy {
-        support::start_server_databricks_direct_copy().await
-    } else {
-        support::start_server().await
-    };
+    let server = support::start_server().await;
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
     let mut exec = ExecutionClient::new(ch.clone());

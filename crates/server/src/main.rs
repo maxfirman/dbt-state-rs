@@ -13,9 +13,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("connecting to postgres");
     let state = AppState::connect(&config.database_url)
         .await?
-        .with_require_org_header(config.require_org_header)
-        .with_databricks_direct_copy(config.databricks_direct_copy)
-        .with_databricks_submit_copy(config.databricks_submit_copy);
+        .with_require_org_header(config.require_org_header);
     if config.require_org_header {
         tracing::info!("x-organization-id header is REQUIRED (multi-tenant mode)");
     }

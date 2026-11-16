@@ -800,7 +800,7 @@ broader copying remain outside that quiescent scope.
 
 ## Databricks automatic submit copy bounded (#153, 2026-11-15)
 
-A separate default-off experimental path supports deterministic fully-qualified
+The original default-off experimental path supported deterministic fully-qualified
 SELECT-star FULL models over one exact current source. Its new versioned identity
 binds UID, client signatures, exact SQL/config and output catalog/name; source
 inputs/build age and publication provenance remain frozen. Invalid origins cannot
@@ -827,3 +827,14 @@ conservative stale direct-source refusal; its raw hosted confirmation gets
 NotFound without publishing anything. No response field or timestamp is masked,
 no pending row is invented, and existing exact corpora remain unchanged.
 This accepted conservative behavior is distinct from full ADR0009 conformance.
+
+## Databricks default-on rollout (#188, 2026-11-16)
+
+Both bounded shared-v2 copy paths now run without private server switches.
+The maintainer accepts unpinned physical source races shared with Snowflake
+and the Unity Catalog shallow-clone FULL rebuild failure also observed with
+hosted and State-disabled execution. [Current copy policy](databricks-copy-preview.md)
+records these limitations and hosted-compatible client controls. Unknown input
+evidence, incompatible identities, externally modified sources observed during
+validation, and invalid publication still refuse reuse. No snapshot pinning,
+automatic DROP or new materialization support is introduced.

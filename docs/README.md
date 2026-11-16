@@ -52,8 +52,8 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 
 - [Preview coverage and limitations](databricks-preview.md): the entry point
   for users, with configuration, archived evidence and follow-up scope.
-- [Copy configuration](databricks-copy-preview.md): default-off Databricks
-  copying and pinned-client settings.
+- [Copy configuration](databricks-copy-preview.md): default-on bounded Databricks
+  copying, client controls and accepted warehouse limitations.
 - [Landing plan](databricks-landing.md): revised preview release gates.
 - [Evidence manifest](databricks-evidence.tsv): archived report/scaffold paths
   and hashes; golden fixtures and reproduction drivers remain in the tree.
