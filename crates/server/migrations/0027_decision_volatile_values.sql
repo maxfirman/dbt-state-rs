@@ -1,0 +1,13 @@
+-- Volatile evaluation (#67, ADR 0005 "Amended by #67"): the values a
+-- decision rendered for the Volatile functions in its SQL, exactly as it
+-- returned them in `transformed_nodes_by_query`, as a JSON array of
+-- {"query", "function", "value"} in the order the functions first appear.
+-- A rendered timestamp or random number cannot be re-derived later, so this
+-- is persisted rather than recomputed.
+--
+-- Explain evidence only: decisions and Reuse qualification never read it,
+-- and it is part of no identity or fingerprint. Read by Explain with the
+-- decision, scoped by organization. NULL when nothing was rendered and for
+-- every decision recorded before this migration; Explain then prints no
+-- volatile lines, because an unknown value is never invented. No backfill.
+ALTER TABLE node_decisions ADD COLUMN rendered_volatile_values JSONB;

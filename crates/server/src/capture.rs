@@ -109,6 +109,9 @@ pub struct CaptureInput {
     /// Frozen submit clock for Explain display, never physical freshness.
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<crate::explain::TemplateComparison>,
+    /// The values Volatile evaluation rendered (migration 0027), for Explain
+    /// only. `None` when nothing was rendered.
+    pub rendered_volatile_values: Option<crate::volatile_evaluation::Rendered>,
     // identity / grouping
     pub org_id: String,
     pub external_invocation_id: Option<String>,
@@ -295,10 +298,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             execution_runtime_ms, query_dependencies, matched_execution_id,
             decision_reason, freshness_tolerance_ms, build_age_ms,
             skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
-            reads_relation, display_submitted_at_ms, template_comparison
+            reads_relation, display_submitted_at_ms, template_comparison,
+            rendered_volatile_values
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
         "#,
     )
     .bind(&i.org_id)
@@ -339,6 +343,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
         i.template_comparison
             .as_ref()
             .map(|value| serde_json::to_value(value).expect("template evidence")),
+    )
+    .bind(
+        i.rendered_volatile_values
+            .as_ref()
+            .map(|values| serde_json::to_value(values).expect("rendered volatile values")),
     )
     .execute(pool)
     .await?;

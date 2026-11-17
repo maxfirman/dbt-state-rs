@@ -12,6 +12,19 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 
 pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
+/// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
+/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85).
+/// Other Databricks Volatile functions are uncaptured and render nothing.
+pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
+    crate::volatile_evaluation::Rules {
+        dialect: &DatabricksDialect {},
+        functions: &[crate::volatile_evaluation::Rule {
+            name: "rand",
+            key: "RAND()",
+            value: crate::volatile_evaluation::Value::UnitRandom,
+        }],
+    };
+
 /// Extra bounds on #144's source-less ordinary-submit rejection. The shared
 /// relation-read proof deliberately treats literal table functions as reading
 /// no named relation; they are uncharacterized here and must stay untouched.

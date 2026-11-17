@@ -217,6 +217,15 @@ pub fn empty_submission(dialect: &str) -> Submit {
     }
 }
 
+/// A captured SubmitEnrichedSQL `request` (a fixture entry's `request`
+/// object), exactly as the client sent it.
+pub fn captured_submit(request: &serde_json::Value) -> Submit {
+    Submit {
+        req: serde_json::from_value(request.clone()).expect("captured SubmitEnrichedSQL request"),
+        sql_follows_body: false,
+    }
+}
+
 impl Submit {
     fn node_state_mut(&mut self) -> &mut qc::DbtNodeState {
         self.req.dbt_node_state.get_or_insert_with(Default::default)
@@ -1147,6 +1156,17 @@ impl Scenario {
     }
 
     /// ResolveDeferredRelations: the physical FQN of each resolvable node.
+    /// GetExplainMessages for `ids`, scoped to this scenario's org.
+    pub async fn explain(&self, ids: &[&str]) -> qc::GetExplainMessagesResponse {
+        qc::explain_client::ExplainClient::new(self.channel.clone())
+            .get_explain_messages(self.request(qc::GetExplainMessagesRequest {
+                execution_decision_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            }))
+            .await
+            .expect("GetExplainMessages")
+            .into_inner()
+    }
+
     pub async fn resolve_deferred(
         &self,
         req: qc::ResolveDeferredRelationsRequest,

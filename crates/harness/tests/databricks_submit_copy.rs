@@ -436,11 +436,13 @@ async fn recent_copy_never_renews_old_source_lag_tolerance() {
 }
 
 /// The separately authorized controls retain the complete hosted91 history.
-/// This asserts the bounded local decision contract, not RAND rewrite/Explain
-/// wire parity. The independently certified primary75 is replayed exactly by
-/// conformance.rs, and the live runner checks full physical invariance.
+/// This asserts the bounded local decision contract and, for the RAND()
+/// control, hosted's `transformed_nodes_by_query` shape (#192; its Explain
+/// is pinned in volatile_evaluation.rs). The independently certified
+/// primary75 is replayed exactly by conformance.rs, and the live runner
+/// checks full physical invariance.
 #[tokio::test]
-async fn crafted_controls_build_safely_without_claiming_volatile_rewrite_parity() {
+async fn crafted_controls_build_safely_and_render_the_hosted_rand_shape() {
     let entries: Vec<serde_json::Value> =
         include_str!("fixtures/databricks_submit_copy_controls.jsonl")
             .lines()
@@ -518,19 +520,29 @@ async fn crafted_controls_build_safely_without_claiming_volatile_rewrite_parity(
             assert!(value["response"].get("ready_to_clone").is_none());
         }
         if cases == 5 {
-            assert!(
-                !entry["response"]["response"][expected]["transformed_nodes_by_query"]
-                    .as_object()
+            // Volatile evaluation (#192): the same map shape as hosted, with
+            // this server's own rendered value in the captured format.
+            let shape = |map: &serde_json::Value| -> Vec<(String, Vec<String>)> {
+                map.as_object()
                     .unwrap()
-                    .is_empty(),
-                "retain actual hosted RAND rewrite evidence"
-            );
+                    .iter()
+                    .map(|(query, node)| {
+                        let functions = node["node_to_func"].as_object().unwrap();
+                        (query.clone(), functions.keys().cloned().collect())
+                    })
+                    .collect()
+            };
+            let hosted = &entry["response"]["response"][expected]["transformed_nodes_by_query"];
+            let local = &value["response"][expected]["transformed_nodes_by_query"];
+            assert!(!shape(hosted).is_empty(), "retain hosted RAND() evidence");
+            assert_eq!(shape(local), shape(hosted), "hosted map shape");
+            let target = entry["request"]["target_table"].as_str().unwrap();
+            let rendered = local[target]["node_to_func"]["RAND()"].as_str().unwrap();
             assert!(
-                value["response"][expected]["transformed_nodes_by_query"]
-                    .as_object()
-                    .unwrap()
-                    .is_empty(),
-                "bounded local policy does not evaluate volatile SQL"
+                rendered.strip_prefix("0.").is_some_and(
+                    |digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+                ),
+                "captured RAND() format, got {rendered:?}"
             );
         }
         cases += 1;

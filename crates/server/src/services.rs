@@ -318,6 +318,7 @@ fn submit_capture(
         reads_relation: None,
         display_submitted_at_ms: None,
         template_comparison: None,
+        rendered_volatile_values: None,
     }
 }
 
@@ -339,6 +340,7 @@ fn capture_submit(
         input_tables: explain.input_tables,
         query_dependencies: explain.query_dependencies,
         reads_relation: explain.reads_relation,
+        rendered_volatile_values: decided.rendered.clone(),
         ..submit_capture(
             meta,
             &decided.outcome,
@@ -408,6 +410,7 @@ fn capture_register(
             reads_relation: None,
             display_submitted_at_ms: None,
             template_comparison: None,
+            rendered_volatile_values: None,
         },
     );
 }
@@ -450,7 +453,9 @@ impl Sql for SqlService {
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
         let org_id = org_id_checked(&self.0, &request)?;
         let cap_meta = capture_meta_of(&request);
-        let now_ms = self.0.clock.now_ms(request.metadata());
+        let sources = crate::volatile_evaluation::Sources::system(
+            self.0.clock.now_micros(request.metadata()),
+        );
         let raw_req = request.into_inner();
         let warehouse = crate::warehouse::Warehouse::from_dialect(&raw_req.dialect);
         if warehouse.invalid_template_signature(&raw_req) {
@@ -478,16 +483,25 @@ impl Sql for SqlService {
             ));
         }
 
-        let decided =
-            crate::submit_decision::submit_sql_explained(&self.0.store, &org_id, &raw_req, now_ms)
-                .await
-                .map_err(store_status)?;
+        let decided = crate::submit_decision::submit_sql_explained(
+            &self.0.store,
+            &org_id,
+            &raw_req,
+            &sources,
+        )
+        .await
+        .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
         capture_submit(&self.0, &cap_meta, &req, &decided);
-        let response = submit_response(
+        let mut response = submit_response(
             decided.outcome,
             raw_req.target_table.as_deref().unwrap_or_default(),
         );
+        if let (Some(rendered), Some(qc::submit_sql_response::Response::ReadyToExecute(ready))) =
+            (&decided.rendered, response.response.as_mut())
+        {
+            ready.transformed_nodes_by_query = rendered.to_wire();
+        }
         Ok(Response::new(response))
     }
 

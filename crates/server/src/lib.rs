@@ -17,6 +17,7 @@ pub mod sql_identity;
 pub mod sql_norm;
 pub mod store;
 pub mod submit_decision;
+pub mod volatile_evaluation;
 pub mod warehouse;
 
 pub use dbt_state_proto::grpc_health;
@@ -60,18 +61,27 @@ pub const REPLAY_NOW_HEADER: &str = "x-dbt-state-replay-now-ms";
 impl Clock {
     /// Now, in Unix milliseconds, for a request with `metadata`.
     pub fn now_ms(self, metadata: &tonic::metadata::MetadataMap) -> i64 {
+        self.now_micros(metadata).div_euclid(1000)
+    }
+
+    /// Now, in Unix microseconds (UTC), for a request with `metadata`. A
+    /// replayed instant has millisecond precision.
+    pub fn now_micros(self, metadata: &tonic::metadata::MetadataMap) -> i64 {
         let replayed = match self {
             Self::System => None,
             Self::Replay => metadata
                 .get(REPLAY_NOW_HEADER)
                 .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse().ok()),
+                .and_then(|v| v.parse::<i64>().ok()),
         };
-        replayed.unwrap_or_else(|| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis() as i64)
-        })
+        replayed.map_or_else(
+            || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| i64::try_from(d.as_micros()).unwrap_or(i64::MAX))
+            },
+            |ms| ms.saturating_mul(1000),
+        )
     }
 }
 

@@ -592,6 +592,21 @@ relation and one over a `ref`).
   <freshness body>
 ```
 
+A decision that rendered Volatile function values (Volatile evaluation, #67)
+prints two `query analysis` lines ahead of `the model query has changed`,
+one `rendered with` child per value (Databricks, captured:
+`databricks_submit_copy_controls.jsonl` entry 86):
+
+```
+  - non-deterministic functions detected in query     [INFO]
+    - RAND() -> rendered with '«value»'
+  - the model query is not deterministic and this is not tolerated by config [INFO]
+```
+
+They are printed only where the tree has `the model query has changed`;
+other shapes with rendered values are uncaptured and print none. A decision
+without rendered values, or recorded before migration 0027, prints none.
+
 The freshness body is the SKIP one (above), judged against the latest build
 in scope, whose identity did not match (an identity-mismatch rebuild has no
 matched build). A view (whose submit reports no upstreams) renders `upstream
@@ -1454,6 +1469,7 @@ the tolerance and Build age persisted with the decision
 | `<UPSTREAM_QUERY_CHANGED>` / `<UPSTREAM_QUERY_UNCHANGED>` | per-upstream Upstream producer comparison, same two snapshots |
 | `«rel_time»` ("last updated …") | the upstream's decision-time `last_modified_epoch` |
 | a view's `no upstream dependencies` / `upstream data is up to date` (no reported upstreams) | whether the view's SQL reads a relation, judged at decision time (`node_decisions.reads_relation`, migration 0019, #117) |
+| `non-deterministic functions detected in query` and its `«function» -> rendered with '«value»'` children, `the model query is not deterministic …` | the values the decision rendered, as returned (`node_decisions.rendered_volatile_values`, migration 0027, #67). Persisted because a rendered value cannot be re-derived |
 
 Explain computes the per-upstream verdicts with the same
 `decision::upstream_freshness` helper the decision uses, against the matched
