@@ -390,6 +390,18 @@ server keeps the conservative behavior described.
 - **Proxy fidelity.** The recording proxy forwards client metadata but does not
   record raw protobuf bytes. It now retains error/status metadata and checks
   capture completeness (`crates/harness/src/bin/record_proxy.rs`).
+- **Volatile evaluation check-ins (#191, awaiting the maintainer).** The
+  Snowflake capture batch
+  ([note](reports/snowflake-volatile-evaluation-2026-11-17.md)) shows hosted
+  (a) SKIPping a deterministic model with `evaluate_volatile_sql: true`, which
+  `reuse_candidate.rs::sql_qualifies` refuses
+  (`explain_volatile_evaluation.jsonl` entry 31); (b) explaining an unchanged
+  volatile model or data test under evaluation as "the model query has
+  changed"; and (c) explaining a consumer of a volatile view as "an upstream
+  model query has changed", "a change in rendered value will result in a
+  diff". (a) relaxes a reuse refusal; (b) and (c) imply rendered values enter
+  query and Upstream producer identity. Decisions in (b) and (c) already match.
+  Hosted also SKIPs volatile SQL with evaluation off, as this server does.
 
 ## Known divergences
 

@@ -241,6 +241,12 @@ returns, and a `reason`. Kinds:
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.
+- **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
+  whose text is exactly one of the named texts are removed, with their
+  children, from the hosted tree only. The decision, the description and the
+  rest of the tree must then match exactly, and at least one named line must
+  be present. Used for volatile lines this server does not render yet
+  (`explain_volatile_evaluation.jsonl`, #191).
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.
