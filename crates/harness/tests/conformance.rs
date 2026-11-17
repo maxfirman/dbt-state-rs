@@ -54,6 +54,15 @@ struct KnownGap {
     /// least one named field genuinely differs (so a resolved gap is flagged).
     #[serde(default)]
     ignore_fields: Vec<String>,
+    /// Optional line-scoped exemption for a `GetExplainMessages` comparison:
+    /// hosted Explain lines whose text is exactly one of these are removed
+    /// (with their children) from the HOSTED tree only. The decision, the
+    /// description and the rest of the tree must then match exactly, and at
+    /// least one named line must have been removed (so a resolved gap is
+    /// flagged). Used for the volatile lines this server does not render yet
+    /// (#191).
+    #[serde(default)]
+    ignore_explain_lines: Vec<String>,
 }
 
 /// New Databricks captures expose the actual hosted decision instant in a
@@ -455,6 +464,24 @@ fn strip_named_fields(value: &mut serde_json::Value, fields: &[String]) -> bool 
     removed
 }
 
+/// Remove every Explain line (and its children) whose text is exactly one of
+/// `texts`, at any depth of a `normalize_explain_lines`-shaped tree. Returns
+/// whether any line was removed.
+fn strip_explain_lines(tree: &mut serde_json::Value, texts: &[String]) -> bool {
+    let mut removed = false;
+    if let serde_json::Value::Array(lines) = tree {
+        let before = lines.len();
+        lines.retain(|l| !texts.iter().any(|t| l["text"].as_str() == Some(t.as_str())));
+        removed |= lines.len() != before;
+        for l in lines.iter_mut() {
+            if let Some(children) = l.get_mut("children") {
+                removed |= strip_explain_lines(children, texts);
+            }
+        }
+    }
+    removed
+}
+
 /// Keep ONLY the named fields in every decision-variant payload (the inverse of
 /// `strip_named_fields`), used to assert that the exempted fields THEMSELVES
 /// differ between local and hosted — so a stale `ignore_fields` exemption is
@@ -565,6 +592,44 @@ fn strip_named_fields_removes_only_named_payload_fields() {
     );
     // Absent field => nothing removed.
     assert!(!strip_named_fields(&mut v, &["nonexistent".to_string()]));
+}
+
+#[test]
+fn strip_explain_lines_removes_only_named_lines_with_their_children() {
+    let line = |text: &str, children: serde_json::Value| serde_json::json!({"text": text, "marker": null, "badge": null, "children": children});
+    let mut hosted = serde_json::json!([line(
+        "query analysis",
+        serde_json::json!([
+            line(
+                "non-deterministic functions detected in query",
+                serde_json::json!([line(
+                    "RANDOM() -> rendered with '0.5'",
+                    serde_json::json!([])
+                )])
+            ),
+            line("the model query has not changed", serde_json::json!([])),
+        ])
+    )]);
+    let removed = strip_explain_lines(
+        &mut hosted,
+        &["non-deterministic functions detected in query".to_string()],
+    );
+    assert!(removed);
+    assert_eq!(
+        hosted,
+        serde_json::json!([line(
+            "query analysis",
+            serde_json::json!([line(
+                "the model query has not changed",
+                serde_json::json!([])
+            )])
+        )])
+    );
+    // Nothing named => nothing removed (a stale exemption is caught).
+    assert!(!strip_explain_lines(
+        &mut hosted,
+        &["non-deterministic functions detected in query".to_string()],
+    ));
 }
 
 #[test]
@@ -2386,6 +2451,26 @@ async fn replay_explain_messages(
                 // keeps the main gate asserting the hosted tree DIRECTLY while
                 // scoping the one tolerated field, rather than waving the
                 // whole entry through.
+                if !gap.ignore_explain_lines.is_empty() {
+                    let mut stripped = hosted_tree.clone();
+                    assert!(
+                        strip_explain_lines(&mut stripped, &gap.ignore_explain_lines),
+                        "{context}: none of the ignore_explain_lines {:?} is in the hosted tree; \
+                         stale exemption",
+                        gap.ignore_explain_lines
+                    );
+                    assert!(
+                        decision_matches && desc_matches && stripped == local_tree,
+                        "{context}: a line-scoped explain gap must match the decision, the \
+                         description and the rest of the tree exactly (decision_matches=\
+                         {decision_matches} desc_matches={desc_matches});\n  hosted without \
+                         {:?}={stripped}\n  local={local_tree}",
+                        gap.ignore_explain_lines
+                    );
+                    seen_gaps.insert((gap.fixture.clone(), entry_idx));
+                    asserted += 1;
+                    continue;
+                }
                 let desc_scoped = gap
                     .ignore_fields
                     .iter()
