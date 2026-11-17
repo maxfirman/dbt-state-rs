@@ -1,4 +1,4 @@
-# Experimental Databricks copy on SQL submission
+# Databricks copy on SQL submission
 
 Ordinary `SubmitEnrichedSQL` Result copy is enabled by default for the bounded
 FULL subset below. There is no separate server switch. Hosted-compatible client
@@ -81,8 +81,8 @@ complete whole91 capture retains twenty actual persisted decision clocks. A
 subsequent narrow guard correction preserves ordinary same-target UID/config-only
 reuse; the fixed-metadata native graph did not exercise that changed branch.
 The complete native outputs are replayed on the final library with their actual
-clocks, and focused regressions cover the corrected branch under both switch
-settings. No successful native command or warehouse write was repeated.
+clocks, and focused regressions cover the corrected branch. (They covered both
+settings of the since-removed server switch when it existed.) No successful native command or warehouse write was repeated.
 
 The exact primary whole75 corpus is
 [`databricks_submit_copy.jsonl`](../golden/fixtures/databricks_submit_copy.jsonl).

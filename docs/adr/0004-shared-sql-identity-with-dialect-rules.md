@@ -64,7 +64,8 @@ Dialect adapters retain their characterized identity bytes, naming, observation
 semantics and copy execution capabilities. Snowflake/DuckDB keep current policy;
 Databricks v2 copy proofs cold-miss incompatible legacy evidence, including
 pending v1 rows confirmed after upgrade. Ordinary strict identities are unaffected.
-Both Databricks switches stay default off, positive chains remain unsupported,
+Both Databricks copy paths initially stayed default off (superseded by the
+[rollout amendment](#databricks-rollout-amendment-2026-11-16) below); positive chains remain unsupported,
 and the documented conservative stale-source refusal is retained even where
 hosted grants. Unversioned physical copy races remain outside this decision.
 

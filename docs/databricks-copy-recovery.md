@@ -69,8 +69,8 @@ assertions are unchanged; this boundary is not added to their conformance claim.
 
 ## Native and safety gates
 
-The native wrapper starts the production-library server with both switches
-explicitly enabled, records the running executable and exact source attribution,
+The native wrapper started the production-library server with both since-removed
+switches explicitly enabled, records the running executable and exact source attribution,
 and retains all 25 actual decision audit clocks before isolated State cleanup.
 Its whole capture must pass exact public replay with those clocks. Native has
 one fewer successful copy/Confirm than hosted because it refuses the modified

@@ -66,7 +66,8 @@ normalization, no field or timestamp is masked and no pending execution is inven
 including dependency rows/timestamps, match. The Rust **94-RPC** history replays
 exactly using all fifteen actual persisted audit clocks retained before local
 State schema cleanup. Live requests carried no replay-clock headers; the native
-server asserted the production System clock and both experimental switches.
+server asserted the production System clock and both then-required experimental
+switches, which have since been removed.
 
 Source attribution is distinct: hosted ran clean `86b3898`; native ran clean
 `184f85c` (only the replay tests differ). Its current-library executable SHA256
