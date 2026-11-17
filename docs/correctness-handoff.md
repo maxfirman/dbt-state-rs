@@ -439,10 +439,15 @@ replay fails when an entry becomes unused or resolved
 ([testing.md](testing.md#goldenreplay_gapsjson)). The categories are:
 
 - **Missing history.** The capture copies from, or depends on, a build made in
-  an earlier session, so an empty local store builds instead.
+  an earlier session, so an empty local store builds instead. This includes
+  the four dev data tests of `golden_20261009T083754.534Z.jsonl` (entries
+  13–16), which are not reuse across Targets: each hosted SKIP echoes a
+  runtime (2140, 1340, 13906, 16155 ms) that matches none of the prod
+  confirmations (2088, 2164, 2148, 1511 ms), the dev SQL reads
+  `dev_clone.customers` at an epoch about 2.5 days older than the capture,
+  and no copy occurs (#190).
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
-  and as view DDL in another, and data-test reuse across targets, rebuild
-  locally where hosted reused.
+  and as view DDL in another rebuilds locally where hosted reused.
 - **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
 - **Safety floor.** The externally modified seed table is reloaded
   (AGENTS.md reuse invariant 3) where hosted skips it, serving the edited
