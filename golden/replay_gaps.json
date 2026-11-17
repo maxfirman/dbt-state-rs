@@ -15,25 +15,25 @@
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 13,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
+    "reason": "MISSING HISTORY (accepted_values_customers_customer_type__new__returning): the capture holds no execution of this dev test. A hosted SKIP echoes the runtime of the execution it reused, and this SKIP echoes 2140 ms while the prod run of the same test UID in this capture confirmed 2088 ms (entry 8). The dev SQL reads ANALYTICS_DB.dev_clone.customers, whose submitted epoch 1791320808105 (2026-10-06 21:06:48 UTC) is about 59.5 hours older than this submit, and no copy occurs in the capture. Hosted most likely reused an earlier dev run of this test that the capture does not contain; the local store, holding only the prod run, executes. These entries are not evidence of data-test reuse across Targets (#190)."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 14,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
+    "reason": "MISSING HISTORY (unique_customers_customer_id): the capture holds no execution of this dev test. A hosted SKIP echoes the runtime of the execution it reused, and this SKIP echoes 1340 ms while the prod run of the same test UID in this capture confirmed 2164 ms (entry 10). The dev SQL reads ANALYTICS_DB.dev_clone.customers, whose submitted epoch 1791320808105 (2026-10-06 21:06:48 UTC) is about 59.5 hours older than this submit, and no copy occurs in the capture. Hosted most likely reused an earlier dev run of this test that the capture does not contain; the local store, holding only the prod run, executes. These entries are not evidence of data-test reuse across Targets (#190)."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 15,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
+    "reason": "MISSING HISTORY (dbt_utils_expression_is_true_customers_lifetime_spend_pretax_lifetime_tax_paid_lifetime_spend): the capture holds no execution of this dev test. A hosted SKIP echoes the runtime of the execution it reused, and this SKIP echoes 13906 ms while the prod run of the same test UID in this capture confirmed 2148 ms (entry 9). The dev SQL reads ANALYTICS_DB.dev_clone.customers, whose submitted epoch 1791320808105 (2026-10-06 21:06:48 UTC) is about 59.5 hours older than this submit, and no copy occurs in the capture. Hosted most likely reused an earlier dev run of this test that the capture does not contain; the local store, holding only the prod run, executes. These entries are not evidence of data-test reuse across Targets (#190)."
   },
   {
     "fixture": "golden_20261009T083754.534Z.jsonl",
     "entry": 16,
     "local_variant": "ready_to_execute",
-    "reason": "Cross-environment data-test reuse needs mapped dependency/context provenance."
+    "reason": "MISSING HISTORY (not_null_customers_customer_id): the capture holds no execution of this dev test. A hosted SKIP echoes the runtime of the execution it reused, and this SKIP echoes 16155 ms while the prod run of the same test UID in this capture confirmed 1511 ms (entry 5). The dev SQL reads ANALYTICS_DB.dev_clone.customers, whose submitted epoch 1791320808105 (2026-10-06 21:06:48 UTC) is about 59.5 hours older than this submit, and no copy occurs in the capture. Hosted most likely reused an earlier dev run of this test that the capture does not contain; the local store, holding only the prod run, executes. These entries are not evidence of data-test reuse across Targets (#190)."
   },
   {
     "fixture": "data_test_upstream_freshness.jsonl",
@@ -84,7 +84,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): both systems EXECUTE and the rest of the payload matches exactly, but hosted returns a nonempty transformed_nodes_by_query recording the runtime value of CURRENT_TIMESTAMP() (here 2026-10-12 21:52:38.577832) so the client can substitute a deterministic value; the local server does not yet evaluate volatile functions and returns {}. Narrowly scoped to this one field. The conservative tolerate_nondeterminism clone-suppression gate is NOT full volatile conformance (handoff B)."
+    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3; reason corrected in #190): both systems EXECUTE and the rest of the payload matches exactly, but hosted returns a nonempty transformed_nodes_by_query with the value it rendered for CURRENT_TIMESTAMP() (here 2026-10-12 21:52:38.577832) from its own clock; the local server does not yet render Volatile functions and returns {}. The map is telemetry no official client reads: on ready_to_execute the pinned dbt client's run-cache service keeps only request_id and runs the original SQL, and its source calls the map telemetry-only and dropped. The Python dbt_state client never reads it. Narrowly scoped to this one field until #67 replaces the exemption. The conservative tolerate_nondeterminism clone-suppression gate is NOT full volatile conformance (handoff B)."
   },
   {
     "fixture": "clone_fallback_volatile.jsonl",
@@ -93,7 +93,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3): dev arm, same as entry 0 — hosted records CURRENT_TIMESTAMP() = 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. Field-scoped visible gap; volatile function evaluation is unimplemented."
+    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3; reason corrected in #190): dev arm, same as entry 0. Hosted reports CURRENT_TIMESTAMP() rendered as 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. The map is telemetry no official client reads (see entry 0); the client runs the original SQL. Field-scoped visible gap until #67 implements Volatile evaluation."
   },
   {
     "fixture": "lag_seed_upstream.jsonl",
