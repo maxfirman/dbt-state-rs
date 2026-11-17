@@ -198,8 +198,16 @@ MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
   cached Struct; an empty Struct when none was recorded), `execution_runtime_ms`
   (echo of the reused run), `execution_decision_id`.
 - `ready_to_execute`: `request_id`, `explained_decision`,
-  `execution_decision_id`. The server always returns
-  `transformed_nodes_by_query` empty and `query_hash_metadata_info` unset.
+  `execution_decision_id`. `query_hash_metadata_info` is always unset.
+  `transformed_nodes_by_query` carries the values of Volatile evaluation
+  (#67) and is empty otherwise: when the submit requests it
+  (`tolerate_nondeterminism = false`) and its root SQL calls a Volatile
+  function the Warehouse has a captured rule for, the map is keyed by the
+  request's `target_table` as sent, with one inner `node_to_func` entry per
+  function. Captured rules: Databricks `rand()` as `RAND()`, a plain decimal
+  in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85). No client
+  reads the map; the Warehouse executes the original SQL. Every other
+  branch keeps it empty.
 - `ready_to_clone`: a Result copy of an equivalent; see
   [Result copy on submit](#result-copy-on-submit).
 
