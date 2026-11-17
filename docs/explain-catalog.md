@@ -273,7 +273,7 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 37 (31 client 2.0.11, 6 crafted), SKIP 28 (27 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 39 (37 client 2.0.11, 2 crafted), SKIP 48 (42 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | —¹⁵ | S E | EXECUTE 39 (37 client 2.0.11, 2 crafted), SKIP 48 (42 client 2.0.11, 5 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 107 (92 crafted, 15 client 2.0.11), SKIP 40 (30 crafted, 9 client 2.0.11, 1 client 2.0.6) |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 31 (27 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
@@ -387,6 +387,13 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
     dependencies`; one over a `ref` says `upstream data is up to date`
     (`explain_view_reads_no_relation.jsonl`). A view whose SQL does not
     parse as one query renders nothing without reported upstreams.
+15. No cell: data tests never get a Result copy. A data test has no Target
+    relation, this server never copies one on submit
+    (`result_copy::submit_lookup`), the client sends `RegisterClone` only for
+    incrementals and snapshots, and no capture shows hosted copying one. The
+    four dev data-test SKIPs once read as reuse across Targets
+    (`golden_20261009T083754.534Z.jsonl` entries 13–16) are Missing history:
+    each echoes a runtime that matches no prod run in the capture (#190).
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -1275,7 +1282,8 @@ upstream). Nothing else:
 
 ### CLONE
 
-Out of scope → #68.
+None: data tests never get a Result copy (see note 15 under
+[Execution type (node kind) coverage](#execution-type-node-kind-coverage)).
 
 ## CLONE (model)
 
@@ -1468,7 +1476,7 @@ What this server never renders, each with its final status:
   (#76); custom and incremental CLONE are unreachable on 2.0.11 too (#86,
   #101): this server copies only FULL (and, on Snowflake, a seed, #91) on
   submit, and a RegisterClone copy has no Explain message. DuckDB's checked delete+insert copy is local-only.
-  Data-test CLONE is out of scope → #68.
+  Data tests never get a Result copy, so there is no data-test CLONE.
 - **Badges and markers** `EB_UNSPECIFIED` (0) and
   `EM_UNSPECIFIED` (0): never emitted; not observed across the census trees
   ([Observed vocabulary](#observed-vocabulary)).
@@ -1528,7 +1536,7 @@ there is no cell.
 | `dependency_set_changed` | U | U | U | U | U | U | U | — |
 | `copy_chain_limit` ᵐ | U | MERGE L (#152); APPEND — | — ᵏ | — | — | — | — | LO ˢ |
 | `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | L ˢ |
-| `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | L ˢ |
+| `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | — | L ˢ |
 
 Evidence for each L and C cell is in the per-kind sections above and the
 conformance replay. No cell is marked → #104 any more; #104 records how the
