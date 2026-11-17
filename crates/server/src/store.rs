@@ -862,7 +862,8 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison
+                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
+                   rendered_volatile_values
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -962,6 +963,9 @@ pub struct ExplainDecisionRow {
     pub unmatched_execution_id: Option<i64>,
     /// Migration 0019: for a view, whether its SQL reads a relation.
     pub reads_relation: Option<bool>,
+    /// Migration 0027: the values the decision's Volatile evaluation
+    /// rendered, as returned. NULL when none were, and before the migration.
+    pub rendered_volatile_values: Option<serde_json::Value>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -1019,6 +1023,7 @@ mod tests {
         ExplainDecisionRow {
             display_submitted_at_ms: None,
             template_comparison: None,
+            rendered_volatile_values: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),

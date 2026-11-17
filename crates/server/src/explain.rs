@@ -74,6 +74,10 @@ pub struct ExplainNode {
     /// Original submit instant, solely for rendering temporal text.
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<TemplateComparison>,
+    /// The values the decision's Volatile evaluation rendered, as returned
+    /// (migration 0027). Empty when none were, for a decision recorded
+    /// before the migration and for unreadable evidence: no volatile lines.
+    pub rendered_volatile_values: Vec<crate::volatile_evaluation::RenderedValue>,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -204,6 +208,11 @@ impl ExplainNode {
                 .template_comparison
                 .clone()
                 .and_then(|v| serde_json::from_value(v).ok()),
+            rendered_volatile_values: row
+                .rendered_volatile_values
+                .clone()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
             execution_decision_id: row.execution_decision_id.clone()?,
             decision,
             execution_type: row.execution_type,
@@ -858,8 +867,50 @@ fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
 }
 
 /// Build the structured tree: fenced by node kind, then shaped by the
-/// persisted decision reason.
+/// persisted decision reason, with the values Volatile evaluation rendered.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let mut lines = decision_lines(node);
+    add_volatile_lines(node, &mut lines);
+    lines
+}
+
+/// Volatile evaluation (#67): hosted prints, in the query analysis and ahead
+/// of the query-changed verdict, one `rendered with` line per rendered value
+/// under `non-deterministic functions detected in query`, then that the
+/// query is not deterministic (`databricks_submit_copy_controls.jsonl` entry
+/// 86). Printed only where that verdict is; other shapes are uncaptured.
+fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
+    if node.rendered_volatile_values.is_empty() {
+        return;
+    }
+    let Some(query) = lines.iter_mut().find(|l| l.text == "query analysis") else {
+        return;
+    };
+    let Some(at) = query.children.iter().position(|l| {
+        l.text == "the model query has changed" && l.badge == Some(BADGE_NODE_QUERY_CHANGED)
+    }) else {
+        return;
+    };
+    let detected = qc::ExplainLine {
+        text: "non-deterministic functions detected in query".into(),
+        marker: Some(MARKER_INFO),
+        badge: None,
+        children: node
+            .rendered_volatile_values
+            .iter()
+            .map(|v| line(format!("{} -> rendered with '{}'", v.function, v.value)))
+            .collect(),
+    };
+    let not_tolerated = leaf(
+        "the model query is not deterministic and this is not tolerated by config",
+        Some(MARKER_INFO),
+        None,
+    );
+    query.children.splice(at..at, [detected, not_tolerated]);
+}
+
+/// The tree [`explain_lines`] prints before Volatile evaluation's lines.
+fn decision_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let mut displayed = node.clone();
     if let Some(comparison) = &node.template_comparison {
         displayed.input_tables.sort_by_key(|input| {
@@ -2377,6 +2428,7 @@ mod tests {
         ExplainNode {
             display_submitted_at_ms: None,
             template_comparison: None,
+            rendered_volatile_values: Vec::new(),
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,

@@ -231,6 +231,12 @@ impl ExplainEvidence {
 pub struct ExplainedOutcome {
     pub outcome: SubmitOutcome,
     pub explain: ExplainEvidence,
+    /// The values Volatile evaluation rendered for this decision, returned in
+    /// `transformed_nodes_by_query` and persisted for Explain only (ADR 0005,
+    /// "Amended by #67"). Rendered after the decision is made, so they never
+    /// enter identity, fingerprints, Upstream producers or Reuse
+    /// qualification. `None` when nothing was rendered.
+    pub rendered: Option<crate::volatile_evaluation::Rendered>,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -241,17 +247,20 @@ pub async fn submit_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
-    Ok(submit_sql_explained(store, org_id, req, now_ms)
+    let sources = crate::volatile_evaluation::Sources::system(now_ms.saturating_mul(1000));
+    Ok(submit_sql_explained(store, org_id, req, &sources)
         .await?
         .outcome)
 }
 
-/// [`submit_sql`], with the decision's [`ExplainEvidence`].
+/// [`submit_sql`], with the decision's [`ExplainEvidence`] and the values
+/// its Volatile evaluation rendered from `sources`. The build age is
+/// measured on the same clock (`sources.now_micros`).
 pub async fn submit_sql_explained(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
-    now_ms: i64,
+    sources: &crate::volatile_evaluation::Sources,
 ) -> sqlx::Result<ExplainedOutcome> {
     record_node_state(
         store,
@@ -260,9 +269,21 @@ pub async fn submit_sql_explained(
         req.target_table.as_deref(),
     )
     .await;
-    Ok(decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
+    let now_ms = sources.now_micros.div_euclid(1000);
+    let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
         .await?
-        .expect("an ordinary submit is always decided"))
+        .expect("an ordinary submit is always decided");
+    // Volatile evaluation, once decided. Only a build is rendered: Volatile
+    // SQL with evaluation requested is never reused or copied, and no other
+    // branch has a capture.
+    if matches!(decided.outcome, SubmitOutcome::Execute { .. }) {
+        decided.rendered = crate::volatile_evaluation::evaluate(
+            req,
+            Warehouse::from_dialect(&req.dialect).volatile_rules(),
+            sources,
+        );
+    }
+    Ok(decided)
 }
 
 /// Decide a `SubmitEnrichedSQLSpeculative` submission (#103). A speculative
@@ -347,6 +368,7 @@ async fn decide_sql(
     Ok(outcome.map(|outcome| ExplainedOutcome {
         explain: ExplainEvidence::of(req, &evidence, &outcome),
         outcome,
+        rendered: None,
     }))
 }
 

@@ -217,6 +217,15 @@ pub fn empty_submission(dialect: &str) -> Submit {
     }
 }
 
+/// A captured SubmitEnrichedSQL `request` (a fixture entry's `request`
+/// object), exactly as the client sent it.
+pub fn captured_submit(request: &serde_json::Value) -> Submit {
+    Submit {
+        req: serde_json::from_value(request.clone()).expect("captured SubmitEnrichedSQL request"),
+        sql_follows_body: false,
+    }
+}
+
 impl Submit {
     fn node_state_mut(&mut self) -> &mut qc::DbtNodeState {
         self.req.dbt_node_state.get_or_insert_with(Default::default)
