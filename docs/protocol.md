@@ -205,7 +205,10 @@ MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
   function the Warehouse has a captured rule for, the map is keyed by the
   request's `target_table` as sent, with one inner `node_to_func` entry per
   function. Captured rules: Databricks `rand()` as `RAND()`, a plain decimal
-  in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85). No client
+  in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85); Snowflake
+  `current_timestamp()` as `CURRENT_TIMESTAMP()`, the server clock in UTC as
+  `YYYY-MM-DD HH:MM:SS.ffffff` (`clone_fallback_volatile.jsonl` entries 0
+  and 2, #193). No client
   reads the map; the Warehouse executes the original SQL. Every other
   branch keeps it empty.
 - `ready_to_clone`: a Result copy of an equivalent; see

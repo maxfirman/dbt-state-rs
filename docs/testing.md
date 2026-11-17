@@ -241,6 +241,16 @@ returns, and a `reason`. Kinds:
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.
+
+Rendered Volatile values are the only runtime values the replay normalizes
+(`conformance.rs::normalize_volatile_values`, #193). In every submit and copy
+response, a `transformed_nodes_by_query` value whose function text is
+registered in `VOLATILE_VALUE_FORMATS` must have that format and is then
+compared as the format's name; map keys and function text are compared
+exactly, and values of other functions are compared as they are. A malformed
+value fails the replay. Field-scoped gaps are judged after this
+normalization, so a map that differs only in its runtime values needs no
+gap.
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the

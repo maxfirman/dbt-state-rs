@@ -78,24 +78,6 @@
     "reason": "MISSING SOURCE HISTORY: hosted clones from a CLONE_PROBE built in a prior live session, absent from this capture; the empty local store executes. The dedicated clone_submit_fallback.rs tests reproduce the fallback from a self-contained build."
   },
   {
-    "fixture": "clone_fallback_volatile.jsonl",
-    "entry": 0,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3; reason corrected in #190): both systems EXECUTE and the rest of the payload matches exactly, but hosted returns a nonempty transformed_nodes_by_query with the value it rendered for CURRENT_TIMESTAMP() (here 2026-10-12 21:52:38.577832) from its own clock; the local server does not yet render Volatile functions and returns {}. The map is telemetry no official client reads: on ready_to_execute the pinned dbt client's run-cache service keeps only request_id and runs the original SQL, and its source calls the map telemetry-only and dropped. The Python dbt_state client never reads it. Narrowly scoped to this one field until #67 replaces the exemption. The conservative tolerate_nondeterminism clone-suppression gate is NOT full volatile conformance (handoff B)."
-  },
-  {
-    "fixture": "clone_fallback_volatile.jsonl",
-    "entry": 2,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (review #2 4th follow-up, P1 #3; reason corrected in #190): dev arm, same as entry 0. Hosted reports CURRENT_TIMESTAMP() rendered as 2026-10-12 21:54:20.325255 in transformed_nodes_by_query; local returns {}. The map is telemetry no official client reads (see entry 0); the client runs the original SQL. Field-scoped visible gap until #67 implements Volatile evaluation."
-  },
-  {
     "fixture": "lag_seed_upstream.jsonl",
     "entry": 22,
     "local_variant": "ready_to_execute",
@@ -403,7 +385,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 1, vm first build (evaluation on, ready_to_execute): hosted renders 9 keys under the Target relation (CURRENT_TIMESTAMP(), SYSDATE(), CURRENT_TIME, CURRENT_DATE, RANDOM(), RANDSTR(8, 1234), UUID_STRING(), NORMAL(0, 1, 1234), UNIFORM(1, 100, RANDOM())). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 1, vm first build (evaluation on, ready_to_execute): hosted renders 9 keys under the Target relation (CURRENT_TIMESTAMP(), SYSDATE(), CURRENT_TIME, CURRENT_DATE, RANDOM(), RANDSTR(8, 1234), UUID_STRING(), NORMAL(0, 1, 1234), UNIFORM(1, 100, RANDOM())). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only CURRENT_TIMESTAMP() so far (#193, compared by format) and none of the other 8 keys (#194). The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
@@ -463,7 +445,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 2, vm unchanged rerun over its existing Target relation (evaluation on, ready_to_execute): hosted renders the same 9 keys with fresh clock/random values; RANDSTR(8, 1234) and NORMAL(0, 1, 1234) keep their values. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 2, vm unchanged rerun over its existing Target relation (evaluation on, ready_to_execute): hosted renders the same 9 keys with fresh clock/random values; RANDSTR(8, 1234) and NORMAL(0, 1, 1234) keep their values. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only CURRENT_TIMESTAMP() so far (#193, compared by format) and none of the other 8 keys (#194). The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",

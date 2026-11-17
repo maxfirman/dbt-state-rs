@@ -155,10 +155,12 @@ server keeps the conservative behavior described.
   client (`experiments/resolution_context.sh`). The schema-abstracted identity
   is unchanged (`analyzed_workload/identity/tests.rs::ns_uniform_schema_rename_is_cross_env_positive`).
 - **Volatile evaluation.** Hosted returns `transformed_nodes_by_query` with
-  runtime values (for example `CURRENT_TIMESTAMP()`). The server returns it
-  empty, leaves `query_hash_metadata_info` unset (hosted use uncharacterized),
-  and never reuses under `tolerate_nondeterminism=false`. Keyed gaps: `clone_fallback_volatile.jsonl`
-  entries 0 and 2 in `golden/replay_gaps.json`.
+  runtime values (for example `CURRENT_TIMESTAMP()`). The server renders only
+  the captured rules on `ready_to_execute` (Databricks `RAND()`, #192;
+  Snowflake `CURRENT_TIMESTAMP()`, #193) and returns the map empty otherwise,
+  leaves `query_hash_metadata_info` unset (hosted use uncharacterized), and
+  never reuses under `tolerate_nondeterminism=false`. Keyed gaps: the
+  `explain_volatile_evaluation*.jsonl` entries in `golden/replay_gaps.json`.
 - **RegisterClone source-age chain, entry 4.** Hosted SKIPs a post-copy submit
   that differs from the chain's first submit in schema, an added incremental
   predicate and epochs at once; the local server does not. The cause is not
@@ -460,7 +462,8 @@ replay fails when an entry becomes unused or resolved
   and no copy occurs (#190).
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
   and as view DDL in another rebuilds locally where hosted reused.
-- **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
+- **Volatile evaluation.** `transformed_nodes_by_query` lacks the functions
+  and branches without a captured rule locally.
 - **Safety floor.** The externally modified seed table is reloaded
   (AGENTS.md reuse invariant 3) where hosted skips it, serving the edited
   table: crafted, `lag_seed_upstream.jsonl` entries 22–23. Seen live

@@ -46,10 +46,12 @@ struct KnownGap {
     reason: String,
     /// Optional field-scoped exemption for a `ready_to_execute` (or other)
     /// payload comparison: the NAMED response fields are stripped from BOTH the
-    /// local and hosted payloads before comparing, so an unimplemented or
-    /// runtime-dependent field (e.g. `transformed_nodes_by_query`, which holds
-    /// the hosted service's volatile-function evaluations) is a VISIBLE,
-    /// documented known gap rather than a silent variant-only pass. When present,
+    /// local and hosted payloads before comparing, so an unimplemented field
+    /// (e.g. a `transformed_nodes_by_query` map with Volatile functions this
+    /// server does not render yet) is a VISIBLE, documented known gap rather
+    /// than a silent variant-only pass. Rendered values with a registered
+    /// format are compared by format first ([`normalize_volatile_values`]), so
+    /// a map that differs only in runtime values is no gap. When present,
     /// the comparison asserts the rest of the payload matches exactly AND that at
     /// least one named field genuinely differs (so a resolved gap is flagged).
     #[serde(default)]
@@ -327,6 +329,86 @@ fn normalize_ids(mut value: serde_json::Value) -> serde_json::Value {
     value
 }
 
+/// A value format of a rendered Volatile function.
+struct ValueFormat {
+    /// What the value is normalized to once it has the format.
+    name: &'static str,
+    matches: fn(&str) -> bool,
+}
+
+/// `YYYY-MM-DD HH:MM:SS.ffffff`, a valid instant without an offset
+/// (Snowflake `CURRENT_TIMESTAMP()`, UTC; `clone_fallback_volatile.jsonl`).
+const UTC_TIMESTAMP_MICROS: ValueFormat = ValueFormat {
+    name: "«YYYY-MM-DD HH:MM:SS.ffffff»",
+    matches: |value| {
+        value.len() == 26
+            && value.as_bytes()[19] == b'.'
+            && chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.6f").is_ok()
+    },
+};
+
+/// The value format of each function text (the inner
+/// `transformed_nodes_by_query` key) whose value is runtime-dependent. Register
+/// a function here when the server renders it from its clock or random source.
+/// A value of any other function is compared exactly.
+const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] =
+    &[("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS)];
+
+/// The only runtime-value normalization of the replay (#67, #193): each
+/// rendered value in a decision payload's `transformed_nodes_by_query` whose
+/// function text has a registered [`ValueFormat`] is replaced by the format's
+/// name, after checking the value has it. Map keys and function text are left
+/// as they are, so the comparison that follows is exact for them. Fails on a
+/// malformed value.
+fn normalize_volatile_values(mut value: serde_json::Value) -> Result<serde_json::Value, String> {
+    fn normalize(payload: &mut serde_json::Value) -> Result<(), String> {
+        let Some(serde_json::Value::Object(map)) = payload.get_mut("transformed_nodes_by_query")
+        else {
+            return Ok(());
+        };
+        for (query, node) in map.iter_mut() {
+            let Some(serde_json::Value::Object(functions)) = node.get_mut("node_to_func") else {
+                continue;
+            };
+            for (function, rendered) in functions.iter_mut() {
+                let Some((_, format)) = VOLATILE_VALUE_FORMATS.iter().find(|(f, _)| f == function)
+                else {
+                    continue;
+                };
+                match rendered.as_str() {
+                    Some(text) if (format.matches)(text) => *rendered = format.name.into(),
+                    _ => {
+                        return Err(format!(
+                            "{query} {function}: {rendered} is not {}",
+                            format.name
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    if let serde_json::Value::Object(root) = &mut value {
+        if let Some(copy) = root.get_mut("ready_to_clone") {
+            normalize(copy)?;
+        }
+        if let Some(serde_json::Value::Object(variants)) = root.get_mut("response") {
+            for payload in variants.values_mut() {
+                normalize(payload)?;
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// [`normalize_ids`] then [`normalize_volatile_values`]: a submit or copy
+/// response as the replay compares it. A malformed rendered value fails the
+/// replay.
+fn comparable(value: serde_json::Value, context: &str) -> serde_json::Value {
+    normalize_volatile_values(normalize_ids(value))
+        .unwrap_or_else(|error| panic!("{context}: malformed rendered value: {error}"))
+}
+
 /// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
 /// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
@@ -592,6 +674,71 @@ fn strip_named_fields_removes_only_named_payload_fields() {
     );
     // Absent field => nothing removed.
     assert!(!strip_named_fields(&mut v, &["nonexistent".to_string()]));
+}
+
+#[test]
+fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format() {
+    let response = |query: &str, function: &str, value: &str| {
+        serde_json::json!({"response": {"ready_to_execute": {
+            "transformed_nodes_by_query": {query: {"node_to_func": {function: value}}}
+        }}})
+    };
+    let target = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"CE_MODEL_215158\"";
+    let hosted = normalize_volatile_values(response(
+        target,
+        "CURRENT_TIMESTAMP()",
+        "2026-10-12 21:52:38.577832",
+    ))
+    .unwrap();
+    // Another instant in the same format compares equal.
+    assert_eq!(
+        normalize_volatile_values(response(
+            target,
+            "CURRENT_TIMESTAMP()",
+            "2026-10-12 21:52:38.707000"
+        )),
+        Ok(hosted.clone())
+    );
+    // A wrong key or wrong function text differs.
+    for (query, function) in [
+        (
+            "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"CE_MODEL_215158\"",
+            "CURRENT_TIMESTAMP()",
+        ),
+        (
+            "CDO_DEMO_DB.PROD_STATE_DEMO.CE_MODEL_215158",
+            "CURRENT_TIMESTAMP()",
+        ),
+        (target, "CURRENT_TIMESTAMP"),
+        (target, "current_timestamp()"),
+    ] {
+        let ours =
+            normalize_volatile_values(response(query, function, "2026-10-12 21:52:38.707000"));
+        assert_ne!(ours, Ok(hosted.clone()), "{query} {function}");
+    }
+    // A malformed value fails.
+    for value in [
+        "2026-10-12 21:52:38.707",
+        "2026-10-12 21:52:38",
+        "2026-10-12T21:52:38.707000",
+        "2026-10-12 21:52:38.707000+00:00",
+        "2026-13-12 21:52:38.707000",
+        "1791841958707",
+        "",
+    ] {
+        assert!(
+            normalize_volatile_values(response(target, "CURRENT_TIMESTAMP()", value)).is_err(),
+            "{value:?}"
+        );
+    }
+    // A function without a registered format is compared exactly.
+    let random = |value| normalize_volatile_values(response(target, "RANDOM()", value));
+    assert_eq!(random("0.25"), random("0.25"));
+    assert_ne!(random("0.25"), random("0.5"));
+    // Responses without a map, and empty maps, are unchanged.
+    let empty =
+        serde_json::json!({"response": {"skip_execution": {"transformed_nodes_by_query": {}}}});
+    assert_eq!(normalize_volatile_values(empty.clone()), Ok(empty));
 }
 
 #[test]
@@ -990,10 +1137,12 @@ async fn conformance_replay_all_corpora() {
                                 "ready_to_execute",
                                 "{context}: hosted rebuild must not skip"
                             );
-                            // Compare the FULL execute payload (minus opaque IDs),
+                            // Compare the FULL execute payload (minus opaque IDs,
+                            // with rendered Volatile values compared by format),
                             // not just the variant. Two documented, VISIBLE
                             // categories are tolerated: (1) a field-scoped gap
-                            // (e.g. the volatile `transformed_nodes_by_query` map)
+                            // (e.g. a volatile `transformed_nodes_by_query` map
+                            // with functions this server does not render yet)
                             // declared in replay_gaps.json via ignore_fields —
                             // and the exempted FIELD ITSELF must differ; and (2)
                             // the first-build-vs-rebuild `explained_decision`
@@ -1002,8 +1151,8 @@ async fn conformance_replay_all_corpora() {
                             // the local wording). Anything else is a mismatch.
                             let has_history = confirmed.contains(&key);
                             let response_json = serde_json::to_value(&response).unwrap();
-                            let ours_full = normalize_ids(response_json);
-                            let real_full = normalize_ids(e.response.clone());
+                            let ours_full = comparable(response_json, &context);
+                            let real_full = comparable(e.response.clone(), &context);
                             let mut ours = ours_full.clone();
                             let mut real = real_full.clone();
                             let gap = find_gap(&known, &fixture, i)
@@ -1063,8 +1212,8 @@ async fn conformance_replay_all_corpora() {
                         "skip_execution" if confirmed.contains(&key) => {
                             let local_variant = support::response_variant(&response);
                             let response_json = serde_json::to_value(response).unwrap();
-                            let ours = normalize_ids(response_json);
-                            let real = normalize_ids(e.response.clone());
+                            let ours = comparable(response_json, &context);
+                            let real = comparable(e.response.clone(), &context);
                             if let Some(gap) = find_gap(&known, &fixture, i) {
                                 assert!(!gap.reason.trim().is_empty());
                                 assert_eq!(
@@ -1119,8 +1268,9 @@ async fn conformance_replay_all_corpora() {
                                 else {
                                     unreachable!()
                                 };
-                                let ours = normalize_ids(serde_json::to_value(&response).unwrap());
-                                let real = normalize_ids(e.response.clone());
+                                let ours =
+                                    comparable(serde_json::to_value(&response).unwrap(), &context);
+                                let real = comparable(e.response.clone(), &context);
                                 if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
@@ -1202,8 +1352,8 @@ async fn conformance_replay_all_corpora() {
                         edid_remap.insert(hosted, local);
                     }
                     assert_eq!(
-                        normalize_ids(serde_json::to_value(&response).unwrap()),
-                        normalize_ids(e.response.clone()),
+                        comparable(serde_json::to_value(&response).unwrap(), &context),
+                        comparable(e.response.clone(), &context),
                         "{context}"
                     );
                     asserted += 1;
@@ -1268,8 +1418,8 @@ async fn conformance_replay_all_corpora() {
                     let hosted_variant = support::clone_response_variant(
                         &serde_json::from_value(e.response.clone()).unwrap(),
                     );
-                    let ours = normalize_ids(serde_json::to_value(&response).unwrap());
-                    let real = normalize_ids(e.response.clone());
+                    let ours = comparable(serde_json::to_value(&response).unwrap(), &context);
+                    let real = comparable(e.response.clone(), &context);
                     if let Some(gap) = find_gap(&known, &fixture, i) {
                         assert!(!gap.reason.trim().is_empty());
                         assert_eq!(

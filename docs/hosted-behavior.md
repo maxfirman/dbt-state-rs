@@ -129,9 +129,11 @@ reproducible skip.
 
 - **Volatile evaluation**: `result_copy.rs::submit_lookup` suppresses the copy
   when volatile evaluation is requested and the SQL contains a volatile
-  function. The server does not evaluate volatile values, so hosted
-  `transformed_nodes_by_query` is a field-scoped gap
-  (`clone_fallback_volatile.jsonl` in `golden/replay_gaps.json`).
+  function. The server renders `CURRENT_TIMESTAMP()` in
+  `transformed_nodes_by_query` as hosted does for these builds
+  (`clone_fallback_volatile.jsonl`, #193); other Snowflake Volatile
+  functions are field-scoped gaps (`explain_volatile_evaluation*.jsonl` in
+  `golden/replay_gaps.json`).
 - **Result copy and upstream producers**: hosted did not copy an equivalent
   whose consumed upstream had since been externally modified, then later copied
   it with `is_stale=true`; the server copies on the first submit. This

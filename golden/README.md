@@ -120,7 +120,7 @@ tests drive instead. Test paths are under `crates/harness/tests/`.
 | `clone_fallback_dep_binding_swap.jsonl` | yes | The same swap through two view dependency definitions, with a keyed cross-run source leak; `clone_submit_fallback.rs::hosted_dep_binding_swap_executes_shape_is_pinned`. |
 | `clone_fallback_stale_source.jsonl` | yes | Hosted copies a source older than the current upstream; `clone_eligibility.rs::hosted_clones_stale_source_with_captured_provenance`. |
 | `clone_fallback_zero_tolerance.jsonl` | yes | The same stale-source copy with zero tolerance; `clone_eligibility.rs::hosted_zero_tolerance_clones_stale_source_shape_is_pinned`. |
-| `clone_fallback_volatile.jsonl` | yes | A volatile model under volatile evaluation builds instead of copying (field-scoped gap); `clone_eligibility.rs::hosted_volatile_executes_not_clones_shape_is_pinned`. |
+| `clone_fallback_volatile.jsonl` | yes | A volatile model under volatile evaluation builds instead of copying, with `CURRENT_TIMESTAMP()` rendered in `transformed_nodes_by_query` (compared by format, #193); `clone_eligibility.rs::hosted_volatile_executes_not_clones_shape_is_pinned`, `volatile_evaluation.rs`. |
 | `selector_state_selection.jsonl` | char-only | A baseline build then `GetStateSelection` queries for every criterion; `selector_conformance.rs::get_state_selection_reproduces_hosted_responses`. |
 | `selector_last_write_wins.jsonl` | char-only | The selector baseline follows the newest recorded build; `selector_conformance.rs::last_write_wins_baseline_reproduces_hosted`. |
 | `deferral_resolve.jsonl` | char-only | `ResolveDeferredRelations` mapping deferred nodes to defer-to target relations; `deferral.rs::hosted_resolution_shape_is_pinned`. |
