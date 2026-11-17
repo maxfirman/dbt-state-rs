@@ -10,14 +10,16 @@
 //!
 //! Evidence: the captured Databricks build of a `rand()` model,
 //! `fixtures/databricks_submit_copy_controls.jsonl` entries 85 (submit) and 86
-//! (Explain).
+//! (Explain); the captured Snowflake first builds of a `current_timestamp()`
+//! model, `golden/fixtures/clone_fallback_volatile.jsonl` entries 0 (prod) and
+//! 2 (dev) (#193).
 mod support;
 
 use std::collections::BTreeMap;
 
 use dbt_state_harness::diff::GoldenEntry;
 use dbt_state_proto::query_cache as qc;
-use support::scenario::{built_at, captured_submit, variant, Scenario};
+use support::scenario::{built_at, captured_submit, variant, Scenario, OWN_EPOCH};
 
 const CONTROLS: &str = include_str!("fixtures/databricks_submit_copy_controls.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
@@ -443,6 +445,293 @@ async fn a_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fing
     deterministic
         .build(model.clone(), captured_target_epoch())
         .await;
+    assert_eq!(
+        variant(&deterministic.submit(model).await),
+        "skip_execution"
+    );
+}
+
+// ── Snowflake CURRENT_TIMESTAMP() (#193) ────────────────────────────────────
+
+const SNOWFLAKE_FIRST_BUILDS: &str =
+    include_str!("../../../golden/fixtures/clone_fallback_volatile.jsonl");
+/// The captured prod and dev first builds of a model calling
+/// `current_timestamp()` with evaluation requested.
+const SNOWFLAKE_PROD_SUBMIT: usize = 0;
+const SNOWFLAKE_DEV_SUBMIT: usize = 2;
+
+fn snowflake_first_builds() -> Vec<GoldenEntry> {
+    SNOWFLAKE_FIRST_BUILDS
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// A map as target → function texts, without the values.
+fn map_shape(map: &BTreeMap<String, BTreeMap<String, String>>) -> Vec<(String, Vec<String>)> {
+    map.iter()
+        .map(|(query, functions)| (query.clone(), functions.keys().cloned().collect()))
+        .collect()
+}
+
+fn hosted_map(entry: &GoldenEntry) -> BTreeMap<String, BTreeMap<String, String>> {
+    entry.response["response"]["ready_to_execute"]["transformed_nodes_by_query"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(query, node)| {
+            let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
+            (query.clone(), functions)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn snowflake_current_timestamp_build_renders_the_replay_clock_in_utc_keyed_as_captured() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
+    let entries = snowflake_first_builds();
+    // Each submit's recorded time (the replay clock), in UTC.
+    for (entry, at) in [
+        (SNOWFLAKE_PROD_SUBMIT, "2026-10-12 21:52:38.707000"),
+        (SNOWFLAKE_DEV_SUBMIT, "2026-10-12 21:54:20.470000"),
+    ] {
+        let entry = &entries[entry];
+        let response = sql
+            .submit_enriched_sql(support::captured_request(
+                captured_submit(&entry.request).build(),
+                entry,
+            ))
+            .await
+            .unwrap()
+            .into_inner();
+        let values = rendered(&support::scenario::into_execute(response));
+        let hosted = hosted_map(entry);
+
+        assert_eq!(map_shape(&values), map_shape(&hosted), "hosted's key shape");
+        let target = entry.request["target_table"].as_str().unwrap();
+        assert_eq!(values[target]["CURRENT_TIMESTAMP()"], at);
+    }
+}
+
+/// The captured prod submit's request.
+fn snowflake_request() -> serde_json::Value {
+    snowflake_first_builds()[SNOWFLAKE_PROD_SUBMIT]
+        .request
+        .clone()
+}
+
+fn snowflake_target() -> String {
+    snowflake_request()["target_table"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The captured model's SQL with `columns` in place of its column list.
+fn snowflake_sql(columns: &str) -> String {
+    format!("\nselect {columns} from CDO_DEMO_DB.prod_state_demo.ce_up_215158")
+}
+
+/// The epoch the captured build confirmed for its Target relation (entry 1).
+const SNOWFLAKE_BUILT_AT: i64 = 1791841959783;
+
+/// Build a deterministic version of the captured model over its Target
+/// relation, so a later submit of other SQL is a query-changed rebuild.
+async fn snowflake_history(sc: &Scenario) {
+    sc.build(
+        captured_submit(&snowflake_request())
+            .sql(&snowflake_sql("id, amount"))
+            .own_epoch(Some(OWN_EPOCH)),
+        SNOWFLAKE_BUILT_AT,
+    )
+    .await;
+}
+
+/// Submit `sql` (with evaluation requested unless `tolerate`) as a
+/// query-changed rebuild of the captured Snowflake model.
+async fn snowflake_rebuild_with(
+    sc: &Scenario,
+    sql: &str,
+    tolerate: bool,
+) -> (qc::ReadyToExecuteResponse, serde_json::Value) {
+    snowflake_history(sc).await;
+    let ready = sc
+        .expect_execute(
+            captured_submit(&snowflake_request())
+                .sql(sql)
+                .own_epoch(Some(OWN_EPOCH))
+                .tolerate_nondeterminism(tolerate),
+        )
+        .await;
+    let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
+    (ready, explained)
+}
+
+#[tokio::test]
+async fn snowflake_submits_without_a_captured_current_timestamp_call_render_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let cases = [
+        (
+            "deterministic control",
+            snowflake_sql("id, amount, 1 as loaded_at"),
+            false,
+        ),
+        (
+            "evaluation off",
+            snowflake_sql("id, amount, current_timestamp() as loaded_at"),
+            true,
+        ),
+        (
+            "uncaptured precision argument",
+            snowflake_sql("id, amount, current_timestamp(3) as loaded_at"),
+            false,
+        ),
+        (
+            "a function hosted renders nothing for",
+            snowflake_sql("id, amount, seq4() as loaded_at"),
+            false,
+        ),
+        (
+            "line comment",
+            snowflake_sql("id, amount, 1 as loaded_at") + " -- current_timestamp()",
+            false,
+        ),
+        (
+            "block comment",
+            snowflake_sql("id, amount, 1 /* current_timestamp() */ as loaded_at"),
+            false,
+        ),
+        (
+            "string literal",
+            snowflake_sql("id, amount, 'current_timestamp()' as loaded_at"),
+            false,
+        ),
+        (
+            "quoted identifier",
+            snowflake_sql("id, amount, \"current_timestamp\"() as loaded_at"),
+            false,
+        ),
+        (
+            "qualified user function",
+            snowflake_sql("id, amount, analytics.current_timestamp() as loaded_at"),
+            false,
+        ),
+    ];
+    // Positive control for the same harness: the captured call renders.
+    let (ready, explained) = snowflake_rebuild_with(
+        &sc.org("control"),
+        &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
+        false,
+    )
+    .await;
+    assert!(!ready.transformed_nodes_by_query.is_empty());
+    assert!(prints_volatile_lines(&explained));
+    for (case, sql, tolerate) in cases {
+        let (ready, explained) = snowflake_rebuild_with(&sc.org(case), &sql, tolerate).await;
+        assert!(
+            ready.transformed_nodes_by_query.is_empty(),
+            "{case}: {:?}",
+            ready.transformed_nodes_by_query
+        );
+        assert!(
+            texts(&explained).contains(&"the model query has changed".to_owned()),
+            "{case}: the query analysis is printed"
+        );
+        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+    }
+}
+
+/// A query-changed rebuild of the captured Snowflake model calling
+/// `current_timestamp()`; returns its decision id.
+async fn snowflake_volatile_rebuild(sc: &Scenario) -> String {
+    let (ready, explained) = snowflake_rebuild_with(
+        sc,
+        &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
+        false,
+    )
+    .await;
+    assert!(prints_volatile_lines(&explained));
+    ready.execution_decision_id.unwrap()
+}
+
+#[tokio::test]
+async fn snowflake_another_organizations_decision_renders_no_values() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let id = snowflake_volatile_rebuild(&sc.org("owner")).await;
+
+    let other = explain(&sc.org("other"), &id).await;
+    assert!(other["messages"].as_array().unwrap().is_empty(), "{other}");
+}
+
+#[tokio::test]
+async fn snowflake_decision_recorded_before_the_migration_prints_no_volatile_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("legacy");
+    let id = snowflake_volatile_rebuild(&sc).await;
+    let with_values = explain(&sc, &id).await;
+
+    support::legacy::forget_rendered_volatile_values(&server.state, "legacy", &id).await;
+
+    let legacy = explain(&sc, &id).await;
+    assert!(!prints_volatile_lines(&legacy), "{legacy}");
+    let mut expected = texts(&with_values);
+    expected.retain(|t| {
+        !t.contains("rendered with")
+            && t != "non-deterministic functions detected in query"
+            && !t.contains("is not deterministic")
+    });
+    assert_eq!(
+        texts(&legacy),
+        expected,
+        "the rest of the tree is unchanged"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("volatile");
+    let entries = snowflake_first_builds();
+    let model = captured_submit(&snowflake_request()).own_epoch(Some(OWN_EPOCH));
+    let value = |ready: &qc::ReadyToExecuteResponse| {
+        rendered(ready)[&snowflake_target()]["CURRENT_TIMESTAMP()"].clone()
+    };
+
+    let first = sc.expect_execute(model.clone()).await;
+    let second = sc.expect_execute(model.clone()).await;
+    assert!(!value(&first).is_empty() && !value(&second).is_empty());
+    assert_eq!(
+        fingerprints(&server, &first.request_id).await,
+        fingerprints(&server, &second.request_id).await,
+        "rendered values enter no persisted identity or fingerprint"
+    );
+
+    assert!(
+        sc.confirm(&first.request_id, built_at(SNOWFLAKE_BUILT_AT))
+            .await
+    );
+    let rerun = sc.expect_execute(model.clone()).await;
+    assert!(!value(&rerun).is_empty(), "a rerun is rebuilt and rendered");
+
+    // The captured dev build of the same model, in another schema of the
+    // namespace: hosted built it, and so does this server.
+    assert_eq!(
+        variant(
+            &sc.submit(captured_submit(&entries[SNOWFLAKE_DEV_SUBMIT].request))
+                .await
+        ),
+        "ready_to_execute",
+        "never copied into another schema of the namespace"
+    );
+
+    // Control: the same history reuses the model when evaluation is off.
+    let deterministic = sc.org("deterministic");
+    let model = model.tolerate_nondeterminism(true);
+    deterministic.build(model.clone(), SNOWFLAKE_BUILT_AT).await;
     assert_eq!(
         variant(&deterministic.submit(model).await),
         "skip_execution"
