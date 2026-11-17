@@ -192,6 +192,93 @@ fn section(text: impl Into<String>, children: Vec<qc::ExplainLine>) -> qc::Expla
 
 // ── public entry point ─────────────────────────────────────────────────────
 
+impl ExplainNode {
+    /// The Explain input for one persisted node decision with its matched
+    /// and unmatched executions. `None` for a row without an execution
+    /// decision id or with an unknown decision class.
+    pub(crate) fn of_decision(row: crate::store::ExplainDecisionRow) -> Option<Self> {
+        let decision = DecisionKind::from_stored(&row.decision)?;
+        Some(Self {
+            display_submitted_at_ms: row.display_submitted_at_ms,
+            template_comparison: row
+                .template_comparison
+                .clone()
+                .and_then(|v| serde_json::from_value(v).ok()),
+            execution_decision_id: row.execution_decision_id.clone()?,
+            decision,
+            execution_type: row.execution_type,
+            decision_description: row.decision_description.clone(),
+            reason: row.decision_reason(),
+            is_stale: row.is_stale,
+            target_table: row.target_table.clone(),
+            display_target_table: row.target_table.as_deref().zip(row.dialect.as_deref()).map(
+                |(name, dialect)| {
+                    crate::warehouse::Warehouse::from_dialect(dialect).explain_target_name(name)
+                },
+            ),
+            clone_source: row.clone_source.clone(),
+            input_tables: row.input_tables(),
+            query_dependencies: serde_json::from_value(row.query_dependencies.clone())
+                .unwrap_or_default(),
+            tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
+            build_age_ms: row.build_age_ms,
+            skip_rejection_reason: row.skip_rejection_reason,
+            // The latest build in scope a rebuild without a matched build
+            // did not have the identity of (migration 0017): the SHAPE 7
+            // freshness listing is judged against it.
+            unmatched: row.unmatched(),
+            // Whether a view's SQL reads a relation (migration 0019).
+            reads_relation: row.reads_relation,
+            // The matched prior `executions` row (ADR 0005 / ticket #30),
+            // loaded via `node_decisions.matched_execution_id`. Present for a
+            // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
+            // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
+            // re-derives the per-upstream FRESH/OUTDATED freshness subtree
+            // against it via the shared pure helper, so the explanation
+            // matches the decision exactly.
+            anchor: row.anchor(),
+        })
+    }
+}
+
+/// Missing audit evidence that the Databricks literal-dependency renderer may
+/// consume. Persisted legacy/malformed evidence retains its normal fallback.
+pub(crate) fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> Option<String> {
+    let current: TemplateComparison =
+        serde_json::from_value(row.template_comparison.clone()?).ok()?;
+    if crate::warehouse::Warehouse::from_dialect(row.dialect.as_deref()?)
+        != crate::warehouse::Warehouse::Databricks
+        || row.execution_type != ModelExecutionType::Full as i32
+        || current.enabled
+        || !current.rendered_query.as_ref()?.literal_dependencies
+        || row.query_dependencies.as_array()?.is_empty()
+    {
+        return None;
+    }
+    let inputs = row.input_tables();
+    let target = row.target_table.as_deref();
+    if inputs
+        .iter()
+        .any(|input| Some(input.name.as_str()) != target)
+        || target
+            .is_some_and(|name| !name.is_empty() && !inputs.iter().any(|input| input.name == name))
+    {
+        return None;
+    }
+    let anchor = row
+        .matched_execution
+        .as_ref()
+        .or(row.unmatched_execution.as_ref())?;
+    if anchor.execution_type != ModelExecutionType::Full as i32
+        || crate::warehouse::Warehouse::from_dialect(&anchor.dialect)
+            != crate::warehouse::Warehouse::Databricks
+        || anchor.explain_comparison.is_some()
+    {
+        return None;
+    }
+    Some(anchor.request_id.clone())
+}
+
 /// Re-derive the full `ExplainMessageEntry` (tree + description) for one node.
 pub fn explain_entry(node: &ExplainNode) -> qc::ExplainMessageEntry {
     qc::ExplainMessageEntry {
@@ -3783,7 +3870,7 @@ mod tests {
             last_modified_epoch: Some(1_000),
             clone_source_table: Some("\"DB\".\"PROD\".\"SNAP\"".into()),
             clone_source_inputs: Some(vec![FIXED.into(), "\"DB\".\"PROD\".\"UP\"".into()]),
-            // Adopted inputs (`reuse_candidate::adopt_current_inputs`).
+            // Adopted inputs (`copy_lifecycle::adopt_current_inputs`).
             input_tables: vec![tbl(FIXED), tbl(PER_TARGET)],
             ..ExecutionRow::default()
         });

@@ -5,9 +5,10 @@
 //! `docs/duckdb-identity-and-copy.md`.
 
 use super::{CopyIdentity, IncrementalCopyContract};
+use crate::analyzed_workload::binding::duckdb_copy_graph;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::sql_identity::{duckdb_copy_graph, duckdb_relation, DuckDbRelation};
+use crate::sql_identity::{duckdb_relation, DuckDbRelation};
 use std::collections::HashMap;
 
 /// The strict SQL identity's version tag. It differs from the shared tag

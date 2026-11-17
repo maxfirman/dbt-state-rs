@@ -163,14 +163,14 @@ pub fn copy_logic_hash(req: &qc::SqlExecution) -> Option<String> {
 fn copy_graph_hash(
     req: &qc::SqlExecution,
     version: &[u8],
-    graph: crate::sql_identity::DuckDbCopyGraph,
+    graph: super::binding::DuckDbCopyGraph,
 ) -> String {
     let mut h = Sha256::new();
     field(&mut h, version);
     field(&mut h, &req.execution_type.to_le_bytes());
     extras(&mut h, &req.semantic_extras);
     field(&mut h, &(graph.queries.len() as u64).to_le_bytes());
-    for crate::sql_identity::DuckDbCopyQuery {
+    for super::binding::DuckDbCopyQuery {
         binding,
         query,
         slots,
@@ -453,3 +453,9 @@ pub fn seed_logic_hash(
     extras(&mut h, semantic_extras);
     hex::encode(h.finalize())
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod pinned_values;

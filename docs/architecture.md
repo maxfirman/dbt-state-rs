@@ -37,21 +37,21 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_REQUIRE_ORG_HEADER` (reject requests without `x-organization-id`). |
 | `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations. |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
-| `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
-| `submit_decision.rs` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`. |
+| `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision`, `copy_registration` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
+| `submit_decision/` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`; `submit_sql_explained` also returns the `ExplainEvidence` capture persists, in the decision's resolved naming. Pure internal seams: `copy_search.rs` (which equivalent the Result copy fallback copies) and `diagnostics.rs` (which refusal diagnostic asks State history what, in hosted's precedence order). |
+| `copy_registration.rs` | How one RegisterClone request is decided and recorded: `result_copy::register_lookup`, the one matching State history read, `result_copy::plan_register`, and the pending copy row. Returns a `RegisterOutcome`. |
 | `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
-| `analyzed_workload/` | Pure shared Submit/Record analysis: strict/template/copy identities, genuine inputs, shared AST traversal and checked dependency bindings. Warehouse adapters retain dialect policy and characterized strict domains. |
+| `analyzed_workload/` | Pure shared Submit/Record analysis. `analyze(&SqlExecution, Purpose)` is the one entry for a workload: it returns the strict, template and copy identities its purpose publishes, the copy proof and direct provenance, genuine inputs and whether the SQL reads a relation. `identity.rs` holds the versioned hash functions (also used directly for counterfactual readings) and their regressions (`identity/tests.rs`, `identity/pinned_values.rs`); shared AST traversal and checked dependency bindings live alongside. Warehouse adapters retain dialect policy and characterized strict domains. |
 | `copy_lifecycle.rs` | Candidate qualification, frozen copy sources/inputs/producers and subsequent adoption for submit copies and RegisterClone. Distinct legacy origin proofs preserve their characterized eligibility and age rules. |
 | `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
-| `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). |
+| `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). `ExplainNode::of_decision` maps a persisted row to the generator's input. |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
-| `fingerprint.rs` | Compatibility exports for the versioned identity implementation in `analyzed_workload/identity.rs`, with the existing fingerprint regressions. |
-| `sql_identity.rs` | Checked DuckDB strict identity and relation-read proofs; compatibility exports for shared traversal/binding. |
+| `sql_identity.rs` | Checked DuckDB strict identity and relation-read proofs. |
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
 | `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
@@ -276,7 +276,7 @@ DDL still requires quiescent sources and does not solve external physical races.
 
 | Existing responsibility / call sites | Shared destination; code that goes away |
 |---|---|
-| `execution::ExecutionEvidence::{sql_submit,sql_record}` → `fingerprint::{sql_logic_hash,copy_logic_hash}` | One analysis result feeds both writes; keep length framing, seed hashing and legacy dialect serialization unchanged. Remove caller-specific repeated identity construction. |
+| `execution::ExecutionEvidence::{sql_submit,sql_record}` → `analyzed_workload::identity::{sql_logic_hash,copy_logic_hash}` | One analysis result feeds both writes; keep length framing, seed hashing and legacy dialect serialization unchanged. Remove caller-specific repeated identity construction. |
 | `sql_identity::{canonicalized,duckdb_copy_graph}`, `sql_norm`, `warehouse/databricks.rs` parsing | Shared traversal/scopes/binding; retain dialect transformations and identifier rules as adapters. Replace duplicated copy-only walks as their shared equivalent lands; unrelated audit/selector proofs are outside this migration. |
 | Former `databricks_submit_copy::identity` and direct SELECT-star analyzer | Removed by #184/#185. Shared `analyzed_workload` traversal produces one `CopyProof`; `CopyProof::for_origin` frames automatic-v2 and direct-v2 origins. Strict fallback and legacy decoding retain their existing domains. |
 | `result_copy::{submit_lookup,plan_submit,register_lookup,plan_register}`, `databricks_submit_copy::{source_admits,reusable}` | One qualification/provenance implementation behind the existing lookup/plan interface; remove duplicate source/input/origin checks. Preserve refusal diagnostics and distinct DDL-attempt versus adoption permission. |
@@ -367,8 +367,11 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
 6. If the Reuse candidate must rebuild for upstream freshness, try a Result
    copy of a same-upstream equivalent over the existing Target relation.
 7. For a rebuild, report an older build that would still qualify
-   (`report_older_match`).
-8. `settle`: mint the ids, write the pending row for every outcome except SKIP,
+   (`older_match`).
+8. For a SQL rebuild, add the refusal diagnostics hosted reports
+   (`diagnostics::decorate`). They only decorate codes and descriptions; none
+   selects a reuse candidate, copy source or Explain anchor.
+9. `settle`: mint the ids, write the pending row for every outcome except SKIP,
    and return the `SubmitOutcome`.
 
 `submit_values` (seeds) follows steps 1, 3, 5, 7 and 8: no producers, no Result

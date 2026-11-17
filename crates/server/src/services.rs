@@ -2,6 +2,7 @@
 
 use tonic::{Request, Response, Status};
 
+use crate::copy_registration::{RegisterError, RegisterOutcome, RegisterRejection};
 use crate::decision::{
     DecisionKind, DecisionReason, DecisionRecord, REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
     REJECTION_FORCED_NOT_ELIGIBLE,
@@ -9,8 +10,7 @@ use crate::decision::{
 use crate::execution::RecordError;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
-use crate::result_copy::{RegisterHistory, RegisterLookup, RegisterRefusal, RegisterRejection};
-use crate::store::{Confirmation, CopySourceQuery};
+use crate::store::Confirmation;
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
 
@@ -321,63 +321,27 @@ fn submit_capture(
     }
 }
 
-/// Build + spawn capture for a SubmitEnrichedSQL decision.
+/// Build + spawn capture for a SubmitEnrichedSQL decision. The Explain
+/// evidence is the decision's own ([`crate::submit_decision::ExplainEvidence`]).
 fn capture_submit(
     state: &AppState,
     meta: &CaptureMeta,
     req: &qc::SubmitEnrichedSqlRequest,
-    outcome: &SubmitOutcome,
-    now_ms: i64,
+    decided: &crate::submit_decision::ExplainedOutcome,
 ) {
+    let explain = decided.explain.clone();
     let input = crate::capture::CaptureInput {
-        display_submitted_at_ms: crate::warehouse::Warehouse::from_dialect(&req.dialect)
-            .explain_submit_clock(now_ms),
-        template_comparison: crate::warehouse::Warehouse::from_dialect(&req.dialect)
-            .template_comparison(req),
-        table_namespace: req.table_namespace.clone(),
-        target_table: req.target_table.clone(),
-        default_schema: req.default_schema.clone(),
-        // The decision-time inputs with their resolved producers (ADR 0007);
-        // the submitted inputs when the decision recorded none (a copy), less
-        // a store_failures test's own audit relation, as the decision reads
-        // them (#88, #123).
-        input_tables: if outcome.record().reason
-            == crate::decision::DecisionReason::NoReuseCandidate(
-                crate::decision::NoCandidate::ResolutionContextChanged,
-            ) {
-            // These are resolved SQL bindings, not guessed freshness metadata.
-            // A context-only rebuild explains the changed binding as ignored;
-            // its pending execution still retains the original request evidence.
-            req.tables
-                .iter()
-                .filter(|t| Some(&t.name) == req.target_table.as_ref())
-                .map(|t| crate::store::InputTable::at(&t.name, t.last_modified_epoch))
-                .chain(
-                    crate::warehouse::Warehouse::from_dialect(&req.dialect)
-                        .resolved_input(req)
-                        .map(|name| crate::store::InputTable::at(&name, None)),
-                )
-                .collect()
-        } else if outcome.record().input_tables.is_empty() {
-            crate::execution::sql_inputs(&crate::execution::sql_execution(req))
-        } else {
-            outcome.record().input_tables.clone()
-        },
-        query_dependencies: req
-            .query_dependencies
-            .iter()
-            .map(|d| d.name.clone())
-            .collect(),
-        // Client 2.0.11 reports no upstreams for a view, so Explain words its
-        // freshness from whether its SQL reads a relation (#117).
-        reads_relation: (req.execution_type == ModelExecutionType::View as i32)
-            .then(|| {
-                crate::warehouse::Warehouse::from_dialect(&req.dialect).sql_reads_relation(&req.sql)
-            })
-            .flatten(),
+        display_submitted_at_ms: explain.display_submitted_at_ms,
+        template_comparison: explain.template_comparison,
+        table_namespace: explain.table_namespace,
+        target_table: explain.target_table,
+        default_schema: explain.default_schema,
+        input_tables: explain.input_tables,
+        query_dependencies: explain.query_dependencies,
+        reads_relation: explain.reads_relation,
         ..submit_capture(
             meta,
-            outcome,
+            &decided.outcome,
             req.dbt_node_state.as_ref(),
             &req.labels,
             &req.dialect,
@@ -386,6 +350,66 @@ fn capture_submit(
         )
     };
     spawn_capture(state, input);
+}
+
+/// Build + spawn capture for a registered RegisterClone copy.
+fn capture_register(
+    state: &AppState,
+    meta: &CaptureMeta,
+    org_id: &str,
+    req: &qc::CloneRequest,
+    ids: &crate::submit_decision::DecisionIds,
+    clone_sqls: &[String],
+) {
+    use crate::capture::{CaptureInput, DecisionKind};
+    spawn_capture(
+        state,
+        CaptureInput {
+            org_id: org_id.to_owned(),
+            external_invocation_id: meta.invocation_id.clone(),
+            session_id: meta.session_id.clone(),
+            project_external_id: None,
+            project_name: None,
+            environment_name: None,
+            profile_name: None,
+            dialect: Some(req.dialect.clone()),
+            database: Some(req.default_catalog.clone()),
+            node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
+            node_name: req.labels.get("dbt_node_name").cloned(),
+            node_fqn: req.labels.get("dbt_node_fqn").cloned(),
+            resource_type: None,
+            execution_type: req.execution_type,
+            decision: DecisionKind::Clone,
+            // A client-requested copy populates the target from an existing
+            // result: a Result copy.
+            decision_reason: DecisionReason::ResultCopy,
+            is_stale: false,
+            decision_description: None,
+            request_id: Some(ids.request_id.clone()),
+            execution_decision_id: Some(ids.execution_decision_id.clone()),
+            node_body_hash: None,
+            values_hash: None,
+            table_namespace: req.table_namespace.clone(),
+            target_table: Some(req.target_table.clone()),
+            default_schema: None,
+            clone_source: Some(req.clone_source_table.clone()),
+            clone_sqls: Some(clone_sqls.to_vec()),
+            input_tables: Vec::new(),
+            query_dependencies: Vec::new(),
+            execution_runtime_ms: None,
+            // CLONE registration matches no prior `executions` row to anchor
+            // freshness against (ADR 0005): NULL.
+            matched_execution_id: None,
+            freshness_tolerance_ms: None,
+            build_age_ms: None,
+            skip_rejection_reason: None,
+            clone_rejection_reason: None,
+            unmatched_execution_id: None,
+            reads_relation: None,
+            display_submitted_at_ms: None,
+            template_comparison: None,
+        },
+    );
 }
 
 /// Build + spawn capture for a SubmitValues (seed) decision.
@@ -410,10 +434,6 @@ fn capture_submit_values(
         )
     };
     spawn_capture(state, input);
-}
-
-fn new_uuid_v7() -> String {
-    uuid::Uuid::now_v7().to_string()
 }
 
 // Preserve the public conversion path used by upgrade regressions.
@@ -458,13 +478,16 @@ impl Sql for SqlService {
             ));
         }
 
-        let outcome = crate::submit_decision::submit_sql(&self.0.store, &org_id, &raw_req, now_ms)
-            .await
-            .map_err(store_status)?;
+        let decided =
+            crate::submit_decision::submit_sql_explained(&self.0.store, &org_id, &raw_req, now_ms)
+                .await
+                .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &outcome, now_ms);
-        let response =
-            submit_response(outcome, raw_req.target_table.as_deref().unwrap_or_default());
+        capture_submit(&self.0, &cap_meta, &req, &decided);
+        let response = submit_response(
+            decided.outcome,
+            raw_req.target_table.as_deref().unwrap_or_default(),
+        );
         Ok(Response::new(response))
     }
 
@@ -507,20 +530,28 @@ impl Sql for SqlService {
         // is `undecided`, as hosted answers in our corpus, and the client
         // then sends the ordinary submit. Never `ready_to_execute_untracked`
         // or `ready_to_clone`.
-        let outcome =
-            crate::submit_decision::speculative_sql(&self.0.store, &org_id, &raw_req, now_ms)
-                .await
-                .map_err(store_status)?;
-        let response = match &outcome {
+        let decided = crate::submit_decision::speculative_sql_explained(
+            &self.0.store,
+            &org_id,
+            &raw_req,
+            now_ms,
+        )
+        .await
+        .map_err(store_status)?;
+        let response = match &decided {
             Some(
-                skip @ SubmitOutcome::Skip {
-                    execution_decision_id,
-                    matched_execution,
-                    record,
+                skip @ crate::submit_decision::ExplainedOutcome {
+                    outcome:
+                        SubmitOutcome::Skip {
+                            execution_decision_id,
+                            matched_execution,
+                            record,
+                        },
+                    ..
                 },
             ) => {
                 // Recorded like an ordinary SKIP, for Explain.
-                capture_submit(&self.0, &cap_meta, &req, skip, now_ms);
+                capture_submit(&self.0, &cap_meta, &req, skip);
                 Speculative::SkipExecution(skip_response(
                     execution_decision_id.clone(),
                     matched_execution.clone(),
@@ -668,184 +699,48 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         let cap_meta = capture_meta_of(&request);
         let req = request.into_inner();
 
-        // Plan the client-requested copy (see `result_copy`): reject ineligible
-        // requests before any read, fetch the history the plan needs, then plan.
-        let refuse = |refusal| match refusal {
-            RegisterRefusal::Reject(rejection) => Ok(Response::new(unable_to_clone_response(
-                req.clone_source_table.clone(),
-                req.target_table.clone(),
-                match rejection {
-                    RegisterRejection::ChainLimitExceeded => REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED,
-                    RegisterRejection::ForcedNotEligible => REJECTION_FORCED_NOT_ELIGIBLE,
-                },
-            ))),
-            RegisterRefusal::Unsupported(reason) => Err(Status::unimplemented(reason)),
-        };
-        let mut source_build = None;
-        let history = match crate::result_copy::register_lookup(&req) {
-            Err(refusal) => {
-                if refusal == RegisterRefusal::Reject(RegisterRejection::ChainLimitExceeded) {
-                    tracing::info!(
-                        source = %req.clone_source_table,
-                        target = %req.target_table,
-                        "clone rejected: clone_chain_depth_limit=0 (allow_clones=false)"
-                    );
-                }
-                return refuse(refusal);
-            }
-            Ok(RegisterLookup::DuckDbIncrementalSource {
-                source,
-                table_namespace,
-                last_modified_epoch,
-                identity,
-            }) => RegisterHistory::DuckDbIncrementalSource(
-                // The incremental contract has pinned the request's execution
-                // and table types; the source's current state must match them.
-                self.0
-                    .store
-                    .find_current_copy_source(
-                        &org_id,
-                        &CopySourceQuery {
-                            source,
-                            table_namespace,
-                            dialect: &req.dialect,
-                            execution_type: req.execution_type,
-                            last_modified_epoch,
-                            table_type: req.clone_source_table_type.as_deref().unwrap_or_default(),
-                            node_hash: identity,
-                        },
-                    )
-                    .await
-                    .map_err(store_status)?,
-            ),
-            Ok(RegisterLookup::DatabricksSource {
-                source,
-                table_namespace,
-            }) => RegisterHistory::DatabricksSource(
-                self.0
-                    .store
-                    .current_direct_copy_source(&org_id, source, table_namespace, &req.dialect)
-                    .await
-                    .map_err(store_status)?
-                    .map(Box::new),
-            ),
-            Ok(RegisterLookup::SourceLogic {
-                source,
-                table_namespace,
-            }) => {
-                source_build = self
-                    .0
-                    .store
-                    .find_copy_source_build(&org_id, source, table_namespace, &req.dialect)
-                    .await
-                    .map_err(store_status)?;
-                RegisterHistory::SourceLogic(
-                    source_build
-                        .as_ref()
-                        .and_then(|s| s.node_namespace_logic_hash.clone()),
-                )
-            }
-            Ok(RegisterLookup::Nothing) => RegisterHistory::Nothing,
-        };
-        let plan = match crate::result_copy::plan_register(&req, history) {
-            Ok(plan) => plan,
-            Err(refusal) => return refuse(refusal),
-        };
-        let clone_sqls = plan.clone_sqls;
-        let request_id = new_uuid_v7();
-        let execution_decision_id = new_uuid_v7();
-
-        // Persist a pending row so the subsequent ConfirmExecution finalizes the
-        // clone into skippable history, keyed on the clone target.
-        let evidence = crate::execution::ExecutionEvidence::copy_registration(
-            &org_id,
-            &req,
-            plan.inherited_ns_logic,
-            source_build.as_ref(),
-            plan.direct,
-        );
-        self.0
-            .store
-            .insert_execution(&evidence.pending(&request_id, &execution_decision_id))
+        let outcome = crate::copy_registration::register(&self.0.store, &org_id, &req)
             .await
-            .map_err(store_status)?;
-
+            .map_err(|error| match error {
+                RegisterError::Unsupported(reason) => Status::unimplemented(reason),
+                RegisterError::Store(error) => store_status(error),
+            })?;
+        let (ids, clone_sqls, required_source_epoch) = match outcome {
+            RegisterOutcome::Refused(rejection) => {
+                return Ok(Response::new(unable_to_clone_response(
+                    req.clone_source_table.clone(),
+                    req.target_table.clone(),
+                    match rejection {
+                        RegisterRejection::ChainLimitExceeded => {
+                            REJECTION_CLONE_CHAIN_LIMIT_EXCEEDED
+                        }
+                        RegisterRejection::ForcedNotEligible => REJECTION_FORCED_NOT_ELIGIBLE,
+                    },
+                )))
+            }
+            RegisterOutcome::Registered {
+                ids,
+                clone_sqls,
+                required_source_epoch,
+            } => (ids, clone_sqls, required_source_epoch),
+        };
         // Best-effort capture (non-blocking) of the clone decision.
-        {
-            use crate::capture::{CaptureInput, DecisionKind};
-            spawn_capture(
-                &self.0,
-                CaptureInput {
-                    org_id: org_id.clone(),
-                    external_invocation_id: cap_meta.invocation_id.clone(),
-                    session_id: cap_meta.session_id.clone(),
-                    project_external_id: None,
-                    project_name: None,
-                    environment_name: None,
-                    profile_name: None,
-                    dialect: Some(req.dialect.clone()),
-                    database: Some(req.default_catalog.clone()),
-                    node_unique_id: req.labels.get("dbt_node_unique_id").cloned(),
-                    node_name: req.labels.get("dbt_node_name").cloned(),
-                    node_fqn: req.labels.get("dbt_node_fqn").cloned(),
-                    resource_type: None,
-                    execution_type: req.execution_type,
-                    decision: DecisionKind::Clone,
-                    // A client-requested copy populates the target from an
-                    // existing result: a Result copy.
-                    decision_reason: DecisionReason::ResultCopy,
-                    is_stale: false,
-                    decision_description: None,
-                    request_id: Some(request_id.clone()),
-                    execution_decision_id: Some(execution_decision_id.clone()),
-                    node_body_hash: None,
-                    values_hash: None,
-                    table_namespace: req.table_namespace.clone(),
-                    target_table: Some(req.target_table.clone()),
-                    default_schema: None,
-                    clone_source: Some(req.clone_source_table.clone()),
-                    clone_sqls: Some(clone_sqls.clone()),
-                    input_tables: Vec::new(),
-                    query_dependencies: Vec::new(),
-                    execution_runtime_ms: None,
-                    // CLONE registration matches no prior `executions` row to
-                    // anchor freshness against (ADR 0005): NULL.
-                    matched_execution_id: None,
-                    freshness_tolerance_ms: None,
-                    build_age_ms: None,
-                    skip_rejection_reason: None,
-                    clone_rejection_reason: None,
-                    unmatched_execution_id: None,
-                    reads_relation: None,
-                    display_submitted_at_ms: None,
-                    template_comparison: None,
-                },
-            );
-        }
-
-        tracing::info!(
-            node = %req.labels.get("dbt_node_name").cloned().unwrap_or_default(),
-            source = %req.clone_source_table,
-            target = %req.target_table,
-            "clone decision: READY_TO_CLONE"
-        );
+        capture_register(&self.0, &cap_meta, &org_id, &req, &ids, &clone_sqls);
 
         let mut ready = ready_to_clone_response(
-            request_id,
+            ids.request_id,
             clone_sqls,
             req.clone_source_table.clone(),
             req.target_table.clone(),
-            execution_decision_id,
+            ids.execution_decision_id,
         );
-
         if crate::warehouse::Warehouse::from_dialect(&req.dialect)
-            == crate::warehouse::Warehouse::Databricks
+            .clone_response_hides_decision_id()
         {
-            // Native RegisterClone leaves this optional string present but empty.
             ready.execution_decision_id = Some(String::new());
         }
-        if plan.required_source_epoch.is_some() {
-            ready.clone_required_last_modified_epoch = plan.required_source_epoch;
+        if required_source_epoch.is_some() {
+            ready.clone_required_last_modified_epoch = required_source_epoch;
         }
 
         // The real CloneResponse populates both the new `ready_to_clone` field
@@ -903,44 +798,6 @@ impl ClientValidation for ClientValidationService {
     }
 }
 
-/// Missing audit evidence that the Databricks literal-dependency renderer may
-/// consume. Persisted legacy/malformed evidence retains its normal fallback.
-fn literal_anchor_request(row: &crate::store::ExplainDecisionRow) -> Option<String> {
-    let current: crate::explain::TemplateComparison =
-        serde_json::from_value(row.template_comparison.clone()?).ok()?;
-    if crate::warehouse::Warehouse::from_dialect(row.dialect.as_deref()?)
-        != crate::warehouse::Warehouse::Databricks
-        || row.execution_type != ModelExecutionType::Full as i32
-        || current.enabled
-        || !current.rendered_query.as_ref()?.literal_dependencies
-        || row.query_dependencies.as_array()?.is_empty()
-    {
-        return None;
-    }
-    let inputs = row.input_tables();
-    let target = row.target_table.as_deref();
-    if inputs
-        .iter()
-        .any(|input| Some(input.name.as_str()) != target)
-        || target
-            .is_some_and(|name| !name.is_empty() && !inputs.iter().any(|input| input.name == name))
-    {
-        return None;
-    }
-    let anchor = row
-        .matched_execution
-        .as_ref()
-        .or(row.unmatched_execution.as_ref())?;
-    if anchor.execution_type != ModelExecutionType::Full as i32
-        || crate::warehouse::Warehouse::from_dialect(&anchor.dialect)
-            != crate::warehouse::Warehouse::Databricks
-        || anchor.explain_comparison.is_some()
-    {
-        return None;
-    }
-    Some(anchor.request_id.clone())
-}
-
 #[derive(Clone)]
 pub struct ExplainService(pub AppState);
 
@@ -976,7 +833,10 @@ impl Explain for ExplainService {
 
         // Literal-view display also consumes the exact prior build's audit.
         // Await only those request correlations, never all captures in an org.
-        let anchor_requests: Vec<_> = rows.iter().filter_map(literal_anchor_request).collect();
+        let anchor_requests: Vec<_> = rows
+            .iter()
+            .filter_map(crate::explain::literal_anchor_request)
+            .collect();
         if !anchor_requests.is_empty() {
             self.0
                 .captures
@@ -995,55 +855,11 @@ impl Explain for ExplainService {
 
         let mut by_id: std::collections::HashMap<String, crate::explain::ExplainNode> =
             std::collections::HashMap::new();
-        for row in rows {
-            let Some(edid) = row.execution_decision_id.clone() else {
-                continue;
-            };
-            let Some(decision) = DecisionKind::from_stored(&row.decision) else {
-                // Unknown decision class — skip rather than invent a tree.
-                continue;
-            };
-            let node = crate::explain::ExplainNode {
-                display_submitted_at_ms: row.display_submitted_at_ms,
-                template_comparison: row
-                    .template_comparison
-                    .clone()
-                    .and_then(|v| serde_json::from_value(v).ok()),
-                execution_decision_id: edid.clone(),
-                decision,
-                execution_type: row.execution_type,
-                decision_description: row.decision_description.clone(),
-                reason: row.decision_reason(),
-                is_stale: row.is_stale,
-                target_table: row.target_table.clone(),
-                display_target_table: row.target_table.as_deref().zip(row.dialect.as_deref()).map(
-                    |(name, dialect)| {
-                        crate::warehouse::Warehouse::from_dialect(dialect).explain_target_name(name)
-                    },
-                ),
-                clone_source: row.clone_source.clone(),
-                input_tables: row.input_tables(),
-                query_dependencies: serde_json::from_value(row.query_dependencies.clone())
-                    .unwrap_or_default(),
-                tolerance_ms: row.freshness_tolerance_ms.unwrap_or(0),
-                build_age_ms: row.build_age_ms,
-                skip_rejection_reason: row.skip_rejection_reason,
-                // The latest build in scope a rebuild without a matched build
-                // did not have the identity of (migration 0017): the SHAPE 7
-                // freshness listing is judged against it.
-                unmatched: row.unmatched(),
-                // Whether a view's SQL reads a relation (migration 0019).
-                reads_relation: row.reads_relation,
-                // The matched prior `executions` row (ADR 0005 / ticket #30),
-                // loaded via `node_decisions.matched_execution_id`. Present for a
-                // SKIP/reuse or a freshness-driven rebuild EXECUTE; `None` for a
-                // first-build/fingerprint-miss EXECUTE or a CLONE. The generator
-                // re-derives the per-upstream FRESH/OUTDATED freshness subtree
-                // against it via the shared pure helper, so the explanation
-                // matches the decision exactly.
-                anchor: row.anchor(),
-            };
-            by_id.insert(edid, node);
+        for node in rows
+            .into_iter()
+            .filter_map(crate::explain::ExplainNode::of_decision)
+        {
+            by_id.insert(node.execution_decision_id.clone(), node);
         }
 
         // Hosted emits tracked decisions in ascending decision-ID order,

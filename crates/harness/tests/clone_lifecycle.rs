@@ -20,7 +20,7 @@
 //!
 //! So post-clone reuse is CROSS-ENVIRONMENT (schema-abstracted) and
 //! LOGIC-SENSITIVE. The server reproduces it by inheriting the clone source's
-//! schema-abstracted logic identity (fingerprint::namespace_logic_hash) onto the
+//! schema-abstracted logic identity (analyzed_workload::identity::namespace_logic_hash) onto the
 //! clone-origin row at RegisterClone, and matching a later submit's abstracted
 //! logic against it. See docs/correctness-handoff.md.
 

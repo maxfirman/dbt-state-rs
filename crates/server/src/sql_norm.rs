@@ -38,7 +38,7 @@ pub fn normalize_sql_namespace_abstracted(sql: &str) -> String {
 /// schema→token map so the caller can share ONE consistent mapping across the
 /// root SQL and every dependency name/definition.
 pub fn normalize_sql_namespace_abstracted_with(sql: &str, schemas: &SchemaMap) -> String {
-    crate::sql_identity::canonicalized(
+    crate::analyzed_workload::canonicalized(
         sql,
         &SnowflakeDialect {},
         &mut Canonicalizer {
@@ -482,7 +482,7 @@ fn projection_expr(stmts: &[sqlparser::ast::Statement]) -> Option<&Expr> {
 }
 
 fn normalize_sql_inner(sql: &str, abstract_schema: bool) -> String {
-    crate::sql_identity::canonicalized(
+    crate::analyzed_workload::canonicalized(
         sql,
         &SnowflakeDialect {},
         &mut Canonicalizer {

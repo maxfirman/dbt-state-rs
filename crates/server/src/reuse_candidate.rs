@@ -436,9 +436,7 @@ pub(crate) fn older_seed_matches(
         && row.node_sql_hash == evidence.node_sql_hash
 }
 
-pub(crate) use crate::copy_lifecycle::{
-    adopt_current_inputs, copy_logic_matches, is_copy_registration,
-};
+use crate::copy_lifecycle::{adopt_current_inputs, copy_logic_matches, is_copy_registration};
 
 /// Rendered identity, or (only in `compare_unrendered_code` mode, when the
 /// submit carries a template hash) the unrendered-template identity. A

@@ -85,13 +85,13 @@ sorted order. The same model in two targets therefore shares an identity,
 while two different schemas in one request stay distinct. Two-part and
 one-part names are not abstracted.
 
-`fingerprint::namespace_logic_hash` uses this with the Snowflake
+`analyzed_workload::identity::namespace_logic_hash` uses this with the Snowflake
 `NAMESPACE_IDENTITY` version tag (`crates/server/src/warehouse/snowflake.rs`).
 It binds each dependency's abstracted name to its abstracted definition, so
 swapping two definitions between references changes the identity
-(`fingerprint.rs::ns_distinguishes_swapped_dependency_bindings`). This identity
+(`analyzed_workload/identity/tests.rs::ns_distinguishes_swapped_dependency_bindings`). This identity
 keys Snowflake cross-target result copy. Same-target reuse uses
-`fingerprint::sql_logic_hash`, which hashes the non-abstracted normalized SQL.
+`analyzed_workload::identity::sql_logic_hash`, which hashes the non-abstracted normalized SQL.
 
 Changing canonicalization requires bumping the version tag in
 `crates/server/src/warehouse.rs` (`SQL_IDENTITY_VERSION`) or

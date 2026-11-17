@@ -15,7 +15,7 @@
 //!   execution_runtime_ms=<source runtime>.
 //!
 //! The server reproduces this using the namespace logic identity
-//! (fingerprint::namespace_logic_hash) recorded on every execution: it finds a
+//! (analyzed_workload::identity::namespace_logic_hash) recorded on every execution: it finds a
 //! confirmed equivalent under another name in the same namespace and emits the
 //! clone DDL. See docs/correctness-handoff.md.
 
@@ -586,7 +586,7 @@ async fn allow_clones_false_suppresses_fallback_with_chain_limit_shape() {
 /// `namespace_logic_hash` hashed only a sorted multiset of definition texts,
 /// which would have conflated consA and consB. The fix binds each
 /// schema-abstracted dependency NAME to its definition
-/// (fingerprint::namespace_logic_hash; see the
+/// (analyzed_workload::identity::namespace_logic_hash; see the
 /// `ns_distinguishes_swapped_dependency_bindings` unit test).
 #[test]
 fn hosted_swapped_bindings_execute_not_clone() {
@@ -1279,7 +1279,7 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
 }
 
 /// P2 (review #2 9th/10th follow-up) — a TAG-ROLLBACK GUARD. This seeds the
-/// prior-tag digest produced by `fingerprint::sql_logic_hash_with_version(…,
+/// prior-tag digest produced by `analyzed_workload::identity::sql_logic_hash_with_version(…,
 /// b"dbt-state-sql-v3")` — which is PARAMETERIZED PRODUCTION HASHING, not an
 /// independently frozen v3 oracle (it shares today's conversion/normalization/
 /// framing). Its value is that reverting the production tag `v4 → v3` makes the
@@ -1304,7 +1304,7 @@ async fn upgrade_does_not_reuse_prefix_clone_with_stale_namespace_hash() {
 /// hosted-service characterization.
 #[tokio::test]
 async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
-    use dbt_state_server::{fingerprint, services::sql_execution};
+    use dbt_state_server::{analyzed_workload::identity, services::sql_execution};
 
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
@@ -1331,8 +1331,8 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
             .and_then(|s| s.node_body_hash.clone())
             .unwrap_or_default();
         (
-            fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3"),
-            fingerprint::sql_logic_hash_with_version(&se, Some(&body), b"dbt-state-sql-v3"),
+            identity::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3"),
+            identity::sql_logic_hash_with_version(&se, Some(&body), b"dbt-state-sql-v3"),
         )
     };
 
@@ -1396,14 +1396,14 @@ async fn upgrade_tag_rollback_guard_ordinary_rows_all_cases() {
 /// `sql_logic_hash_with_version`.)
 #[tokio::test]
 async fn parameterized_v3_tag_differs_from_current_v4() {
-    use dbt_state_server::{fingerprint, services::sql_execution};
+    use dbt_state_server::{analyzed_workload::identity, services::sql_execution};
     let r = demo::model("\"DB\".\"S\".\"T\"", "s", CLONE_PROBE)
         .namespace(NS)
         .sql("select 1 as id")
         .build();
     let se = sql_execution(&r);
-    let v3 = fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3");
-    let v4 = fingerprint::sql_logic_hash(&se, None);
+    let v3 = identity::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v3");
+    let v4 = identity::sql_logic_hash(&se, None);
     assert_ne!(
         v3, v4,
         "the v3 and v4 fingerprints of the same request must differ (the tag bump \
@@ -1412,7 +1412,7 @@ async fn parameterized_v3_tag_differs_from_current_v4() {
     );
     // And the frozen helper reproduces the current tag exactly.
     assert_eq!(
-        fingerprint::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v4"),
+        identity::sql_logic_hash_with_version(&se, None, b"dbt-state-sql-v4"),
         v4,
         "the versioned helper with the current tag equals sql_logic_hash"
     );

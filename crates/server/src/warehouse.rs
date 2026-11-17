@@ -355,9 +355,12 @@ impl Warehouse {
         self.template_body(true, req.dbt_node_state.as_ref())
     }
 
+    /// Explain's template comparison for a resolved submit whose strict
+    /// rendered identity is `rendered_hash`.
     pub(crate) fn template_comparison(
         self,
         req: &crate::query_cache::SubmitEnrichedSqlRequest,
+        rendered_hash: &str,
     ) -> Option<crate::explain::TemplateComparison> {
         if self != Self::Databricks {
             return None;
@@ -375,7 +378,7 @@ impl Warehouse {
                 let mut outer = crate::execution::sql_execution(req);
                 outer.query_dependencies.clear();
                 crate::explain::RenderedQuery {
-                    outer_hash: crate::fingerprint::sql_logic_hash(&outer, None),
+                    outer_hash: crate::analyzed_workload::identity::sql_logic_hash(&outer, None),
                     dependency_names: req
                         .query_dependencies
                         .iter()
@@ -397,10 +400,7 @@ impl Warehouse {
             body: state.and_then(|s| s.node_body_hash.clone()),
             config: state.and_then(|s| s.node_configs_hash.clone()),
             macros: state.and_then(|s| s.node_macros_hash.clone()),
-            rendered_hash: crate::fingerprint::sql_logic_hash(
-                &crate::execution::sql_execution(req),
-                None,
-            ),
+            rendered_hash: rendered_hash.to_owned(),
         })
     }
 
@@ -699,7 +699,7 @@ impl Warehouse {
         if prior.input == current.input {
             return None;
         }
-        let hash = crate::fingerprint::sql_logic_hash(
+        let hash = crate::analyzed_workload::identity::sql_logic_hash(
             &crate::execution::sql_execution(&target_context),
             None,
         );
@@ -757,8 +757,11 @@ impl Warehouse {
         prior.query_dependencies.clear();
         latest.node_sql_hash.as_deref()
             == Some(
-                crate::fingerprint::sql_logic_hash(&crate::execution::sql_execution(&prior), None)
-                    .as_str(),
+                crate::analyzed_workload::identity::sql_logic_hash(
+                    &crate::execution::sql_execution(&prior),
+                    None,
+                )
+                .as_str(),
             )
     }
 
@@ -776,6 +779,12 @@ impl Warehouse {
             .or(inferred.as_deref())
             .unwrap_or("");
         Some(databricks::resolved_sql(&req.sql, &req.default_catalog, schema)?.input)
+    }
+
+    /// Native Databricks RegisterClone leaves the optional
+    /// `execution_decision_id` present but empty in `ready_to_clone`.
+    pub(crate) fn clone_response_hides_decision_id(self) -> bool {
+        self == Self::Databricks
     }
 
     /// Storage's physical history key (migration 0020). Raw names remain in
@@ -1098,7 +1107,7 @@ impl Warehouse {
 }
 
 /// A submission's copy logic identity ([`Warehouse::copy_identity`]), which
-/// `fingerprint::copy_logic_hash` frames.
+/// `analyzed_workload::identity::copy_logic_hash` frames.
 pub(crate) enum CopyIdentity {
     /// The namespace logic identity ([`Warehouse::namespace_identity`]).
     NamespaceLogic,
@@ -1107,7 +1116,7 @@ pub(crate) enum CopyIdentity {
     /// A checked copy graph, framed under `version`.
     CopyGraph {
         version: &'static [u8],
-        graph: crate::sql_identity::DuckDbCopyGraph,
+        graph: crate::analyzed_workload::binding::DuckDbCopyGraph,
     },
 }
 

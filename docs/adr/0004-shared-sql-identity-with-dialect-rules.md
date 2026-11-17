@@ -26,7 +26,7 @@ Changes to persisted identity semantics require versioned fingerprints and
 safe invalidation rather than reinterpretation of old history.
 
 Evidence: current [SQL normalization](../../crates/server/src/sql_norm.rs),
-[fingerprinting](../../crates/server/src/fingerprint.rs), and
+[fingerprinting](../../crates/server/src/analyzed_workload/identity.rs), and
 [DuckDB identifier rules](https://duckdb.org/docs/2.0/sql/dialect/keywords_and_identifiers).
 
 Current rules: [DuckDB SQL identity and result copies](../duckdb-identity-and-copy.md).

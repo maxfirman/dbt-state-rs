@@ -50,7 +50,7 @@ Snowflake type and function synonyms are not applied. SQL outside the subset
 keeps its exact bytes (`validated_duckdb_sql` returns `None`), so same-target
 exact reuse still works under the normal freshness policy.
 
-The strict fingerprint (`fingerprint.rs`) also covers the root catalog and
+The strict fingerprint (`analyzed_workload/identity.rs`) also covers the root catalog and
 schema, each dependency's name, catalog, schema and definition, and the
 semantic extras. Dependency bindings are sorted, so list order does not
 matter, but swapping two definitions between names changes the identity.
@@ -74,7 +74,7 @@ copy identity only when all of these hold:
 - every reported input other than the target relation has a known epoch, is a
   unique checked relation, and every physical graph input is among them.
 
-`fingerprint::copy_logic_hash` frames that graph. In the graph:
+`analyzed_workload::identity::copy_logic_hash` frames that graph. In the graph:
 
 - each level uses the formatting subset with one input, including checked
   `CREATE VIEW` wrappers;

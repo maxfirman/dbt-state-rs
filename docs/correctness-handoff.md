@@ -69,7 +69,7 @@ Do not weaken these without new evidence.
   inputs; stored duplicates are never retroactively normalized. Explain submit
   clocks are separate nullable display data and never freshness evidence.
 - **Versioned fingerprints.** Each fingerprint starts with a version tag
-  (`crates/server/src/warehouse.rs`, `fingerprint.rs`). A change to identity
+  (`crates/server/src/warehouse.rs`, `analyzed_workload/identity.rs`). A change to identity
   semantics takes a new tag, so older State history cold-misses and rebuilds
   once. Never rehash old rows in place
   ([ADR 0004](adr/0004-shared-sql-identity-with-dialect-rules.md)).
@@ -102,9 +102,9 @@ Do not weaken these without new evidence.
   RegisterClone copy only when its schema-abstracted logic equals the logic
   the copy inherited from its source build, directly or with the submit's
   Target relation schema read as the copy source's schema (Snowflake only,
-  `fingerprint::rehomed_copy_logic_hash`, #93). Either way each dependency's
+  `analyzed_workload::identity::rehomed_copy_logic_hash`, #93). Either way each dependency's
   name stays bound to its definition
-  (`fingerprint.rs::rehomed_identity_keeps_dependency_bindings`). No
+  (`analyzed_workload/identity/tests.rs::rehomed_identity_keeps_dependency_bindings`). No
   persisted fingerprint changed. A submit of another execution type with that
   logic is never reused: it is an execution type change (2 / 2) judged
   against the copy, as hosted does (`explain_copy_logic_mismatch.jsonl`
@@ -112,7 +112,7 @@ Do not weaken these without new evidence.
 - **Submit-time equivalents read in another schema.** The Result copy
   fallback finds an equivalent by the submit's schema-abstracted logic, or by
   that logic with the submit's Target relation schema read as another schema
-  the request names (the #93 rule, `fingerprint::rehomed_copy_logic_hashes`,
+  the request names (the #93 rule, `analyzed_workload::identity::rehomed_copy_logic_hashes`,
   Snowflake only, #107). A candidate found the second way must have its
   Target relation in that schema: one elsewhere read other relations. That
   schema does not show where the build resolved its references (a build into
@@ -153,7 +153,7 @@ server keeps the conservative behavior described.
   equivalence on anything beyond the definition body and freshness. A
   context-only change could not be isolated from upstream freshness through the
   client (`experiments/resolution_context.sh`). The schema-abstracted identity
-  is unchanged (`fingerprint.rs::ns_uniform_schema_rename_is_cross_env_positive`).
+  is unchanged (`analyzed_workload/identity/tests.rs::ns_uniform_schema_rename_is_cross_env_positive`).
 - **Volatile evaluation.** Hosted returns `transformed_nodes_by_query` with
   runtime values (for example `CURRENT_TIMESTAMP()`). The server returns it
   empty, leaves `query_hash_metadata_info` unset (hosted use uncharacterized),

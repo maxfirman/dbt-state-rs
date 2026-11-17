@@ -466,7 +466,7 @@ When the fallback applies:
   Explain shows "but it's old, so we will clone from …".
 - An equivalent that reads the same upstream relations is always judged that
   way. A stale one is skipped and the next same-upstream equivalent is tried,
-  newest build first, up to `COPY_CANDIDATE_LIMIT` (`submit_decision.rs`). An
+  newest build first, up to `COPY_CANDIDATE_LIMIT` (`submit_decision/mod.rs`). An
   equivalent in another target reads other relations and is copied without
   that judgment (`clone_fallback_stale_source.jsonl`,
   `clone_fallback_zero_tolerance.jsonl`). Fixtures `lag_copy_candidates.jsonl`,

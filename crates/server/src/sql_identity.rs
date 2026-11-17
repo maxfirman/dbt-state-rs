@@ -31,7 +31,7 @@ pub fn validated_duckdb_sql(sql: &str) -> Option<String> {
     subset.seen_statement.then_some(result)
 }
 
-pub(crate) use crate::analyzed_workload::canonicalized;
+use crate::analyzed_workload::canonicalized;
 
 // Only simple SELECTs with named inputs, identifier projections or explicitly
 // aliased expressions. DuckDB's implicit expression column names can include
@@ -250,12 +250,6 @@ pub fn duckdb_copy_inputs(sql: &str, catalog: &str) -> Option<Vec<Vec<String>>> 
     canonicalized(sql, &DuckDbDialect {}, &mut inputs)?;
     Some(inputs.names)
 }
-
-/// Checked graph representation. SQL relation slots are framed separately from
-/// their structured bindings, so no identifier spelling can impersonate a slot.
-pub(crate) use crate::analyzed_workload::binding::{
-    duckdb_copy_graph, DuckDbCopyGraph, DuckDbCopyQuery,
-};
 
 /// Whether a model's SQL reads a relation: a table or view it names in a
 /// FROM or JOIN, other than a CTE in scope. A CTE, a VALUES list and a

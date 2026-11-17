@@ -27,9 +27,9 @@
 //! contract) are answered by the [`Warehouse`] rules, never by testing the
 //! dialect string here.
 
+use crate::analyzed_workload::identity::RehomedLogic;
 use crate::decision::NoCandidate;
 use crate::execution::ExecutionEvidence;
-use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
 use crate::reuse_candidate::Selection;
@@ -48,7 +48,7 @@ pub(crate) struct EquivalentLookup<'a> {
     pub node_namespace_logic_hash: &'a str,
     /// The submit's logic read in each other schema it names, with its Target
     /// relation's schema read as that schema
-    /// (`fingerprint::rehomed_copy_logic_hashes`, #107). Each admits only a
+    /// (`analyzed_workload::identity::rehomed_copy_logic_hashes`, #107). Each admits only a
     /// candidate whose Target relation is in its schema and, when the submit
     /// may be copied, that read what the submit so read reads
     /// ([`Self::admits`]).
@@ -67,13 +67,11 @@ pub(crate) struct EquivalentLookup<'a> {
 pub(crate) struct RehomedReading {
     pub logic: RehomedLogic,
     /// The submit's recorded upstream reads with its Target relation's schema
-    /// read as `logic.schema` ([`canonical_reads`]). `None` when they do not
+    /// read as `logic.schema` ([`crate::copy_lifecycle::canonical_reads`]). `None` when they do not
     /// read a relation in each schema the reading names: they cannot then
     /// show that a build resolved its references in those schemas.
     pub reads: Option<Vec<Vec<String>>>,
 }
-
-pub(crate) use crate::copy_lifecycle::canonical_reads;
 
 /// Whether the submit fallback applies, and if so what to look up.
 ///
@@ -124,7 +122,7 @@ pub(crate) fn submit_lookup<'a>(
     let node_namespace_logic_hash = ns_logic_hash?;
     let rehomed = crate::sql_norm::schema_of_object_name(exclude_target)
         .map(|from| {
-            crate::fingerprint::rehomed_copy_logic_hashes(
+            crate::analyzed_workload::identity::rehomed_copy_logic_hashes(
                 &crate::execution::sql_execution(req),
                 &from,
             )
@@ -378,7 +376,7 @@ pub(crate) fn seed_copy_target<'a>(
 /// in the submit's scope (organization, warehouse family, `table_namespace`)
 /// with the seed's reuse identity, its `values_hash` and its seed logic hash
 /// (dialect, catalog and every `semantic_extras` entry the client sends,
-/// `fingerprint::seed_logic_hash`). Only its schema may differ from the
+/// `analyzed_workload::identity::seed_logic_hash`). Only its schema may differ from the
 /// target ([`SeedCopyLookup::admits`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SeedCopyLookup<'a> {
@@ -473,11 +471,17 @@ pub(crate) enum RegisterRefusal {
     Unsupported(&'static str),
 }
 
-pub(crate) use crate::copy_lifecycle::DirectCopyProvenance;
+use crate::copy_lifecycle::DirectCopyProvenance;
 
 #[cfg(test)]
 fn direct_copy_provenance(req: &qc::SqlExecution) -> Option<DirectCopyProvenance> {
-    crate::analyzed_workload::analyze(req).direct_provenance
+    crate::analyzed_workload::analyze(
+        req,
+        crate::analyzed_workload::Purpose::Submit {
+            compare_unrendered_code: false,
+        },
+    )
+    .direct_provenance
 }
 
 /// #152's observed is_defer_to_profile + chain-zero wire scope. This proves
@@ -609,7 +613,7 @@ pub(crate) fn direct_refusal_matches(
     reading.default_schema = context.default_schema.clone();
     reading.target_table = Some(row.target_table.clone());
     row.node_sql_hash.as_deref()
-        == Some(crate::fingerprint::sql_logic_hash(&reading, None).as_str())
+        == Some(crate::analyzed_workload::identity::sql_logic_hash(&reading, None).as_str())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -652,15 +656,18 @@ pub(crate) enum RegisterHistory {
     /// `None`: no eligible source. `Some(logic)`: eligible, carrying the
     /// source's logic identity (itself optional).
     DuckDbIncrementalSource(Option<Option<String>>),
-    SourceLogic(Option<String>),
+    /// The source's current confirmed build, if any.
+    SourceLogic(Option<crate::store::CopySourceBuild>),
     DatabricksSource(Option<Box<crate::store::ExecutionRow>>),
     Nothing,
 }
 
 /// A client-requested copy that will be registered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct RegisterPlan {
     pub direct: Option<DirectRegistration>,
+    /// What the copy inherits from its source's current build (Snowflake).
+    pub source_build: Option<crate::store::CopySourceBuild>,
     pub clone_sqls: Vec<String>,
     /// The source's logic identity, stamped on the copy's pending row. Without
     /// it a later submit for the target falls back to EXECUTE (safe: no skip
@@ -748,7 +755,7 @@ pub(crate) fn plan_register(
     req: &qc::CloneRequest,
     history: RegisterHistory,
 ) -> Result<RegisterPlan, RegisterRefusal> {
-    let mut direct = None;
+    let (mut direct, mut source_build) = (None, None);
     let (inherited_ns_logic, required_source_epoch) = match history {
         RegisterHistory::DuckDbIncrementalSource(None) => {
             return Err(RegisterRefusal::Reject(
@@ -758,7 +765,13 @@ pub(crate) fn plan_register(
         RegisterHistory::DuckDbIncrementalSource(Some(logic)) => {
             (logic, req.clone_source_last_modified_epoch)
         }
-        RegisterHistory::SourceLogic(logic) => (logic, None),
+        RegisterHistory::SourceLogic(build) => {
+            let logic = build
+                .as_ref()
+                .and_then(|build| build.node_namespace_logic_hash.clone());
+            source_build = build;
+            (logic, None)
+        }
         RegisterHistory::DatabricksSource(source) => {
             direct = crate::copy_lifecycle::qualify_registration(req, source.as_deref())?;
             // This establishes permission to attempt the warehouse DDL, not
@@ -769,6 +782,7 @@ pub(crate) fn plan_register(
     };
     Ok(RegisterPlan {
         direct,
+        source_build,
         clone_sqls: register_ddl(req)?,
         inherited_ns_logic,
         required_source_epoch,
@@ -789,6 +803,7 @@ fn register_ddl(req: &qc::CloneRequest) -> Result<Vec<String>, RegisterRefusal> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::copy_lifecycle::canonical_reads;
 
     #[test]
     fn direct_refusal_diagnostic_requires_fresh_scoped_rendered_evidence() {
@@ -1212,7 +1227,7 @@ mod tests {
             vec![RehomedReading {
                 logic: RehomedLogic {
                     schema: "PROD".into(),
-                    hash: crate::fingerprint::namespace_logic_hash(&prod),
+                    hash: crate::analyzed_workload::identity::namespace_logic_hash(&prod),
                     named: vec!["PROD".into()],
                 },
                 reads: Some(reads(&[["DB", "PROD", "UP"], ["DB", "PROD", "V"]])),
@@ -1936,8 +1951,15 @@ mod tests {
                 table_namespace: Some("ns"),
             })
         );
-        let plan = plan_register(&req, RegisterHistory::SourceLogic(Some("logic".into())))
-            .expect("registered copy");
+        let plan = plan_register(
+            &req,
+            RegisterHistory::SourceLogic(Some(crate::store::CopySourceBuild {
+                node_namespace_logic_hash: Some("logic".into()),
+                execution_runtime_ms: None,
+                input_names: Vec::new(),
+            })),
+        )
+        .expect("registered copy");
         assert_eq!(plan.inherited_ns_logic.as_deref(), Some("logic"));
         assert_eq!(plan.required_source_epoch, None);
         assert_eq!(plan.clone_sqls.len(), 1);

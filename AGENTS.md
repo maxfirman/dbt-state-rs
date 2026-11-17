@@ -14,7 +14,8 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 - `crates/server`: the server. Modules to know:
   - `decision.rs`: the pure decision engine (`decide`), freshness, descriptions.
   - `reuse_candidate.rs`: pure Reuse candidate selection and Reuse qualification.
-  - `submit_decision.rs`: how one submit is decided, end to end.
+  - `submit_decision/`: how one submit is decided, end to end.
+  - `copy_registration.rs`: how one RegisterClone request is decided and recorded.
   - `result_copy.rs`: pure Result copy planning (submit fallback and RegisterClone).
   - `explain.rs`: pure re-derivation of `dbt state explain` trees.
   - `warehouse.rs` + `warehouse/`: dialect policy and the Warehouse rules.

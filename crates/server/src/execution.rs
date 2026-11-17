@@ -9,6 +9,7 @@
 //! write type for pending (Submit, RegisterClone) and confirmed
 //! (RecordExecutions) rows, so identity fields are set the same way for each.
 
+use crate::analyzed_workload::Purpose;
 use crate::query_cache as qc;
 use crate::store::{logic_identity, InputTable, Producer, Store};
 use std::collections::HashMap;
@@ -75,6 +76,9 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) table_namespace: Option<String>,
     pub(crate) dialect: String,
     pub(crate) input_tables: Vec<InputTable>,
+    /// Whether the workload's SQL reads a relation (from its analysis); not
+    /// persisted. `None` for seeds and copies, or SQL that is not one query.
+    pub(crate) sql_reads_relation: Option<bool>,
     /// Original wire inputs when the decision removes redundant current
     /// evidence. Persist these, so no recorded duplicate is reinterpreted.
     pub(crate) raw_input_tables: Option<Vec<InputTable>>,
@@ -137,9 +141,9 @@ impl ExecutionEvidence {
         let mut evidence = Self::sql(
             org_id,
             &sql_execution(&req),
-            crate::warehouse::Warehouse::from_dialect(&req.dialect)
-                .template_body(req.compare_unrendered_code, req.dbt_node_state.as_ref()),
-            !req.compare_unrendered_code && !req.sql.trim().is_empty(),
+            Purpose::Submit {
+                compare_unrendered_code: req.compare_unrendered_code,
+            },
         );
         evidence.raw_target_table = raw_target;
         if raw_count != req.tables.len() {
@@ -152,32 +156,26 @@ impl ExecutionEvidence {
         // Record has no template comparison flag and computes the supplied SQL identity.
         let raw_target = req.target_table.clone();
         let req = crate::warehouse::Warehouse::from_dialect(&req.dialect).resolve_record(req);
-        let warehouse = crate::warehouse::Warehouse::from_dialect(&req.dialect);
-        // #138 actual write-only Record retains declared body/config evidence.
-        // A false Submit still does not publish a template alternative.
-        let template = warehouse.record_template_body(&req);
-        let mut evidence = Self::sql(org_id, &req, template, true);
+        // #138 actual write-only Record retains declared body/config evidence
+        // (`Purpose::Record`). A false Submit still does not publish a
+        // template alternative.
+        let mut evidence = Self::sql(org_id, &req, Purpose::Record);
         evidence.raw_target_table = raw_target;
         evidence
     }
 
-    fn sql(org_id: &str, req: &qc::SqlExecution, template: Option<&str>, copy: bool) -> Self {
-        let analysis = crate::analyzed_workload::analyze(req);
+    fn sql(org_id: &str, req: &qc::SqlExecution, purpose: Purpose) -> Self {
+        let analysis = crate::analyzed_workload::analyze(req, purpose);
         Self {
             node_unique_id: node_unique_id(req.dbt_node_state.as_ref(), &req.labels),
             node_sql_hash: Some(analysis.rendered_hash),
-            analyzed_copy_proof: (copy && template.is_none())
-                .then_some(analysis.copy_proof)
-                .flatten(),
-            // Template mode cannot establish direct equivalence, even when
-            // missing signatures leave no usable template alternative.
-            direct_copy_provenance: (copy && template.is_none())
-                .then_some(analysis.direct_provenance)
-                .flatten(),
+            analyzed_copy_proof: analysis.copy_proof,
+            direct_copy_provenance: analysis.direct_provenance,
             submit_copy_provenance: None,
-            node_namespace_logic_hash: copy.then_some(analysis.copy_hash).flatten(),
-            node_template_hash: template.and(analysis.template_hash),
+            node_namespace_logic_hash: analysis.copy_hash,
+            node_template_hash: analysis.template_hash,
             input_tables: analysis.inputs,
+            sql_reads_relation: analysis.reads_relation,
             ..Self::node(
                 org_id,
                 req.target_table.clone().unwrap_or_default(),
@@ -221,6 +219,7 @@ impl ExecutionEvidence {
             node_namespace_logic_hash: None,
             node_template_hash: None,
             input_tables: Vec::new(),
+            sql_reads_relation: None,
             raw_input_tables: None,
             display_submitted_at_ms: None,
             values_hash: None,
@@ -253,7 +252,7 @@ impl ExecutionEvidence {
 
     pub(crate) fn values_record(org_id: &str, req: &qc::ValuesExecution) -> Self {
         Self {
-            node_sql_hash: Some(crate::fingerprint::seed_logic_hash(
+            node_sql_hash: Some(crate::analyzed_workload::identity::seed_logic_hash(
                 &req.dialect,
                 &req.default_catalog,
                 &req.semantic_extras,
@@ -539,9 +538,23 @@ mod tests {
         for case in fixture["cases"].as_array().unwrap() {
             let request: qc::SqlExecution =
                 serde_json::from_value(case["request"].clone()).unwrap();
-            let analysis = crate::analyzed_workload::analyze(&request);
+            // Every frozen case has SQL: a rendered submit publishes its copy
+            // evidence, and a template-mode submit its template identity.
+            let analysis = crate::analyzed_workload::analyze(
+                &request,
+                Purpose::Submit {
+                    compare_unrendered_code: false,
+                },
+            );
+            let template = crate::analyzed_workload::analyze(
+                &request,
+                Purpose::Submit {
+                    compare_unrendered_code: true,
+                },
+            );
             assert_eq!(serde_json::json!(analysis.rendered_hash), case["rendered"]);
-            assert_eq!(serde_json::json!(analysis.template_hash), case["template"]);
+            assert_eq!(serde_json::json!(template.rendered_hash), case["rendered"]);
+            assert_eq!(serde_json::json!(template.template_hash), case["template"]);
             if request.dialect == "databricks"
                 && request.execution_type == 1
                 && !case["copy"].is_null()

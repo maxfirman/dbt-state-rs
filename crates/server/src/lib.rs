@@ -1,14 +1,14 @@
 //! Open-source dbt State ("query cache") gRPC server with a Postgres backend.
 
-mod analyzed_workload;
+pub mod analyzed_workload;
 pub mod capture;
 pub mod config;
 mod copy_lifecycle;
+mod copy_registration;
 mod databricks_submit_copy;
 pub mod decision;
 mod execution;
 pub mod explain;
-pub mod fingerprint;
 mod result_copy;
 mod reuse_candidate;
 pub mod selector;

@@ -1,8 +1,8 @@
 //! Shared Result copy evidence lifecycle. Protocol lookup/planning stays in
 //! result_copy; source snapshots and adoption live here. Legacy origin formats
 //! remain distinct because direct DDL permission is weaker than adoption proof.
+use crate::analyzed_workload::identity::RehomedLogic;
 use crate::execution::ExecutionEvidence;
-use crate::fingerprint::RehomedLogic;
 use crate::query_cache as qc;
 use crate::result_copy::{
     DirectRegistration, EquivalentLookup, RegisterRefusal, RegisterRejection, RehomedReading,
@@ -402,7 +402,7 @@ pub(crate) fn copy_logic_matches(
 
 /// Whether the submit, with its Target relation's schema read as the copy
 /// source's schema, has the schema-abstracted logic the copy inherited from
-/// its source build (`fingerprint::rehomed_copy_logic_hash`, #93). VERIFIED
+/// its source build (`analyzed_workload::identity::rehomed_copy_logic_hash`, #93). VERIFIED
 /// LIVE 2026-11-11 (explain_post_copy_identity.jsonl): hosted reuses a
 /// dev-clone pre-step copy whose post-copy submit reads the source build's
 /// fixed prod-schema source, or a view resolved per target over it, which the
@@ -418,7 +418,7 @@ fn rehomed_logic_matches(req: &qc::SubmitEnrichedSqlRequest, row: &ExecutionRow)
         return false;
     };
     row.node_namespace_logic_hash.is_some()
-        && crate::fingerprint::rehomed_copy_logic_hash(
+        && crate::analyzed_workload::identity::rehomed_copy_logic_hash(
             &crate::execution::sql_execution(req),
             &from,
             &to,

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 /// Namespace range for diagnostic-only query evidence. `All` is used only
 /// for an omitted namespace's rejection/Explain contract, never physical reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueryDiagnosticNamespaces<'a> {
     All,
     Exact(Option<&'a str>),

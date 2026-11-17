@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 mod history;
 pub use history::CopySourceBuild;
-pub(crate) use history::QueryDiagnosticNamespaces;
+pub(crate) use history::{QueryDiagnosticNamespaces, QueryDiagnosticReference};
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.
@@ -995,7 +995,7 @@ impl ExplainDecisionRow {
         // Re-derive against the same recorded inputs the decision used: the
         // persisted decision-time inputs stand in exactly when the decision
         // substituted the submit's inputs (one shared rule).
-        crate::reuse_candidate::adopt_current_inputs(&mut anchor, &self.input_tables());
+        crate::copy_lifecycle::adopt_current_inputs(&mut anchor, &self.input_tables());
         Some(anchor)
     }
 
@@ -1006,7 +1006,7 @@ impl ExplainDecisionRow {
     /// lists each upstream FRESH since the copy).
     pub fn unmatched(&self) -> Option<ExecutionRow> {
         let mut unmatched = self.unmatched_execution.clone()?;
-        crate::reuse_candidate::adopt_current_inputs(&mut unmatched, &self.input_tables());
+        crate::copy_lifecycle::adopt_current_inputs(&mut unmatched, &self.input_tables());
         Some(unmatched)
     }
 }
@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     /// Explain re-derives against the same recorded inputs the decision used
-    /// (`reuse_candidate::adopt_current_inputs`): substituted for a
+    /// (`copy_lifecycle::adopt_current_inputs`): substituted for a
     /// client-requested copy, kept as recorded for a SQL-submit copy.
     #[test]
     fn explain_anchor_applies_the_decision_input_rule() {

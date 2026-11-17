@@ -160,7 +160,7 @@ Seeds use the client's SubmitValues request and ordinary `dbt seed`. A
 successful load advances evidence before confirmation and before dependent
 models submit. Unchanged CSV and configuration plus current evidence for the
 target relation allow SKIP; a file hash alone does not. Seeds get no Lag
-tolerance (`submit_decision.rs::submit_values`). Unsupported column types such
+tolerance (`submit_decision::submit_values`). Unsupported column types such
 as DOUBLE build normally and never receive evidence.
 
 ## Cached data tests and stored failures

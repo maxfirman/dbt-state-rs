@@ -126,8 +126,10 @@ mod tests {
     #[test]
     fn identity_is_distinct_exact_and_bounded() {
         let req = request();
-        let original =
-            crate::fingerprint::copy_logic_hash(&crate::execution::sql_execution(&req)).unwrap();
+        let original = crate::analyzed_workload::identity::copy_logic_hash(
+            &crate::execution::sql_execution(&req),
+        )
+        .unwrap();
         let mut other = req.clone();
         other.default_schema = Some("prod".into());
         other.target_table = Some("`cdo`.`prod`.`out`".into());
