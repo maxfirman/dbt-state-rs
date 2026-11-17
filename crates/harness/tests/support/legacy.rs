@@ -337,3 +337,20 @@ pub async fn import_complete_history(db: &impl Db, rows: &[serde_json::Value]) {
         );
     }
 }
+
+/// A decision recorded before migration 0027: no rendered Volatile values.
+/// Waits for the decision's best-effort capture first.
+pub async fn forget_rendered_volatile_values(db: &impl Db, org_id: &str, decision_id: &str) {
+    super::rows::wait_for_decision_capture(db, org_id, decision_id).await;
+    let updated = sqlx::query(
+        "UPDATE node_decisions SET rendered_volatile_values = NULL \
+         WHERE org_id = $1 AND execution_decision_id = $2",
+    )
+    .bind(org_id)
+    .bind(decision_id)
+    .execute(db.pool())
+    .await
+    .expect("forget rendered volatile values")
+    .rows_affected();
+    assert_eq!(updated, 1, "exactly the captured decision");
+}

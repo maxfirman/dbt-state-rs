@@ -1156,6 +1156,17 @@ impl Scenario {
     }
 
     /// ResolveDeferredRelations: the physical FQN of each resolvable node.
+    /// GetExplainMessages for `ids`, scoped to this scenario's org.
+    pub async fn explain(&self, ids: &[&str]) -> qc::GetExplainMessagesResponse {
+        qc::explain_client::ExplainClient::new(self.channel.clone())
+            .get_explain_messages(self.request(qc::GetExplainMessagesRequest {
+                execution_decision_ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            }))
+            .await
+            .expect("GetExplainMessages")
+            .into_inner()
+    }
+
     pub async fn resolve_deferred(
         &self,
         req: qc::ResolveDeferredRelationsRequest,

@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use dbt_state_harness::diff::GoldenEntry;
 use dbt_state_proto::query_cache as qc;
-use support::scenario::{captured_submit, Scenario};
+use support::scenario::{built_at, captured_submit, variant, Scenario};
 
 const CONTROLS: &str = include_str!("fixtures/databricks_submit_copy_controls.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
@@ -88,12 +88,11 @@ fn rendered(ready: &qc::ReadyToExecuteResponse) -> BTreeMap<String, BTreeMap<Str
         .collect()
 }
 
-/// Whether `value` has the captured `RAND()` format: a decimal in [0, 1)
-/// (`0.2867523899434695`).
+/// Whether `value` has the captured `RAND()` format: a plain decimal in
+/// [0, 1), without an exponent (`0.2867523899434695`).
 fn is_captured_rand_format(value: &str) -> bool {
     let digits = value.strip_prefix("0.").unwrap_or_default();
     !digits.is_empty()
-        && digits.len() <= 17
         && digits.bytes().all(|b| b.is_ascii_digit())
         && value.parse::<f64>().is_ok_and(|v| (0.0..1.0).contains(&v))
 }
@@ -155,14 +154,31 @@ fn ready_request_id(response: &qc::SubmitSqlResponse) -> Option<String> {
 }
 
 async fn explain(sc: &Scenario, id: &str) -> serde_json::Value {
-    let response = qc::explain_client::ExplainClient::new(sc.channel())
-        .get_explain_messages(qc::GetExplainMessagesRequest {
-            execution_decision_ids: vec![id.to_owned()],
-        })
-        .await
-        .unwrap()
-        .into_inner();
-    serde_json::to_value(response).unwrap()
+    serde_json::to_value(sc.explain(&[id]).await).unwrap()
+}
+
+/// Every line of an Explain response, depth first.
+fn texts(explain: &serde_json::Value) -> Vec<String> {
+    fn walk(lines: &serde_json::Value, out: &mut Vec<String>) {
+        for line in lines.as_array().into_iter().flatten() {
+            out.push(line["text"].as_str().unwrap().to_owned());
+            walk(&line["children"], out);
+        }
+    }
+    let mut out = Vec::new();
+    for message in explain["messages"].as_array().unwrap() {
+        walk(&message["explain_lines"], &mut out);
+    }
+    out
+}
+
+/// Whether an Explain response prints any Volatile evaluation line.
+fn prints_volatile_lines(explain: &serde_json::Value) -> bool {
+    texts(explain).iter().any(|t| {
+        t.contains("rendered with")
+            || t == "non-deterministic functions detected in query"
+            || t.contains("is not deterministic")
+    })
 }
 
 /// Hosted's entry 86 Explain, for the local decision `id` whose `RAND()`
@@ -219,5 +235,216 @@ async fn databricks_rand_explain_matches_hosted_with_the_returned_value_after_a_
         explain(&sc, &id).await,
         hosted_rand_explain(&id, &value),
         "the persisted value prints after a restart"
+    );
+}
+
+/// Submit `sql` (with evaluation requested unless `tolerate`) as a
+/// query-changed rebuild of the captured model, in its own org.
+async fn rebuild_with(
+    sc: &Scenario,
+    sql: &str,
+    tolerate: bool,
+) -> (qc::ReadyToExecuteResponse, serde_json::Value) {
+    deterministic_history(sc).await;
+    let ready = sc
+        .expect_execute(
+            captured_submit(&captured_request(RAND_SUBMIT))
+                .sql(sql)
+                .tolerate_nondeterminism(tolerate),
+        )
+        .await;
+    let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
+    (ready, explained)
+}
+
+#[tokio::test]
+async fn submits_without_a_captured_volatile_call_render_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let input = "cdo_demo_db.ds_20261112a134ef_prod.p153_80615b233ac140e48993d85c06bfc823_inputs";
+    let cases = [
+        (
+            "deterministic control",
+            format!("select *, 1 AS noise from {input}"),
+            false,
+        ),
+        (
+            "evaluation off",
+            format!("select *, rand() AS noise from {input}"),
+            true,
+        ),
+        (
+            "uncaptured volatile function",
+            format!("select *, uuid() AS noise from {input}"),
+            false,
+        ),
+        (
+            "uncaptured clock",
+            format!("select *, current_timestamp() AS noise from {input}"),
+            false,
+        ),
+        (
+            "seeded rand",
+            format!("select *, rand(42) AS noise from {input}"),
+            false,
+        ),
+        (
+            "line comment",
+            format!("select * from {input} -- rand()"),
+            false,
+        ),
+        (
+            "block comment",
+            format!("select * /* rand() */ from {input}"),
+            false,
+        ),
+        (
+            "string literal",
+            format!("select *, 'rand()' AS noise from {input}"),
+            false,
+        ),
+        (
+            "quoted identifier",
+            format!("select *, `rand`() AS noise from {input}"),
+            false,
+        ),
+    ];
+    // Positive control for the same harness: the captured call renders.
+    let (ready, explained) = rebuild_with(
+        &sc.org("control"),
+        &format!("select *, rand() AS noise from {input}"),
+        false,
+    )
+    .await;
+    assert!(!ready.transformed_nodes_by_query.is_empty());
+    assert!(prints_volatile_lines(&explained));
+    for (case, sql, tolerate) in cases {
+        let (ready, explained) = rebuild_with(&sc.org(case), &sql, tolerate).await;
+        assert!(
+            ready.transformed_nodes_by_query.is_empty(),
+            "{case}: {:?}",
+            ready.transformed_nodes_by_query
+        );
+        assert!(
+            texts(&explained).contains(&"the model query has changed".to_owned()),
+            "{case}: the query analysis is printed"
+        );
+        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+    }
+}
+
+#[tokio::test]
+async fn another_organizations_decision_renders_no_values() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let owner = sc.org("owner");
+    deterministic_history(&owner).await;
+    let ready = owner
+        .expect_execute(captured_submit(&captured_request(RAND_SUBMIT)))
+        .await;
+    let id = ready.execution_decision_id.unwrap();
+    assert!(prints_volatile_lines(&explain(&owner, &id).await));
+
+    let other = explain(&sc.org("other"), &id).await;
+    assert!(other["messages"].as_array().unwrap().is_empty(), "{other}");
+    assert!(!prints_volatile_lines(&other));
+}
+
+#[tokio::test]
+async fn a_decision_recorded_before_the_migration_prints_no_volatile_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("legacy");
+    deterministic_history(&sc).await;
+    let ready = sc
+        .expect_execute(captured_submit(&captured_request(RAND_SUBMIT)))
+        .await;
+    let id = ready.execution_decision_id.unwrap();
+    let with_values = explain(&sc, &id).await;
+    assert!(prints_volatile_lines(&with_values));
+
+    support::legacy::forget_rendered_volatile_values(&server.state, "legacy", &id).await;
+
+    let legacy = explain(&sc, &id).await;
+    assert!(!prints_volatile_lines(&legacy), "{legacy}");
+    let mut expected = texts(&with_values);
+    expected.retain(|t| {
+        !t.contains("rendered with")
+            && t != "non-deterministic functions detected in query"
+            && !t.contains("is not deterministic")
+    });
+    assert_eq!(
+        texts(&legacy),
+        expected,
+        "the rest of the tree is unchanged"
+    );
+}
+
+/// A persisted execution with the columns that differ per request removed.
+async fn fingerprints(server: &support::TestServer, request_id: &str) -> serde_json::Value {
+    let mut row = support::rows::complete_execution(&server.state, request_id).await;
+    let object = row.as_object_mut().unwrap();
+    for per_request in [
+        "id",
+        "request_id",
+        "execution_decision_id",
+        "created_at",
+        "display_submitted_at_ms",
+    ] {
+        object.remove(per_request);
+    }
+    row
+}
+
+#[tokio::test]
+async fn a_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("volatile");
+    let model = captured_submit(&captured_request(RAND_SUBMIT));
+
+    let first = sc.expect_execute(model.clone()).await;
+    let second = sc.expect_execute(model.clone()).await;
+    let value =
+        |ready: &qc::ReadyToExecuteResponse| rendered(ready)[&captured_target()]["RAND()"].clone();
+    assert_ne!(value(&first), value(&second), "each decision renders anew");
+    assert_eq!(
+        fingerprints(&server, &first.request_id).await,
+        fingerprints(&server, &second.request_id).await,
+        "rendered values enter no persisted identity or fingerprint"
+    );
+
+    assert!(
+        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
+            .await
+    );
+    let rerun = sc.expect_execute(model.clone()).await;
+    assert!(
+        !rendered(&rerun).is_empty(),
+        "a rerun is rebuilt and rendered"
+    );
+
+    let elsewhere = model
+        .clone()
+        .target("`cdo_demo_db`.`elsewhere`.`p153_80615b233ac140e48993d85c06bfc823_full`")
+        .schema("elsewhere")
+        .no_tables()
+        .table(
+            "`cdo_demo_db`.`ds_20261112a134ef_prod`.`p153_80615b233ac140e48993d85c06bfc823_inputs`",
+            Some(1794768588000),
+        );
+    assert_eq!(
+        variant(&sc.submit(elsewhere).await),
+        "ready_to_execute",
+        "never copied into another schema of the namespace"
+    );
+
+    // Control: the same history reuses the model when evaluation is off.
+    let deterministic = sc.org("deterministic");
+    let model = model.tolerate_nondeterminism(true);
+    deterministic
+        .build(model.clone(), captured_target_epoch())
+        .await;
+    assert_eq!(
+        variant(&deterministic.submit(model).await),
+        "skip_execution"
     );
 }
