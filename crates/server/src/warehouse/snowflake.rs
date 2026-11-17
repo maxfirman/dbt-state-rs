@@ -2,6 +2,22 @@
 //! identity is the schema-abstracted namespace logic (see `fingerprint`).
 
 use super::{CopyIdentity, NamespaceIdentity};
+use sqlparser::dialect::SnowflakeDialect;
+
+/// Volatile evaluation (#67, #193): hosted renders `current_timestamp()` as
+/// `CURRENT_TIMESTAMP()` with the clock in UTC to the microsecond
+/// (`clone_fallback_volatile.jsonl` entries 0 and 2). Other Snowflake Volatile
+/// functions and forms (`getdate()`, a parenless `current_timestamp`, …)
+/// render nothing yet.
+pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
+    crate::volatile_evaluation::Rules {
+        dialect: &SnowflakeDialect {},
+        functions: &[crate::volatile_evaluation::Rule {
+            name: "current_timestamp",
+            key: "CURRENT_TIMESTAMP()",
+            value: crate::volatile_evaluation::Value::UtcTimestampMicros,
+        }],
+    };
 
 /// Verified live: the same model in two environments shares this identity.
 pub(super) const NAMESPACE_IDENTITY: NamespaceIdentity = NamespaceIdentity::SchemaAbstracted {

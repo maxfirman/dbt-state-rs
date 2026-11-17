@@ -70,12 +70,19 @@ pub enum Value {
     /// A uniform random number in `[0, 1)`, as the shortest decimal that
     /// round-trips (`0.2867523899434695`).
     UnitRandom,
+    /// The server clock in UTC to the microsecond, without an offset
+    /// (`2026-10-12 21:52:38.577832`).
+    UtcTimestampMicros,
 }
 
 impl Value {
     fn render(self, sources: &Sources) -> String {
         match self {
             Self::UnitRandom => (sources.random)().to_string(),
+            Self::UtcTimestampMicros => chrono::DateTime::from_timestamp_micros(sources.now_micros)
+                .unwrap_or_default()
+                .format("%Y-%m-%d %H:%M:%S%.6f")
+                .to_string(),
         }
     }
 }

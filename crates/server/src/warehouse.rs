@@ -854,6 +854,7 @@ impl Warehouse {
     pub fn volatile_rules(self) -> Option<crate::volatile_evaluation::Rules> {
         match self {
             Self::Databricks => Some(databricks::VOLATILE_RULES),
+            Self::Snowflake => Some(snowflake::VOLATILE_RULES),
             _ => None,
         }
     }
