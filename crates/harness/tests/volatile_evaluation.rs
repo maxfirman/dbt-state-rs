@@ -725,6 +725,30 @@ async fn snowflake_decision_recorded_before_the_migration_prints_no_volatile_lin
 }
 
 #[tokio::test]
+async fn snowflake_decision_recorded_before_the_evaluation_flag_prints_no_volatile_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("legacy flag");
+    let id = snowflake_volatile_rebuild(&sc).await;
+    let with_flag = explain(&sc, &id).await;
+
+    support::legacy::forget_volatile_evaluation_flag(&server.state, "legacy flag", &id).await;
+
+    let legacy = explain(&sc, &id).await;
+    assert!(!prints_volatile_lines(&legacy), "{legacy}");
+    let mut expected = texts(&with_flag);
+    expected.retain(|t| {
+        !t.contains("rendered with")
+            && t != "non-deterministic functions detected in query"
+            && !t.contains("is not deterministic")
+    });
+    assert_eq!(
+        texts(&legacy),
+        expected,
+        "the rest of the tree is unchanged"
+    );
+}
+
+#[tokio::test]
 async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("volatile");
@@ -997,6 +1021,9 @@ async fn snowflake_model_cells_return_hosted_codes_and_maps_on_builds_and_reuses
     ] {
         assert_matches_hosted(&responses[&entry], &run_1[entry], case);
     }
+    // Reuse is still refused for SQL whose query dependency definition calls
+    // a Volatile function with evaluation requested (cell 5 consumer rerun).
+    assert_eq!(variant(&responses[&35]), "ready_to_execute");
 }
 
 #[tokio::test]
@@ -1022,4 +1049,104 @@ async fn snowflake_evaluation_off_renders_a_rebuild_but_prints_no_uncaptured_exp
         "{explained}"
     );
     assert!(!prints_volatile_lines(&explained), "{explained}");
+}
+
+/// Hosted's Explain `explain` of captured submit `submit`, for the local
+/// decision `local`: hosted's decision id and rendered values replaced by
+/// the local ones.
+fn hosted_explain_for(
+    explain: &GoldenEntry,
+    submit: &GoldenEntry,
+    local: &qc::SubmitSqlResponse,
+) -> serde_json::Value {
+    let local_json = serde_json::to_value(local).unwrap();
+    let payload = local_json["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let local_id = payload["execution_decision_id"].as_str().unwrap();
+    let hosted_payload = submit.response["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let hosted_id = hosted_payload["execution_decision_id"].as_str().unwrap();
+    let mut hosted = serde_json::to_string(&explain.response)
+        .unwrap()
+        .replace(hosted_id, local_id);
+    let local_values = local_map(local);
+    for (query, functions) in hosted_map_of(submit) {
+        for (function, value) in functions {
+            let ours = &local_values[&query][&function];
+            hosted = hosted.replace(
+                &format!("{function} -> rendered with '{value}'"),
+                &format!("{function} -> rendered with '{ours}'"),
+            );
+        }
+    }
+    serde_json::from_str(&hosted).unwrap()
+}
+
+fn decision_id(response: &qc::SubmitSqlResponse) -> String {
+    let value = serde_json::to_value(response).unwrap();
+    value["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["execution_decision_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_cells").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let run_1 = entries(RUN_1);
+    let responses = replay(&sc, &run_1, 50).await;
+    // (submit, its captured Explain, case)
+    let cases = [
+        (6, 19, "cell 1 first build: no volatile lines"),
+        (
+            8,
+            20,
+            "cell 4 evaluation off, first build: no volatile lines",
+        ),
+        (5, 21, "cell 3 first build"),
+        (7, 22, "a view with evaluation off, first build"),
+        (33, 41, "cell 2 rerun with evaluation on"),
+        (34, 42, "cell 4 evaluation off, reused"),
+        (31, 43, "cell 3 deterministic control, reused"),
+        (32, 44, "a view with evaluation off, reused"),
+        (50, 51, "cell 4 evaluation switched off, reused"),
+    ];
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(submit, explained, _)| {
+            hosted_explain_for(&run_1[*explained], &run_1[*submit], &responses[submit])
+        })
+        .collect();
+    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
+        let id = decision_id(&responses[submit]);
+        assert_eq!(&explain(&sc, &id).await, expected, "{case}");
+    }
+
+    drop(sc);
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
+        let id = decision_id(&responses[submit]);
+        assert_eq!(
+            &explain(&sc, &id).await,
+            expected,
+            "{case}: the persisted values print after a restart"
+        );
+    }
 }

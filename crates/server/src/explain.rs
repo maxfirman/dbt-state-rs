@@ -873,45 +873,114 @@ fn same_upstream_names(node: &ExplainNode, row: &ExecutionRow) -> bool {
 /// Build the structured tree: fenced by node kind, then shaped by the
 /// persisted decision reason, with the values Volatile evaluation rendered.
 pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let mut lines = decision_lines(node);
+    let mut lines = volatile_rebuild_lines(node).unwrap_or_else(|| decision_lines(node));
     add_volatile_lines(node, &mut lines);
     lines
 }
 
+/// The values the decision rendered for the node's own SQL, as opposed to a
+/// query dependency's definition.
+fn own_volatile_values(node: &ExplainNode) -> Vec<&crate::volatile_evaluation::RenderedValue> {
+    node.rendered_volatile_values
+        .iter()
+        .filter(|v| !node.query_dependencies.contains(&v.query))
+        .collect()
+}
+
+/// #191 cell 2 (`explain_volatile_evaluation.jsonl` entry 41): a table model
+/// whose own SQL rendered Volatile functions with evaluation requested is
+/// rebuilt over its existing Target relation, refused at Reuse
+/// qualification. Hosted explains it as a query change (the volatile lines
+/// follow from [`add_volatile_lines`]). Identity is unchanged: the wording is
+/// derived from the persisted values and flag only (maintainer decision on
+/// #191). Captured for a table model without upstreams; other shapes keep
+/// the decision's own tree.
+fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
+    let captured = node.volatile_evaluation_requested == Some(true)
+        && !own_volatile_values(node).is_empty()
+        && node.decision == DecisionKind::Build
+        && node.reason
+            == Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::FailedReuseQualification,
+            ))
+        && node.execution_type == ModelExecutionType::Full as i32
+        && node.template_comparison.as_ref().is_none_or(|c| !c.enabled)
+        && node.query_dependencies.is_empty()
+        && node.genuine_upstreams().is_empty()
+        && node
+            .target_table
+            .as_deref()
+            .is_some_and(|target| node.input_tables.iter().any(|t| t.name == target));
+    captured.then(|| {
+        vec![
+            table_analysis_exists(node),
+            section(
+                "query analysis",
+                vec![leaf(
+                    "the model query has changed",
+                    Some(MARKER_FAIL),
+                    Some(BADGE_NODE_QUERY_CHANGED),
+                )],
+            ),
+            section(
+                "data freshness analysis",
+                vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
+            ),
+        ]
+    })
+}
+
 /// Volatile evaluation (#67): hosted prints, in the query analysis and ahead
-/// of the query-changed verdict, one `rendered with` line per rendered value
-/// under `non-deterministic functions detected in query`, then that the
-/// query is not deterministic (`databricks_submit_copy_controls.jsonl` entry
-/// 86). Printed only where that verdict is; other shapes are uncaptured.
+/// of the query verdict, one `rendered with` line per value the node's own
+/// SQL rendered under `non-deterministic functions detected in query`, then
+/// whether the configuration tolerates that the query is not deterministic:
+/// - evaluation requested, before `the model query has changed`
+///   (`databricks_submit_copy_controls.jsonl` entry 86;
+///   `explain_volatile_evaluation.jsonl` entry 41);
+/// - evaluation off, on a reuse, before `the model query has not changed`
+///   (`explain_volatile_evaluation.jsonl` entries 42, 44, 51).
+///
+/// Other shapes are uncaptured and print no volatile lines, and so does a
+/// decision recorded without the evaluation flag.
 fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
-    if node.rendered_volatile_values.is_empty() || node.volatile_evaluation_requested != Some(true)
-    {
+    let values = own_volatile_values(node);
+    if values.is_empty() {
         return;
     }
+    let (verdict, badge, tolerance) = match node.volatile_evaluation_requested {
+        Some(true) => (
+            "the model query has changed",
+            BADGE_NODE_QUERY_CHANGED,
+            "the model query is not deterministic and this is not tolerated by config",
+        ),
+        Some(false) if node.decision == DecisionKind::Skip => (
+            "the model query has not changed",
+            BADGE_NODE_QUERY_UNCHANGED,
+            "the model query is not deterministic but this is tolerated by config",
+        ),
+        _ => return,
+    };
     let Some(query) = lines.iter_mut().find(|l| l.text == "query analysis") else {
         return;
     };
-    let Some(at) = query.children.iter().position(|l| {
-        l.text == "the model query has changed" && l.badge == Some(BADGE_NODE_QUERY_CHANGED)
-    }) else {
+    let Some(at) = query
+        .children
+        .iter()
+        .position(|l| l.text == verdict && l.badge == Some(badge))
+    else {
         return;
     };
     let detected = qc::ExplainLine {
         text: "non-deterministic functions detected in query".into(),
         marker: Some(MARKER_INFO),
         badge: None,
-        children: node
-            .rendered_volatile_values
+        children: values
             .iter()
             .map(|v| line(format!("{} -> rendered with '{}'", v.function, v.value)))
             .collect(),
     };
-    let not_tolerated = leaf(
-        "the model query is not deterministic and this is not tolerated by config",
-        Some(MARKER_INFO),
-        None,
-    );
-    query.children.splice(at..at, [detected, not_tolerated]);
+    let tolerance = leaf(tolerance, Some(MARKER_INFO), None);
+    query.children.splice(at..at, [detected, tolerance]);
 }
 
 /// The tree [`explain_lines`] prints before Volatile evaluation's lines.

@@ -5,7 +5,8 @@
 //! State service renders each Volatile function in the SQL to a value when it
 //! decides, and reports it with the decision in `transformed_nodes_by_query`.
 //! The Warehouse still executes the original SQL; no official client reads
-//! the map, so it is telemetry.
+//! the map, so it is telemetry. Where a Warehouse's captures show it, values
+//! are also rendered with evaluation off and on a reuse ([`Rules`]).
 //!
 //! This module is pure. The submit decision layer calls [`evaluate`] after the
 //! decision is made, with the [`Sources`] the values are drawn from, and the
