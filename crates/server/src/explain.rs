@@ -349,7 +349,8 @@ pub fn decision_description(node: &ExplainNode) -> String {
 /// Characterized matrix (docs/explain-catalog.md "Execution type (node kind) coverage"):
 ///   - model/table (FULL=1): Skip | Build | Clone.
 ///   - view (VIEW=10): Skip | Build (Clone unreachable on 2.0.11, #76).
-///   - data test (DBT_DATA_TEST=8): Skip | Build (Clone out of scope → #68).
+///   - data test (DBT_DATA_TEST=8): Skip | Build (no Clone: data tests never
+///     get a Result copy, docs/explain-catalog.md note 15, #190).
 ///   - seed (VALUES=9): Skip | Build | Clone (the Snowflake seed copy, #91).
 ///   - snapshot (SNAPSHOT=7): Skip | Build (Clone unreachable on 2.0.11, #76).
 ///   - custom node (DBT_CUSTOM=11): Skip | Build (Clone unreachable on
@@ -385,7 +386,8 @@ fn is_characterized(execution_type: i32, decision: DecisionKind) -> bool {
         }
         Ok(ModelExecutionType::DbtDataTest) => {
             // EXECUTE: VERIFIED LIVE 2026-11-10 (explain_data_test_history.jsonl,
-            // client 2.0.11). Data-test CLONE is out of scope (→ #68).
+            // client 2.0.11). No CLONE: data tests never get a Result copy
+            // (docs/explain-catalog.md note 15, #190).
             matches!(decision, DecisionKind::Skip | DecisionKind::Build)
         }
         // VERIFIED LIVE 2026-11-10 (explain_snapshot_history.jsonl, client
@@ -3401,7 +3403,7 @@ mod tests {
                     | (10, DecisionKind::Skip) // view SKIP
                     | (10, DecisionKind::Build) // view EXECUTE (CLONE unreachable on 2.0.11, #76)
                     | (8, DecisionKind::Skip) // data test SKIP
-                    | (8, DecisionKind::Build) // data test EXECUTE (explain_data_test_history; CLONE → #68)
+                    | (8, DecisionKind::Build) // data test EXECUTE (explain_data_test_history; never copied, #190)
                     | (9, DecisionKind::Skip) // seed SKIP (lag_seed_upstream)
                     | (9, DecisionKind::Build) // seed reload
                     | (9, DecisionKind::Clone) // seed copy on submit (explain_copy_probes, explain_seed_copy_existing; #91)
