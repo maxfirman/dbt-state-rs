@@ -380,39 +380,12 @@
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 6,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 1, vm first build (evaluation on, ready_to_execute): hosted renders 9 keys under the Target relation (CURRENT_TIMESTAMP(), SYSDATE(), CURRENT_TIME, CURRENT_DATE, RANDOM(), RANDSTR(8, 1234), UUID_STRING(), NORMAL(0, 1, 1234), UNIFORM(1, 100, RANDOM())). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only CURRENT_TIMESTAMP() so far (#193, compared by format) and none of the other 8 keys (#194). The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 7,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vv view first build (evaluation off, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under the view's Target relation although evaluation is off. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 8,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 4, vo first build (evaluation off, ready_to_execute): hosted renders the same 9 keys as vm although evaluation is off. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
     "entry": 10,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd first build (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name, not by vd's Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd first build (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name, not by vd's Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only the Volatile functions of a model's own SQL (#194), so it returns {} for vd, whose own SQL calls none; dependency keys are #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
@@ -421,40 +394,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test first execution (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under the key __target_query__ (a data test has no Target relation). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 31,
-    "local_variant": "ready_to_execute",
-    "reason": "CHECK-IN (#191 cell 3, maintainer decision pending): deterministic control vc with evaluate_volatile_sql: true (tolerate_nondeterminism=false), unchanged rerun. Hosted SKIPs it with an empty map; the local server rebuilds with failed_reuse_qualification (6/6) because reuse_candidate.rs::sql_qualifies refuses every submit that requests Volatile evaluation. Matching hosted relaxes that reuse refusal, so it waits for the maintainer (#67 check-in rule). See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 32,
-    "local_variant": "skip_execution",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vv view unchanged rerun (evaluation off, skip_execution): hosted SKIPs and still renders CURRENT_TIMESTAMP() on the SKIP branch. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 33,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 2, vm unchanged rerun over its existing Target relation (evaluation on, ready_to_execute): hosted renders the same 9 keys with fresh clock/random values; RANDSTR(8, 1234) and NORMAL(0, 1, 1234) keep their values. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only CURRENT_TIMESTAMP() so far (#193, compared by format) and none of the other 8 keys (#194). The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 34,
-    "local_variant": "skip_execution",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 4, vo unchanged rerun (evaluation off, skip_execution): hosted SKIPs and still renders the 9 keys on the SKIP branch. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test first execution (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under the key __target_query__ (a data test has no Target relation). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only under a model's Target relation (#194), so it returns {} for a data test without one; the __target_query__ key is #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
@@ -463,7 +403,7 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd unchanged rerun (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd unchanged rerun (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only the Volatile functions of a model's own SQL (#194), so it returns {} for vd, whose own SQL calls none; dependency keys are #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
@@ -472,54 +412,13 @@
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test unchanged rerun (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under __target_query__. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 50,
-    "local_variant": "skip_execution",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 4 toggled, vm rebuilt with evaluation switched off over its evaluation-on build (skip_execution): hosted SKIPs (the local server also SKIPs) and renders the 9 keys on the SKIP branch. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
+    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test unchanged rerun (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under __target_query__. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only under a model's Target relation (#194), so it returns {} for a data test without one; the __target_query__ key is #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
     "entry": 24,
     "local_variant": "explain",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 16, vt data test first execution with evaluation on): decision and description match. Hosted adds a query analysis section (non-deterministic functions detected in query / CURRENT_TIMESTAMP() -> rendered with '...', the test query is not deterministic and this is not tolerated by config, the test query has changed <NODE_QUERY_CHANGED>); the local tree has only the data freshness section. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 41,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 33, vm rerun with evaluation on): both EXECUTE with the same description. Hosted lists the 9 rendered values, 'the model query is not deterministic and this is not tolerated by config' and 'the model query has changed' <NODE_QUERY_CHANGED> (CHECK-IN: hosted reports the unchanged query as changed, see the note); the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 42,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "non-deterministic functions detected in query",
-      "the model query is not deterministic but this is tolerated by config"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 34, vo SKIP with evaluation off): the tree matches exactly except the hosted volatile lines this server does not render yet (the rendered-values list and 'tolerated by config'). See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 43,
-    "local_variant": "empty_tree",
-    "reason": "CHECK-IN explain of entry 31 (#191 cell 3): hosted explains its SKIP of the deterministic control with evaluation on (no volatile lines); the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 44,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "non-deterministic functions detected in query",
-      "the model query is not deterministic but this is tolerated by config"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 32, vv view SKIP with evaluation off): the tree matches exactly except the hosted volatile lines this server does not render yet. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
@@ -532,105 +431,5 @@
     "entry": 46,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 37, vt data test rerun with evaluation on): both EXECUTE with the same description. Hosted shows the rendered CURRENT_TIMESTAMP(), 'not tolerated by config' and 'the test query has changed' <NODE_QUERY_CHANGED> plus the freshness section; the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 51,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "non-deterministic functions detected in query",
-      "the model query is not deterministic but this is tolerated by config"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 50, vm SKIP after evaluation was switched off): the tree matches exactly except the hosted volatile lines this server does not render yet. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 13,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls getdate(); hosted renders CURRENT_TIMESTAMP() under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 14,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls localtimestamp; hosted renders CURRENT_TIMESTAMP under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 15,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls current_date; hosted renders CURRENT_DATE under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 16,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls zipf(1, 10, random()); hosted renders RANDOM() under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 17,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls localtime(); hosted renders CURRENT_TIME under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 18,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls uniform(1, 100, random()); hosted renders RANDOM(), UNIFORM(1, 100, RANDOM()) under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 19,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls systimestamp(); hosted renders CURRENT_TIMESTAMP() under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 20,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls current_time(); hosted renders CURRENT_TIME under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 23,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls localtimestamp(); hosted renders CURRENT_TIMESTAMP() under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation_functions.jsonl",
-    "entry": 24,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191, one function per model, first build with evaluation on): the SQL calls current_timestamp; hosted renders CURRENT_TIMESTAMP() under the Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server does not render Volatile functions yet (#67) and returns {}. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   }
 ]
