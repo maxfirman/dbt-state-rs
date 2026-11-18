@@ -781,3 +781,136 @@ async fn snowflake_volatile_data_test_and_dependency_render_keyed_as_captured() 
         );
     }
 }
+
+/// Replay the captured run through `through` (inclusive) at the recorded
+/// times, correlating each confirm with its local request id. Returns each
+/// local `ready_to_execute` by its submit's entry index.
+async fn replay_snowflake_evaluation(
+    sc: &Scenario,
+    through: usize,
+) -> BTreeMap<usize, qc::ReadyToExecuteResponse> {
+    let entries = snowflake_evaluation();
+    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
+    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
+    let mut local_ids = std::collections::HashMap::new();
+    let mut executed = BTreeMap::new();
+    for (index, entry) in entries[..=through].iter().enumerate() {
+        match entry.method.as_str() {
+            "SubmitEnrichedSQL" => {
+                let response = sql
+                    .submit_enriched_sql(support::captured_request(
+                        captured_submit(&entry.request).build(),
+                        entry,
+                    ))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let hosted = entry.response["response"]["ready_to_execute"]["request_id"].as_str();
+                if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
+                    local_ids.insert(hosted.to_owned(), local);
+                }
+                if let Some(qc::submit_sql_response::Response::ReadyToExecute(ready)) =
+                    response.response
+                {
+                    executed.insert(index, ready);
+                }
+            }
+            "ConfirmExecution" => {
+                let mut req: qc::ConfirmExecutionRequest =
+                    serde_json::from_value(entry.request.clone()).unwrap();
+                req.request_id = local_ids[&req.request_id].clone();
+                exec.confirm_execution(support::captured_request(req, entry))
+                    .await
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+    executed
+}
+
+/// Hosted's Explain `explain` of the captured submit `submit`, for the local
+/// decision `local` and the values it rendered.
+fn hosted_explain_of(
+    entries: &[GoldenEntry],
+    submit: usize,
+    explain: usize,
+    local: &qc::ReadyToExecuteResponse,
+) -> serde_json::Value {
+    let hosted_id = entries[submit].response["response"]["ready_to_execute"]
+        ["execution_decision_id"]
+        .as_str()
+        .unwrap();
+    let mut text = serde_json::to_string(&entries[explain].response)
+        .unwrap()
+        .replace(hosted_id, local.execution_decision_id.as_deref().unwrap());
+    let values = rendered(local);
+    for (query, functions) in hosted_map(&entries[submit]) {
+        for (function, value) in functions {
+            text = text.replace(
+                &format!("{function} -> rendered with '{value}'"),
+                &format!(
+                    "{function} -> rendered with '{}'",
+                    values[&query][&function]
+                ),
+            );
+        }
+    }
+    masked_relative_times(serde_json::from_str(&text).unwrap())
+}
+
+/// `explain` with each `last updated: …` line masked. Outside Databricks a
+/// data test's upstream listing prints the raw epoch, not hosted's relative
+/// time; the conformance replay masks the same slot (`«rel_time»`).
+fn masked_relative_times(mut explain: serde_json::Value) -> serde_json::Value {
+    fn walk(lines: &mut serde_json::Value) {
+        for line in lines.as_array_mut().into_iter().flatten() {
+            if line["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("last updated:"))
+            {
+                line["text"] = "last updated: «rel_time»".into();
+            }
+            walk(&mut line["children"]);
+        }
+    }
+    for message in explain["messages"].as_array_mut().unwrap() {
+        walk(&mut message["explain_lines"]);
+    }
+    explain
+}
+
+#[tokio::test]
+async fn snowflake_volatile_data_test_explain_matches_hosted_on_both_runs_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_test_restart").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let executed = replay_snowflake_evaluation(&sc, VT_RERUN).await;
+    let cases = [(VT_FIRST, VT_FIRST_EXPLAIN), (VT_RERUN, VT_RERUN_EXPLAIN)];
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|&(submit, explain)| hosted_explain_of(&entries, submit, explain, &executed[&submit]))
+        .collect();
+    let explained = |sc: Scenario| {
+        let executed = &executed;
+        async move {
+            let mut out = Vec::new();
+            for (submit, _) in cases {
+                let id = executed[&submit].execution_decision_id.as_deref().unwrap();
+                out.push(masked_relative_times(explain(&sc, id).await));
+            }
+            out
+        }
+    };
+
+    assert_eq!(explained(sc).await, expected);
+
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    assert_eq!(
+        explained(Scenario::connect(&server).await).await,
+        expected,
+        "the persisted values print after a restart"
+    );
+}

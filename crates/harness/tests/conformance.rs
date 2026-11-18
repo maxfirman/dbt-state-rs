@@ -409,6 +409,28 @@ fn comparable(value: serde_json::Value, context: &str) -> serde_json::Value {
         .unwrap_or_else(|error| panic!("{context}: malformed rendered value: {error}"))
 }
 
+/// The Explain form of [`normalize_volatile_values`] (#195): a
+/// `«function» -> rendered with '«value»'` line whose function text has a
+/// registered [`ValueFormat`] prints the format's name in place of the value,
+/// after checking the value has it. Any other line is returned as it is.
+/// Fails on a malformed value.
+fn normalize_volatile_line(text: &str) -> Result<String, String> {
+    let Some((function, quoted)) = text.split_once(" -> rendered with '") else {
+        return Ok(text.to_owned());
+    };
+    let (Some(value), Some((_, format))) = (
+        quoted.strip_suffix('\''),
+        VOLATILE_VALUE_FORMATS.iter().find(|(f, _)| *f == function),
+    ) else {
+        return Ok(text.to_owned());
+    };
+    if (format.matches)(value) {
+        Ok(format!("{function} -> rendered with '{}'", format.name))
+    } else {
+        Err(format!("{function}: {value} is not {}", format.name))
+    }
+}
+
 /// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
 /// ONLY remaining difference between a local and hosted `ready_to_execute`
 /// payload is the first-build-vs-rebuild `decision_description` WORDING, AND the
@@ -674,6 +696,45 @@ fn strip_named_fields_removes_only_named_payload_fields() {
     );
     // Absent field => nothing removed.
     assert!(!strip_named_fields(&mut v, &["nonexistent".to_string()]));
+}
+
+#[test]
+fn explain_volatile_values_compare_function_text_exactly_and_values_by_format() {
+    let hosted = normalize_volatile_line(
+        "CURRENT_TIMESTAMP() -> rendered with '2026-11-17 16:48:56.015041'",
+    )
+    .unwrap();
+    assert_eq!(
+        hosted,
+        "CURRENT_TIMESTAMP() -> rendered with '«YYYY-MM-DD HH:MM:SS.ffffff»'"
+    );
+    assert_eq!(
+        normalize_volatile_line(
+            "CURRENT_TIMESTAMP() -> rendered with '2026-11-17 16:48:56.150000'"
+        ),
+        Ok(hosted.clone()),
+        "another instant in the same format compares equal"
+    );
+    for other in [
+        "CURRENT_TIMESTAMP -> rendered with '2026-11-17 16:48:56.150000'",
+        "RANDSTR(8, 1234) -> rendered with '9XChaf68'",
+        "a change in rendered value will result in a diff",
+    ] {
+        assert_eq!(
+            normalize_volatile_line(other).as_deref(),
+            Ok(other),
+            "kept exactly"
+        );
+    }
+    for malformed in ["2026-11-17 16:48:56", "2026-11-17T16:48:56.150000", "now"] {
+        assert!(
+            normalize_volatile_line(&format!(
+                "CURRENT_TIMESTAMP() -> rendered with '{malformed}'"
+            ))
+            .is_err(),
+            "{malformed}"
+        );
+    }
 }
 
 #[test]
@@ -2372,7 +2433,8 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
         } else if t.starts_with('"') && t.ends_with('"') {
             "«FQN»".to_string()
         } else {
-            t.to_string()
+            normalize_volatile_line(t)
+                .unwrap_or_else(|error| panic!("malformed rendered value in Explain: {error}"))
         }
     }
     fn conv(l: &qc::ExplainLine) -> serde_json::Value {

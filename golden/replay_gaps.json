@@ -449,12 +449,6 @@
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 24,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 16, vt data test first execution with evaluation on): decision and description match. Hosted adds a query analysis section (non-deterministic functions detected in query / CURRENT_TIMESTAMP() -> rendered with '...', the test query is not deterministic and this is not tolerated by config, the test query has changed <NODE_QUERY_CHANGED>); the local tree has only the data freshness section. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
     "entry": 41,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 33, vm rerun with evaluation on): both EXECUTE with the same description. Hosted lists the 9 rendered values, 'the model query is not deterministic and this is not tolerated by config' and 'the model query has changed' <NODE_QUERY_CHANGED> (CHECK-IN: hosted reports the unchanged query as changed, see the note); the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
@@ -490,12 +484,6 @@
     "entry": 45,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 35, vd rerun with evaluation on over a volatile view): both EXECUTE with the same description. Hosted says 'the model query has not changed', lists the dependency's rendered CURRENT_TIMESTAMP() with 'a change in rendered value will result in a diff', and fails 'an upstream model query has changed' (CHECK-IN: a rendered value counts as an upstream query change, see the note); the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 46,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 37, vt data test rerun with evaluation on): both EXECUTE with the same description. Hosted shows the rendered CURRENT_TIMESTAMP(), 'not tolerated by config' and 'the test query has changed' <NODE_QUERY_CHANGED> plus the freshness section; the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   },
   {
     "fixture": "explain_volatile_evaluation.jsonl",

@@ -163,6 +163,16 @@ impl ExplainNode {
             .filter(|t| Some(t.name.as_str()) != target)
             .collect()
     }
+
+    /// The values Volatile evaluation rendered for the node's own SQL (keyed
+    /// by its Target relation, or a data test's `__target_query__`), not for
+    /// a query dependency definition.
+    fn own_volatile_values(&self) -> Vec<&crate::volatile_evaluation::RenderedValue> {
+        self.rendered_volatile_values
+            .iter()
+            .filter(|v| !self.query_dependencies.contains(&v.query))
+            .collect()
+    }
 }
 
 // ── tree node constructors (ExplainLine) ───────────────────────────────────
@@ -546,6 +556,14 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                 DecisionKind::Build,
                 R::FirstBuild | R::NoReuseCandidate(NoCandidate::IdentityMismatch),
             ) => Shape::DataTestExecute,
+            // Volatile evaluation (#195): a test whose own SQL rendered values
+            // is never reused, and its unchanged rerun prints the first
+            // execution's tree (explain_volatile_evaluation.jsonl entry 46).
+            (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
+                if !node.own_volatile_values().is_empty() && !compares_templates(node) =>
+            {
+                Shape::DataTestExecute
+            }
             (DecisionKind::Build, R::UpstreamOutdated | R::UpstreamQueryChanged)
                 if !node.genuine_upstreams().is_empty() =>
             {
@@ -875,19 +893,24 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 }
 
 /// Volatile evaluation (#67): hosted prints, in the query analysis and ahead
-/// of the query-changed verdict, one `rendered with` line per rendered value
-/// under `non-deterministic functions detected in query`, then that the
-/// query is not deterministic (`databricks_submit_copy_controls.jsonl` entry
-/// 86). Printed only where that verdict is; other shapes are uncaptured.
+/// of the query-changed verdict, one `rendered with` line per value rendered
+/// for the node's own SQL under `non-deterministic functions detected in
+/// query`, then that the query is not deterministic. Captured for a model
+/// (`databricks_submit_copy_controls.jsonl` entry 86) and a data test
+/// (`explain_volatile_evaluation.jsonl` entries 24 and 46). Printed only
+/// where that verdict is; other shapes are uncaptured.
 fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
-    if node.rendered_volatile_values.is_empty() {
+    let own = node.own_volatile_values();
+    let noun = node.noun();
+    if own.is_empty() || !matches!(noun, "model" | "test") {
         return;
     }
     let Some(query) = lines.iter_mut().find(|l| l.text == "query analysis") else {
         return;
     };
     let Some(at) = query.children.iter().position(|l| {
-        l.text == "the model query has changed" && l.badge == Some(BADGE_NODE_QUERY_CHANGED)
+        l.text == format!("the {noun} query has changed")
+            && l.badge == Some(BADGE_NODE_QUERY_CHANGED)
     }) else {
         return;
     };
@@ -895,18 +918,24 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         text: "non-deterministic functions detected in query".into(),
         marker: Some(MARKER_INFO),
         badge: None,
-        children: node
-            .rendered_volatile_values
+        children: own
             .iter()
             .map(|v| line(format!("{} -> rendered with '{}'", v.function, v.value)))
             .collect(),
     };
     let not_tolerated = leaf(
-        "the model query is not deterministic and this is not tolerated by config",
+        format!("the {noun} query is not deterministic and this is not tolerated by config"),
         Some(MARKER_INFO),
         None,
     );
     query.children.splice(at..at, [detected, not_tolerated]);
+}
+
+/// Whether the decision compared the node's unrendered code
+/// (`compare_unrendered_code`), whose query analysis no Volatile evaluation
+/// capture covers.
+fn compares_templates(node: &ExplainNode) -> bool {
+    node.template_comparison.as_ref().is_some_and(|c| c.enabled)
 }
 
 /// The tree [`explain_lines`] prints before Volatile evaluation's lines.
@@ -1174,7 +1203,24 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(Shape::UpstreamNamesChanged) => upstream_names_changed_tree(node),
         Some(Shape::CopyDisabled { over: false }) => vec![copy_disabled_table_analysis(node)],
         Some(Shape::CopyDisabled { over: true }) => seed_copy_disabled_over_tree(node),
-        Some(Shape::DataTestExecute) => vec![unanchored_data_freshness_analysis(node)],
+        Some(Shape::DataTestExecute) => {
+            let mut tree = Vec::new();
+            // Volatile evaluation (#195): a test whose own SQL rendered values
+            // prints a query analysis, where `add_volatile_lines` lists them
+            // (explain_volatile_evaluation.jsonl entries 24 and 46).
+            if !node.own_volatile_values().is_empty() && !compares_templates(node) {
+                tree.push(section(
+                    "query analysis",
+                    vec![leaf(
+                        "the test query has changed",
+                        Some(MARKER_FAIL),
+                        Some(BADGE_NODE_QUERY_CHANGED),
+                    )],
+                ));
+            }
+            tree.push(unanchored_data_freshness_analysis(node));
+            tree
+        }
         Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
             section("query analysis", Vec::new()),
             unanchored_data_freshness_analysis(node),
