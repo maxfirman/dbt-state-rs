@@ -811,10 +811,8 @@ async fn replay_snowflake_evaluation(
                 if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
                     local_ids.insert(hosted.to_owned(), local);
                 }
-                if let Some(qc::submit_sql_response::Response::ReadyToExecute(ready)) =
-                    response.response
-                {
-                    executed.insert(index, ready);
+                if variant(&response) == "ready_to_execute" {
+                    executed.insert(index, support::scenario::into_execute(response));
                 }
             }
             "ConfirmExecution" => {
