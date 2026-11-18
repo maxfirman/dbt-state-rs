@@ -92,6 +92,31 @@ the request: `c1_config_semantics.jsonl` recorded a `pre_hook` rebuild that a
 clean-baseline retest did not reproduce. The server implements the
 reproducible skip.
 
+## Volatile SQL (Volatile evaluation)
+
+Client 2.0.11 sends `evaluate_volatile_sql: true` as
+`tolerate_nondeterminism = false`. Hosted then reports a value for each
+Volatile function in `transformed_nodes_by_query`; no client reads it, and
+the Warehouse executes the original SQL. The supported functions, branches
+and value formats are in [protocol.md](protocol.md#volatile-evaluation).
+Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
+`explain_volatile_evaluation_functions.jsonl` (run 2)
+([characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)).
+
+| Scenario | Hosted | Reproduced |
+|---|---|---|
+| Snowflake model calling Volatile functions, evaluation on, first build | build, 6 / 6, "its table did not exist"; one map entry per distinct function text, keyed by the Target relation; first-build Explain tree without volatile lines (run 1 entry 6, run 2) | ✅ (#193, #194) |
+| Same, rerun over its existing Target relation | build, 6 / 6, "either its query didn't match or its upstream data is out of date"; Explain "the model query has changed" with each rendered value and "not tolerated by config" (run 1 entries 33, 41) | ✅ (#194): reuse is refused; identity is unchanged and the Explain wording comes from the persisted values |
+| Deterministic Snowflake model, evaluation on, unchanged | skip, empty map (run 1 entry 31) | ✅ (#194): Reuse qualification refuses only SQL that calls a Volatile function (maintainer decision on #191 cell 3) |
+| Volatile Snowflake model or view, evaluation off, unchanged (also a model switched off after an evaluation-on build) | skip with the map filled; Explain "the model query has not changed" with the values and "tolerated by config" (run 1 entries 32, 34, 50) | ✅ (#194) |
+| Snowflake table over a view that calls a Volatile function, evaluation on, rerun | build, 6 / 6; map keyed by the dependency's name only; Explain "an upstream model query has changed" with the dependency's values (run 1 entries 35, 45) | ✅ (#195): identity and Upstream producers are unchanged |
+| Snowflake data test calling a Volatile function, evaluation on | build on every run, 6 / 6, map keyed `__target_query__`; Explain "the test query has changed" with the values (run 1 entries 16, 24, 37, 46) | ✅ (#195) |
+| Snowflake table downstream of a volatile model, Lag tolerance 3600 s, after the upstream's rebuild | skip, `is_stale=true`, "within lag tolerance", empty map (run 1 entries 39, 47) | ✅ (#196): the rebuild is upstream data drift; outside Lag tolerance it rebuilds (offline only) |
+| Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
+| Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (`clone_fallback_volatile.jsonl`) | ✅ |
+| Databricks model calling `rand()`, evaluation on | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
+| Databricks rerun, data test, downstream table, evaluation off | not captured (#198) | empty map, conservative rebuild |
+
 ## Result copy (`CLONE`)
 
 | Scenario | Hosted | Reproduced |
@@ -120,20 +145,16 @@ reproducible skip.
 | FULL SQL submit, equivalent exists under another name | `ready_to_clone` (srr=1 TARGET_TABLE_MISMATCH) | ✅ |
 | Same, with `clone_chain_depth_limit=0` | build (srr=1, crr=10) | ✅ |
 | Same, source older than the current upstream, any tolerance | copy | ✅ |
-| Same, volatile SQL with `tolerate_nondeterminism=false` | build | ✅ conservative gate only (see below) |
+| Same, volatile SQL with `tolerate_nondeterminism=false` | build, with the rendered values in `transformed_nodes_by_query` (`clone_fallback_volatile.jsonl`) | ✅ ([Volatile SQL](#volatile-sql-volatile-evaluation)) |
 | Swapped dependency bindings | build | ✅ |
 | Snowflake copy DDL (TABLE, TRANSIENT TABLE) | `CREATE OR REPLACE … CLONE … COPY GRANTS` | ✅ byte match |
 | View source, or a dialect without copy DDL | — | rejected; no guessed DDL |
 
 ## Known gaps
 
-- **Volatile evaluation**: `result_copy.rs::submit_lookup` suppresses the copy
-  when volatile evaluation is requested and the SQL contains a volatile
-  function. The server renders `CURRENT_TIMESTAMP()` in
-  `transformed_nodes_by_query` as hosted does for these builds
-  (`clone_fallback_volatile.jsonl`, #193); other Snowflake Volatile
-  functions are field-scoped gaps (`explain_volatile_evaluation*.jsonl` in
-  `golden/replay_gaps.json`).
+- **Volatile evaluation**: the uncaptured cells, Databricks (#198) and
+  Snowflake, are listed in
+  [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
 - **Result copy and upstream producers**: hosted did not copy an equivalent
   whose consumed upstream had since been externally modified, then later copied
   it with `is_stale=true`; the server copies on the first submit. This

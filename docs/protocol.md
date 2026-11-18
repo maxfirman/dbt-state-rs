@@ -196,21 +196,15 @@ MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
 
 - `skip_execution`: `explained_decision`, `execution_results` (the complete
   cached Struct; an empty Struct when none was recorded), `execution_runtime_ms`
-  (echo of the reused run), `execution_decision_id`.
+  (echo of the reused run), `execution_decision_id`,
+  `transformed_nodes_by_query`.
 - `ready_to_execute`: `request_id`, `explained_decision`,
-  `execution_decision_id`. `query_hash_metadata_info` is always unset.
-  `transformed_nodes_by_query` carries the values of Volatile evaluation
-  (#67) and is empty otherwise: when the submit requests it
-  (`tolerate_nondeterminism = false`) and its root SQL calls a Volatile
-  function the Warehouse has a captured rule for, the map is keyed by the
-  request's `target_table` as sent, with one inner `node_to_func` entry per
-  function. Captured rules: Databricks `rand()` as `RAND()`, a plain decimal
-  in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85); Snowflake
-  `current_timestamp()` as `CURRENT_TIMESTAMP()`, the server clock in UTC as
-  `YYYY-MM-DD HH:MM:SS.ffffff` (`clone_fallback_volatile.jsonl` entries 0
-  and 2, #193). No client
-  reads the map; the Warehouse executes the original SQL. Every other
-  branch keeps it empty.
+  `execution_decision_id`, `transformed_nodes_by_query`.
+  `query_hash_metadata_info` is always unset.
+- `transformed_nodes_by_query` carries the values of Volatile evaluation on
+  the Warehouses, branches and function forms hosted was captured rendering,
+  and is empty otherwise ([Volatile evaluation](#volatile-evaluation)). No
+  client reads the map; the Warehouse executes the original SQL.
 - `ready_to_clone`: a Result copy of an equivalent; see
   [Result copy on submit](#result-copy-on-submit).
 
@@ -396,12 +390,22 @@ and fingerprints.
    Hosted differs in one captured case, a keyed divergence: it reuses a test
    confirmed with incomplete results and echoes them (#87, crafted, an
    [accepted divergence](correctness-handoff.md#accepted-divergences)).
-8. **Volatile evaluation.** With `tolerate_nondeterminism=false` the server
-   never reuses a model or data test (it does not implement the hosted
-   `transformed_nodes_by_query` exchange). On Snowflake the Result copy
-   fallback is suppressed only when the root SQL or a dependency definition
-   contains a volatile function; a deterministic model is still copied (fixture
-   `clone_fallback_volatile.jsonl`, `experiments/clone_eligibility.sh`).
+8. **Volatile evaluation.** With `tolerate_nondeterminism=false` (Volatile
+   evaluation requested), Reuse qualification refuses reuse only when the
+   Warehouse's detector finds a Volatile function in the root SQL or a
+   query dependency definition (`reuse_candidate.rs::sql_qualifies`,
+   `Warehouse::has_volatile_sql`). Deterministic SQL reuses as without the
+   flag: hosted SKIPs a deterministic Snowflake model with evaluation
+   requested (`explain_volatile_evaluation.jsonl` entry 31), and the
+   maintainer approved this relaxation on the #191 check-in (#194). Only
+   Snowflake has a checked detector; every other Warehouse, Databricks
+   included, never reuses with evaluation requested. On Snowflake the Result
+   copy fallback is suppressed under the same condition; a deterministic
+   model is still copied (fixture `clone_fallback_volatile.jsonl`,
+   `experiments/clone_eligibility.sh`). Evaluation off changes nothing:
+   hosted and this server SKIP unchanged volatile SQL. The values rendered
+   for the response follow the decision and never change it; the Warehouse
+   executes the original SQL ([Volatile evaluation](#volatile-evaluation)).
 
 A passing replay establishes only its captured cases.
 
@@ -549,6 +553,126 @@ every other dialect reload the seed.
   COPY GRANTS`, transient exactly when the source's confirmed `table_type`
   is (`snowflake::copy_ddl`). The pending row keeps the seed's own identity,
   so the confirmed copy is reused by the next matching submit.
+
+### Volatile evaluation
+
+Client 2.0.11 sends `evaluate_volatile_sql: true` as
+`tolerate_nondeterminism = false`, which requests Volatile evaluation. Hosted
+then renders each Volatile function in the SQL to a value when it decides
+and returns the values in `transformed_nodes_by_query`. This server does the
+same for the function forms, branches and Warehouses that hosted was
+captured rendering (#67; Snowflake:
+[characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)).
+No official client reads the map: the pinned client calls it telemetry and
+drops it. **The Warehouse always executes the original SQL.** The
+characterization read back what each captured build wrote and found no
+rendered value in it.
+
+The submit decision layer renders the values after the decision is made
+(`submit_decision::submit_sql_explained`, `volatile_evaluation::evaluate`,
+rules from `Warehouse::volatile_rules`). The pure decision engine never sees
+them, and they enter no identity, fingerprint, Upstream producer or Reuse
+qualification. They are persisted with the decision for Explain only
+([ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md), "Amended by #67").
+
+**Map shape.** `{query: {"node_to_func": {function_text: value}}}`.
+- `query` is the request's `target_table` as sent. A Snowflake data test,
+  which has no Target relation, uses `__target_query__`. A Snowflake query
+  dependency definition uses the dependency's `name` as sent; dependencies
+  follow the root SQL, in request order. A model whose only Volatile call is
+  in a dependency has only the dependency key (`explain_volatile_evaluation.jsonl`
+  entries 10, 16).
+- Each function text appears once per query. Repeats and aliases fold into
+  one value, from the first call in the SQL.
+- Clock values come from the server clock in UTC, to the microsecond. The
+  server reads the clock once per submit, so every clock function in one
+  response carries the same instant; hosted reads it per function. Random
+  values and UUIDs come from the operating system's random source. In tests
+  the test-only replay clock sets the instant, to the millisecond.
+- Only an unquoted, unqualified call in a captured form matches. A function
+  name in a comment, a string literal or a quoted identifier renders nothing
+  (`explain_volatile_evaluation_functions.jsonl` entry 22), and neither do a
+  qualified name or SQL that does not parse.
+
+**Supported functions** (client 2.0.11; run 1 =
+`golden/fixtures/explain_volatile_evaluation.jsonl`, run 2 =
+`golden/fixtures/explain_volatile_evaluation_functions.jsonl`):
+
+| Warehouse | SQL form | Function text (inner key) | Value | Evidence |
+|---|---|---|---|---|
+| Snowflake | `current_timestamp()`, `current_timestamp`, `localtimestamp()`, `systimestamp()`, `getdate()` | `CURRENT_TIMESTAMP()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` | run 1 entry 6; run 2 entries 13, 19, 23, 24; `clone_fallback_volatile.jsonl` entries 0, 2 |
+| Snowflake | `localtimestamp` (no parentheses) | `CURRENT_TIMESTAMP` | as above | run 2 entry 14 |
+| Snowflake | `sysdate()` | `SYSDATE()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff+00:00` | run 1 entry 6 |
+| Snowflake | `current_time()`, `localtime()` | `CURRENT_TIME` | clock, `HH:MM:SS.ffffff` | run 2 entries 17, 20 |
+| Snowflake | `current_date()`, `current_date` | `CURRENT_DATE` | clock, `YYYY-MM-DD` | run 1 entry 6; run 2 entry 15 |
+| Snowflake | `random()`, also nested (`zipf(1, 10, random())`) | `RANDOM()` | decimal in [0, 1) | run 1 entry 6; run 2 entry 16 |
+| Snowflake | `uniform(1, 100, random())` | `UNIFORM(1, 100, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | run 2 entry 18 |
+| Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | run 1 entries 6, 8, 33, 34, 50 |
+| Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | as above |
+| Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | run 1 entry 6 |
+| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 |
+
+Intentional fallbacks, each rendering nothing for that call:
+- Snowflake `zipf(1, 10, 1234)` and `seq1()`, `seq2()`, `seq4()`, `seq8()`:
+  hosted renders nothing for them either (run 1 entry 6; run 2 entries 16,
+  21). `zipf` keeps the nested `random()`'s value.
+- Uncaptured forms: `current_time` and `localtime` without parentheses,
+  `current_timestamp(n)`, and `uniform`, `randstr` or `normal` with other
+  arguments. Hosted's key and value for them are unknown, so none is
+  invented.
+- Functions outside the Snowflake detector set (for example `CURRENT_USER`):
+  uncaptured; nothing is rendered, and reuse is not refused for them.
+- DuckDB and every other dialect: nothing. Hosted does not engage for DuckDB.
+
+**Branches.** A cell marked uncaptured keeps an empty map.
+
+| Warehouse | Case | Evaluation on | Evaluation off | Evidence |
+|---|---|---|---|---|
+| Snowflake | `ready_to_execute`, root SQL of a model | rendered | rendered | run 1 entries 6, 7, 8, 33 |
+| Snowflake | `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 32, 34, 50 |
+| Snowflake | data test (`__target_query__`) | rendered | rendered, uncaptured | run 1 entries 16, 37 |
+| Snowflake | query dependency definition | rendered | rendered, uncaptured | run 1 entries 10, 35 |
+| Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
+| Databricks | `ready_to_execute`, root SQL | rendered | empty, uncaptured (#198) | entries 85, 86 |
+| Databricks | rerun, data test, downstream table, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
+
+The data-test and query-dependency values with evaluation off are current
+behavior, not hosted evidence: Snowflake's rules render with evaluation off
+for every key, and only the model cells of that case were captured. Explain
+prints no volatile lines for those values.
+
+**Decisions.** Rendering never changes a decision (rule 8 for Reuse
+qualification and Result copy). With evaluation requested, a Snowflake
+model or data test whose SQL calls a Volatile function rebuilds on every
+run with codes 6 / 6 and hosted's description (run 1 entries 33, 35, 37).
+The detector set (`sql_norm::VOLATILE_FUNCTIONS`) is wider than the
+rendering rules, so `zipf`, `seqN` and the uncaptured forms above also
+rebuild, with an empty map or only the other functions' values. A table
+downstream of a volatile model follows the ordinary
+[ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) rules: the
+upstream's rebuild is upstream data drift, not an Upstream producer change,
+so the table is reused within Lag tolerance (run 1 entries 39, 47) and
+rebuilt outside it (offline only, #196). Its own map is empty.
+
+**Explain** reads the persisted values (`node_decisions.rendered_volatile_values`,
+migration 0027) and whether the submit requested evaluation
+(`node_decisions.volatile_evaluation_requested`, migration 0028). A decision
+recorded before either migration prints no volatile lines. The captured trees
+are in [explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7) (own
+SQL, a model rerun, an evaluation-off reuse), its
+[volatile query dependency](explain-catalog.md#execute-over-a-volatile-query-dependency)
+section and its [DATA TEST](explain-catalog.md#data-test) section.
+
+**Conformance.** The replay compares map keys and function text exactly and
+each runtime value by its format (`conformance.rs::normalize_volatile_values`,
+[testing.md](testing.md#goldenreplay_gapsjson)). No replay gap covers
+Volatile evaluation.
+
+**Not captured.** The remaining cells, each with its tracking issue where
+one is open, are listed in
+[correctness-handoff.md](correctness-handoff.md#open-hosted-questions)
+(Databricks: #198).
 
 ## Speculative submits: `SQL.SubmitEnrichedSQLSpeculative`
 
