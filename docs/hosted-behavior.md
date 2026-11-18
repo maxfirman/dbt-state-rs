@@ -97,7 +97,7 @@ reproducible skip.
 Client 2.0.11 sends `evaluate_volatile_sql: true` as
 `tolerate_nondeterminism = false`. Hosted then reports a value for each
 Volatile function in `transformed_nodes_by_query`; no client reads it, and
-the Warehouse executes the original SQL. The supported functions, branches
+the Warehouse executes the original SQL. The supported functions, cells
 and value formats are in [protocol.md](protocol.md#volatile-evaluation).
 Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 `explain_volatile_evaluation_functions.jsonl` (run 2)
@@ -114,8 +114,8 @@ Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 | Snowflake table downstream of a volatile model, Lag tolerance 3600 s, after the upstream's rebuild | skip, `is_stale=true`, "within lag tolerance", empty map (run 1 entries 39, 47) | ✅ (#196): the rebuild is upstream data drift; outside Lag tolerance it rebuilds (offline only) |
 | Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
 | Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (`clone_fallback_volatile.jsonl`) | ✅ |
-| Databricks model calling `rand()`, evaluation on | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
-| Databricks rerun, data test, downstream table, evaluation off | not captured (#198) | conservative rebuild; a rerun renders `RAND()` as a build does, the other cells render nothing |
+| Databricks model calling `rand()`, evaluation on, query-changed rebuild over its existing Target relation | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
+| Databricks first build, unchanged rerun, data test, downstream table, evaluation off | not captured (#198) | conservative rebuild, empty map, no volatile Explain lines |
 
 ## Result copy (`CLONE`)
 

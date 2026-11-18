@@ -74,13 +74,10 @@ pub struct ExplainNode {
     /// Original submit instant, solely for rendering temporal text.
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<TemplateComparison>,
-    /// The values the decision's Volatile evaluation rendered, as returned
-    /// (migration 0027). Empty when none were, for a decision recorded
-    /// before the migration and for unreadable evidence: no volatile lines.
-    pub rendered_volatile_values: Vec<crate::volatile_evaluation::RenderedValue>,
-    /// Whether the SQL submit requested Volatile evaluation (migration 0028).
-    /// `None` for other decisions and before the migration: no volatile lines.
-    pub volatile_evaluation_requested: Option<bool>,
+    /// The decision's Volatile evaluation: the values it rendered, as
+    /// returned, and whether the SQL submit requested it. No evidence prints
+    /// no volatile lines.
+    pub volatile_evaluation: crate::volatile_evaluation::Evidence,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -171,10 +168,17 @@ impl ExplainNode {
     /// by its Target relation, or a data test's `__target_query__`), not for
     /// a query dependency definition.
     fn own_volatile_values(&self) -> Vec<&crate::volatile_evaluation::RenderedValue> {
-        self.rendered_volatile_values
+        self.volatile_evaluation
+            .values
             .iter()
             .filter(|v| !self.query_dependencies.contains(&v.query))
             .collect()
+    }
+
+    /// Whether Volatile evaluation was requested and rendered values for the
+    /// node's own SQL.
+    fn evaluated_own_volatile_sql(&self) -> bool {
+        self.volatile_evaluation.requested == Some(true) && !self.own_volatile_values().is_empty()
     }
 }
 
@@ -221,12 +225,7 @@ impl ExplainNode {
                 .template_comparison
                 .clone()
                 .and_then(|v| serde_json::from_value(v).ok()),
-            rendered_volatile_values: row
-                .rendered_volatile_values
-                .clone()
-                .and_then(|v| serde_json::from_value(v).ok())
-                .unwrap_or_default(),
-            volatile_evaluation_requested: row.volatile_evaluation_requested,
+            volatile_evaluation: row.volatile_evaluation(),
             execution_decision_id: row.execution_decision_id.clone()?,
             decision,
             execution_type: row.execution_type,
@@ -831,9 +830,9 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                 && !upstreams
                 && !node.own_target_absent()
                 && !compares_templates(node)
-                && node.volatile_evaluation_requested == Some(true)
+                && node.volatile_evaluation.requested == Some(true)
                 && node.own_volatile_values().is_empty()
-                && !node.rendered_volatile_values.is_empty() =>
+                && !node.volatile_evaluation.values.is_empty() =>
         {
             Shape::VolatileDependency
         }
@@ -926,8 +925,7 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// #191). Captured for a table model without upstreams; other shapes keep
 /// the decision's own tree.
 fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
-    let captured = node.volatile_evaluation_requested == Some(true)
-        && !node.own_volatile_values().is_empty()
+    let captured = node.evaluated_own_volatile_sql()
         && node.decision == DecisionKind::Build
         && node.reason
             == Some(DecisionReason::NoReuseCandidate(
@@ -980,7 +978,7 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
     if own.is_empty() || !matches!(noun, "model" | "test") {
         return;
     }
-    let (verdict, badge, tolerance) = match node.volatile_evaluation_requested {
+    let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
         Some(true) => (
             format!("the {noun} query has changed"),
             BADGE_NODE_QUERY_CHANGED,
@@ -1003,17 +1001,24 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
     else {
         return;
     };
-    let detected = qc::ExplainLine {
+    let detected = volatile_functions_detected(own.into_iter().map(rendered_value).collect());
+    let tolerance = leaf(tolerance, Some(MARKER_INFO), None);
+    query.children.splice(at..at, [detected, tolerance]);
+}
+
+/// `non-deterministic functions detected in query` [INFO] over `values`.
+fn volatile_functions_detected(values: Vec<qc::ExplainLine>) -> qc::ExplainLine {
+    qc::ExplainLine {
         text: "non-deterministic functions detected in query".into(),
         marker: Some(MARKER_INFO),
         badge: None,
-        children: own
-            .iter()
-            .map(|v| line(format!("{} -> rendered with '{}'", v.function, v.value)))
-            .collect(),
-    };
-    let tolerance = leaf(tolerance, Some(MARKER_INFO), None);
-    query.children.splice(at..at, [detected, tolerance]);
+        children: values,
+    }
+}
+
+/// `«function» -> rendered with '«value»'`.
+fn rendered_value(v: &crate::volatile_evaluation::RenderedValue) -> qc::ExplainLine {
+    line(format!("{} -> rendered with '{}'", v.function, v.value))
 }
 
 /// Volatile evaluation (#195): the rebuild of a table whose own query is
@@ -1026,8 +1031,8 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
 /// line in this form.
 fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let mut dependencies: Vec<(&str, Vec<qc::ExplainLine>)> = Vec::new();
-    for v in &node.rendered_volatile_values {
-        let rendered = line(format!("{} -> rendered with '{}'", v.function, v.value));
+    for v in &node.volatile_evaluation.values {
+        let rendered = rendered_value(v);
         match dependencies.iter_mut().find(|(name, _)| *name == v.query) {
             Some((_, values)) => values.push(rendered),
             None => dependencies.push((&v.query, vec![rendered])),
@@ -1037,15 +1042,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         .into_iter()
         .map(|(name, mut values)| {
             values.push(line("a change in rendered value will result in a diff"));
-            section(
-                quote(name),
-                vec![qc::ExplainLine {
-                    text: "non-deterministic functions detected in query".into(),
-                    marker: Some(MARKER_INFO),
-                    badge: None,
-                    children: values,
-                }],
-            )
+            section(quote(name), vec![volatile_functions_detected(values)])
         })
         .collect();
     vec![
@@ -1084,8 +1081,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// with values, and evaluation off, are uncaptured and keep the ordinary tree.
 fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
     node.is_data_test()
-        && node.volatile_evaluation_requested == Some(true)
-        && !node.own_volatile_values().is_empty()
+        && node.evaluated_own_volatile_sql()
         && !compares_templates(node)
         && matches!(
             node.reason,
@@ -2640,8 +2636,7 @@ mod tests {
         ExplainNode {
             display_submitted_at_ms: None,
             template_comparison: None,
-            rendered_volatile_values: Vec::new(),
-            volatile_evaluation_requested: None,
+            volatile_evaluation: Default::default(),
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,
@@ -4729,7 +4724,7 @@ mod tests {
         test.target_table = None;
         test.input_tables = vec![tbl("\"DB\".\"S\".\"UP\"")];
         test.reason = Some(DecisionReason::FirstBuild);
-        test.rendered_volatile_values = vec![value(crate::volatile_evaluation::TARGET_QUERY_KEY)];
+        test.volatile_evaluation.values = vec![value(crate::volatile_evaluation::TARGET_QUERY_KEY)];
 
         let view = "\"DB\".\"S\".\"VV\"";
         let mut table = node(
@@ -4741,11 +4736,11 @@ mod tests {
             NoCandidate::FailedReuseQualification,
         ));
         table.query_dependencies = vec![view.into()];
-        table.rendered_volatile_values = vec![value(view)];
+        table.volatile_evaluation.values = vec![value(view)];
 
         for n in [&test, &table] {
             let mut requested = n.clone();
-            requested.volatile_evaluation_requested = Some(true);
+            requested.volatile_evaluation.requested = Some(true);
             assert!(
                 detected(&explain_lines(&requested)),
                 "{:?}",
@@ -4753,7 +4748,7 @@ mod tests {
             );
             for flag in [Some(false), None] {
                 let mut other = n.clone();
-                other.volatile_evaluation_requested = flag;
+                other.volatile_evaluation.requested = flag;
                 assert!(
                     !detected(&explain_lines(&other)),
                     "{flag:?}: {:?}",

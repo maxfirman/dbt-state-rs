@@ -14,7 +14,7 @@
 //! expect a build, confirm) or [`Scenario::record`] with [`Submit::record`] /
 //! [`Seed::record`]. Raw SQL writes live only in `legacy` and `fault`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dbt_state_proto::query_cache as qc;
 use dbt_state_server::store::Store;
@@ -800,6 +800,56 @@ pub fn variant(resp: &qc::SubmitSqlResponse) -> &'static str {
     super::response_variant(resp)
 }
 
+/// Volatile evaluation values (`transformed_nodes_by_query`), as query →
+/// function text → value.
+pub type VolatileValues = BTreeMap<String, BTreeMap<String, String>>;
+
+/// `map` (a decision's `transformed_nodes_by_query`) as [`VolatileValues`].
+pub fn volatile_values_of(map: &HashMap<String, qc::NodeFuncMapping>) -> VolatileValues {
+    map.iter()
+        .map(|(query, node)| {
+            let functions = node
+                .node_to_func
+                .iter()
+                .map(|(function, value)| (function.clone(), value.clone()))
+                .collect();
+            (query.clone(), functions)
+        })
+        .collect()
+}
+
+/// The Volatile evaluation values a SubmitSQLResponse returned, on whichever
+/// branch.
+pub fn volatile_values(resp: &qc::SubmitSqlResponse) -> VolatileValues {
+    match &resp.response {
+        Some(Response::ReadyToExecute(r)) => volatile_values_of(&r.transformed_nodes_by_query),
+        Some(Response::SkipExecution(r)) => volatile_values_of(&r.transformed_nodes_by_query),
+        Some(Response::ReadyToClone(r)) => volatile_values_of(&r.transformed_nodes_by_query),
+        _ => VolatileValues::new(),
+    }
+}
+
+/// The Volatile evaluation values of a captured SubmitEnrichedSQL `response`
+/// (a fixture entry's `response` object), on whichever branch.
+pub fn hosted_volatile_values(response: &serde_json::Value) -> VolatileValues {
+    let payload = response["response"]
+        .as_object()
+        .and_then(|branches| branches.values().next())
+        .expect("a captured decision");
+    let map: HashMap<String, qc::NodeFuncMapping> =
+        serde_json::from_value(payload["transformed_nodes_by_query"].clone())
+            .expect("captured transformed_nodes_by_query");
+    volatile_values_of(&map)
+}
+
+/// `values` as query → function texts, without the values.
+pub fn volatile_map_shape(values: &VolatileValues) -> Vec<(String, Vec<String>)> {
+    values
+        .iter()
+        .map(|(query, functions)| (query.clone(), functions.keys().cloned().collect()))
+        .collect()
+}
+
 /// The BUILD decision, or a panic naming what was decided instead.
 pub fn into_execute(resp: qc::SubmitSqlResponse) -> qc::ReadyToExecuteResponse {
     match resp.response {
@@ -1173,8 +1223,9 @@ impl Scenario {
         self.try_select(req).await.expect("GetStateSelection")
     }
 
-    /// ResolveDeferredRelations: the physical FQN of each resolvable node.
-    /// GetExplainMessages for `ids`, scoped to this scenario's org.
+    /// GetExplainMessages for `ids`, scoped to this scenario's org: the
+    /// Explain tree of each decision this org recorded, and nothing for
+    /// another org's decision ids.
     pub async fn explain(&self, ids: &[&str]) -> qc::GetExplainMessagesResponse {
         qc::explain_client::ExplainClient::new(self.channel.clone())
             .get_explain_messages(self.request(qc::GetExplainMessagesRequest {
@@ -1185,6 +1236,7 @@ impl Scenario {
             .into_inner()
     }
 
+    /// ResolveDeferredRelations: the physical FQN of each resolvable node.
     pub async fn resolve_deferred(
         &self,
         req: qc::ResolveDeferredRelationsRequest,

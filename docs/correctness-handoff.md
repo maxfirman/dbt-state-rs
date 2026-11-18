@@ -155,29 +155,32 @@ server keeps the conservative behavior described.
   client (`experiments/resolution_context.sh`). The schema-abstracted identity
   is unchanged (`analyzed_workload/identity/tests.rs::ns_uniform_schema_rename_is_cross_env_positive`).
 - **Volatile evaluation: uncaptured cells.** The supported functions,
-  response branches and Warehouses are in
-  [protocol.md](protocol.md#volatile-evaluation) (#67). Each cell below
-  keeps today's behavior, which is an empty map (or only the captured
-  functions' values) and the conservative rebuild unless stated. None has a
-  replay gap, and the Warehouse executes the original SQL in every case.
-  - Databricks (#198): the rerun over the existing Target relation, a data
-    test, a table downstream of the volatile model run twice, their Explain,
-    and evaluation off. Until then a Databricks rerun renders its root
-    SQL's values as a first build does, and a data test or query dependency
-    renders nothing. Databricks never reuses with evaluation requested,
-    because it has no checked Volatile function detector.
+  cells and Warehouses are in
+  [protocol.md](protocol.md#volatile-evaluation) (#67). Values are returned
+  only in the captured cells (`Rules::cells`). Each cell below keeps today's
+  behavior, which is an empty map, no volatile Explain lines and the
+  conservative rebuild unless stated. None has a replay gap, and the
+  Warehouse executes the original SQL in every case.
+  - Databricks (#198): the first build, the unchanged rerun over the
+    existing Target relation, other execution types, a data test, a query
+    dependency, a table downstream of the volatile model run twice, their
+    Explain, and evaluation off. Only the query-changed FULL rebuild
+    (entries 85, 86) renders. Databricks never reuses with evaluation
+    requested, because it has no checked Volatile function detector.
   - Snowflake, no open ticket: a model with Volatile calls both in its own
-    SQL and in a dependency (the server returns both keys); `ready_to_clone`
-    with a filled map, and a Result copy of volatile SQL with evaluation off;
-    a data test over a volatile view; functions outside the detector set
+    SQL and in a dependency; a data test over a volatile view; a data test
+    or query dependency with evaluation off; a view with evaluation on;
+    incremental, snapshot and custom execution types; a data test with a
+    Target relation; `ready_to_clone` with a filled map, and a Result copy
+    of volatile SQL with evaluation off; functions outside the detector set
     (for example `CURRENT_USER`) and the uncaptured call forms
     (`current_time` or `localtime` without parentheses,
     `current_timestamp(n)`, `uniform`, `randstr` or `normal` with other
     arguments); a downstream table with zero Lag tolerance.
-  - Snowflake data test or query dependency with evaluation off, no open
-    ticket: the server returns their values in the map, because Snowflake's
-    rules render with evaluation off for every key and only the model cells
-    of that case were captured. Explain prints no volatile lines for them.
+  - Snowflake FULL model builds render for any decision reason, with
+    evaluation on or off. Hosted was captured on first builds and the
+    unchanged rerun only; a query-changed or otherwise forced rebuild is
+    uncaptured on Snowflake (captured on Databricks, entries 85, 86).
   - Snowflake Explain, no open ticket: an evaluation-off rebuild; a volatile
     data test's logic change; the model rerun tree (#191 cell 2) for a model
     with upstreams, query dependencies, a view, an incremental or

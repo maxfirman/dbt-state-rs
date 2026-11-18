@@ -273,17 +273,23 @@ pub async fn submit_sql_explained(
     let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
-    // Volatile evaluation, once decided: a build, and a reuse where the
-    // Warehouse's captures show one rendered. A copy has no capture.
-    let rules = Warehouse::from_dialect(&req.dialect).volatile_rules();
-    let renders = match decided.outcome {
-        SubmitOutcome::Execute { .. } => true,
-        SubmitOutcome::Skip { .. } => rules.is_some_and(|rules| rules.on_skip),
-        _ => false,
+    // Volatile evaluation, once decided: a build or a reuse, in the cells the
+    // Warehouse was captured rendering in. A copy has no capture.
+    let decision = match &decided.outcome {
+        SubmitOutcome::Execute { record, .. } => {
+            Some(crate::volatile_evaluation::Decided::Build(record.reason))
+        }
+        SubmitOutcome::Skip { .. } => Some(crate::volatile_evaluation::Decided::Reuse),
+        _ => None,
     };
-    if renders {
-        decided.rendered = crate::volatile_evaluation::evaluate(req, rules, sources);
-    }
+    decided.rendered = decision.and_then(|outcome| {
+        crate::volatile_evaluation::evaluate(
+            req,
+            Warehouse::from_dialect(&req.dialect).volatile_rules(),
+            outcome,
+            sources,
+        )
+    });
     Ok(decided)
 }
 

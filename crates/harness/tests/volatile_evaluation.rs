@@ -22,7 +22,10 @@ use std::collections::BTreeMap;
 
 use dbt_state_harness::diff::GoldenEntry;
 use dbt_state_proto::query_cache as qc;
-use support::scenario::{built_at, captured_submit, variant, Scenario, OWN_EPOCH};
+use support::scenario::{
+    built_at, captured_submit, hosted_volatile_values, variant, volatile_map_shape,
+    volatile_values, volatile_values_of, Scenario, Submit, VolatileValues, OWN_EPOCH,
+};
 
 const CONTROLS: &str = include_str!("fixtures/databricks_submit_copy_controls.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
@@ -32,28 +35,26 @@ const RAND_EXPLAIN: usize = 86;
 /// The submit before it: the same model without `rand()`.
 const DETERMINISTIC_SUBMIT: usize = 83;
 
-fn controls() -> Vec<GoldenEntry> {
-    CONTROLS
+fn entries(fixture: &str) -> Vec<GoldenEntry> {
+    fixture
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
 }
 
-fn captured_request(entry: usize) -> serde_json::Value {
-    controls()[entry].request.clone()
+/// The request of captured submit `entry` of `fixture`.
+fn request(fixture: &str, entry: usize) -> serde_json::Value {
+    entries(fixture)[entry].request.clone()
 }
 
-/// The Target relation the captured submit sends.
-fn captured_target() -> String {
-    captured_submit(&captured_request(RAND_SUBMIT))
-        .build()
-        .target_table
-        .unwrap()
+/// The Target relation a captured `request` sends.
+fn target(request: &serde_json::Value) -> String {
+    request["target_table"].as_str().unwrap().to_owned()
 }
 
 /// The epoch the captured submit reports for its own Target relation.
 fn captured_target_epoch() -> i64 {
-    let req = captured_submit(&captured_request(RAND_SUBMIT)).build();
+    let req = captured_submit(&request(CONTROLS, RAND_SUBMIT)).build();
     req.tables
         .iter()
         .find(|t| Some(&t.name) == req.target_table.as_ref())
@@ -64,12 +65,12 @@ fn captured_target_epoch() -> i64 {
 /// Build the deterministic model over the captured Target relation, so a
 /// later submit of changed SQL is a query-changed rebuild of an existing table.
 async fn deterministic_history(sc: &Scenario) {
-    let deterministic = captured_request(DETERMINISTIC_SUBMIT)["sql"]
+    let deterministic = request(CONTROLS, DETERMINISTIC_SUBMIT)["sql"]
         .as_str()
         .unwrap()
         .to_owned();
     sc.build(
-        captured_submit(&captured_request(RAND_SUBMIT)).sql(&deterministic),
+        captured_submit(&request(CONTROLS, RAND_SUBMIT)).sql(&deterministic),
         captured_target_epoch(),
     )
     .await;
@@ -77,25 +78,14 @@ async fn deterministic_history(sc: &Scenario) {
 
 /// The rendered values a `ready_to_execute` returned, as
 /// target → function → value.
-fn rendered(ready: &qc::ReadyToExecuteResponse) -> BTreeMap<String, BTreeMap<String, String>> {
-    ready
-        .transformed_nodes_by_query
-        .iter()
-        .map(|(query, node)| {
-            (
-                query.clone(),
-                node.node_to_func
-                    .iter()
-                    .map(|(f, v)| (f.clone(), v.clone()))
-                    .collect(),
-            )
-        })
-        .collect()
+fn rendered(ready: &qc::ReadyToExecuteResponse) -> VolatileValues {
+    volatile_values_of(&ready.transformed_nodes_by_query)
 }
 
-/// Whether `value` has the captured `RAND()` format: a plain decimal in
-/// [0, 1), without an exponent (`0.2867523899434695`).
-fn is_captured_rand_format(value: &str) -> bool {
+/// Whether `value` has the captured `RAND()` (Databricks) and `RANDOM()`
+/// (Snowflake) format: a plain decimal in [0, 1), without an exponent
+/// (`0.2867523899434695`, `0.2496468898543448`).
+fn is_captured_unit_random(value: &str) -> bool {
     let digits = value.strip_prefix("0.").unwrap_or_default();
     !digits.is_empty()
         && digits.bytes().all(|b| b.is_ascii_digit())
@@ -105,7 +95,7 @@ fn is_captured_rand_format(value: &str) -> bool {
 /// Replay the captured controls through the RAND submit (entry 85) at their
 /// recorded times. Returns the local response to entry 85.
 async fn replay_through_rand_submit(sc: &Scenario) -> qc::ReadyToExecuteResponse {
-    let mut responses = replay(sc, &controls(), RAND_SUBMIT).await;
+    let mut responses = replay(sc, &entries(CONTROLS), RAND_SUBMIT).await;
     support::scenario::into_execute(responses.remove(&RAND_SUBMIT).unwrap())
 }
 
@@ -192,7 +182,7 @@ fn prints_volatile_lines(explain: &serde_json::Value) -> bool {
 /// Hosted's entry 86 Explain, for the local decision `id` whose `RAND()`
 /// rendered `value`.
 fn hosted_rand_explain(id: &str, value: &str) -> serde_json::Value {
-    let hosted = serde_json::to_string(&controls()[RAND_EXPLAIN].response)
+    let hosted = serde_json::to_string(&entries(CONTROLS)[RAND_EXPLAIN].response)
         .unwrap()
         .replace("0.2867523899434695", value)
         .replace("01a1e094-30e7-7588-b0dd-086c25a0df43", id);
@@ -206,19 +196,19 @@ async fn databricks_rand_build_returns_its_rendered_value_keyed_by_the_target_as
     deterministic_history(&sc).await;
 
     let ready = sc
-        .expect_execute(captured_submit(&captured_request(RAND_SUBMIT)))
+        .expect_execute(captured_submit(&request(CONTROLS, RAND_SUBMIT)))
         .await;
 
     let values = rendered(&ready);
     assert_eq!(
         values.keys().collect::<Vec<_>>(),
-        [&captured_target()],
+        [&target(&request(CONTROLS, RAND_SUBMIT))],
         "keyed by the Target relation as sent"
     );
-    let functions = &values[&captured_target()];
+    let functions = &values[&target(&request(CONTROLS, RAND_SUBMIT))];
     assert_eq!(functions.keys().collect::<Vec<_>>(), ["RAND()"]);
     assert!(
-        is_captured_rand_format(&functions["RAND()"]),
+        is_captured_unit_random(&functions["RAND()"]),
         "captured float format, got {:?}",
         functions["RAND()"]
     );
@@ -231,7 +221,7 @@ async fn databricks_rand_explain_matches_hosted_with_the_returned_value_after_a_
     let sc = Scenario::connect(&server).await;
     let ready = replay_through_rand_submit(&sc).await;
     let id = ready.execution_decision_id.clone().unwrap();
-    let value = rendered(&ready)[&captured_target()]["RAND()"].clone();
+    let value = rendered(&ready)[&target(&request(CONTROLS, RAND_SUBMIT))]["RAND()"].clone();
 
     assert_eq!(explain(&sc, &id).await, hosted_rand_explain(&id, &value));
 
@@ -246,20 +236,20 @@ async fn databricks_rand_explain_matches_hosted_with_the_returned_value_after_a_
     );
 }
 
-/// Submit `sql` (with evaluation requested unless `tolerate`) as a
-/// query-changed rebuild of the captured model, in its own org.
+/// Build a deterministic version of `model` over its Target relation with
+/// `history`, then submit `model` with `sql` (with evaluation requested
+/// unless `tolerate`) as a query-changed rebuild. Returns the rebuild and
+/// its Explain.
 async fn rebuild_with(
     sc: &Scenario,
+    history: impl AsyncFnOnce(&Scenario),
+    model: Submit,
     sql: &str,
     tolerate: bool,
 ) -> (qc::ReadyToExecuteResponse, serde_json::Value) {
-    deterministic_history(sc).await;
+    history(sc).await;
     let ready = sc
-        .expect_execute(
-            captured_submit(&captured_request(RAND_SUBMIT))
-                .sql(sql)
-                .tolerate_nondeterminism(tolerate),
-        )
+        .expect_execute(model.sql(sql).tolerate_nondeterminism(tolerate))
         .await;
     let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
     (ready, explained)
@@ -320,6 +310,8 @@ async fn submits_without_a_captured_volatile_call_render_nothing() {
     // Positive control for the same harness: the captured call renders.
     let (ready, explained) = rebuild_with(
         &sc.org("control"),
+        deterministic_history,
+        captured_submit(&request(CONTROLS, RAND_SUBMIT)),
         &format!("select *, rand() AS noise from {input}"),
         false,
     )
@@ -327,7 +319,14 @@ async fn submits_without_a_captured_volatile_call_render_nothing() {
     assert!(!ready.transformed_nodes_by_query.is_empty());
     assert!(prints_volatile_lines(&explained));
     for (case, sql, tolerate) in cases {
-        let (ready, explained) = rebuild_with(&sc.org(case), &sql, tolerate).await;
+        let (ready, explained) = rebuild_with(
+            &sc.org(case),
+            deterministic_history,
+            captured_submit(&request(CONTROLS, RAND_SUBMIT)),
+            &sql,
+            tolerate,
+        )
+        .await;
         assert!(
             ready.transformed_nodes_by_query.is_empty(),
             "{case}: {:?}",
@@ -348,7 +347,7 @@ async fn another_organizations_decision_renders_no_values() {
     let owner = sc.org("owner");
     deterministic_history(&owner).await;
     let ready = owner
-        .expect_execute(captured_submit(&captured_request(RAND_SUBMIT)))
+        .expect_execute(captured_submit(&request(CONTROLS, RAND_SUBMIT)))
         .await;
     let id = ready.execution_decision_id.unwrap();
     assert!(prints_volatile_lines(&explain(&owner, &id).await));
@@ -364,7 +363,7 @@ async fn a_decision_recorded_before_the_migration_prints_no_volatile_lines() {
     let sc = Scenario::connect(&server).await.org("legacy");
     deterministic_history(&sc).await;
     let ready = sc
-        .expect_execute(captured_submit(&captured_request(RAND_SUBMIT)))
+        .expect_execute(captured_submit(&request(CONTROLS, RAND_SUBMIT)))
         .await;
     let id = ready.execution_decision_id.unwrap();
     let with_values = explain(&sc, &id).await;
@@ -387,8 +386,9 @@ async fn a_decision_recorded_before_the_migration_prints_no_volatile_lines() {
     );
 }
 
-/// A persisted execution with the columns that differ per request removed.
-async fn fingerprints(server: &support::TestServer, request_id: &str) -> serde_json::Value {
+/// The persisted execution row of `request_id` without the columns that
+/// differ per request: its identity, fingerprints and evidence.
+async fn persisted_execution(server: &support::TestServer, request_id: &str) -> serde_json::Value {
     let mut row = support::rows::complete_execution(&server.state, request_id).await;
     let object = row.as_object_mut().unwrap();
     for per_request in [
@@ -407,27 +407,31 @@ async fn fingerprints(server: &support::TestServer, request_id: &str) -> serde_j
 async fn a_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("volatile");
-    let model = captured_submit(&captured_request(RAND_SUBMIT));
+    let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
 
+    // Two captured query-changed rebuilds, each over a deterministic build.
+    deterministic_history(&sc).await;
     let first = sc.expect_execute(model.clone()).await;
+    deterministic_history(&sc).await;
     let second = sc.expect_execute(model.clone()).await;
-    let value =
-        |ready: &qc::ReadyToExecuteResponse| rendered(ready)[&captured_target()]["RAND()"].clone();
+    let value = |ready: &qc::ReadyToExecuteResponse| {
+        rendered(ready)[&target(&request(CONTROLS, RAND_SUBMIT))]["RAND()"].clone()
+    };
     assert_ne!(value(&first), value(&second), "each decision renders anew");
     assert_eq!(
-        fingerprints(&server, &first.request_id).await,
-        fingerprints(&server, &second.request_id).await,
+        persisted_execution(&server, &first.request_id).await,
+        persisted_execution(&server, &second.request_id).await,
         "rendered values enter no persisted identity or fingerprint"
     );
 
     assert!(
-        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
+        sc.confirm(&second.request_id, built_at(captured_target_epoch()))
             .await
     );
-    let rerun = sc.expect_execute(model.clone()).await;
-    assert!(
-        !rendered(&rerun).is_empty(),
-        "a rerun is rebuilt and rendered"
+    assert_eq!(
+        variant(&sc.submit(model.clone()).await),
+        "ready_to_execute",
+        "a rerun is rebuilt"
     );
 
     let elsewhere = model
@@ -466,38 +470,12 @@ const SNOWFLAKE_FIRST_BUILDS: &str =
 const SNOWFLAKE_PROD_SUBMIT: usize = 0;
 const SNOWFLAKE_DEV_SUBMIT: usize = 2;
 
-fn snowflake_first_builds() -> Vec<GoldenEntry> {
-    SNOWFLAKE_FIRST_BUILDS
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
-
-/// A map as target → function texts, without the values.
-fn map_shape(map: &BTreeMap<String, BTreeMap<String, String>>) -> Vec<(String, Vec<String>)> {
-    map.iter()
-        .map(|(query, functions)| (query.clone(), functions.keys().cloned().collect()))
-        .collect()
-}
-
-fn hosted_map(entry: &GoldenEntry) -> BTreeMap<String, BTreeMap<String, String>> {
-    entry.response["response"]["ready_to_execute"]["transformed_nodes_by_query"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(query, node)| {
-            let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
-            (query.clone(), functions)
-        })
-        .collect()
-}
-
 #[tokio::test]
 async fn snowflake_current_timestamp_build_renders_the_replay_clock_in_utc_keyed_as_captured() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     let mut sql = qc::sql_client::SqlClient::new(sc.channel());
-    let entries = snowflake_first_builds();
+    let entries = entries(SNOWFLAKE_FIRST_BUILDS);
     // Each submit's recorded time (the replay clock), in UTC.
     for (entry, at) in [
         (SNOWFLAKE_PROD_SUBMIT, "2026-10-12 21:52:38.707000"),
@@ -513,26 +491,16 @@ async fn snowflake_current_timestamp_build_renders_the_replay_clock_in_utc_keyed
             .unwrap()
             .into_inner();
         let values = rendered(&support::scenario::into_execute(response));
-        let hosted = hosted_map(entry);
+        let hosted = hosted_volatile_values(&entry.response);
 
-        assert_eq!(map_shape(&values), map_shape(&hosted), "hosted's key shape");
+        assert_eq!(
+            volatile_map_shape(&values),
+            volatile_map_shape(&hosted),
+            "hosted's key shape"
+        );
         let target = entry.request["target_table"].as_str().unwrap();
         assert_eq!(values[target]["CURRENT_TIMESTAMP()"], at);
     }
-}
-
-/// The captured prod submit's request.
-fn snowflake_request() -> serde_json::Value {
-    snowflake_first_builds()[SNOWFLAKE_PROD_SUBMIT]
-        .request
-        .clone()
-}
-
-fn snowflake_target() -> String {
-    snowflake_request()["target_table"]
-        .as_str()
-        .unwrap()
-        .to_owned()
 }
 
 /// The captured model's SQL with `columns` in place of its column list.
@@ -547,32 +515,12 @@ const SNOWFLAKE_BUILT_AT: i64 = 1791841959783;
 /// relation, so a later submit of other SQL is a query-changed rebuild.
 async fn snowflake_history(sc: &Scenario) {
     sc.build(
-        captured_submit(&snowflake_request())
-            .sql(&snowflake_sql("id, amount"))
-            .own_epoch(Some(OWN_EPOCH)),
+        captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(OWN_EPOCH))
+            .sql(&snowflake_sql("id, amount")),
         SNOWFLAKE_BUILT_AT,
     )
     .await;
-}
-
-/// Submit `sql` (with evaluation requested unless `tolerate`) as a
-/// query-changed rebuild of the captured Snowflake model.
-async fn snowflake_rebuild_with(
-    sc: &Scenario,
-    sql: &str,
-    tolerate: bool,
-) -> (qc::ReadyToExecuteResponse, serde_json::Value) {
-    snowflake_history(sc).await;
-    let ready = sc
-        .expect_execute(
-            captured_submit(&snowflake_request())
-                .sql(sql)
-                .own_epoch(Some(OWN_EPOCH))
-                .tolerate_nondeterminism(tolerate),
-        )
-        .await;
-    let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
-    (ready, explained)
 }
 
 #[tokio::test]
@@ -657,8 +605,11 @@ async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
         ),
     ];
     // Positive control for the same harness: the captured call renders.
-    let (ready, explained) = snowflake_rebuild_with(
+    let (ready, explained) = rebuild_with(
         &sc.org("control"),
+        snowflake_history,
+        captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(OWN_EPOCH)),
         &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
         false,
     )
@@ -666,7 +617,15 @@ async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
     assert!(!ready.transformed_nodes_by_query.is_empty());
     assert!(prints_volatile_lines(&explained));
     for (case, sql, tolerate) in cases {
-        let (ready, explained) = snowflake_rebuild_with(&sc.org(case), &sql, tolerate).await;
+        let (ready, explained) = rebuild_with(
+            &sc.org(case),
+            snowflake_history,
+            captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+                .own_epoch(Some(OWN_EPOCH)),
+            &sql,
+            tolerate,
+        )
+        .await;
         assert!(
             ready.transformed_nodes_by_query.is_empty(),
             "{case}: {:?}",
@@ -683,8 +642,11 @@ async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
 /// A query-changed rebuild of the captured Snowflake model calling
 /// `current_timestamp()`; returns its decision id.
 async fn snowflake_volatile_rebuild(sc: &Scenario) -> String {
-    let (ready, explained) = snowflake_rebuild_with(
+    let (ready, explained) = rebuild_with(
         sc,
+        snowflake_history,
+        captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(OWN_EPOCH)),
         &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
         false,
     )
@@ -755,18 +717,21 @@ async fn snowflake_decision_recorded_before_the_evaluation_flag_prints_no_volati
 async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("volatile");
-    let entries = snowflake_first_builds();
-    let model = captured_submit(&snowflake_request()).own_epoch(Some(OWN_EPOCH));
+    let entries = entries(SNOWFLAKE_FIRST_BUILDS);
+    let model = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+        .own_epoch(Some(OWN_EPOCH));
     let value = |ready: &qc::ReadyToExecuteResponse| {
-        rendered(ready)[&snowflake_target()]["CURRENT_TIMESTAMP()"].clone()
+        rendered(ready)[&target(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))]
+            ["CURRENT_TIMESTAMP()"]
+            .clone()
     };
 
     let first = sc.expect_execute(model.clone()).await;
     let second = sc.expect_execute(model.clone()).await;
     assert!(!value(&first).is_empty() && !value(&second).is_empty());
     assert_eq!(
-        fingerprints(&server, &first.request_id).await,
-        fingerprints(&server, &second.request_id).await,
+        persisted_execution(&server, &first.request_id).await,
+        persisted_execution(&server, &second.request_id).await,
         "rendered values enter no persisted identity or fingerprint"
     );
 
@@ -809,61 +774,11 @@ const RUN_1: &str = include_str!("../../../golden/fixtures/explain_volatile_eval
 const RUN_2: &str =
     include_str!("../../../golden/fixtures/explain_volatile_evaluation_functions.jsonl");
 
-fn entries(fixture: &str) -> Vec<GoldenEntry> {
-    fixture
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
-
-/// The map a captured submit's response returned, on whichever branch.
-fn hosted_map_of(entry: &GoldenEntry) -> BTreeMap<String, BTreeMap<String, String>> {
-    let response = entry.response["response"].as_object().unwrap();
-    let payload = response.values().next().unwrap();
-    payload["transformed_nodes_by_query"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(query, node)| {
-            let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
-            (query.clone(), functions)
-        })
-        .collect()
-}
-
-/// The map a local response returned, on whichever branch.
-fn local_map(response: &qc::SubmitSqlResponse) -> BTreeMap<String, BTreeMap<String, String>> {
-    let value = serde_json::to_value(response).unwrap();
-    let payload = value["response"]
-        .as_object()
-        .unwrap()
-        .values()
-        .next()
-        .unwrap();
-    payload["transformed_nodes_by_query"]
-        .as_object()
-        .map(|map| {
-            map.iter()
-                .map(|(query, node)| {
-                    let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
-                    (query.clone(), functions)
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 /// Whether `value` is a lowercase version 4 UUID (`8f162c59-9bda-412e-b5de-d0d22af57bf9`).
 fn is_lowercase_v4_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|u| u.get_version_num() == 4)
         && value.len() == 36
         && value == value.to_ascii_lowercase()
-}
-
-/// Whether `value` has the captured `RANDOM()` format: a plain decimal in
-/// [0, 1) (`0.2496468898543448`).
-fn is_captured_random_format(value: &str) -> bool {
-    is_captured_rand_format(value)
 }
 
 #[tokio::test]
@@ -922,15 +837,19 @@ async fn snowflake_every_captured_function_renders_hosted_key_and_value_format()
             .unwrap()
             .into_inner();
         assert_eq!(variant(&response), "ready_to_execute", "{sql_text}");
-        let local = local_map(&response);
-        let hosted = hosted_map_of(entry);
-        assert_eq!(map_shape(&local), map_shape(&hosted), "{sql_text}");
+        let local = volatile_values(&response);
+        let hosted = hosted_volatile_values(&entry.response);
+        assert_eq!(
+            volatile_map_shape(&local),
+            volatile_map_shape(&hosted),
+            "{sql_text}"
+        );
         for (query, functions) in &local {
             for (function, value) in functions {
                 let hosted_value = &hosted[query][function];
                 match function.as_str() {
                     "RANDOM()" | "UNIFORM(1, 100, RANDOM())" => {
-                        assert!(is_captured_random_format(value), "{function}: {value:?}")
+                        assert!(is_captured_unit_random(value), "{function}: {value:?}")
                     }
                     "UUID_STRING()" => {
                         assert!(is_lowercase_v4_uuid(value), "{function}: {value:?}");
@@ -989,8 +908,8 @@ fn assert_matches_hosted(local: &qc::SubmitSqlResponse, entry: &GoldenEntry, cas
         "{case}: {local_json}"
     );
     assert_eq!(
-        map_shape(&local_map(local)),
-        map_shape(&hosted_map_of(entry)),
+        volatile_map_shape(&volatile_values(local)),
+        volatile_map_shape(&hosted_volatile_values(&entry.response)),
         "{case}"
     );
 }
@@ -1033,16 +952,22 @@ async fn snowflake_model_cells_return_hosted_codes_and_maps_on_builds_and_reuses
 async fn snowflake_evaluation_off_renders_a_rebuild_but_prints_no_uncaptured_explain_lines() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("evaluation off");
-    let (ready, explained) = snowflake_rebuild_with(
+    let (ready, explained) = rebuild_with(
         &sc,
+        snowflake_history,
+        captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(OWN_EPOCH)),
         &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
         true,
     )
     .await;
 
     assert_eq!(
-        map_shape(&rendered(&ready)),
-        [(snowflake_target(), vec!["CURRENT_TIMESTAMP()".to_owned()])],
+        volatile_map_shape(&rendered(&ready)),
+        [(
+            target(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT)),
+            vec!["CURRENT_TIMESTAMP()".to_owned()]
+        )],
         "rendered with evaluation off, as on hosted's evaluation-off builds"
     );
     // Hosted's Explain of a query-changed rebuild with evaluation off is
@@ -1055,33 +980,23 @@ async fn snowflake_evaluation_off_renders_a_rebuild_but_prints_no_uncaptured_exp
 }
 
 /// Hosted's Explain `explain` of captured submit `submit`, for the local
-/// decision `local`: hosted's decision id and rendered values replaced by
-/// the local ones.
+/// decision `local_id` that rendered `local_values`: hosted's decision id and
+/// rendered values replaced by the local ones.
 fn hosted_explain_for(
     explain: &GoldenEntry,
     submit: &GoldenEntry,
-    local: &qc::SubmitSqlResponse,
+    local_id: &str,
+    local_values: &VolatileValues,
 ) -> serde_json::Value {
-    let local_json = serde_json::to_value(local).unwrap();
-    let payload = local_json["response"]
+    let hosted_id = submit.response["response"]
         .as_object()
-        .unwrap()
-        .values()
-        .next()
+        .and_then(|branches| branches.values().next())
+        .and_then(|payload| payload["execution_decision_id"].as_str())
         .unwrap();
-    let local_id = payload["execution_decision_id"].as_str().unwrap();
-    let hosted_payload = submit.response["response"]
-        .as_object()
-        .unwrap()
-        .values()
-        .next()
-        .unwrap();
-    let hosted_id = hosted_payload["execution_decision_id"].as_str().unwrap();
     let mut hosted = serde_json::to_string(&explain.response)
         .unwrap()
         .replace(hosted_id, local_id);
-    let local_values = local_map(local);
-    for (query, functions) in hosted_map_of(submit) {
+    for (query, functions) in hosted_volatile_values(&submit.response) {
         for (function, value) in functions {
             let ours = &local_values[&query][&function];
             hosted = hosted.replace(
@@ -1132,7 +1047,12 @@ async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
     let expected: Vec<_> = cases
         .iter()
         .map(|(submit, explained, _)| {
-            hosted_explain_for(&run_1[*explained], &run_1[*submit], &responses[submit])
+            hosted_explain_for(
+                &run_1[*explained],
+                &run_1[*submit],
+                &decision_id(&responses[submit]),
+                &volatile_values(&responses[submit]),
+            )
         })
         .collect();
     for ((submit, _, case), expected) in cases.iter().zip(&expected) {
@@ -1413,8 +1333,8 @@ async fn snowflake_volatile_data_test_and_dependency_render_keyed_as_captured() 
             .await;
         let values = rendered(&ready);
         assert_eq!(
-            map_shape(&values),
-            map_shape(&hosted_map(entry)),
+            volatile_map_shape(&values),
+            volatile_map_shape(&hosted_volatile_values(&entry.response)),
             "{case}: hosted's key shape"
         );
     }
@@ -1465,36 +1385,6 @@ async fn replay_snowflake_evaluation(
     executed
 }
 
-/// Hosted's Explain `explain` of the captured submit `submit`, for the local
-/// decision `local` and the values it rendered.
-fn hosted_explain_of(
-    entries: &[GoldenEntry],
-    submit: usize,
-    explain: usize,
-    local: &qc::ReadyToExecuteResponse,
-) -> serde_json::Value {
-    let hosted_id = entries[submit].response["response"]["ready_to_execute"]
-        ["execution_decision_id"]
-        .as_str()
-        .unwrap();
-    let mut text = serde_json::to_string(&entries[explain].response)
-        .unwrap()
-        .replace(hosted_id, local.execution_decision_id.as_deref().unwrap());
-    let values = rendered(local);
-    for (query, functions) in hosted_map(&entries[submit]) {
-        for (function, value) in functions {
-            text = text.replace(
-                &format!("{function} -> rendered with '{value}'"),
-                &format!(
-                    "{function} -> rendered with '{}'",
-                    values[&query][&function]
-                ),
-            );
-        }
-    }
-    masked_relative_times(serde_json::from_str(&text).unwrap())
-}
-
 /// `explain` with each `last updated: …` line masked. Outside Databricks a
 /// data test's upstream listing prints the raw epoch, not hosted's relative
 /// time; the conformance replay masks the same slot (`«rel_time»`).
@@ -1527,7 +1417,15 @@ async fn assert_explains_match_hosted_after_a_restart(database: &str, cases: &[(
     let executed = replay_snowflake_evaluation(&Scenario::connect(&server).await, through).await;
     let expected: Vec<_> = cases
         .iter()
-        .map(|&(submit, explain)| hosted_explain_of(&entries, submit, explain, &executed[&submit]))
+        .map(|&(submit, explain)| {
+            let local = &executed[&submit];
+            masked_relative_times(hosted_explain_for(
+                &entries[explain],
+                &entries[submit],
+                local.execution_decision_id.as_deref().unwrap(),
+                &rendered(local),
+            ))
+        })
         .collect();
     let explained = |server: support::TestServer| {
         let executed = &executed;
@@ -1602,8 +1500,8 @@ async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied(
     let second = pending.expect_execute(request(VD_FIRST_BUILD)).await;
     assert!(!rendered(&first).is_empty() && !rendered(&second).is_empty());
     assert_eq!(
-        fingerprints(&server, &first.request_id).await,
-        fingerprints(&server, &second.request_id).await,
+        persisted_execution(&server, &first.request_id).await,
+        persisted_execution(&server, &second.request_id).await,
         "rendered values enter no persisted identity or fingerprint"
     );
 
@@ -1611,7 +1509,7 @@ async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied(
     volatile.build(request(VD_FIRST_BUILD), vd_built_at).await;
     let rerun = volatile.expect_execute(request(VD_RERUN)).await;
     assert_eq!(
-        map_shape(&rendered(&rerun)),
+        volatile_map_shape(&rendered(&rerun)),
         [(vv.clone(), vec!["CURRENT_TIMESTAMP()".to_owned()])],
         "the unchanged table over the volatile view is rebuilt and rendered"
     );
@@ -1629,7 +1527,7 @@ async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied(
     assert!(volatile.confirm(&test.request_id, vt_passed()).await);
     let test_rerun = volatile.expect_execute(request(VT_RERUN)).await;
     assert_eq!(
-        map_shape(&rendered(&test_rerun)),
+        volatile_map_shape(&rendered(&test_rerun)),
         [(
             "__target_query__".to_owned(),
             vec!["CURRENT_TIMESTAMP()".to_owned()]
@@ -1744,7 +1642,7 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
 
     // Databricks has no capture of a dependency or a data test: only a Target
     // relation's own `rand()` renders.
-    let model = captured_submit(&captured_request(RAND_SUBMIT));
+    let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
     let databricks_dependency = model
         .clone()
         .sql(&format!(
@@ -1798,4 +1696,225 @@ async fn a_volatile_data_test_logic_change_is_uncaptured_and_prints_no_volatile_
         texts(&explained).contains(&"data freshness analysis".to_owned()),
         "the captured logic-change tree: {explained}"
     );
+}
+
+// ── Uncaptured cells render nothing (#67 review) ────────────────────────────
+//
+// Values are returned only in the cells hosted was captured rendering:
+// Snowflake FULL models (own SQL, evaluation on or off; a query dependency,
+// evaluation on), views with evaluation off, and data tests without a Target
+// relation with evaluation on; Databricks the query-changed rebuild of a FULL
+// model (entries 85–86). Every other cell keeps an empty map and prints no
+// volatile Explain lines.
+
+/// The captured `vd` request `entry` with its own SQL also calling
+/// `current_timestamp()`.
+fn vd_with_own_volatile_sql(entries: &[GoldenEntry], entry: usize) -> serde_json::Value {
+    let mut request = entries[entry].request.clone();
+    let sql = request["sql"].as_str().unwrap().replacen(
+        "select id,",
+        "select current_timestamp() as own_ts, id,",
+        1,
+    );
+    request["sql"] = sql.into();
+    request
+}
+
+#[tokio::test]
+async fn snowflake_evaluation_off_renders_nothing_for_a_data_test_or_a_query_dependency() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    // Positive control: a model's own SQL renders with evaluation off (run 1
+    // entry 8).
+    let control = sc
+        .org("control")
+        .expect_execute(captured_submit(&entries[8].request))
+        .await;
+    assert!(!rendered(&control).is_empty());
+
+    for (case, entry) in [("data test", VT_FIRST), ("view dependency", VD_FIRST_BUILD)] {
+        let ready = sc
+            .org(case)
+            .expect_execute(captured_submit(&entries[entry].request).tolerate_nondeterminism(true))
+            .await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
+}
+
+#[tokio::test]
+async fn snowflake_values_in_own_sql_and_a_dependency_or_a_data_test_over_a_volatile_view_render_nothing(
+) {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vv_sql = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["query"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vd_built_at = entries[VD_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+
+    // A model calling a Volatile function in its own SQL and in a dependency:
+    // first build, and an unchanged rerun whose Explain would carry the lines.
+    let both = sc.org("both");
+    let first = both
+        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
+            &entries,
+            VD_FIRST_BUILD,
+        )))
+        .await;
+    assert!(rendered(&first).is_empty(), "{:?}", rendered(&first));
+    assert!(both.confirm(&first.request_id, built_at(vd_built_at)).await);
+    let rerun = both
+        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
+            &entries, VD_RERUN,
+        )))
+        .await;
+    assert!(rendered(&rerun).is_empty(), "{:?}", rendered(&rerun));
+    let explained = explain(&both, rerun.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+
+    // A data test over the volatile view, with deterministic and with
+    // volatile SQL of its own.
+    let over_view = |own: &str| {
+        captured_submit(&entries[VT_FIRST].request)
+            .sql(&format!(
+                "\nselect id, v from CDO_DEMO_DB.prod_state_demo.vv_164840c243b8\nwhere {own}"
+            ))
+            .no_tables()
+            .dependency(&vv, &vv_sql)
+    };
+    for (case, test) in [
+        ("data test over a volatile view", over_view("id > 100")),
+        (
+            "volatile data test over a volatile view",
+            over_view("id > 100 and current_timestamp() < '2000-01-01'::timestamp_ltz"),
+        ),
+    ] {
+        let sc = sc.org(case);
+        let ready = sc.expect_execute(test).await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+        let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+    }
+}
+
+#[tokio::test]
+async fn databricks_renders_only_the_captured_query_changed_rebuild() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("databricks cells");
+    let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
+
+    let first = sc.expect_execute(model.clone()).await;
+    assert!(
+        rendered(&first).is_empty(),
+        "first build: {:?}",
+        rendered(&first)
+    );
+    assert!(
+        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
+            .await
+    );
+    let rerun = sc.expect_execute(model.clone()).await;
+    assert!(
+        rendered(&rerun).is_empty(),
+        "unchanged rerun (cell 2, #198): {:?}",
+        rendered(&rerun)
+    );
+    let explained = explain(&sc, rerun.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+
+    // Positive control: the captured query-changed rebuild renders.
+    let control = sc.org("databricks control");
+    deterministic_history(&control).await;
+    assert!(!rendered(&control.expect_execute(model).await).is_empty());
+}
+
+#[tokio::test]
+async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
+    use support::scenario::ExecutionType;
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let uncaptured = [
+        ExecutionType::Append,
+        ExecutionType::Merge,
+        ExecutionType::InsertOverwrite,
+        ExecutionType::DeleteInsert,
+        ExecutionType::Microbatch,
+        ExecutionType::Snapshot,
+        ExecutionType::DbtCustom,
+    ];
+
+    // Snowflake: the captured FULL first build renders; the same build of
+    // another execution type, or a view with evaluation on, does not.
+    let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
+    assert!(!rendered(
+        &sc.org("snowflake control")
+            .expect_execute(snowflake.clone())
+            .await
+    )
+    .is_empty());
+    for execution_type in uncaptured.into_iter().chain([ExecutionType::View]) {
+        let case = format!("snowflake {execution_type:?}");
+        let ready = sc
+            .org(&case)
+            .expect_execute(snowflake.clone().execution_type(execution_type))
+            .await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
+    // A Snowflake data test with a Target relation (store_failures).
+    let entries = snowflake_evaluation();
+    let stored = captured_submit(&entries[VT_FIRST].request)
+        .target("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"VT_164840C243B8\"");
+    let ready = sc
+        .org("snowflake stored failures")
+        .expect_execute(stored)
+        .await;
+    assert!(rendered(&ready).is_empty(), "{:?}", rendered(&ready));
+
+    // Databricks: the captured query-changed FULL rebuild renders; the same
+    // rebuild of another execution type does not.
+    let input = "cdo_demo_db.ds_20261112a134ef_prod.p153_80615b233ac140e48993d85c06bfc823_inputs";
+    for execution_type in [
+        ExecutionType::Full,
+        ExecutionType::View,
+        ExecutionType::Merge,
+        ExecutionType::Snapshot,
+    ] {
+        let case = format!("databricks {execution_type:?}");
+        let sc = sc.org(&case);
+        let model = captured_submit(&request(CONTROLS, RAND_SUBMIT)).execution_type(execution_type);
+        sc.build(
+            model
+                .clone()
+                .sql(&format!("select *, 1 AS noise from {input}")),
+            captured_target_epoch(),
+        )
+        .await;
+        let ready = sc.expect_execute(model).await;
+        assert_eq!(
+            rendered(&ready).is_empty(),
+            execution_type != ExecutionType::Full,
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
 }

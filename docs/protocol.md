@@ -201,8 +201,8 @@ MICROBATCH=6, SNAPSHOT=7, DBT_DATA_TEST=8, VALUES=9, VIEW=10, DBT_CUSTOM=11`.
 - `ready_to_execute`: `request_id`, `explained_decision`,
   `execution_decision_id`, `transformed_nodes_by_query`.
   `query_hash_metadata_info` is always unset.
-- `transformed_nodes_by_query` carries the values of Volatile evaluation on
-  the Warehouses, branches and function forms hosted was captured rendering,
+- `transformed_nodes_by_query` carries the values of Volatile evaluation in
+  the Warehouses, cells and function forms hosted was captured rendering,
   and is empty otherwise ([Volatile evaluation](#volatile-evaluation)). No
   client reads the map; the Warehouse executes the original SQL.
 - `ready_to_clone`: a Result copy of an equivalent; see
@@ -560,7 +560,7 @@ Client 2.0.11 sends `evaluate_volatile_sql: true` as
 `tolerate_nondeterminism = false`, which requests Volatile evaluation. Hosted
 then renders each Volatile function in the SQL to a value when it decides
 and returns the values in `transformed_nodes_by_query`. This server does the
-same for the function forms, branches and Warehouses that hosted was
+same for the function forms, cells and Warehouses that hosted was
 captured rendering (#67; Snowflake:
 [characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)).
 No official client reads the map: the pinned client calls it telemetry and
@@ -624,23 +624,28 @@ Intentional fallbacks, each rendering nothing for that call:
   uncaptured; nothing is rendered, and reuse is not refused for them.
 - DuckDB and every other dialect: nothing. Hosted does not engage for DuckDB.
 
-**Branches.** A cell marked uncaptured keeps an empty map.
+**Cells.** Values are returned only in the cells hosted was captured
+rendering in (`Rules::cells` in `warehouse/snowflake.rs` and
+`warehouse/databricks.rs`). Every other cell keeps an empty map and prints
+no volatile Explain lines.
 
 | Warehouse | Case | Evaluation on | Evaluation off | Evidence |
 |---|---|---|---|---|
-| Snowflake | `ready_to_execute`, root SQL of a model | rendered | rendered | run 1 entries 6, 7, 8, 33 |
-| Snowflake | `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 32, 34, 50 |
-| Snowflake | data test (`__target_query__`) | rendered | rendered, uncaptured | run 1 entries 16, 37 |
-| Snowflake | query dependency definition | rendered | rendered, uncaptured | run 1 entries 10, 35 |
+| Snowflake | FULL model, root SQL, `ready_to_execute` | rendered | rendered | run 1 entries 6, 8, 33 |
+| Snowflake | FULL model, root SQL, `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 34, 50 |
+| Snowflake | view, root SQL | empty, uncaptured | rendered on `ready_to_execute` and `skip_execution` | run 1 entries 7, 32 |
+| Snowflake | data test without a Target relation (`__target_query__`) | rendered | empty, uncaptured | run 1 entries 16, 37 |
+| Snowflake | FULL model, query dependency definition | rendered | empty, uncaptured | run 1 entries 10, 35 |
+| Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | incremental, snapshot, custom; a data test with a Target relation | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
-| Databricks | `ready_to_execute`, root SQL of a model | rendered; a rerun is rendered the same way, uncaptured (#198) | empty, uncaptured (#198) | entries 85, 86 |
-| Databricks | data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
+| Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
-The data-test and query-dependency values with evaluation off are current
-behavior, not hosted evidence: Snowflake's rules render with evaluation off
-for every key, and only the model cells of that case were captured. Explain
-prints no volatile lines for those values.
+A Snowflake FULL model renders on a build for any decision reason. Hosted
+was captured on first builds and the unchanged rerun; a query-changed
+rebuild is captured on Databricks only (entries 85, 86).
 
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake

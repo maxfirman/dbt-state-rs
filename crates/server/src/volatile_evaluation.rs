@@ -5,8 +5,9 @@
 //! State service renders each Volatile function in the SQL to a value when it
 //! decides, and reports it with the decision in `transformed_nodes_by_query`.
 //! The Warehouse still executes the original SQL; no official client reads
-//! the map, so it is telemetry. Where a Warehouse's captures show it, values
-//! are also rendered with evaluation off and on a reuse ([`Rules`]).
+//! the map, so it is telemetry. Values are rendered only in the cells a
+//! Warehouse was captured rendering in ([`Cell`]), which on Snowflake include
+//! evaluation off and a reuse; every other submit returns an empty map.
 //!
 //! This module is pure. The submit decision layer calls [`evaluate`] after the
 //! decision is made, with the [`Sources`] the values are drawn from, and the
@@ -23,6 +24,7 @@ use sqlparser::dialect::Dialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 
+use crate::decision::DecisionReason;
 use crate::query_cache as qc;
 
 /// What rendered values are drawn from. Injected by the gRPC adapter, so the
@@ -54,18 +56,67 @@ impl Sources {
 #[derive(Debug, Clone, Copy)]
 pub struct Rules {
     pub dialect: &'static dyn Dialect,
-    /// Whether hosted was captured rendering a data test's SQL (keyed
-    /// [`TARGET_QUERY_KEY`]) and query dependency definitions (keyed by the
-    /// dependency's name). Otherwise only a Target relation's root SQL is
-    /// rendered.
-    pub data_tests_and_dependencies: bool,
     pub functions: &'static [Rule],
-    /// Whether values are rendered when the submit tolerates nondeterminism
-    /// (evaluation off), as hosted was captured doing.
-    pub evaluation_off: bool,
-    /// Whether a reuse (`skip_execution`) is rendered as well as a build, as
-    /// hosted was captured doing.
-    pub on_skip: bool,
+    /// The cells hosted was captured rendering values in. A submit in any
+    /// other cell renders nothing.
+    pub cells: &'static [Cell],
+}
+
+/// A kind of submit and decision hosted was captured rendering values in.
+#[derive(Debug, Clone, Copy)]
+pub struct Cell {
+    pub execution_type: qc::ModelExecutionType,
+    /// Whether the submit requested Volatile evaluation ([`requested`]).
+    pub evaluation_requested: bool,
+    pub outcome: Outcome,
+    /// The SQL the values come from. Values from both a node's own SQL and a
+    /// query dependency are captured in no cell.
+    pub queries: Queries,
+}
+
+/// The decisions a [`Cell`] covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// A build (`ready_to_execute`) for any reason.
+    AnyBuild,
+    /// A build for this reason only.
+    BuildFor(DecisionReason),
+    /// A reuse (`skip_execution`).
+    Reuse,
+}
+
+impl Outcome {
+    fn covers(self, decided: Decided) -> bool {
+        match (self, decided) {
+            (Self::AnyBuild, Decided::Build(_)) | (Self::Reuse, Decided::Reuse) => true,
+            (Self::BuildFor(captured), Decided::Build(reason)) => captured == reason,
+            _ => false,
+        }
+    }
+}
+
+/// What a submit was decided: values are only ever rendered for a build or
+/// a reuse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decided {
+    Build(DecisionReason),
+    Reuse,
+}
+
+/// The SQL a [`Cell`]'s values come from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Queries {
+    /// The root SQL, keyed by the Target relation as sent, or for a data
+    /// test without one by [`TARGET_QUERY_KEY`].
+    Own,
+    /// Query dependency definitions, keyed by the dependency's name.
+    Dependencies,
+}
+
+/// Whether `req` requests Volatile evaluation: current clients send
+/// `tolerate_nondeterminism = false` for `evaluate_volatile_sql: true`.
+pub fn requested(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    !req.tolerate_nondeterminism
 }
 
 /// The outer map key hosted reports a data test's own values under: a data
@@ -174,58 +225,111 @@ impl Rendered {
     }
 }
 
+/// What a decision records about its Volatile evaluation, for Explain only
+/// (ADR 0005, "Amended by #67"). The default, no evidence, is every decision
+/// other than a SQL submit's and one recorded before migrations 0027 and
+/// 0028; it prints no volatile lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Evidence {
+    /// Whether the SQL submit requested Volatile evaluation ([`requested`],
+    /// migration 0028).
+    pub requested: Option<bool>,
+    /// The values rendered, as returned (migration 0027). Empty when none
+    /// were, and for unreadable stored values.
+    pub values: Vec<RenderedValue>,
+}
+
+impl Evidence {
+    /// The evidence of a decided SQL submit that rendered `rendered`.
+    pub fn of_submit(req: &qc::SubmitEnrichedSqlRequest, rendered: Option<&Rendered>) -> Self {
+        Self {
+            requested: Some(requested(req)),
+            values: rendered.map(|r| r.0.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// The evidence stored in `node_decisions.rendered_volatile_values` and
+    /// `node_decisions.volatile_evaluation_requested`.
+    pub fn stored(values: Option<serde_json::Value>, requested: Option<bool>) -> Self {
+        Self {
+            requested,
+            values: values
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The `node_decisions.rendered_volatile_values` value: NULL when
+    /// nothing was rendered.
+    pub fn stored_values(&self) -> Option<serde_json::Value> {
+        (!self.values.is_empty())
+            .then(|| serde_json::to_value(&self.values).expect("rendered volatile values"))
+    }
+}
+
 /// Render the Volatile functions of `req`'s SQL that `rules` has a rule
-/// for, when the submit requests Volatile evaluation or the rules render
-/// with evaluation off. `None` when nothing was rendered.
+/// for, when `req` and its decision fall in a captured [`Cell`]. `None` when
+/// nothing was rendered.
 ///
 /// The root SQL is keyed by the Target relation as sent, or for a data test
-/// by [`TARGET_QUERY_KEY`]; each query dependency definition by the
-/// dependency's name, in request order (`explain_volatile_evaluation.jsonl`
+/// without one by [`TARGET_QUERY_KEY`]; each query dependency definition by
+/// the dependency's name, in request order (`explain_volatile_evaluation.jsonl`
 /// entries 10 and 16). Each function is rendered once per query however often
-/// it is called. SQL that does not parse renders nothing.
+/// it is called. SQL that does not parse renders nothing, and so does a
+/// submit with values in both its own SQL and a query dependency.
 pub fn evaluate(
     req: &qc::SubmitEnrichedSqlRequest,
     rules: Option<Rules>,
+    decided: Decided,
     sources: &Sources,
 ) -> Option<Rendered> {
     let rules = rules?;
-    if req.tolerate_nondeterminism && !rules.evaluation_off {
-        return None;
-    }
-    let own = req
-        .target_table
-        .as_deref()
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            (rules.data_tests_and_dependencies
-                && req.execution_type == qc::ModelExecutionType::DbtDataTest as i32)
-                .then_some(TARGET_QUERY_KEY)
-        });
-    let dependencies = req
-        .query_dependencies
-        .iter()
-        .filter(|_| rules.data_tests_and_dependencies)
-        .map(|d| (d.name.as_str(), d.query.as_str()));
-    let mut values: Vec<RenderedValue> = Vec::new();
-    for (query, sql) in own
-        .map(|query| (query, req.sql.as_str()))
-        .into_iter()
-        .chain(dependencies)
-    {
-        for rule in called_rules(rules, sql) {
-            if !values
-                .iter()
-                .any(|v| v.query == query && v.function == rule.key)
-            {
-                values.push(RenderedValue {
-                    query: query.to_owned(),
-                    function: rule.key.to_owned(),
-                    value: rule.value.render(sources),
-                });
+    let captured = |queries| {
+        rules.cells.iter().any(|cell| {
+            cell.execution_type as i32 == req.execution_type
+                && cell.evaluation_requested == requested(req)
+                && cell.outcome.covers(decided)
+                && cell.queries == queries
+        })
+    };
+    let target = req.target_table.as_deref().filter(|t| !t.is_empty());
+    // A data test with a Target relation (stored failures) is uncaptured.
+    let own = if req.execution_type == qc::ModelExecutionType::DbtDataTest as i32 {
+        target.is_none().then_some(TARGET_QUERY_KEY)
+    } else {
+        target
+    };
+    let render = |queries: &mut dyn Iterator<Item = (&str, &str)>| {
+        let mut values: Vec<RenderedValue> = Vec::new();
+        for (query, sql) in queries {
+            for rule in called_rules(rules, sql) {
+                if !values
+                    .iter()
+                    .any(|v| v.query == query && v.function == rule.key)
+                {
+                    values.push(RenderedValue {
+                        query: query.to_owned(),
+                        function: rule.key.to_owned(),
+                        value: rule.value.render(sources),
+                    });
+                }
             }
         }
-    }
-    (!values.is_empty()).then_some(Rendered(values))
+        values
+    };
+    let own_values = render(&mut own.map(|query| (query, req.sql.as_str())).into_iter());
+    let dependency_values = render(
+        &mut req
+            .query_dependencies
+            .iter()
+            .map(|d| (d.name.as_str(), d.query.as_str())),
+    );
+    let values = match (own_values.is_empty(), dependency_values.is_empty()) {
+        (false, true) if captured(Queries::Own) => own_values,
+        (true, false) if captured(Queries::Dependencies) => dependency_values,
+        _ => return None,
+    };
+    Some(Rendered(values))
 }
 
 /// The rules `sql` calls, first call first; none when it does not parse.

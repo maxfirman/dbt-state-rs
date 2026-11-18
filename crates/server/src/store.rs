@@ -987,6 +987,14 @@ impl ExplainDecisionRow {
             .and_then(crate::decision::DecisionReason::from_stored)
     }
 
+    /// The decision's Volatile evaluation, from its two columns.
+    pub fn volatile_evaluation(&self) -> crate::volatile_evaluation::Evidence {
+        crate::volatile_evaluation::Evidence::stored(
+            self.rendered_volatile_values.clone(),
+            self.volatile_evaluation_requested,
+        )
+    }
+
     /// Decode the JSONB `input_tables` column into the typed shape.
     pub fn input_tables(&self) -> Vec<InputTable> {
         serde_json::from_value::<Vec<InputTable>>(self.input_tables.clone()).unwrap_or_default()

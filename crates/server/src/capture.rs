@@ -109,12 +109,9 @@ pub struct CaptureInput {
     /// Frozen submit clock for Explain display, never physical freshness.
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<crate::explain::TemplateComparison>,
-    /// The values Volatile evaluation rendered (migration 0027), for Explain
-    /// only. `None` when nothing was rendered.
-    pub rendered_volatile_values: Option<crate::volatile_evaluation::Rendered>,
-    /// Whether the SQL submit requested Volatile evaluation (migration
-    /// 0028), for Explain only. `None` for every other decision.
-    pub volatile_evaluation_requested: Option<bool>,
+    /// The decision's Volatile evaluation (migrations 0027 and 0028), for
+    /// Explain only. The default for every decision but a SQL submit's.
+    pub volatile_evaluation: crate::volatile_evaluation::Evidence,
     // identity / grouping
     pub org_id: String,
     pub external_invocation_id: Option<String>,
@@ -348,12 +345,8 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             .as_ref()
             .map(|value| serde_json::to_value(value).expect("template evidence")),
     )
-    .bind(
-        i.rendered_volatile_values
-            .as_ref()
-            .map(|values| serde_json::to_value(values).expect("rendered volatile values")),
-    )
-    .bind(i.volatile_evaluation_requested)
+    .bind(i.volatile_evaluation.stored_values())
+    .bind(i.volatile_evaluation.requested)
     .execute(pool)
     .await?;
 
