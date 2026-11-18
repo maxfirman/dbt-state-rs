@@ -511,7 +511,7 @@ fn adoptable(
 /// `explain_volatile_evaluation.jsonl` entry 31; #194). Empty SQL or
 /// template is likewise insufficient evidence.
 fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
-    (req.tolerate_nondeterminism || !calls_volatile_function(req))
+    (!crate::volatile_evaluation::requested(req) || !calls_volatile_function(req))
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
         && (!req.compare_unrendered_code

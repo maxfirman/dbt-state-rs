@@ -318,8 +318,7 @@ fn submit_capture(
         reads_relation: None,
         display_submitted_at_ms: None,
         template_comparison: None,
-        rendered_volatile_values: None,
-        volatile_evaluation_requested: None,
+        volatile_evaluation: Default::default(),
     }
 }
 
@@ -341,8 +340,10 @@ fn capture_submit(
         input_tables: explain.input_tables,
         query_dependencies: explain.query_dependencies,
         reads_relation: explain.reads_relation,
-        rendered_volatile_values: decided.rendered.clone(),
-        volatile_evaluation_requested: Some(!req.tolerate_nondeterminism),
+        volatile_evaluation: crate::volatile_evaluation::Evidence::of_submit(
+            req,
+            decided.rendered.as_ref(),
+        ),
         ..submit_capture(
             meta,
             &decided.outcome,
@@ -412,8 +413,7 @@ fn capture_register(
             reads_relation: None,
             display_submitted_at_ms: None,
             template_comparison: None,
-            rendered_volatile_values: None,
-            volatile_evaluation_requested: None,
+            volatile_evaluation: Default::default(),
         },
     );
 }

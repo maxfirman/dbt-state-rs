@@ -225,6 +225,48 @@ impl Rendered {
     }
 }
 
+/// What a decision records about its Volatile evaluation, for Explain only
+/// (ADR 0005, "Amended by #67"). The default, no evidence, is every decision
+/// other than a SQL submit's and one recorded before migrations 0027 and
+/// 0028; it prints no volatile lines.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Evidence {
+    /// Whether the SQL submit requested Volatile evaluation ([`requested`],
+    /// migration 0028).
+    pub requested: Option<bool>,
+    /// The values rendered, as returned (migration 0027). Empty when none
+    /// were, and for unreadable stored values.
+    pub values: Vec<RenderedValue>,
+}
+
+impl Evidence {
+    /// The evidence of a decided SQL submit that rendered `rendered`.
+    pub fn of_submit(req: &qc::SubmitEnrichedSqlRequest, rendered: Option<&Rendered>) -> Self {
+        Self {
+            requested: Some(requested(req)),
+            values: rendered.map(|r| r.0.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// The evidence stored in `node_decisions.rendered_volatile_values` and
+    /// `node_decisions.volatile_evaluation_requested`.
+    pub fn stored(values: Option<serde_json::Value>, requested: Option<bool>) -> Self {
+        Self {
+            requested,
+            values: values
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// The `node_decisions.rendered_volatile_values` value: NULL when
+    /// nothing was rendered.
+    pub fn stored_values(&self) -> Option<serde_json::Value> {
+        (!self.values.is_empty())
+            .then(|| serde_json::to_value(&self.values).expect("rendered volatile values"))
+    }
+}
+
 /// Render the Volatile functions of `req`'s SQL that `rules` has a rule
 /// for, when `req` and its decision fall in a captured [`Cell`]. `None` when
 /// nothing was rendered.
