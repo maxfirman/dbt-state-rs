@@ -12,7 +12,8 @@
 //! `fixtures/databricks_submit_copy_controls.jsonl` entries 85 (submit) and 86
 //! (Explain); the captured Snowflake first builds of a `current_timestamp()`
 //! model, `golden/fixtures/clone_fallback_volatile.jsonl` entries 0 (prod) and
-//! 2 (dev) (#193).
+//! 2 (dev) (#193); the captured consumer of a volatile model,
+//! `golden/fixtures/explain_volatile_evaluation.jsonl` #191 cell 7 (#196).
 mod support;
 
 use std::collections::BTreeMap;
@@ -735,5 +736,228 @@ async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter
     assert_eq!(
         variant(&deterministic.submit(model).await),
         "skip_execution"
+    );
+}
+
+// ── Snowflake consumer of a volatile model (#196) ───────────────────────────
+//
+// #191 cell 7, `golden/fixtures/explain_volatile_evaluation.jsonl`: `vm` calls
+// every Volatile function with evaluation requested, and `vk` is a table over
+// `vm` with a Lag tolerance of an hour and evaluation off. A rebuild of `vm`
+// with unchanged SQL is a data change for `vk` (ADR 0007): hosted SKIPs `vk`
+// within Lag tolerance, so its identity holds no rendered value.
+
+const VOLATILE_CELLS: &str =
+    include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
+const VM_BUILD: usize = 6;
+const VM_REBUILD: usize = 33;
+const VK_BUILD: usize = 15;
+const VK_BUILD_EXPLAIN: usize = 25;
+const VK_RERUN: usize = 39;
+const VK_RERUN_EXPLAIN: usize = 47;
+const HOUR_MS: i64 = 3_600_000;
+
+fn volatile_cells() -> Vec<GoldenEntry> {
+    VOLATILE_CELLS
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// When the client sent the captured `entry` (`x-submitted-at-epoch`): the
+/// earliest time hosted can have decided it. The proxy's `recorded_at` is
+/// later, after hosted answered, and moves "last updated: now" past a second.
+fn submitted_at(entry: &GoldenEntry) -> i64 {
+    entry
+        .metadata
+        .iter()
+        .find(|(key, _)| key == "x-submitted-at-epoch")
+        .and_then(|(_, value)| value.parse().ok())
+        .unwrap()
+}
+
+/// Submit the captured `submit` when the client sent it, expect a build, and
+/// confirm it with its captured confirmation when that one was sent.
+async fn build_captured(
+    sc: &Scenario,
+    entries: &[GoldenEntry],
+    submit: usize,
+) -> qc::ReadyToExecuteResponse {
+    let entry = &entries[submit];
+    let ready = sc
+        .at(submitted_at(entry))
+        .expect_execute(captured_submit(&entry.request))
+        .await;
+    let hosted_id = &entry.response["response"]["ready_to_execute"]["request_id"];
+    let confirmation = entries
+        .iter()
+        .find(|e| e.method == "ConfirmExecution" && &e.request["request_id"] == hosted_id)
+        .unwrap();
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(confirmation.request.clone()).unwrap();
+    confirm.request_id = ready.request_id.clone();
+    assert!(
+        sc.at(submitted_at(confirmation))
+            .try_confirm(confirm)
+            .await
+            .unwrap()
+            .success
+    );
+    ready
+}
+
+/// Hosted's captured Explain `entry`, for the local decision `id`.
+fn hosted_explain(entries: &[GoldenEntry], entry: usize, id: &str) -> serde_json::Value {
+    let hosted = &entries[entry].response;
+    let hosted_id = hosted["messages"][0]["execution_decision_id"]
+        .as_str()
+        .unwrap();
+    serde_json::from_str(
+        &serde_json::to_string(hosted)
+            .unwrap()
+            .replace(hosted_id, id),
+    )
+    .unwrap()
+}
+
+/// Cell 7's first builds of `vm` and `vk`. Returns `vk`'s.
+async fn first_builds(sc: &Scenario, entries: &[GoldenEntry]) -> qc::ReadyToExecuteResponse {
+    build_captured(sc, entries, VM_BUILD).await;
+    build_captured(sc, entries, VK_BUILD).await
+}
+
+/// The captured decision of a submit `entry`, as hosted explained it.
+fn hosted_decision(entries: &[GoldenEntry], entry: usize, variant: &str) -> serde_json::Value {
+    entries[entry].response["response"][variant]["explained_decision"].clone()
+}
+
+/// Cell 7 up to `vk`'s rerun: both first builds, then a rebuild of `vm`.
+/// Returns `vk`'s first build.
+async fn consumer_history(sc: &Scenario, entries: &[GoldenEntry]) -> qc::ReadyToExecuteResponse {
+    let vk = first_builds(sc, entries).await;
+    let vm = build_captured(sc, entries, VM_REBUILD).await;
+    assert!(
+        !vm.transformed_nodes_by_query.is_empty(),
+        "the volatile upstream is rebuilt and rendered"
+    );
+    vk
+}
+
+#[tokio::test]
+async fn snowflake_consumer_of_a_volatile_model_skips_within_lag_tolerance_after_its_rebuild() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("cell7");
+    let entries = volatile_cells();
+
+    let vk = consumer_history(&sc, &entries).await;
+    assert_eq!(
+        serde_json::to_value(&vk.explained_decision).unwrap(),
+        hosted_decision(&entries, VK_BUILD, "ready_to_execute")
+    );
+    assert!(vk.transformed_nodes_by_query.is_empty());
+    let id = vk.execution_decision_id.unwrap();
+    assert_eq!(
+        explain(&sc, &id).await,
+        hosted_explain(&entries, VK_BUILD_EXPLAIN, &id)
+    );
+
+    let rerun = &entries[VK_RERUN];
+    let skip = sc
+        .at(submitted_at(rerun))
+        .expect_skip(captured_submit(&rerun.request))
+        .await;
+    assert_eq!(
+        serde_json::to_value(&skip.explained_decision).unwrap(),
+        hosted_decision(&entries, VK_RERUN, "skip_execution"),
+        "a SKIP within Lag tolerance, reported stale"
+    );
+    assert!(skip.transformed_nodes_by_query.is_empty());
+    assert_eq!(
+        skip.execution_runtime_ms,
+        rerun.response["response"]["skip_execution"]["execution_runtime_ms"].as_i64()
+    );
+    let id = skip.execution_decision_id.unwrap();
+    assert_eq!(
+        explain(&sc, &id).await,
+        hosted_explain(&entries, VK_RERUN_EXPLAIN, &id)
+    );
+}
+
+/// One Explain line of the first message, by its exact text.
+fn line<'a>(explain: &'a serde_json::Value, text: &str) -> Option<&'a serde_json::Value> {
+    fn find<'a>(lines: &'a serde_json::Value, text: &str) -> Option<&'a serde_json::Value> {
+        lines.as_array()?.iter().find_map(|line| {
+            (line["text"] == text)
+                .then_some(line)
+                .or_else(|| find(&line["children"], text))
+        })
+    }
+    find(&explain["messages"][0]["explain_lines"], text)
+}
+
+#[tokio::test]
+async fn snowflake_consumer_of_a_volatile_model_rebuilds_after_its_rebuild_outside_lag_tolerance() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("cell7-late");
+    let entries = volatile_cells();
+    consumer_history(&sc, &entries).await;
+
+    // The captured rerun, an hour later than captured: `vk` was built more
+    // than its Lag tolerance ago, and `vm` has changed since.
+    let rerun = &entries[VK_RERUN];
+    let ready = sc
+        .at(submitted_at(rerun) + HOUR_MS)
+        .expect_execute(captured_submit(&rerun.request))
+        .await;
+    assert_eq!(
+        ready.explained_decision.as_ref().unwrap().decision_description,
+        "model was executed because either its query didn't match or its upstream data is out of date"
+    );
+    assert!(ready.transformed_nodes_by_query.is_empty());
+    let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+    for (text, marker, badge) in [
+        ("the model query has not changed", Some(1), Some(5)),
+        ("upstream model queries have not changed", Some(1), None),
+        ("upstream data is outdated", Some(2), None),
+    ] {
+        let found = line(&explained, text).unwrap_or_else(|| panic!("{text}: {explained}"));
+        assert_eq!(
+            (found["marker"].as_i64(), found["badge"].as_i64()),
+            (marker, badge),
+            "{text}"
+        );
+    }
+    // A data-only rebuild with no equivalent elsewhere prints no Lag
+    // tolerance line (hosted, `explain_rebuild_tolerance_line.jsonl` entry 3).
+    assert!(
+        !texts(&explained)
+            .iter()
+            .any(|t| t.contains("lag tolerance")),
+        "{explained}"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_consumer_of_an_unchanged_volatile_model_skips_outside_lag_tolerance() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("cell7-control");
+    let entries = volatile_cells();
+    first_builds(&sc, &entries).await;
+
+    // Control for the test above: the same late rerun without `vm`'s
+    // rebuild, so `vm` reports the epoch `vk` was built over.
+    let rerun = &entries[VK_RERUN];
+    let vm = entries[VM_BUILD].request["target_table"].as_str().unwrap();
+    let vm_built = entries[VK_BUILD].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let skip = sc
+        .at(submitted_at(rerun) + HOUR_MS)
+        .expect_skip(captured_submit(&rerun.request).upstream(vm, vm_built))
+        .await;
+    assert_eq!(
+        skip.explained_decision.unwrap().decision_description,
+        "model was a no-op because both its query and its upstream data are up to date"
     );
 }

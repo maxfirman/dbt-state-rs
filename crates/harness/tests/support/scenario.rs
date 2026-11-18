@@ -862,6 +862,8 @@ pub fn into_speculative_skip(resp: qc::SubmitSqlSpeculativeResponse) -> qc::Skip
 pub struct Scenario {
     channel: Channel,
     org: Option<String>,
+    /// The replay clock (Unix ms) sent with each request, when set.
+    now_ms: Option<i64>,
     builds: std::sync::Arc<std::sync::Mutex<Builds>>,
 }
 
@@ -880,6 +882,7 @@ impl Scenario {
         Self {
             channel: super::channel(server.addr).await,
             org: None,
+            now_ms: None,
             builds: Default::default(),
         }
     }
@@ -887,9 +890,17 @@ impl Scenario {
     /// The same server, scoped to `org`.
     pub fn org(&self, org: &str) -> Self {
         Self {
-            channel: self.channel.clone(),
             org: Some(org.into()),
-            builds: self.builds.clone(),
+            ..self.clone()
+        }
+    }
+
+    /// The same server, deciding at `now_ms` (Unix ms) through the test
+    /// replay clock (`Clock::Replay`).
+    pub fn at(&self, now_ms: i64) -> Self {
+        Self {
+            now_ms: Some(now_ms),
+            ..self.clone()
         }
     }
 
@@ -930,10 +941,17 @@ impl Scenario {
     }
 
     fn request<T>(&self, body: T) -> tonic::Request<T> {
-        match &self.org {
+        let mut req = match &self.org {
             Some(org) => super::request_with_org(body, org),
             None => tonic::Request::new(body),
+        };
+        if let Some(now_ms) = self.now_ms {
+            req.metadata_mut().insert(
+                dbt_state_server::REPLAY_NOW_HEADER,
+                now_ms.to_string().parse().expect("valid metadata value"),
+            );
         }
+        req
     }
 
     fn sql(&self) -> qc::sql_client::SqlClient<Channel> {
