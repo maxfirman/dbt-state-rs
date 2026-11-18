@@ -4,20 +4,122 @@
 use super::{CopyIdentity, NamespaceIdentity};
 use sqlparser::dialect::SnowflakeDialect;
 
-/// Volatile evaluation (#67, #193): hosted renders `current_timestamp()` as
-/// `CURRENT_TIMESTAMP()` with the clock in UTC to the microsecond
-/// (`clone_fallback_volatile.jsonl` entries 0 and 2). Other Snowflake Volatile
-/// functions and forms (`getdate()`, a parenless `current_timestamp`, …)
-/// render nothing yet.
-pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
-    crate::volatile_evaluation::Rules {
+/// Volatile evaluation (#67): the function forms hosted was captured
+/// rendering, with hosted's key and value format for each. `CURRENT_TIMESTAMP()`
+/// first in #193 (`clone_fallback_volatile.jsonl` entries 0 and 2); every other
+/// form in #191/#194 (`explain_volatile_evaluation.jsonl` entry 6, the forms of
+/// `explain_volatile_evaluation_functions.jsonl` entries 13–24).
+///
+/// Several forms fold into one key, and a key is rendered once per submit.
+/// Hosted renders values with evaluation off as well, and on a reuse (run 1
+/// entries 8, 34, 50). A form without a rule renders nothing: `zipf` and the
+/// `seqN` generators (hosted renders none), a parenless `current_time` or
+/// `localtime`, and calls with other arguments are uncaptured.
+pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
+    use crate::volatile_evaluation::{Call, Rule, Rules, Value};
+    const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
+        Rule {
+            name,
+            call,
+            key,
+            value,
+        }
+    }
+    Rules {
         dialect: &SnowflakeDialect {},
-        functions: &[crate::volatile_evaluation::Rule {
-            name: "current_timestamp",
-            key: "CURRENT_TIMESTAMP()",
-            value: crate::volatile_evaluation::Value::UtcTimestampMicros,
-        }],
-    };
+        functions: &[
+            rule(
+                "current_timestamp",
+                Call::Empty,
+                "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            rule(
+                "current_timestamp",
+                Call::Parenless,
+                "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            rule(
+                "localtimestamp",
+                Call::Empty,
+                "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            // Hosted prints a parenless `localtimestamp` without parentheses
+            // (run 2 entry 14), unlike a parenless `current_timestamp`.
+            rule(
+                "localtimestamp",
+                Call::Parenless,
+                "CURRENT_TIMESTAMP",
+                Value::UtcTimestampMicros,
+            ),
+            rule(
+                "systimestamp",
+                Call::Empty,
+                "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            rule(
+                "getdate",
+                Call::Empty,
+                "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            rule(
+                "sysdate",
+                Call::Empty,
+                "SYSDATE()",
+                Value::UtcTimestampMicrosWithOffset,
+            ),
+            rule(
+                "current_time",
+                Call::Empty,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
+            rule(
+                "localtime",
+                Call::Empty,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
+            rule("current_date", Call::Empty, "CURRENT_DATE", Value::UtcDate),
+            rule(
+                "current_date",
+                Call::Parenless,
+                "CURRENT_DATE",
+                Value::UtcDate,
+            ),
+            rule("random", Call::Empty, "RANDOM()", Value::UnitRandom),
+            // The bounds are ignored: a decimal in [0, 1), and the nested
+            // `random()` is rendered under its own key (run 2 entry 18).
+            rule(
+                "uniform",
+                Call::Arguments("1, 100, random()"),
+                "UNIFORM(1, 100, RANDOM())",
+                Value::UnitRandom,
+            ),
+            // Constant seeds: the same value in every captured render (run 1
+            // entries 6, 8, 33, 34, 50), not the value Snowflake computes.
+            rule(
+                "randstr",
+                Call::Arguments("8, 1234"),
+                "RANDSTR(8, 1234)",
+                Value::Constant("9XChaf68"),
+            ),
+            rule(
+                "normal",
+                Call::Arguments("0, 1, 1234"),
+                "NORMAL(0, 1, 1234)",
+                Value::Constant("1.0542196419272387"),
+            ),
+            rule("uuid_string", Call::Empty, "UUID_STRING()", Value::Uuid),
+        ],
+        evaluation_off: true,
+        on_skip: true,
+    }
+};
 
 /// Verified live: the same model in two environments shares this identity.
 pub(super) const NAMESPACE_IDENTITY: NamespaceIdentity = NamespaceIdentity::SchemaAbstracted {

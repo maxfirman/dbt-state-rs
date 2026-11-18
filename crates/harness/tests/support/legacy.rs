@@ -354,3 +354,20 @@ pub async fn forget_rendered_volatile_values(db: &impl Db, org_id: &str, decisio
     .rows_affected();
     assert_eq!(updated, 1, "exactly the captured decision");
 }
+
+/// A decision recorded before migration 0028: rendered values without the
+/// evaluation flag. Waits for the decision's best-effort capture first.
+pub async fn forget_volatile_evaluation_flag(db: &impl Db, org_id: &str, decision_id: &str) {
+    super::rows::wait_for_decision_capture(db, org_id, decision_id).await;
+    let updated = sqlx::query(
+        "UPDATE node_decisions SET volatile_evaluation_requested = NULL \
+         WHERE org_id = $1 AND execution_decision_id = $2",
+    )
+    .bind(org_id)
+    .bind(decision_id)
+    .execute(db.pool())
+    .await
+    .expect("forget the volatile evaluation flag")
+    .rows_affected();
+    assert_eq!(updated, 1, "exactly the captured decision");
+}

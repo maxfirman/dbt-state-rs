@@ -1,0 +1,13 @@
+-- Volatile evaluation (#67, #194): whether the submit requested Volatile
+-- evaluation (`tolerate_nondeterminism = false`, sent by current clients for
+-- `evaluate_volatile_sql: true`). Snowflake renders values with evaluation
+-- off as well, and hosted's Explain prints a different line for each
+-- ("… and this is not tolerated by config" / "… but this is tolerated by
+-- config"), so the rendered values alone cannot say which applies.
+--
+-- Explain evidence only: decisions and Reuse qualification never read it,
+-- and it is part of no identity or fingerprint. Read by Explain with the
+-- decision, scoped by organization. NULL for decisions other than a SQL
+-- submit and for every decision recorded before this migration; Explain then
+-- prints no volatile lines. No backfill.
+ALTER TABLE node_decisions ADD COLUMN volatile_evaluation_requested BOOLEAN;

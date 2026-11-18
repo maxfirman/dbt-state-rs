@@ -347,12 +347,71 @@ const UTC_TIMESTAMP_MICROS: ValueFormat = ValueFormat {
     },
 };
 
+/// `YYYY-MM-DD HH:MM:SS.ffffff+00:00`, a valid UTC instant with its offset
+/// (Snowflake `SYSDATE()`; `explain_volatile_evaluation.jsonl` entry 6).
+const UTC_TIMESTAMP_MICROS_WITH_OFFSET: ValueFormat = ValueFormat {
+    name: "«YYYY-MM-DD HH:MM:SS.ffffff+00:00»",
+    matches: |value| {
+        value
+            .strip_suffix("+00:00")
+            .is_some_and(|instant| (UTC_TIMESTAMP_MICROS.matches)(instant))
+    },
+};
+
+/// `HH:MM:SS.ffffff`, a valid time of day (Snowflake `CURRENT_TIME`).
+const UTC_TIME_MICROS: ValueFormat = ValueFormat {
+    name: "«HH:MM:SS.ffffff»",
+    matches: |value| {
+        value.len() == 15
+            && value.as_bytes()[8] == b'.'
+            && chrono::NaiveTime::parse_from_str(value, "%H:%M:%S%.6f").is_ok()
+    },
+};
+
+/// `YYYY-MM-DD`, a valid date (Snowflake `CURRENT_DATE`).
+const UTC_DATE: ValueFormat = ValueFormat {
+    name: "«YYYY-MM-DD»",
+    matches: |value| {
+        value.len() == 10 && chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
+    },
+};
+
+/// A plain decimal in [0, 1) without an exponent (Snowflake `RANDOM()`,
+/// `0.2496468898543448`).
+const UNIT_DECIMAL: ValueFormat = ValueFormat {
+    name: "«decimal in [0, 1)»",
+    matches: |value| {
+        value
+            .strip_prefix("0.")
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    },
+};
+
+/// A lowercase version 4 UUID (Snowflake `UUID_STRING()`).
+const LOWERCASE_UUID_V4: ValueFormat = ValueFormat {
+    name: "«uuid v4»",
+    matches: |value| {
+        value.len() == 36
+            && value == value.to_ascii_lowercase()
+            && uuid::Uuid::parse_str(value).is_ok_and(|u| u.get_version_num() == 4)
+    },
+};
+
 /// The value format of each function text (the inner
 /// `transformed_nodes_by_query` key) whose value is runtime-dependent. Register
 /// a function here when the server renders it from its clock or random source.
-/// A value of any other function is compared exactly.
-const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] =
-    &[("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS)];
+/// A value of any other function is compared exactly (`RANDSTR(8, 1234)` and
+/// `NORMAL(0, 1, 1234)` were the same in every captured render).
+const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
+    ("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS),
+    ("CURRENT_TIMESTAMP", UTC_TIMESTAMP_MICROS),
+    ("SYSDATE()", UTC_TIMESTAMP_MICROS_WITH_OFFSET),
+    ("CURRENT_TIME", UTC_TIME_MICROS),
+    ("CURRENT_DATE", UTC_DATE),
+    ("RANDOM()", UNIT_DECIMAL),
+    ("UNIFORM(1, 100, RANDOM())", UNIT_DECIMAL),
+    ("UUID_STRING()", LOWERCASE_UUID_V4),
+];
 
 /// The only runtime-value normalization of the replay (#67, #193): each
 /// rendered value in a decision payload's `transformed_nodes_by_query` whose
@@ -407,6 +466,28 @@ fn normalize_volatile_values(mut value: serde_json::Value) -> Result<serde_json:
 fn comparable(value: serde_json::Value, context: &str) -> serde_json::Value {
     normalize_volatile_values(normalize_ids(value))
         .unwrap_or_else(|error| panic!("{context}: malformed rendered value: {error}"))
+}
+
+/// The Explain form of [`normalize_volatile_values`] (#195): a
+/// `«function» -> rendered with '«value»'` line whose function text has a
+/// registered [`ValueFormat`] prints the format's name in place of the value,
+/// after checking the value has it. Any other line is returned as it is.
+/// Fails on a malformed value.
+fn normalize_volatile_line(text: &str) -> Result<String, String> {
+    let Some((function, quoted)) = text.split_once(" -> rendered with '") else {
+        return Ok(text.to_owned());
+    };
+    let (Some(value), Some((_, format))) = (
+        quoted.strip_suffix('\''),
+        VOLATILE_VALUE_FORMATS.iter().find(|(f, _)| *f == function),
+    ) else {
+        return Ok(text.to_owned());
+    };
+    if (format.matches)(value) {
+        Ok(format!("{function} -> rendered with '{}'", format.name))
+    } else {
+        Err(format!("{function}: {value} is not {}", format.name))
+    }
 }
 
 /// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
@@ -731,10 +812,51 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
             "{value:?}"
         );
     }
+    // Each registered format accepts hosted's captured value and rejects a
+    // malformed one.
+    for (function, captured, malformed) in [
+        (
+            "CURRENT_TIMESTAMP",
+            "2026-11-17 17:05:56.597561",
+            "2026-11-17 17:05:56",
+        ),
+        (
+            "SYSDATE()",
+            "2026-11-17 16:48:51.782884+00:00",
+            "2026-11-17 16:48:51.782884",
+        ),
+        ("CURRENT_TIME", "16:48:51.782956", "16:48:51"),
+        ("CURRENT_DATE", "2026-11-17", "2026-11-17 00:00:00"),
+        ("RANDOM()", "0.2496468898543448", "1.5"),
+        ("UNIFORM(1, 100, RANDOM())", "0.31728658843764224", "71"),
+        (
+            "UUID_STRING()",
+            "8f162c59-9bda-412e-b5de-d0d22af57bf9",
+            "8F162C59-9BDA-412E-B5DE-D0D22AF57BF9",
+        ),
+    ] {
+        let ours = normalize_volatile_values(response(target, function, captured));
+        assert_eq!(
+            ours,
+            normalize_volatile_values(response(target, function, captured))
+        );
+        assert!(ours.is_ok(), "{function} {captured}");
+        assert!(
+            normalize_volatile_values(response(target, function, malformed)).is_err(),
+            "{function} {malformed}"
+        );
+        // And the same values in Explain lines.
+        let line = |value: &str| format!("{function} -> rendered with '{value}'");
+        assert_ne!(normalize_volatile_line(&line(captured)), Ok(line(captured)));
+        assert!(normalize_volatile_line(&line(captured)).is_ok());
+        assert!(normalize_volatile_line(&line(malformed)).is_err());
+    }
     // A function without a registered format is compared exactly.
-    let random = |value| normalize_volatile_values(response(target, "RANDOM()", value));
-    assert_eq!(random("0.25"), random("0.25"));
-    assert_ne!(random("0.25"), random("0.5"));
+    let constant = |value| normalize_volatile_values(response(target, "RANDSTR(8, 1234)", value));
+    assert_eq!(constant("9XChaf68"), constant("9XChaf68"));
+    assert_ne!(constant("9XChaf68"), constant("E5tavqyk"));
+    let kept = "RANDSTR(8, 1234) -> rendered with '9XChaf68'";
+    assert_eq!(normalize_volatile_line(kept).as_deref(), Ok(kept));
     // Responses without a map, and empty maps, are unchanged.
     let empty =
         serde_json::json!({"response": {"skip_execution": {"transformed_nodes_by_query": {}}}});
@@ -2372,7 +2494,8 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
         } else if t.starts_with('"') && t.ends_with('"') {
             "«FQN»".to_string()
         } else {
-            t.to_string()
+            normalize_volatile_line(t)
+                .unwrap_or_else(|error| panic!("malformed rendered value in Explain: {error}"))
         }
     }
     fn conv(l: &qc::ExplainLine) -> serde_json::Value {

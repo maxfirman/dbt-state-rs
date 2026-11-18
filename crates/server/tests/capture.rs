@@ -87,6 +87,7 @@ fn sample(decision: DecisionKind, inv: &str, node: &str) -> CaptureInput {
         display_submitted_at_ms: None,
         template_comparison: None,
         rendered_volatile_values: None,
+        volatile_evaluation_requested: None,
     }
 }
 

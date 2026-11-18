@@ -319,6 +319,7 @@ fn submit_capture(
         display_submitted_at_ms: None,
         template_comparison: None,
         rendered_volatile_values: None,
+        volatile_evaluation_requested: None,
     }
 }
 
@@ -341,6 +342,7 @@ fn capture_submit(
         query_dependencies: explain.query_dependencies,
         reads_relation: explain.reads_relation,
         rendered_volatile_values: decided.rendered.clone(),
+        volatile_evaluation_requested: Some(!req.tolerate_nondeterminism),
         ..submit_capture(
             meta,
             &decided.outcome,
@@ -411,6 +413,7 @@ fn capture_register(
             display_submitted_at_ms: None,
             template_comparison: None,
             rendered_volatile_values: None,
+            volatile_evaluation_requested: None,
         },
     );
 }
@@ -497,10 +500,16 @@ impl Sql for SqlService {
             decided.outcome,
             raw_req.target_table.as_deref().unwrap_or_default(),
         );
-        if let (Some(rendered), Some(qc::submit_sql_response::Response::ReadyToExecute(ready))) =
-            (&decided.rendered, response.response.as_mut())
-        {
-            ready.transformed_nodes_by_query = rendered.to_wire();
+        if let Some(rendered) = &decided.rendered {
+            match response.response.as_mut() {
+                Some(qc::submit_sql_response::Response::ReadyToExecute(ready)) => {
+                    ready.transformed_nodes_by_query = rendered.to_wire();
+                }
+                Some(qc::submit_sql_response::Response::SkipExecution(skip)) => {
+                    skip.transformed_nodes_by_query = rendered.to_wire();
+                }
+                _ => {}
+            }
         }
         Ok(Response::new(response))
     }

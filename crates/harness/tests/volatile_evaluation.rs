@@ -101,14 +101,25 @@ fn is_captured_rand_format(value: &str) -> bool {
 }
 
 /// Replay the captured controls through the RAND submit (entry 85) at their
-/// recorded times, correlating each confirm with its local request id.
-/// Returns the local response to entry 85.
+/// recorded times. Returns the local response to entry 85.
 async fn replay_through_rand_submit(sc: &Scenario) -> qc::ReadyToExecuteResponse {
-    let entries = controls();
+    let mut responses = replay(sc, &controls(), RAND_SUBMIT).await;
+    support::scenario::into_execute(responses.remove(&RAND_SUBMIT).unwrap())
+}
+
+/// Replay the submits and confirms of `entries` through entry `through`, at
+/// their recorded times, correlating each confirm with its local request id.
+/// Returns the local response to each submit, by entry.
+async fn replay(
+    sc: &Scenario,
+    entries: &[GoldenEntry],
+    through: usize,
+) -> std::collections::HashMap<usize, qc::SubmitSqlResponse> {
     let mut sql = qc::sql_client::SqlClient::new(sc.channel());
     let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
     let mut local_ids = std::collections::HashMap::new();
-    for entry in &entries[..RAND_SUBMIT] {
+    let mut responses = std::collections::HashMap::new();
+    for (index, entry) in entries.iter().enumerate().take(through + 1) {
         match entry.method.as_str() {
             "SubmitEnrichedSQL" => {
                 let req = captured_submit(&entry.request).build();
@@ -123,6 +134,7 @@ async fn replay_through_rand_submit(sc: &Scenario) -> qc::ReadyToExecuteResponse
                 if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
                     local_ids.insert(hosted.to_owned(), local);
                 }
+                responses.insert(index, response);
             }
             "ConfirmExecution" => {
                 let mut req: qc::ConfirmExecutionRequest =
@@ -135,16 +147,7 @@ async fn replay_through_rand_submit(sc: &Scenario) -> qc::ReadyToExecuteResponse
             _ => {}
         }
     }
-    let entry = &entries[RAND_SUBMIT];
-    let response = sql
-        .submit_enriched_sql(support::captured_request(
-            captured_submit(&entry.request).build(),
-            entry,
-        ))
-        .await
-        .unwrap()
-        .into_inner();
-    support::scenario::into_execute(response)
+    responses
 }
 
 fn ready_request_id(response: &qc::SubmitSqlResponse) -> Option<String> {
@@ -571,7 +574,7 @@ async fn snowflake_rebuild_with(
 }
 
 #[tokio::test]
-async fn snowflake_submits_without_a_captured_current_timestamp_call_render_nothing() {
+async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     let cases = [
@@ -581,11 +584,6 @@ async fn snowflake_submits_without_a_captured_current_timestamp_call_render_noth
             false,
         ),
         (
-            "evaluation off",
-            snowflake_sql("id, amount, current_timestamp() as loaded_at"),
-            true,
-        ),
-        (
             "uncaptured precision argument",
             snowflake_sql("id, amount, current_timestamp(3) as loaded_at"),
             false,
@@ -593,6 +591,41 @@ async fn snowflake_submits_without_a_captured_current_timestamp_call_render_noth
         (
             "a function hosted renders nothing for",
             snowflake_sql("id, amount, seq4() as loaded_at"),
+            false,
+        ),
+        (
+            "zipf with a constant generator",
+            snowflake_sql("id, amount, zipf(1, 10, 1234) as loaded_at"),
+            false,
+        ),
+        (
+            "uncaptured seed",
+            snowflake_sql("id, amount, randstr(8, 99) as loaded_at"),
+            false,
+        ),
+        (
+            "uncaptured normal arguments",
+            snowflake_sql("id, amount, normal(0, 1, 7) as loaded_at"),
+            false,
+        ),
+        (
+            "uniform with a constant generator",
+            snowflake_sql("id, amount, uniform(1, 100, 1234) as loaded_at"),
+            false,
+        ),
+        (
+            "uncaptured parenless current_time",
+            snowflake_sql("id, amount, current_time as loaded_at"),
+            false,
+        ),
+        (
+            "uncaptured parenless localtime",
+            snowflake_sql("id, amount, localtime as loaded_at"),
+            false,
+        ),
+        (
+            "a column named like a function that needs parentheses",
+            snowflake_sql("id, amount, random as loaded_at"),
             false,
         ),
         (
@@ -693,6 +726,30 @@ async fn snowflake_decision_recorded_before_the_migration_prints_no_volatile_lin
 }
 
 #[tokio::test]
+async fn snowflake_decision_recorded_before_the_evaluation_flag_prints_no_volatile_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("legacy flag");
+    let id = snowflake_volatile_rebuild(&sc).await;
+    let with_flag = explain(&sc, &id).await;
+
+    support::legacy::forget_volatile_evaluation_flag(&server.state, "legacy flag", &id).await;
+
+    let legacy = explain(&sc, &id).await;
+    assert!(!prints_volatile_lines(&legacy), "{legacy}");
+    let mut expected = texts(&with_flag);
+    expected.retain(|t| {
+        !t.contains("rendered with")
+            && t != "non-deterministic functions detected in query"
+            && !t.contains("is not deterministic")
+    });
+    assert_eq!(
+        texts(&legacy),
+        expected,
+        "the rest of the tree is unchanged"
+    );
+}
+
+#[tokio::test]
 async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fingerprint() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("volatile");
@@ -739,6 +796,361 @@ async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter
     );
 }
 
+// ── Snowflake model cells 1–4 and 8 (#194) ──────────────────────────────────
+//
+// Evidence: the #191 capture batch, `golden/fixtures/explain_volatile_evaluation.jsonl`
+// (run 1: every function in one model, reruns, the deterministic control and
+// evaluation off) and `explain_volatile_evaluation_functions.jsonl` (run 2:
+// one function form per model). Both were captured with dbt 2.0.11.
+
+const RUN_1: &str = include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
+const RUN_2: &str =
+    include_str!("../../../golden/fixtures/explain_volatile_evaluation_functions.jsonl");
+
+fn entries(fixture: &str) -> Vec<GoldenEntry> {
+    fixture
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// The map a captured submit's response returned, on whichever branch.
+fn hosted_map_of(entry: &GoldenEntry) -> BTreeMap<String, BTreeMap<String, String>> {
+    let response = entry.response["response"].as_object().unwrap();
+    let payload = response.values().next().unwrap();
+    payload["transformed_nodes_by_query"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(query, node)| {
+            let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
+            (query.clone(), functions)
+        })
+        .collect()
+}
+
+/// The map a local response returned, on whichever branch.
+fn local_map(response: &qc::SubmitSqlResponse) -> BTreeMap<String, BTreeMap<String, String>> {
+    let value = serde_json::to_value(response).unwrap();
+    let payload = value["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    payload["transformed_nodes_by_query"]
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .map(|(query, node)| {
+                    let functions = serde_json::from_value(node["node_to_func"].clone()).unwrap();
+                    (query.clone(), functions)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `value` is a lowercase version 4 UUID (`8f162c59-9bda-412e-b5de-d0d22af57bf9`).
+fn is_lowercase_v4_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|u| u.get_version_num() == 4)
+        && value.len() == 36
+        && value == value.to_ascii_lowercase()
+}
+
+/// Whether `value` has the captured `RANDOM()` format: a plain decimal in
+/// [0, 1) (`0.2496468898543448`).
+fn is_captured_random_format(value: &str) -> bool {
+    is_captured_rand_format(value)
+}
+
+#[tokio::test]
+async fn snowflake_every_captured_function_renders_hosted_key_and_value_format() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
+    let run_1 = entries(RUN_1);
+    let run_2 = entries(RUN_2);
+    // Each submit is decided at its recorded time (the replay clock). The
+    // clock values are that instant in UTC, in hosted's format per function.
+    let clock: &[(&GoldenEntry, &[(&str, &str)])] = &[
+        (
+            &run_1[6],
+            &[
+                ("CURRENT_TIMESTAMP()", "2026-11-17 16:48:51.890000"),
+                ("SYSDATE()", "2026-11-17 16:48:51.890000+00:00"),
+                ("CURRENT_TIME", "16:48:51.890000"),
+                ("CURRENT_DATE", "2026-11-17"),
+            ],
+        ),
+        (
+            &run_2[13],
+            &[("CURRENT_TIMESTAMP()", "2026-11-17 17:05:56.620000")],
+        ),
+        (
+            &run_2[14],
+            &[("CURRENT_TIMESTAMP", "2026-11-17 17:05:56.712000")],
+        ),
+        (&run_2[15], &[("CURRENT_DATE", "2026-11-17")]),
+        (&run_2[16], &[]),
+        (&run_2[17], &[("CURRENT_TIME", "17:05:56.783000")]),
+        (&run_2[18], &[]),
+        (
+            &run_2[19],
+            &[("CURRENT_TIMESTAMP()", "2026-11-17 17:05:56.805000")],
+        ),
+        (&run_2[20], &[("CURRENT_TIME", "17:05:56.812000")]),
+        (&run_2[21], &[]),
+        (&run_2[22], &[]),
+        (
+            &run_2[23],
+            &[("CURRENT_TIMESTAMP()", "2026-11-17 17:05:56.855000")],
+        ),
+        (
+            &run_2[24],
+            &[("CURRENT_TIMESTAMP()", "2026-11-17 17:05:56.862000")],
+        ),
+    ];
+    for (entry, clock_values) in clock {
+        let request = captured_submit(&entry.request).build();
+        let sql_text = request.sql.clone();
+        let response = sql
+            .submit_enriched_sql(support::captured_request(request, entry))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(variant(&response), "ready_to_execute", "{sql_text}");
+        let local = local_map(&response);
+        let hosted = hosted_map_of(entry);
+        assert_eq!(map_shape(&local), map_shape(&hosted), "{sql_text}");
+        for (query, functions) in &local {
+            for (function, value) in functions {
+                let hosted_value = &hosted[query][function];
+                match function.as_str() {
+                    "RANDOM()" | "UNIFORM(1, 100, RANDOM())" => {
+                        assert!(is_captured_random_format(value), "{function}: {value:?}")
+                    }
+                    "UUID_STRING()" => {
+                        assert!(is_lowercase_v4_uuid(value), "{function}: {value:?}");
+                        assert!(is_lowercase_v4_uuid(hosted_value));
+                    }
+                    // Stable across every captured render.
+                    "RANDSTR(8, 1234)" | "NORMAL(0, 1, 1234)" => {
+                        assert_eq!(value, hosted_value, "{function}")
+                    }
+                    _ => {
+                        let expected = clock_values
+                            .iter()
+                            .find(|(f, _)| f == function)
+                            .unwrap_or_else(|| panic!("{function} is a clock value"));
+                        assert_eq!(value, expected.1, "{function}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A decision payload's fields other than its ids and map, which differ per
+/// run.
+fn codes(payload: &serde_json::Value) -> serde_json::Value {
+    let mut payload = payload.clone();
+    let object = payload.as_object_mut().unwrap();
+    for per_run in [
+        "request_id",
+        "execution_decision_id",
+        "transformed_nodes_by_query",
+    ] {
+        object.remove(per_run);
+    }
+    payload
+}
+
+/// The local and hosted response to captured submit `entry`: variant, codes
+/// and description, and the map's keys and function texts.
+fn assert_matches_hosted(local: &qc::SubmitSqlResponse, entry: &GoldenEntry, case: &str) {
+    let local_json = serde_json::to_value(local).unwrap();
+    let (variant, hosted) = entry.response["response"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    assert_eq!(
+        support::scenario::variant(local),
+        variant,
+        "{case}: {local_json}"
+    );
+    assert_eq!(
+        codes(&local_json["response"][variant]),
+        codes(hosted),
+        "{case}: {local_json}"
+    );
+    assert_eq!(
+        map_shape(&local_map(local)),
+        map_shape(&hosted_map_of(entry)),
+        "{case}"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_model_cells_return_hosted_codes_and_maps_on_builds_and_reuses() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let run_1 = entries(RUN_1);
+    let responses = replay(&sc, &run_1, 50).await;
+    for (entry, case) in [
+        (5, "cell 3 deterministic control, first build: empty map"),
+        (6, "cell 1 every function, first build"),
+        (8, "cell 4 evaluation off, first build: rendered"),
+        (7, "a view with evaluation off, first build: rendered"),
+        (
+            31,
+            "cell 3 deterministic control rerun with evaluation on: reused",
+        ),
+        (32, "a view with evaluation off, rerun: reused and rendered"),
+        (33, "cell 2 rerun with evaluation on: rebuilt and rendered"),
+        (34, "cell 4 evaluation off, rerun: reused and rendered"),
+        (
+            39,
+            "cell 7 consumer within Lag tolerance: reused, empty map",
+        ),
+        (
+            50,
+            "cell 4 evaluation switched off over an evaluation-on build: reused and rendered",
+        ),
+    ] {
+        assert_matches_hosted(&responses[&entry], &run_1[entry], case);
+    }
+    // Reuse is still refused for SQL whose query dependency definition calls
+    // a Volatile function with evaluation requested (cell 5 consumer rerun).
+    assert_eq!(variant(&responses[&35]), "ready_to_execute");
+}
+
+#[tokio::test]
+async fn snowflake_evaluation_off_renders_a_rebuild_but_prints_no_uncaptured_explain_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("evaluation off");
+    let (ready, explained) = snowflake_rebuild_with(
+        &sc,
+        &snowflake_sql("id, amount, current_timestamp() as loaded_at"),
+        true,
+    )
+    .await;
+
+    assert_eq!(
+        map_shape(&rendered(&ready)),
+        [(snowflake_target(), vec!["CURRENT_TIMESTAMP()".to_owned()])],
+        "rendered with evaluation off, as on hosted's evaluation-off builds"
+    );
+    // Hosted's Explain of a query-changed rebuild with evaluation off is
+    // uncaptured: the query analysis prints, without volatile lines.
+    assert!(
+        texts(&explained).contains(&"the model query has changed".to_owned()),
+        "{explained}"
+    );
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+}
+
+/// Hosted's Explain `explain` of captured submit `submit`, for the local
+/// decision `local`: hosted's decision id and rendered values replaced by
+/// the local ones.
+fn hosted_explain_for(
+    explain: &GoldenEntry,
+    submit: &GoldenEntry,
+    local: &qc::SubmitSqlResponse,
+) -> serde_json::Value {
+    let local_json = serde_json::to_value(local).unwrap();
+    let payload = local_json["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let local_id = payload["execution_decision_id"].as_str().unwrap();
+    let hosted_payload = submit.response["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap();
+    let hosted_id = hosted_payload["execution_decision_id"].as_str().unwrap();
+    let mut hosted = serde_json::to_string(&explain.response)
+        .unwrap()
+        .replace(hosted_id, local_id);
+    let local_values = local_map(local);
+    for (query, functions) in hosted_map_of(submit) {
+        for (function, value) in functions {
+            let ours = &local_values[&query][&function];
+            hosted = hosted.replace(
+                &format!("{function} -> rendered with '{value}'"),
+                &format!("{function} -> rendered with '{ours}'"),
+            );
+        }
+    }
+    serde_json::from_str(&hosted).unwrap()
+}
+
+fn decision_id(response: &qc::SubmitSqlResponse) -> String {
+    let value = serde_json::to_value(response).unwrap();
+    value["response"]
+        .as_object()
+        .unwrap()
+        .values()
+        .next()
+        .unwrap()["execution_decision_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+#[tokio::test]
+async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_cells").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let run_1 = entries(RUN_1);
+    let responses = replay(&sc, &run_1, 50).await;
+    // (submit, its captured Explain, case)
+    let cases = [
+        (6, 19, "cell 1 first build: no volatile lines"),
+        (
+            8,
+            20,
+            "cell 4 evaluation off, first build: no volatile lines",
+        ),
+        (5, 21, "cell 3 first build"),
+        (7, 22, "a view with evaluation off, first build"),
+        (33, 41, "cell 2 rerun with evaluation on"),
+        (34, 42, "cell 4 evaluation off, reused"),
+        (31, 43, "cell 3 deterministic control, reused"),
+        (32, 44, "a view with evaluation off, reused"),
+        (50, 51, "cell 4 evaluation switched off, reused"),
+    ];
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(submit, explained, _)| {
+            hosted_explain_for(&run_1[*explained], &run_1[*submit], &responses[submit])
+        })
+        .collect();
+    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
+        let id = decision_id(&responses[submit]);
+        assert_eq!(&explain(&sc, &id).await, expected, "{case}");
+    }
+
+    drop(sc);
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
+        let id = decision_id(&responses[submit]);
+        assert_eq!(
+            &explain(&sc, &id).await,
+            expected,
+            "{case}: the persisted values print after a restart"
+        );
+    }
+}
 // ── Snowflake consumer of a volatile model (#196) ───────────────────────────
 //
 // #191 cell 7, `golden/fixtures/explain_volatile_evaluation.jsonl`: `vm` calls
