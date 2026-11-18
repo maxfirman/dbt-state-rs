@@ -581,7 +581,7 @@ qualification. They are persisted with the decision for Explain only
   dependency definition uses the dependency's `name` as sent; dependencies
   follow the root SQL, in request order. A model whose only Volatile call is
   in a dependency has only the dependency key (`explain_volatile_evaluation.jsonl`
-  entries 10, 16).
+  entries 16 and 10).
 - Each function text appears once per query. Repeats and aliases fold into
   one value, from the first call in the SQL.
 - Clock values come from the server clock in UTC, to the microsecond. The
@@ -633,8 +633,8 @@ Intentional fallbacks, each rendering nothing for that call:
 | Snowflake | data test (`__target_query__`) | rendered | rendered, uncaptured | run 1 entries 16, 37 |
 | Snowflake | query dependency definition | rendered | rendered, uncaptured | run 1 entries 10, 35 |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
-| Databricks | `ready_to_execute`, root SQL | rendered | empty, uncaptured (#198) | entries 85, 86 |
-| Databricks | rerun, data test, downstream table, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| Databricks | `ready_to_execute`, root SQL of a model | rendered; a rerun is rendered the same way, uncaptured (#198) | empty, uncaptured (#198) | entries 85, 86 |
+| Databricks | data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
 The data-test and query-dependency values with evaluation off are current

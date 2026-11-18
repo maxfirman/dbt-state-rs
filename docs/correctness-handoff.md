@@ -162,9 +162,10 @@ server keeps the conservative behavior described.
   replay gap, and the Warehouse executes the original SQL in every case.
   - Databricks (#198): the rerun over the existing Target relation, a data
     test, a table downstream of the volatile model run twice, their Explain,
-    and evaluation off. Until then a Databricks data test or query
-    dependency renders nothing. Databricks never reuses with evaluation
-    requested, because it has no checked Volatile function detector.
+    and evaluation off. Until then a Databricks rerun renders its root
+    SQL's values as a first build does, and a data test or query dependency
+    renders nothing. Databricks never reuses with evaluation requested,
+    because it has no checked Volatile function detector.
   - Snowflake, no open ticket: a model with Volatile calls both in its own
     SQL and in a dependency (the server returns both keys); `ready_to_clone`
     with a filled map, and a Result copy of volatile SQL with evaluation off;

@@ -115,7 +115,7 @@ Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 | Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
 | Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (`clone_fallback_volatile.jsonl`) | ✅ |
 | Databricks model calling `rand()`, evaluation on | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
-| Databricks rerun, data test, downstream table, evaluation off | not captured (#198) | empty map, conservative rebuild |
+| Databricks rerun, data test, downstream table, evaluation off | not captured (#198) | conservative rebuild; a rerun renders `RAND()` as a build does, the other cells render nothing |
 
 ## Result copy (`CLONE`)
 
