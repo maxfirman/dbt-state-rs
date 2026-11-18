@@ -563,7 +563,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             // is never reused, and its unchanged rerun prints the first
             // execution's tree (explain_volatile_evaluation.jsonl entry 46).
             (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
-                if !node.own_volatile_values().is_empty() && !compares_templates(node) =>
+                if volatile_test_query_analysis(node) =>
             {
                 Shape::DataTestExecute
             }
@@ -1008,6 +1008,23 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     ]
 }
 
+/// Whether a data test's tree starts with the Volatile evaluation query
+/// analysis (#195): values were rendered for its own SQL on a first execution
+/// or an unchanged rerun (`explain_volatile_evaluation.jsonl` entries 24 and
+/// 46). A logic change with values is uncaptured and keeps its captured tree.
+fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
+    node.is_data_test()
+        && !node.own_volatile_values().is_empty()
+        && !compares_templates(node)
+        && matches!(
+            node.reason,
+            Some(
+                DecisionReason::FirstBuild
+                    | DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification)
+            )
+        )
+}
+
 /// Whether the decision compared the node's unrendered code
 /// (`compare_unrendered_code`), whose query analysis no Volatile evaluation
 /// capture covers.
@@ -1285,7 +1302,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             // Volatile evaluation (#195): a test whose own SQL rendered values
             // prints a query analysis, where `add_volatile_lines` lists them
             // (explain_volatile_evaluation.jsonl entries 24 and 46).
-            if !node.own_volatile_values().is_empty() && !compares_templates(node) {
+            if volatile_test_query_analysis(node) {
                 tree.push(section(
                     "query analysis",
                     vec![leaf(

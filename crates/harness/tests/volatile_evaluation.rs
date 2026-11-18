@@ -1135,3 +1135,31 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
         );
     }
 }
+
+#[tokio::test]
+async fn a_volatile_data_test_logic_change_is_uncaptured_and_prints_no_volatile_lines() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("logic change");
+    let entries = snowflake_evaluation();
+    let vt_results: qc::Struct =
+        serde_json::from_value(entries[VT_FIRST + 1].request["execution_results"].clone()).unwrap();
+    sc.build_with(
+        captured_submit(&entries[VT_FIRST].request),
+        support::scenario::outcome().results(vt_results),
+    )
+    .await;
+
+    let changed = sc
+        .expect_execute(
+            captured_submit(&entries[VT_RERUN].request)
+                .with(|r| r.sql = r.sql.replace("id > 100", "id > 200")),
+        )
+        .await;
+    assert!(!rendered(&changed).is_empty(), "rendered and returned");
+    let explained = explain(&sc, changed.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+    assert!(
+        texts(&explained).contains(&"data freshness analysis".to_owned()),
+        "the captured logic-change tree: {explained}"
+    );
+}
