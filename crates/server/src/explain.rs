@@ -487,6 +487,9 @@ enum Shape {
     /// (VERIFIED LIVE 2026-11-10, explain_data_test_history.jsonl).
     DataTestExecute,
     DataTestExistingTargetWithoutHistory,
+    /// A model over a query dependency whose definition rendered Volatile
+    /// function values ([`volatile_dependency_tree`], #195).
+    VolatileDependency,
 }
 
 /// Select the tree shape from the persisted decision reason, the class and
@@ -812,6 +815,19 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             Shape::CopyOver
         }
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
+        // Volatile evaluation (#195): a table over a view whose definition
+        // rendered values, with no values of its own and no upstream table,
+        // is never reused (explain_volatile_evaluation.jsonl entry 45).
+        (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
+            if full
+                && !upstreams
+                && !node.own_target_absent()
+                && !compares_templates(node)
+                && node.own_volatile_values().is_empty()
+                && !node.rendered_volatile_values.is_empty() =>
+        {
+            Shape::VolatileDependency
+        }
         // Captured for FULL only, the one kind a submit copies (#101).
         (DecisionKind::Build, R::CopyDisabled)
             if full && node.own_target_absent() && node.clone_source.is_some() =>
@@ -929,6 +945,67 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         None,
     );
     query.children.splice(at..at, [detected, not_tolerated]);
+}
+
+/// Volatile evaluation (#195): the rebuild of a table whose own query is
+/// unchanged, over a query dependency whose definition rendered values. Each
+/// such dependency, by its name as sent, lists its values under
+/// `non-deterministic functions detected in query`, which ends with `a change
+/// in rendered value will result in a diff`; the upstream model query is
+/// then reported changed, and the upstream data up to date
+/// (`explain_volatile_evaluation.jsonl` entry 45). No `tolerated by config`
+/// line in this form.
+fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    let mut dependencies: Vec<(&str, Vec<qc::ExplainLine>)> = Vec::new();
+    for v in &node.rendered_volatile_values {
+        let rendered = line(format!("{} -> rendered with '{}'", v.function, v.value));
+        match dependencies.iter_mut().find(|(name, _)| *name == v.query) {
+            Some((_, values)) => values.push(rendered),
+            None => dependencies.push((&v.query, vec![rendered])),
+        }
+    }
+    let dependencies = dependencies
+        .into_iter()
+        .map(|(name, mut values)| {
+            values.push(line("a change in rendered value will result in a diff"));
+            section(
+                quote(name),
+                vec![qc::ExplainLine {
+                    text: "non-deterministic functions detected in query".into(),
+                    marker: Some(MARKER_INFO),
+                    badge: None,
+                    children: values,
+                }],
+            )
+        })
+        .collect();
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    "the model query has not changed",
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                section("upstream dependencies", dependencies),
+                leaf(
+                    "an upstream model query has changed",
+                    Some(MARKER_FAIL),
+                    None,
+                ),
+            ],
+        ),
+        section(
+            "data freshness analysis",
+            vec![leaf(
+                "upstream data is up to date",
+                Some(MARKER_SUCCESS),
+                None,
+            )],
+        ),
+    ]
 }
 
 /// Whether the decision compared the node's unrendered code
@@ -1221,6 +1298,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             tree.push(unanchored_data_freshness_analysis(node));
             tree
         }
+        Some(Shape::VolatileDependency) => volatile_dependency_tree(node),
         Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
             section("query analysis", Vec::new()),
             unanchored_data_freshness_analysis(node),

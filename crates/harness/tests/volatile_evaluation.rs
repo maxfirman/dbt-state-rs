@@ -880,23 +880,25 @@ fn masked_relative_times(mut explain: serde_json::Value) -> serde_json::Value {
     explain
 }
 
-#[tokio::test]
-async fn snowflake_volatile_data_test_explain_matches_hosted_on_both_runs_after_a_restart() {
-    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_test_restart").await);
+/// Replay the captured run through the last of `cases` (submit entry,
+/// hosted Explain entry), then require each local Explain to equal hosted's
+/// for the values the local decision rendered, before and after a restart.
+async fn assert_explains_match_hosted_after_a_restart(database: &str, cases: &[(usize, usize)]) {
+    let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
     let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
     let entries = snowflake_evaluation();
-    let executed = replay_snowflake_evaluation(&sc, VT_RERUN).await;
-    let cases = [(VT_FIRST, VT_FIRST_EXPLAIN), (VT_RERUN, VT_RERUN_EXPLAIN)];
+    let through = cases.iter().map(|&(submit, _)| submit).max().unwrap();
+    let executed = replay_snowflake_evaluation(&Scenario::connect(&server).await, through).await;
     let expected: Vec<_> = cases
         .iter()
         .map(|&(submit, explain)| hosted_explain_of(&entries, submit, explain, &executed[&submit]))
         .collect();
-    let explained = |sc: Scenario| {
+    let explained = |server: support::TestServer| {
         let executed = &executed;
         async move {
+            let sc = Scenario::connect(&server).await;
             let mut out = Vec::new();
-            for (submit, _) in cases {
+            for &(submit, _) in cases {
                 let id = executed[&submit].execution_decision_id.as_deref().unwrap();
                 out.push(masked_relative_times(explain(&sc, id).await));
             }
@@ -904,13 +906,30 @@ async fn snowflake_volatile_data_test_explain_matches_hosted_on_both_runs_after_
         }
     };
 
-    assert_eq!(explained(sc).await, expected);
+    assert_eq!(explained(server).await, expected);
 
-    drop(server);
     let server = support::start_server_on_database(database.clone()).await;
     assert_eq!(
-        explained(Scenario::connect(&server).await).await,
+        explained(server).await,
         expected,
         "the persisted values print after a restart"
     );
+}
+
+#[tokio::test]
+async fn snowflake_volatile_data_test_explain_matches_hosted_on_both_runs_after_a_restart() {
+    assert_explains_match_hosted_after_a_restart(
+        "volatile_test_restart",
+        &[(VT_FIRST, VT_FIRST_EXPLAIN), (VT_RERUN, VT_RERUN_EXPLAIN)],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn snowflake_volatile_dependency_explain_matches_hosted_after_a_restart() {
+    assert_explains_match_hosted_after_a_restart(
+        "volatile_dependency_restart",
+        &[(VD_RERUN, VD_RERUN_EXPLAIN)],
+    )
+    .await;
 }
