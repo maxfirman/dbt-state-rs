@@ -20,9 +20,13 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
         dialect: &DatabricksDialect {},
         functions: &[crate::volatile_evaluation::Rule {
             name: "rand",
+            call: crate::volatile_evaluation::Call::Empty,
             key: "RAND()",
             value: crate::volatile_evaluation::Value::UnitRandom,
         }],
+        // Evaluation off and reuse are uncaptured on Databricks.
+        evaluation_off: false,
+        on_skip: false,
     };
 
 /// Extra bounds on #144's source-less ordinary-submit rejection. The shared

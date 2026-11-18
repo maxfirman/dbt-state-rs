@@ -273,15 +273,16 @@ pub async fn submit_sql_explained(
     let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
-    // Volatile evaluation, once decided. Only a build is rendered: Volatile
-    // SQL with evaluation requested is never reused or copied, and no other
-    // branch has a capture.
-    if matches!(decided.outcome, SubmitOutcome::Execute { .. }) {
-        decided.rendered = crate::volatile_evaluation::evaluate(
-            req,
-            Warehouse::from_dialect(&req.dialect).volatile_rules(),
-            sources,
-        );
+    // Volatile evaluation, once decided: a build, and a reuse where the
+    // Warehouse's captures show one rendered. A copy has no capture.
+    let rules = Warehouse::from_dialect(&req.dialect).volatile_rules();
+    let renders = match decided.outcome {
+        SubmitOutcome::Execute { .. } => true,
+        SubmitOutcome::Skip { .. } => rules.is_some_and(|rules| rules.on_skip),
+        _ => false,
+    };
+    if renders {
+        decided.rendered = crate::volatile_evaluation::evaluate(req, rules, sources);
     }
     Ok(decided)
 }

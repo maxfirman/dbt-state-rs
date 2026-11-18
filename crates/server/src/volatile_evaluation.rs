@@ -33,6 +33,8 @@ pub struct Sources {
     pub now_micros: i64,
     /// A uniform random number in `[0, 1)`.
     pub random: fn() -> f64,
+    /// A random (version 4) UUID.
+    pub uuid: fn() -> uuid::Uuid,
 }
 
 impl Sources {
@@ -41,6 +43,7 @@ impl Sources {
         Self {
             now_micros,
             random: rand::random::<f64>,
+            uuid: uuid::Uuid::new_v4,
         }
     }
 }
@@ -51,17 +54,37 @@ impl Sources {
 pub struct Rules {
     pub dialect: &'static dyn Dialect,
     pub functions: &'static [Rule],
+    /// Whether values are rendered when the submit tolerates nondeterminism
+    /// (evaluation off), as hosted was captured doing.
+    pub evaluation_off: bool,
+    /// Whether a reuse (`skip_execution`) is rendered as well as a build, as
+    /// hosted was captured doing.
+    pub on_skip: bool,
 }
 
 /// A Volatile function hosted was captured rendering, and how.
 #[derive(Debug, Clone, Copy)]
 pub struct Rule {
     /// The builtin's name, lower case. Matches an unquoted, unqualified call
-    /// with an empty argument list (`rand()`), in any case.
+    /// written as [`Rule::call`], in any case.
     pub name: &'static str,
+    pub call: Call,
     /// The function text hosted reports as the inner map key (`RAND()`).
     pub key: &'static str,
     pub value: Value,
+}
+
+/// The call form a [`Rule`] matches. Each form is matched only as captured:
+/// hosted keys some forms of one builtin differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    /// `name()`, an empty argument list.
+    Empty,
+    /// `name` without parentheses (`current_date`).
+    Parenless,
+    /// `name(…)` with exactly these arguments as the parser prints them,
+    /// in any case (`1, 100, random()`).
+    Arguments(&'static str),
 }
 
 /// How a rule renders its value.
@@ -73,16 +96,36 @@ pub enum Value {
     /// The server clock in UTC to the microsecond, without an offset
     /// (`2026-10-12 21:52:38.577832`).
     UtcTimestampMicros,
+    /// The server clock in UTC to the microsecond, with the UTC offset
+    /// (`2026-11-17 16:48:51.782884+00:00`).
+    UtcTimestampMicrosWithOffset,
+    /// The server clock's UTC time of day to the microsecond (`16:48:51.782956`).
+    UtcTimeMicros,
+    /// The server clock's UTC date (`2026-11-17`).
+    UtcDate,
+    /// A random UUID in lower case (`8f162c59-9bda-412e-b5de-d0d22af57bf9`).
+    Uuid,
+    /// The same value on every render: hosted's value for a generator called
+    /// with a constant seed (`RANDSTR(8, 1234)` -> `9XChaf68`).
+    Constant(&'static str),
 }
 
 impl Value {
     fn render(self, sources: &Sources) -> String {
+        let clock = |format| {
+            chrono::DateTime::from_timestamp_micros(sources.now_micros)
+                .unwrap_or_default()
+                .format(format)
+                .to_string()
+        };
         match self {
             Self::UnitRandom => (sources.random)().to_string(),
-            Self::UtcTimestampMicros => chrono::DateTime::from_timestamp_micros(sources.now_micros)
-                .unwrap_or_default()
-                .format("%Y-%m-%d %H:%M:%S%.6f")
-                .to_string(),
+            Self::UtcTimestampMicros => clock("%Y-%m-%d %H:%M:%S%.6f"),
+            Self::UtcTimestampMicrosWithOffset => clock("%Y-%m-%d %H:%M:%S%.6f+00:00"),
+            Self::UtcTimeMicros => clock("%H:%M:%S%.6f"),
+            Self::UtcDate => clock("%Y-%m-%d"),
+            Self::Uuid => (sources.uuid)().hyphenated().to_string(),
+            Self::Constant(value) => value.to_owned(),
         }
     }
 }
@@ -120,9 +163,9 @@ impl Rendered {
     }
 }
 
-/// Render the Volatile functions of `req`'s SQL, when the submit requests
-/// Volatile evaluation and `rules` has a rule for them. `None` when nothing
-/// was rendered.
+/// Render the Volatile functions of `req`'s SQL that `rules` has a rule
+/// for, when the submit requests Volatile evaluation or the rules render
+/// with evaluation off. `None` when nothing was rendered.
 ///
 /// Only the root SQL is read, and each function is rendered once however
 /// often it is called: those are the captured cells. A function in a query
@@ -132,11 +175,11 @@ pub fn evaluate(
     rules: Option<Rules>,
     sources: &Sources,
 ) -> Option<Rendered> {
-    if req.tolerate_nondeterminism {
+    let rules = rules?;
+    if req.tolerate_nondeterminism && !rules.evaluation_off {
         return None;
     }
     let query = req.target_table.as_deref().filter(|t| !t.is_empty())?;
-    let rules = rules?;
     let statements = Parser::parse_sql(rules.dialect, &req.sql).ok()?;
     let mut finder = Finder {
         rules: rules.functions,
@@ -174,9 +217,9 @@ impl Visitor for Finder {
     }
 }
 
-/// The rule `expr` calls: an unquoted, unqualified `name()` with an empty
-/// argument list and no clauses. Comments and string literals never reach the
-/// visitor, and a quoted name is a user object.
+/// The rule `expr` calls: an unquoted, unqualified `name` in the call form
+/// a rule names, without clauses. Comments and string literals never reach
+/// the visitor, and a quoted name is a user object.
 fn called_rule(rules: &'static [Rule], expr: &Expr) -> Option<&'static Rule> {
     let Expr::Function(f) = expr else {
         return None;
@@ -184,15 +227,9 @@ fn called_rule(rules: &'static [Rule], expr: &Expr) -> Option<&'static Rule> {
     let [ObjectNamePart::Identifier(name)] = f.name.0.as_slice() else {
         return None;
     };
-    let FunctionArguments::List(args) = &f.args else {
-        return None;
-    };
     if name.quote_style.is_some()
         || f.uses_odbc_syntax
         || !matches!(f.parameters, FunctionArguments::None)
-        || args.duplicate_treatment.is_some()
-        || !args.args.is_empty()
-        || !args.clauses.is_empty()
         || f.filter.is_some()
         || f.null_treatment.is_some()
         || f.over.is_some()
@@ -200,7 +237,30 @@ fn called_rule(rules: &'static [Rule], expr: &Expr) -> Option<&'static Rule> {
     {
         return None;
     }
-    rules
-        .iter()
-        .find(|rule| name.value.eq_ignore_ascii_case(rule.name))
+    let arguments = match &f.args {
+        FunctionArguments::None => None,
+        FunctionArguments::List(args)
+            if args.duplicate_treatment.is_none() && args.clauses.is_empty() =>
+        {
+            Some(
+                args.args
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        }
+        _ => return None,
+    };
+    rules.iter().find(|rule| {
+        name.value.eq_ignore_ascii_case(rule.name)
+            && match (rule.call, arguments.as_deref()) {
+                (Call::Empty, Some(args)) => args.is_empty(),
+                (Call::Parenless, None) => true,
+                (Call::Arguments(expected), Some(args)) => {
+                    !expected.is_empty() && args.eq_ignore_ascii_case(expected)
+                }
+                _ => false,
+            }
+    })
 }

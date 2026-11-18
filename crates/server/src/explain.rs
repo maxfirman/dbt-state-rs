@@ -78,6 +78,9 @@ pub struct ExplainNode {
     /// (migration 0027). Empty when none were, for a decision recorded
     /// before the migration and for unreadable evidence: no volatile lines.
     pub rendered_volatile_values: Vec<crate::volatile_evaluation::RenderedValue>,
+    /// Whether the SQL submit requested Volatile evaluation (migration 0028).
+    /// `None` for other decisions and before the migration: no volatile lines.
+    pub volatile_evaluation_requested: Option<bool>,
     pub execution_decision_id: String,
     pub decision: DecisionKind,
     pub execution_type: i32,
@@ -213,6 +216,7 @@ impl ExplainNode {
                 .clone()
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+            volatile_evaluation_requested: row.volatile_evaluation_requested,
             execution_decision_id: row.execution_decision_id.clone()?,
             decision,
             execution_type: row.execution_type,
@@ -880,7 +884,8 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// query is not deterministic (`databricks_submit_copy_controls.jsonl` entry
 /// 86). Printed only where that verdict is; other shapes are uncaptured.
 fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
-    if node.rendered_volatile_values.is_empty() {
+    if node.rendered_volatile_values.is_empty() || node.volatile_evaluation_requested != Some(true)
+    {
         return;
     }
     let Some(query) = lines.iter_mut().find(|l| l.text == "query analysis") else {
@@ -2429,6 +2434,7 @@ mod tests {
             display_submitted_at_ms: None,
             template_comparison: None,
             rendered_volatile_values: Vec::new(),
+            volatile_evaluation_requested: None,
             execution_decision_id: "edid".into(),
             decision,
             execution_type: et,
