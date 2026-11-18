@@ -413,22 +413,6 @@ const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
     ("UUID_STRING()", LOWERCASE_UUID_V4),
 ];
 
-/// An Explain `«function» -> rendered with '«value»'` line with the value
-/// normalized as [`normalize_volatile_values`] does, or `None` for any other
-/// line. Fails on a malformed value of a registered function.
-fn normalize_rendered_line(text: &str) -> Option<Result<String, String>> {
-    let (function, rest) = text.split_once(" -> rendered with '")?;
-    let value = rest.strip_suffix('\'')?;
-    let (_, format) = VOLATILE_VALUE_FORMATS
-        .iter()
-        .find(|(f, _)| *f == function)?;
-    Some(if (format.matches)(value) {
-        Ok(format!("{function} -> rendered with '{}'", format.name))
-    } else {
-        Err(format!("{function}: {value:?} is not {}", format.name))
-    })
-}
-
 /// The only runtime-value normalization of the replay (#67, #193): each
 /// rendered value in a decision payload's `transformed_nodes_by_query` whose
 /// function text has a registered [`ValueFormat`] is replaced by the format's
@@ -482,6 +466,28 @@ fn normalize_volatile_values(mut value: serde_json::Value) -> Result<serde_json:
 fn comparable(value: serde_json::Value, context: &str) -> serde_json::Value {
     normalize_volatile_values(normalize_ids(value))
         .unwrap_or_else(|error| panic!("{context}: malformed rendered value: {error}"))
+}
+
+/// The Explain form of [`normalize_volatile_values`] (#195): a
+/// `«function» -> rendered with '«value»'` line whose function text has a
+/// registered [`ValueFormat`] prints the format's name in place of the value,
+/// after checking the value has it. Any other line is returned as it is.
+/// Fails on a malformed value.
+fn normalize_volatile_line(text: &str) -> Result<String, String> {
+    let Some((function, quoted)) = text.split_once(" -> rendered with '") else {
+        return Ok(text.to_owned());
+    };
+    let (Some(value), Some((_, format))) = (
+        quoted.strip_suffix('\''),
+        VOLATILE_VALUE_FORMATS.iter().find(|(f, _)| *f == function),
+    ) else {
+        return Ok(text.to_owned());
+    };
+    if (format.matches)(value) {
+        Ok(format!("{function} -> rendered with '{}'", format.name))
+    } else {
+        Err(format!("{function}: {value} is not {}", format.name))
+    }
 }
 
 /// After `normalize_ids` (and any `ignore_fields`) stripping, decide whether the
@@ -841,14 +847,16 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
         );
         // And the same values in Explain lines.
         let line = |value: &str| format!("{function} -> rendered with '{value}'");
-        assert!(normalize_rendered_line(&line(captured)).is_some_and(|r| r.is_ok()));
-        assert!(normalize_rendered_line(&line(malformed)).is_some_and(|r| r.is_err()));
+        assert_ne!(normalize_volatile_line(&line(captured)), Ok(line(captured)));
+        assert!(normalize_volatile_line(&line(captured)).is_ok());
+        assert!(normalize_volatile_line(&line(malformed)).is_err());
     }
     // A function without a registered format is compared exactly.
     let constant = |value| normalize_volatile_values(response(target, "RANDSTR(8, 1234)", value));
     assert_eq!(constant("9XChaf68"), constant("9XChaf68"));
     assert_ne!(constant("9XChaf68"), constant("E5tavqyk"));
-    assert!(normalize_rendered_line("RANDSTR(8, 1234) -> rendered with '9XChaf68'").is_none());
+    let kept = "RANDSTR(8, 1234) -> rendered with '9XChaf68'";
+    assert_eq!(normalize_volatile_line(kept).as_deref(), Ok(kept));
     // Responses without a map, and empty maps, are unchanged.
     let empty =
         serde_json::json!({"response": {"skip_execution": {"transformed_nodes_by_query": {}}}});
@@ -2457,9 +2465,7 @@ fn local_speculative_edid(resp: &qc::SubmitSqlSpeculativeResponse) -> Option<Str
 /// `updated N seconds after "…" last executed` line.
 fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
     fn mask_text(t: &str) -> String {
-        if let Some(normalized) = normalize_rendered_line(t) {
-            normalized.unwrap_or_else(|error| panic!("malformed rendered value: {error}"))
-        } else if t.starts_with("table analysis (") {
+        if t.starts_with("table analysis (") {
             "table analysis («FQN»)".to_string()
         } else if t.starts_with("last updated:") {
             "last updated: «rel_time»".to_string()
@@ -2488,7 +2494,8 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
         } else if t.starts_with('"') && t.ends_with('"') {
             "«FQN»".to_string()
         } else {
-            t.to_string()
+            normalize_volatile_line(t)
+                .unwrap_or_else(|error| panic!("malformed rendered value in Explain: {error}"))
         }
     }
     fn conv(l: &qc::ExplainLine) -> serde_json::Value {
