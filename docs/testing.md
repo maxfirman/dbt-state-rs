@@ -247,16 +247,18 @@ Rendered Volatile values are the only runtime values the replay normalizes
 response, a `transformed_nodes_by_query` value whose function text is
 registered in `VOLATILE_VALUE_FORMATS` must have that format and is then
 compared as the format's name; map keys and function text are compared
-exactly, and values of other functions are compared as they are. A malformed
-value fails the replay. Field-scoped gaps are judged after this
-normalization, so a map that differs only in its runtime values needs no
-gap.
+exactly, and values of other functions are compared as they are. Explain
+`«function» -> rendered with '«value»'` lines are compared the same way
+(`conformance.rs::normalize_volatile_line`). A malformed value fails the
+replay. Field-scoped gaps are judged after this normalization, so a map that
+differs only in its runtime values needs no gap, and no gap covers Volatile
+evaluation.
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the
   rest of the tree must then match exactly, and at least one named line must
-  be present. Used for volatile lines this server does not render yet
-  (`explain_volatile_evaluation.jsonl`, #191).
+  be present. No entry uses it now: the volatile lines it was added for
+  (#191) are rendered since #194 and #195.
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.

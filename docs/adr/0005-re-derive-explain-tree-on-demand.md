@@ -9,9 +9,9 @@ persisted, and selects the tree shape. Amended by #73: the unmatched latest
 build's id is also persisted ([below](#decision)). Amended by #83/#90: an
 execution type change keeps the build it was judged against as
 `matched_execution_id` ([below](#decision)). Amended by #117: a view decision
-records whether its SQL reads a relation ([below](#decision)). Amended by #67:
-a decision records the values its Volatile evaluation rendered
-([below](#decision)).
+records whether its SQL reads a relation ([below](#decision)). Amended by #67
+(Accepted): a decision records the values its Volatile evaluation rendered
+and whether the submit requested evaluation ([below](#decision)).
 
 ## Decision
 
@@ -88,19 +88,32 @@ caller already holds this id). Everything else is re-derived.
 > decided before the migration: such a view without reported upstreams
 > renders nothing, because unknown evidence does not choose a wording.
 
-> **Amended by #67** (maintainer decision 2026-11-17; Proposed until the
-> #67 captures land). A decision that performs Volatile evaluation records
-> the rendered values it returned in `transformed_nodes_by_query`, keyed as
-> returned, in one nullable column on `node_decisions`. Hosted's Explain
-> tree prints each value ("`RAND() -> rendered with '…'`",
-> `databricks_submit_copy_controls.jsonl` entry 86). A rendered timestamp
-> or random number cannot be re-derived later, so this is the one input
-> that must be persisted rather than recomputed. Explain reads it with the
-> decision, org-scoped; decisions and Reuse qualification never read it,
-> and it is not part of any identity or fingerprint. NULL when no value
-> was rendered and for decisions recorded before the migration: Explain
-> then renders no volatile lines, because an unknown value is not
-> invented. As elsewhere in this ADR, only evidence is stored, never a
+> **Amended by #67** (maintainer decision 2026-11-17; Accepted in #197,
+> after the #191 Snowflake captures and #192–#196). A decision that performs
+> Volatile evaluation records the rendered values it returned in
+> `transformed_nodes_by_query`, in `node_decisions.rendered_volatile_values`
+> (JSONB, migration 0027): an array of `{query, function, value}` in the
+> order the functions first appear, keyed exactly as returned. Hosted's
+> Explain tree prints each value ("`RAND() -> rendered with '…'`",
+> `databricks_submit_copy_controls.jsonl` entry 86; the Snowflake trees of
+> `explain_volatile_evaluation.jsonl`). A rendered timestamp or random
+> number cannot be re-derived later, so it must be persisted rather than
+> recomputed. Snowflake also renders values with evaluation off, and hosted
+> then prints "… but this is tolerated by config" instead of "… and this is
+> not tolerated by config", so the values alone cannot choose the line: a
+> second nullable column, `node_decisions.volatile_evaluation_requested`
+> (BOOLEAN, migration 0028, #194), records whether the SQL submit requested
+> evaluation. Explain reads both with the decision, org-scoped; decisions and
+> Reuse qualification never read them, and neither is part of any identity
+> or fingerprint. The captured Explain wording that reads like a query or
+> Upstream producer change ("the model query has changed" for an unchanged
+> volatile model, "an upstream model query has changed" over a volatile
+> view) is derived from these two columns and the persisted decision
+> reason; identity is unchanged
+> (maintainer decision on the #191 check-in). Either column NULL, which
+> includes every decision recorded before its migration: Explain then
+> renders no volatile lines, because an unknown value is not invented. No
+> backfill. As elsewhere in this ADR, only evidence is stored, never a
 > verdict or tree.
 
 ## Why re-derive (not persist the tree)

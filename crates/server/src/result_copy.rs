@@ -93,8 +93,9 @@ pub(crate) struct RehomedReading {
 /// golden/fixtures/clone_fallback_volatile.jsonl). A deterministic model with
 /// the same flag still copies (experiments/clone_eligibility.sh volatile_det,
 /// review #2 4th follow-up P1 #3). The parse-based detector
-/// (`sql_norm::request_has_volatile_sql`) is a conservative suppression gate,
-/// not full volatile-evaluation conformance (golden/replay_gaps.json).
+/// (`sql_norm::request_has_volatile_sql`) is a conservative suppression gate;
+/// the values Volatile evaluation reports are rendered separately, after the
+/// decision (`volatile_evaluation`).
 pub(crate) fn submit_lookup<'a>(
     req: &'a qc::SubmitEnrichedSqlRequest,
     evidence: &'a ExecutionEvidence,

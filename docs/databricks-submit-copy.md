@@ -98,7 +98,8 @@ One boundary remains explicit. (The RAND control's sampled
 `transformed_nodes_by_query` value and its Explain lines are implemented by
 Volatile evaluation, #192: the map has hosted's shape with this server's own
 value, and Explain prints that value; the model still BUILDs and the
-Warehouse executes the original SQL.) The unknown-input control's
+Warehouse executes the original SQL. The remaining Databricks Volatile
+evaluation cells are #198.) The unknown-input control's
 hosted display uses the second containing the captured client submit, while its
 UUIDv7 decision instant crosses into the next second (119ms later). This server's
 replay uses the evidenced decision instant, so that one display differs by1s;

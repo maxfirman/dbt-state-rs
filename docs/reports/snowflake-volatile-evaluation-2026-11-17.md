@@ -9,6 +9,13 @@ likely hosted policy, not proven). Cells that would change identity, Upstream
 producer semantics or a reuse refusal are marked **Check-in** and wait for
 the maintainer (#67 check-in rule). This ticket changes no server code.
 
+> Status (#197): the maintainer decided the check-ins on 2026-11-17. Cell 3
+> relaxed Reuse qualification for deterministic SQL; cells 2, 5 and 6 changed
+> only the Explain wording, not identity. #193–#196 implemented every
+> captured cell, and both fixtures now replay without a gap. The gap table records
+> the state at capture time. The current support boundary is in
+> [protocol.md](../protocol.md#volatile-evaluation).
+
 ## Provenance
 
 | | Run 1 | Run 2 |
