@@ -591,8 +591,9 @@ the persisted evaluation flag, migration 0028):
   - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
 ```
 One child per value, in the order the functions first appear in the SQL.
-A data test or a rebuild with evaluation off is not captured and prints no
-volatile lines.
+A data test or a query dependency with evaluation off renders no values
+([protocol.md](protocol.md#volatile-evaluation)), and a model rebuild with
+evaluation off is not captured: neither prints volatile lines.
 
 ### EXECUTE: node query changed (SHAPE 7)
 
@@ -636,7 +637,10 @@ rendered values are uncaptured and print none, except the evaluation-off
 reuse ([SKIP](#skip-shapes-0-1-2-4-8)) and the table over a volatile view
 ([EXECUTE: over a volatile query dependency](#execute-over-a-volatile-query-dependency)).
 A decision without rendered values, or recorded before migration 0027 or
-0028, prints none.
+0028, prints none. Values exist only in the captured cells
+([protocol.md](protocol.md#volatile-evaluation)): on Databricks only this
+query-changed FULL rebuild renders, so a Databricks first build or rerun
+prints no volatile lines (#198).
 
 The freshness body is the SKIP one (above), judged against the latest build
 in scope, whose identity did not match (an identity-mismatch rebuild has no
@@ -928,7 +932,10 @@ The wording comes from the persisted values and evaluation flag
 (maintainer decision on #191). Not captured, and keeping the decision's own
 (empty) tree: the same rerun with upstreams, query dependencies, as a view,
 an incremental, a snapshot or a custom node, or under
-`compare_unrendered_code`.
+`compare_unrendered_code`. A rerun with values in both its own SQL and a
+query dependency, any incremental, snapshot or custom node, and a
+Databricks rerun (#198) render no values at all, so they print no volatile
+lines.
 
 ### EXECUTE: over a volatile query dependency
 
@@ -959,8 +966,10 @@ in `transformed_nodes_by_query`. There is no `tolerated by config` line, and
 the persisted values (`explain.rs::volatile_dependency_tree`): identity and
 Upstream producers do not change (#67 decision 2). Uncaptured, and empty: a
 first build (`table analysis` only, as captured, entry 23), another model
-kind, a table with an upstream table or with values of its own too, and a
-dependency over evaluation off.
+kind and a table with an upstream table. A table with values of its own
+too, a data test over a volatile view and a dependency with evaluation off
+render no values ([protocol.md](protocol.md#volatile-evaluation)), so they
+print no volatile lines.
 
 ### First build
 
@@ -1353,7 +1362,10 @@ and on every rerun, which this server rebuilds for
 ```
 The values are the persisted ones the decision returned. A logic change of
 such a test (`identity_mismatch`) is uncaptured and keeps the tree above
-without the query analysis.
+without the query analysis. A data test with evaluation off, over a
+volatile view, or with a Target relation renders no values
+([protocol.md](protocol.md#volatile-evaluation)) and prints no volatile
+lines.
 
 The tree does not depend on the test's outcome: the passing and the failing
 test render the same tree in every round, and the outcome (`failures`,
@@ -1748,8 +1760,9 @@ last ones were settled.
   [its tree](#execute-over-a-volatile-query-dependency)) and a data test
   whose own SQL rendered values (entries 24, 46, [DATA TEST](#data-test)).
   Not captured (N): every other kind and situation, including SQL whose
-  Volatile calls render nothing (`zipf`, `seqN`); Databricks cells are
-  tracked in #198. From a malformed request it is
+  Volatile calls render nothing (`zipf`, `seqN`) and the cells that render
+  no values ([protocol.md](protocol.md#volatile-evaluation)); Databricks
+  cells, among them the unchanged rerun, are tracked in #198. From a malformed request it is
   local-only, empty tree (crafted `experiments/malformed_requests.py`,
   accepted divergence #114). For a model of every kind and a data test,
   hosted rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
