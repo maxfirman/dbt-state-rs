@@ -12,7 +12,9 @@
 //! `fixtures/databricks_submit_copy_controls.jsonl` entries 85 (submit) and 86
 //! (Explain); the captured Snowflake first builds of a `current_timestamp()`
 //! model, `golden/fixtures/clone_fallback_volatile.jsonl` entries 0 (prod) and
-//! 2 (dev) (#193).
+//! 2 (dev) (#193); the captured Snowflake table over a volatile view and data
+//! test, `golden/fixtures/explain_volatile_evaluation.jsonl` entries 10, 35
+//! and 45, and 16, 24, 37 and 46 (#195).
 mod support;
 
 use std::collections::BTreeMap;
@@ -932,4 +934,206 @@ async fn snowflake_volatile_dependency_explain_matches_hosted_after_a_restart() 
         &[(VD_RERUN, VD_RERUN_EXPLAIN)],
     )
     .await;
+}
+
+#[tokio::test]
+async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let request = |entry: usize| captured_submit(&entries[entry].request);
+    let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vd_built_at = entries[VD_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    // The captured confirm of the first `vt` execution: passed, 0 failures.
+    let vt_results: qc::Struct =
+        serde_json::from_value(entries[VT_FIRST + 1].request["execution_results"].clone()).unwrap();
+    let vt_passed = || support::scenario::outcome().results(vt_results.clone());
+    // `vd` built in the other schema of its namespace over that schema's
+    // `vv`, as a dev Target.
+    let vd_elsewhere = |tolerate: bool| {
+        let dev = serde_json::to_string(&entries[VD_FIRST_BUILD].request)
+            .unwrap()
+            .replace("PROD_STATE_DEMO", "DEV_STATE_DEMO")
+            .replace("prod_state_demo", "dev_state_demo");
+        captured_submit(&serde_json::from_str(&dev).unwrap()).tolerate_nondeterminism(tolerate)
+    };
+
+    let pending = sc.org("pending");
+    let first = pending.expect_execute(request(VD_FIRST_BUILD)).await;
+    let second = pending.expect_execute(request(VD_FIRST_BUILD)).await;
+    assert!(!rendered(&first).is_empty() && !rendered(&second).is_empty());
+    assert_eq!(
+        fingerprints(&server, &first.request_id).await,
+        fingerprints(&server, &second.request_id).await,
+        "rendered values enter no persisted identity or fingerprint"
+    );
+
+    let volatile = sc.org("volatile");
+    volatile.build(request(VD_FIRST_BUILD), vd_built_at).await;
+    let rerun = volatile.expect_execute(request(VD_RERUN)).await;
+    assert_eq!(
+        map_shape(&rendered(&rerun)),
+        [(vv.clone(), vec!["CURRENT_TIMESTAMP()".to_owned()])],
+        "the unchanged table over the volatile view is rebuilt and rendered"
+    );
+    assert!(
+        volatile
+            .confirm(&rerun.request_id, built_at(vd_built_at))
+            .await
+    );
+    assert_eq!(
+        variant(&volatile.submit(vd_elsewhere(false)).await),
+        "ready_to_execute",
+        "never copied into another schema of the namespace"
+    );
+    let test = volatile.expect_execute(request(VT_FIRST)).await;
+    assert!(volatile.confirm(&test.request_id, vt_passed()).await);
+    let test_rerun = volatile.expect_execute(request(VT_RERUN)).await;
+    assert_eq!(
+        map_shape(&rendered(&test_rerun)),
+        [(
+            "__target_query__".to_owned(),
+            vec!["CURRENT_TIMESTAMP()".to_owned()]
+        )],
+        "the unchanged data test is executed again and rendered"
+    );
+
+    // Control: the same history is reused, and `vd` copied, with evaluation off.
+    let tolerated = sc.org("tolerated");
+    tolerated
+        .build(
+            request(VD_FIRST_BUILD).tolerate_nondeterminism(true),
+            vd_built_at,
+        )
+        .await;
+    assert_eq!(
+        variant(
+            &tolerated
+                .submit(request(VD_RERUN).tolerate_nondeterminism(true))
+                .await
+        ),
+        "skip_execution"
+    );
+    assert_eq!(
+        variant(&tolerated.submit(vd_elsewhere(true)).await),
+        "ready_to_clone"
+    );
+    tolerated
+        .build_with(request(VT_FIRST).tolerate_nondeterminism(true), vt_passed())
+        .await;
+    assert_eq!(
+        variant(
+            &tolerated
+                .submit(request(VT_RERUN).tolerate_nondeterminism(true))
+                .await
+        ),
+        "skip_execution"
+    );
+}
+
+#[tokio::test]
+async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let vv_columns = "1 as id, current_timestamp() as ts, 'vv_164840c243b8' as v";
+    let vt_condition = "current_timestamp() < '2000-01-01'::timestamp_ltz";
+    let cases = [
+        (
+            "line comment",
+            "1 as id, 1 as ts -- current_timestamp()",
+            "1 = 1 -- current_timestamp()",
+        ),
+        (
+            "block comment",
+            "1 as id, 1 /* current_timestamp() */ as ts",
+            "1 /* current_timestamp() */ = 1",
+        ),
+        (
+            "string literal",
+            "1 as id, 'current_timestamp()' as ts",
+            "'current_timestamp()' = v",
+        ),
+        (
+            "quoted identifier",
+            "1 as id, \"current_timestamp\"() as ts",
+            "\"current_timestamp\"() < '2000-01-01'::timestamp_ltz",
+        ),
+    ];
+    let with = |entry: usize, find: &str, replace: &str| {
+        let (find, replace) = (find.to_owned(), replace.to_owned());
+        captured_submit(&entries[entry].request).with(move |r| {
+            r.sql = r.sql.replace(&find, &replace);
+            for d in &mut r.query_dependencies {
+                d.query = d.query.replace(&find, &replace);
+            }
+        })
+    };
+    for (case, dependency, condition) in cases {
+        for (node, submit) in [
+            (
+                "view dependency",
+                with(VD_FIRST_BUILD, vv_columns, dependency),
+            ),
+            ("data test", with(VT_FIRST, vt_condition, condition)),
+        ] {
+            let ready = sc
+                .org(&format!("{case} {node}"))
+                .expect_execute(submit)
+                .await;
+            assert!(
+                rendered(&ready).is_empty(),
+                "{case} {node}: {:?}",
+                rendered(&ready)
+            );
+        }
+    }
+    // Positive control for the same edits: the captured calls render.
+    for (node, submit) in [
+        (
+            "view dependency",
+            with(VD_FIRST_BUILD, vv_columns, vv_columns),
+        ),
+        ("data test", with(VT_FIRST, vt_condition, vt_condition)),
+    ] {
+        let ready = sc
+            .org(&format!("control {node}"))
+            .expect_execute(submit)
+            .await;
+        assert!(!rendered(&ready).is_empty(), "{node}");
+    }
+
+    // Databricks has no capture of a dependency or a data test: only a Target
+    // relation's own `rand()` renders.
+    let model = captured_submit(&captured_request(RAND_SUBMIT));
+    let databricks_dependency = model
+        .clone()
+        .sql(&format!(
+            "select * from {}",
+            "`cdo_demo_db`.`ds_20261112a134ef_prod`.`v`"
+        ))
+        .dependency(
+            "`cdo_demo_db`.`ds_20261112a134ef_prod`.`v`",
+            "select rand() as noise",
+        );
+    let databricks_test = support::scenario::data_test("test.databricks.rand")
+        .dialect("databricks")
+        .sql("select rand() as noise where false")
+        .tolerate_nondeterminism(false);
+    for (node, submit) in [
+        ("Databricks dependency", databricks_dependency),
+        ("Databricks data test", databricks_test),
+    ] {
+        let ready = sc.org(node).expect_execute(submit).await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{node}: {:?}",
+            rendered(&ready)
+        );
+    }
 }
