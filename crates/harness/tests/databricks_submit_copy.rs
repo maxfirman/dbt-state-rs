@@ -504,7 +504,7 @@ async fn crafted_controls_build_safely_and_render_the_hosted_rand_shape() {
             expected,
             "control{cases}"
         );
-        let value = serde_json::to_value(response).unwrap();
+        let value = serde_json::to_value(&response).unwrap();
         if matches!(cases, 0 | 7) {
             let runtime = value["response"][expected]["execution_runtime_ms"].clone();
             if cases == 0 {
@@ -522,22 +522,17 @@ async fn crafted_controls_build_safely_and_render_the_hosted_rand_shape() {
         if cases == 5 {
             // Volatile evaluation (#192): the same map shape as hosted, with
             // this server's own rendered value in the captured format.
-            let shape = |map: &serde_json::Value| -> Vec<(String, Vec<String>)> {
-                map.as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(query, node)| {
-                        let functions = node["node_to_func"].as_object().unwrap();
-                        (query.clone(), functions.keys().cloned().collect())
-                    })
-                    .collect()
-            };
-            let hosted = &entry["response"]["response"][expected]["transformed_nodes_by_query"];
-            let local = &value["response"][expected]["transformed_nodes_by_query"];
-            assert!(!shape(hosted).is_empty(), "retain hosted RAND() evidence");
-            assert_eq!(shape(local), shape(hosted), "hosted map shape");
+            use support::scenario::{hosted_volatile_values, volatile_map_shape, volatile_values};
+            let hosted = hosted_volatile_values(&entry["response"]);
+            let local = volatile_values(&response);
+            assert!(!hosted.is_empty(), "retain hosted RAND() evidence");
+            assert_eq!(
+                volatile_map_shape(&local),
+                volatile_map_shape(&hosted),
+                "hosted map shape"
+            );
             let target = entry["request"]["target_table"].as_str().unwrap();
-            let rendered = local[target]["node_to_func"]["RAND()"].as_str().unwrap();
+            let rendered = &local[target]["RAND()"];
             assert!(
                 rendered.strip_prefix("0.").is_some_and(
                     |digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())

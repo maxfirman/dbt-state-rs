@@ -111,9 +111,23 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `record`. `Submit::body` changes the rendered SQL as well as the body hash,
   because reuse ignores `node_body_hash`. Seed State history through the
   protocol with `Scenario::build` or `Scenario::record`.
+  - `captured_submit(&entry.request)` builds a `Submit` from a captured
+    fixture request, exactly as the client sent it.
+  - `Scenario::at(now_ms)` sends the test replay clock header
+    (`x-dbt-state-replay-now-ms`) on every request of that scenario, so it
+    decides at a captured time.
+  - `Scenario::explain(&[ids])` calls GetExplainMessages scoped to the
+    scenario's org.
+  - `volatile_values` (a response, on any branch), `volatile_values_of` (a
+    `transformed_nodes_by_query` map) and `hosted_volatile_values` (a
+    captured response) read Volatile evaluation values as query → function
+    → value; `volatile_map_shape` drops the values.
 - `rows.rs` reads `executions` and `node_states` back for assertions.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
+  `legacy::forget_rendered_volatile_values` and
+  `legacy::forget_volatile_evaluation_flag` make a captured decision look
+  recorded before migration 0027 or 0028.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 
