@@ -15,20 +15,32 @@ pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 /// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
 /// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85).
 /// Other Databricks Volatile functions are uncaptured and render nothing.
-pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
-    crate::volatile_evaluation::Rules {
+pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
+    use crate::decision::{DecisionReason, NoCandidate};
+    use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    Rules {
         dialect: &DatabricksDialect {},
-        data_tests_and_dependencies: false,
-        functions: &[crate::volatile_evaluation::Rule {
+        functions: &[Rule {
             name: "rand",
-            call: crate::volatile_evaluation::Call::Empty,
+            call: Call::Empty,
             key: "RAND()",
-            value: crate::volatile_evaluation::Value::UnitRandom,
+            value: Value::UnitRandom,
         }],
-        // Evaluation off and reuse are uncaptured on Databricks.
-        evaluation_off: false,
-        on_skip: false,
-    };
+        // The one captured cell: a FULL model's query-changed rebuild over
+        // its existing Target relation, evaluation on (entries 85–86). A
+        // first build, an unchanged rerun (#198), other execution types,
+        // data tests, query dependencies, evaluation off and a reuse are
+        // uncaptured.
+        cells: &[Cell {
+            execution_type: crate::query_cache::ModelExecutionType::Full,
+            evaluation_requested: true,
+            outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+                NoCandidate::IdentityMismatch,
+            )),
+            queries: Queries::Own,
+        }],
+    }
+};
 
 /// Extra bounds on #144's source-less ordinary-submit rejection. The shared
 /// relation-read proof deliberately treats literal table functions as reading

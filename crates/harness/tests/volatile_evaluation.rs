@@ -409,7 +409,10 @@ async fn a_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fing
     let sc = Scenario::connect(&server).await.org("volatile");
     let model = captured_submit(&captured_request(RAND_SUBMIT));
 
+    // Two captured query-changed rebuilds, each over a deterministic build.
+    deterministic_history(&sc).await;
     let first = sc.expect_execute(model.clone()).await;
+    deterministic_history(&sc).await;
     let second = sc.expect_execute(model.clone()).await;
     let value =
         |ready: &qc::ReadyToExecuteResponse| rendered(ready)[&captured_target()]["RAND()"].clone();
@@ -421,13 +424,13 @@ async fn a_volatile_model_is_never_reused_or_copied_and_its_values_enter_no_fing
     );
 
     assert!(
-        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
+        sc.confirm(&second.request_id, built_at(captured_target_epoch()))
             .await
     );
-    let rerun = sc.expect_execute(model.clone()).await;
-    assert!(
-        !rendered(&rerun).is_empty(),
-        "a rerun is rebuilt and rendered"
+    assert_eq!(
+        variant(&sc.submit(model.clone()).await),
+        "ready_to_execute",
+        "a rerun is rebuilt"
     );
 
     let elsewhere = model
@@ -1798,4 +1801,225 @@ async fn a_volatile_data_test_logic_change_is_uncaptured_and_prints_no_volatile_
         texts(&explained).contains(&"data freshness analysis".to_owned()),
         "the captured logic-change tree: {explained}"
     );
+}
+
+// ── Uncaptured cells render nothing (#67 review) ────────────────────────────
+//
+// Values are returned only in the cells hosted was captured rendering:
+// Snowflake FULL models (own SQL, evaluation on or off; a query dependency,
+// evaluation on), views with evaluation off, and data tests without a Target
+// relation with evaluation on; Databricks the query-changed rebuild of a FULL
+// model (entries 85–86). Every other cell keeps an empty map and prints no
+// volatile Explain lines.
+
+/// The captured `vd` request `entry` with its own SQL also calling
+/// `current_timestamp()`.
+fn vd_with_own_volatile_sql(entries: &[GoldenEntry], entry: usize) -> serde_json::Value {
+    let mut request = entries[entry].request.clone();
+    let sql = request["sql"].as_str().unwrap().replacen(
+        "select id,",
+        "select current_timestamp() as own_ts, id,",
+        1,
+    );
+    request["sql"] = sql.into();
+    request
+}
+
+#[tokio::test]
+async fn snowflake_evaluation_off_renders_nothing_for_a_data_test_or_a_query_dependency() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    // Positive control: a model's own SQL renders with evaluation off (run 1
+    // entry 8).
+    let control = sc
+        .org("control")
+        .expect_execute(captured_submit(&entries[8].request))
+        .await;
+    assert!(!rendered(&control).is_empty());
+
+    for (case, entry) in [("data test", VT_FIRST), ("view dependency", VD_FIRST_BUILD)] {
+        let ready = sc
+            .org(case)
+            .expect_execute(captured_submit(&entries[entry].request).tolerate_nondeterminism(true))
+            .await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
+}
+
+#[tokio::test]
+async fn snowflake_values_in_own_sql_and_a_dependency_or_a_data_test_over_a_volatile_view_render_nothing(
+) {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vv_sql = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["query"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vd_built_at = entries[VD_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+
+    // A model calling a Volatile function in its own SQL and in a dependency:
+    // first build, and an unchanged rerun whose Explain would carry the lines.
+    let both = sc.org("both");
+    let first = both
+        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
+            &entries,
+            VD_FIRST_BUILD,
+        )))
+        .await;
+    assert!(rendered(&first).is_empty(), "{:?}", rendered(&first));
+    assert!(both.confirm(&first.request_id, built_at(vd_built_at)).await);
+    let rerun = both
+        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
+            &entries, VD_RERUN,
+        )))
+        .await;
+    assert!(rendered(&rerun).is_empty(), "{:?}", rendered(&rerun));
+    let explained = explain(&both, rerun.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+
+    // A data test over the volatile view, with deterministic and with
+    // volatile SQL of its own.
+    let over_view = |own: &str| {
+        captured_submit(&entries[VT_FIRST].request)
+            .sql(&format!(
+                "\nselect id, v from CDO_DEMO_DB.prod_state_demo.vv_164840c243b8\nwhere {own}"
+            ))
+            .no_tables()
+            .dependency(&vv, &vv_sql)
+    };
+    for (case, test) in [
+        ("data test over a volatile view", over_view("id > 100")),
+        (
+            "volatile data test over a volatile view",
+            over_view("id > 100 and current_timestamp() < '2000-01-01'::timestamp_ltz"),
+        ),
+    ] {
+        let sc = sc.org(case);
+        let ready = sc.expect_execute(test).await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+        let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+    }
+}
+
+#[tokio::test]
+async fn databricks_renders_only_the_captured_query_changed_rebuild() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("databricks cells");
+    let model = captured_submit(&captured_request(RAND_SUBMIT));
+
+    let first = sc.expect_execute(model.clone()).await;
+    assert!(
+        rendered(&first).is_empty(),
+        "first build: {:?}",
+        rendered(&first)
+    );
+    assert!(
+        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
+            .await
+    );
+    let rerun = sc.expect_execute(model.clone()).await;
+    assert!(
+        rendered(&rerun).is_empty(),
+        "unchanged rerun (cell 2, #198): {:?}",
+        rendered(&rerun)
+    );
+    let explained = explain(&sc, rerun.execution_decision_id.as_deref().unwrap()).await;
+    assert!(!prints_volatile_lines(&explained), "{explained}");
+
+    // Positive control: the captured query-changed rebuild renders.
+    let control = sc.org("databricks control");
+    deterministic_history(&control).await;
+    assert!(!rendered(&control.expect_execute(model).await).is_empty());
+}
+
+#[tokio::test]
+async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
+    use support::scenario::ExecutionType;
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let uncaptured = [
+        ExecutionType::Append,
+        ExecutionType::Merge,
+        ExecutionType::InsertOverwrite,
+        ExecutionType::DeleteInsert,
+        ExecutionType::Microbatch,
+        ExecutionType::Snapshot,
+        ExecutionType::DbtCustom,
+    ];
+
+    // Snowflake: the captured FULL first build renders; the same build of
+    // another execution type, or a view with evaluation on, does not.
+    let snowflake = captured_submit(&snowflake_request());
+    assert!(!rendered(
+        &sc.org("snowflake control")
+            .expect_execute(snowflake.clone())
+            .await
+    )
+    .is_empty());
+    for execution_type in uncaptured.into_iter().chain([ExecutionType::View]) {
+        let case = format!("snowflake {execution_type:?}");
+        let ready = sc
+            .org(&case)
+            .expect_execute(snowflake.clone().execution_type(execution_type))
+            .await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
+    // A Snowflake data test with a Target relation (store_failures).
+    let entries = snowflake_evaluation();
+    let stored = captured_submit(&entries[VT_FIRST].request)
+        .target("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"VT_164840C243B8\"");
+    let ready = sc
+        .org("snowflake stored failures")
+        .expect_execute(stored)
+        .await;
+    assert!(rendered(&ready).is_empty(), "{:?}", rendered(&ready));
+
+    // Databricks: the captured query-changed FULL rebuild renders; the same
+    // rebuild of another execution type does not.
+    let input = "cdo_demo_db.ds_20261112a134ef_prod.p153_80615b233ac140e48993d85c06bfc823_inputs";
+    for execution_type in [
+        ExecutionType::Full,
+        ExecutionType::View,
+        ExecutionType::Merge,
+        ExecutionType::Snapshot,
+    ] {
+        let case = format!("databricks {execution_type:?}");
+        let sc = sc.org(&case);
+        let model = captured_submit(&captured_request(RAND_SUBMIT)).execution_type(execution_type);
+        sc.build(
+            model
+                .clone()
+                .sql(&format!("select *, 1 AS noise from {input}")),
+            captured_target_epoch(),
+        )
+        .await;
+        let ready = sc.expect_execute(model).await;
+        assert_eq!(
+            rendered(&ready).is_empty(),
+            execution_type != ExecutionType::Full,
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+    }
 }
