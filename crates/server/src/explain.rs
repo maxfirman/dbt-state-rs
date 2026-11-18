@@ -4702,4 +4702,62 @@ mod tests {
             "model was a no-op because its query is up to date and its data is within lag tolerance"
         );
     }
+
+    /// Volatile evaluation (#195 on #194's flag): a data test's own values and
+    /// a query dependency's values print only for a decision that requested
+    /// evaluation. Evaluation off is uncaptured for both, and a decision
+    /// recorded without the flag prints no volatile lines.
+    #[test]
+    fn data_test_and_dependency_volatile_lines_need_the_evaluation_flag() {
+        fn detected(lines: &[qc::ExplainLine]) -> bool {
+            lines.iter().any(|l| {
+                l.text == "non-deterministic functions detected in query" || detected(&l.children)
+            })
+        }
+        let value = |query: &str| crate::volatile_evaluation::RenderedValue {
+            query: query.into(),
+            function: "CURRENT_TIMESTAMP()".into(),
+            value: "2026-11-17 16:48:56.015041".into(),
+        };
+        let mut test = node(
+            DecisionKind::Build,
+            ModelExecutionType::DbtDataTest as i32,
+            "data test was executed because it has no prior execution or its query changed",
+        );
+        test.target_table = None;
+        test.input_tables = vec![tbl("\"DB\".\"S\".\"UP\"")];
+        test.reason = Some(DecisionReason::FirstBuild);
+        test.rendered_volatile_values = vec![value(crate::volatile_evaluation::TARGET_QUERY_KEY)];
+
+        let view = "\"DB\".\"S\".\"VV\"";
+        let mut table = node(
+            DecisionKind::Build,
+            ModelExecutionType::Full as i32,
+            "model was executed because it is not deterministic",
+        );
+        table.reason = Some(DecisionReason::NoReuseCandidate(
+            NoCandidate::FailedReuseQualification,
+        ));
+        table.query_dependencies = vec![view.into()];
+        table.rendered_volatile_values = vec![value(view)];
+
+        for n in [&test, &table] {
+            let mut requested = n.clone();
+            requested.volatile_evaluation_requested = Some(true);
+            assert!(
+                detected(&explain_lines(&requested)),
+                "{:?}",
+                render(&requested)
+            );
+            for flag in [Some(false), None] {
+                let mut other = n.clone();
+                other.volatile_evaluation_requested = flag;
+                assert!(
+                    !detected(&explain_lines(&other)),
+                    "{flag:?}: {:?}",
+                    render(&other)
+                );
+            }
+        }
+    }
 }

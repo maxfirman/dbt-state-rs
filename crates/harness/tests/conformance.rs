@@ -775,7 +775,7 @@ fn explain_volatile_values_compare_function_text_exactly_and_values_by_format() 
         "another instant in the same format compares equal"
     );
     for other in [
-        "CURRENT_TIMESTAMP -> rendered with '2026-11-17 16:48:56.150000'",
+        "CURRENT_TIMESTAMP(3) -> rendered with '2026-11-17 16:48:56.150000'",
         "RANDSTR(8, 1234) -> rendered with '9XChaf68'",
         "a change in rendered value will result in a diff",
     ] {
