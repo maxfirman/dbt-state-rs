@@ -737,3 +737,47 @@ async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter
         "skip_execution"
     );
 }
+
+// ── Snowflake volatile view dependency and data test (#195) ─────────────────
+
+const SNOWFLAKE_EVALUATION: &str =
+    include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
+/// `vd`, a table over the view `vv` that calls `current_timestamp()`, with
+/// evaluation requested: first build and unchanged rerun.
+const VD_FIRST_BUILD: usize = 10;
+const VD_RERUN: usize = 35;
+/// Hosted's Explain of the `vd` rerun.
+const VD_RERUN_EXPLAIN: usize = 45;
+/// `vt`, a data test calling `current_timestamp()` with evaluation
+/// requested: first execution and unchanged rerun, and their Explains.
+const VT_FIRST: usize = 16;
+const VT_RERUN: usize = 37;
+const VT_FIRST_EXPLAIN: usize = 24;
+const VT_RERUN_EXPLAIN: usize = 46;
+
+fn snowflake_evaluation() -> Vec<GoldenEntry> {
+    SNOWFLAKE_EVALUATION
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn snowflake_volatile_data_test_and_dependency_render_keyed_as_captured() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    for (case, entry) in [("data test", VT_FIRST), ("view dependency", VD_FIRST_BUILD)] {
+        let entry = &entries[entry];
+        let ready = sc
+            .org(case)
+            .expect_execute(captured_submit(&entry.request))
+            .await;
+        let values = rendered(&ready);
+        assert_eq!(
+            map_shape(&values),
+            map_shape(&hosted_map(entry)),
+            "{case}: hosted's key shape"
+        );
+    }
+}

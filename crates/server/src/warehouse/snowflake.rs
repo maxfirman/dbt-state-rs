@@ -12,6 +12,7 @@ use sqlparser::dialect::SnowflakeDialect;
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
     crate::volatile_evaluation::Rules {
         dialect: &SnowflakeDialect {},
+        data_tests_and_dependencies: true,
         functions: &[crate::volatile_evaluation::Rule {
             name: "current_timestamp",
             key: "CURRENT_TIMESTAMP()",

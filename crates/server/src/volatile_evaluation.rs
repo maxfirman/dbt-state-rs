@@ -50,8 +50,18 @@ impl Sources {
 #[derive(Debug, Clone, Copy)]
 pub struct Rules {
     pub dialect: &'static dyn Dialect,
+    /// Whether hosted was captured rendering a data test's SQL (keyed
+    /// [`TARGET_QUERY_KEY`]) and query dependency definitions (keyed by the
+    /// dependency's name). Otherwise only a Target relation's root SQL is
+    /// rendered.
+    pub data_tests_and_dependencies: bool,
     pub functions: &'static [Rule],
 }
+
+/// The outer map key hosted reports a data test's own values under: a data
+/// test has no Target relation (`explain_volatile_evaluation.jsonl` entries
+/// 16 and 37).
+pub const TARGET_QUERY_KEY: &str = "__target_query__";
 
 /// A Volatile function hosted was captured rendering, and how.
 #[derive(Debug, Clone, Copy)]
@@ -124,9 +134,11 @@ impl Rendered {
 /// Volatile evaluation and `rules` has a rule for them. `None` when nothing
 /// was rendered.
 ///
-/// Only the root SQL is read, and each function is rendered once however
-/// often it is called: those are the captured cells. A function in a query
-/// dependency, or in SQL without a Target relation, renders nothing.
+/// The root SQL is keyed by the Target relation as sent, or for a data test
+/// by [`TARGET_QUERY_KEY`]; each query dependency definition by the
+/// dependency's name, in request order (`explain_volatile_evaluation.jsonl`
+/// entries 10 and 16). Each function is rendered once per query however often
+/// it is called. SQL that does not parse renders nothing.
 pub fn evaluate(
     req: &qc::SubmitEnrichedSqlRequest,
     rules: Option<Rules>,
@@ -135,24 +147,54 @@ pub fn evaluate(
     if req.tolerate_nondeterminism {
         return None;
     }
-    let query = req.target_table.as_deref().filter(|t| !t.is_empty())?;
     let rules = rules?;
-    let statements = Parser::parse_sql(rules.dialect, &req.sql).ok()?;
+    let own = req
+        .target_table
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            (rules.data_tests_and_dependencies
+                && req.execution_type == qc::ModelExecutionType::DbtDataTest as i32)
+                .then_some(TARGET_QUERY_KEY)
+        });
+    let dependencies = req
+        .query_dependencies
+        .iter()
+        .filter(|_| rules.data_tests_and_dependencies)
+        .map(|d| (d.name.as_str(), d.query.as_str()));
+    let mut values: Vec<RenderedValue> = Vec::new();
+    for (query, sql) in own
+        .map(|query| (query, req.sql.as_str()))
+        .into_iter()
+        .chain(dependencies)
+    {
+        for rule in called_rules(rules, sql) {
+            if !values
+                .iter()
+                .any(|v| v.query == query && v.function == rule.key)
+            {
+                values.push(RenderedValue {
+                    query: query.to_owned(),
+                    function: rule.key.to_owned(),
+                    value: rule.value.render(sources),
+                });
+            }
+        }
+    }
+    (!values.is_empty()).then_some(Rendered(values))
+}
+
+/// The rules `sql` calls, first call first; none when it does not parse.
+fn called_rules(rules: Rules, sql: &str) -> Vec<&'static Rule> {
+    let Ok(statements) = Parser::parse_sql(rules.dialect, sql) else {
+        return Vec::new();
+    };
     let mut finder = Finder {
         rules: rules.functions,
         found: Vec::new(),
     };
     let _ = statements.visit(&mut finder);
-    let values: Vec<_> = finder
-        .found
-        .into_iter()
-        .map(|rule| RenderedValue {
-            query: query.to_owned(),
-            function: rule.key.to_owned(),
-            value: rule.value.render(sources),
-        })
-        .collect();
-    (!values.is_empty()).then_some(Rendered(values))
+    finder.found
 }
 
 /// Collects the rules whose function the SQL calls, first call first.

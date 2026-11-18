@@ -18,6 +18,7 @@ pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules =
     crate::volatile_evaluation::Rules {
         dialect: &DatabricksDialect {},
+        data_tests_and_dependencies: false,
         functions: &[crate::volatile_evaluation::Rule {
             name: "rand",
             key: "RAND()",
