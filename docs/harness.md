@@ -116,8 +116,11 @@ A run:
    `fixture_candidate.jsonl` (the driver's decision/Explain subset,
    including `RecordExecutions`; telemetry, `GetStateSelection` and
    the like are
-   dropped and counted), `steps.json` (bound steps and row offsets) and the
-   oracle report on stdout.
+   dropped and counted), `steps.json` (bound steps and row offsets),
+   `client.json` (the `dbt` executable's path, version and SHA-256, and every
+   `dbt_run_cache_version` it sent; the run fails if they disagree or none was
+   sent), `reads.json` (rows each `Read` step read back) and the oracle report
+   on stdout.
 
 The generic conformance replay also handles version validation and batched
 telemetry. The separate [Databricks auxiliary runner](../experiments/databricks_auxiliary.py)
@@ -184,6 +187,12 @@ SCENARIO = Scenario(
   `truncate table`, `drop table [if exists]` or `drop view [if exists]`
   followed by the per-run relation it writes. Unqualified names are allowed; two- or four-part names,
   `IDENTIFIER(...)`, Jinja braces, comments and `;` are refused.
+- `Read(relation, target="prod_demo")`: one `dbt show --inline "select * from
+  <relation>" --limit -1 --output json` with dbt State disabled (no proxy, no
+  RPC). The relation must be a three-part per-run object in a demo schema of
+  `CDO_DEMO_DB`. The rows go to `reads.json`, so a capture can compare what the
+  Warehouse wrote with what the service returned (`volatile_evaluation.py`,
+  #191).
 - `Explain(select, intent, node=None, decision=None, execution_type=None,
   history=True, target="prod_demo")`: one `dbt state explain --verbose` per
   node. Set `node` to the `dbt_node_name` when the selector is not the name

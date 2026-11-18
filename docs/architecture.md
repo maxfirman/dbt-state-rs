@@ -48,6 +48,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `copy_lifecycle.rs` | Candidate qualification, frozen copy sources/inputs/producers and subsequent adoption for submit copies and RegisterClone. Distinct legacy origin proofs preserve their characterized eligibility and age rules. |
 | `databricks_submit_copy.rs` | Bounded Databricks FULL automatic-copy request policy; identity and provenance implementation live in shared analysis/lifecycle. |
 | `execution.rs` | Execution evidence: identity construction, pending SQL/seed/copy rows, and atomic RecordExecutions publication with selector/deferral state. |
+| `volatile_evaluation.rs` | Pure Volatile evaluation (#67): renders each Volatile function the Warehouse has a captured rule for (`Warehouse::volatile_rules`), in the cells it was captured rendering in (`Rules::cells`), from an injected clock and random source (`Sources`), for `transformed_nodes_by_query` and Explain. Snowflake and Databricks rules live in `warehouse/`. Called by `submit_decision` after the decision; never an input to identity, fingerprints, Upstream producers or Reuse qualification. |
 | `explain.rs` | Pure re-derivation of `dbt state explain` trees from a persisted node decision and its matched execution ([explain-catalog.md](explain-catalog.md)). `ExplainNode::of_decision` maps a persisted row to the generator's input. |
 | `selector.rs` | Pure engine for `state:*` selectors (`SelectorService.GetStateSelection`). |
 | `capture.rs` | Best-effort, non-blocking write of the UI domain rows and one `node_decisions` row per decision. |
@@ -356,7 +357,11 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    from State history (`resolve_producers`).
 3. Read State history once: the Target relation's current physical state, or a
    data test's latest outcome by scoped UID. `reuse_candidate` decides on that
-   row alone whether it is a Reuse candidate.
+   row alone whether it is a Reuse candidate. With Volatile evaluation
+   requested, Reuse qualification refuses only SQL whose root or query
+   dependency definitions call a Volatile function per the Warehouse's
+   detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
+   (#191 cell 3, maintainer decision, #194).
 4. With no Reuse candidate (and no External modification of the Target
    relation), try the Result copy fallback. A copy overrides the verdict.
    Only the execution types the Warehouse rules copy are copied (FULL; DuckDB
@@ -373,6 +378,17 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    selects a reuse candidate, copy source or Explain anchor.
 9. `settle`: mint the ids, write the pending row for every outcome except SKIP,
    and return the `SubmitOutcome`.
+10. Volatile evaluation, once decided (`volatile_evaluation::evaluate`, ADR
+    0005 "Amended by #67"): for a build or a reuse, render the Volatile
+    functions the Warehouse has captured rules for
+    (`Warehouse::volatile_rules`) in the root SQL or the query dependency
+    definitions, only in a cell the Warehouse was captured rendering in
+    (`Rules::cells`: execution type, evaluation on or off, build reason or
+    reuse, own SQL or dependencies). Any other submit, a copy and the
+    chain-limit build render nothing. The values are returned in
+    `transformed_nodes_by_query` and persisted with the decision for
+    Explain; the decision above never sees them, and the Warehouse executes
+    the original SQL ([protocol.md](protocol.md#volatile-evaluation)).
 
 `submit_values` (seeds) follows steps 1, 3, 5, 7 and 8: no producers, no Result
 copy, no Lag tolerance, ANY policy.
@@ -415,7 +431,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 |---|---|
 | `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`). |
 | `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus retained `target_table` snapshot metadata. |
-| `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117). Read by Explain and the UI. |
+| `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `actors`, `roles`, `role_bindings` | Reserved for future auth; nothing writes them. |
 

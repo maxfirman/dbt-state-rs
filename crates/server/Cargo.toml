@@ -28,6 +28,7 @@ md-5.workspace = true
 hex.workspace = true
 sqlparser.workspace = true
 uuid.workspace = true
+rand.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true

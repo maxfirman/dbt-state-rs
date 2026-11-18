@@ -94,9 +94,12 @@ These calls execute no DDL or Confirm, and complete physical bags/history remain
 unchanged. The local public regressions assert those decisions and the retained
 hosted/local differences; they do not claim exact whole91 hosted replay.
 
-Two boundaries remain explicit. Hosted RAND evaluation returns a sampled
-`transformed_nodes_by_query` value and additional Explain lines; this server
-conservatively BUILDs without rewriting volatile SQL. The unknown-input control's
+One boundary remains explicit. (The RAND control's sampled
+`transformed_nodes_by_query` value and its Explain lines are implemented by
+Volatile evaluation, #192: the map has hosted's shape with this server's own
+value, and Explain prints that value; the model still BUILDs and the
+Warehouse executes the original SQL. The remaining Databricks Volatile
+evaluation cells are #198.) The unknown-input control's
 hosted display uses the second containing the captured client submit, while its
 UUIDv7 decision instant crosses into the next second (119ms later). This server's
 replay uses the evidenced decision instant, so that one display differs by1s;

@@ -255,6 +255,7 @@ Each node kind × decision cell has one status (spec #40):
 | unreachable on 2.0.11 | client-source evidence or a live negative result shows the cell cannot occur |
 | local-only, empty tree | a decision this server makes that hosted never makes; the server renders nothing |
 | out of scope → #N | owned by another issue; the server renders nothing |
+| not captured | no hosted capture, and no open issue owns it; the server renders nothing |
 
 A cell renders a tree only if `is_characterized` opens it. "Fence" says
 whether it is open. Inside an open cell, each Decision reason renders only
@@ -273,7 +274,7 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 37 (31 client 2.0.11, 6 crafted), SKIP 28 (27 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | out of scope → #68 | S E | EXECUTE 39 (37 client 2.0.11, 2 crafted), SKIP 48 (42 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | —¹⁵ | S E | EXECUTE 39 (37 client 2.0.11, 2 crafted), SKIP 48 (42 client 2.0.11, 5 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 107 (92 crafted, 15 client 2.0.11), SKIP 40 (30 crafted, 9 client 2.0.11, 1 client 2.0.6) |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 31 (27 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
@@ -346,7 +347,8 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
    under a configured alias, which the request does not name, is not an
    input either, so its unchanged rerun SKIPs as hosted does (#123,
    [ADR 0008](adr/0008-store-failures-audit-relation-by-elimination.md)).
-   A test failing reuse qualification is out of scope → #67
+   A test failing reuse qualification is rendered when its own SQL rendered
+   Volatile function values (#195); otherwise it is not captured
    ([Decision reason coverage](#decision-reason-coverage)).
 10. Live, 2026-11-10 (#74, #86). Hosted does not copy a custom node: built
     in `dev_clone` over an equivalent prod build, it rebuilds with codes 1 / 3
@@ -387,6 +389,13 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
     dependencies`; one over a `ref` says `upstream data is up to date`
     (`explain_view_reads_no_relation.jsonl`). A view whose SQL does not
     parse as one query renders nothing without reported upstreams.
+15. No cell: data tests never get a Result copy. A data test has no Target
+    relation, this server never copies one on submit
+    (`result_copy::submit_lookup`), the client sends `RegisterClone` only for
+    incrementals and snapshots, and no capture shows hosted copying one. The
+    four dev data-test SKIPs once read as reuse across Targets
+    (`golden_20261009T083754.534Z.jsonl` entries 13–16) are Missing history:
+    each echoes a runtime that matches no prod run in the capture (#190).
 
 Adoption of a copy-origin row by a later submit does not depend on the
 execution type, so its anchored subtree renders for a FULL model even when the
@@ -570,6 +579,22 @@ Freshness body (`explain.rs::data_freshness_analysis_fresh`):
   [Lag tolerance lines](#lag-tolerance-lines). When an epoch only moved back,
   there is no summary line.
 
+**Volatile evaluation off** (#67, #194). A Snowflake model or view reused
+with `evaluate_volatile_sql` off whose own SQL rendered values prints them
+ahead of `the model query has not changed`
+(`explain_volatile_evaluation.jsonl` entries 42, 44, 51; the server needs
+the persisted evaluation flag, migration 0028):
+```
+  - non-deterministic functions detected in query     [INFO]
+    - CURRENT_TIMESTAMP() -> rendered with '«value»'
+  - the model query is not deterministic but this is tolerated by config [INFO]
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+```
+One child per value, in the order the functions first appear in the SQL.
+A data test or a query dependency with evaluation off renders no values
+([protocol.md](protocol.md#volatile-evaluation)), and a model rebuild with
+evaluation off is not captured: neither prints volatile lines.
+
 ### EXECUTE: node query changed (SHAPE 7)
 
 Decision reasons `no_reuse_candidate.identity_mismatch` and, over a
@@ -591,6 +616,31 @@ relation and one over a `ref`).
 - data freshness analysis
   <freshness body>
 ```
+
+A decision that rendered Volatile function values with Volatile evaluation
+requested (#67) prints two `query analysis` lines ahead of `the model query
+has changed`, one `rendered with` child per value, in the order the
+functions first appear in the SQL (Databricks, captured:
+`databricks_submit_copy_controls.jsonl` entry 86; Snowflake, the model rerun
+[below](#execute-rerun-of-a-volatile-model)):
+
+```
+  - non-deterministic functions detected in query     [INFO]
+    - RAND() -> rendered with '«value»'
+  - the model query is not deterministic and this is not tolerated by config [INFO]
+```
+
+They are printed only where the tree has `the model query has changed`
+(or a data test's `the test query has changed`, [DATA TEST](#data-test)),
+and only for values rendered for the node's own SQL; other shapes with
+rendered values are uncaptured and print none, except the evaluation-off
+reuse ([SKIP](#skip-shapes-0-1-2-4-8)) and the table over a volatile view
+([EXECUTE: over a volatile query dependency](#execute-over-a-volatile-query-dependency)).
+A decision without rendered values, or recorded before migration 0027 or
+0028, prints none. Values exist only in the captured cells
+([protocol.md](protocol.md#volatile-evaluation)): on Databricks only this
+query-changed FULL rebuild renders, so a Databricks first build or rerun
+prints no volatile lines (#198).
 
 The freshness body is the SKIP one (above), judged against the latest build
 in scope, whose identity did not match (an identity-mismatch rebuild has no
@@ -856,7 +906,76 @@ A seed gets the same codes with its ordinary description, and the same tree
 with the seed noun, or another one over its existing table
 ([SEED](#seed), copy disallowed).
 
+### EXECUTE: rerun of a volatile model
+
+Volatile evaluation (#67, #194, #191 cell 2). A FULL model whose own SQL
+renders Volatile function values with `evaluate_volatile_sql: true`, rerun
+unchanged over its existing Target relation, without upstreams or query
+dependencies. Reuse qualification refuses it, so this server rebuilds for
+`no_reuse_candidate.failed_reuse_qualification` with codes 6 / 6 and "model
+was executed because either its query didn't match or its upstream data is
+out of date". Hosted explains it as a query change
+(`explain_volatile_evaluation.jsonl` entries 33, 41):
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - non-deterministic functions detected in query     [INFO]
+    - «function» -> rendered with '«value»'           (one per value)
+  - the model query is not deterministic and this is not tolerated by config [INFO]
+  - the model query has changed                       [FAIL]    <NODE_QUERY_CHANGED>
+- data freshness analysis
+  - no upstream dependencies                          [SUCCESS]
+```
+The wording comes from the persisted values and evaluation flag
+(`explain.rs::volatile_rebuild_lines`); the model's identity is unchanged
+(maintainer decision on #191). Not captured, and keeping the decision's own
+(empty) tree: the same rerun with upstreams, query dependencies, as a view,
+an incremental, a snapshot or a custom node, or under
+`compare_unrendered_code`. A rerun with values in both its own SQL and a
+query dependency, any incremental, snapshot or custom node, and a
+Databricks rerun (#198) render no values at all, so they print no volatile
+lines.
+
+### EXECUTE: over a volatile query dependency
+
+Volatile evaluation (#67, #195). A table whose own SQL is unchanged and
+renders nothing, with no upstream table, over a view whose definition calls a
+Volatile function, submitted with `evaluate_volatile_sql: true`. Hosted
+rebuilds it with codes 1 / 6 and "model was executed because either its query
+didn't match or its upstream data is out of date"
+(`explain_volatile_evaluation.jsonl` entry 45, the rerun of `vd` over `vv`):
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+  - upstream dependencies
+    - "«dependency»"
+      - non-deterministic functions detected in query [INFO]
+        - CURRENT_TIMESTAMP() -> rendered with '«value»'
+        - a change in rendered value will result in a diff
+  - an upstream model query has changed               [FAIL]
+- data freshness analysis
+  - upstream data is up to date                       [SUCCESS]
+```
+`«dependency»` is the query dependency's name as sent, which keys its values
+in `transformed_nodes_by_query`. There is no `tolerated by config` line, and
+`an upstream model query has changed` has no badge. This server rebuilds for
+`no_reuse_candidate.failed_reuse_qualification` and renders this tree from
+the persisted values (`explain.rs::volatile_dependency_tree`): identity and
+Upstream producers do not change (#67 decision 2). Uncaptured, and empty: a
+first build (`table analysis` only, as captured, entry 23), another model
+kind and a table with an upstream table. A table with values of its own
+too, a data test over a volatile view and a dependency with evaluation off
+render no values ([protocol.md](protocol.md#volatile-evaluation)), so they
+print no volatile lines.
+
 ### First build
+
+A first build prints no volatile lines, even when it rendered values
+(`explain_volatile_evaluation.jsonl` entries 19–23,
+`explain_volatile_evaluation_functions.jsonl` entries 37–48).
 
 Also a rebuild whose decision-time inputs lack the Target relation
 (`lag_copy_candidates` `dt`, `dt_m`; for every model kind, a logic change
@@ -1226,6 +1345,28 @@ after drift `last updated` is the new epoch. The listing is the
 [CLONE](#clone-model) one without an anchor
 (`explain.rs::clone_upstream_dependencies`).
 
+**Volatile evaluation** (#67, #195). A test whose own SQL renders a Volatile
+function value with `evaluate_volatile_sql: true` (its values keyed
+`__target_query__`) prints a query analysis first, on its first execution
+and on every rerun, which this server rebuilds for
+`no_reuse_candidate.failed_reuse_qualification`
+(`explain_volatile_evaluation.jsonl` entries 24 and 46):
+```
+- query analysis
+  - non-deterministic functions detected in query     [INFO]
+    - CURRENT_TIMESTAMP() -> rendered with '«value»'
+  - the test query is not deterministic and this is not tolerated by config  [INFO]
+  - the test query has changed                        [FAIL]    <NODE_QUERY_CHANGED>
+- data freshness analysis
+  <the EXECUTE listing above>
+```
+The values are the persisted ones the decision returned. A logic change of
+such a test (`identity_mismatch`) is uncaptured and keeps the tree above
+without the query analysis. A data test with evaluation off, over a
+volatile view, or with a Target relation renders no values
+([protocol.md](protocol.md#volatile-evaluation)) and prints no volatile
+lines.
+
 The tree does not depend on the test's outcome: the passing and the failing
 test render the same tree in every round, and the outcome (`failures`,
 `should_warn`, `should_error`) only arrives later in the ConfirmExecution of
@@ -1257,7 +1398,8 @@ replay exactly.
 
 Rendered for `first_build` and `no_reuse_candidate.identity_mismatch`, and
 for `upstream_outdated` and `upstream_query_changed` (which need an
-upstream). Nothing else:
+upstream), and for `no_reuse_candidate.failed_reuse_qualification` of a test
+whose own SQL rendered values (Volatile evaluation, above). Nothing else:
 
 - **Incomplete cached results** (crafted only). A test confirmed with
   `execution_results: null`, or with only `failures`, is SKIPped by hosted,
@@ -1266,16 +1408,18 @@ upstream). Nothing else:
   `no_reuse_candidate.incomplete_cached_test_results`, which renders nothing
   (accepted divergence #87, keyed gaps `explain_incomplete_test_results.jsonl`
   2, 3, 6, 7). Client 2.0.11 always confirms all three result fields.
-- `no_reuse_candidate.failed_reuse_qualification`: out of scope → #67 for
-  the cause the client sends (`evaluate_volatile_sql: true`). From a
-  malformed request, local-only, empty tree (crafted, accepted divergence
-  #114): hosted
+- `no_reuse_candidate.failed_reuse_qualification` without rendered values
+  of the test's own: from `evaluate_volatile_sql: true` over SQL whose
+  Volatile calls render nothing (`seq4()`, for example), not captured. From
+  a malformed request, local-only, empty tree
+  (crafted, accepted divergence #114): hosted
   rejects empty SQL and SKIPs a test whose query dependency is listed twice
   (`explain_malformed_requests.jsonl` `e4-8`).
 
 ### CLONE
 
-Out of scope → #68.
+None: data tests never get a Result copy (see note 15 under
+[Execution type (node kind) coverage](#execution-type-node-kind-coverage)).
 
 ## CLONE (model)
 
@@ -1454,6 +1598,7 @@ the tolerance and Build age persisted with the decision
 | `<UPSTREAM_QUERY_CHANGED>` / `<UPSTREAM_QUERY_UNCHANGED>` | per-upstream Upstream producer comparison, same two snapshots |
 | `«rel_time»` ("last updated …") | the upstream's decision-time `last_modified_epoch` |
 | a view's `no upstream dependencies` / `upstream data is up to date` (no reported upstreams) | whether the view's SQL reads a relation, judged at decision time (`node_decisions.reads_relation`, migration 0019, #117) |
+| `non-deterministic functions detected in query` and its `«function» -> rendered with '«value»'` children, `the model query is not deterministic …` (`test` for a data test), the dependency form's `a change in rendered value will result in a diff` | the values the decision rendered, as returned (`node_decisions.rendered_volatile_values`, migration 0027, #67), and for the `not tolerated` / `tolerated` choice whether the submit requested evaluation (`node_decisions.volatile_evaluation_requested`, migration 0028, #194). Persisted because a rendered value cannot be re-derived |
 
 Explain computes the per-upstream verdicts with the same
 `decision::upstream_freshness` helper the decision uses, against the matched
@@ -1468,7 +1613,7 @@ What this server never renders, each with its final status:
   (#76); custom and incremental CLONE are unreachable on 2.0.11 too (#86,
   #101): this server copies only FULL (and, on Snowflake, a seed, #91) on
   submit, and a RegisterClone copy has no Explain message. DuckDB's checked delete+insert copy is local-only.
-  Data-test CLONE is out of scope → #68.
+  Data tests never get a Result copy, so there is no data-test CLONE.
 - **Badges and markers** `EB_UNSPECIFIED` (0) and
   `EM_UNSPECIFIED` (0): never emitted; not observed across the census trees
   ([Observed vocabulary](#observed-vocabulary)).
@@ -1506,7 +1651,7 @@ renders nothing. Statuses as in the
 [coverage table](#execution-type-node-kind-coverage), abbreviated: **L**
 characterized (live), **C** characterized (crafted only), **U** unreachable
 on 2.0.11, **LO** local-only, empty tree, **→ #N** out of scope → #N (empty
-tree). "—" means this server never records the reason for that kind, so
+tree), **N** not captured (empty tree). "—" means this server never records the reason for that kind, so
 there is no cell.
 
 | Decision reason | FULL | APPEND, MERGE | INSERT_OVERWRITE, DELETE_INSERT, MICROBATCH | SNAPSHOT | VIEW | DBT_CUSTOM | DBT_DATA_TEST | VALUES |
@@ -1523,12 +1668,12 @@ there is no cell.
 | `no_reuse_candidate.upstream_names_changed` ᵖ | U | U | U | U | L | L | — | — |
 | `no_reuse_candidate.copy_logic_mismatch` ˡ | C | L | L | L | L | L | — | — |
 | `no_reuse_candidate.own_target_changed_or_missing`, `no_build_anchor` | LO (#80, #82) | LO | LO | LO | LO | LO | — | LO ʰ (#129) |
-| `no_reuse_candidate.failed_reuse_qualification` ⁱ | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | → #67, LO | U ʲ |
+| `no_reuse_candidate.failed_reuse_qualification` ⁱ | L (#194, #195), N, LO | N, LO | N, LO | N, LO | N, LO | N, LO | L (#195), N, LO | U ʲ |
 | `no_reuse_candidate.incomplete_cached_test_results` | — | — | — | — | — | — | LO (#87) | — |
 | `dependency_set_changed` | U | U | U | U | U | U | U | — |
 | `copy_chain_limit` ᵐ | U | MERGE L (#152); APPEND — | — ᵏ | — | — | — | — | LO ˢ |
 | `copy_disabled` ᵐ | L | — | — ᵏ | — | — | — | — | L ˢ |
-| `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | → #68 | L ˢ |
+| `result_copy` (CLONE) | L | U (#101) | U (#101) ᵏ | U | U | U (#86) | — | L ˢ |
 
 Evidence for each L and C cell is in the per-kind sections above and the
 conformance replay. No cell is marked → #104 any more; #104 records how the
@@ -1606,8 +1751,18 @@ last ones were settled.
   other kinds on 2.0.11: only a view drops its upstreams, and a view shares
   only a custom node's semantic extras. A data test and a seed are not
   judged on execution type.
-- ⁱ The client sends it for `evaluate_volatile_sql: true`
-  (`tolerate_nondeterminism = false`): → #67. From a malformed request it is
+- ⁱ With `evaluate_volatile_sql: true` (`tolerate_nondeterminism = false`)
+  for SQL that calls a Volatile function (protocol.md rule 8). Live
+  (`explain_volatile_evaluation.jsonl`): the FULL model rerun without
+  upstreams or query dependencies (#194, entry 41,
+  [its tree](#execute-rerun-of-a-volatile-model)), FULL over a volatile
+  query dependency (#195, entry 45,
+  [its tree](#execute-over-a-volatile-query-dependency)) and a data test
+  whose own SQL rendered values (entries 24, 46, [DATA TEST](#data-test)).
+  Not captured (N): every other kind and situation, including SQL whose
+  Volatile calls render nothing (`zipf`, `seqN`) and the cells that render
+  no values ([protocol.md](protocol.md#volatile-evaluation)); Databricks
+  cells, among them the unchanged rerun, are tracked in #198. From a malformed request it is
   local-only, empty tree (crafted `experiments/malformed_requests.py`,
   accepted divergence #114). For a model of every kind and a data test,
   hosted rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
@@ -1674,7 +1829,7 @@ Explain selects a shape from the persisted decision class, Decision reason
 | seed EXECUTE | `copy_disabled` with the equivalent persisted, without an anchor | [copy disabled](#execute-copy-disabled-allow_clones-false), seed noun |
 | seed, other | any other reason | empty tree |
 | data test SKIP | `reused.fresh` | data-test SKIP |
-| data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream | data-test EXECUTE |
+| data test EXECUTE | `first_build`, `no_reuse_candidate.identity_mismatch`; `upstream_outdated`, `upstream_query_changed` with at least one upstream; `no_reuse_candidate.failed_reuse_qualification` with values rendered for the test's own SQL | data-test EXECUTE, with the volatile query analysis when the test's own SQL rendered values |
 | data test, other | any other reason (including `incomplete_cached_test_results`, #87, and `dependency_set_changed`, unreachable on 2.0.11) | empty tree |
 | SKIP | `reused.fresh`, `reused.within_lag_tolerance` where the kind's listing is captured¹; `reused.tolerated_stale` likewise, except SNAPSHOT | SKIP (SHAPE 0/1/2/4/8 by kind and upstreams) |
 | EXECUTE | `first_build`, `no_reuse_candidate.own_target_missing` | first build |
@@ -1689,6 +1844,8 @@ Explain selects a shape from the persisted decision class, Decision reason
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
+| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, no genuine upstream or query dependency, values rendered for its own SQL and evaluation requested | [rerun of a volatile model](#execute-rerun-of-a-volatile-model) |
+| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, no genuine upstream, and values rendered only for query dependency definitions, with evaluation requested | [over a volatile query dependency](#execute-over-a-volatile-query-dependency) |
 | EXECUTE | `copy_chain_limit` for the captured Databricks MERGE with an existing Target relation, own anchor, proven upstream drift and frozen refused copy name | ordinary own-anchor outdated tree plus the captured table refusal line (#152) |
 | any | every other reason (local-only reasons, `copy_chain_limit` outside the captured scope, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 

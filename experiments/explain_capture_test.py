@@ -349,6 +349,90 @@ with tempfile.TemporaryDirectory() as work:
     ok("a probe explain asks the run's proxy for the node's latest decision")
 
 
+# --- warehouse read-back (#191) -----------------------------------------------------------
+# `Read` selects every row of one per-run demo relation with `dbt show`, without
+# dbt State, so a capture can compare what the Warehouse wrote with what the
+# service rendered.
+READS = ec.Scenario("r", "", ("ra",), [
+    ec.Build("${ra}"),
+    ec.Read("CDO_DEMO_DB.PROD_STATE_DEMO.${ra}"),
+    ec.Explain("${ra}", intent="dbt"),
+])
+rb = ec.bind(READS, RUN)
+if rb.steps[1].query != f"select * from CDO_DEMO_DB.PROD_STATE_DEMO.ra_{RUN}":
+    fail("a Read selects every row of its per-run relation", rb.steps[1])
+ok("a Read selects every row of its per-run relation")
+rp = ec.plan(rb)
+if (rp.reads, rp.total) != (1, 3):
+    fail("a Read is a dbt invocation", rp)
+ok("a Read is a dbt invocation")
+for bad in ("CDO_DEMO_DB.PROD_STATE_DEMO.ORDERS", "OTHER_DB.PROD_STATE_DEMO.${ra}",
+            "PROD_STATE_DEMO.${ra}", "CDO_DEMO_DB.RAW.${ra}",
+            "CDO_DEMO_DB.PROD_STATE_DEMO.${ra} where 1=1"):
+    expect_refusal(f"a Read of {bad!r} is refused",
+                   lambda: ec.bind(ec.Scenario("bad", "", ("ra",), [ec.Read(bad)]), RUN))
+
+SHOW_LOG = """       dbt 2.0.11
+   Loading ~/.dbt/profiles.yml
+[{"TS":"2026-11-17T16:39:51.373Z","R":5488611025542342294,"U":"d2208da5-9b9d-4b51-a3a1-b4b101062c49"}]
+ Succeeded model prod_state_demo.inline (ephemeral) [1 of 1 in 4.00s]
+"""
+if ec.parse_show_rows(SHOW_LOG) != [{"TS": "2026-11-17T16:39:51.373Z", "R": 5488611025542342294,
+                                     "U": "d2208da5-9b9d-4b51-a3a1-b4b101062c49"}]:
+    fail("dbt show JSON rows are parsed from the log", ec.parse_show_rows(SHOW_LOG))
+ok("dbt show JSON rows are parsed from the log")
+expect_refusal("a show log without JSON rows is refused",
+               lambda: ec.parse_show_rows("  Loading\n Succeeded\n"))
+
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(rb, 50999, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    calls = []
+    real_run = ec.subprocess.run
+
+    class _Shown:
+        returncode = 0
+
+    def fake_show(cmd, **kw):
+        calls.append((cmd, kw))
+        kw["stdout"].write(SHOW_LOG)
+        return _Shown()
+
+    ec.subprocess.run = fake_show
+    try:
+        run.run_step(1, rb.steps[1])
+    finally:
+        ec.subprocess.run = real_run
+    cmd, kw = calls[0]
+    if cmd[:2] != ["dbt", "show"] or cmd[cmd.index("--inline") + 1] != rb.steps[1].query:
+        fail("a Read runs dbt show --inline with its query", cmd)
+    ok("a Read runs dbt show --inline with its query")
+    if any(k in kw["env"] for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL")):
+        fail("a Read runs without dbt State", kw["env"])
+    ok("a Read runs without dbt State")
+    if run.reads != [{"step": 1, "relation": rb.steps[1].relation, "rows": ec.parse_show_rows(SHOW_LOG)}]:
+        fail("a Read records the rows it read", run.reads)
+    ok("a Read records the rows it read")
+
+# --- client version (#191) ----------------------------------------------------------------
+if ec.parse_dbt_version("       dbt 2.0.11\n") != "2.0.11":
+    fail("the dbt version is parsed from `dbt --version`", ec.parse_dbt_version("dbt 2.0.11"))
+ok("the dbt version is parsed from `dbt --version`")
+wire = [{"method": "ValidateClientVersion", "request": {"dbt_run_cache_version": "2.0.11"}},
+        {"method": "SubmitEnrichedSQL", "request": {}},
+        {"method": "ValidateClientVersion", "request": {"dbt_run_cache_version": "2.0.11"}}]
+if ec.wire_client_versions(wire) != ["2.0.11"]:
+    fail("the client versions sent on the wire are collected", ec.wire_client_versions(wire))
+ok("the client versions sent on the wire are collected")
+rec = ec.client_record("dbt 2.0.11\n", "/bin/dbt", "ab" * 32, wire)
+if rec != {"dbt_version": "2.0.11", "dbt_path": "/bin/dbt", "dbt_sha256": "ab" * 32,
+           "wire_dbt_run_cache_versions": ["2.0.11"]}:
+    fail("the client record names the executable and the wire version", rec)
+ok("the client record names the executable and the wire version")
+expect_refusal("a client record whose wire version differs from the executable's is refused",
+               lambda: ec.client_record("dbt 2.0.12\n", "/bin/dbt", "ab" * 32, wire))
+
+
 # --- oracle -------------------------------------------------------------------
 def submit(node, variant, edid, rid=None, et=1, decision=None):
     inner = {"execution_decision_id": edid,

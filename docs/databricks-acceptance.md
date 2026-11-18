@@ -142,10 +142,15 @@ scheduled/manual generated run is a separate gate, not claimed by a main run.
 - Ordinary FULL/seed replacement over an existing shallow-clone target can fail
   in the tested client/warehouse even with State disabled. A successful fallback
   after an absent-target copy failure does not remove that separate limitation.
-- Hosted RAND literal rewriting is not implemented; the local control BUILDs
-  without rewriting. One crafted unknown-input Explain differs by one second
-  because the captured client submit and UUIDv7 decision cross a second boundary.
-  Neither boundary grants copy, and no timestamp or response field is masked.
+- The RAND control returns hosted's `transformed_nodes_by_query` shape with a
+  locally rendered value and prints it in Explain (Volatile evaluation, #192);
+  it still BUILDs over the original SQL. The other Databricks Volatile
+  evaluation cells (rerun, data test, downstream table, evaluation off) are
+  not captured and render nothing (#198,
+  [protocol.md](protocol.md#volatile-evaluation)). One crafted unknown-input Explain
+  differs by one second because the captured client submit and UUIDv7 decision
+  cross a second boundary. That boundary grants no copy, and no timestamp or
+  response field is masked.
 
 A wrong result attributable to this server remains a defect. Conservative
 completion does not relax org/warehouse/namespace isolation, latest physical

@@ -504,12 +504,14 @@ fn adoptable(
     row.execution_type == req.execution_type && copy_logic_matches(req, evidence, row)
 }
 
-/// Reuse qualification shared by models and data tests. Runtime volatile
-/// function evidence is not implemented, so requested volatile evaluation
-/// builds instead of claiming reuse. Empty SQL or template is likewise
-/// insufficient evidence.
+/// Reuse qualification shared by models and data tests. With Volatile
+/// evaluation requested, SQL whose root or query dependency definitions call
+/// a Volatile function (per the Warehouse's detector) builds instead of
+/// claiming reuse; deterministic SQL reuses as without it (#191 cell 3,
+/// `explain_volatile_evaluation.jsonl` entry 31; #194). Empty SQL or
+/// template is likewise insufficient evidence.
 fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
-    req.tolerate_nondeterminism
+    (!crate::volatile_evaluation::requested(req) || !calls_volatile_function(req))
         && complete_dependencies(req)
         && !req.sql.trim().is_empty()
         && (!req.compare_unrendered_code
@@ -518,6 +520,16 @@ fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidenc
                 .node_body_hash
                 .as_ref()
                 .is_some_and(|s| !s.is_empty()))
+}
+
+/// Whether the root SQL or a query dependency definition calls a Volatile
+/// function. A Warehouse without a checked detector reports every SQL as
+/// volatile, so it never reuses with evaluation requested.
+fn calls_volatile_function(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
+        &req.sql,
+        req.query_dependencies.iter().map(|d| d.query.as_str()),
+    )
 }
 
 fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {
@@ -957,9 +969,28 @@ mod tests {
         let base = model_req("select id from DB.DEV.UP");
         type Mutation = fn(&mut qc::SubmitEnrichedSqlRequest);
         let cases: Vec<(&str, Mutation)> = vec![
-            ("volatile evaluation requested", |r| {
-                r.tolerate_nondeterminism = false
+            ("volatile evaluation of volatile SQL requested", |r| {
+                r.tolerate_nondeterminism = false;
+                r.sql = "select id, random() from DB.DEV.UP".into();
             }),
+            (
+                "volatile evaluation of a volatile dependency requested",
+                |r| {
+                    r.tolerate_nondeterminism = false;
+                    r.query_dependencies = vec![qc::QueryDependency {
+                        name: "d".into(),
+                        query: "select current_timestamp() as ts".into(),
+                        ..Default::default()
+                    }];
+                },
+            ),
+            (
+                "volatile evaluation requested without a checked detector",
+                |r| {
+                    r.tolerate_nondeterminism = false;
+                    r.dialect = "postgres".into();
+                },
+            ),
             ("own target missing", |r| {
                 r.tables.retain(|t| t.name != TARGET)
             }),
@@ -995,6 +1026,21 @@ mod tests {
             let row = recorded(&evidence(&req));
             assert!(model(&req, Some(row)).candidate.is_none(), "{why}");
         }
+    }
+
+    /// #191 cell 3 (`explain_volatile_evaluation.jsonl` entry 31): hosted
+    /// reuses deterministic SQL with evaluation requested.
+    #[test]
+    fn deterministic_sql_with_volatile_evaluation_requested_qualifies() {
+        let mut req = model_req("select id from DB.DEV.UP");
+        req.tolerate_nondeterminism = false;
+        req.query_dependencies = vec![qc::QueryDependency {
+            name: "d".into(),
+            query: "select 1 as id".into(),
+            ..Default::default()
+        }];
+        let row = recorded(&evidence(&req));
+        assert!(model(&req, Some(row)).candidate.is_some());
     }
 
     #[test]
@@ -1052,6 +1098,14 @@ mod tests {
     }
 
     // ---- data tests ---------------------------------------------------------
+
+    /// A model calling a Volatile function, with evaluation requested.
+    fn volatile_evaluation_req() -> qc::SubmitEnrichedSqlRequest {
+        qc::SubmitEnrichedSqlRequest {
+            tolerate_nondeterminism: false,
+            ..model_req("select id, current_timestamp() as ts from DB.DEV.UP")
+        }
+    }
 
     fn data_test_req() -> qc::SubmitEnrichedSqlRequest {
         qc::SubmitEnrichedSqlRequest {
@@ -1174,6 +1228,7 @@ mod tests {
 
         let mut volatile = base.clone();
         volatile.tolerate_nondeterminism = false;
+        volatile.sql = "select id, random() from DB.DEV.UP".into();
         let row = recorded(&evidence(&volatile));
         assert_eq!(
             why(&volatile, Some(row)),
@@ -1228,6 +1283,7 @@ mod tests {
 
         let mut volatile = data_test_req();
         volatile.tolerate_nondeterminism = false;
+        volatile.sql = "select * from DB.DEV.UP where ts > current_timestamp()".into();
         let vev = evidence(&volatile);
         assert_eq!(
             for_data_test(&volatile, &vev, Some(recorded(&vev)))
@@ -1403,6 +1459,8 @@ mod tests {
 
         let mut volatile = req.clone();
         volatile.tolerate_nondeterminism = false;
+        volatile.sql = "select id, random() from DB.DEV.UP".into();
+        let ev = evidence(&volatile);
         let older = built_as(&recorded(&ev), 5, 1, BUILT);
         let latest = built_as(&older, 9, 2, BUILT);
         let s = for_model_over_build_of_type(&volatile, &ev, latest, older).unwrap();
@@ -1486,6 +1544,14 @@ mod tests {
         }
 
         #[test]
+        fn volatile_sql_with_evaluation_requested_never_reuses(
+            row in arbitrary_row(evidence(&volatile_evaluation_req())),
+        ) {
+            let req = volatile_evaluation_req();
+            prop_assert!(model(&req, Some(row)).candidate.is_none());
+        }
+
+        #[test]
         fn candidate_is_always_the_current_target_row(
             row in arbitrary_row(evidence(&model_req("select id from DB.DEV.UP"))),
             tolerate in any::<bool>(),
@@ -1494,7 +1560,6 @@ mod tests {
             req.tolerate_nondeterminism = tolerate;
             let (id, clone) = (row.id, row.clone_source_table.is_some());
             if let Some(c) = model(&req, Some(row)).candidate {
-                prop_assert!(tolerate, "volatile evaluation never reuses");
                 prop_assert_eq!(c.id, id);
                 prop_assert_eq!(c.target_table.as_str(), TARGET);
                 prop_assert_eq!(c.execution_type, req.execution_type);

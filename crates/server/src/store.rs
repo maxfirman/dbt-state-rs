@@ -862,7 +862,8 @@ impl Store {
                    decision_description, is_stale, target_table, clone_source,
                    input_tables, matched_execution_id, decision_reason,
                    freshness_tolerance_ms, build_age_ms, skip_rejection_reason,
-                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison
+                   unmatched_execution_id, reads_relation, query_dependencies, display_submitted_at_ms, template_comparison,
+                   rendered_volatile_values, volatile_evaluation_requested
             FROM node_decisions
             WHERE org_id = $1
               AND execution_decision_id = ANY($2)
@@ -962,6 +963,12 @@ pub struct ExplainDecisionRow {
     pub unmatched_execution_id: Option<i64>,
     /// Migration 0019: for a view, whether its SQL reads a relation.
     pub reads_relation: Option<bool>,
+    /// Migration 0027: the values the decision's Volatile evaluation
+    /// rendered, as returned. NULL when none were, and before the migration.
+    pub rendered_volatile_values: Option<serde_json::Value>,
+    /// Migration 0028: whether the SQL submit requested Volatile evaluation.
+    /// NULL for other decisions, and before the migration.
+    pub volatile_evaluation_requested: Option<bool>,
     /// The complete `executions` row `matched_execution_id` names, loaded by
     /// [`Store::fetch_explain_decisions`].
     #[sqlx(skip)]
@@ -978,6 +985,14 @@ impl ExplainDecisionRow {
         self.decision_reason
             .as_deref()
             .and_then(crate::decision::DecisionReason::from_stored)
+    }
+
+    /// The decision's Volatile evaluation, from its two columns.
+    pub fn volatile_evaluation(&self) -> crate::volatile_evaluation::Evidence {
+        crate::volatile_evaluation::Evidence::stored(
+            self.rendered_volatile_values.clone(),
+            self.volatile_evaluation_requested,
+        )
     }
 
     /// Decode the JSONB `input_tables` column into the typed shape.
@@ -1019,6 +1034,8 @@ mod tests {
         ExplainDecisionRow {
             display_submitted_at_ms: None,
             template_comparison: None,
+            rendered_volatile_values: None,
+            volatile_evaluation_requested: None,
             dialect: None,
             execution_decision_id: Some("d".into()),
             decision: "skip".into(),

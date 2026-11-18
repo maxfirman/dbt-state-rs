@@ -154,11 +154,43 @@ server keeps the conservative behavior described.
   context-only change could not be isolated from upstream freshness through the
   client (`experiments/resolution_context.sh`). The schema-abstracted identity
   is unchanged (`analyzed_workload/identity/tests.rs::ns_uniform_schema_rename_is_cross_env_positive`).
-- **Volatile evaluation.** Hosted returns `transformed_nodes_by_query` with
-  runtime values (for example `CURRENT_TIMESTAMP()`). The server returns it
-  empty, leaves `query_hash_metadata_info` unset (hosted use uncharacterized),
-  and never reuses under `tolerate_nondeterminism=false`. Keyed gaps: `clone_fallback_volatile.jsonl`
-  entries 0 and 2 in `golden/replay_gaps.json`.
+- **Volatile evaluation: uncaptured cells.** The supported functions,
+  cells and Warehouses are in
+  [protocol.md](protocol.md#volatile-evaluation) (#67). Values are returned
+  only in the captured cells (`Rules::cells`). Each cell below keeps today's
+  behavior, which is an empty map, no volatile Explain lines and the
+  conservative rebuild unless stated. None has a replay gap, and the
+  Warehouse executes the original SQL in every case.
+  - Databricks (#198): the first build, the unchanged rerun over the
+    existing Target relation, other execution types, a data test, a query
+    dependency, a table downstream of the volatile model run twice, their
+    Explain, and evaluation off. Only the query-changed FULL rebuild
+    (entries 85, 86) renders. Databricks never reuses with evaluation
+    requested, because it has no checked Volatile function detector.
+  - Snowflake, no open ticket: a model with Volatile calls both in its own
+    SQL and in a dependency; a data test over a volatile view; a data test
+    or query dependency with evaluation off; a view with evaluation on;
+    incremental, snapshot and custom execution types; a data test with a
+    Target relation; `ready_to_clone` with a filled map, and a Result copy
+    of volatile SQL with evaluation off; functions outside the detector set
+    (for example `CURRENT_USER`) and the uncaptured call forms
+    (`current_time` or `localtime` without parentheses,
+    `current_timestamp(n)`, `uniform`, `randstr` or `normal` with other
+    arguments); a downstream table with zero Lag tolerance.
+  - Snowflake FULL model builds render for any decision reason, with
+    evaluation on or off. Hosted was captured on first builds and the
+    unchanged rerun only; a query-changed or otherwise forced rebuild is
+    uncaptured on Snowflake (captured on Databricks, entries 85, 86).
+  - Snowflake Explain, no open ticket: an evaluation-off rebuild; a volatile
+    data test's logic change; the model rerun tree (#191 cell 2) for a model
+    with upstreams, query dependencies, a view, an incremental or
+    `compare_unrendered_code`; the volatile-dependency tree for a table with
+    an upstream table or values of its own, or another node kind. Each keeps
+    the decision's own tree without volatile lines.
+  - Hosted reads the clock for each function; this server reads it once per
+    submit. The replay compares clock values by format only.
+  - `query_hash_metadata_info` stays unset; hosted's use of it is
+    uncharacterized.
 - **RegisterClone source-age chain, entry 4.** Hosted SKIPs a post-copy submit
   that differs from the chain's first submit in schema, an added incremental
   predicate and epochs at once; the local server does not. The cause is not
@@ -282,9 +314,12 @@ server keeps the conservative behavior described.
   drift and an upstream whose logic changed, for passing and failing tests,
   over one or two upstreams; a test without upstreams says `no upstream
   dependencies` (`explain_rebuild_reason_gaps.jsonl`, #40 code review). A
-  test that fails reuse qualification (`evaluate_volatile_sql`, #67) was not
-  captured; the server renders nothing for it
-  ([explain-catalog.md](explain-catalog.md#data-test)).
+  test whose own SQL rendered Volatile function values with evaluation
+  requested is captured on its first execution and rerun
+  (`explain_volatile_evaluation.jsonl` entries 24, 46, #195). A test that
+  fails reuse qualification without rendered values, for example over
+  `seq4()` with evaluation requested, was not captured; the server renders
+  nothing for it ([explain-catalog.md](explain-catalog.md#data-test)).
 - **`store_failures` audit relation recognition (#88, #106, #123).** Hosted's own
   rule is not observable: every capture is also explained by "compare only
   the inputs recorded at the build". The server recognizes the audit relation
@@ -439,11 +474,15 @@ replay fails when an entry becomes unused or resolved
 ([testing.md](testing.md#goldenreplay_gapsjson)). The categories are:
 
 - **Missing history.** The capture copies from, or depends on, a build made in
-  an earlier session, so an empty local store builds instead.
+  an earlier session, so an empty local store builds instead. This includes
+  the four dev data tests of `golden_20261009T083754.534Z.jsonl` (entries
+  13–16), which are not reuse across Targets: each hosted SKIP echoes a
+  runtime (2140, 1340, 13906, 16155 ms) that matches none of the prod
+  confirmations (2088, 2164, 2148, 1511 ms), the dev SQL reads
+  `dev_clone.customers` at an epoch about 2.5 days older than the capture,
+  and no copy occurs (#190).
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
-  and as view DDL in another, and data-test reuse across targets, rebuild
-  locally where hosted reused.
-- **Volatile evaluation.** `transformed_nodes_by_query` is empty locally.
+  and as view DDL in another rebuilds locally where hosted reused.
 - **Safety floor.** The externally modified seed table is reloaded
   (AGENTS.md reuse invariant 3) where hosted skips it, serving the edited
   table: crafted, `lag_seed_upstream.jsonl` entries 22–23. Seen live

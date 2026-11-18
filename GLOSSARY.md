@@ -80,6 +80,17 @@ current producer's logic differs from the one the workload consumed, the
 upstream's query has changed, which Lag tolerance does not cover.
 _Avoid_: Upstream build, writer
 
+**Volatile function**:
+A function in a workload's SQL whose result can differ between executions of
+the same query, such as the current time or a random number.
+_Avoid_: Nondeterminism (except when naming the `tolerate_nondeterminism` wire field)
+
+**Volatile evaluation**:
+The State service's rendering of each Volatile function in a workload's SQL
+to a value when it decides, reported with that decision. The Warehouse still
+executes the original SQL; rendered values are not substituted into it.
+_Avoid_: Substitution, SQL transformation
+
 **Hosted conformance**:
 Agreement with the official dbt State service's observable behavior for a
 specified client, warehouse and feature scope.

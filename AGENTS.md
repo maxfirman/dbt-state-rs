@@ -18,6 +18,7 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
   - `copy_registration.rs`: how one RegisterClone request is decided and recorded.
   - `result_copy.rs`: pure Result copy planning (submit fallback and RegisterClone).
   - `explain.rs`: pure re-derivation of `dbt state explain` trees.
+  - `volatile_evaluation.rs`: pure Volatile evaluation (`transformed_nodes_by_query`).
   - `warehouse.rs` + `warehouse/`: dialect policy and the Warehouse rules.
   - `store.rs` + `store/history.rs`: Postgres writes and scoped State history reads.
   - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.

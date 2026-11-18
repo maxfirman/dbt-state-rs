@@ -849,6 +849,16 @@ impl Warehouse {
         }
     }
 
+    /// The Volatile functions this warehouse has captured rendering rules
+    /// for (Volatile evaluation, #67). `None`: nothing is rendered.
+    pub fn volatile_rules(self) -> Option<crate::volatile_evaluation::Rules> {
+        match self {
+            Self::Databricks => Some(databricks::VOLATILE_RULES),
+            Self::Snowflake => Some(snowflake::VOLATILE_RULES),
+            _ => None,
+        }
+    }
+
     // ── Result copy rules ───────────────────────────────────────────────────
     //
     // A result copy populates a target from an existing result instead of

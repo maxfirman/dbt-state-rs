@@ -109,6 +109,9 @@ pub struct CaptureInput {
     /// Frozen submit clock for Explain display, never physical freshness.
     pub display_submitted_at_ms: Option<i64>,
     pub template_comparison: Option<crate::explain::TemplateComparison>,
+    /// The decision's Volatile evaluation (migrations 0027 and 0028), for
+    /// Explain only. The default for every decision but a SQL submit's.
+    pub volatile_evaluation: crate::volatile_evaluation::Evidence,
     // identity / grouping
     pub org_id: String,
     pub external_invocation_id: Option<String>,
@@ -295,10 +298,12 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             execution_runtime_ms, query_dependencies, matched_execution_id,
             decision_reason, freshness_tolerance_ms, build_age_ms,
             skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
-            reads_relation, display_submitted_at_ms, template_comparison
+            reads_relation, display_submitted_at_ms, template_comparison,
+            rendered_volatile_values, volatile_evaluation_requested
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
-                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+                $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,
+                $37)
         "#,
     )
     .bind(&i.org_id)
@@ -340,6 +345,8 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             .as_ref()
             .map(|value| serde_json::to_value(value).expect("template evidence")),
     )
+    .bind(i.volatile_evaluation.stored_values())
+    .bind(i.volatile_evaluation.requested)
     .execute(pool)
     .await?;
 

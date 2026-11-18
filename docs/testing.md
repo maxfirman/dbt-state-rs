@@ -111,9 +111,23 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `record`. `Submit::body` changes the rendered SQL as well as the body hash,
   because reuse ignores `node_body_hash`. Seed State history through the
   protocol with `Scenario::build` or `Scenario::record`.
+  - `captured_submit(&entry.request)` builds a `Submit` from a captured
+    fixture request, exactly as the client sent it.
+  - `Scenario::at(now_ms)` sends the test replay clock header
+    (`x-dbt-state-replay-now-ms`) on every request of that scenario, so it
+    decides at a captured time.
+  - `Scenario::explain(&[ids])` calls GetExplainMessages scoped to the
+    scenario's org.
+  - `volatile_values` (a response, on any branch), `volatile_values_of` (a
+    `transformed_nodes_by_query` map) and `hosted_volatile_values` (a
+    captured response) read Volatile evaluation values as query → function
+    → value; `volatile_map_shape` drops the values.
 - `rows.rs` reads `executions` and `node_states` back for assertions.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
+  `legacy::forget_rendered_volatile_values` and
+  `legacy::forget_volatile_evaluation_flag` make a captured decision look
+  recorded before migration 0027 or 0028.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 
@@ -241,6 +255,24 @@ returns, and a `reason`. Kinds:
 - **Field-scoped gap** (`ignore_fields`): the named fields are stripped from
   both responses and the rest must match exactly. The named fields must still
   differ.
+
+Rendered Volatile values are the only runtime values the replay normalizes
+(`conformance.rs::normalize_volatile_values`, #193). In every submit and copy
+response, a `transformed_nodes_by_query` value whose function text is
+registered in `VOLATILE_VALUE_FORMATS` must have that format and is then
+compared as the format's name; map keys and function text are compared
+exactly, and values of other functions are compared as they are. Explain
+`«function» -> rendered with '«value»'` lines are compared the same way
+(`conformance.rs::normalize_volatile_line`). A malformed value fails the
+replay. Field-scoped gaps are judged after this normalization, so a map that
+differs only in its runtime values needs no gap, and no gap covers Volatile
+evaluation.
+- **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
+  whose text is exactly one of the named texts are removed, with their
+  children, from the hosted tree only. The decision, the description and the
+  rest of the tree must then match exactly, and at least one named line must
+  be present. No entry uses it now: the volatile lines it was added for
+  (#191) are rendered since #194 and #195.
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.

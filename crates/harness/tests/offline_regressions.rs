@@ -147,12 +147,20 @@ async fn dependency_context_and_volatile_policy_prevent_unsupported_reuse() {
     let req = node.clone().dependency("DB.S.V", "select 1");
     sc.build_with(req.clone(), outcome().epoch(100)).await;
     assert_eq!(sc.verdict(req.clone()).await, "skip_execution");
-    let changed = node.dependency("DB.S.V", "select 2");
+    let changed = node.clone().dependency("DB.S.V", "select 2");
     assert_eq!(sc.verdict(changed).await, "ready_to_execute");
     let changed = req.clone().schema("OTHER");
     assert_eq!(sc.verdict(changed).await, "ready_to_execute");
-    let req = req.tolerate_nondeterminism(false);
-    assert_eq!(sc.verdict(req).await, "ready_to_execute");
+    // Volatile evaluation requested: deterministic SQL reuses as hosted does
+    // (#191 cell 3, `explain_volatile_evaluation.jsonl` entry 31), and SQL
+    // whose dependency definition calls a Volatile function rebuilds.
+    let deterministic = req.clone().tolerate_nondeterminism(false);
+    assert_eq!(sc.verdict(deterministic).await, "skip_execution");
+    let volatile = node.dependency("DB.S.V", "select current_timestamp() as ts");
+    sc.build_with(volatile.clone(), outcome().epoch(100)).await;
+    assert_eq!(sc.verdict(volatile.clone()).await, "skip_execution");
+    let volatile = volatile.tolerate_nondeterminism(false);
+    assert_eq!(sc.verdict(volatile).await, "ready_to_execute");
 }
 
 #[tokio::test]

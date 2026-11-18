@@ -182,6 +182,88 @@ class Build:
                      test_failures=self.test_failures, args=args)
 
 
+_RELATION = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){2}")
+
+
+@dataclass(init=False)
+class Read:
+    """Read every row of one per-run demo relation with `dbt show --inline`, without dbt State.
+
+    The rows land in `reads.json`, so a capture can compare the value the
+    Warehouse wrote with the value the service rendered (#191).
+    """
+    relation: str
+    target: str = "prod_demo"
+    query: str = ""
+
+    def __init__(self, relation, target="prod_demo", query=""):
+        self.relation = relation
+        self.target = target
+        self.query = query
+
+    def bind(self, m, run):
+        rel = _sub(self.relation, m, "Read relation")
+        if not _RELATION.fullmatch(rel) or not _demo_object(rel.split("."), run):
+            raise CaptureError(f"Read is not of one three-part per-run demo relation: {rel!r}")
+        return Read(rel, target=self.target, query=f"select * from {rel}")
+
+
+def parse_show_rows(log_text):
+    """The JSON rows `dbt show --output json` printed into a log."""
+    for line in log_text.splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            try:
+                rows = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(rows, list):
+                return rows
+    raise CaptureError("dbt show printed no JSON rows")
+
+
+def parse_dbt_version(text):
+    """The version `dbt --version` reports (`dbt 2.0.11`)."""
+    m = re.search(r"\bdbt\s+(\d+\.\d+\.\d+\S*)", text)
+    if not m:
+        raise CaptureError(f"cannot read a dbt version from {text!r}")
+    return m.group(1)
+
+
+def wire_client_versions(rows):
+    """Every `dbt_run_cache_version` the client sent in ValidateClientVersion."""
+    return sorted({(r.get("request") or {}).get("dbt_run_cache_version")
+                   for r in rows if r.get("method") == "ValidateClientVersion"} - {None})
+
+
+def client_record(version_text, path, sha256, rows):
+    """The client a capture ran: the executable's version and digest, and what it sent.
+
+    Older dbt-fusion clients pass `evaluate_volatile_sql` uninverted as
+    `tolerate_nondeterminism`, so every capture must name its client (#191).
+    """
+    version = parse_dbt_version(version_text)
+    wire = wire_client_versions(rows)
+    if any(v != version for v in wire):
+        raise CaptureError(f"the client sent run-cache version(s) {wire}, but dbt reports {version}")
+    return {"dbt_version": version, "dbt_path": path, "dbt_sha256": sha256,
+            "wire_dbt_run_cache_versions": wire}
+
+
+def dbt_executable():
+    """The resolved `dbt` on PATH, its `--version` text and SHA-256."""
+    import hashlib
+
+    path = shutil.which("dbt")
+    if not path:
+        raise CaptureError("dbt is not on PATH")
+    path = os.path.realpath(path)
+    with open(path, "rb") as fh:
+        sha = hashlib.sha256(fh.read()).hexdigest()
+    text = subprocess.run([path, "--version"], capture_output=True, text=True).stdout
+    return path, text, sha
+
+
 # Extra `dbt build` flags a scenario may pass, each followed by one value: the
 # microbatch event-time window (#73). They select which batches run, nothing else.
 BUILD_FLAGS = {"--event-time-start", "--event-time-end"}
@@ -245,11 +327,12 @@ class Plan:
     explains: int
     targets: set
     probe_explains: int = 0
+    reads: int = 0
 
     @property
     def total(self):
         """dbt invocations (probe explains are not dbt invocations)."""
-        return self.builds + self.run_operations + self.explains
+        return self.builds + self.run_operations + self.explains + self.reads
 
 
 def new_run_id():
@@ -268,9 +351,10 @@ def plan(bound):
         builds=sum(isinstance(s, Build) for s in steps),
         run_operations=sum(isinstance(s, Sql) for s in steps),
         explains=sum(isinstance(s, Explain) and s.via == "dbt" for s in steps),
-        targets={s.target for s in steps if isinstance(s, (Build, Sql))
+        targets={s.target for s in steps if isinstance(s, (Build, Sql, Read))
                  or (isinstance(s, Explain) and s.via == "dbt")},
         probe_explains=sum(isinstance(s, Explain) and s.via == "probe" for s in steps),
+        reads=sum(isinstance(s, Read) for s in steps),
     )
 
 
@@ -545,6 +629,7 @@ class Run:
         self.proxy = None
         self.invocations = Counter()
         self.prior = []  # an earlier run's window (--prior-window), for probe explains
+        self.reads = []  # rows each Read step read back from the Warehouse
 
     # environment
     def client_env(self):
@@ -552,6 +637,13 @@ class Run:
         env.update(DBT_ENGINE_MANAGE_STATE="true", RUN_CACHE_API_URL=f"127.0.0.1:{self.port}",
                    RUN_CACHE_API_SECURE="false")
         env.pop("PROBE_URL", None)
+        return env
+
+    def read_env(self):
+        """A Read runs without dbt State: no proxy, no State RPC, no metering."""
+        env = dict(os.environ)
+        for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL", "RUN_CACHE_API_SECURE", "PROBE_URL"):
+            env.pop(k, None)
         return env
 
     def copy_project(self):
@@ -604,13 +696,13 @@ class Run:
             return [json.loads(line) for line in fh if line.strip()]
 
     # steps
-    def dbt(self, k, label, args):
+    def dbt(self, k, label, args, env=None):
         log = os.path.join(self.logs, f"{k:02d}_{label}.log")
         cmd = ["dbt", *args, "--profiles-dir", self.profiles_dir, "--profile", PROFILE,
                "--skip-semantic-manifest-validation"]
         print(f"  $ {' '.join(cmd)}")
         with open(log, "w") as fh:
-            rc = subprocess.run(cmd, cwd=self.project, env=self.client_env(),
+            rc = subprocess.run(cmd, cwd=self.project, env=env or self.client_env(),
                                 stdout=fh, stderr=subprocess.STDOUT).returncode
         self.invocations[label] += 1
         return rc, log
@@ -655,6 +747,15 @@ class Run:
                 raise CaptureError(f"dbt build exited {rc}; see {log}")
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
+        elif isinstance(step, Read):
+            rc, log = self.dbt(k, "show", ["show", "--target", step.target, "--inline", step.query,
+                                           "--limit", "-1", "--output", "json"], env=self.read_env())
+            if rc:
+                raise CaptureError(f"dbt show exited {rc}; see {log}")
+            with open(log) as fh:
+                rows = parse_show_rows(fh.read())
+            self.reads.append({"step": k, "relation": step.relation, "rows": rows})
+            print(f"  read {len(rows)} row(s) of {step.relation}: {json.dumps(rows)[:400]}")
         elif isinstance(step, Explain) and step.via == "probe":
             self.probe_explain(k, step)
         elif isinstance(step, Explain):
@@ -696,12 +797,20 @@ def off_demo_submits(rows):
             and not r["request"]["target_table"].upper().startswith(f'"{DEMO_DB}".')]
 
 
-def report(bound, rows, marks, work, prior=()):
+def report(bound, rows, marks, work, prior=(), client=None, reads=()):
     sys.path.insert(0, HERE)
     import explain_slice  # noqa: E402
 
     with open(os.path.join(work, "window.jsonl"), "w") as fh:
         fh.writelines(json.dumps(r) + "\n" for r in rows)
+    if client is not None:
+        with open(os.path.join(work, "client.json"), "w") as fh:
+            json.dump(client, fh, indent=1)
+        print(f"## client: {json.dumps(client)}")
+    if reads:
+        with open(os.path.join(work, "reads.json"), "w") as fh:
+            json.dump(list(reads), fh, indent=1)
+        print(f"## warehouse reads: {len(reads)} (reads.json)")
     kept, dropped = trim(rows)
     cand = os.path.join(work, "fixture_candidate.jsonl")
     with open(cand, "w") as fh:
@@ -762,7 +871,7 @@ def main(argv=None):
     print(f"scenario {bound.scenario.name}: {bound.scenario.summary}")
     print(f"run id {bound.run}; nodes: {', '.join(bound.names.values())}")
     print(f"dbt invocations: {p.total} ({p.builds} build, {p.run_operations} run-operation, "
-          f"{p.explains} state explain); targets: {', '.join(sorted(p.targets))}")
+          f"{p.explains} state explain, {p.reads} show); targets: {', '.join(sorted(p.targets))}")
     if p.probe_explains:
         print(f"state-probe explains: {p.probe_explains} (GetExplainMessages, no dbt invocation)")
 
@@ -778,6 +887,8 @@ def main(argv=None):
             raise CaptureError(f"{PROBE_BIN} missing; run `cargo build -p dbt-state-harness --bin state-probe`")
         if not os.path.isdir(os.path.join(a.jaffle_shop, ".git")):
             raise CaptureError(f"{a.jaffle_shop} is not a git checkout")
+        dbt_path, dbt_version_text, dbt_sha = dbt_executable()
+        print(f"client: dbt {parse_dbt_version(dbt_version_text)} at {dbt_path} sha256 {dbt_sha}")
     except CaptureError as e:
         print(f"REFUSED: {e}")
         return 2
@@ -826,7 +937,15 @@ def main(argv=None):
             rows = run.rows() if os.path.isdir(run.golden_dir) else []
         except (CaptureError, OSError, ValueError):
             rows = []
-    ok = report(bound, rows, marks, work, run.prior)
+    client = None
+    try:
+        client = client_record(dbt_version_text, dbt_path, dbt_sha, rows)
+        if not client["wire_dbt_run_cache_versions"]:
+            raise CaptureError("the capture holds no ValidateClientVersion call")
+    except CaptureError as error:
+        failure = failure or error
+        print(f"CLIENT VERSION: {error}")
+    ok = report(bound, rows, marks, work, run.prior, client, run.reads)
     after = shared_status(a.jaffle_shop)
     if after != before:
         print(f"WARNING: {a.jaffle_shop} status changed during the run:\n{after}")
