@@ -377,59 +377,5 @@
     "entry": 28,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 10,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd first build (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name, not by vd's Target relation. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only the Volatile functions of a model's own SQL (#194), so it returns {} for vd, whose own SQL calls none; dependency keys are #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 16,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test first execution (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under the key __target_query__ (a data test has no Target relation). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only under a model's Target relation (#194), so it returns {} for a data test without one; the __target_query__ key is #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 35,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 5, vd unchanged rerun (evaluation on, ready_to_execute): hosted renders the view dependency's CURRENT_TIMESTAMP() keyed by the dependency name. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only the Volatile functions of a model's own SQL (#194), so it returns {} for vd, whose own SQL calls none; dependency keys are #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 37,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#191) cell 6, vt data test unchanged rerun (evaluation on, ready_to_execute): hosted renders CURRENT_TIMESTAMP() under __target_query__. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the local server renders only under a model's Target relation (#194), so it returns {} for a data test without one; the __target_query__ key is #195. The rest of the payload matches exactly. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 24,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 16, vt data test first execution with evaluation on): decision and description match. Hosted adds a query analysis section (non-deterministic functions detected in query / CURRENT_TIMESTAMP() -> rendered with '...', the test query is not deterministic and this is not tolerated by config, the test query has changed <NODE_QUERY_CHANGED>); the local tree has only the data freshness section. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 45,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 35, vd rerun with evaluation on over a volatile view): both EXECUTE with the same description. Hosted says 'the model query has not changed', lists the dependency's rendered CURRENT_TIMESTAMP() with 'a change in rendered value will result in a diff', and fails 'an upstream model query has changed' (CHECK-IN: a rendered value counts as an upstream query change, see the note); the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
-  },
-  {
-    "fixture": "explain_volatile_evaluation.jsonl",
-    "entry": 46,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#191 cell 8, explain of entry 37, vt data test rerun with evaluation on): both EXECUTE with the same description. Hosted shows the rendered CURRENT_TIMESTAMP(), 'not tolerated by config' and 'the test query has changed' <NODE_QUERY_CHANGED> plus the freshness section; the local failed_reuse_qualification rebuild renders no tree. See docs/reports/snowflake-volatile-evaluation-2026-11-17.md."
   }
 ]

@@ -27,6 +27,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     }
     Rules {
         dialect: &SnowflakeDialect {},
+        data_tests_and_dependencies: true,
         functions: &[
             rule(
                 "current_timestamp",

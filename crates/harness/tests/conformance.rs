@@ -758,6 +758,45 @@ fn strip_named_fields_removes_only_named_payload_fields() {
 }
 
 #[test]
+fn explain_volatile_values_compare_function_text_exactly_and_values_by_format() {
+    let hosted = normalize_volatile_line(
+        "CURRENT_TIMESTAMP() -> rendered with '2026-11-17 16:48:56.015041'",
+    )
+    .unwrap();
+    assert_eq!(
+        hosted,
+        "CURRENT_TIMESTAMP() -> rendered with '«YYYY-MM-DD HH:MM:SS.ffffff»'"
+    );
+    assert_eq!(
+        normalize_volatile_line(
+            "CURRENT_TIMESTAMP() -> rendered with '2026-11-17 16:48:56.150000'"
+        ),
+        Ok(hosted.clone()),
+        "another instant in the same format compares equal"
+    );
+    for other in [
+        "CURRENT_TIMESTAMP -> rendered with '2026-11-17 16:48:56.150000'",
+        "RANDSTR(8, 1234) -> rendered with '9XChaf68'",
+        "a change in rendered value will result in a diff",
+    ] {
+        assert_eq!(
+            normalize_volatile_line(other).as_deref(),
+            Ok(other),
+            "kept exactly"
+        );
+    }
+    for malformed in ["2026-11-17 16:48:56", "2026-11-17T16:48:56.150000", "now"] {
+        assert!(
+            normalize_volatile_line(&format!(
+                "CURRENT_TIMESTAMP() -> rendered with '{malformed}'"
+            ))
+            .is_err(),
+            "{malformed}"
+        );
+    }
+}
+
+#[test]
 fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format() {
     let response = |query: &str, function: &str, value: &str| {
         serde_json::json!({"response": {"ready_to_execute": {
