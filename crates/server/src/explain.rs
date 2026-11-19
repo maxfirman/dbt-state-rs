@@ -495,6 +495,9 @@ enum Shape {
     /// A model over a query dependency whose definition rendered Volatile
     /// function values ([`volatile_dependency_tree`], #195).
     VolatileDependency,
+    /// Its reuse with evaluation off ([`tolerated_volatile_dependency_tree`],
+    /// #204).
+    ToleratedVolatileDependency,
 }
 
 /// Select the tree shape from the persisted decision reason, the class and
@@ -567,8 +570,10 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
             // Volatile evaluation (#195): a test whose own SQL rendered values
             // is never reused, and its unchanged rerun prints the first
             // execution's tree (explain_volatile_evaluation.jsonl entry 46).
+            // Likewise a test over a query dependency whose definition
+            // rendered values (#204, explain_volatile_cells.jsonl entry 201).
             (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
-                if volatile_test_query_analysis(node) =>
+                if volatile_test_query_analysis(node) || volatile_dependency_test(node) =>
             {
                 Shape::DataTestExecute
             }
@@ -637,6 +642,20 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                         .all(|input| input.last_modified_epoch.is_some_and(|epoch| epoch > 0))) =>
         {
             Shape::ExistingTargetWithoutHistory
+        }
+        // Volatile evaluation (#204): the reuse of a table over a view whose
+        // definition rendered values with evaluation off, with no values of
+        // its own and no upstream table (explain_volatile_cells.jsonl entry
+        // 187).
+        (DecisionKind::Skip, R::Reused(Reuse::Fresh))
+            if full
+                && !upstreams
+                && !compares_templates(node)
+                && node.volatile_evaluation.requested == Some(false)
+                && node.own_volatile_values().is_empty()
+                && !node.volatile_evaluation.values.is_empty() =>
+        {
+            Shape::ToleratedVolatileDependency
         }
         (DecisionKind::Skip, R::Reused(Reuse::Fresh | Reuse::WithinLagTolerance)) if listing => {
             Shape::Skip
@@ -925,10 +944,12 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// derived from the persisted values and flag only (maintainer decision on
 /// #191). Captured for a table model without upstreams, and in
 /// `explain_volatile_cells.jsonl`: for a custom node without upstreams
-/// (entry 191, #205); for a table over a deterministic query dependency
-/// (entry 197, #206) or an upstream table (entry 195, #206); and for an
-/// APPEND incremental and a snapshot (in `snapshot` wording) over an upstream
-/// table (entries 189 and 190, #205). Every form with an upstream or a query
+/// (entry 191, #205); for a view that reads no relation (entry 188, #204);
+/// for a table over a query dependency, deterministic (entry 197, #206) or
+/// whose definition also rendered values (entry 186, #204: the own values
+/// only), or over an upstream table (entry 195, #206); and for an APPEND
+/// incremental and a snapshot (in `snapshot` wording) over an upstream table
+/// (entries 189 and 190, #205). Every form with an upstream or a query
 /// dependency adds `upstream model queries have not changed`; the dependency
 /// says `upstream data is up to date`, and an upstream table is listed
 /// against the refused build, as a reuse does, when none provably changed
@@ -967,6 +988,10 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         node.query_dependencies.is_empty(),
     ) {
         (K::Full | K::DbtCustom, true, true) => section(
+            "data freshness analysis",
+            vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
+        ),
+        (K::View, true, true) if view_reads_no_relation(node) => section(
             "data freshness analysis",
             vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
         ),
@@ -1021,14 +1046,15 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
 ///   `the snapshot query has changed` (`explain_volatile_cells.jsonl` entry
 ///   190);
 /// - evaluation off, on a model's reuse, before `the model query has not
-///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51);
+///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51), and
+///   on a data test's before `the test query has not changed`
+///   (`explain_volatile_cells.jsonl` entry 202, #204);
 /// - evaluation off, on a table's query-changed rebuild without upstreams,
 ///   before `the model query has changed` and with no `tolerated by config`
 ///   line (`explain_volatile_cells.jsonl` entry 194, #206).
 ///
-/// Other shapes (a data test with evaluation off among them) are uncaptured
-/// and print no volatile lines, and so does a decision recorded without the
-/// evaluation flag.
+/// Other shapes are uncaptured and print no volatile lines, and so does a
+/// decision recorded without the evaluation flag.
 fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
     let own = node.own_volatile_values();
     let noun = node.noun();
@@ -1043,10 +1069,12 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
                 "the {noun} query is not deterministic and this is not tolerated by config"
             )),
         ),
-        Some(false) if noun == "model" && node.decision == DecisionKind::Skip => (
-            "the model query has not changed".to_owned(),
+        Some(false) if node.decision == DecisionKind::Skip => (
+            format!("the {noun} query has not changed"),
             BADGE_NODE_QUERY_UNCHANGED,
-            Some("the model query is not deterministic but this is tolerated by config".to_owned()),
+            Some(format!(
+                "the {noun} query is not deterministic but this is tolerated by config"
+            )),
         ),
         Some(false) if evaluation_off_query_changed_rebuild(node) => (
             "the model query has changed".to_owned(),
@@ -1116,32 +1144,18 @@ fn rendered_value(v: &crate::volatile_evaluation::RenderedValue) -> qc::ExplainL
 /// the refused build, as a reuse does (`explain_volatile_cells.jsonl` entry
 /// 199, #206).
 fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
-    let mut dependencies: Vec<(&str, Vec<qc::ExplainLine>)> = Vec::new();
-    for v in &node.volatile_evaluation.values {
-        let rendered = rendered_value(v);
-        match dependencies.iter_mut().find(|(name, _)| *name == v.query) {
-            Some((_, values)) => values.push(rendered),
-            None => dependencies.push((&v.query, vec![rendered])),
-        }
-    }
     let upstreams = node.genuine_upstreams();
-    let dependencies = dependencies
-        .into_iter()
-        .map(|(name, mut values)| {
-            values.push(line("a change in rendered value will result in a diff"));
-            section(quote(name), vec![volatile_functions_detected(values)])
-        })
-        .chain(upstreams.iter().map(|up| {
-            section(
-                quote(&up.name),
-                vec![leaf(
-                    "query or upstream query unchanged",
-                    None,
-                    Some(BADGE_UPSTREAM_QUERY_UNCHANGED),
-                )],
-            )
-        }))
-        .collect();
+    let mut dependencies = volatile_dependencies(node, true);
+    dependencies.children.extend(upstreams.iter().map(|up| {
+        section(
+            quote(&up.name),
+            vec![leaf(
+                "query or upstream query unchanged",
+                None,
+                Some(BADGE_UPSTREAM_QUERY_UNCHANGED),
+            )],
+        )
+    }));
     let freshness = if upstreams.is_empty() {
         section(
             "data freshness analysis",
@@ -1164,7 +1178,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
                     Some(MARKER_SUCCESS),
                     Some(BADGE_NODE_QUERY_UNCHANGED),
                 ),
-                section("upstream dependencies", dependencies),
+                dependencies,
                 leaf(
                     "an upstream model query has changed",
                     Some(MARKER_FAIL),
@@ -1174,6 +1188,72 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         ),
         freshness,
     ]
+}
+
+/// Volatile evaluation (#204): the reuse, with evaluation off, of a table
+/// whose query dependency definitions rendered values. Each lists its values
+/// as in [`volatile_dependency_tree`] but without `a change in rendered value
+/// will result in a diff`; the configuration tolerates it, and the upstream
+/// model queries and data are unchanged (`explain_volatile_cells.jsonl` entry
+/// 187).
+fn tolerated_volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
+    vec![
+        table_analysis_exists(node),
+        section(
+            "query analysis",
+            vec![
+                leaf(
+                    "the model query has not changed",
+                    Some(MARKER_SUCCESS),
+                    Some(BADGE_NODE_QUERY_UNCHANGED),
+                ),
+                volatile_dependencies(node, false),
+                leaf(
+                    "an upstream model query is not deterministic but this is tolerated by config",
+                    Some(MARKER_INFO),
+                    None,
+                ),
+                leaf(
+                    "upstream model queries have not changed",
+                    Some(MARKER_SUCCESS),
+                    None,
+                ),
+            ],
+        ),
+        section(
+            "data freshness analysis",
+            vec![leaf(
+                "upstream data is up to date",
+                Some(MARKER_SUCCESS),
+                None,
+            )],
+        ),
+    ]
+}
+
+/// `upstream dependencies` with each query dependency, by its name as sent,
+/// listing the values its definition rendered under `non-deterministic
+/// functions detected in query`, ending with `a change in rendered value will
+/// result in a diff` when `diff`.
+fn volatile_dependencies(node: &ExplainNode, diff: bool) -> qc::ExplainLine {
+    let mut dependencies: Vec<(&str, Vec<qc::ExplainLine>)> = Vec::new();
+    for v in &node.volatile_evaluation.values {
+        let rendered = rendered_value(v);
+        match dependencies.iter_mut().find(|(name, _)| *name == v.query) {
+            Some((_, values)) => values.push(rendered),
+            None => dependencies.push((&v.query, vec![rendered])),
+        }
+    }
+    let dependencies = dependencies
+        .into_iter()
+        .map(|(name, mut values)| {
+            if diff {
+                values.push(line("a change in rendered value will result in a diff"));
+            }
+            section(quote(name), vec![volatile_functions_detected(values)])
+        })
+        .collect();
+    section("upstream dependencies", dependencies)
 }
 
 /// Whether a data test's tree starts with the Volatile evaluation query
@@ -1193,6 +1273,28 @@ fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
                     | DecisionReason::NoReuseCandidate(
                         NoCandidate::FailedReuseQualification | NoCandidate::IdentityMismatch
                     )
+            )
+        )
+}
+
+/// Whether a data test executes over a query dependency whose definition
+/// rendered values with evaluation requested, with no values of its own and
+/// no upstream tables, on a first execution or an unchanged rerun: hosted's
+/// tree is one `data freshness analysis` line without children
+/// (`explain_volatile_cells.jsonl` entries 105 and 201). Whether the same
+/// test over a deterministic dependency prints that is uncaptured.
+fn volatile_dependency_test(node: &ExplainNode) -> bool {
+    node.is_data_test()
+        && node.volatile_evaluation.requested == Some(true)
+        && node.own_volatile_values().is_empty()
+        && !node.volatile_evaluation.values.is_empty()
+        && node.genuine_upstreams().is_empty()
+        && !compares_templates(node)
+        && matches!(
+            node.reason,
+            Some(
+                DecisionReason::FirstBuild
+                    | DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification)
             )
         )
 }
@@ -1484,10 +1586,34 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
                     )],
                 ));
             }
-            tree.push(unanchored_data_freshness_analysis(node));
+            // With evaluation off, a first execution's query analysis lists
+            // the values only: no tolerance or query verdict line (#204,
+            // explain_volatile_cells.jsonl entry 106).
+            if node.volatile_evaluation.requested == Some(false)
+                && node.reason == Some(DecisionReason::FirstBuild)
+                && !compares_templates(node)
+            {
+                let own = node.own_volatile_values();
+                if !own.is_empty() {
+                    tree.push(section(
+                        "query analysis",
+                        vec![volatile_functions_detected(
+                            own.into_iter().map(rendered_value).collect(),
+                        )],
+                    ));
+                }
+            }
+            // A test over a volatile query dependency, without upstreams,
+            // prints a bare data freshness analysis (#204).
+            if volatile_dependency_test(node) {
+                tree.push(section("data freshness analysis", Vec::new()));
+            } else {
+                tree.push(unanchored_data_freshness_analysis(node));
+            }
             tree
         }
         Some(Shape::VolatileDependency) => volatile_dependency_tree(node),
+        Some(Shape::ToleratedVolatileDependency) => tolerated_volatile_dependency_tree(node),
         Some(Shape::DataTestExistingTargetWithoutHistory) => vec![
             section("query analysis", Vec::new()),
             unanchored_data_freshness_analysis(node),
@@ -4806,9 +4932,10 @@ mod tests {
     }
 
     /// Volatile evaluation (#195 on #194's flag): a data test's own values and
-    /// a query dependency's values print only for a decision that requested
-    /// evaluation. Evaluation off is uncaptured for both, and a decision
-    /// recorded without the flag prints no volatile lines.
+    /// a query dependency's values print for a decision that requested
+    /// evaluation. With evaluation off they print on a data test's first
+    /// execution (#204), not on a table's rebuild (uncaptured), and a
+    /// decision recorded without the flag prints no volatile lines.
     #[test]
     fn data_test_and_dependency_volatile_lines_need_the_evaluation_flag() {
         fn detected(lines: &[qc::ExplainLine]) -> bool {
@@ -4843,19 +4970,17 @@ mod tests {
         table.query_dependencies = vec![view.into()];
         table.volatile_evaluation.values = vec![value(view)];
 
-        for n in [&test, &table] {
-            let mut requested = n.clone();
-            requested.volatile_evaluation.requested = Some(true);
-            assert!(
-                detected(&explain_lines(&requested)),
-                "{:?}",
-                render(&requested)
-            );
-            for flag in [Some(false), None] {
+        for (n, printed_when_off) in [(&test, true), (&table, false)] {
+            for (flag, printed) in [
+                (Some(true), true),
+                (Some(false), printed_when_off),
+                (None, false),
+            ] {
                 let mut other = n.clone();
                 other.volatile_evaluation.requested = flag;
-                assert!(
-                    !detected(&explain_lines(&other)),
+                assert_eq!(
+                    detected(&explain_lines(&other)),
+                    printed,
                     "{flag:?}: {:?}",
                     render(&other)
                 );

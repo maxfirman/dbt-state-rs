@@ -69,8 +69,7 @@ pub struct Cell {
     /// Whether the submit requested Volatile evaluation ([`requested`]).
     pub evaluation_requested: bool,
     pub outcome: Outcome,
-    /// The SQL the values come from. Values from both a node's own SQL and a
-    /// query dependency are captured in no cell.
+    /// The SQL the values come from.
     pub queries: Queries,
 }
 
@@ -111,6 +110,9 @@ pub enum Queries {
     Own,
     /// Query dependency definitions, keyed by the dependency's name.
     Dependencies,
+    /// Both: values in the root SQL and in a query dependency definition,
+    /// each keyed as for [`Queries::Own`] and [`Queries::Dependencies`].
+    OwnAndDependencies,
 }
 
 /// Whether `req` requests Volatile evaluation: current clients send
@@ -274,9 +276,12 @@ impl Evidence {
 /// The root SQL is keyed by the Target relation as sent, or for a data test
 /// without one by [`TARGET_QUERY_KEY`]; each query dependency definition by
 /// the dependency's name, in request order (`explain_volatile_evaluation.jsonl`
-/// entries 10 and 16). Each function is rendered once per query however often
-/// it is called. SQL that does not parse renders nothing, and so does a
-/// submit with values in both its own SQL and a query dependency.
+/// entries 10 and 16). Values in both a node's own SQL and a query dependency
+/// are listed dependencies first, as hosted printed them
+/// (`explain_volatile_cells.jsonl` entries 59 and 159; the wire map has no
+/// order). Each function is rendered once per query however often it is
+/// called. SQL that does not parse renders nothing, and so does a data test
+/// with a Target relation.
 pub fn evaluate(
     req: &qc::SubmitEnrichedSqlRequest,
     rules: Option<Rules>,
@@ -295,7 +300,10 @@ pub fn evaluate(
     let target = req.target_table.as_deref().filter(|t| !t.is_empty());
     // A data test with a Target relation (stored failures) is uncaptured.
     let own = if req.execution_type == qc::ModelExecutionType::DbtDataTest as i32 {
-        target.is_none().then_some(TARGET_QUERY_KEY)
+        if target.is_some() {
+            return None;
+        }
+        Some(TARGET_QUERY_KEY)
     } else {
         target
     };
@@ -327,6 +335,11 @@ pub fn evaluate(
     let values = match (own_values.is_empty(), dependency_values.is_empty()) {
         (false, true) if captured(Queries::Own) => own_values,
         (true, false) if captured(Queries::Dependencies) => dependency_values,
+        (false, false) if captured(Queries::OwnAndDependencies) => {
+            let mut values = dependency_values;
+            values.extend(own_values);
+            values
+        }
         _ => return None,
     };
     Some(Rendered(values))

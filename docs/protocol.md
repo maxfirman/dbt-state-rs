@@ -581,7 +581,8 @@ qualification. They are persisted with the decision for Explain only
   dependency definition uses the dependency's `name` as sent; dependencies
   follow the root SQL, in request order. A model whose only Volatile call is
   in a dependency has only the dependency key (`explain_volatile_evaluation.jsonl`
-  entries 16 and 10).
+  entries 16 and 10). A table with values in both has both keys, each with
+  its own values (`explain_volatile_cells.jsonl` entries 59, 159; #204).
 - Each function text appears once per query. Repeats and aliases fold into
   one value, from the first call in the SQL.
 - Clock values come from the server clock in UTC, to the microsecond. The
@@ -644,18 +645,21 @@ no volatile Explain lines.
 |---|---|---|---|---|
 | Snowflake | FULL model, root SQL, `ready_to_execute` for the captured reasons below | rendered | rendered | run 1 entries 6, 8, 33; `explain_volatile_cells.jsonl` entries 133, 137, 142, 147, 166 |
 | Snowflake | FULL model, root SQL, `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 34, 50 |
-| Snowflake | view, root SQL | empty, uncaptured | rendered on a first build and `skip_execution` | run 1 entries 7, 32 |
-| Snowflake | data test without a Target relation (`__target_query__`) | rendered on a first execution, a rerun and a logic change | empty, uncaptured | run 1 entries 16, 37; `explain_volatile_cells.jsonl` entry 148 |
-| Snowflake | FULL model, query dependency definition | rendered on a first build and a rerun | empty, uncaptured | run 1 entries 10, 35; `explain_volatile_cells.jsonl` entries 72, 168 |
-| Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | APPEND incremental, snapshot, custom node, root SQL: first build and unchanged rerun | rendered | empty, uncaptured | `explain_volatile_cells.jsonl` entries 71/167, 69/165, 24/143 (#205) |
+| Snowflake | view, root SQL | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: cells entries 19, 141; off: run 1 entries 7, 32 |
+| Snowflake | data test without a Target relation (`__target_query__`) | rendered on a first execution, a rerun and a logic change | rendered on a first execution and `skip_execution` | on: run 1 entries 16, 37, cells entry 148; off: cells entries 60, 146 |
+| Snowflake | FULL model, query dependency definition | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: run 1 entries 10, 35, cells entries 72, 168; off: cells entries 58, 158 |
+| Snowflake | FULL model, values in both the root SQL and a query dependency (both keys) | rendered on a first build and a rerun | empty, uncaptured | cells entries 59, 159 |
+| Snowflake | data test without a Target relation over a volatile query dependency (the dependency's key) | rendered on a first execution and a rerun | empty, uncaptured | cells entries 52, 144 |
+| Snowflake | data test with values in both its own SQL and a query dependency | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | APPEND incremental, snapshot, custom node, root SQL: first build and unchanged rerun | rendered | empty, uncaptured | cells entries 71/167, 69/165, 24/143 (#205) |
 | Snowflake | those types' other rebuild reasons; the other incremental strategies | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | a data test with a Target relation: unreachable through client 2.0.11, which sends a `store_failures` test without one (`explain_volatile_cells.jsonl` entries 61, 145) | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | a data test with a Target relation: unreachable through client 2.0.11, which sends a `store_failures` test without one (cells entries 61, 145) | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
 | Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
 | Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
+"Cells entries" are `golden/fixtures/explain_volatile_cells.jsonl` (#202).
 A Snowflake build renders only for a captured decision reason
 (`warehouse/snowflake.rs` cells). With evaluation on: a first build
 (`first_build`), a rerun refused at Reuse qualification

@@ -15,11 +15,11 @@ use sqlparser::dialect::SnowflakeDialect;
 ///
 /// Several forms fold into one key, and a key is rendered once per submit.
 /// Values are rendered only in the captured cells below; every other
-/// execution type, decision reason and evaluation setting, and values in both
-/// a node's own SQL and a query dependency, render nothing. A form without a
-/// rule renders nothing: `zipf` and the `seqN` generators and functions
-/// outside the detector set such as `current_user()` (hosted renders none,
-/// #202 entries 20, 25 and 31), and calls with other arguments are uncaptured.
+/// execution type, decision reason, evaluation setting and source of values
+/// renders nothing. A form without a rule renders nothing: `zipf` and the
+/// `seqN` generators and functions outside the detector set such as
+/// `current_user()` (hosted renders none, #202 entries 20, 25 and 31), and
+/// calls with other arguments are uncaptured.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
     use crate::query_cache::ModelExecutionType::{
@@ -252,6 +252,23 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Snapshot, true, REFUSED_REUSE, Queries::Own),
             cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
             cell(DbtCustom, true, REFUSED_REUSE, Queries::Own),
+            // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
+            // on, first build and rerun refused at Reuse qualification: a
+            // table with values of its own and in a view dependency (entries
+            // 59 and 159); a data test over a volatile view (52, 144); a view
+            // (19, 141).
+            cell(Full, true, FIRST_BUILD, Queries::OwnAndDependencies),
+            cell(Full, true, REFUSED_REUSE, Queries::OwnAndDependencies),
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Dependencies),
+            cell(DbtDataTest, true, REFUSED_REUSE, Queries::Dependencies),
+            cell(View, true, FIRST_BUILD, Queries::Own),
+            cell(View, true, REFUSED_REUSE, Queries::Own),
+            // Evaluation off, first build and reuse: a data test (60, 146);
+            // a table over a volatile view (58, 158).
+            cell(DbtDataTest, false, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, false, Outcome::Reuse, Queries::Own),
+            cell(Full, false, FIRST_BUILD, Queries::Dependencies),
+            cell(Full, false, Outcome::Reuse, Queries::Dependencies),
         ],
     }
 };
