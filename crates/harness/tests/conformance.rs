@@ -400,16 +400,21 @@ const LOWERCASE_UUID_V4: ValueFormat = ValueFormat {
 /// The value format of each function text (the inner
 /// `transformed_nodes_by_query` key) whose value is runtime-dependent. Register
 /// a function here when the server renders it from its clock or random source.
-/// A value of any other function is compared exactly (`RANDSTR(8, 1234)` and
-/// `NORMAL(0, 1, 1234)` were the same in every captured render).
+/// A value of any other function is compared exactly (`RANDSTR(8, 1234)`,
+/// `NORMAL(0, 1, 1234)`, `RANDSTR(5, 1234)`, `NORMAL(5, 2, 42)` and
+/// `UNIFORM(1, 100, 1234)` were the same in every captured render).
 const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
     ("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS),
     ("CURRENT_TIMESTAMP", UTC_TIMESTAMP_MICROS),
+    ("CURRENT_TIMESTAMP(3)", UTC_TIMESTAMP_MICROS),
     ("SYSDATE()", UTC_TIMESTAMP_MICROS_WITH_OFFSET),
     ("CURRENT_TIME", UTC_TIME_MICROS),
     ("CURRENT_DATE", UTC_DATE),
     ("RANDOM()", UNIT_DECIMAL),
     ("UNIFORM(1, 100, RANDOM())", UNIT_DECIMAL),
+    ("UNIFORM(1, 10, RANDOM())", UNIT_DECIMAL),
+    ("RANDSTR(8, RANDOM())", UNIT_DECIMAL),
+    ("NORMAL(0, 1, RANDOM())", UNIT_DECIMAL),
     ("UUID_STRING()", LOWERCASE_UUID_V4),
 ];
 
@@ -775,8 +780,10 @@ fn explain_volatile_values_compare_function_text_exactly_and_values_by_format() 
         "another instant in the same format compares equal"
     );
     for other in [
-        "CURRENT_TIMESTAMP(3) -> rendered with '2026-11-17 16:48:56.150000'",
+        "CURRENT_TIMESTAMP(6) -> rendered with '2026-11-17 16:48:56.150000'",
         "RANDSTR(8, 1234) -> rendered with '9XChaf68'",
+        "RANDSTR(5, 1234) -> rendered with '9XCha'",
+        "UNIFORM(1, 100, 1234) -> rendered with '96'",
         "a change in rendered value will result in a diff",
     ] {
         assert_eq!(
@@ -868,6 +875,19 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
         ("CURRENT_DATE", "2026-11-17", "2026-11-17 00:00:00"),
         ("RANDOM()", "0.2496468898543448", "1.5"),
         ("UNIFORM(1, 100, RANDOM())", "0.31728658843764224", "71"),
+        // #202 `explain_volatile_cells.jsonl` entries 21, 33 and 36.
+        (
+            "CURRENT_TIMESTAMP(3)",
+            "2026-11-19 14:32:10.951024",
+            "2026-11-19 14:32:10.951",
+        ),
+        ("UNIFORM(1, 10, RANDOM())", "0.3241189184511579", "7"),
+        ("RANDSTR(8, RANDOM())", "0.62736052987072", "9XChaf68"),
+        (
+            "NORMAL(0, 1, RANDOM())",
+            "0.5431403180470619",
+            "-0.5431403180470619",
+        ),
         (
             "UUID_STRING()",
             "8f162c59-9bda-412e-b5de-d0d22af57bf9",

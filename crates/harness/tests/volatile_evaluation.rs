@@ -535,7 +535,7 @@ async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
         ),
         (
             "uncaptured precision argument",
-            snowflake_sql("id, amount, current_timestamp(3) as loaded_at"),
+            snowflake_sql("id, amount, current_timestamp(6) as loaded_at"),
             false,
         ),
         (
@@ -559,18 +559,18 @@ async fn snowflake_submits_without_a_captured_volatile_call_render_nothing() {
             false,
         ),
         (
-            "uniform with a constant generator",
-            snowflake_sql("id, amount, uniform(1, 100, 1234) as loaded_at"),
+            "uniform with uncaptured constant arguments",
+            snowflake_sql("id, amount, uniform(1, 10, 1234) as loaded_at"),
             false,
         ),
         (
-            "uncaptured parenless current_time",
-            snowflake_sql("id, amount, current_time as loaded_at"),
+            "uncaptured time precision argument",
+            snowflake_sql("id, amount, current_time(3) as loaded_at"),
             false,
         ),
         (
-            "uncaptured parenless localtime",
-            snowflake_sql("id, amount, localtime as loaded_at"),
+            "uncaptured randstr seed",
+            snowflake_sql("id, amount, randstr(5, 42) as loaded_at"),
             false,
         ),
         (
@@ -1917,4 +1917,262 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
             rendered(&ready)
         );
     }
+}
+
+// ── Snowflake call forms and functions outside the detector set (#203) ──────
+//
+// Evidence: the #202 capture batch, `golden/fixtures/explain_volatile_cells.jsonl`
+// (dbt 2.0.11), FULL tables without upstreams, evaluation on. First builds
+// are entries 20–36, reruns 128–139, and their Explains 80–87 and 177–184.
+// `fct` calls a parenless `current_time`, `flt` a parenless `localtime`, `fts`
+// `current_timestamp(3)`; `fra` and `frb` call `uniform`, `randstr` and
+// `normal` with a `random()` generator or a constant one; `fcu`, `fcx` and
+// `fcq` call functions outside the detector set (`current_user()` …).
+
+const CALL_FORMS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+/// The nodes of the call-form cells, by the tag their SQL selects.
+const CALL_FORM_TAGS: &[&str] = &[
+    "fct_", "flt_", "fts_", "fra_", "frb_", "fcu_", "fcx_", "fcq_",
+];
+/// (submit entry, hosted Explain entry) of every call-form decision.
+const CALL_FORM_EXPLAINS: &[(usize, usize)] = &[
+    (23, 80),
+    (28, 81),
+    (21, 82),
+    (33, 83),
+    (36, 84),
+    (25, 85),
+    (31, 86),
+    (20, 87),
+    (139, 177),
+    (138, 178),
+    (135, 179),
+    (134, 180),
+    (131, 181),
+    (129, 182),
+    (136, 183),
+    (128, 184),
+];
+
+/// Replay the call-form nodes' submits and confirms at their recorded times,
+/// correlating each confirm with its local request id. Returns the local
+/// response to each submit, by its entry in the fixture.
+async fn replay_call_forms(
+    sc: &Scenario,
+    entries: &[GoldenEntry],
+) -> BTreeMap<usize, qc::SubmitSqlResponse> {
+    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
+    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
+    let mut local_ids = std::collections::HashMap::new();
+    let mut responses = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        match entry.method.as_str() {
+            "SubmitEnrichedSQL"
+                if CALL_FORM_TAGS
+                    .iter()
+                    .any(|tag| entry.request["sql"].as_str().unwrap().contains(tag)) =>
+            {
+                let response = sql
+                    .submit_enriched_sql(support::captured_request(
+                        captured_submit(&entry.request).build(),
+                        entry,
+                    ))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                let hosted = entry.response["response"]["ready_to_execute"]["request_id"].as_str();
+                if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
+                    local_ids.insert(hosted.to_owned(), local);
+                }
+                responses.insert(index, response);
+            }
+            "ConfirmExecution" => {
+                let mut req: qc::ConfirmExecutionRequest =
+                    serde_json::from_value(entry.request.clone()).unwrap();
+                let Some(local) = local_ids.get(&req.request_id) else {
+                    continue;
+                };
+                req.request_id = local.clone();
+                exec.confirm_execution(support::captured_request(req, entry))
+                    .await
+                    .unwrap();
+            }
+            _ => {}
+        }
+    }
+    responses
+}
+
+#[tokio::test]
+async fn snowflake_captured_call_forms_render_hosted_keys_and_value_formats() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(CALL_FORMS);
+    let responses = replay_call_forms(&sc, &entries).await;
+    // Each submit is decided at its recorded time (the replay clock), so a
+    // clock value is that instant in UTC in hosted's format. A random value
+    // is a unit decimal, and a constant-seeded value is hosted's captured
+    // value (the same on both runs).
+    enum Expected {
+        Exactly(&'static str),
+        UnitRandom,
+    }
+    use Expected::{Exactly, UnitRandom};
+    /// Each function text and its expected value.
+    type Values = &'static [(&'static str, Expected)];
+    let cases: &[(usize, &str, Values)] = &[
+        (
+            23,
+            "fct first build",
+            &[("CURRENT_TIME", Exactly("14:32:11.092000"))],
+        ),
+        (
+            139,
+            "fct rerun",
+            &[("CURRENT_TIME", Exactly("14:33:51.183000"))],
+        ),
+        (
+            28,
+            "flt first build",
+            &[("CURRENT_TIME", Exactly("14:32:11.162000"))],
+        ),
+        (
+            138,
+            "flt rerun",
+            &[("CURRENT_TIME", Exactly("14:33:51.177000"))],
+        ),
+        (
+            21,
+            "fts first build",
+            &[(
+                "CURRENT_TIMESTAMP(3)",
+                Exactly("2026-11-19 14:32:11.078000"),
+            )],
+        ),
+        (
+            135,
+            "fts rerun",
+            &[(
+                "CURRENT_TIMESTAMP(3)",
+                Exactly("2026-11-19 14:33:51.156000"),
+            )],
+        ),
+        (
+            33,
+            "fra first build",
+            &[
+                ("UNIFORM(1, 10, RANDOM())", UnitRandom),
+                ("RANDOM()", UnitRandom),
+                ("RANDSTR(5, 1234)", Exactly("9XCha")),
+                ("NORMAL(5, 2, 42)", Exactly("4.711819340844143")),
+            ],
+        ),
+        (
+            134,
+            "fra rerun",
+            &[
+                ("UNIFORM(1, 10, RANDOM())", UnitRandom),
+                ("RANDOM()", UnitRandom),
+                ("RANDSTR(5, 1234)", Exactly("9XCha")),
+                ("NORMAL(5, 2, 42)", Exactly("4.711819340844143")),
+            ],
+        ),
+        (
+            36,
+            "frb first build",
+            &[
+                ("UNIFORM(1, 100, 1234)", Exactly("96")),
+                ("RANDSTR(8, RANDOM())", UnitRandom),
+                ("RANDOM()", UnitRandom),
+                ("NORMAL(0, 1, RANDOM())", UnitRandom),
+            ],
+        ),
+        (
+            131,
+            "frb rerun",
+            &[
+                ("UNIFORM(1, 100, 1234)", Exactly("96")),
+                ("RANDSTR(8, RANDOM())", UnitRandom),
+                ("RANDOM()", UnitRandom),
+                ("NORMAL(0, 1, RANDOM())", UnitRandom),
+            ],
+        ),
+    ];
+    for (entry, case, expected) in cases {
+        let response = &responses[entry];
+        assert_matches_hosted(response, &entries[*entry], case);
+        let local = volatile_values(response);
+        let [(_, functions)] = local.iter().collect::<Vec<_>>()[..] else {
+            panic!("{case}: one query, {local:?}");
+        };
+        assert_eq!(functions.len(), expected.len(), "{case}: {functions:?}");
+        for (function, value) in expected.iter() {
+            let rendered = &functions[*function];
+            match value {
+                Exactly(value) => assert_eq!(rendered, value, "{case}: {function}"),
+                UnitRandom => assert!(
+                    is_captured_unit_random(rendered),
+                    "{case}: {function}: {rendered:?}"
+                ),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn snowflake_functions_outside_the_detector_set_render_nothing_and_are_reused_as_captured() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(CALL_FORMS);
+    let responses = replay_call_forms(&sc, &entries).await;
+    for (entry, case) in [
+        (25, "fcu current_user(), first build"),
+        (31, "fcx current_role() …, first build"),
+        (20, "fcq current_session() …, first build"),
+        (129, "fcu rerun: reused"),
+        (136, "fcx rerun: reused"),
+        (128, "fcq rerun: reused"),
+    ] {
+        assert_matches_hosted(&responses[&entry], &entries[entry], case);
+        assert!(volatile_values(&responses[&entry]).is_empty(), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn snowflake_call_form_explains_match_hosted_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_call_forms").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let entries = entries(CALL_FORMS);
+    let responses = replay_call_forms(&Scenario::connect(&server).await, &entries).await;
+    let expected: Vec<_> = CALL_FORM_EXPLAINS
+        .iter()
+        .map(|&(submit, explain)| {
+            hosted_explain_for(
+                &entries[explain],
+                &entries[submit],
+                &decision_id(&responses[&submit]),
+                &volatile_values(&responses[&submit]),
+            )
+        })
+        .collect();
+    let explained = |server: support::TestServer| {
+        let responses = &responses;
+        async move {
+            let sc = Scenario::connect(&server).await;
+            let mut out = Vec::new();
+            for &(submit, _) in CALL_FORM_EXPLAINS {
+                out.push(explain(&sc, &decision_id(&responses[&submit])).await);
+            }
+            out
+        }
+    };
+
+    assert_eq!(explained(server).await, expected);
+
+    let server = support::start_server_on_database(database.clone()).await;
+    assert_eq!(
+        explained(server).await,
+        expected,
+        "the persisted values print after a restart"
+    );
 }

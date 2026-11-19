@@ -6,17 +6,20 @@ use sqlparser::dialect::SnowflakeDialect;
 
 /// Volatile evaluation (#67): the function forms hosted was captured
 /// rendering, with hosted's key and value format for each. `CURRENT_TIMESTAMP()`
-/// first in #193 (`clone_fallback_volatile.jsonl` entries 0 and 2); every other
-/// form in #191/#194 (`explain_volatile_evaluation.jsonl` entry 6, the forms of
-/// `explain_volatile_evaluation_functions.jsonl` entries 13–24).
+/// first in #193 (`clone_fallback_volatile.jsonl` entries 0 and 2); the forms
+/// of #191/#194 (`explain_volatile_evaluation.jsonl` entry 6, the forms of
+/// `explain_volatile_evaluation_functions.jsonl` entries 13–24); and the call
+/// forms of #202/#203 (`explain_volatile_cells.jsonl` entries 21–36 and
+/// 131–139): a parenless `current_time` or `localtime`, `current_timestamp(3)`,
+/// and `uniform`, `randstr` and `normal` with the captured arguments.
 ///
 /// Several forms fold into one key, and a key is rendered once per submit.
 /// Values are rendered only in the captured cells below; every other
 /// execution type, decision and evaluation setting, and values in both a
 /// node's own SQL and a query dependency, render nothing. A form without a
-/// rule renders nothing: `zipf` and the
-/// `seqN` generators (hosted renders none), a parenless `current_time` or
-/// `localtime`, and calls with other arguments are uncaptured.
+/// rule renders nothing: `zipf` and the `seqN` generators and functions
+/// outside the detector set such as `current_user()` (hosted renders none,
+/// #202 entries 20, 25 and 31), and calls with other arguments are uncaptured.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::query_cache::ModelExecutionType::{DbtDataTest, Full, View};
     use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
@@ -54,6 +57,14 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 "current_timestamp",
                 Call::Parenless,
                 "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            // A precision argument is kept in the key; the value still has six
+            // fractional digits (#202 entries 21 and 135).
+            rule(
+                "current_timestamp",
+                Call::Arguments("3"),
+                "CURRENT_TIMESTAMP(3)",
                 Value::UtcTimestampMicros,
             ),
             rule(
@@ -100,6 +111,20 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 "CURRENT_TIME",
                 Value::UtcTimeMicros,
             ),
+            // Parenless forms fold into the same key (#202 `explain_volatile_cells.jsonl`
+            // entries 23 and 28).
+            rule(
+                "current_time",
+                Call::Parenless,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
+            rule(
+                "localtime",
+                Call::Parenless,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
             rule("current_date", Call::Empty, "CURRENT_DATE", Value::UtcDate),
             rule(
                 "current_date",
@@ -129,6 +154,47 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 Call::Arguments("0, 1, 1234"),
                 "NORMAL(0, 1, 1234)",
                 Value::Constant("1.0542196419272387"),
+            ),
+            // #202 `explain_volatile_cells.jsonl` entries 33/134 (`fra`) and
+            // 36/131 (`frb`). With a `random()` generator hosted renders a
+            // unit decimal whatever the outer function, as for
+            // `uniform(1, 100, random())`.
+            rule(
+                "uniform",
+                Call::Arguments("1, 10, random()"),
+                "UNIFORM(1, 10, RANDOM())",
+                Value::UnitRandom,
+            ),
+            rule(
+                "randstr",
+                Call::Arguments("8, random()"),
+                "RANDSTR(8, RANDOM())",
+                Value::UnitRandom,
+            ),
+            rule(
+                "normal",
+                Call::Arguments("0, 1, random()"),
+                "NORMAL(0, 1, RANDOM())",
+                Value::UnitRandom,
+            ),
+            // With a constant generator, hosted's value on both runs.
+            rule(
+                "randstr",
+                Call::Arguments("5, 1234"),
+                "RANDSTR(5, 1234)",
+                Value::Constant("9XCha"),
+            ),
+            rule(
+                "normal",
+                Call::Arguments("5, 2, 42"),
+                "NORMAL(5, 2, 42)",
+                Value::Constant("4.711819340844143"),
+            ),
+            rule(
+                "uniform",
+                Call::Arguments("1, 100, 1234"),
+                "UNIFORM(1, 100, 1234)",
+                Value::Constant("96"),
             ),
             rule("uuid_string", Call::Empty, "UUID_STRING()", Value::Uuid),
         ],

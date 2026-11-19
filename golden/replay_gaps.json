@@ -389,57 +389,12 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 21,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fts first build, `current_timestamp(3)` (value has 6 fractional digits): hosted renders [\"FTS_1431544D67B8\": CURRENT_TIMESTAMP(3)]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 23,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fct first build, parenless `current_time`: hosted renders [\"FCT_1431544D67B8\": CURRENT_TIME]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 24,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
       "transformed_nodes_by_query"
     ],
     "reason": "VOLATILE EVALUATION GAP (#202, for #205) xc custom materialization (execution type 11), first build: hosted renders [\"XC_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 28,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) flt first build, parenless `localtime`: hosted renders [\"FLT_1431544D67B8\": CURRENT_TIME]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 33,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fra first build, `uniform(1, 10, random())`, `randstr(5, 1234)`, `normal(5, 2, 42)`: hosted renders [\"FRA_1431544D67B8\": RANDOM(), UNIFORM(1, 10, RANDOM()), NORMAL(5, 2, 42), RANDSTR(5, 1234)]. The local server renders only RANDOM(); the other keys have no rule (warehouse/snowflake.rs VOLATILE_RULES). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 36,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) frb first build, `uniform(1, 100, 1234)`, `randstr(8, random())`, `normal(0, 1, random())`: hosted renders [\"FRB_1431544D67B8\": NORMAL(0, 1, RANDOM()), RANDOM(), UNIFORM(1, 100, 1234), RANDSTR(8, RANDOM())]. The local server renders only RANDOM(); the other keys have no rule (warehouse/snowflake.rs VOLATILE_RULES). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -509,51 +464,6 @@
       "query analysis"
     ],
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) cto first execution (evaluation off): hosted adds a 'query analysis' section holding only the volatile block (no 'tolerated by config' line, no query-changed line); the rest matches."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 131,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) frb rerun (6/6); UNIFORM(1, 100, 1234) keeps '96': hosted renders [\"FRB_1431544D67B8\": RANDSTR(8, RANDOM()), NORMAL(0, 1, RANDOM()), RANDOM(), UNIFORM(1, 100, 1234)]. The local server renders only RANDOM(); the other keys have no rule (warehouse/snowflake.rs VOLATILE_RULES). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 134,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fra rerun (6/6); RANDSTR(5, 1234) and NORMAL(5, 2, 42) keep their values: hosted renders [\"FRA_1431544D67B8\": NORMAL(5, 2, 42), UNIFORM(1, 10, RANDOM()), RANDSTR(5, 1234), RANDOM()]. The local server renders only RANDOM(); the other keys have no rule (warehouse/snowflake.rs VOLATILE_RULES). transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 135,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fts rerun (6/6), `current_timestamp(3)`: hosted renders [\"FTS_1431544D67B8\": CURRENT_TIMESTAMP(3)]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 138,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) flt rerun (6/6), parenless `localtime`: hosted renders [\"FLT_1431544D67B8\": CURRENT_TIME]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 139,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #203) fct rerun (6/6), parenless `current_time`: hosted renders [\"FCT_1431544D67B8\": CURRENT_TIME]. The local server has no rule for this call form (warehouse/snowflake.rs VOLATILE_RULES) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -633,46 +543,6 @@
       "transformed_nodes_by_query"
     ],
     "reason": "VOLATILE EVALUATION GAP (#202, for #205) xi incremental run (6/6): hosted renders [\"XI_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 177,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #203) fct rerun, parenless `current_time`: hosted prints the own-SQL volatile block (the #191 cell 2 rerun tree); the local failed-reuse-qualification rebuild renders nothing for this form and so no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 178,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #203) flt rerun, parenless `localtime`: hosted prints the own-SQL volatile block (the #191 cell 2 rerun tree); the local failed-reuse-qualification rebuild renders nothing for this form and so no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 179,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #203) fts rerun, `current_timestamp(3)`: hosted prints the own-SQL volatile block (the #191 cell 2 rerun tree); the local failed-reuse-qualification rebuild renders nothing for this form and so no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 180,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "UNIFORM(1, 10, RANDOM()) -> rendered with '0.32851968989725855'",
-      "RANDSTR(5, 1234) -> rendered with '9XCha'",
-      "NORMAL(5, 2, 42) -> rendered with '4.711819340844143'"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #203) fra rerun: the tree matches except the value lines of the keys the local server has no rule for."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 181,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "UNIFORM(1, 100, 1234) -> rendered with '96'",
-      "RANDSTR(8, RANDOM()) -> rendered with '0.7806433267383432'",
-      "NORMAL(0, 1, RANDOM()) -> rendered with '0.6677621253055257'"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #203) frb rerun: the tree matches except the value lines of the keys the local server has no rule for."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
