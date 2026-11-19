@@ -652,8 +652,8 @@ The decision records the template comparison only for this reuse
 [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by #201").
 Every other Snowflake decision under `compare_unrendered_code` keeps its
 ordinary tree, uncaptured in that mode: a changed template with the same
-rendered SQL is refused at Reuse qualification and prints the
-[rerun of a volatile model](#execute-rerun-of-a-volatile-model) tree.
+rendered SQL is refused at Reuse qualification, renders no values and
+prints no tree (#211).
 
 ### EXECUTE: node query changed (SHAPE 7)
 
@@ -1053,8 +1053,9 @@ print no volatile lines. Under `compare_unrendered_code` an unchanged
 template is reused instead
 ([above](#skip-of-volatile-sql-by-its-unrendered-code-evaluation-on)); a
 changed template with the same rendered SQL is refused at Reuse
-qualification and prints this tree without template lines, which is not
-captured in that mode.
+qualification but renders no values, so it prints no tree (uncaptured in
+that mode, #211). Neither does a rerun refused for another cause besides
+its volatile SQL, such as a query dependency without a definition.
 
 ### EXECUTE: over a volatile query dependency
 
