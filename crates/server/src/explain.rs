@@ -160,12 +160,21 @@ impl ExplainNode {
     /// A model whose decision-time inputs do not report its own target: the
     /// table does not exist.
     fn own_target_absent(&self) -> bool {
-        match self.target_table.as_deref() {
-            Some(target) if !target.is_empty() && !self.is_seed() && !self.is_data_test() => {
-                !self.input_tables.iter().any(|t| t.name == target)
-            }
-            _ => false,
-        }
+        self.own_target_reported() == Some(false)
+    }
+
+    /// A model whose decision-time inputs report its own target: the table
+    /// exists.
+    fn own_target_exists(&self) -> bool {
+        self.own_target_reported() == Some(true)
+    }
+
+    /// Whether the decision-time inputs report a model's own target; `None`
+    /// for a seed, a data test and a node without a Target relation.
+    fn own_target_reported(&self) -> Option<bool> {
+        let target = self.target_table.as_deref().filter(|t| !t.is_empty())?;
+        (!self.is_seed() && !self.is_data_test())
+            .then(|| self.input_tables.iter().any(|t| t.name == target))
     }
 
     fn is_data_test(&self) -> bool {
@@ -196,6 +205,12 @@ impl ExplainNode {
     /// node's own SQL.
     fn evaluated_own_volatile_sql(&self) -> bool {
         self.volatile_evaluation.requested == Some(true) && !self.own_volatile_values().is_empty()
+    }
+
+    /// Whether Volatile evaluation rendered values, all of them for query
+    /// dependency definitions and none for the node's own SQL.
+    fn rendered_only_for_dependencies(&self) -> bool {
+        !self.volatile_evaluation.values.is_empty() && self.own_volatile_values().is_empty()
     }
 }
 
@@ -669,8 +684,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                 && !upstreams
                 && !compares_templates(node)
                 && node.volatile_evaluation.requested == Some(false)
-                && node.own_volatile_values().is_empty()
-                && !node.volatile_evaluation.values.is_empty() =>
+                && node.rendered_only_for_dependencies() =>
         {
             Shape::ToleratedVolatileDependency
         }
@@ -868,8 +882,7 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
                 && !node.own_target_absent()
                 && !compares_templates(node)
                 && node.volatile_evaluation.requested == Some(true)
-                && node.own_volatile_values().is_empty()
-                && !node.volatile_evaluation.values.is_empty() =>
+                && node.rendered_only_for_dependencies() =>
         {
             Shape::VolatileDependency
         }
@@ -981,10 +994,7 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
                 NoCandidate::FailedReuseQualification,
             ))
         && node.template_comparison.as_ref().is_none_or(|c| !c.enabled)
-        && node
-            .target_table
-            .as_deref()
-            .is_some_and(|target| node.input_tables.iter().any(|t| t.name == target));
+        && node.own_target_exists();
     if !captured {
         return None;
     }
@@ -1004,24 +1014,17 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         node.genuine_upstreams().is_empty(),
         node.query_dependencies.is_empty(),
     ) {
-        (K::Full | K::DbtCustom, true, true) => section(
-            "data freshness analysis",
-            vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
-        ),
-        (K::View, true, true) if view_reads_no_relation(node) => section(
-            "data freshness analysis",
-            vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
-        ),
-        (K::Full, true, false) => {
-            query.push(upstream_queries_unchanged);
+        (K::Full | K::DbtCustom | K::View, true, true)
+            if kind != K::View || view_reads_no_relation(node) =>
+        {
             section(
                 "data freshness analysis",
-                vec![leaf(
-                    "upstream data is up to date",
-                    Some(MARKER_SUCCESS),
-                    None,
-                )],
+                vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
             )
+        }
+        (K::Full, true, false) => {
+            query.push(upstream_queries_unchanged);
+            upstream_data_up_to_date()
         }
         (K::Full | K::Append | K::Snapshot, false, true)
             if upstreams_fresh_against_anchor(node) =>
@@ -1187,14 +1190,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         )
     }));
     let freshness = if upstreams.is_empty() {
-        section(
-            "data freshness analysis",
-            vec![leaf(
-                "upstream data is up to date",
-                Some(MARKER_SUCCESS),
-                None,
-            )],
-        )
+        upstream_data_up_to_date()
     } else {
         data_freshness_analysis_fresh(node)
     };
@@ -1250,15 +1246,22 @@ fn tolerated_volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine
                 ),
             ],
         ),
-        section(
-            "data freshness analysis",
-            vec![leaf(
-                "upstream data is up to date",
-                Some(MARKER_SUCCESS),
-                None,
-            )],
-        ),
+        upstream_data_up_to_date(),
     ]
+}
+
+/// `data freshness analysis` with `upstream data is up to date` [SUCCESS]:
+/// the volatile trees' freshness over query dependencies and no upstream
+/// table.
+fn upstream_data_up_to_date() -> qc::ExplainLine {
+    section(
+        "data freshness analysis",
+        vec![leaf(
+            "upstream data is up to date",
+            Some(MARKER_SUCCESS),
+            None,
+        )],
+    )
 }
 
 /// `upstream dependencies` with each query dependency, by its name as sent,
@@ -1316,8 +1319,7 @@ fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
 fn volatile_dependency_test(node: &ExplainNode) -> bool {
     node.is_data_test()
         && node.volatile_evaluation.requested == Some(true)
-        && node.own_volatile_values().is_empty()
-        && !node.volatile_evaluation.values.is_empty()
+        && node.rendered_only_for_dependencies()
         && node.genuine_upstreams().is_empty()
         && !compares_templates(node)
         && matches!(

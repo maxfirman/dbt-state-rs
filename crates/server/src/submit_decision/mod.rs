@@ -304,15 +304,9 @@ pub async fn submit_sql_explained(
             },
         ),
         SubmitOutcome::Skip { .. } => Some(crate::volatile_evaluation::Decided::Reuse),
-        SubmitOutcome::Copy { .. } => {
-            let explain = &decided.explain;
-            Some(crate::volatile_evaluation::Decided::Copy {
-                target_exists: explain
-                    .target_table
-                    .as_ref()
-                    .is_some_and(|target| explain.input_tables.iter().any(|t| &t.name == target)),
-            })
-        }
+        SubmitOutcome::Copy { .. } => Some(crate::volatile_evaluation::Decided::Copy {
+            target_exists: !own_target_absent(req),
+        }),
         SubmitOutcome::ChainLimitExecute { .. } => None,
     };
     decided.rendered = decision.and_then(|outcome| {
@@ -442,10 +436,7 @@ async fn decide_resolved_sql(
         stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
         tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
         now_ms,
-        own_target_absent: req
-            .target_table
-            .as_deref()
-            .is_some_and(|t| !req.tables.iter().any(|x| x.name == t)),
+        own_target_absent: own_target_absent(req),
     };
     let mut refused_copy = None;
     if copy_considered {
@@ -801,6 +792,14 @@ pub(crate) async fn resolve_producers(
         input.producer = Producer::of(builds.get(&input.name), input.last_modified_epoch);
     }
     Ok(())
+}
+
+/// Whether `req` sends a Target relation that its reported tables do not
+/// include: the table does not exist.
+fn own_target_absent(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    req.target_table
+        .as_deref()
+        .is_some_and(|t| !req.tables.iter().any(|x| x.name == t))
 }
 
 /// The freshness parameters of one submission, distilled at the boundary.
