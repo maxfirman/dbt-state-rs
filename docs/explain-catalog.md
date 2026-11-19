@@ -929,13 +929,38 @@ out of date". Hosted explains it as a query change
 ```
 The wording comes from the persisted values and evaluation flag
 (`explain.rs::volatile_rebuild_lines`); the model's identity is unchanged
-(maintainer decision on #191). Not captured, and keeping the decision's own
-(empty) tree: the same rerun with upstreams, query dependencies, as a view,
-an incremental, a snapshot or a custom node, or under
-`compare_unrendered_code`. A rerun with values in both its own SQL and a
-query dependency, any incremental, snapshot or custom node, and a
-Databricks rerun (#198) render no values at all, so they print no volatile
-lines.
+(maintainer decision on #191).
+
+A custom node without upstreams prints the same tree (#205,
+`explain_volatile_cells.jsonl` entry 191). An APPEND incremental and a
+snapshot over an upstream table print it with `the «noun» query has changed`
+followed by `upstream model queries have not changed` [SUCCESS], and the SKIP
+tree's freshness listing in place of `no upstream dependencies` (entries 189,
+190; a snapshot says `snapshot` in the table, tolerance and query lines):
+```
+- query analysis
+  - …volatile lines…
+  - the snapshot query has changed                    [FAIL]    <NODE_QUERY_CHANGED>
+  - upstream model queries have not changed           [SUCCESS]
+- data freshness analysis
+  - upstream dependencies
+    - "«upstream FQN»"                                <FRESH>
+      - no updates since "«FQN»" last executed
+      - last updated: «rel_time»
+```
+The listing is judged against the build Reuse qualification refused, which
+the rebuild records as its anchor. In the capture the upstream's epoch moved
+back since the build, so no summary line follows, as in a SKIP tree. The
+tree renders only when no upstream drifted or changed its producer since
+that build.
+
+Not captured, and keeping the decision's own (empty) tree: a FULL model or
+custom node rerun with upstreams; an APPEND incremental or snapshot rerun
+without upstreams or over a drifted or re-produced upstream; the other
+incremental strategies; the same rerun with query dependencies, as a view,
+or under `compare_unrendered_code`. A rerun with values in both its own SQL
+and a query dependency, the other incremental strategies, and a Databricks
+rerun (#198) render no values at all, so they print no volatile lines.
 
 ### EXECUTE: over a volatile query dependency
 

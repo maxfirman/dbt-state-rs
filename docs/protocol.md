@@ -637,7 +637,9 @@ no volatile Explain lines.
 | Snowflake | data test without a Target relation (`__target_query__`) | rendered | empty, uncaptured | run 1 entries 16, 37 |
 | Snowflake | FULL model, query dependency definition | rendered | empty, uncaptured | run 1 entries 10, 35 |
 | Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | incremental, snapshot, custom; a data test with a Target relation | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | APPEND incremental, snapshot, custom node, root SQL: first build and unchanged rerun | rendered | empty, uncaptured | `explain_volatile_cells.jsonl` entries 71/167, 69/165, 24/143 (#205) |
+| Snowflake | those types' other rebuild reasons; the other incremental strategies | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | a data test with a Target relation: unreachable through client 2.0.11, which sends a `store_failures` test without one (`explain_volatile_cells.jsonl` entries 61, 145) | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
 | Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
 | Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
