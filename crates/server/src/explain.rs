@@ -46,6 +46,23 @@ pub struct TemplateComparison {
     pub rendered_hash: String,
 }
 
+impl TemplateComparison {
+    /// An enabled comparison of the node's unrendered code (`node_state`)
+    /// with no display order or rendered-root evidence; `rendered_hash` is
+    /// the submit's strict rendered identity.
+    pub(crate) fn unrendered(node_state: Option<&qc::DbtNodeState>, rendered_hash: &str) -> Self {
+        Self {
+            rendered_query: None,
+            enabled: true,
+            display_upstream_order: Vec::new(),
+            body: node_state.and_then(|s| s.node_body_hash.clone()),
+            config: node_state.and_then(|s| s.node_configs_hash.clone()),
+            macros: node_state.and_then(|s| s.node_macros_hash.clone()),
+            rendered_hash: rendered_hash.to_owned(),
+        }
+    }
+}
+
 /// Decision-time display inputs for the captured literal-view dependency shape.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct RenderedQuery {

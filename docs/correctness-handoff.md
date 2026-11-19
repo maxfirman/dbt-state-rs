@@ -168,10 +168,12 @@ server keeps the conservative behavior described.
     difference is keyed in `golden/replay_gaps.json` for the follow-up that
     resolves it: #203 call forms and functions outside the detector set,
     #204 combinations, #205 execution types, #206 rebuild reasons and
-    Explain variants, #207 copy and zero Lag tolerance. Two findings wait
-    for the maintainer (#201 check-in rule): hosted SKIPs volatile SQL under
-    evaluation with `compare_unrendered_code` (entry 140), and a data-test
-    SKIP echoes another data test's runtime (entry 146). A data test with a
+    Explain variants, #207 copy and zero Lag tolerance. The maintainer
+    decided the two check-in findings (#201): hosted's SKIP of volatile SQL
+    under evaluation with `compare_unrendered_code` (entry 140) is matched
+    for a Snowflake model with an unchanged template (#206); a data-test
+    SKIP echoing another data test's runtime (entry 146) is not matched, and
+    stays keyed under #200. A data test with a
     Target relation cannot be reached through the pinned Snowflake client
     and stays uncaptured.
   - Databricks (#198): the first build, the unchanged rerun over the

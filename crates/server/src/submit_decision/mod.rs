@@ -209,7 +209,21 @@ impl ExplainEvidence {
         Self {
             display_submitted_at_ms: evidence.display_submitted_at_ms,
             template_comparison: warehouse
-                .template_comparison(req, evidence.node_sql_hash.as_deref().unwrap_or_default()),
+                .template_comparison(req, evidence.node_sql_hash.as_deref().unwrap_or_default())
+                .or_else(|| {
+                    // A reuse of volatile SQL by its unrendered code (#206,
+                    // maintainer decision 1 on #201) is explained by that
+                    // comparison (`explain_volatile_cells.jsonl` entry 198).
+                    // Every other Snowflake decision keeps its tree.
+                    (matches!(outcome, SubmitOutcome::Skip { .. })
+                        && crate::reuse_candidate::volatile_sql_compared_by_unrendered_code(req))
+                    .then(|| {
+                        crate::explain::TemplateComparison::unrendered(
+                            req.dbt_node_state.as_ref(),
+                            evidence.node_sql_hash.as_deref().unwrap_or_default(),
+                        )
+                    })
+                }),
             table_namespace: req.table_namespace.clone(),
             target_table: req.target_table.clone(),
             default_schema: req.default_schema.clone(),

@@ -2581,6 +2581,138 @@ mod rebuild_reasons_206 {
             assert!(!rendered(&ready).is_empty(), "{case}");
         }
     }
+
+    // ── compare_unrendered_code (#206; maintainer decision 1 on #201) ───────
+    //
+    // `ecu`: a table calling `current_timestamp()` with evaluation on and
+    // `compare_unrendered_code: true`, unchanged rerun. Hosted reuses it
+    // (entry 140, its runtime 12089 from the round 1 confirm, entry 54) and
+    // explains it by its unrendered code with no volatile lines (entry 198).
+    // Only that mode with an unchanged template lifts the refusal of volatile
+    // SQL at Reuse qualification; everywhere else it stays.
+
+    /// `ecu`: round 1 build (entry 35) and confirm (54); round 2 rerun (140)
+    /// and hosted's Explain of it (198).
+    const ECU_BUILD: usize = 35;
+    const ECU_BUILT_AT: i64 = 1795098737983;
+    const ECU: (usize, usize) = (140, 198);
+    /// The `rt` data test's round 1 build (evaluation on).
+    const RT_BUILD: usize = 62;
+
+    #[tokio::test]
+    async fn snowflake_volatile_rerun_compared_by_unrendered_code_skips_and_explains_as_hosted() {
+        assert_rebuilds_match_hosted(
+            "volatile_206_ecu",
+            &[(
+                ECU,
+                "ecu: unchanged rerun under compare_unrendered_code, evaluation on",
+            )],
+        )
+        .await;
+    }
+
+    /// The reuse is only lifted for an unchanged template under
+    /// `compare_unrendered_code` on Snowflake models: each case rebuilds,
+    /// refused at Reuse qualification or for another identity, while its
+    /// control over the same history reuses.
+    #[tokio::test]
+    async fn snowflake_volatile_sql_is_still_refused_outside_an_unchanged_unrendered_comparison() {
+        use support::scenario::{outcome, test_results};
+        const FAILED_REUSE_QUALIFICATION: Option<i32> = Some(6);
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        let built = captured_submit(&entries[ECU_BUILD].request);
+        let rerun = captured_submit(&entries[ECU.0].request);
+        let off = |s: Submit| s.with(|r| r.compare_unrendered_code = false);
+        let databricks = |s: Submit| s.dialect("databricks");
+        let cases = [
+            (
+                "compare_unrendered_code off",
+                off(built.clone()),
+                off(rerun.clone()),
+                FAILED_REUSE_QUALIFICATION,
+            ),
+            (
+                "template changed, same SQL",
+                built.clone(),
+                rerun
+                    .clone()
+                    .node_state(|n| n.node_body_hash = Some("another body".into())),
+                FAILED_REUSE_QUALIFICATION,
+            ),
+            (
+                "template and SQL changed",
+                built.clone(),
+                rerun
+                    .clone()
+                    .node_state(|n| n.node_body_hash = Some("another body".into()))
+                    .sql("\nselect 2 as id, current_timestamp() as ts, 'ecu_1431544d67b8' as v"),
+                None,
+            ),
+            (
+                "Databricks, which has no checked detector",
+                databricks(built.clone()),
+                databricks(rerun.clone()),
+                FAILED_REUSE_QUALIFICATION,
+            ),
+        ];
+        for (case, history, rebuild, reason) in cases {
+            let sc = sc.org(case);
+            sc.build(history.clone(), ECU_BUILT_AT).await;
+            let ready = sc.expect_execute(rebuild.clone()).await;
+            if reason.is_some() {
+                assert_eq!(
+                    ready.explained_decision.unwrap().skip_rejection_reason,
+                    reason,
+                    "{case}"
+                );
+            }
+            // Control: the same history and rerun reuse with evaluation off.
+            let sc = sc.org(&format!("control {case}"));
+            sc.build(history.tolerate_nondeterminism(true), ECU_BUILT_AT)
+                .await;
+            let control = rebuild.tolerate_nondeterminism(true);
+            if reason.is_some() {
+                sc.expect_skip(control).await;
+            }
+        }
+
+        // A volatile data test under compare_unrendered_code: uncaptured,
+        // still refused (its control reuses with evaluation off).
+        let test = captured_submit(&entries[RT_BUILD].request).compare_unrendered_code();
+        for (case, test) in [
+            ("data test, evaluation on", test.clone()),
+            ("control data test", test.tolerate_nondeterminism(true)),
+        ] {
+            let sc = sc.org(case);
+            sc.build_with(test.clone(), outcome().runtime(10).results(test_results(0)))
+                .await;
+            let reused = variant(&sc.submit(test).await) == "skip_execution";
+            assert_eq!(reused, case.starts_with("control"), "{case}");
+        }
+    }
+
+    /// The lifted refusal changes no identity or fingerprint: the build the
+    /// rerun reuses is persisted as with evaluation off.
+    #[tokio::test]
+    async fn snowflake_unrendered_comparison_reuse_enters_no_identity_or_fingerprint() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        let built = captured_submit(&entries[ECU_BUILD].request);
+        let on = sc.org("evaluation on").execute_id(built.clone()).await;
+        let off = sc
+            .org("evaluation off")
+            .execute_id(built.tolerate_nondeterminism(true))
+            .await;
+        let mut on = persisted_execution(&server, &on).await;
+        let mut off = persisted_execution(&server, &off).await;
+        for row in [&mut on, &mut off] {
+            row.as_object_mut().unwrap().remove("org_id");
+        }
+        assert_eq!(on, off);
+    }
 }
 
 // ── Snowflake combination cells (#204) ──────────────────────────────────────
@@ -2597,8 +2729,8 @@ const COMBINATIONS: &str = include_str!("../../../golden/fixtures/explain_volati
 /// The last combination submit of the run (`cmb`'s rerun).
 const COMBINATIONS_THROUGH: usize = 159;
 /// `cto`'s rerun SKIP. Hosted echoes the runtime another data test confirmed
-/// (pending maintainer check-in under #201); the local server echoes `cto`'s
-/// own confirmed runtime.
+/// (not matched, maintainer decision 2 on #201, tracked in #200); the local
+/// server echoes `cto`'s own confirmed runtime.
 const CTO_SKIP: usize = 146;
 const CTO_CONFIRM: usize = 63;
 
