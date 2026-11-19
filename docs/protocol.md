@@ -671,8 +671,11 @@ section and its [DATA TEST](explain-catalog.md#data-test) section.
 
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
-[testing.md](testing.md#goldenreplay_gapsjson)). No replay gap covers
-Volatile evaluation.
+[testing.md](testing.md#goldenreplay_gapsjson)). The only Volatile
+evaluation replay gaps are those of the #202 capture
+(`explain_volatile_cells.jsonl`,
+[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)),
+keyed per entry for #203–#207.
 
 **Not captured.** The remaining cells, each with its tracking issue where
 one is open, are listed in
