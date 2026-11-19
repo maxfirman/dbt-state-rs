@@ -18,8 +18,16 @@ use sqlparser::dialect::SnowflakeDialect;
 /// `seqN` generators (hosted renders none), a parenless `current_time` or
 /// `localtime`, and calls with other arguments are uncaptured.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
-    use crate::query_cache::ModelExecutionType::{DbtDataTest, Full, View};
+    use crate::decision::{DecisionReason, NoCandidate};
+    use crate::query_cache::ModelExecutionType::{
+        Append, DbtCustom, DbtDataTest, Full, Snapshot, View,
+    };
     use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
+    // An unchanged rerun: refused at Reuse qualification.
+    const RERUN: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::FailedReuseQualification,
+    ));
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
         Rule {
             name,
@@ -149,6 +157,17 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, false, Outcome::Reuse, Queries::Own),
             cell(View, false, Outcome::AnyBuild, Queries::Own),
             cell(View, false, Outcome::Reuse, Queries::Own),
+            // Evaluation on: an APPEND incremental, a snapshot and a custom
+            // materialization, first build and unchanged rerun
+            // (`explain_volatile_cells.jsonl` entries 71/167, 69/165 and
+            // 24/143, #205). Their other rebuild reasons, and evaluation off,
+            // are uncaptured.
+            cell(Append, true, FIRST_BUILD, Queries::Own),
+            cell(Append, true, RERUN, Queries::Own),
+            cell(Snapshot, true, FIRST_BUILD, Queries::Own),
+            cell(Snapshot, true, RERUN, Queries::Own),
+            cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
+            cell(DbtCustom, true, RERUN, Queries::Own),
         ],
     }
 };

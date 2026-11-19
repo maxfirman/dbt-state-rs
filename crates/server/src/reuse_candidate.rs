@@ -45,6 +45,10 @@ pub(crate) struct Selection {
     /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
     /// reused.
     pub rejected: Option<ExecutionRow>,
+    /// The row with the workload's identity that failed Reuse qualification:
+    /// a model's rebuild is explained against it (#205,
+    /// `explain_volatile_cells.jsonl` entries 189 and 190). Never reused.
+    pub unqualified: Option<ExecutionRow>,
     /// The latest row when it does not have the workload's identity (models
     /// only). Never reused; Explain judges the SHAPE 7 freshness listing
     /// against it (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
@@ -68,6 +72,7 @@ impl Selection {
             target_has_prior_build: true,
             why_no_candidate: None,
             rejected: None,
+            unqualified: None,
             unmatched: None,
             type_changed: None,
             transition_display: None,
@@ -80,6 +85,7 @@ impl Selection {
         target_has_prior_build: false,
         why_no_candidate: None,
         rejected: None,
+        unqualified: None,
         unmatched: None,
         type_changed: None,
         transition_display: None,
@@ -105,10 +111,13 @@ impl Selection {
             why_no_candidate,
             Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
         );
-        let (candidate, rejected) = match identified {
-            Some(row) if why_no_candidate.is_none() => (Some(row), None),
-            Some(row) if own_target => (None, Some(row)),
-            _ => (None, None),
+        let (candidate, rejected, unqualified) = match identified {
+            Some(row) if why_no_candidate.is_none() => (Some(row), None, None),
+            Some(row) if own_target => (None, Some(row), None),
+            Some(row) if why_no_candidate == Some(NoCandidate::FailedReuseQualification) => {
+                (None, None, Some(row))
+            }
+            _ => (None, None, None),
         };
         // A row with the identity under another type is no unmatched build.
         let (unmatched, type_changed) = match why_no_candidate {
@@ -120,6 +129,7 @@ impl Selection {
             target_has_prior_build,
             why_no_candidate,
             rejected,
+            unqualified,
             unmatched,
             type_changed,
             transition_display: None,
@@ -351,7 +361,7 @@ pub(crate) fn for_data_test(
     } else {
         None
     };
-    Ok(Selection::of(
+    let selected = Selection::of(
         identified,
         NoCandidate::IdentityMismatch,
         |prev| {
@@ -365,7 +375,13 @@ pub(crate) fn for_data_test(
         },
         false,
         None,
-    ))
+    );
+    // Only a model's qualification-refused rebuild is captured explained
+    // against the refused build (#205); a data test's keeps no anchor.
+    Ok(Selection {
+        unqualified: None,
+        ..selected
+    })
 }
 
 /// Seeds compare values and seed configuration identity, then require the

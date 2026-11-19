@@ -529,10 +529,23 @@ async fn decide_resolved_sql(
         }));
     }
     log_decision(evidence, &record, candidate.is_some(), &req.labels);
+    // A rebuild refused at Reuse qualification is explained against the
+    // build it refused, with that build's age at the submit, which dates the
+    // upstream listing's `last updated` lines (#205,
+    // `explain_volatile_cells.jsonl` entry 189). Explain only.
+    let mut record = record;
+    if let (None, Some(row)) = (record.build_age_ms, &selection.unqualified) {
+        record.build_age_ms = Warehouse::from_dialect(&row.dialect)
+            .build_time_ms(row)
+            .map(|built| now_ms.saturating_sub(built));
+    }
     let (record, candidate) = anchor_rejected(
         record,
         candidate,
-        selection.rejected.or(selection.type_changed),
+        selection
+            .rejected
+            .or(selection.type_changed)
+            .or(selection.unqualified),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
     let mut outcome = settle(store, evidence, record, candidate).await?;
@@ -554,7 +567,8 @@ async fn decide_resolved_sql(
 /// A rebuild whose latest build had the workload's identity but whose own
 /// target was missing or modified keeps that build as its Explain anchor; so
 /// does a rebuild whose latest build had the identity under another
-/// execution type (#83).
+/// execution type (#83), and a model's rebuild refused at Reuse
+/// qualification (#205).
 fn anchor_rejected(
     mut record: DecisionRecord,
     candidate: Option<ExecutionRow>,
