@@ -380,15 +380,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 19,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cvo view with evaluation on, first build: hosted renders [\"CVO_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 21,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
@@ -443,42 +434,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 52,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) ctv data test over the volatile view (evaluation on), first execution: the dependency's key: hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 58,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cdo table over the volatile view with evaluation off, first build: the dependency's key: hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 59,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cmb first build, own `uuid_string()` plus a volatile view dependency (evaluation on): two outer keys, the dependency's and the Target relation's: hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP(); \"CMB_1431544D67B8\": UUID_STRING()]. The local server renders nothing when both the root SQL and a dependency render (volatile_evaluation::evaluate) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 60,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cto data test with evaluation off, first execution: __target_query__: hosted renders [__target_query__: CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 69,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
@@ -494,21 +449,6 @@
       "transformed_nodes_by_query"
     ],
     "reason": "VOLATILE EVALUATION GAP (#202, for #205) xi append incremental (execution type 2), first build: hosted renders [\"XI_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 105,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) ctv first execution: hosted's tree is one bare 'data freshness analysis' line with no children; the local tree adds 'no upstream dependencies' [SUCCESS]."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 106,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "query analysis"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) cto first execution (evaluation off): hosted adds a 'query analysis' section holding only the volatile block (no 'tolerated by config' line, no query-changed line); the rest matches."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -563,15 +503,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 141,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cvo view rerun (6/6, evaluation on): hosted renders [\"CVO_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 143,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
@@ -581,40 +512,12 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 144,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) ctv rerun (6/6): hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 146,
     "local_variant": "skip_execution",
     "ignore_fields": [
-      "transformed_nodes_by_query",
       "execution_runtime_ms"
     ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cto data test with evaluation off, unchanged rerun SKIP: hosted renders [__target_query__: CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. Hosted also echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm), not cto's own 1701, which the local server echoes (the scoped UID floor, cf. the #138 UID difference). Everything else matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 158,
-    "local_variant": "skip_execution",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cdo unchanged rerun SKIP (evaluation off): the dependency's key on the SKIP branch: hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 159,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #204) cmb rerun (6/6), own plus dependency values: hosted renders [\"VW_1431544D67B8\": CURRENT_TIMESTAMP(); \"CMB_1431544D67B8\": UUID_STRING()]. The local server renders nothing when both the root SQL and a dependency render (volatile_evaluation::evaluate) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
+    "reason": "RUNTIME ECHO GAP (#202, #204; maintainer check-in pending under #201) cto data test with evaluation off, unchanged rerun SKIP: hosted echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm, entry 65), not cto's own 1701 (entry 63), which the local server echoes (the scoped UID floor, cf. the #138 UID difference). Matching would weaken the scoped UID floor. Everything else, the transformed_nodes_by_query map included, matches exactly."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -676,24 +579,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 186,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204, #206) cmb rerun (own plus dependency values): hosted prints only the own-SQL block, then 'upstream model queries have not changed' [SUCCESS] and 'upstream data is up to date' [SUCCESS]; the dependency's value is in the map but not in the tree. The local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 187,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204, #206) cdo SKIP (query dependency, evaluation off): hosted adds 'upstream dependencies' -> the view -> the volatile block (no 'a change in rendered value' line), 'an upstream model query is not deterministic but this is tolerated by config' [INFO], 'upstream model queries have not changed' [SUCCESS], and data freshness 'upstream data is up to date' [SUCCESS]; the local tree has none of these and prints 'no upstream dependencies' [SUCCESS]."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 188,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204, #206) cvo view rerun (evaluation on): hosted prints the #191 cell 2 own-SQL rerun tree; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 189,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #205, #206) xi incremental run: hosted prints the own-SQL rerun block, 'upstream model queries have not changed' [SUCCESS] and the upstream's FRESH freshness listing; the local rebuild renders no tree."
@@ -742,22 +627,6 @@
     "entry": 199,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) edu rerun, a volatile view dependency plus an upstream table: hosted prints the #191 cell 5 dependency block, then the table upstream with 'query or upstream query unchanged' <UPSTREAM_QUERY_UNCHANGED>, 'an upstream model query has changed' [FAIL] and the FRESH listing; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 201,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) ctv rerun: hosted's tree is one bare 'data freshness analysis' line; the local failed-reuse-qualification rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 202,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "non-deterministic functions detected in query",
-      "the test query is not deterministic but this is tolerated by config"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) cto SKIP (evaluation off): hosted adds the volatile block and 'the test query is not deterministic but this is tolerated by config' [INFO]; the rest matches."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",

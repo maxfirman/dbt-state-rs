@@ -12,8 +12,8 @@ use sqlparser::dialect::SnowflakeDialect;
 ///
 /// Several forms fold into one key, and a key is rendered once per submit.
 /// Values are rendered only in the captured cells below; every other
-/// execution type, decision and evaluation setting, and values in both a
-/// node's own SQL and a query dependency, render nothing. A form without a
+/// execution type, decision, evaluation setting and source of values renders
+/// nothing. A form without a
 /// rule renders nothing: `zipf` and the
 /// `seqN` generators (hosted renders none), a parenless `current_time` or
 /// `localtime`, and calls with other arguments are uncaptured.
@@ -149,6 +149,20 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, false, Outcome::Reuse, Queries::Own),
             cell(View, false, Outcome::AnyBuild, Queries::Own),
             cell(View, false, Outcome::Reuse, Queries::Own),
+            // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
+            // on: a table with values of its own and in a view dependency,
+            // first build and rerun (entries 59 and 159); a data test over a
+            // volatile view (52, 144); a view (19, 141).
+            cell(Full, true, Outcome::AnyBuild, Queries::OwnAndDependencies),
+            cell(DbtDataTest, true, Outcome::AnyBuild, Queries::Dependencies),
+            cell(View, true, Outcome::AnyBuild, Queries::Own),
+            // Evaluation off: a data test, first execution and reuse (60,
+            // 146); a table over a volatile view, first build and reuse (58,
+            // 158).
+            cell(DbtDataTest, false, Outcome::AnyBuild, Queries::Own),
+            cell(DbtDataTest, false, Outcome::Reuse, Queries::Own),
+            cell(Full, false, Outcome::AnyBuild, Queries::Dependencies),
+            cell(Full, false, Outcome::Reuse, Queries::Dependencies),
         ],
     }
 };

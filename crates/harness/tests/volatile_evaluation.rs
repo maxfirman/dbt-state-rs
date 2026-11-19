@@ -1701,11 +1701,12 @@ async fn a_volatile_data_test_logic_change_is_uncaptured_and_prints_no_volatile_
 // ── Uncaptured cells render nothing (#67 review) ────────────────────────────
 //
 // Values are returned only in the cells hosted was captured rendering:
-// Snowflake FULL models (own SQL, evaluation on or off; a query dependency,
-// evaluation on), views with evaluation off, and data tests without a Target
-// relation with evaluation on; Databricks the query-changed rebuild of a FULL
-// model (entries 85–86). Every other cell keeps an empty map and prints no
-// volatile Explain lines.
+// Snowflake FULL models (own SQL or a query dependency, evaluation on or off;
+// both, evaluation on), views (evaluation off; own SQL, evaluation on), and
+// data tests without a Target relation (own SQL, evaluation on or off; a
+// query dependency, evaluation on); Databricks the query-changed rebuild of a
+// FULL model (entries 85–86). Every other cell keeps an empty map and prints
+// no volatile Explain lines.
 
 /// The captured `vd` request `entry` with its own SQL also calling
 /// `current_timestamp()`.
@@ -1721,36 +1722,36 @@ fn vd_with_own_volatile_sql(entries: &[GoldenEntry], entry: usize) -> serde_json
 }
 
 #[tokio::test]
-async fn snowflake_evaluation_off_renders_nothing_for_a_data_test_or_a_query_dependency() {
+async fn snowflake_evaluation_off_renders_a_data_test_and_a_query_dependency_keyed_as_captured() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     let entries = snowflake_evaluation();
-    // Positive control: a model's own SQL renders with evaluation off (run 1
-    // entry 8).
-    let control = sc
-        .org("control")
-        .expect_execute(captured_submit(&entries[8].request))
-        .await;
-    assert!(!rendered(&control).is_empty());
-
-    for (case, entry) in [("data test", VT_FIRST), ("view dependency", VD_FIRST_BUILD)] {
+    let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // Captured with evaluation off in #202 (`explain_volatile_cells.jsonl`
+    // entries 60 and 58); the same cells over the #191 nodes.
+    for (case, entry, key) in [
+        ("data test", VT_FIRST, "__target_query__".to_owned()),
+        ("view dependency", VD_FIRST_BUILD, vv),
+    ] {
         let ready = sc
             .org(case)
             .expect_execute(captured_submit(&entries[entry].request).tolerate_nondeterminism(true))
             .await;
-        assert!(
-            rendered(&ready).is_empty(),
-            "{case}: {:?}",
-            rendered(&ready)
+        assert_eq!(
+            volatile_map_shape(&rendered(&ready)),
+            [(key, vec!["CURRENT_TIMESTAMP()".to_owned()])],
+            "{case}"
         );
     }
 }
 
 #[tokio::test]
-async fn snowflake_values_in_own_sql_and_a_dependency_or_a_data_test_over_a_volatile_view_render_nothing(
-) {
+async fn snowflake_volatile_data_test_over_a_volatile_view_renders_nothing() {
     let server = support::start_server().await;
-    let sc = Scenario::connect(&server).await;
+    let sc = Scenario::connect(&server).await.org("both in a data test");
     let entries = snowflake_evaluation();
     let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
         .as_str()
@@ -1760,57 +1761,19 @@ async fn snowflake_values_in_own_sql_and_a_dependency_or_a_data_test_over_a_vola
         .as_str()
         .unwrap()
         .to_owned();
-    let vd_built_at = entries[VD_RERUN].request["tables"][0]["last_modified_epoch"]
-        .as_i64()
-        .unwrap();
-
-    // A model calling a Volatile function in its own SQL and in a dependency:
-    // first build, and an unchanged rerun whose Explain would carry the lines.
-    let both = sc.org("both");
-    let first = both
-        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
-            &entries,
-            VD_FIRST_BUILD,
-        )))
-        .await;
-    assert!(rendered(&first).is_empty(), "{:?}", rendered(&first));
-    assert!(both.confirm(&first.request_id, built_at(vd_built_at)).await);
-    let rerun = both
-        .expect_execute(captured_submit(&vd_with_own_volatile_sql(
-            &entries, VD_RERUN,
-        )))
-        .await;
-    assert!(rendered(&rerun).is_empty(), "{:?}", rendered(&rerun));
-    let explained = explain(&both, rerun.execution_decision_id.as_deref().unwrap()).await;
+    // A data test with values in its own SQL and in a query dependency is
+    // uncaptured.
+    let test = captured_submit(&entries[VT_FIRST].request)
+        .sql(
+            "\nselect id, v from CDO_DEMO_DB.prod_state_demo.vv_164840c243b8\nwhere id > 100 \
+             and current_timestamp() < '2000-01-01'::timestamp_ltz",
+        )
+        .no_tables()
+        .dependency(&vv, &vv_sql);
+    let ready = sc.expect_execute(test).await;
+    assert!(rendered(&ready).is_empty(), "{:?}", rendered(&ready));
+    let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
     assert!(!prints_volatile_lines(&explained), "{explained}");
-
-    // A data test over the volatile view, with deterministic and with
-    // volatile SQL of its own.
-    let over_view = |own: &str| {
-        captured_submit(&entries[VT_FIRST].request)
-            .sql(&format!(
-                "\nselect id, v from CDO_DEMO_DB.prod_state_demo.vv_164840c243b8\nwhere {own}"
-            ))
-            .no_tables()
-            .dependency(&vv, &vv_sql)
-    };
-    for (case, test) in [
-        ("data test over a volatile view", over_view("id > 100")),
-        (
-            "volatile data test over a volatile view",
-            over_view("id > 100 and current_timestamp() < '2000-01-01'::timestamp_ltz"),
-        ),
-    ] {
-        let sc = sc.org(case);
-        let ready = sc.expect_execute(test).await;
-        assert!(
-            rendered(&ready).is_empty(),
-            "{case}: {:?}",
-            rendered(&ready)
-        );
-        let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
-        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
-    }
 }
 
 #[tokio::test]
@@ -1860,7 +1823,7 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
     ];
 
     // Snowflake: the captured FULL first build renders; the same build of
-    // another execution type, or a view with evaluation on, does not.
+    // another execution type does not.
     let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
     assert!(!rendered(
         &sc.org("snowflake control")
@@ -1868,7 +1831,7 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
             .await
     )
     .is_empty());
-    for execution_type in uncaptured.into_iter().chain([ExecutionType::View]) {
+    for execution_type in uncaptured {
         let case = format!("snowflake {execution_type:?}");
         let ready = sc
             .org(&case)
@@ -1917,4 +1880,252 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
             rendered(&ready)
         );
     }
+}
+
+// ── Snowflake combination cells (#204) ──────────────────────────────────────
+//
+// Evidence: the #202 capture batch, `golden/fixtures/explain_volatile_cells.jsonl`
+// (dbt 2.0.11; entry indices in docs/reports/snowflake-volatile-cells-2026-11-19.md).
+// `cmb` is a table calling `uuid_string()` over the view `vw` that calls
+// `current_timestamp()`, with evaluation on; `ctv` a data test over `vw`
+// with evaluation on; `cto` a data test calling `current_timestamp()` with
+// evaluation off; `cdo` a table over `vw` with evaluation off; `cvo` a view
+// calling `current_timestamp()` with evaluation on.
+
+const COMBINATIONS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+/// The last combination submit of the run (`cmb`'s rerun).
+const COMBINATIONS_THROUGH: usize = 159;
+/// `cto`'s rerun SKIP. Hosted echoes the runtime another data test confirmed
+/// (pending maintainer check-in under #201); the local server echoes `cto`'s
+/// own confirmed runtime.
+const CTO_SKIP: usize = 146;
+const CTO_CONFIRM: usize = 63;
+
+#[tokio::test]
+async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(COMBINATIONS);
+    let responses = replay(&sc, &entries, COMBINATIONS_THROUGH).await;
+    for (entry, case) in [
+        (59, "cmb first build: the dependency's and its own values"),
+        (159, "cmb rerun: the dependency's and its own values"),
+        (52, "ctv first execution: the dependency's values"),
+        (144, "ctv rerun: the dependency's values"),
+        (60, "cto first execution, evaluation off: its own values"),
+        (
+            58,
+            "cdo first build, evaluation off: the dependency's values",
+        ),
+        (158, "cdo reuse, evaluation off: the dependency's values"),
+        (19, "cvo view first build, evaluation on: its own values"),
+        (141, "cvo view rerun, evaluation on: its own values"),
+    ] {
+        assert_matches_hosted(&responses[&entry], &entries[entry], case);
+    }
+
+    let skip = support::scenario::into_skip(responses[&CTO_SKIP].clone());
+    let hosted = &entries[CTO_SKIP].response["response"]["skip_execution"];
+    let mut local = codes(&serde_json::to_value(&skip).unwrap());
+    let mut expected = codes(hosted);
+    for payload in [&mut local, &mut expected] {
+        payload
+            .as_object_mut()
+            .unwrap()
+            .remove("execution_runtime_ms");
+    }
+    assert_eq!(local, expected, "cto reuse, evaluation off");
+    assert_eq!(
+        volatile_map_shape(&volatile_values(&responses[&CTO_SKIP])),
+        volatile_map_shape(&hosted_volatile_values(&entries[CTO_SKIP].response)),
+        "cto reuse, evaluation off: its own values"
+    );
+    assert_eq!(
+        skip.execution_runtime_ms,
+        entries[CTO_CONFIRM].request["execution_runtime_ms"].as_i64(),
+        "cto's own confirmed runtime, not another data test's"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_combination_cells_explain_as_hosted_including_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_combinations").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let entries = entries(COMBINATIONS);
+    let responses = replay(
+        &Scenario::connect(&server).await,
+        &entries,
+        COMBINATIONS_THROUGH,
+    )
+    .await;
+    // (submit, its captured Explain, case)
+    let cases = [
+        (59, 89, "cmb first build: no volatile lines"),
+        (159, 186, "cmb rerun: only its own value"),
+        (
+            52,
+            105,
+            "ctv first execution: a bare data freshness analysis",
+        ),
+        (144, 201, "ctv rerun: a bare data freshness analysis"),
+        (
+            60,
+            106,
+            "cto first execution, evaluation off: its own value",
+        ),
+        (
+            CTO_SKIP,
+            202,
+            "cto reuse, evaluation off: tolerated by config",
+        ),
+        (58, 90, "cdo first build: no volatile lines"),
+        (
+            158,
+            187,
+            "cdo reuse, evaluation off: the dependency's value",
+        ),
+        (19, 91, "cvo view first build: no volatile lines"),
+        (141, 188, "cvo view rerun: its own value"),
+    ];
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|(submit, explained, _)| {
+            masked_relative_times(hosted_explain_for(
+                &entries[*explained],
+                &entries[*submit],
+                &decision_id(&responses[submit]),
+                &volatile_values(&responses[submit]),
+            ))
+        })
+        .collect();
+    let explained = |server: support::TestServer| {
+        let responses = &responses;
+        async move {
+            let sc = Scenario::connect(&server).await;
+            let mut out = Vec::new();
+            for (submit, _, _) in &cases {
+                let id = decision_id(&responses[submit]);
+                out.push(masked_relative_times(explain(&sc, &id).await));
+            }
+            out
+        }
+    };
+
+    let before = explained(server).await;
+    for (((_, _, case), local), expected) in cases.iter().zip(&before).zip(&expected) {
+        assert_eq!(local, expected, "{case}");
+    }
+    let server = support::start_server_on_database(database.clone()).await;
+    assert_eq!(
+        explained(server).await,
+        expected,
+        "the persisted values print after a restart"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_own_and_dependency_values_render_with_evaluation_on_and_enter_no_fingerprint() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = snowflake_evaluation();
+    let vd = target(&entries[VD_FIRST_BUILD].request);
+    let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let vd_built_at = entries[VD_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    // `vd` (a table over the volatile view `vv`) also calling
+    // `current_timestamp()` itself: `cmb`'s cell over the #191 nodes.
+    let both = |entry: usize| captured_submit(&vd_with_own_volatile_sql(&entries, entry));
+    let both_keys = vec![
+        (vd.clone(), vec!["CURRENT_TIMESTAMP()".to_owned()]),
+        (vv.clone(), vec!["CURRENT_TIMESTAMP()".to_owned()]),
+    ];
+
+    let pending = sc.org("pending both");
+    let first = pending.expect_execute(both(VD_FIRST_BUILD)).await;
+    let second = pending.expect_execute(both(VD_FIRST_BUILD)).await;
+    assert_eq!(volatile_map_shape(&rendered(&first)), both_keys);
+    assert_eq!(
+        persisted_execution(&server, &first.request_id).await,
+        persisted_execution(&server, &second.request_id).await,
+        "rendered values enter no persisted identity or fingerprint"
+    );
+
+    let rerun_sc = sc.org("both");
+    rerun_sc.build(both(VD_FIRST_BUILD), vd_built_at).await;
+    let rerun = rerun_sc.expect_execute(both(VD_RERUN)).await;
+    let values = rendered(&rerun);
+    assert_eq!(volatile_map_shape(&values), both_keys);
+    let explained = explain(&rerun_sc, rerun.execution_decision_id.as_deref().unwrap()).await;
+    let printed: Vec<_> = texts(&explained)
+        .into_iter()
+        .filter(|t| t.contains(" -> rendered with "))
+        .collect();
+    assert_eq!(
+        printed,
+        [format!(
+            "CURRENT_TIMESTAMP() -> rendered with '{}'",
+            values[&vd]["CURRENT_TIMESTAMP()"]
+        )],
+        "only its own value prints: {explained}"
+    );
+    for text in [
+        "upstream model queries have not changed",
+        "upstream data is up to date",
+    ] {
+        assert!(line(&explained, text).is_some(), "{text}: {explained}");
+    }
+
+    // Evaluation off is uncaptured for values in both: nothing renders, on
+    // the build or the reuse.
+    let off = sc.org("both off");
+    let ready = off
+        .expect_execute(both(VD_FIRST_BUILD).tolerate_nondeterminism(true))
+        .await;
+    assert!(rendered(&ready).is_empty(), "{:?}", rendered(&ready));
+    assert!(off.confirm(&ready.request_id, built_at(vd_built_at)).await);
+    let reused = off
+        .expect_skip(both(VD_RERUN).tolerate_nondeterminism(true))
+        .await;
+    assert!(
+        reused.transformed_nodes_by_query.is_empty(),
+        "{:?}",
+        reused.transformed_nodes_by_query
+    );
+}
+
+#[tokio::test]
+async fn snowflake_uncaptured_data_tests_over_a_volatile_view_render_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(COMBINATIONS);
+    // `ctv`, the data test over the volatile view (entry 52).
+    let ctv = || captured_submit(&entries[52].request);
+    for (case, test) in [
+        ("evaluation off", ctv().tolerate_nondeterminism(true)),
+        (
+            "with a Target relation",
+            ctv()
+                .target("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"CTV_1431544D67B8\""),
+        ),
+    ] {
+        let sc = sc.org(case);
+        let ready = sc.expect_execute(test).await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "{case}: {:?}",
+            rendered(&ready)
+        );
+        let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+        assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+    }
+    // Positive control: the captured cell renders the dependency's key.
+    let ready = sc.org("control").expect_execute(ctv()).await;
+    assert_eq!(
+        volatile_map_shape(&rendered(&ready)),
+        volatile_map_shape(&hosted_volatile_values(&entries[52].response))
+    );
 }
