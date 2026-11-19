@@ -712,36 +712,9 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 194,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "non-deterministic functions detected in query"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) ro query-changed rebuild with evaluation off: hosted adds the volatile block before 'the model query has changed' [FAIL] <NODE_QUERY_CHANGED>, with no 'tolerated by config' line; the rest matches."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 195,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) eu rerun, a model with an upstream table: hosted prints the own-SQL rerun block, 'upstream model queries have not changed' [SUCCESS] and the FRESH listing; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 197,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) eq rerun, a model with a deterministic query dependency: hosted prints the own-SQL rerun block, 'upstream model queries have not changed' [SUCCESS] and 'upstream data is up to date' [SUCCESS]; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 198,
     "local_variant": "explain",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) ecu SKIP under compare_unrendered_code (CHECK-IN, entry 140): hosted explains its SKIP with 'the model was compared to state based on its unrendered code' [INFO] and 'the unrendered model code has not changed' [SUCCESS], no volatile lines; the local server explains the rebuild it decided (the #191 cell 2 rerun tree)."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 199,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) edu rerun, a volatile view dependency plus an upstream table: hosted prints the #191 cell 5 dependency block, then the table upstream with 'query or upstream query unchanged' <UPSTREAM_QUERY_UNCHANGED>, 'an upstream model query has changed' [FAIL] and the FRESH listing; the local rebuild renders no tree."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -758,15 +731,6 @@
       "the test query is not deterministic but this is tolerated by config"
     ],
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) cto SKIP (evaluation off): hosted adds the volatile block and 'the test query is not deterministic but this is tolerated by config' [INFO]; the rest matches."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 204,
-    "local_variant": "explain",
-    "ignore_explain_lines": [
-      "query analysis"
-    ],
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) rt volatile data test after its logic changed: hosted adds the same 'query analysis' section as an unchanged rerun (volatile block, 'not tolerated by config', 'the test query has changed' [FAIL] <NODE_QUERY_CHANGED>); the rest matches."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",

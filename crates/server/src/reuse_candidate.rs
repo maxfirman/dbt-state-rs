@@ -58,6 +58,12 @@ pub(crate) struct Selection {
     /// Databricks APPEND/MERGE response/Explain basis only. Selection still
     /// rejects against the submit type's build; this row is never reusable.
     pub transition_display: Option<ExecutionRow>,
+    /// The latest row when it has the workload's identity but the submit
+    /// failed Reuse qualification (volatile SQL with Volatile evaluation
+    /// requested, among others): Explain judges the rebuild's freshness
+    /// listing against it (`explain_volatile_cells.jsonl` entries 195 and
+    /// 199, #206). Never reused, and never a copy's anchor.
+    pub unqualified: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -71,6 +77,7 @@ impl Selection {
             unmatched: None,
             type_changed: None,
             transition_display: None,
+            unqualified: None,
         }
     }
 
@@ -83,6 +90,7 @@ impl Selection {
         unmatched: None,
         type_changed: None,
         transition_display: None,
+        unqualified: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -105,10 +113,12 @@ impl Selection {
             why_no_candidate,
             Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
         );
-        let (candidate, rejected) = match identified {
-            Some(row) if why_no_candidate.is_none() => (Some(row), None),
-            Some(row) if own_target => (None, Some(row)),
-            _ => (None, None),
+        let unqualified_build = why_no_candidate == Some(NoCandidate::FailedReuseQualification);
+        let (candidate, rejected, unqualified) = match identified {
+            Some(row) if why_no_candidate.is_none() => (Some(row), None, None),
+            Some(row) if own_target => (None, Some(row), None),
+            Some(row) if unqualified_build => (None, None, Some(row)),
+            _ => (None, None, None),
         };
         // A row with the identity under another type is no unmatched build.
         let (unmatched, type_changed) = match why_no_candidate {
@@ -123,6 +133,7 @@ impl Selection {
             unmatched,
             type_changed,
             transition_display: None,
+            unqualified,
         }
     }
 }

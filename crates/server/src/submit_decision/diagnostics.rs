@@ -484,6 +484,7 @@ mod tests {
             unmatched: None,
             type_changed: None,
             transition_display: None,
+            unqualified: None,
         }
     }
 
