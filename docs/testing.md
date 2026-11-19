@@ -266,15 +266,17 @@ exactly, and values of other functions are compared as they are. Explain
 (`conformance.rs::normalize_volatile_line`). A malformed value fails the
 replay. Field-scoped gaps are judged after this normalization, so a map that
 differs only in its runtime values needs no gap. The only Volatile evaluation
-gaps are the #202 capture's (`explain_volatile_cells.jsonl`), each naming the
-follow-up ticket (#203–#207) that resolves it. A field-scoped gap can also
-cover a submit `ready_to_clone` payload (#202 entry 207 had one until #207).
+gap is `explain_volatile_cells.jsonl` entry 146, a field-scoped
+`execution_runtime_ms` gap keyed to #200 (maintainer decision 2 on #201,
+[correctness-handoff.md](correctness-handoff.md#known-divergences)). A
+field-scoped gap can also cover a submit `ready_to_clone` payload (#202
+entry 207 had one until #207).
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the
   rest of the tree must then match exactly, and at least one named line must
-  be present. The #191 volatile lines it was added for are rendered since
-  #194 and #195; the #202 capture uses it for the lines still missing.
+  be present. The #191 and #202 volatile lines it was used for are rendered
+  since #194, #195 and #203–#207; no gap uses it now.
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.
