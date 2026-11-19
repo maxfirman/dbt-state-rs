@@ -71,6 +71,10 @@ exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 
+- Volatile evaluation renders only the captured query-changed FULL rebuild.
+  First build, rerun, data-test and downstream cells in #198 remain uncaptured;
+  the [prepared runner and compute blocker](databricks-volatile.md) record the
+  2026-11-19 attempt. No new volatile decision or Explain parity is claimed.
 - Bounded FULL and direct MERGE/check-snapshot Result copy are enabled by
   default. [Shared-copy acceptance](databricks-shared-copy.md) states the tested
   grammar and physical evidence. Client controls remain supported; there are no

@@ -643,6 +643,11 @@ no volatile Explain lines.
 | Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
+The remaining Databricks cells in #198 have a
+[prepared capture runner](databricks-volatile.md). The 2026-11-19 live attempt
+was blocked by an inactive SQL compute resource before any dbt invocation;
+these cells remain uncaptured.
+
 A Snowflake FULL model renders on a build for any decision reason. Hosted
 was captured on first builds and the unchanged rerun; a query-changed
 rebuild is captured on Databricks only (entries 85, 86).
