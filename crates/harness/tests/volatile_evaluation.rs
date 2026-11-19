@@ -18,8 +18,6 @@
 //! fixture's entries 10, 35 and 45, and 16, 24, 37 and 46 (#195).
 mod support;
 
-use std::collections::BTreeMap;
-
 use dbt_state_harness::diff::GoldenEntry;
 use dbt_state_proto::query_cache as qc;
 use support::scenario::{
@@ -28,6 +26,16 @@ use support::scenario::{
 };
 
 const CONTROLS: &str = include_str!("fixtures/databricks_submit_copy_controls.jsonl");
+/// The #191 Snowflake capture batch, run 1 (dbt 2.0.11): every function in
+/// one model, reruns, the deterministic control, evaluation off, a table
+/// over a volatile view, a data test and a consumer of a volatile model.
+const RUN_1: &str = include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
+/// The #191 capture batch, run 2: one function form per model.
+const RUN_2: &str =
+    include_str!("../../../golden/fixtures/explain_volatile_evaluation_functions.jsonl");
+/// The #202 Snowflake capture batch of the cells #191 left open (dbt 2.0.11;
+/// entry indices in `docs/reports/snowflake-volatile-cells-2026-11-19.md`).
+const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
 const RAND_SUBMIT: usize = 85;
 /// Hosted's Explain of that decision.
@@ -92,13 +100,6 @@ fn is_captured_unit_random(value: &str) -> bool {
         && value.parse::<f64>().is_ok_and(|v| (0.0..1.0).contains(&v))
 }
 
-/// Replay the captured controls through the RAND submit (entry 85) at their
-/// recorded times. Returns the local response to entry 85.
-async fn replay_through_rand_submit(sc: &Scenario) -> qc::ReadyToExecuteResponse {
-    let mut responses = replay(sc, &entries(CONTROLS), RAND_SUBMIT).await;
-    support::scenario::into_execute(responses.remove(&RAND_SUBMIT).unwrap())
-}
-
 /// Replay the submits and confirms of `entries` through entry `through`, at
 /// their recorded times, correlating each confirm with its local request id.
 /// Returns the local response to each submit, by entry.
@@ -107,12 +108,29 @@ async fn replay(
     entries: &[GoldenEntry],
     through: usize,
 ) -> std::collections::HashMap<usize, qc::SubmitSqlResponse> {
+    replay_where(sc, entries, through, |_| true).await
+}
+
+/// [`replay`] of only the submits `submits` admits, and their confirms. A
+/// confirm of a submit that was replayed but not answered with a request id
+/// panics.
+async fn replay_where(
+    sc: &Scenario,
+    entries: &[GoldenEntry],
+    through: usize,
+    submits: impl Fn(&GoldenEntry) -> bool,
+) -> std::collections::HashMap<usize, qc::SubmitSqlResponse> {
     let mut sql = qc::sql_client::SqlClient::new(sc.channel());
     let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
     let mut local_ids = std::collections::HashMap::new();
+    let mut left_out = std::collections::HashSet::new();
     let mut responses = std::collections::HashMap::new();
     for (index, entry) in entries.iter().enumerate().take(through + 1) {
+        let hosted = entry.response["response"]["ready_to_execute"]["request_id"]
+            .as_str()
+            .or(entry.response["response"]["ready_to_clone"]["request_id"].as_str());
         match entry.method.as_str() {
+            "SubmitEnrichedSQL" if !submits(entry) => left_out.extend(hosted),
             "SubmitEnrichedSQL" => {
                 let req = captured_submit(&entry.request).build();
                 let response = sql
@@ -120,9 +138,6 @@ async fn replay(
                     .await
                     .unwrap()
                     .into_inner();
-                let hosted = entry.response["response"]["ready_to_execute"]["request_id"]
-                    .as_str()
-                    .or(entry.response["response"]["ready_to_clone"]["request_id"].as_str());
                 if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
                     local_ids.insert(hosted.to_owned(), local);
                 }
@@ -131,6 +146,9 @@ async fn replay(
             "ConfirmExecution" => {
                 let mut req: qc::ConfirmExecutionRequest =
                     serde_json::from_value(entry.request.clone()).unwrap();
+                if left_out.contains(req.request_id.as_str()) {
+                    continue;
+                }
                 req.request_id = local_ids[&req.request_id].clone();
                 exec.confirm_execution(support::captured_request(req, entry))
                     .await
@@ -179,16 +197,6 @@ fn prints_volatile_lines(explain: &serde_json::Value) -> bool {
     })
 }
 
-/// Hosted's entry 86 Explain, for the local decision `id` whose `RAND()`
-/// rendered `value`.
-fn hosted_rand_explain(id: &str, value: &str) -> serde_json::Value {
-    let hosted = serde_json::to_string(&entries(CONTROLS)[RAND_EXPLAIN].response)
-        .unwrap()
-        .replace("0.2867523899434695", value)
-        .replace("01a1e094-30e7-7588-b0dd-086c25a0df43", id);
-    serde_json::from_str(&hosted).unwrap()
-}
-
 #[tokio::test]
 async fn databricks_rand_build_returns_its_rendered_value_keyed_by_the_target_as_sent() {
     let server = support::start_server().await;
@@ -216,24 +224,13 @@ async fn databricks_rand_build_returns_its_rendered_value_keyed_by_the_target_as
 
 #[tokio::test]
 async fn databricks_rand_explain_matches_hosted_with_the_returned_value_after_a_restart() {
-    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_restart").await);
-    let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
-    let ready = replay_through_rand_submit(&sc).await;
-    let id = ready.execution_decision_id.clone().unwrap();
-    let value = rendered(&ready)[&target(&request(CONTROLS, RAND_SUBMIT))]["RAND()"].clone();
-
-    assert_eq!(explain(&sc, &id).await, hosted_rand_explain(&id, &value));
-
-    drop(sc);
-    drop(server);
-    let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
-    assert_eq!(
-        explain(&sc, &id).await,
-        hosted_rand_explain(&id, &value),
-        "the persisted value prints after a restart"
-    );
+    assert_replayed_explains_match_hosted(
+        "volatile_restart",
+        CONTROLS,
+        &[(RAND_SUBMIT, RAND_EXPLAIN, "RAND() query-changed rebuild")],
+        std::convert::identity,
+    )
+    .await;
 }
 
 /// Build a deterministic version of `model` over its Target relation with
@@ -770,10 +767,6 @@ async fn snowflake_volatile_model_is_never_reused_or_copied_and_its_values_enter
 // evaluation off) and `explain_volatile_evaluation_functions.jsonl` (run 2:
 // one function form per model). Both were captured with dbt 2.0.11.
 
-const RUN_1: &str = include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
-const RUN_2: &str =
-    include_str!("../../../golden/fixtures/explain_volatile_evaluation_functions.jsonl");
-
 /// Whether `value` is a lowercase version 4 UUID (`8f162c59-9bda-412e-b5de-d0d22af57bf9`).
 fn is_lowercase_v4_uuid(value: &str) -> bool {
     uuid::Uuid::parse_str(value).is_ok_and(|u| u.get_version_num() == 4)
@@ -1023,58 +1016,132 @@ fn decision_id(response: &qc::SubmitSqlResponse) -> String {
         .to_owned()
 }
 
-#[tokio::test]
-async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
-    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_cells").await);
+/// One local decision whose Explain must equal hosted's.
+struct HostedExplain {
+    case: String,
+    /// The local decision.
+    id: String,
+    /// When the client asked hosted for its Explain (`x-submitted-at-epoch`).
+    at: i64,
+    /// Hosted's Explain, for the local decision and the values it rendered.
+    expected: serde_json::Value,
+}
+
+impl HostedExplain {
+    /// Hosted's Explain `explain` of captured submit `submit`, for the local
+    /// decision `id` that rendered `values`.
+    fn of(
+        case: impl Into<String>,
+        explain: &GoldenEntry,
+        submit: &GoldenEntry,
+        id: &str,
+        values: &VolatileValues,
+    ) -> Self {
+        Self {
+            case: case.into(),
+            id: id.to_owned(),
+            at: submitted_at(explain),
+            expected: hosted_explain_for(explain, submit, id, values),
+        }
+    }
+
+    /// [`HostedExplain::of`] the local `response` to `submit`.
+    fn of_response(
+        case: impl Into<String>,
+        explain: &GoldenEntry,
+        submit: &GoldenEntry,
+        response: &qc::SubmitSqlResponse,
+    ) -> Self {
+        let id = decision_id(response);
+        Self::of(case, explain, submit, &id, &volatile_values(response))
+    }
+}
+
+/// Require each local Explain, asked at hosted's Explain time and seen
+/// through `seen`, to equal hosted's on `server`, then on a server restarted
+/// on `database`: the persisted values print after a restart.
+async fn assert_explains_match_hosted(
+    database: &std::sync::Arc<support::TestDatabase>,
+    server: support::TestServer,
+    explains: &[HostedExplain],
+    seen: fn(serde_json::Value) -> serde_json::Value,
+) {
+    async fn check(
+        server: &support::TestServer,
+        explains: &[HostedExplain],
+        seen: fn(serde_json::Value) -> serde_json::Value,
+        when: &str,
+    ) {
+        let sc = Scenario::connect(server).await;
+        for hosted in explains {
+            assert_eq!(
+                seen(explain(&sc.at(hosted.at), &hosted.id).await),
+                seen(hosted.expected.clone()),
+                "{}{when}",
+                hosted.case
+            );
+        }
+    }
+    check(&server, explains, seen, "").await;
+    drop(server);
     let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
-    let run_1 = entries(RUN_1);
-    let responses = replay(&sc, &run_1, 50).await;
-    // (submit, its captured Explain, case)
-    let cases = [
-        (6, 19, "cell 1 first build: no volatile lines"),
-        (
-            8,
-            20,
-            "cell 4 evaluation off, first build: no volatile lines",
-        ),
-        (5, 21, "cell 3 first build"),
-        (7, 22, "a view with evaluation off, first build"),
-        (33, 41, "cell 2 rerun with evaluation on"),
-        (34, 42, "cell 4 evaluation off, reused"),
-        (31, 43, "cell 3 deterministic control, reused"),
-        (32, 44, "a view with evaluation off, reused"),
-        (50, 51, "cell 4 evaluation switched off, reused"),
-    ];
-    let expected: Vec<_> = cases
+    check(&server, explains, seen, ": after a restart").await;
+}
+
+/// Replay `fixture` through the last submit of `cases` (submit entry, hosted
+/// Explain entry, case) on a fresh `database`, then
+/// [`assert_explains_match_hosted`].
+async fn assert_replayed_explains_match_hosted(
+    database: &str,
+    fixture: &str,
+    cases: &[(usize, usize, &str)],
+    seen: fn(serde_json::Value) -> serde_json::Value,
+) {
+    let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let entries = entries(fixture);
+    let through = cases.iter().map(|&(submit, _, _)| submit).max().unwrap();
+    let responses = replay(&Scenario::connect(&server).await, &entries, through).await;
+    let explains: Vec<_> = cases
         .iter()
-        .map(|(submit, explained, _)| {
-            hosted_explain_for(
-                &run_1[*explained],
-                &run_1[*submit],
-                &decision_id(&responses[submit]),
-                &volatile_values(&responses[submit]),
+        .map(|&(submit, explain, case)| {
+            HostedExplain::of_response(
+                case,
+                &entries[explain],
+                &entries[submit],
+                &responses[&submit],
             )
         })
         .collect();
-    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
-        let id = decision_id(&responses[submit]);
-        assert_eq!(&explain(&sc, &id).await, expected, "{case}");
-    }
-
-    drop(sc);
-    drop(server);
-    let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
-    for ((submit, _, case), expected) in cases.iter().zip(&expected) {
-        let id = decision_id(&responses[submit]);
-        assert_eq!(
-            &explain(&sc, &id).await,
-            expected,
-            "{case}: the persisted values print after a restart"
-        );
-    }
+    assert_explains_match_hosted(&database, server, &explains, seen).await;
 }
+
+#[tokio::test]
+async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
+    // (submit, its captured Explain, case)
+    assert_replayed_explains_match_hosted(
+        "volatile_cells",
+        RUN_1,
+        &[
+            (6, 19, "cell 1 first build: no volatile lines"),
+            (
+                8,
+                20,
+                "cell 4 evaluation off, first build: no volatile lines",
+            ),
+            (5, 21, "cell 3 first build"),
+            (7, 22, "a view with evaluation off, first build"),
+            (33, 41, "cell 2 rerun with evaluation on"),
+            (34, 42, "cell 4 evaluation off, reused"),
+            (31, 43, "cell 3 deterministic control, reused"),
+            (32, 44, "a view with evaluation off, reused"),
+            (50, 51, "cell 4 evaluation switched off, reused"),
+        ],
+        std::convert::identity,
+    )
+    .await;
+}
+
 // ── Snowflake consumer of a volatile model (#196) ───────────────────────────
 //
 // #191 cell 7, `golden/fixtures/explain_volatile_evaluation.jsonl`: `vm` calls
@@ -1083,8 +1150,6 @@ async fn snowflake_model_cells_explain_as_hosted_including_after_a_restart() {
 // with unchanged SQL is a data change for `vk` (ADR 0007): hosted SKIPs `vk`
 // within Lag tolerance, so its identity holds no rendered value.
 
-const VOLATILE_CELLS: &str =
-    include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
 const VM_BUILD: usize = 6;
 const VM_REBUILD: usize = 33;
 const VK_BUILD: usize = 15;
@@ -1092,13 +1157,6 @@ const VK_BUILD_EXPLAIN: usize = 25;
 const VK_RERUN: usize = 39;
 const VK_RERUN_EXPLAIN: usize = 47;
 const HOUR_MS: i64 = 3_600_000;
-
-fn volatile_cells() -> Vec<GoldenEntry> {
-    VOLATILE_CELLS
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
 
 /// When the client sent the captured `entry` (`x-submitted-at-epoch`): the
 /// earliest time hosted can have decided it. The proxy's `recorded_at` is
@@ -1183,7 +1241,7 @@ async fn consumer_history(sc: &Scenario, entries: &[GoldenEntry]) -> qc::ReadyTo
 async fn snowflake_consumer_of_a_volatile_model_skips_within_lag_tolerance_after_its_rebuild() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("cell7");
-    let entries = volatile_cells();
+    let entries = entries(RUN_1);
 
     let vk = consumer_history(&sc, &entries).await;
     assert_eq!(
@@ -1235,7 +1293,7 @@ fn line<'a>(explain: &'a serde_json::Value, text: &str) -> Option<&'a serde_json
 async fn snowflake_consumer_of_a_volatile_model_rebuilds_after_its_rebuild_outside_lag_tolerance() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("cell7-late");
-    let entries = volatile_cells();
+    let entries = entries(RUN_1);
     consumer_history(&sc, &entries).await;
 
     // The captured rerun, an hour later than captured: `vk` was built more
@@ -1278,7 +1336,7 @@ async fn snowflake_consumer_of_a_volatile_model_rebuilds_after_its_rebuild_outsi
 async fn snowflake_consumer_of_an_unchanged_volatile_model_skips_outside_lag_tolerance() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("cell7-control");
-    let entries = volatile_cells();
+    let entries = entries(RUN_1);
     first_builds(&sc, &entries).await;
 
     // Control for the test above: the same late rerun without `vm`'s
@@ -1300,8 +1358,6 @@ async fn snowflake_consumer_of_an_unchanged_volatile_model_skips_outside_lag_tol
 
 // ── Snowflake volatile view dependency and data test (#195) ─────────────────
 
-const SNOWFLAKE_EVALUATION: &str =
-    include_str!("../../../golden/fixtures/explain_volatile_evaluation.jsonl");
 /// `vd`, a table over the view `vv` that calls `current_timestamp()`, with
 /// evaluation requested: first build and unchanged rerun.
 const VD_FIRST_BUILD: usize = 10;
@@ -1315,18 +1371,11 @@ const VT_RERUN: usize = 37;
 const VT_FIRST_EXPLAIN: usize = 24;
 const VT_RERUN_EXPLAIN: usize = 46;
 
-fn snowflake_evaluation() -> Vec<GoldenEntry> {
-    SNOWFLAKE_EVALUATION
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
-}
-
 #[tokio::test]
 async fn snowflake_volatile_data_test_and_dependency_render_keyed_as_captured() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     for (case, entry) in [("data test", VT_FIRST), ("view dependency", VD_FIRST_BUILD)] {
         let entry = &entries[entry];
         let ready = sc
@@ -1342,130 +1391,61 @@ async fn snowflake_volatile_data_test_and_dependency_render_keyed_as_captured() 
     }
 }
 
-/// Replay the captured run through `through` (inclusive) at the recorded
-/// times, correlating each confirm with its local request id. Returns each
-/// local `ready_to_execute` by its submit's entry index.
-async fn replay_snowflake_evaluation(
-    sc: &Scenario,
-    through: usize,
-) -> BTreeMap<usize, qc::ReadyToExecuteResponse> {
-    let entries = snowflake_evaluation();
-    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
-    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
-    let mut local_ids = std::collections::HashMap::new();
-    let mut executed = BTreeMap::new();
-    for (index, entry) in entries[..=through].iter().enumerate() {
-        match entry.method.as_str() {
-            "SubmitEnrichedSQL" => {
-                let response = sql
-                    .submit_enriched_sql(support::captured_request(
-                        captured_submit(&entry.request).build(),
-                        entry,
-                    ))
-                    .await
-                    .unwrap()
-                    .into_inner();
-                let hosted = entry.response["response"]["ready_to_execute"]["request_id"].as_str();
-                if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
-                    local_ids.insert(hosted.to_owned(), local);
-                }
-                if variant(&response) == "ready_to_execute" {
-                    executed.insert(index, support::scenario::into_execute(response));
-                }
-            }
-            "ConfirmExecution" => {
-                let mut req: qc::ConfirmExecutionRequest =
-                    serde_json::from_value(entry.request.clone()).unwrap();
-                req.request_id = local_ids[&req.request_id].clone();
-                exec.confirm_execution(support::captured_request(req, entry))
-                    .await
-                    .unwrap();
-            }
-            _ => {}
-        }
-    }
-    executed
-}
-
-/// `explain` with each `last updated: …` line masked. Outside Databricks a
-/// data test's upstream listing prints the raw epoch, not hosted's relative
-/// time; the conformance replay masks the same slot (`«rel_time»`).
-fn masked_relative_times(mut explain: serde_json::Value) -> serde_json::Value {
-    fn walk(lines: &mut serde_json::Value) {
+/// `explain` with the text of each line `masked` selects replaced by
+/// `replacement`, as the conformance replay masks a slot.
+fn mask_lines(
+    mut explain: serde_json::Value,
+    masked: fn(&str) -> bool,
+    replacement: &str,
+) -> serde_json::Value {
+    fn walk(lines: &mut serde_json::Value, masked: fn(&str) -> bool, replacement: &str) {
         for line in lines.as_array_mut().into_iter().flatten() {
-            if line["text"]
-                .as_str()
-                .is_some_and(|t| t.starts_with("last updated:"))
-            {
-                line["text"] = "last updated: «rel_time»".into();
+            if line["text"].as_str().is_some_and(masked) {
+                line["text"] = replacement.into();
             }
-            walk(&mut line["children"]);
+            walk(&mut line["children"], masked, replacement);
         }
     }
     for message in explain["messages"].as_array_mut().unwrap() {
-        walk(&mut message["explain_lines"]);
+        walk(&mut message["explain_lines"], masked, replacement);
     }
     explain
 }
 
-/// Replay the captured run through the last of `cases` (submit entry,
-/// hosted Explain entry), then require each local Explain to equal hosted's
-/// for the values the local decision rendered, before and after a restart.
-async fn assert_explains_match_hosted_after_a_restart(database: &str, cases: &[(usize, usize)]) {
-    let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
-    let server = support::start_server_on_database(database.clone()).await;
-    let entries = snowflake_evaluation();
-    let through = cases.iter().map(|&(submit, _)| submit).max().unwrap();
-    let executed = replay_snowflake_evaluation(&Scenario::connect(&server).await, through).await;
-    let expected: Vec<_> = cases
-        .iter()
-        .map(|&(submit, explain)| {
-            let local = &executed[&submit];
-            masked_relative_times(hosted_explain_for(
-                &entries[explain],
-                &entries[submit],
-                local.execution_decision_id.as_deref().unwrap(),
-                &rendered(local),
-            ))
-        })
-        .collect();
-    let explained = |server: support::TestServer| {
-        let executed = &executed;
-        async move {
-            let sc = Scenario::connect(&server).await;
-            let mut out = Vec::new();
-            for &(submit, _) in cases {
-                let id = executed[&submit].execution_decision_id.as_deref().unwrap();
-                out.push(masked_relative_times(explain(&sc, id).await));
-            }
-            out
-        }
-    };
-
-    assert_eq!(explained(server).await, expected);
-
-    let server = support::start_server_on_database(database.clone()).await;
-    assert_eq!(
-        explained(server).await,
-        expected,
-        "the persisted values print after a restart"
-    );
+/// `explain` with each `last updated: …` line masked (`«rel_time»`). A data
+/// test's upstream listing, like a copy's, prints each upstream's raw epoch
+/// (`last updated: 1795098737210 (UTC)`, `explain::clone_upstream_line`), not
+/// hosted's relative time (`2 minutes ago, 2026-11-19 14:32:17 UTC`). The
+/// conformance replay masks the same slot.
+fn masked_relative_times(explain: serde_json::Value) -> serde_json::Value {
+    mask_lines(
+        explain,
+        |text| text.starts_with("last updated:"),
+        "last updated: «rel_time»",
+    )
 }
 
 #[tokio::test]
 async fn snowflake_volatile_data_test_explain_matches_hosted_on_both_runs_after_a_restart() {
-    assert_explains_match_hosted_after_a_restart(
+    assert_replayed_explains_match_hosted(
         "volatile_test_restart",
-        &[(VT_FIRST, VT_FIRST_EXPLAIN), (VT_RERUN, VT_RERUN_EXPLAIN)],
+        RUN_1,
+        &[
+            (VT_FIRST, VT_FIRST_EXPLAIN, "vt first execution"),
+            (VT_RERUN, VT_RERUN_EXPLAIN, "vt rerun"),
+        ],
+        masked_relative_times,
     )
     .await;
 }
 
 #[tokio::test]
 async fn snowflake_volatile_dependency_explain_matches_hosted_after_a_restart() {
-    assert_explains_match_hosted_after_a_restart(
+    assert_replayed_explains_match_hosted(
         "volatile_dependency_restart",
-        &[(VD_RERUN, VD_RERUN_EXPLAIN)],
+        RUN_1,
+        &[(VD_RERUN, VD_RERUN_EXPLAIN, "vd rerun")],
+        masked_relative_times,
     )
     .await;
 }
@@ -1474,7 +1454,7 @@ async fn snowflake_volatile_dependency_explain_matches_hosted_after_a_restart() 
 async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let request = |entry: usize| captured_submit(&entries[entry].request);
     let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
         .as_str()
@@ -1574,7 +1554,7 @@ async fn snowflake_volatile_dependency_and_data_test_are_never_reused_or_copied(
 async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let vv_columns = "1 as id, current_timestamp() as ts, 'vv_164840c243b8' as v";
     let vt_condition = "current_timestamp() < '2000-01-01'::timestamp_ltz";
     let cases = [
@@ -1699,7 +1679,7 @@ fn vd_with_own_volatile_sql(entries: &[GoldenEntry], entry: usize) -> serde_json
 async fn snowflake_evaluation_off_renders_a_data_test_and_a_query_dependency_keyed_as_captured() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
         .as_str()
         .unwrap()
@@ -1726,7 +1706,7 @@ async fn snowflake_evaluation_off_renders_a_data_test_and_a_query_dependency_key
 async fn snowflake_volatile_data_test_over_a_volatile_view_renders_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("both in a data test");
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
         .as_str()
         .unwrap()
@@ -1823,7 +1803,7 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
         );
     }
     // A Snowflake data test with a Target relation (store_failures).
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let stored = captured_submit(&entries[VT_FIRST].request)
         .target("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO_DBT_TEST__AUDIT\".\"VT_164840C243B8\"");
     let ready = sc
@@ -1871,7 +1851,6 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
 // `normal` with a `random()` generator or a constant one; `fcu`, `fcx` and
 // `fcq` call functions outside the detector set (`current_user()` …).
 
-const CALL_FORMS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
 /// The nodes of the call-form cells, by the tag their SQL selects.
 const CALL_FORM_TAGS: &[&str] = &[
     "fct_", "flt_", "fts_", "fra_", "frb_", "fcu_", "fcx_", "fcq_",
@@ -1896,60 +1875,24 @@ const CALL_FORM_EXPLAINS: &[(usize, usize)] = &[
     (128, 184),
 ];
 
-/// Replay the call-form nodes' submits and confirms at their recorded times,
-/// correlating each confirm with its local request id. Returns the local
-/// response to each submit, by its entry in the fixture.
+/// Replay the call-form nodes' submits and confirms at their recorded times.
+/// Returns the local response to each submit, by its entry in the fixture.
 async fn replay_call_forms(
     sc: &Scenario,
     entries: &[GoldenEntry],
-) -> BTreeMap<usize, qc::SubmitSqlResponse> {
-    let mut sql = qc::sql_client::SqlClient::new(sc.channel());
-    let mut exec = qc::execution_client::ExecutionClient::new(sc.channel());
-    let mut local_ids = std::collections::HashMap::new();
-    let mut responses = BTreeMap::new();
-    for (index, entry) in entries.iter().enumerate() {
-        match entry.method.as_str() {
-            "SubmitEnrichedSQL"
-                if CALL_FORM_TAGS
-                    .iter()
-                    .any(|tag| entry.request["sql"].as_str().unwrap().contains(tag)) =>
-            {
-                let response = sql
-                    .submit_enriched_sql(support::captured_request(
-                        captured_submit(&entry.request).build(),
-                        entry,
-                    ))
-                    .await
-                    .unwrap()
-                    .into_inner();
-                let hosted = entry.response["response"]["ready_to_execute"]["request_id"].as_str();
-                if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
-                    local_ids.insert(hosted.to_owned(), local);
-                }
-                responses.insert(index, response);
-            }
-            "ConfirmExecution" => {
-                let mut req: qc::ConfirmExecutionRequest =
-                    serde_json::from_value(entry.request.clone()).unwrap();
-                let Some(local) = local_ids.get(&req.request_id) else {
-                    continue;
-                };
-                req.request_id = local.clone();
-                exec.confirm_execution(support::captured_request(req, entry))
-                    .await
-                    .unwrap();
-            }
-            _ => {}
-        }
-    }
-    responses
+) -> std::collections::HashMap<usize, qc::SubmitSqlResponse> {
+    replay_where(sc, entries, entries.len() - 1, |entry| {
+        let sql = entry.request["sql"].as_str().unwrap();
+        CALL_FORM_TAGS.iter().any(|tag| sql.contains(tag))
+    })
+    .await
 }
 
 #[tokio::test]
 async fn snowflake_captured_call_forms_render_hosted_keys_and_value_formats() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = entries(CALL_FORMS);
+    let entries = entries(CELLS);
     let responses = replay_call_forms(&sc, &entries).await;
     // Each submit is decided at its recorded time (the replay clock), so a
     // clock value is that instant in UTC in hosted's format. A random value
@@ -2065,7 +2008,7 @@ async fn snowflake_captured_call_forms_render_hosted_keys_and_value_formats() {
 async fn snowflake_functions_outside_the_detector_set_render_nothing_and_are_reused_as_captured() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = entries(CALL_FORMS);
+    let entries = entries(CELLS);
     let responses = replay_call_forms(&sc, &entries).await;
     for (entry, case) in [
         (25, "fcu current_user(), first build"),
@@ -2084,39 +2027,20 @@ async fn snowflake_functions_outside_the_detector_set_render_nothing_and_are_reu
 async fn snowflake_call_form_explains_match_hosted_after_a_restart() {
     let database = std::sync::Arc::new(support::TestDatabase::new("volatile_call_forms").await);
     let server = support::start_server_on_database(database.clone()).await;
-    let entries = entries(CALL_FORMS);
+    let entries = entries(CELLS);
     let responses = replay_call_forms(&Scenario::connect(&server).await, &entries).await;
-    let expected: Vec<_> = CALL_FORM_EXPLAINS
+    let explains: Vec<_> = CALL_FORM_EXPLAINS
         .iter()
         .map(|&(submit, explain)| {
-            hosted_explain_for(
+            HostedExplain::of_response(
+                format!("submit {submit}"),
                 &entries[explain],
                 &entries[submit],
-                &decision_id(&responses[&submit]),
-                &volatile_values(&responses[&submit]),
+                &responses[&submit],
             )
         })
         .collect();
-    let explained = |server: support::TestServer| {
-        let responses = &responses;
-        async move {
-            let sc = Scenario::connect(&server).await;
-            let mut out = Vec::new();
-            for &(submit, _) in CALL_FORM_EXPLAINS {
-                out.push(explain(&sc, &decision_id(&responses[&submit])).await);
-            }
-            out
-        }
-    };
-
-    assert_eq!(explained(server).await, expected);
-
-    let server = support::start_server_on_database(database.clone()).await;
-    assert_eq!(
-        explained(server).await,
-        expected,
-        "the persisted values print after a restart"
-    );
+    assert_explains_match_hosted(&database, server, &explains, std::convert::identity).await;
 }
 
 // ── Snowflake execution types (#205) ────────────────────────────────────────
@@ -2128,7 +2052,6 @@ async fn snowflake_call_form_explains_match_hosted_after_a_restart() {
 // and `xt` a `store_failures` data test (sent without a Target relation).
 // Round 1 is each node's first build, round 2 its unchanged rerun.
 
-const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
 /// (first build, rerun, rerun Explain) submit entries of `xi`, `xs`, `xc`.
 const XI: (usize, usize, usize) = (71, 167, 189);
 const XS: (usize, usize, usize) = (69, 165, 190);
@@ -2157,86 +2080,50 @@ async fn snowflake_incremental_snapshot_and_custom_render_their_own_values_on_bo
     }
 }
 
-/// Replay the #202 capture through the last of `cases` (submit entry, hosted
-/// Explain entry), then require each local Explain, asked at hosted's Explain
-/// time, to equal hosted's for the values the local decision rendered,
-/// before and after a restart, both seen through `seen`.
-async fn assert_cells_explain_as_hosted_after_a_restart_seen(
-    database: &str,
-    cases: &[(usize, usize)],
-    seen: fn(serde_json::Value) -> serde_json::Value,
-) {
-    let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
-    let server = support::start_server_on_database(database.clone()).await;
-    let cells = entries(CELLS);
-    let through = cases.iter().map(|&(submit, _)| submit).max().unwrap();
-    let responses = replay(&Scenario::connect(&server).await, &cells, through).await;
-    let expected: Vec<_> = cases
-        .iter()
-        .map(|&(submit, explained)| {
-            seen(hosted_explain_for(
-                &cells[explained],
-                &cells[submit],
-                &decision_id(&responses[&submit]),
-                &volatile_values(&responses[&submit]),
-            ))
-        })
-        .collect();
-    let explained = |server: support::TestServer| {
-        let (responses, cells) = (&responses, &cells);
-        async move {
-            let sc = Scenario::connect(&server).await;
-            let mut out = Vec::new();
-            for &(submit, explained) in cases {
-                let at = cells[explained].recorded_at_ms().unwrap();
-                out.push(seen(
-                    explain(&sc.at(at), &decision_id(&responses[&submit])).await,
-                ));
-            }
-            out
-        }
-    };
-
-    assert_eq!(explained(server).await, expected);
-
-    let server = support::start_server_on_database(database.clone()).await;
-    assert_eq!(
-        explained(server).await,
-        expected,
-        "the persisted values print after a restart"
-    );
-}
-
-/// [`assert_cells_explain_as_hosted_after_a_restart_seen`], every line as is.
-async fn assert_cells_explain_as_hosted_after_a_restart(database: &str, cases: &[(usize, usize)]) {
-    assert_cells_explain_as_hosted_after_a_restart_seen(database, cases, |explain| explain).await;
-}
-
 #[tokio::test]
 async fn snowflake_custom_rerun_explains_as_hosted_after_a_restart() {
-    assert_cells_explain_as_hosted_after_a_restart("volatile_custom_restart", &[(XC.1, XC.2)])
-        .await;
+    assert_replayed_explains_match_hosted(
+        "volatile_custom_restart",
+        CELLS,
+        &[(XC.1, XC.2, "xc rerun")],
+        std::convert::identity,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn snowflake_incremental_run_explains_as_hosted_after_a_restart() {
-    assert_cells_explain_as_hosted_after_a_restart("volatile_incremental_restart", &[(XI.1, XI.2)])
-        .await;
+    assert_replayed_explains_match_hosted(
+        "volatile_incremental_restart",
+        CELLS,
+        &[(XI.1, XI.2, "xi incremental run")],
+        std::convert::identity,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn snowflake_snapshot_rerun_explains_as_hosted_in_snapshot_wording_after_a_restart() {
-    assert_cells_explain_as_hosted_after_a_restart("volatile_snapshot_restart", &[(XS.1, XS.2)])
-        .await;
+    assert_replayed_explains_match_hosted(
+        "volatile_snapshot_restart",
+        CELLS,
+        &[(XS.1, XS.2, "xs rerun")],
+        std::convert::identity,
+    )
+    .await;
 }
 
 /// The `store_failures` data test, sent without a Target relation, keeps the
 /// #191 cell 6 trees on both runs; its rerun is explained without an anchor.
 #[tokio::test]
 async fn snowflake_store_failures_data_test_explains_as_hosted_on_both_runs_after_a_restart() {
-    assert_cells_explain_as_hosted_after_a_restart_seen(
+    assert_replayed_explains_match_hosted(
         "volatile_store_failures_restart",
-        &[(XT.0, XT_EXPLAINS.0), (XT.1, XT_EXPLAINS.1)],
+        CELLS,
+        &[
+            (XT.0, XT_EXPLAINS.0, "xt first execution"),
+            (XT.1, XT_EXPLAINS.1, "xt rerun"),
+        ],
         masked_relative_times,
     )
     .await;
@@ -2336,10 +2223,9 @@ async fn snowflake_uncaptured_incremental_snapshot_and_custom_cells_render_nothi
 // (dbt 2.0.11; `docs/reports/snowflake-volatile-cells-2026-11-19.md`). Round 2
 // reruns each node; every case below is a `ready_to_execute` 6/6 whose map
 // replays, and whose Explain is compared with hosted's.
-mod rebuild_reasons_206 {
+mod rebuild_reasons {
     use super::*;
 
-    const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
     /// Round 2 submits, and hosted's Explain of each.
     /// `rq`: query-changed FULL rebuild, evaluation on.
     const RQ: (usize, usize) = (142, 192);
@@ -2364,47 +2250,27 @@ mod rebuild_reasons_206 {
     /// at the recorded times on a fresh database, then require each case's
     /// local response to match hosted's codes and map shape, and its Explain
     /// to equal hosted's for the values the local decision rendered, before
-    /// and after a restart. `last updated` lines are masked: outside
-    /// Databricks they print the raw epoch, as the conformance replay masks.
+    /// and after a restart. `last updated` lines are masked for the data
+    /// test `rt`, whose upstream listing prints raw epochs
+    /// ([`masked_relative_times`]); the models' lines match hosted's.
     async fn assert_rebuilds_match_hosted(database: &str, cases: &[((usize, usize), &str)]) {
         let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
         let server = support::start_server_on_database(database.clone()).await;
         let entries = entries(CELLS);
         let responses = replay(&Scenario::connect(&server).await, &entries, 168).await;
-        let expected: Vec<_> = cases
+        let explains: Vec<_> = cases
             .iter()
             .map(|&((submit, explained), case)| {
                 assert_matches_hosted(&responses[&submit], &entries[submit], case);
-                masked_relative_times(hosted_explain_for(
+                HostedExplain::of_response(
+                    case,
                     &entries[explained],
                     &entries[submit],
-                    &decision_id(&responses[&submit]),
-                    &volatile_values(&responses[&submit]),
-                ))
+                    &responses[&submit],
+                )
             })
             .collect();
-        let explained = |server: support::TestServer| {
-            let responses = &responses;
-            async move {
-                let sc = Scenario::connect(&server).await;
-                let mut out = Vec::new();
-                for &((submit, _), _) in cases {
-                    let id = decision_id(&responses[&submit]);
-                    out.push(masked_relative_times(explain(&sc, &id).await));
-                }
-                out
-            }
-        };
-        let cases: Vec<_> = cases.iter().map(|(_, case)| *case).collect();
-        let local = explained(server).await;
-        for ((local, expected), case) in local.iter().zip(&expected).zip(&cases) {
-            assert_eq!(local, expected, "{case}");
-        }
-        let server = support::start_server_on_database(database.clone()).await;
-        let local = explained(server).await;
-        for ((local, expected), case) in local.iter().zip(&expected).zip(&cases) {
-            assert_eq!(local, expected, "{case}: after a restart");
-        }
+        assert_explains_match_hosted(&database, server, &explains, masked_relative_times).await;
     }
 
     #[tokio::test]
@@ -2599,6 +2465,11 @@ mod rebuild_reasons_206 {
     /// The `rt` data test's round 1 build (evaluation on).
     const RT_BUILD: usize = 62;
 
+    /// The skip rejection reason hosted reports for a rebuild refused at
+    /// Reuse qualification.
+    const NO_SUITABLE_MATCH_FOUND: Option<i32> =
+        Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+
     #[tokio::test]
     async fn snowflake_volatile_rerun_compared_by_unrendered_code_skips_and_explains_as_hosted() {
         assert_rebuilds_match_hosted(
@@ -2618,7 +2489,6 @@ mod rebuild_reasons_206 {
     #[tokio::test]
     async fn snowflake_volatile_sql_is_still_refused_outside_an_unchanged_unrendered_comparison() {
         use support::scenario::{outcome, test_results};
-        const FAILED_REUSE_QUALIFICATION: Option<i32> = Some(6);
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
         let entries = entries(CELLS);
@@ -2631,7 +2501,7 @@ mod rebuild_reasons_206 {
                 "compare_unrendered_code off",
                 off(built.clone()),
                 off(rerun.clone()),
-                FAILED_REUSE_QUALIFICATION,
+                NO_SUITABLE_MATCH_FOUND,
             ),
             (
                 "template changed, same SQL",
@@ -2639,7 +2509,7 @@ mod rebuild_reasons_206 {
                 rerun
                     .clone()
                     .node_state(|n| n.node_body_hash = Some("another body".into())),
-                FAILED_REUSE_QUALIFICATION,
+                NO_SUITABLE_MATCH_FOUND,
             ),
             (
                 "template and SQL changed",
@@ -2654,7 +2524,7 @@ mod rebuild_reasons_206 {
                 "Databricks, which has no checked detector",
                 databricks(built.clone()),
                 databricks(rerun.clone()),
-                FAILED_REUSE_QUALIFICATION,
+                NO_SUITABLE_MATCH_FOUND,
             ),
         ];
         for (case, history, rebuild, reason) in cases {
@@ -2692,11 +2562,6 @@ mod rebuild_reasons_206 {
             assert_eq!(reused, case.starts_with("control"), "{case}");
         }
     }
-
-    /// The skip rejection reason hosted reports for a rebuild refused at
-    /// Reuse qualification.
-    const NO_SUITABLE_MATCH_FOUND: Option<i32> =
-        Some(qc::RejectionReason::NoSuitableMatchFound as i32);
 
     /// Submit `rerun` over `history` built in a fresh organization `case`;
     /// require a rebuild refused at Reuse qualification, and return it with
@@ -2853,7 +2718,6 @@ mod rebuild_reasons_206 {
 // evaluation off; `cdo` a table over `vw` with evaluation off; `cvo` a view
 // calling `current_timestamp()` with evaluation on.
 
-const COMBINATIONS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
 /// The last combination submit of the run (`cmb`'s rerun).
 const COMBINATIONS_THROUGH: usize = 159;
 /// `cto`'s rerun SKIP. Hosted echoes the runtime another data test confirmed
@@ -2866,7 +2730,7 @@ const CTO_CONFIRM: usize = 63;
 async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = entries(COMBINATIONS);
+    let entries = entries(CELLS);
     let responses = replay(&sc, &entries, COMBINATIONS_THROUGH).await;
     for (entry, case) in [
         (59, "cmb first build: the dependency's and its own values"),
@@ -2910,85 +2774,48 @@ async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
 
 #[tokio::test]
 async fn snowflake_combination_cells_explain_as_hosted_including_after_a_restart() {
-    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_combinations").await);
-    let server = support::start_server_on_database(database.clone()).await;
-    let entries = entries(COMBINATIONS);
-    let responses = replay(
-        &Scenario::connect(&server).await,
-        &entries,
-        COMBINATIONS_THROUGH,
+    // (submit, its captured Explain, case)
+    assert_replayed_explains_match_hosted(
+        "volatile_combinations",
+        CELLS,
+        &[
+            (59, 89, "cmb first build: no volatile lines"),
+            (159, 186, "cmb rerun: only its own value"),
+            (
+                52,
+                105,
+                "ctv first execution: a bare data freshness analysis",
+            ),
+            (144, 201, "ctv rerun: a bare data freshness analysis"),
+            (
+                60,
+                106,
+                "cto first execution, evaluation off: its own value",
+            ),
+            (
+                CTO_SKIP,
+                202,
+                "cto reuse, evaluation off: tolerated by config",
+            ),
+            (58, 90, "cdo first build: no volatile lines"),
+            (
+                158,
+                187,
+                "cdo reuse, evaluation off: the dependency's value",
+            ),
+            (19, 91, "cvo view first build: no volatile lines"),
+            (141, 188, "cvo view rerun: its own value"),
+        ],
+        masked_relative_times,
     )
     .await;
-    // (submit, its captured Explain, case)
-    let cases = [
-        (59, 89, "cmb first build: no volatile lines"),
-        (159, 186, "cmb rerun: only its own value"),
-        (
-            52,
-            105,
-            "ctv first execution: a bare data freshness analysis",
-        ),
-        (144, 201, "ctv rerun: a bare data freshness analysis"),
-        (
-            60,
-            106,
-            "cto first execution, evaluation off: its own value",
-        ),
-        (
-            CTO_SKIP,
-            202,
-            "cto reuse, evaluation off: tolerated by config",
-        ),
-        (58, 90, "cdo first build: no volatile lines"),
-        (
-            158,
-            187,
-            "cdo reuse, evaluation off: the dependency's value",
-        ),
-        (19, 91, "cvo view first build: no volatile lines"),
-        (141, 188, "cvo view rerun: its own value"),
-    ];
-    let expected: Vec<_> = cases
-        .iter()
-        .map(|(submit, explained, _)| {
-            masked_relative_times(hosted_explain_for(
-                &entries[*explained],
-                &entries[*submit],
-                &decision_id(&responses[submit]),
-                &volatile_values(&responses[submit]),
-            ))
-        })
-        .collect();
-    let explained = |server: support::TestServer| {
-        let responses = &responses;
-        async move {
-            let sc = Scenario::connect(&server).await;
-            let mut out = Vec::new();
-            for (submit, _, _) in &cases {
-                let id = decision_id(&responses[submit]);
-                out.push(masked_relative_times(explain(&sc, &id).await));
-            }
-            out
-        }
-    };
-
-    let before = explained(server).await;
-    for (((_, _, case), local), expected) in cases.iter().zip(&before).zip(&expected) {
-        assert_eq!(local, expected, "{case}");
-    }
-    let server = support::start_server_on_database(database.clone()).await;
-    assert_eq!(
-        explained(server).await,
-        expected,
-        "the persisted values print after a restart"
-    );
 }
 
 #[tokio::test]
 async fn snowflake_own_and_dependency_values_render_with_evaluation_on_and_enter_no_fingerprint() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = snowflake_evaluation();
+    let entries = entries(RUN_1);
     let vd = target(&entries[VD_FIRST_BUILD].request);
     let vv = entries[VD_FIRST_BUILD].request["query_dependencies"][0]["name"]
         .as_str()
@@ -3062,7 +2889,7 @@ async fn snowflake_own_and_dependency_values_render_with_evaluation_on_and_enter
 async fn snowflake_uncaptured_data_tests_over_a_volatile_view_render_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = entries(COMBINATIONS);
+    let entries = entries(CELLS);
     // `ctv`, the data test over the volatile view (entry 52).
     let ctv = || captured_submit(&entries[52].request);
     for (case, test) in [
@@ -3102,7 +2929,6 @@ async fn snowflake_uncaptured_data_tests_over_a_volatile_view_render_nothing() {
 // on and so is rebuilt on every run: `lz` is built (77, 78) and rebuilt on its
 // rerun (172, 174), explained by entries 104 and 200.
 
-const CELLS_202: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
 const PC_PROD_BUILD: usize = 29;
 const PC_DEV_COPY: usize = 207;
 const PC_DEV_CONFIRM: usize = 208;
@@ -3113,10 +2939,6 @@ const LZ_BUILD: usize = 77;
 const LZ_REBUILD: usize = 172;
 const LZ_BUILD_EXPLAIN: usize = 104;
 const LZ_REBUILD_EXPLAIN: usize = 200;
-
-fn cells_202() -> Vec<GoldenEntry> {
-    entries(CELLS_202)
-}
 
 /// `pc`'s captured prod build, then its dev submit at the captured time,
 /// which must be a Result copy.
@@ -3132,7 +2954,7 @@ async fn pc_copy(sc: &Scenario, entries: &[GoldenEntry]) -> qc::ReadyToCloneResp
 async fn snowflake_evaluation_off_copy_renders_under_the_dev_target_at_the_dev_decision_time() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("pc");
-    let entries = cells_202();
+    let entries = entries(CELLS);
     let copy = pc_copy(&sc, &entries).await;
 
     let hosted = &entries[PC_DEV_COPY].response["response"]["ready_to_clone"];
@@ -3167,7 +2989,7 @@ async fn snowflake_evaluation_off_copy_explain_matches_hosted_after_a_restart() 
     let database = std::sync::Arc::new(support::TestDatabase::new("volatile_copy_restart").await);
     let server = support::start_server_on_database(database.clone()).await;
     let sc = Scenario::connect(&server).await;
-    let entries = cells_202();
+    let entries = entries(CELLS);
     let copy = pc_copy(&sc, &entries).await;
     let mut confirm: qc::ConfirmExecutionRequest =
         serde_json::from_value(entries[PC_DEV_CONFIRM].request.clone()).unwrap();
@@ -3180,46 +3002,27 @@ async fn snowflake_evaluation_off_copy_explain_matches_hosted_after_a_restart() 
             .success
     );
     let id = copy.execution_decision_id.clone().unwrap();
-    let expected = hosted_explain_for(
+    let explains = [HostedExplain::of(
+        "pc copy",
         &entries[PC_COPY_EXPLAIN],
         &entries[PC_DEV_COPY],
         &id,
         &volatile_values_of(&copy.transformed_nodes_by_query),
-    );
-    let at = submitted_at(&entries[PC_COPY_EXPLAIN]);
-    assert_eq!(explain(&sc.at(at), &id).await, expected);
-
-    drop(sc);
-    drop(server);
-    let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await.at(at);
-    assert_eq!(
-        explain(&sc, &id).await,
-        expected,
-        "the persisted values print after a restart"
-    );
+    )];
+    assert_explains_match_hosted(&database, server, &explains, std::convert::identity).await;
 }
 
 /// `explain` with each `updated … after … last executed` line masked, as the
 /// conformance replay masks it (`«gap»`). Hosted words `lz`'s 94.992 s gap
 /// (entry 200: `eu` at 1795098837609, recorded at 1795098742617) as
-/// `2 minutes`; this server rounds down to `a minute` outside Databricks.
-fn masked_gaps(mut explain: serde_json::Value) -> serde_json::Value {
-    fn walk(lines: &mut serde_json::Value) {
-        for line in lines.as_array_mut().into_iter().flatten() {
-            if line["text"]
-                .as_str()
-                .is_some_and(|t| t.starts_with("updated ") && t.ends_with(" last executed"))
-            {
-                line["text"] = "«gap»".into();
-            }
-            walk(&mut line["children"]);
-        }
-    }
-    for message in explain["messages"].as_array_mut().unwrap() {
-        walk(&mut message["explain_lines"]);
-    }
-    explain
+/// `2 minutes`; this server rounds down to `a minute` outside Databricks
+/// (#210).
+fn masked_gaps(explain: serde_json::Value) -> serde_json::Value {
+    mask_lines(
+        explain,
+        |text| text.starts_with("updated ") && text.ends_with(" last executed"),
+        "«gap»",
+    )
 }
 
 #[tokio::test]
@@ -3227,14 +3030,14 @@ async fn snowflake_zero_lag_tolerance_table_over_a_volatile_model_is_rebuilt_on_
     let database = std::sync::Arc::new(support::TestDatabase::new("volatile_zero_lag").await);
     let server = support::start_server_on_database(database.clone()).await;
     let sc = Scenario::connect(&server).await;
-    let entries = cells_202();
+    let entries = entries(CELLS);
 
     build_captured(&sc, &entries, EU_BUILD).await;
     let first = build_captured(&sc, &entries, LZ_BUILD).await;
     build_captured(&sc, &entries, EU_REBUILD).await;
     let rerun = build_captured(&sc, &entries, LZ_REBUILD).await;
 
-    let mut cases = Vec::new();
+    let mut explains = Vec::new();
     for (ready, submit, explained) in [
         (&first, LZ_BUILD, LZ_BUILD_EXPLAIN),
         (&rerun, LZ_REBUILD, LZ_REBUILD_EXPLAIN),
@@ -3248,35 +3051,24 @@ async fn snowflake_zero_lag_tolerance_table_over_a_volatile_model_is_rebuilt_on_
             ready.transformed_nodes_by_query.is_empty(),
             "entry {submit}"
         );
-        let id = ready.execution_decision_id.clone().unwrap();
-        let at = submitted_at(&entries[explained]);
-        let expected = masked_gaps(hosted_explain(&entries, explained, &id));
-        assert_eq!(
-            masked_gaps(explain(&sc.at(at), &id).await),
-            expected,
-            "entry {explained}"
-        );
-        cases.push((id, at, expected));
+        explains.push(HostedExplain::of(
+            format!("entry {explained}"),
+            &entries[explained],
+            &entries[submit],
+            ready.execution_decision_id.as_deref().unwrap(),
+            &rendered(ready),
+        ));
     }
-
     drop(sc);
-    drop(server);
-    let server = support::start_server_on_database(database.clone()).await;
-    let sc = Scenario::connect(&server).await;
-    for (id, at, expected) in cases {
-        assert_eq!(
-            masked_gaps(explain(&sc.at(at), &id).await),
-            expected,
-            "{id}: after a restart"
-        );
-    }
+    assert_explains_match_hosted(&database, server, &explains, masked_gaps).await;
 }
 
 #[tokio::test]
 async fn snowflake_uncaptured_copy_cells_render_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let entries = cells_202();
+    let evaluation = entries(RUN_1);
+    let entries = entries(CELLS);
     let dev = captured_submit(&entries[PC_DEV_COPY].request);
 
     // `pc`'s copy over a dev Target relation that already exists.
@@ -3291,7 +3083,6 @@ async fn snowflake_uncaptured_copy_cells_render_nothing() {
 
     // A copy of `vd` (#191), whose values are in its query dependency `vv`,
     // into the other schema of its namespace, with evaluation off.
-    let evaluation = snowflake_evaluation();
     let vd = captured_submit(&evaluation[VD_FIRST_BUILD].request).tolerate_nondeterminism(true);
     let vd_dev = serde_json::to_string(&evaluation[VD_FIRST_BUILD].request)
         .unwrap()
