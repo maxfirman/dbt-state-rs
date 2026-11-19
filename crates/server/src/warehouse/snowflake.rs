@@ -15,8 +15,8 @@ use sqlparser::dialect::SnowflakeDialect;
 ///
 /// Several forms fold into one key, and a key is rendered once per submit.
 /// Values are rendered only in the captured cells below; every other
-/// execution type, decision and evaluation setting, and values in both a
-/// node's own SQL and a query dependency, render nothing. A form without a
+/// execution type, decision reason and evaluation setting, and values in both
+/// a node's own SQL and a query dependency, render nothing. A form without a
 /// rule renders nothing: `zipf` and the `seqN` generators and functions
 /// outside the detector set such as `current_user()` (hosted renders none,
 /// #202 entries 20, 25 and 31), and calls with other arguments are uncaptured.
@@ -26,11 +26,6 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
         Append, DbtCustom, DbtDataTest, Full, Snapshot, View,
     };
     use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
-    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
-    // An unchanged rerun: refused at Reuse qualification.
-    const RERUN: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-        NoCandidate::FailedReuseQualification,
-    ));
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
         Rule {
             name,
@@ -39,6 +34,16 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             value,
         }
     }
+    // The captured build reasons. A build for any other reason (upstream
+    // data or producer changes, an External modification with evaluation
+    // off, an execution type change, ...) renders nothing.
+    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
+    const REFUSED_REUSE: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::FailedReuseQualification,
+    ));
+    const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::IdentityMismatch,
+    ));
     const fn cell(
         execution_type: crate::query_cache::ModelExecutionType,
         evaluation_requested: bool,
@@ -207,21 +212,34 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             rule("uuid_string", Call::Empty, "UUID_STRING()", Value::Uuid),
         ],
         cells: &[
-            // Evaluation on: a table's first builds (run 1 entry 6, run 2
-            // entries 13–24, `clone_fallback_volatile.jsonl` entries 0 and 2)
-            // and its unchanged rerun (run 1 entry 33).
-            cell(Full, true, Outcome::AnyBuild, Queries::Own),
+            // Evaluation on, a table: its first builds (run 1 entry 6, run 2
+            // entries 13–24, `clone_fallback_volatile.jsonl` entries 0 and 2),
+            // a rerun refused at Reuse qualification, unchanged (run 1 entry
+            // 33), after an External modification, over an upstream table
+            // or a query dependency (`explain_volatile_cells.jsonl` entries
+            // 137, 166, 147), and a query-changed rebuild (entry 142).
+            cell(Full, true, FIRST_BUILD, Queries::Own),
+            cell(Full, true, REFUSED_REUSE, Queries::Own),
+            cell(Full, true, QUERY_CHANGED, Queries::Own),
             // A table over a volatile view, first build and rerun (run 1
-            // entries 10 and 35).
-            cell(Full, true, Outcome::AnyBuild, Queries::Dependencies),
-            // A data test without a Target relation, first execution and
-            // rerun (run 1 entries 16 and 37).
-            cell(DbtDataTest, true, Outcome::AnyBuild, Queries::Own),
-            // Evaluation off: a table's first build and reuses (run 1
-            // entries 8, 34 and 50), and a view's (entries 7 and 32).
-            cell(Full, false, Outcome::AnyBuild, Queries::Own),
+            // entries 10 and 35; `explain_volatile_cells.jsonl` entries 72
+            // and 168, over an upstream table too).
+            cell(Full, true, FIRST_BUILD, Queries::Dependencies),
+            cell(Full, true, REFUSED_REUSE, Queries::Dependencies),
+            // A data test without a Target relation: first execution, rerun
+            // (run 1 entries 16 and 37) and after its logic changed
+            // (`explain_volatile_cells.jsonl` entry 148).
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, true, REFUSED_REUSE, Queries::Own),
+            cell(DbtDataTest, true, QUERY_CHANGED, Queries::Own),
+            // Evaluation off: a table's first build, query-changed rebuild
+            // and reuses (run 1 entries 8, 34 and 50;
+            // `explain_volatile_cells.jsonl` entry 133), and a view's first
+            // build and reuse (run 1 entries 7 and 32).
+            cell(Full, false, FIRST_BUILD, Queries::Own),
+            cell(Full, false, QUERY_CHANGED, Queries::Own),
             cell(Full, false, Outcome::Reuse, Queries::Own),
-            cell(View, false, Outcome::AnyBuild, Queries::Own),
+            cell(View, false, FIRST_BUILD, Queries::Own),
             cell(View, false, Outcome::Reuse, Queries::Own),
             // Evaluation on: an APPEND incremental, a snapshot and a custom
             // materialization, first build and unchanged rerun
@@ -229,11 +247,11 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             // 24/143, #205). Their other rebuild reasons, and evaluation off,
             // are uncaptured.
             cell(Append, true, FIRST_BUILD, Queries::Own),
-            cell(Append, true, RERUN, Queries::Own),
+            cell(Append, true, REFUSED_REUSE, Queries::Own),
             cell(Snapshot, true, FIRST_BUILD, Queries::Own),
-            cell(Snapshot, true, RERUN, Queries::Own),
+            cell(Snapshot, true, REFUSED_REUSE, Queries::Own),
             cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
-            cell(DbtCustom, true, RERUN, Queries::Own),
+            cell(DbtCustom, true, REFUSED_REUSE, Queries::Own),
         ],
     }
 };

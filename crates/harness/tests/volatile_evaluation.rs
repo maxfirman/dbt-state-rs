@@ -971,7 +971,9 @@ async fn snowflake_evaluation_off_renders_a_rebuild_but_prints_no_uncaptured_exp
         "rendered with evaluation off, as on hosted's evaluation-off builds"
     );
     // Hosted's Explain of a query-changed rebuild with evaluation off is
-    // uncaptured: the query analysis prints, without volatile lines.
+    // captured for a table without upstreams only (`ro`, #206); this one
+    // reads an upstream table, so the query analysis prints without
+    // volatile lines.
     assert!(
         texts(&explained).contains(&"the model query has changed".to_owned()),
         "{explained}"
@@ -1670,34 +1672,6 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
     }
 }
 
-#[tokio::test]
-async fn a_volatile_data_test_logic_change_is_uncaptured_and_prints_no_volatile_lines() {
-    let server = support::start_server().await;
-    let sc = Scenario::connect(&server).await.org("logic change");
-    let entries = snowflake_evaluation();
-    let vt_results: qc::Struct =
-        serde_json::from_value(entries[VT_FIRST + 1].request["execution_results"].clone()).unwrap();
-    sc.build_with(
-        captured_submit(&entries[VT_FIRST].request),
-        support::scenario::outcome().results(vt_results),
-    )
-    .await;
-
-    let changed = sc
-        .expect_execute(
-            captured_submit(&entries[VT_RERUN].request)
-                .with(|r| r.sql = r.sql.replace("id > 100", "id > 200")),
-        )
-        .await;
-    assert!(!rendered(&changed).is_empty(), "rendered and returned");
-    let explained = explain(&sc, changed.execution_decision_id.as_deref().unwrap()).await;
-    assert!(!prints_volatile_lines(&explained), "{explained}");
-    assert!(
-        texts(&explained).contains(&"data freshness analysis".to_owned()),
-        "the captured logic-change tree: {explained}"
-    );
-}
-
 // ── Uncaptured cells render nothing (#67 review) ────────────────────────────
 //
 // Values are returned only in the cells hosted was captured rendering:
@@ -2388,6 +2362,259 @@ async fn snowflake_uncaptured_incremental_snapshot_and_custom_cells_render_nothi
                 !tree,
                 "{node} {case}: {explained}"
             );
+        }
+    }
+}
+
+// ── Snowflake rebuild reasons and Explain variants (#206) ───────────────────
+//
+// Evidence: the #202 capture, `golden/fixtures/explain_volatile_cells.jsonl`
+// (dbt 2.0.11; `docs/reports/snowflake-volatile-cells-2026-11-19.md`). Round 2
+// reruns each node; every case below is a `ready_to_execute` 6/6 whose map
+// replays, and whose Explain is compared with hosted's.
+mod rebuild_reasons_206 {
+    use super::*;
+
+    const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+    /// Round 2 submits, and hosted's Explain of each.
+    /// `rq`: query-changed FULL rebuild, evaluation on.
+    const RQ: (usize, usize) = (142, 192);
+    /// `rx`: rebuild after an External modification, evaluation on.
+    const RX: (usize, usize) = (137, 193);
+    /// `ro`: query-changed FULL rebuild, evaluation off.
+    const RO: (usize, usize) = (133, 194);
+    /// `rt`: a volatile data test after its logic changed (`id > 100` ->
+    /// `id > 101`), evaluation on.
+    const RT: (usize, usize) = (148, 204);
+    /// `eq`: unchanged rerun of a table over a deterministic query
+    /// dependency (the view `vwd`), evaluation on.
+    const EQ: (usize, usize) = (147, 197);
+    /// `eu`: unchanged rerun of a table over an upstream table (`vb`),
+    /// evaluation on.
+    const EU: (usize, usize) = (166, 195);
+    /// `edu`: unchanged rerun of a table over the volatile view `vw` (a
+    /// query dependency) and an upstream table (`vb`), evaluation on.
+    const EDU: (usize, usize) = (168, 199);
+
+    /// Replay the capture through its last round 2 submit (`edu`, entry 168)
+    /// at the recorded times on a fresh database, then require each case's
+    /// local response to match hosted's codes and map shape, and its Explain
+    /// to equal hosted's for the values the local decision rendered, before
+    /// and after a restart. `last updated` lines are masked: outside
+    /// Databricks they print the raw epoch, as the conformance replay masks.
+    async fn assert_rebuilds_match_hosted(database: &str, cases: &[((usize, usize), &str)]) {
+        let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
+        let server = support::start_server_on_database(database.clone()).await;
+        let entries = entries(CELLS);
+        let responses = replay(&Scenario::connect(&server).await, &entries, 168).await;
+        let expected: Vec<_> = cases
+            .iter()
+            .map(|&((submit, explained), case)| {
+                assert_matches_hosted(&responses[&submit], &entries[submit], case);
+                masked_relative_times(hosted_explain_for(
+                    &entries[explained],
+                    &entries[submit],
+                    &decision_id(&responses[&submit]),
+                    &volatile_values(&responses[&submit]),
+                ))
+            })
+            .collect();
+        let explained = |server: support::TestServer| {
+            let responses = &responses;
+            async move {
+                let sc = Scenario::connect(&server).await;
+                let mut out = Vec::new();
+                for &((submit, _), _) in cases {
+                    let id = decision_id(&responses[&submit]);
+                    out.push(masked_relative_times(explain(&sc, &id).await));
+                }
+                out
+            }
+        };
+        let cases: Vec<_> = cases.iter().map(|(_, case)| *case).collect();
+        let local = explained(server).await;
+        for ((local, expected), case) in local.iter().zip(&expected).zip(&cases) {
+            assert_eq!(local, expected, "{case}");
+        }
+        let server = support::start_server_on_database(database.clone()).await;
+        let local = explained(server).await;
+        for ((local, expected), case) in local.iter().zip(&expected).zip(&cases) {
+            assert_eq!(local, expected, "{case}: after a restart");
+        }
+    }
+
+    #[tokio::test]
+    async fn snowflake_query_changed_and_externally_modified_rebuilds_render_and_explain_as_captured(
+    ) {
+        assert_rebuilds_match_hosted(
+            "volatile_206_rq_rx",
+            &[
+                (RQ, "rq: query-changed rebuild, evaluation on"),
+                (
+                    RX,
+                    "rx: rebuild after an External modification, evaluation on",
+                ),
+            ],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn snowflake_query_changed_rebuild_with_evaluation_off_lists_its_values_without_a_tolerance_line(
+    ) {
+        assert_rebuilds_match_hosted(
+            "volatile_206_ro",
+            &[(RO, "ro: query-changed rebuild, evaluation off")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn snowflake_volatile_data_test_logic_change_prints_the_volatile_query_analysis() {
+        assert_rebuilds_match_hosted(
+            "volatile_206_rt",
+            &[(RT, "rt: volatile data test logic change, evaluation on")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn snowflake_rerun_over_a_deterministic_query_dependency_explains_as_captured() {
+        assert_rebuilds_match_hosted(
+            "volatile_206_eq",
+            &[(EQ, "eq: rerun over a deterministic query dependency")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn snowflake_rerun_over_an_upstream_table_explains_as_captured() {
+        assert_rebuilds_match_hosted(
+            "volatile_206_eu",
+            &[(EU, "eu: rerun over an upstream table")],
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn snowflake_rerun_over_a_volatile_dependency_and_an_upstream_table_explains_as_captured()
+    {
+        assert_rebuilds_match_hosted(
+            "volatile_206_edu",
+            &[(
+                EDU,
+                "edu: rerun over a volatile view dependency and an upstream table",
+            )],
+        )
+        .await;
+    }
+
+    /// Hosted's rerun trees over an upstream table were captured with the
+    /// upstream unchanged since the build. A rerun after the upstream was
+    /// rebuilt is uncaptured: it keeps its map and renders no tree.
+    #[tokio::test]
+    async fn snowflake_reruns_over_a_changed_upstream_table_render_no_tree() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        // Round 1: every first build and its confirm.
+        replay(&sc, &entries, 108).await;
+        for (case, (submit, _)) in [("eu", EU), ("edu", EDU)] {
+            let vb = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"VB_1431544D67B8\"";
+            let rebuilt = captured_submit(&entries[submit].request).with(move |r| {
+                for table in r.tables.iter_mut().filter(|t| t.name == vb) {
+                    table.last_modified_epoch = Some(1795098900000);
+                }
+            });
+            let ready = sc.expect_execute(rebuilt).await;
+            assert_eq!(
+                volatile_map_shape(&rendered(&ready)),
+                volatile_map_shape(&hosted_volatile_values(&entries[submit].response)),
+                "{case}: the map is unchanged"
+            );
+            let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+            assert_eq!(
+                explained["messages"][0]["explain_lines"],
+                serde_json::json!([]),
+                "{case}: {explained}"
+            );
+        }
+    }
+
+    /// Snowflake build cells render only for the captured decision reasons:
+    /// a first build, a rerun refused at Reuse qualification and a
+    /// query-changed rebuild (evaluation on), and a first build and a
+    /// query-changed rebuild (evaluation off). A rebuild for any other reason
+    /// keeps an empty map.
+    #[tokio::test]
+    async fn snowflake_rebuilds_for_uncaptured_reasons_keep_an_empty_map() {
+        use support::scenario::ExecutionType;
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let model = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(SNOWFLAKE_BUILT_AT));
+        let upstream = model.clone().build().tables[0].name.clone();
+        let upstream_epoch = model.clone().build().tables[0].last_modified_epoch.unwrap();
+        let off = model.clone().tolerate_nondeterminism(true);
+        let cases = [
+            (
+                "evaluation off, upstream data changed",
+                off.clone(),
+                off.clone().upstream(&upstream, upstream_epoch + 60_000),
+            ),
+            (
+                "evaluation off, External modification",
+                off.clone(),
+                off.clone().own_epoch(Some(SNOWFLAKE_BUILT_AT + 60_000)),
+            ),
+            (
+                "evaluation on, built as a view before",
+                model.clone().execution_type(ExecutionType::View),
+                model.clone(),
+            ),
+        ];
+        for (case, history, rebuild) in cases {
+            let sc = sc.org(case);
+            sc.build(history, SNOWFLAKE_BUILT_AT).await;
+            let ready = sc.expect_execute(rebuild).await;
+            assert!(
+                rendered(&ready).is_empty(),
+                "{case}: {:?}",
+                rendered(&ready)
+            );
+        }
+
+        // Controls over the same history: the captured reasons render.
+        let controls = [
+            (
+                "evaluation off, query changed",
+                off.clone(),
+                off.clone()
+                    .sql(&snowflake_sql("id, current_timestamp() as loaded_at")),
+            ),
+            (
+                "evaluation on, unchanged rerun",
+                model.clone(),
+                model.clone(),
+            ),
+            (
+                "evaluation on, External modification",
+                model.clone(),
+                model.clone().own_epoch(Some(SNOWFLAKE_BUILT_AT + 60_000)),
+            ),
+            (
+                "evaluation on, query changed",
+                model.clone(),
+                model
+                    .clone()
+                    .sql(&snowflake_sql("id, current_timestamp() as loaded_at")),
+            ),
+        ];
+        for (case, history, rebuild) in controls {
+            let sc = sc.org(&format!("control {case}"));
+            sc.build(history, SNOWFLAKE_BUILT_AT).await;
+            let ready = sc.expect_execute(rebuild).await;
+            assert!(!rendered(&ready).is_empty(), "{case}");
         }
     }
 }

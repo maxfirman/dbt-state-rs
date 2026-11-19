@@ -531,8 +531,8 @@ async fn decide_resolved_sql(
     log_decision(evidence, &record, candidate.is_some(), &req.labels);
     // A rebuild refused at Reuse qualification is explained against the
     // build it refused, with that build's age at the submit, which dates the
-    // upstream listing's `last updated` lines (#205,
-    // `explain_volatile_cells.jsonl` entry 189). Explain only.
+    // upstream listing's `last updated` lines (#205, #206,
+    // `explain_volatile_cells.jsonl` entries 189, 195 and 199). Explain only.
     let mut record = record;
     if let (None, Some(row)) = (record.build_age_ms, &selection.unqualified) {
         record.build_age_ms = Warehouse::from_dialect(&row.dialect)
@@ -568,7 +568,7 @@ async fn decide_resolved_sql(
 /// target was missing or modified keeps that build as its Explain anchor; so
 /// does a rebuild whose latest build had the identity under another
 /// execution type (#83), and a model's rebuild refused at Reuse
-/// qualification (#205).
+/// qualification (#205, #206).
 fn anchor_rejected(
     mut record: DecisionRecord,
     candidate: Option<ExecutionRow>,

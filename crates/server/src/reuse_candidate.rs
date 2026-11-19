@@ -45,10 +45,6 @@ pub(crate) struct Selection {
     /// (VERIFIED LIVE 2026-11-10, lag_copy_candidates `ome`, `de`). Never
     /// reused.
     pub rejected: Option<ExecutionRow>,
-    /// The row with the workload's identity that failed Reuse qualification:
-    /// a model's rebuild is explained against it (#205,
-    /// `explain_volatile_cells.jsonl` entries 189 and 190). Never reused.
-    pub unqualified: Option<ExecutionRow>,
     /// The latest row when it does not have the workload's identity (models
     /// only). Never reused; Explain judges the SHAPE 7 freshness listing
     /// against it (VERIFIED LIVE 2026-11-11, explain_rebuild_reason_gaps.jsonl).
@@ -62,6 +58,12 @@ pub(crate) struct Selection {
     /// Databricks APPEND/MERGE response/Explain basis only. Selection still
     /// rejects against the submit type's build; this row is never reusable.
     pub transition_display: Option<ExecutionRow>,
+    /// The latest row when it has the workload's identity but the submit
+    /// failed Reuse qualification (volatile SQL with Volatile evaluation
+    /// requested, among others): Explain judges the rebuild's freshness
+    /// listing against it (`explain_volatile_cells.jsonl` entries 189, 190
+    /// (#205), 195 and 199 (#206)). Never reused, and never a copy's anchor.
+    pub unqualified: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -111,12 +113,11 @@ impl Selection {
             why_no_candidate,
             Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
         );
+        let unqualified_build = why_no_candidate == Some(NoCandidate::FailedReuseQualification);
         let (candidate, rejected, unqualified) = match identified {
             Some(row) if why_no_candidate.is_none() => (Some(row), None, None),
             Some(row) if own_target => (None, Some(row), None),
-            Some(row) if why_no_candidate == Some(NoCandidate::FailedReuseQualification) => {
-                (None, None, Some(row))
-            }
+            Some(row) if unqualified_build => (None, None, Some(row)),
             _ => (None, None, None),
         };
         // A row with the identity under another type is no unmatched build.

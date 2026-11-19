@@ -822,12 +822,13 @@ fn shape(node: &ExplainNode) -> Option<Shape> {
         (DecisionKind::Clone, R::ResultCopy) => Shape::Clone,
         // Volatile evaluation (#195): a table over a view whose definition
         // rendered values with evaluation requested, with no values of its
-        // own and no upstream table, is never reused
-        // (explain_volatile_evaluation.jsonl entry 45). Evaluation off is
-        // uncaptured and keeps the ordinary tree.
+        // own, is never reused (explain_volatile_evaluation.jsonl entry 45);
+        // also over an upstream table none of which provably changed since
+        // the refused build (explain_volatile_cells.jsonl entry 199, #206).
+        // Evaluation off is uncaptured and keeps the ordinary tree.
         (DecisionKind::Build, R::NoReuseCandidate(NoCandidate::FailedReuseQualification))
             if full
-                && !upstreams
+                && (!upstreams || upstreams_fresh_against_anchor(node))
                 && !node.own_target_absent()
                 && !compares_templates(node)
                 && node.volatile_evaluation.requested == Some(true)
@@ -922,30 +923,26 @@ pub fn explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
 /// qualification. Hosted explains it as a query change (the volatile lines
 /// follow from [`add_volatile_lines`]). Identity is unchanged: the wording is
 /// derived from the persisted values and flag only (maintainer decision on
-/// #191). Captured (#205, `explain_volatile_cells.jsonl`) for a table model
-/// and a custom node without upstreams (entry 191), and for an APPEND
-/// incremental and a snapshot (in `snapshot` wording) over an upstream table
-/// that neither drifted nor changed its producer since the build (entries
-/// 189 and 190), which adds `upstream model queries have not changed` and
-/// the SKIP tree's freshness listing (there FRESH with an epoch that moved
-/// back, so no summary line). Other shapes keep the decision's own tree.
+/// #191). Captured for a table model without upstreams, and in
+/// `explain_volatile_cells.jsonl`: for a custom node without upstreams
+/// (entry 191, #205); for a table over a deterministic query dependency
+/// (entry 197, #206) or an upstream table (entry 195, #206); and for an
+/// APPEND incremental and a snapshot (in `snapshot` wording) over an upstream
+/// table (entries 189 and 190, #205). Every form with an upstream or a query
+/// dependency adds `upstream model queries have not changed`; the dependency
+/// says `upstream data is up to date`, and an upstream table is listed
+/// against the refused build, as a reuse does, when none provably changed
+/// since it (in 189 and 190 FRESH with an epoch that moved back, so no
+/// summary line). Other shapes keep the decision's own tree.
 fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     use ModelExecutionType as K;
-    let upstreams = node.genuine_upstreams();
-    let captured_shape = match K::try_from(node.execution_type) {
-        Ok(K::Full | K::DbtCustom) => upstreams.is_empty(),
-        Ok(K::Append | K::Snapshot) => !upstreams.is_empty() && upstreams_fresh_since_build(node),
-        _ => false,
-    };
     let captured = node.evaluated_own_volatile_sql()
         && node.decision == DecisionKind::Build
         && node.reason
             == Some(DecisionReason::NoReuseCandidate(
                 NoCandidate::FailedReuseQualification,
             ))
-        && captured_shape
         && node.template_comparison.as_ref().is_none_or(|c| !c.enabled)
-        && node.query_dependencies.is_empty()
         && node
             .target_table
             .as_deref()
@@ -953,34 +950,64 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
     if !captured {
         return None;
     }
+    let kind = K::try_from(node.execution_type).ok()?;
     let mut query = vec![leaf(
         format!("the {} query has changed", node.noun()),
         Some(MARKER_FAIL),
         Some(BADGE_NODE_QUERY_CHANGED),
     )];
-    let freshness = if upstreams.is_empty() {
-        vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)]
-    } else {
-        query.push(leaf(
-            "upstream model queries have not changed",
-            Some(MARKER_SUCCESS),
-            None,
-        ));
-        let mut listing = vec![upstream_dependencies_freshness(node, &upstreams)];
-        listing.extend(freshness_summary(node));
-        listing
+    let upstream_queries_unchanged = leaf(
+        "upstream model queries have not changed",
+        Some(MARKER_SUCCESS),
+        None,
+    );
+    let freshness = match (
+        kind,
+        node.genuine_upstreams().is_empty(),
+        node.query_dependencies.is_empty(),
+    ) {
+        (K::Full | K::DbtCustom, true, true) => section(
+            "data freshness analysis",
+            vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
+        ),
+        (K::Full, true, false) => {
+            query.push(upstream_queries_unchanged);
+            section(
+                "data freshness analysis",
+                vec![leaf(
+                    "upstream data is up to date",
+                    Some(MARKER_SUCCESS),
+                    None,
+                )],
+            )
+        }
+        (K::Full | K::Append | K::Snapshot, false, true)
+            if upstreams_fresh_against_anchor(node) =>
+        {
+            query.push(upstream_queries_unchanged);
+            data_freshness_analysis_fresh(node)
+        }
+        _ => return None,
     };
     Some(vec![
         table_analysis_exists(node),
         section("query analysis", query),
-        section("data freshness analysis", freshness),
+        freshness,
     ])
 }
 
-/// Whether no genuine upstream drifted or changed its producing build since
-/// the node's matched build (an epoch that only moved back is no drift).
-fn upstreams_fresh_since_build(node: &ExplainNode) -> bool {
-    anchored_verdicts(node).is_some_and(|v| v.iter().all(|u| !u.drifted && !u.producer_changed))
+/// Whether every genuine upstream is judged against the anchored build and
+/// none provably drifted or changed producer since it (an epoch that only
+/// moved back is no drift). An unprovable upstream counts as drifted.
+fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|anchor| {
+        let freshness = decision::upstream_freshness(freshness_inputs(node), anchor);
+        freshness.evidence == decision::FreshnessEvidence::Evaluated
+            && freshness
+                .upstreams
+                .iter()
+                .all(|u| !u.drifted && !u.unprovable && !u.producer_changed)
+    })
 }
 
 /// Volatile evaluation (#67): hosted prints, in the query analysis and ahead
@@ -994,7 +1021,10 @@ fn upstreams_fresh_since_build(node: &ExplainNode) -> bool {
 ///   `the snapshot query has changed` (`explain_volatile_cells.jsonl` entry
 ///   190);
 /// - evaluation off, on a model's reuse, before `the model query has not
-///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51).
+///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51);
+/// - evaluation off, on a table's query-changed rebuild without upstreams,
+///   before `the model query has changed` and with no `tolerated by config`
+///   line (`explain_volatile_cells.jsonl` entry 194, #206).
 ///
 /// Other shapes (a data test with evaluation off among them) are uncaptured
 /// and print no volatile lines, and so does a decision recorded without the
@@ -1009,12 +1039,19 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         Some(true) => (
             format!("the {noun} query has changed"),
             BADGE_NODE_QUERY_CHANGED,
-            format!("the {noun} query is not deterministic and this is not tolerated by config"),
+            Some(format!(
+                "the {noun} query is not deterministic and this is not tolerated by config"
+            )),
         ),
         Some(false) if noun == "model" && node.decision == DecisionKind::Skip => (
             "the model query has not changed".to_owned(),
             BADGE_NODE_QUERY_UNCHANGED,
-            "the model query is not deterministic but this is tolerated by config".to_owned(),
+            Some("the model query is not deterministic but this is tolerated by config".to_owned()),
+        ),
+        Some(false) if evaluation_off_query_changed_rebuild(node) => (
+            "the model query has changed".to_owned(),
+            BADGE_NODE_QUERY_CHANGED,
+            None,
         ),
         _ => return,
     };
@@ -1029,8 +1066,27 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     };
     let detected = volatile_functions_detected(own.into_iter().map(rendered_value).collect());
-    let tolerance = leaf(tolerance, Some(MARKER_INFO), None);
-    query.children.splice(at..at, [detected, tolerance]);
+    let tolerance = tolerance.map(|text| leaf(text, Some(MARKER_INFO), None));
+    query
+        .children
+        .splice(at..at, std::iter::once(detected).chain(tolerance));
+}
+
+/// The captured evaluation-off rebuild (#206, `explain_volatile_cells.jsonl`
+/// entry 194): a table without upstreams or query dependencies whose own SQL
+/// changed, over its existing Target relation. Other evaluation-off rebuilds
+/// are uncaptured.
+fn evaluation_off_query_changed_rebuild(node: &ExplainNode) -> bool {
+    node.decision == DecisionKind::Build
+        && node.reason
+            == Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::IdentityMismatch,
+            ))
+        && node.execution_type == ModelExecutionType::Full as i32
+        && !compares_templates(node)
+        && node.query_dependencies.is_empty()
+        && node.genuine_upstreams().is_empty()
+        && !node.own_target_absent()
 }
 
 /// `non-deterministic functions detected in query` [INFO] over `values`.
@@ -1055,7 +1111,10 @@ fn rendered_value(v: &crate::volatile_evaluation::RenderedValue) -> qc::ExplainL
 /// in rendered value will result in a diff`; the upstream model query is
 /// then reported changed, and the upstream data up to date
 /// (`explain_volatile_evaluation.jsonl` entry 45). No `tolerated by config`
-/// line in this form.
+/// line in this form. An upstream table follows the dependencies with `query
+/// or upstream query unchanged`, and the freshness analysis lists it against
+/// the refused build, as a reuse does (`explain_volatile_cells.jsonl` entry
+/// 199, #206).
 fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let mut dependencies: Vec<(&str, Vec<qc::ExplainLine>)> = Vec::new();
     for v in &node.volatile_evaluation.values {
@@ -1065,13 +1124,36 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             None => dependencies.push((&v.query, vec![rendered])),
         }
     }
+    let upstreams = node.genuine_upstreams();
     let dependencies = dependencies
         .into_iter()
         .map(|(name, mut values)| {
             values.push(line("a change in rendered value will result in a diff"));
             section(quote(name), vec![volatile_functions_detected(values)])
         })
+        .chain(upstreams.iter().map(|up| {
+            section(
+                quote(&up.name),
+                vec![leaf(
+                    "query or upstream query unchanged",
+                    None,
+                    Some(BADGE_UPSTREAM_QUERY_UNCHANGED),
+                )],
+            )
+        }))
         .collect();
+    let freshness = if upstreams.is_empty() {
+        section(
+            "data freshness analysis",
+            vec![leaf(
+                "upstream data is up to date",
+                Some(MARKER_SUCCESS),
+                None,
+            )],
+        )
+    } else {
+        data_freshness_analysis_fresh(node)
+    };
     vec![
         table_analysis_exists(node),
         section(
@@ -1090,22 +1172,16 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
                 ),
             ],
         ),
-        section(
-            "data freshness analysis",
-            vec![leaf(
-                "upstream data is up to date",
-                Some(MARKER_SUCCESS),
-                None,
-            )],
-        ),
+        freshness,
     ]
 }
 
 /// Whether a data test's tree starts with the Volatile evaluation query
 /// analysis (#195): values were rendered for its own SQL, with evaluation
-/// requested, on a first execution or an unchanged rerun
-/// (`explain_volatile_evaluation.jsonl` entries 24 and 46). A logic change
-/// with values, and evaluation off, are uncaptured and keep the ordinary tree.
+/// requested, on a first execution, an unchanged rerun
+/// (`explain_volatile_evaluation.jsonl` entries 24 and 46) or after its logic
+/// changed (`explain_volatile_cells.jsonl` entry 204, #206). Evaluation off
+/// is uncaptured and keeps the ordinary tree.
 fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
     node.is_data_test()
         && node.evaluated_own_volatile_sql()
@@ -1114,7 +1190,9 @@ fn volatile_test_query_analysis(node: &ExplainNode) -> bool {
             node.reason,
             Some(
                 DecisionReason::FirstBuild
-                    | DecisionReason::NoReuseCandidate(NoCandidate::FailedReuseQualification)
+                    | DecisionReason::NoReuseCandidate(
+                        NoCandidate::FailedReuseQualification | NoCandidate::IdentityMismatch
+                    )
             )
         )
 }
