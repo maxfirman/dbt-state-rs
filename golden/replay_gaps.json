@@ -767,20 +767,5 @@
       "query analysis"
     ],
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) rt volatile data test after its logic changed: hosted adds the same 'query analysis' section as an unchanged rerun (volatile block, 'not tolerated by config', 'the test query has changed' [FAIL] <NODE_QUERY_CHANGED>); the rest matches."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 207,
-    "local_variant": "ready_to_clone",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #207) pc dev run (evaluation off) copied from its prod build: ready_to_clone keyed by the dev Target relation: hosted renders [\"PC_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server copies too but renders nothing on ready_to_clone and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 209,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #207) pc copy into dev: hosted's 'query analysis (vs clone)' adds the volatile block and 'the model query is not deterministic but this is tolerated by config' [INFO], and has no 'upstream model queries have not changed' line; its 'data freshness analysis (vs clone)' says 'no upstream dependencies' [SUCCESS] where the local tree says 'upstream data is up to date' [SUCCESS]."
   }
 ]

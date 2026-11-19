@@ -273,14 +273,24 @@ pub async fn submit_sql_explained(
     let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
-    // Volatile evaluation, once decided: a build or a reuse, in the cells the
-    // Warehouse was captured rendering in. A copy has no capture.
+    // Volatile evaluation, once decided: a build, a reuse or a Result copy,
+    // in the cells the Warehouse was captured rendering in. The chain-limit
+    // build has no capture.
     let decision = match &decided.outcome {
         SubmitOutcome::Execute { record, .. } => {
             Some(crate::volatile_evaluation::Decided::Build(record.reason))
         }
         SubmitOutcome::Skip { .. } => Some(crate::volatile_evaluation::Decided::Reuse),
-        _ => None,
+        SubmitOutcome::Copy { .. } => {
+            let explain = &decided.explain;
+            Some(crate::volatile_evaluation::Decided::Copy {
+                target_exists: explain
+                    .target_table
+                    .as_ref()
+                    .is_some_and(|target| explain.input_tables.iter().any(|t| &t.name == target)),
+            })
+        }
+        SubmitOutcome::ChainLimitExecute { .. } => None,
     };
     decided.rendered = decision.and_then(|outcome| {
         crate::volatile_evaluation::evaluate(

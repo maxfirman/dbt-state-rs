@@ -149,6 +149,10 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, false, Outcome::Reuse, Queries::Own),
             cell(View, false, Outcome::AnyBuild, Queries::Own),
             cell(View, false, Outcome::Reuse, Queries::Own),
+            // Evaluation off: a table's Result copy into its absent dev
+            // Target relation, keyed by that relation and rendered at the dev
+            // decision (#207; `explain_volatile_cells.jsonl` entry 207).
+            cell(Full, false, Outcome::CopyIntoAbsentTarget, Queries::Own),
         ],
     }
 };

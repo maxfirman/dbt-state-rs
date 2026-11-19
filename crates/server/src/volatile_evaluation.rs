@@ -7,7 +7,8 @@
 //! The Warehouse still executes the original SQL; no official client reads
 //! the map, so it is telemetry. Values are rendered only in the cells a
 //! Warehouse was captured rendering in ([`Cell`]), which on Snowflake include
-//! evaluation off and a reuse; every other submit returns an empty map.
+//! evaluation off, a reuse and a Result copy; every other submit returns an
+//! empty map.
 //!
 //! This module is pure. The submit decision layer calls [`evaluate`] after the
 //! decision is made, with the [`Sources`] the values are drawn from, and the
@@ -83,24 +84,38 @@ pub enum Outcome {
     BuildFor(DecisionReason),
     /// A reuse (`skip_execution`).
     Reuse,
+    /// A Result copy (`ready_to_clone`) into a Target relation that does not
+    /// exist. A copy over an existing Target relation is not covered.
+    CopyIntoAbsentTarget,
 }
 
 impl Outcome {
     fn covers(self, decided: Decided) -> bool {
         match (self, decided) {
-            (Self::AnyBuild, Decided::Build(_)) | (Self::Reuse, Decided::Reuse) => true,
+            (Self::AnyBuild, Decided::Build(_))
+            | (Self::Reuse, Decided::Reuse)
+            | (
+                Self::CopyIntoAbsentTarget,
+                Decided::Copy {
+                    target_exists: false,
+                },
+            ) => true,
             (Self::BuildFor(captured), Decided::Build(reason)) => captured == reason,
             _ => false,
         }
     }
 }
 
-/// What a submit was decided: values are only ever rendered for a build or
-/// a reuse.
+/// What a submit was decided: values are only ever rendered for a build, a
+/// reuse or a Result copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decided {
     Build(DecisionReason),
     Reuse,
+    /// A Result copy, and whether the decision saw the Target relation exist.
+    Copy {
+        target_exists: bool,
+    },
 }
 
 /// The SQL a [`Cell`]'s values come from.

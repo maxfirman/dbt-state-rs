@@ -967,7 +967,9 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
 ///   `explain_volatile_evaluation.jsonl` entry 41) or `the test query has
 ///   changed` (`explain_volatile_evaluation.jsonl` entries 24 and 46);
 /// - evaluation off, on a model's reuse, before `the model query has not
-///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51).
+///   changed` (`explain_volatile_evaluation.jsonl` entries 42, 44, 51), and
+///   on its Result copy into an absent Target relation, in `query analysis
+///   (vs clone)` (`explain_volatile_cells.jsonl` entry 209, #207).
 ///
 /// Other shapes (a data test with evaluation off among them) are uncaptured
 /// and print no volatile lines, and so does a decision recorded without the
@@ -984,14 +986,24 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
             BADGE_NODE_QUERY_CHANGED,
             format!("the {noun} query is not deterministic and this is not tolerated by config"),
         ),
-        Some(false) if noun == "model" && node.decision == DecisionKind::Skip => (
-            "the model query has not changed".to_owned(),
-            BADGE_NODE_QUERY_UNCHANGED,
-            "the model query is not deterministic but this is tolerated by config".to_owned(),
-        ),
+        Some(false)
+            if noun == "model"
+                && (node.decision == DecisionKind::Skip
+                    || node.decision == DecisionKind::Clone && node.own_target_absent()) =>
+        {
+            (
+                "the model query has not changed".to_owned(),
+                BADGE_NODE_QUERY_UNCHANGED,
+                "the model query is not deterministic but this is tolerated by config".to_owned(),
+            )
+        }
         _ => return,
     };
-    let Some(query) = lines.iter_mut().find(|l| l.text == "query analysis") else {
+    let section = match node.decision {
+        DecisionKind::Clone => "query analysis (vs clone)",
+        _ => "query analysis",
+    };
+    let Some(query) = lines.iter_mut().find(|l| l.text == section) else {
         return;
     };
     let Some(at) = query
@@ -2525,14 +2537,32 @@ fn clone_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         Some(MARKER_SUCCESS),
         Some(BADGE_NODE_QUERY_UNCHANGED),
     )];
-    query_children.push(leaf(
-        "upstream model queries have not changed",
-        Some(MARKER_SUCCESS),
-        None,
-    ));
+    let upstreams = node.genuine_upstreams();
+    // A copy that reads nothing is worded like a reuse without upstreams:
+    // no upstream query verdict, and `no upstream dependencies` (#207,
+    // `explain_volatile_cells.jsonl` entry 209, the one captured copy without
+    // upstreams). A copy over a query dependency keeps both lines, as for a
+    // reuse over one (entry 197).
+    let reads_nothing = upstreams.is_empty()
+        && node.query_dependencies.is_empty()
+        && says_no_upstream_dependencies(node)
+        && !node.is_stale;
+    if !reads_nothing {
+        query_children.push(leaf(
+            "upstream model queries have not changed",
+            Some(MARKER_SUCCESS),
+            None,
+        ));
+    }
     out.push(section("query analysis (vs clone)", query_children));
 
-    let upstreams = node.genuine_upstreams();
+    if reads_nothing {
+        out.push(section(
+            "data freshness analysis (vs clone)",
+            vec![leaf("no upstream dependencies", Some(MARKER_SUCCESS), None)],
+        ));
+        return out;
+    }
     let mut freshness_children = Vec::new();
     if !upstreams.is_empty() {
         // Against the target's own build when the decision kept one as its
