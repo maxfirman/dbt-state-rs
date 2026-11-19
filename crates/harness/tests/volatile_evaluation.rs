@@ -2067,4 +2067,81 @@ mod rebuild_reasons_206 {
             );
         }
     }
+
+    /// Snowflake build cells render only for the captured decision reasons:
+    /// a first build, a rerun refused at Reuse qualification and a
+    /// query-changed rebuild (evaluation on), and a first build and a
+    /// query-changed rebuild (evaluation off). A rebuild for any other reason
+    /// keeps an empty map.
+    #[tokio::test]
+    async fn snowflake_rebuilds_for_uncaptured_reasons_keep_an_empty_map() {
+        use support::scenario::ExecutionType;
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let model = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT))
+            .own_epoch(Some(SNOWFLAKE_BUILT_AT));
+        let upstream = model.clone().build().tables[0].name.clone();
+        let upstream_epoch = model.clone().build().tables[0].last_modified_epoch.unwrap();
+        let off = model.clone().tolerate_nondeterminism(true);
+        let cases = [
+            (
+                "evaluation off, upstream data changed",
+                off.clone(),
+                off.clone().upstream(&upstream, upstream_epoch + 60_000),
+            ),
+            (
+                "evaluation off, External modification",
+                off.clone(),
+                off.clone().own_epoch(Some(SNOWFLAKE_BUILT_AT + 60_000)),
+            ),
+            (
+                "evaluation on, built as a view before",
+                model.clone().execution_type(ExecutionType::View),
+                model.clone(),
+            ),
+        ];
+        for (case, history, rebuild) in cases {
+            let sc = sc.org(case);
+            sc.build(history, SNOWFLAKE_BUILT_AT).await;
+            let ready = sc.expect_execute(rebuild).await;
+            assert!(
+                rendered(&ready).is_empty(),
+                "{case}: {:?}",
+                rendered(&ready)
+            );
+        }
+
+        // Controls over the same history: the captured reasons render.
+        let controls = [
+            (
+                "evaluation off, query changed",
+                off.clone(),
+                off.clone()
+                    .sql(&snowflake_sql("id, current_timestamp() as loaded_at")),
+            ),
+            (
+                "evaluation on, unchanged rerun",
+                model.clone(),
+                model.clone(),
+            ),
+            (
+                "evaluation on, External modification",
+                model.clone(),
+                model.clone().own_epoch(Some(SNOWFLAKE_BUILT_AT + 60_000)),
+            ),
+            (
+                "evaluation on, query changed",
+                model.clone(),
+                model
+                    .clone()
+                    .sql(&snowflake_sql("id, current_timestamp() as loaded_at")),
+            ),
+        ];
+        for (case, history, rebuild) in controls {
+            let sc = sc.org(&format!("control {case}"));
+            sc.build(history, SNOWFLAKE_BUILT_AT).await;
+            let ready = sc.expect_execute(rebuild).await;
+            assert!(!rendered(&ready).is_empty(), "{case}");
+        }
+    }
 }
