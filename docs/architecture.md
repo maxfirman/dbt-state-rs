@@ -361,7 +361,9 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
    detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
-   (#191 cell 3, maintainer decision, #194).
+   (#191 cell 3, maintainer decision, #194). A Snowflake model under
+   `compare_unrendered_code` whose template identity equals the row's is not
+   refused for volatile SQL (maintainer decision 1 on #201, #206).
 4. With no Reuse candidate (and no External modification of the Target
    relation), try the Result copy fallback. A copy overrides the verdict.
    Only the execution types the Warehouse rules copy are copied (FULL; DuckDB

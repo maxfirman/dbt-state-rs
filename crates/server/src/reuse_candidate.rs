@@ -217,7 +217,15 @@ fn model_rejection(
     evidence: &ExecutionEvidence,
     prev: &ExecutionRow,
 ) -> Option<NoCandidate> {
-    if !sql_qualifies(req, evidence) {
+    let qualifies = if volatile_sql_compared_by_unrendered_code(req)
+        && evidence.node_template_hash.is_some()
+        && prev.node_template_hash == evidence.node_template_hash
+    {
+        sql_evidence_complete(req, evidence)
+    } else {
+        sql_qualifies(req, evidence)
+    };
+    if !qualifies {
         Some(NoCandidate::FailedReuseQualification)
     } else {
         match own_target(req, prev) {
@@ -529,7 +537,33 @@ fn adoptable(
 /// template is likewise insufficient evidence.
 fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
     (!crate::volatile_evaluation::requested(req) || !calls_volatile_function(req))
-        && complete_dependencies(req)
+        && sql_evidence_complete(req, evidence)
+}
+
+/// Maintainer decision 1 on #201 (#206): whether `req` is a Snowflake
+/// submit compared by its unrendered code (`compare_unrendered_code`) whose
+/// SQL calls a Volatile function with Volatile evaluation requested. Against
+/// a build with the same template identity, a model is then not refused at
+/// Reuse qualification for its volatile SQL; the ordinary reuse rules of the
+/// dual rendered/template identity apply. Hosted reuses it and explains it by
+/// its unrendered code with no volatile lines (`explain_volatile_cells.jsonl`
+/// `ecu`, entries 140 and 198). A changed template (the compiled SQL
+/// decides), a data test, `compare_unrendered_code` off and every other
+/// Warehouse keep the refusal (uncaptured; Databricks has no checked
+/// detector).
+pub(crate) fn volatile_sql_compared_by_unrendered_code(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    req.compare_unrendered_code
+        && crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            == crate::warehouse::Warehouse::Snowflake
+        && crate::volatile_evaluation::requested(req)
+        && calls_volatile_function(req)
+}
+
+/// The workload evidence Reuse qualification requires whatever the SQL
+/// calls: complete query dependencies, SQL, and a template body when the
+/// template identity is used.
+fn sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
+    complete_dependencies(req)
         && !req.sql.trim().is_empty()
         && (!req.compare_unrendered_code
             || evidence.node_template_hash.is_none()

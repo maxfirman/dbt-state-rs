@@ -628,6 +628,27 @@ there is no `a change in rendered value will result in a diff` line
 upstream table, within Lag tolerance, or of another kind is uncaptured and
 keeps the ordinary SKIP tree.
 
+#### SKIP of volatile SQL by its unrendered code, evaluation on
+
+#206, maintainer decision 1 on #201 (`explain_volatile_cells.jsonl` entry
+198, `ecu`). A Snowflake table calling a Volatile function, reused with
+`evaluate_volatile_sql` and `compare_unrendered_code` on because its
+unrendered code is unchanged, prints the
+[template comparison](#databricks-template-comparison-2026-11-14-138) lines
+and no volatile lines:
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - the model was compared to state based on its unrendered code [INFO]
+  - the unrendered model code has not changed         [SUCCESS]
+- data freshness analysis
+  - no upstream dependencies                          [SUCCESS]
+```
+The decision records the template comparison only for this reuse
+(`submit_decision::ExplainEvidence`); every other Snowflake decision under
+`compare_unrendered_code` keeps its ordinary tree (uncaptured).
+
 ### EXECUTE: node query changed (SHAPE 7)
 
 Decision reasons `no_reuse_candidate.identity_mismatch` and, over a
@@ -1019,8 +1040,9 @@ over an upstream table that drifted or changed producer since the refused
 build, or over both an upstream table and a query dependency; a custom node
 rerun with upstreams; an APPEND incremental or snapshot rerun without
 upstreams; the APPEND, snapshot or custom rerun with query dependencies; the
-other incremental strategies; a view over a `ref`; or under
-`compare_unrendered_code`. The other incremental strategies and a
+other incremental strategies; a view over a `ref`; or a rebuild under
+`compare_unrendered_code` (an unchanged unrendered code is reused instead,
+[above](#skip-of-volatile-sql-by-its-unrendered-code-evaluation-on)). The other incremental strategies and a
 Databricks rerun (#198) render no values at all, so they print no volatile
 lines.
 

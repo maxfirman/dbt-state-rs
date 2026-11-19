@@ -399,7 +399,14 @@ and fingerprints.
    requested (`explain_volatile_evaluation.jsonl` entry 31), and the
    maintainer approved this relaxation on the #191 check-in (#194). Only
    Snowflake has a checked detector; every other Warehouse, Databricks
-   included, never reuses with evaluation requested. On Snowflake the Result
+   included, never reuses with evaluation requested. One exception lifts the
+   refusal (maintainer decision 1 on #201, #206): a Snowflake model under
+   `compare_unrendered_code` whose template identity equals the build's is
+   reused by the ordinary dual rendered/template identity rules, as hosted
+   SKIPs it (`explain_volatile_cells.jsonl` `ecu`, entry 140;
+   `reuse_candidate.rs::volatile_sql_compared_by_unrendered_code`). A changed
+   template, `compare_unrendered_code` off, a data test and every other
+   Warehouse keep the refusal. On Snowflake the Result
    copy fallback is suppressed under the same condition; a deterministic
    model is still copied (fixture `clone_fallback_volatile.jsonl`,
    `experiments/clone_eligibility.sh`). Evaluation off changes nothing:
@@ -644,7 +651,7 @@ no volatile Explain lines.
 | Warehouse | Case | Evaluation on | Evaluation off | Evidence |
 |---|---|---|---|---|
 | Snowflake | FULL model, root SQL, `ready_to_execute` for the captured reasons below | rendered | rendered | run 1 entries 6, 8, 33; `explain_volatile_cells.jsonl` entries 133, 137, 142, 147, 166 |
-| Snowflake | FULL model, root SQL, `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 34, 50 |
+| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the only volatile reuse, an unchanged template under `compare_unrendered_code` (#206); a deterministic reuse returns `{}` | rendered | on: cells entry 140; off: run 1 entries 31, 34, 50 |
 | Snowflake | view, root SQL | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: cells entries 19, 141; off: run 1 entries 7, 32 |
 | Snowflake | data test without a Target relation (`__target_query__`) | rendered on a first execution, a rerun and a logic change | rendered on a first execution and `skip_execution` | on: run 1 entries 16, 37, cells entry 148; off: cells entries 60, 146 |
 | Snowflake | FULL model, query dependency definition | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: run 1 entries 10, 35, cells entries 72, 168; off: cells entries 58, 158 |
@@ -675,7 +682,9 @@ keeps an empty map (#206).
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake
 model or data test whose SQL calls a Volatile function rebuilds on every
-run with codes 6 / 6 and hosted's description (run 1 entries 33, 35, 37).
+run with codes 6 / 6 and hosted's description (run 1 entries 33, 35, 37),
+except a model reused by its unchanged unrendered code under
+`compare_unrendered_code` (cells entry 140, #206).
 The detector set (`sql_norm::VOLATILE_FUNCTIONS`) is wider than the
 rendering rules, so `zipf`, `seqN` and the uncaptured forms above also
 rebuild, with an empty map or only the other functions' values. A table
@@ -698,10 +707,11 @@ section and its [DATA TEST](explain-catalog.md#data-test) section.
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
 [testing.md](testing.md#goldenreplay_gapsjson)). The only Volatile
-evaluation replay gaps are those of the #202 capture
+evaluation replay gap is entry 146 of the #202 capture
 (`explain_volatile_cells.jsonl`,
-[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)),
-keyed per entry for #203–#207.
+[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)):
+its `execution_runtime_ms`, which hosted echoes from another data test
+(not matched by maintainer decision, #200).
 
 **Not captured.** The remaining cells, each with its tracking issue where
 one is open, are listed in

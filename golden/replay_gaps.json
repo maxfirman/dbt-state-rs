@@ -380,23 +380,11 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 140,
-    "local_variant": "ready_to_execute",
-    "reason": "CHECK-IN (#202, for #206; maintainer decision pending): ecu calls current_timestamp() with evaluate_volatile_sql and compare_unrendered_code both true, unchanged rerun. Hosted SKIPs it (decision 0, runtime 12089 echoed, map filled with CURRENT_TIMESTAMP()); the local server rebuilds with failed_reuse_qualification (6/6) because reuse_candidate.rs::sql_qualifies refuses volatile SQL under evaluation. Matching hosted relaxes that reuse refusal under compare_unrendered_code."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 146,
     "local_variant": "skip_execution",
     "ignore_fields": [
       "execution_runtime_ms"
     ],
-    "reason": "RUNTIME ECHO GAP (#202, #204; maintainer check-in pending under #201) cto data test with evaluation off, unchanged rerun SKIP: hosted echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm, entry 65), not cto's own 1701 (entry 63), which the local server echoes (the scoped UID floor, cf. the #138 UID difference). Matching would weaken the scoped UID floor. Everything else, the transformed_nodes_by_query map included, matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 198,
-    "local_variant": "explain",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #206) ecu SKIP under compare_unrendered_code (CHECK-IN, entry 140): hosted explains its SKIP with 'the model was compared to state based on its unrendered code' [INFO] and 'the unrendered model code has not changed' [SUCCESS], no volatile lines; the local server explains the rebuild it decided (the #191 cell 2 rerun tree)."
+    "reason": "RUNTIME ECHO GAP (#202, #204; maintainer decision 2 on #201: not implemented, tracked in #200) cto data test with evaluation off, unchanged rerun SKIP: hosted echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm, entry 65), not cto's own 1701 (entry 63), which the local server echoes because the scoped data-test UID floor stays (cf. the #138 UID difference). Everything else, the transformed_nodes_by_query map included, matches exactly."
   }
 ]

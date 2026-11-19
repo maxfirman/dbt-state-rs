@@ -221,6 +221,11 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, true, FIRST_BUILD, Queries::Own),
             cell(Full, true, REFUSED_REUSE, Queries::Own),
             cell(Full, true, QUERY_CHANGED, Queries::Own),
+            // Evaluation on, a table's reuse: only an unchanged template
+            // under `compare_unrendered_code` reuses volatile SQL (#206,
+            // maintainer decision 1 on #201; `explain_volatile_cells.jsonl`
+            // `ecu`, entry 140).
+            cell(Full, true, Outcome::Reuse, Queries::Own),
             // A table over a volatile view, first build and rerun (run 1
             // entries 10 and 35; `explain_volatile_cells.jsonl` entries 72
             // and 168, over an upstream table too).
