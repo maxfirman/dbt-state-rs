@@ -2830,3 +2830,221 @@ async fn snowflake_uncaptured_data_tests_over_a_volatile_view_render_nothing() {
         volatile_map_shape(&hosted_volatile_values(&entries[52].response))
     );
 }
+
+// ── Snowflake copy and zero Lag tolerance (#207) ────────────────────────────
+//
+// The #202 capture, `golden/fixtures/explain_volatile_cells.jsonl`. `pc` calls
+// `current_timestamp()` with evaluation off. It is built in prod (entries 29,
+// 47), then submitted in dev, where hosted copies the prod build (207, 208)
+// and renders the value under the dev Target relation at the dev decision
+// time; entry 209 explains the copy. `lz` is a table with zero Lag tolerance,
+// evaluation off, over `eu`, which calls `current_timestamp()` with evaluation
+// on and so is rebuilt on every run: `lz` is built (77, 78) and rebuilt on its
+// rerun (172, 174), explained by entries 104 and 200.
+
+const CELLS_202: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+const PC_PROD_BUILD: usize = 29;
+const PC_DEV_COPY: usize = 207;
+const PC_DEV_CONFIRM: usize = 208;
+const PC_COPY_EXPLAIN: usize = 209;
+const EU_BUILD: usize = 70;
+const EU_REBUILD: usize = 166;
+const LZ_BUILD: usize = 77;
+const LZ_REBUILD: usize = 172;
+const LZ_BUILD_EXPLAIN: usize = 104;
+const LZ_REBUILD_EXPLAIN: usize = 200;
+
+fn cells_202() -> Vec<GoldenEntry> {
+    entries(CELLS_202)
+}
+
+/// `pc`'s captured prod build, then its dev submit at the captured time,
+/// which must be a Result copy.
+async fn pc_copy(sc: &Scenario, entries: &[GoldenEntry]) -> qc::ReadyToCloneResponse {
+    build_captured(sc, entries, PC_PROD_BUILD).await;
+    let copy = &entries[PC_DEV_COPY];
+    sc.at(submitted_at(copy))
+        .expect_clone(captured_submit(&copy.request))
+        .await
+}
+
+#[tokio::test]
+async fn snowflake_evaluation_off_copy_renders_under_the_dev_target_at_the_dev_decision_time() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await.org("pc");
+    let entries = cells_202();
+    let copy = pc_copy(&sc, &entries).await;
+
+    let hosted = &entries[PC_DEV_COPY].response["response"]["ready_to_clone"];
+    assert_eq!(
+        serde_json::to_value(&copy.explained_decision).unwrap(),
+        hosted["explained_decision"]
+    );
+    assert_eq!(
+        serde_json::to_value(&copy.clone_sqls).unwrap(),
+        hosted["clone_sqls"]
+    );
+    assert_eq!(
+        copy.execution_runtime_ms,
+        hosted["execution_runtime_ms"].as_i64()
+    );
+    let values = volatile_values_of(&copy.transformed_nodes_by_query);
+    assert_eq!(
+        volatile_map_shape(&values),
+        volatile_map_shape(&hosted_volatile_values(&entries[PC_DEV_COPY].response)),
+        "hosted's key shape: the dev Target relation"
+    );
+    // The replay clock at the dev submit (1795098919604 ms), not the prod
+    // build's time.
+    assert_eq!(
+        values[&target(&entries[PC_DEV_COPY].request)]["CURRENT_TIMESTAMP()"],
+        "2026-11-19 14:35:19.604000"
+    );
+}
+
+#[tokio::test]
+async fn snowflake_evaluation_off_copy_explain_matches_hosted_after_a_restart() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_copy_restart").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let entries = cells_202();
+    let copy = pc_copy(&sc, &entries).await;
+    let mut confirm: qc::ConfirmExecutionRequest =
+        serde_json::from_value(entries[PC_DEV_CONFIRM].request.clone()).unwrap();
+    confirm.request_id = copy.request_id.clone();
+    assert!(
+        sc.at(submitted_at(&entries[PC_DEV_CONFIRM]))
+            .try_confirm(confirm)
+            .await
+            .unwrap()
+            .success
+    );
+    let id = copy.execution_decision_id.clone().unwrap();
+    let expected = hosted_explain_for(
+        &entries[PC_COPY_EXPLAIN],
+        &entries[PC_DEV_COPY],
+        &id,
+        &volatile_values_of(&copy.transformed_nodes_by_query),
+    );
+    let at = submitted_at(&entries[PC_COPY_EXPLAIN]);
+    assert_eq!(explain(&sc.at(at), &id).await, expected);
+
+    drop(sc);
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await.at(at);
+    assert_eq!(
+        explain(&sc, &id).await,
+        expected,
+        "the persisted values print after a restart"
+    );
+}
+
+/// `explain` with each `updated … after … last executed` line masked, as the
+/// conformance replay masks it (`«gap»`). Hosted words `lz`'s 94.992 s gap
+/// (entry 200: `eu` at 1795098837609, recorded at 1795098742617) as
+/// `2 minutes`; this server rounds down to `a minute` outside Databricks.
+fn masked_gaps(mut explain: serde_json::Value) -> serde_json::Value {
+    fn walk(lines: &mut serde_json::Value) {
+        for line in lines.as_array_mut().into_iter().flatten() {
+            if line["text"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("updated ") && t.ends_with(" last executed"))
+            {
+                line["text"] = "«gap»".into();
+            }
+            walk(&mut line["children"]);
+        }
+    }
+    for message in explain["messages"].as_array_mut().unwrap() {
+        walk(&mut message["explain_lines"]);
+    }
+    explain
+}
+
+#[tokio::test]
+async fn snowflake_zero_lag_tolerance_table_over_a_volatile_model_is_rebuilt_on_its_rerun() {
+    let database = std::sync::Arc::new(support::TestDatabase::new("volatile_zero_lag").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let entries = cells_202();
+
+    build_captured(&sc, &entries, EU_BUILD).await;
+    let first = build_captured(&sc, &entries, LZ_BUILD).await;
+    build_captured(&sc, &entries, EU_REBUILD).await;
+    let rerun = build_captured(&sc, &entries, LZ_REBUILD).await;
+
+    let mut cases = Vec::new();
+    for (ready, submit, explained) in [
+        (&first, LZ_BUILD, LZ_BUILD_EXPLAIN),
+        (&rerun, LZ_REBUILD, LZ_REBUILD_EXPLAIN),
+    ] {
+        assert_eq!(
+            serde_json::to_value(&ready.explained_decision).unwrap(),
+            hosted_decision(&entries, submit, "ready_to_execute"),
+            "entry {submit}"
+        );
+        assert!(
+            ready.transformed_nodes_by_query.is_empty(),
+            "entry {submit}"
+        );
+        let id = ready.execution_decision_id.clone().unwrap();
+        let at = submitted_at(&entries[explained]);
+        let expected = masked_gaps(hosted_explain(&entries, explained, &id));
+        assert_eq!(
+            masked_gaps(explain(&sc.at(at), &id).await),
+            expected,
+            "entry {explained}"
+        );
+        cases.push((id, at, expected));
+    }
+
+    drop(sc);
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    for (id, at, expected) in cases {
+        assert_eq!(
+            masked_gaps(explain(&sc.at(at), &id).await),
+            expected,
+            "{id}: after a restart"
+        );
+    }
+}
+
+#[tokio::test]
+async fn snowflake_uncaptured_copy_cells_render_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = cells_202();
+    let dev = captured_submit(&entries[PC_DEV_COPY].request);
+
+    // `pc`'s copy over a dev Target relation that already exists.
+    let over = sc.org("copy over");
+    build_captured(&over, &entries, PC_PROD_BUILD).await;
+    let response = over
+        .at(submitted_at(&entries[PC_DEV_COPY]))
+        .submit(dev.clone().own_epoch(Some(OWN_EPOCH)))
+        .await;
+    assert_eq!(variant(&response), "ready_to_clone");
+    assert!(volatile_values(&response).is_empty(), "{response:?}");
+
+    // A copy of `vd` (#191), whose values are in its query dependency `vv`,
+    // into the other schema of its namespace, with evaluation off.
+    let evaluation = snowflake_evaluation();
+    let vd = captured_submit(&evaluation[VD_FIRST_BUILD].request).tolerate_nondeterminism(true);
+    let vd_dev = serde_json::to_string(&evaluation[VD_FIRST_BUILD].request)
+        .unwrap()
+        .replace("PROD_STATE_DEMO", "DEV_STATE_DEMO")
+        .replace("prod_state_demo", "dev_state_demo");
+    let vd_dev =
+        captured_submit(&serde_json::from_str(&vd_dev).unwrap()).tolerate_nondeterminism(true);
+    let dependency = sc.org("copy over a volatile dependency");
+    let built_at = evaluation[VD_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    dependency.build(vd, built_at).await;
+    let response = dependency.submit(vd_dev).await;
+    assert_eq!(variant(&response), "ready_to_clone");
+    assert!(volatile_values(&response).is_empty(), "{response:?}");
+}

@@ -654,7 +654,8 @@ no volatile Explain lines.
 | Snowflake | APPEND incremental, snapshot, custom node, root SQL: first build and unchanged rerun | rendered | empty, uncaptured | cells entries 71/167, 69/165, 24/143 (#205) |
 | Snowflake | those types' other rebuild reasons; the other incremental strategies | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | a data test with a Target relation: unreachable through client 2.0.11, which sends a `store_failures` test without one (cells entries 61, 145) | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
+| Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | empty: volatile SQL is not copied | rendered, keyed by the copy's Target relation as sent, at the copy decision | `clone_fallback_volatile.jsonl`; cells entry 207 (#207) |
+| Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
 | Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
 | Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |

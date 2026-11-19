@@ -508,7 +508,10 @@ impl Sql for SqlService {
                 Some(qc::submit_sql_response::Response::SkipExecution(skip)) => {
                     skip.transformed_nodes_by_query = rendered.to_wire();
                 }
-                _ => {}
+                Some(qc::submit_sql_response::Response::ReadyToClone(copy)) => {
+                    copy.transformed_nodes_by_query = rendered.to_wire();
+                }
+                None => {}
             }
         }
         Ok(Response::new(response))
