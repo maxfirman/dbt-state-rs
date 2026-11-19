@@ -2911,6 +2911,9 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         serde_json::from_value(entries[0].request.clone()).unwrap();
     let hosted_explain = &entries[1].response["messages"][0];
 
+    // Every request carries the capture's clock (test-only replay clock), so
+    // the build's age against the 10-day Lag tolerance is the captured one
+    // rather than a wall-clock age that grows past it.
     let server = support::start_server().await;
     let ch = support::channel(server.addr).await;
     let mut sql = SqlClient::new(ch.clone());
@@ -2930,7 +2933,11 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
             t.last_modified_epoch = t.last_modified_epoch.map(|e| e + 1_000);
         }
     }
-    let r1 = sql.submit_enriched_sql(first).await.unwrap().into_inner();
+    let r1 = sql
+        .submit_enriched_sql(support::captured_request(first, &entries[0]))
+        .await
+        .unwrap()
+        .into_inner();
     let qc::submit_sql_response::Response::ReadyToExecute(exec1) = r1.response.unwrap() else {
         panic!("first submit must EXECUTE");
     };
@@ -2942,19 +2949,20 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
         .find(|t| Some(t.name.as_str()) == submit0.target_table.as_deref())
         .and_then(|t| t.last_modified_epoch)
         .unwrap();
-    exec.confirm_execution(
+    exec.confirm_execution(support::captured_request(
         support::scenario::outcome()
             .epoch(own_epoch)
             .table()
             .runtime(2200)
             .confirm(&exec1.request_id),
-    )
+        &entries[0],
+    ))
     .await
     .unwrap();
 
     // 2) Re-submit with the current ET_UP epoch → SKIP within lag tolerance.
     let r2 = sql
-        .submit_enriched_sql(submit0.clone())
+        .submit_enriched_sql(support::captured_request(submit0.clone(), &entries[0]))
         .await
         .unwrap()
         .into_inner();
@@ -2968,9 +2976,12 @@ async fn explain_skip_tree_matches_hosted_oracle_when_history_seeded() {
     let mut msg = None;
     for _ in 0..100 {
         let resp = explain
-            .get_explain_messages(qc::GetExplainMessagesRequest {
-                execution_decision_ids: vec![edid.clone()],
-            })
+            .get_explain_messages(support::captured_request(
+                qc::GetExplainMessagesRequest {
+                    execution_decision_ids: vec![edid.clone()],
+                },
+                &entries[1],
+            ))
             .await
             .unwrap()
             .into_inner();
