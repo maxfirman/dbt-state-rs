@@ -232,7 +232,7 @@ server keeps the conservative behavior described.
     reuse. A data test whose only input is a deterministic query dependency
     keeps `no upstream dependencies`: no capture shows whether hosted's
     bare `data freshness analysis` line (`ctv`, entries 105, 201) is
-    specific to volatile dependencies. A copy that reads nothing now says
+    specific to volatile dependencies. A copy that reads nothing says
     `no upstream dependencies` whether or not its SQL is volatile; only the
     volatile copy (entry 209) was captured.
   - Relative-time wording (#210): for `lz`'s rerun (entry 200) hosted words
