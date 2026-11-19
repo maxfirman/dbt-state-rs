@@ -1849,26 +1849,30 @@ async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
     use support::scenario::ExecutionType;
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    let uncaptured = [
+    // Snowflake: the captured FULL first build renders, and so does an APPEND
+    // incremental's, a snapshot's and a custom node's (#205); the same build
+    // of another incremental strategy, or a view with evaluation on, does not.
+    let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
+    for execution_type in [
+        ExecutionType::Full,
         ExecutionType::Append,
+        ExecutionType::Snapshot,
+        ExecutionType::DbtCustom,
+    ] {
+        let case = format!("snowflake control {execution_type:?}");
+        let ready = sc
+            .org(&case)
+            .expect_execute(snowflake.clone().execution_type(execution_type))
+            .await;
+        assert!(!rendered(&ready).is_empty(), "{case}");
+    }
+    for execution_type in [
         ExecutionType::Merge,
         ExecutionType::InsertOverwrite,
         ExecutionType::DeleteInsert,
         ExecutionType::Microbatch,
-        ExecutionType::Snapshot,
-        ExecutionType::DbtCustom,
-    ];
-
-    // Snowflake: the captured FULL first build renders; the same build of
-    // another execution type, or a view with evaluation on, does not.
-    let snowflake = captured_submit(&request(SNOWFLAKE_FIRST_BUILDS, SNOWFLAKE_PROD_SUBMIT));
-    assert!(!rendered(
-        &sc.org("snowflake control")
-            .expect_execute(snowflake.clone())
-            .await
-    )
-    .is_empty());
-    for execution_type in uncaptured.into_iter().chain([ExecutionType::View]) {
+        ExecutionType::View,
+    ] {
         let case = format!("snowflake {execution_type:?}");
         let ready = sc
             .org(&case)
@@ -2175,4 +2179,215 @@ async fn snowflake_call_form_explains_match_hosted_after_a_restart() {
         expected,
         "the persisted values print after a restart"
     );
+}
+
+// ── Snowflake execution types (#205) ────────────────────────────────────────
+//
+// Evidence: the #202 capture, `golden/fixtures/explain_volatile_cells.jsonl`
+// (dbt 2.0.11). Each node calls `current_timestamp()` in its own SQL with
+// evaluation requested: `xi` an APPEND incremental over the table `vb`, `xs`
+// a check snapshot of `vb`, `xc` a custom materialization without upstreams,
+// and `xt` a `store_failures` data test (sent without a Target relation).
+// Round 1 is each node's first build, round 2 its unchanged rerun.
+
+const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+/// (first build, rerun, rerun Explain) submit entries of `xi`, `xs`, `xc`.
+const XI: (usize, usize, usize) = (71, 167, 189);
+const XS: (usize, usize, usize) = (69, 165, 190);
+const XC: (usize, usize, usize) = (24, 143, 191);
+/// `xt`: first execution and rerun, with their Explains.
+const XT: (usize, usize) = (61, 145);
+const XT_EXPLAINS: (usize, usize) = (107, 203);
+
+#[tokio::test]
+async fn snowflake_incremental_snapshot_and_custom_render_their_own_values_on_both_runs() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let cells = entries(CELLS);
+    let responses = replay(&sc, &cells, XI.1).await;
+    for (entry, case) in [
+        (XI.0, "xi APPEND incremental, first build"),
+        (XI.1, "xi APPEND incremental, incremental run"),
+        (XS.0, "xs snapshot, first build"),
+        (XS.1, "xs snapshot, rerun"),
+        (XC.0, "xc custom materialization, first build"),
+        (XC.1, "xc custom materialization, rerun"),
+        (XT.0, "xt store_failures data test, first execution"),
+        (XT.1, "xt store_failures data test, rerun"),
+    ] {
+        assert_matches_hosted(&responses[&entry], &cells[entry], case);
+    }
+}
+
+/// Replay the #202 capture through the last of `cases` (submit entry, hosted
+/// Explain entry), then require each local Explain, asked at hosted's Explain
+/// time, to equal hosted's for the values the local decision rendered,
+/// before and after a restart, both seen through `seen`.
+async fn assert_cells_explain_as_hosted_after_a_restart_seen(
+    database: &str,
+    cases: &[(usize, usize)],
+    seen: fn(serde_json::Value) -> serde_json::Value,
+) {
+    let database = std::sync::Arc::new(support::TestDatabase::new(database).await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let cells = entries(CELLS);
+    let through = cases.iter().map(|&(submit, _)| submit).max().unwrap();
+    let responses = replay(&Scenario::connect(&server).await, &cells, through).await;
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|&(submit, explained)| {
+            seen(hosted_explain_for(
+                &cells[explained],
+                &cells[submit],
+                &decision_id(&responses[&submit]),
+                &volatile_values(&responses[&submit]),
+            ))
+        })
+        .collect();
+    let explained = |server: support::TestServer| {
+        let (responses, cells) = (&responses, &cells);
+        async move {
+            let sc = Scenario::connect(&server).await;
+            let mut out = Vec::new();
+            for &(submit, explained) in cases {
+                let at = cells[explained].recorded_at_ms().unwrap();
+                out.push(seen(
+                    explain(&sc.at(at), &decision_id(&responses[&submit])).await,
+                ));
+            }
+            out
+        }
+    };
+
+    assert_eq!(explained(server).await, expected);
+
+    let server = support::start_server_on_database(database.clone()).await;
+    assert_eq!(
+        explained(server).await,
+        expected,
+        "the persisted values print after a restart"
+    );
+}
+
+/// [`assert_cells_explain_as_hosted_after_a_restart_seen`], every line as is.
+async fn assert_cells_explain_as_hosted_after_a_restart(database: &str, cases: &[(usize, usize)]) {
+    assert_cells_explain_as_hosted_after_a_restart_seen(database, cases, |explain| explain).await;
+}
+
+#[tokio::test]
+async fn snowflake_custom_rerun_explains_as_hosted_after_a_restart() {
+    assert_cells_explain_as_hosted_after_a_restart("volatile_custom_restart", &[(XC.1, XC.2)])
+        .await;
+}
+
+#[tokio::test]
+async fn snowflake_incremental_run_explains_as_hosted_after_a_restart() {
+    assert_cells_explain_as_hosted_after_a_restart("volatile_incremental_restart", &[(XI.1, XI.2)])
+        .await;
+}
+
+#[tokio::test]
+async fn snowflake_snapshot_rerun_explains_as_hosted_in_snapshot_wording_after_a_restart() {
+    assert_cells_explain_as_hosted_after_a_restart("volatile_snapshot_restart", &[(XS.1, XS.2)])
+        .await;
+}
+
+/// The `store_failures` data test, sent without a Target relation, keeps the
+/// #191 cell 6 trees on both runs; its rerun is explained without an anchor.
+#[tokio::test]
+async fn snowflake_store_failures_data_test_explains_as_hosted_on_both_runs_after_a_restart() {
+    assert_cells_explain_as_hosted_after_a_restart_seen(
+        "volatile_store_failures_restart",
+        &[(XT.0, XT_EXPLAINS.0), (XT.1, XT_EXPLAINS.1)],
+        masked_relative_times,
+    )
+    .await;
+}
+
+/// Uncaptured cells of these execution types keep an empty map and print no
+/// volatile lines: evaluation off, and a query-changed rebuild. A rerun
+/// whose upstream drifted is still refused at Reuse qualification and
+/// rendered, but its tree is uncaptured and renders nothing.
+#[tokio::test]
+async fn snowflake_uncaptured_incremental_snapshot_and_custom_cells_render_nothing() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let cells = entries(CELLS);
+    let submit = |entry: usize| captured_submit(&cells[entry].request);
+    // The epoch each rerun reports for its own Target relation: the build.
+    let own_epoch = |entry: usize| {
+        let req = submit(entry).build();
+        req.tables
+            .iter()
+            .find(|t| Some(&t.name) == req.target_table.as_ref())
+            .and_then(|t| t.last_modified_epoch)
+            .unwrap()
+    };
+    for (node, (first, rerun, _)) in [("xi", XI), ("xs", XS), ("xc", XC)] {
+        let off = sc.org(&format!("{node} evaluation off"));
+        let built = off
+            .expect_execute(submit(first).tolerate_nondeterminism(true))
+            .await;
+        assert!(
+            rendered(&built).is_empty(),
+            "{node} evaluation off: first build"
+        );
+        assert!(
+            off.confirm(&built.request_id, built_at(own_epoch(rerun)))
+                .await
+        );
+        let reused = off
+            .submit(submit(rerun).tolerate_nondeterminism(true))
+            .await;
+        assert_eq!(variant(&reused), "skip_execution", "{node} evaluation off");
+        assert!(
+            volatile_values(&reused).is_empty(),
+            "{node} evaluation off: rerun"
+        );
+
+        let changed = sc.org(&format!("{node} query changed"));
+        changed.build(submit(first), own_epoch(rerun)).await;
+        let rebuilt = changed
+            .expect_execute(submit(rerun).with(|r| r.sql = r.sql.replace(" as ts", " as ts2")))
+            .await;
+        assert!(rendered(&rebuilt).is_empty(), "{node} query changed");
+        let explained = explain(&changed, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+        assert!(!prints_volatile_lines(&explained), "{node}: {explained}");
+    }
+
+    for (node, (first, rerun, _)) in [("xi", XI), ("xs", XS)] {
+        let upstream = |drift: i64| {
+            submit(rerun).with(move |r| {
+                let vb = r
+                    .tables
+                    .iter_mut()
+                    .find(|t| t.name.contains("VB_"))
+                    .unwrap();
+                vb.last_modified_epoch = vb.last_modified_epoch.map(|e| e + drift);
+            })
+        };
+        for (case, drift, tree) in [
+            ("fresh upstream", 0, true),
+            ("drifted upstream", 600_000, false),
+        ] {
+            let sc = sc.org(&format!("{node} {case}"));
+            sc.build(submit(first), own_epoch(rerun)).await;
+            let rebuilt = sc.expect_execute(upstream(drift)).await;
+            assert!(
+                !rendered(&rebuilt).is_empty(),
+                "{node} {case}: refused and rendered"
+            );
+            let explained = explain(&sc, rebuilt.execution_decision_id.as_deref().unwrap()).await;
+            assert_eq!(
+                prints_volatile_lines(&explained),
+                tree,
+                "{node} {case}: {explained}"
+            );
+            assert_eq!(
+                texts(&explained).is_empty(),
+                !tree,
+                "{node} {case}: {explained}"
+            );
+        }
+    }
 }

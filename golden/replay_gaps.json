@@ -389,15 +389,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 24,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xc custom materialization (execution type 11), first build: hosted renders [\"XC_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 52,
     "local_variant": "ready_to_execute",
     "ignore_fields": [
@@ -434,24 +425,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 69,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xs snapshot (execution type 7), first build: hosted renders [\"XS_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 71,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xi append incremental (execution type 2), first build: hosted renders [\"XI_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 105,
     "local_variant": "explain",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204) ctv first execution: hosted's tree is one bare 'data freshness analysis' line with no children; the local tree adds 'no upstream dependencies' [SUCCESS]."
@@ -479,15 +452,6 @@
       "transformed_nodes_by_query"
     ],
     "reason": "VOLATILE EVALUATION GAP (#202, for #204) cvo view rerun (6/6, evaluation on): hosted renders [\"CVO_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 143,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xc custom rerun (6/6): hosted renders [\"XC_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
@@ -528,24 +492,6 @@
   },
   {
     "fixture": "explain_volatile_cells.jsonl",
-    "entry": 165,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xs snapshot rerun (6/6): hosted renders [\"XS_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 167,
-    "local_variant": "ready_to_execute",
-    "ignore_fields": [
-      "transformed_nodes_by_query"
-    ],
-    "reason": "VOLATILE EVALUATION GAP (#202, for #205) xi incremental run (6/6): hosted renders [\"XI_1431544D67B8\": CURRENT_TIMESTAMP()]. The local server renders nothing in this uncaptured cell (Rules::cells) and returns {}. transformed_nodes_by_query is telemetry the pinned client 2.0.11 drops; the rest of the payload matches exactly."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
     "entry": 186,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204, #206) cmb rerun (own plus dependency values): hosted prints only the own-SQL block, then 'upstream model queries have not changed' [SUCCESS] and 'upstream data is up to date' [SUCCESS]; the dependency's value is in the map but not in the tree. The local rebuild renders no tree."
@@ -561,24 +507,6 @@
     "entry": 188,
     "local_variant": "empty_tree",
     "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #204, #206) cvo view rerun (evaluation on): hosted prints the #191 cell 2 own-SQL rerun tree; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 189,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #205, #206) xi incremental run: hosted prints the own-SQL rerun block, 'upstream model queries have not changed' [SUCCESS] and the upstream's FRESH freshness listing; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 190,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #205) xs snapshot rerun: hosted prints the own-SQL rerun block with 'snapshot' wording, 'upstream model queries have not changed' [SUCCESS] and the FRESH listing; the local rebuild renders no tree."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 191,
-    "local_variant": "empty_tree",
-    "reason": "VOLATILE EVALUATION EXPLAIN GAP (#202, for #205) xc custom rerun: hosted prints the #191 cell 2 own-SQL rerun tree; the local rebuild renders no tree."
   },
   {
     "fixture": "explain_volatile_cells.jsonl",

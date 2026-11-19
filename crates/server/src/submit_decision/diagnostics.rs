@@ -481,6 +481,7 @@ mod tests {
             target_has_prior_build: false,
             why_no_candidate: None,
             rejected: None,
+            unqualified: None,
             unmatched: None,
             type_changed: None,
             transition_display: None,
