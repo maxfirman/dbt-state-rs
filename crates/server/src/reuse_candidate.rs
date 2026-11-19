@@ -559,12 +559,27 @@ pub(crate) fn volatile_sql_compared_by_unrendered_code(req: &qc::SubmitEnrichedS
         && calls_volatile_function(req)
 }
 
+/// Whether a Reuse qualification refusal of `req` is the refusal of its
+/// volatile SQL alone, compared by its rendered SQL: Volatile evaluation is
+/// requested, the root SQL or a query dependency definition calls a
+/// Volatile function, `compare_unrendered_code` is off, and the rest of the
+/// evidence Reuse qualification requires is complete. Every refusal hosted
+/// was captured rendering values for is one (`explain_volatile_cells.jsonl`,
+/// `explain_volatile_evaluation.jsonl`); the one capture under
+/// `compare_unrendered_code` is a reuse (`ecu`, entry 140). Selects the
+/// Volatile evaluation cell only; it decides nothing.
+pub(crate) fn refuses_volatile_sql_alone(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    !req.compare_unrendered_code
+        && crate::volatile_evaluation::requested(req)
+        && calls_volatile_function(req)
+        && rendered_sql_evidence_complete(req)
+}
+
 /// The workload evidence Reuse qualification requires whatever the SQL
 /// calls: complete query dependencies, SQL, and a template body when the
 /// template identity is used.
 fn sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
-    complete_dependencies(req)
-        && !req.sql.trim().is_empty()
+    rendered_sql_evidence_complete(req)
         && (!req.compare_unrendered_code
             || evidence.node_template_hash.is_none()
             || evidence
@@ -581,6 +596,12 @@ fn calls_volatile_function(req: &qc::SubmitEnrichedSqlRequest) -> bool {
         &req.sql,
         req.query_dependencies.iter().map(|d| d.query.as_str()),
     )
+}
+
+/// [`sql_evidence_complete`] without the template body: complete query
+/// dependencies and SQL.
+fn rendered_sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    complete_dependencies(req) && !req.sql.trim().is_empty()
 }
 
 fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {

@@ -291,9 +291,18 @@ pub async fn submit_sql_explained(
     // in the cells the Warehouse was captured rendering in. The chain-limit
     // build has no capture.
     let decision = match &decided.outcome {
-        SubmitOutcome::Execute { record, .. } => {
-            Some(crate::volatile_evaluation::Decided::Build(record.reason))
-        }
+        SubmitOutcome::Execute { record, .. } => Some(
+            if record.reason
+                == decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::FailedReuseQualification,
+                )
+                && reuse_candidate::refuses_volatile_sql_alone(req)
+            {
+                crate::volatile_evaluation::Decided::RefusedVolatileSql
+            } else {
+                crate::volatile_evaluation::Decided::Build(record.reason)
+            },
+        ),
         SubmitOutcome::Skip { .. } => Some(crate::volatile_evaluation::Decided::Reuse),
         SubmitOutcome::Copy { .. } => {
             let explain = &decided.explain;

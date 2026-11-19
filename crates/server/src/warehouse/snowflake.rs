@@ -36,11 +36,11 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     }
     // The captured build reasons. A build for any other reason (upstream
     // data or producer changes, an External modification with evaluation
-    // off, an execution type change, ...) renders nothing.
+    // off, an execution type change, a Reuse qualification refusal for any
+    // cause but volatile SQL compared by its rendered SQL, ...) renders
+    // nothing.
     const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
-    const REFUSED_REUSE: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-        NoCandidate::FailedReuseQualification,
-    ));
+    const REFUSED_VOLATILE_SQL: Outcome = Outcome::RefusedVolatileSql;
     const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
         NoCandidate::IdentityMismatch,
     ));
@@ -219,7 +219,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             // or a query dependency (`explain_volatile_cells.jsonl` entries
             // 137, 166, 147), and a query-changed rebuild (entry 142).
             cell(Full, true, FIRST_BUILD, Queries::Own),
-            cell(Full, true, REFUSED_REUSE, Queries::Own),
+            cell(Full, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(Full, true, QUERY_CHANGED, Queries::Own),
             // Evaluation on, a table's reuse: only an unchanged template
             // under `compare_unrendered_code` reuses volatile SQL (#206,
@@ -230,12 +230,12 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             // entries 10 and 35; `explain_volatile_cells.jsonl` entries 72
             // and 168, over an upstream table too).
             cell(Full, true, FIRST_BUILD, Queries::Dependencies),
-            cell(Full, true, REFUSED_REUSE, Queries::Dependencies),
+            cell(Full, true, REFUSED_VOLATILE_SQL, Queries::Dependencies),
             // A data test without a Target relation: first execution, rerun
             // (run 1 entries 16 and 37) and after its logic changed
             // (`explain_volatile_cells.jsonl` entry 148).
             cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
-            cell(DbtDataTest, true, REFUSED_REUSE, Queries::Own),
+            cell(DbtDataTest, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(DbtDataTest, true, QUERY_CHANGED, Queries::Own),
             // Evaluation off: a table's first build, query-changed rebuild
             // and reuses (run 1 entries 8, 34 and 50;
@@ -252,22 +252,32 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             // 24/143, #205). Their other rebuild reasons, and evaluation off,
             // are uncaptured.
             cell(Append, true, FIRST_BUILD, Queries::Own),
-            cell(Append, true, REFUSED_REUSE, Queries::Own),
+            cell(Append, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(Snapshot, true, FIRST_BUILD, Queries::Own),
-            cell(Snapshot, true, REFUSED_REUSE, Queries::Own),
+            cell(Snapshot, true, REFUSED_VOLATILE_SQL, Queries::Own),
             cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
-            cell(DbtCustom, true, REFUSED_REUSE, Queries::Own),
+            cell(DbtCustom, true, REFUSED_VOLATILE_SQL, Queries::Own),
             // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
             // on, first build and rerun refused at Reuse qualification: a
             // table with values of its own and in a view dependency (entries
             // 59 and 159); a data test over a volatile view (52, 144); a view
             // (19, 141).
             cell(Full, true, FIRST_BUILD, Queries::OwnAndDependencies),
-            cell(Full, true, REFUSED_REUSE, Queries::OwnAndDependencies),
+            cell(
+                Full,
+                true,
+                REFUSED_VOLATILE_SQL,
+                Queries::OwnAndDependencies,
+            ),
             cell(DbtDataTest, true, FIRST_BUILD, Queries::Dependencies),
-            cell(DbtDataTest, true, REFUSED_REUSE, Queries::Dependencies),
+            cell(
+                DbtDataTest,
+                true,
+                REFUSED_VOLATILE_SQL,
+                Queries::Dependencies,
+            ),
             cell(View, true, FIRST_BUILD, Queries::Own),
-            cell(View, true, REFUSED_REUSE, Queries::Own),
+            cell(View, true, REFUSED_VOLATILE_SQL, Queries::Own),
             // Evaluation off, first build and reuse: a data test (60, 146);
             // a table over a volatile view (58, 158).
             cell(DbtDataTest, false, FIRST_BUILD, Queries::Own),

@@ -2693,6 +2693,134 @@ mod rebuild_reasons_206 {
         }
     }
 
+    /// The skip rejection reason hosted reports for a rebuild refused at
+    /// Reuse qualification.
+    const NO_SUITABLE_MATCH_FOUND: Option<i32> =
+        Some(qc::RejectionReason::NoSuitableMatchFound as i32);
+
+    /// Submit `rerun` over `history` built in a fresh organization `case`;
+    /// require a rebuild refused at Reuse qualification, and return it with
+    /// its Explain.
+    async fn refused_rerun(
+        sc: &Scenario,
+        case: &str,
+        history: Submit,
+        rerun: Submit,
+    ) -> (qc::ReadyToExecuteResponse, serde_json::Value) {
+        use support::scenario::{outcome, test_results};
+        let sc = sc.org(case);
+        if history.clone().build().execution_type == qc::ModelExecutionType::DbtDataTest as i32 {
+            sc.build_with(history, outcome().runtime(10).results(test_results(0)))
+                .await;
+        } else {
+            sc.build(history, ECU_BUILT_AT).await;
+        }
+        let ready = sc.expect_execute(rerun).await;
+        assert_eq!(
+            ready
+                .explained_decision
+                .as_ref()
+                .unwrap()
+                .skip_rejection_reason,
+            NO_SUITABLE_MATCH_FOUND,
+            "{case}"
+        );
+        let explained = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+        (ready, explained)
+    }
+
+    /// Under `compare_unrendered_code`, a rerun whose template changed but
+    /// whose rendered SQL did not is still refused at Reuse qualification
+    /// for its volatile SQL. Hosted was not captured in that cell: the map
+    /// stays empty, and Explain prints no volatile lines and, as for any
+    /// qualification refusal of a table that rendered nothing, no tree. The
+    /// same rerun compared by its rendered SQL is the captured cell 2
+    /// refusal, and renders.
+    #[tokio::test]
+    async fn snowflake_rerun_refused_under_compare_unrendered_code_keeps_an_empty_map() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        let built = captured_submit(&entries[ECU_BUILD].request);
+        let changed_template =
+            |s: Submit| s.node_state(|n| n.node_body_hash = Some("another body".into()));
+        let rerun = changed_template(captured_submit(&entries[ECU.0].request));
+
+        let (ready, explained) =
+            refused_rerun(&sc, "template changed", built.clone(), rerun.clone()).await;
+        assert!(
+            rendered(&ready).is_empty(),
+            "uncaptured: {:?}",
+            rendered(&ready)
+        );
+        assert!(!prints_volatile_lines(&explained), "{explained}");
+        assert_eq!(
+            texts(&explained),
+            Vec::<String>::new(),
+            "no tree: {explained}"
+        );
+
+        // Control: compared by its rendered SQL, the captured refusal renders.
+        let off = |s: Submit| s.with(|r| r.compare_unrendered_code = false);
+        let (ready, explained) = refused_rerun(&sc, "control", off(built), off(rerun)).await;
+        assert!(!rendered(&ready).is_empty());
+        assert!(prints_volatile_lines(&explained), "{explained}");
+    }
+
+    /// The captured qualification refusal is of volatile SQL alone. A
+    /// volatile table or data test refused for an uncaptured cause as well
+    /// (a query dependency without a definition; under
+    /// `compare_unrendered_code`, a missing template body) keeps an empty map
+    /// and prints no volatile lines.
+    #[tokio::test]
+    async fn snowflake_reruns_refused_for_an_uncaptured_qualification_cause_keep_an_empty_map() {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        let entries = entries(CELLS);
+        let off = |s: Submit| s.with(|r| r.compare_unrendered_code = false);
+        let table = off(captured_submit(&entries[ECU_BUILD].request));
+        let table_rerun = off(captured_submit(&entries[ECU.0].request));
+        let test = captured_submit(&entries[RT_BUILD].request);
+        let undefined =
+            |s: Submit| s.dependency("\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"NODEF\"", "");
+        let no_body = |s: Submit| s.node_state(|n| n.node_body_hash = None);
+        let cases = [
+            (
+                "table, a query dependency without a definition",
+                undefined(table.clone()),
+                undefined(table_rerun.clone()),
+            ),
+            (
+                "data test, a query dependency without a definition",
+                undefined(test.clone()),
+                undefined(test.clone()),
+            ),
+            (
+                "table under compare_unrendered_code, no template body",
+                no_body(captured_submit(&entries[ECU_BUILD].request)),
+                no_body(captured_submit(&entries[ECU.0].request)),
+            ),
+        ];
+        for (case, history, rerun) in cases {
+            let (ready, explained) = refused_rerun(&sc, case, history, rerun).await;
+            assert!(
+                rendered(&ready).is_empty(),
+                "{case}: {:?}",
+                rendered(&ready)
+            );
+            assert!(!prints_volatile_lines(&explained), "{case}: {explained}");
+        }
+
+        // Controls: the same nodes refused for their volatile SQL alone render.
+        for (case, history, rerun) in [
+            ("control table", table.clone(), table_rerun),
+            ("control data test", test.clone(), test),
+        ] {
+            let (ready, _) = refused_rerun(&sc, case, history, rerun).await;
+            assert!(!rendered(&ready).is_empty(), "{case}");
+        }
+    }
+
     /// The lifted refusal changes no identity or fingerprint: the build the
     /// rerun reuses is persisted as with evaluation off.
     #[tokio::test]
