@@ -684,19 +684,23 @@ says "empty".
 
 A Snowflake build renders only for a captured decision reason
 (`warehouse/snowflake.rs` cells). With evaluation on: a first build
-(`first_build`) and a rerun refused at Reuse qualification
+(`first_build`) and a rerun refused at Reuse qualification for its volatile
+SQL alone, compared by its rendered SQL
 (`failed_reuse_qualification`: unchanged, after an External modification,
-over an upstream table or a query dependency); for a table's or a data
+over an upstream table or a query dependency;
+`reuse_candidate::refuses_volatile_sql_alone`); for a table's or a data
 test's own SQL also a query-changed rebuild (`identity_mismatch`; for a
 data test, a logic change). With evaluation off: a first build, and for a
 table's own SQL a query-changed rebuild (cells entry 133). A build for any
 other reason, among them upstream data or Upstream producer changes, an
 External modification with evaluation off and an execution type change,
-keeps an empty map (#206). One rendered rebuild is not captured: under
+keeps an empty map (#206). So does a refusal at Reuse qualification that
+was not captured: one for another cause as well (a query dependency
+without a definition, a missing template body), and, under
 `compare_unrendered_code`, a table whose template changed while its
-rendered SQL did not is refused at Reuse qualification and renders, and is
-explained, as the unchanged rerun with the flag off; hosted was captured
-only with an unchanged template (cells entry 140).
+rendered SQL did not. That table is refused for its volatile SQL and
+explained with no tree; hosted was captured only with an unchanged
+template (cells entry 140; #211).
 
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake

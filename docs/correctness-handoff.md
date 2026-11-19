@@ -187,8 +187,8 @@ server keeps the conservative behavior described.
     Target relation. The client sends `target_table: null` even for a
     `store_failures` test (cells entries 61, 145), so this server renders
     nothing for one.
-  - Snowflake, reachable through client 2.0.11 but not captured, and with no
-    tracking issue since #201: the map stays empty for
+  - Snowflake, reachable through client 2.0.11 but not captured (#211):
+    the map stays empty for
     - the call forms `current_timestamp(n)` with another precision than 3,
       `current_time(n)`, and `uniform`, `randstr` or `normal` with other
       arguments. Whether a constant-generator call alone, such as
@@ -210,14 +210,17 @@ server keeps the conservative behavior described.
     - a reuse under `compare_unrendered_code` (decision 1) with values only
       in a query dependency, or of another kind than FULL; a data test under
       `compare_unrendered_code`, which keeps the refusal;
+    - under `compare_unrendered_code`, a table whose template changed while
+      its rendered SQL did not: refused at Reuse qualification for its
+      volatile SQL, explained with no tree. Only the unchanged template was
+      captured (entry 140);
+    - a rerun refused at Reuse qualification for another cause besides its
+      volatile SQL (a query dependency without a definition, a missing
+      template body): only the refusal of volatile SQL alone was captured
+      (`reuse_candidate::refuses_volatile_sql_alone`);
     - a speculative submit, which this server never renders for (the
       #202 capture's 36 speculative submits were all `undecided`).
-  - Snowflake, rendered but not captured: under `compare_unrendered_code`, a
-    table whose template changed while its rendered SQL did not is refused
-    at Reuse qualification and renders its values, explained as the
-    unchanged rerun with the flag off (the #191 cell 2 tree, no template
-    lines). Only the unchanged template was captured (entry 140).
-  - Snowflake Explain, reachable but not captured, with no tracking issue:
+  - Snowflake Explain, reachable but not captured (#211):
     the decision's own tree without volatile lines for an evaluation-off
     rebuild other than a table's query change without upstreams; the model
     rerun tree or the volatile-dependency tree over an upstream table that

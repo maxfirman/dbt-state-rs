@@ -1452,26 +1452,7 @@ async fn conformance_replay_all_corpora() {
                                 let ours =
                                     comparable(serde_json::to_value(&response).unwrap(), &context);
                                 let real = comparable(e.response.clone(), &context);
-                                // A field-scoped gap (#202: a Volatile map on a
-                                // copy this server does not render) matches the
-                                // rest of the payload exactly.
-                                let field_gap =
-                                    known_gap.as_ref().filter(|g| !g.ignore_fields.is_empty());
-                                if let Some(gap) = field_gap {
-                                    assert!(!gap.reason.trim().is_empty());
-                                    assert_eq!(
-                                        local_variant, gap.local_variant,
-                                        "{context}: characterized local copy changed"
-                                    );
-                                    assert_field_scoped_gap(
-                                        &ours,
-                                        &real,
-                                        &gap.ignore_fields,
-                                        &context,
-                                    );
-                                    seen_gaps.insert((gap.fixture.clone(), i));
-                                    gaps += 1;
-                                } else if ours != real {
+                                if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
                                     ));

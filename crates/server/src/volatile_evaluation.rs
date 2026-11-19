@@ -77,10 +77,11 @@ pub struct Cell {
 /// The decisions a [`Cell`] covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// A build (`ready_to_execute`) for any reason.
-    AnyBuild,
-    /// A build for this reason only.
+    /// A build for this reason only ([`Decided::Build`]).
     BuildFor(DecisionReason),
+    /// A build refused at Reuse qualification for its volatile SQL alone
+    /// ([`Decided::RefusedVolatileSql`]).
+    RefusedVolatileSql,
     /// A reuse (`skip_execution`).
     Reuse,
     /// A Result copy (`ready_to_clone`) into a Target relation that does not
@@ -91,7 +92,7 @@ pub enum Outcome {
 impl Outcome {
     fn covers(self, decided: Decided) -> bool {
         match (self, decided) {
-            (Self::AnyBuild, Decided::Build(_))
+            (Self::RefusedVolatileSql, Decided::RefusedVolatileSql)
             | (Self::Reuse, Decided::Reuse)
             | (
                 Self::CopyIntoAbsentTarget,
@@ -109,7 +110,14 @@ impl Outcome {
 /// reuse or a Result copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decided {
+    /// A build for this reason. A build refused at Reuse qualification for
+    /// any cause other than [`Decided::RefusedVolatileSql`]'s is
+    /// `Build(NoReuseCandidate(FailedReuseQualification))`.
     Build(DecisionReason),
+    /// A build refused at Reuse qualification for its volatile SQL alone,
+    /// compared by its rendered SQL
+    /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
+    RefusedVolatileSql,
     Reuse,
     /// A Result copy, and whether the decision saw the Target relation exist.
     Copy {
