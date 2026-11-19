@@ -159,8 +159,21 @@ server keeps the conservative behavior described.
   [protocol.md](protocol.md#volatile-evaluation) (#67). Values are returned
   only in the captured cells (`Rules::cells`). Each cell below keeps today's
   behavior, which is an empty map, no volatile Explain lines and the
-  conservative rebuild unless stated. None has a replay gap, and the
-  Warehouse executes the original SQL in every case.
+  conservative rebuild unless stated. The Warehouse executes the original
+  SQL in every case.
+  - #202 captured the Snowflake cells listed below in
+    `golden/fixtures/explain_volatile_cells.jsonl`
+    ([characterization note](reports/snowflake-volatile-cells-2026-11-19.md)).
+    Hosted's behavior there is observed; this server's is unchanged, and each
+    difference is keyed in `golden/replay_gaps.json` for the follow-up that
+    resolves it: #203 call forms and functions outside the detector set,
+    #204 combinations, #205 execution types, #206 rebuild reasons and
+    Explain variants, #207 copy and zero Lag tolerance. Two findings wait
+    for the maintainer (#201 check-in rule): hosted SKIPs volatile SQL under
+    evaluation with `compare_unrendered_code` (entry 140), and a data-test
+    SKIP echoes another data test's runtime (entry 146). A data test with a
+    Target relation cannot be reached through the pinned Snowflake client
+    and stays uncaptured.
   - Databricks (#198): the first build, the unchanged rerun over the
     existing Target relation, other execution types, a data test, a query
     dependency, a table downstream of the volatile model run twice, their

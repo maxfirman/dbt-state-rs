@@ -366,6 +366,9 @@ exactly, and fails if no named line was present (stale exemption).
 
 ## Not captured
 
+All but the data test with a Target relation were captured by #202; see
+[snowflake-volatile-cells-2026-11-19.md](snowflake-volatile-cells-2026-11-19.md).
+
 - A model with Volatile functions both in its own SQL and in a dependency
   (one key or two).
 - `ready_to_clone` with a filled map, and Result copy of volatile SQL with
