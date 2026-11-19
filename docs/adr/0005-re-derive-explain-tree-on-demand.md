@@ -11,7 +11,10 @@ execution type change keeps the build it was judged against as
 `matched_execution_id` ([below](#decision)). Amended by #117: a view decision
 records whether its SQL reads a relation ([below](#decision)). Amended by #67
 (Accepted): a decision records the values its Volatile evaluation rendered
-and whether the submit requested evaluation ([below](#decision)).
+and whether the submit requested evaluation ([below](#decision)). Amended by
+#201 (maintainer decisions 1 and 3, 2026-11-19): a Snowflake reuse of
+volatile SQL by its unrendered code, and the Explain anchor of a model's
+rebuild refused at Reuse qualification ([below](#decision)).
 
 ## Decision
 
@@ -116,6 +119,58 @@ caller already holds this id). Everything else is re-derived.
 > backfill. As elsewhere in this ADR, only evidence is stored, never a
 > verdict or tree.
 
+> **Amended by #201** (maintainer decisions on the #202 check-in,
+> 2026-11-19; implemented by #205 and #206).
+>
+> 1. *Volatile SQL reused by its unrendered code* (decision 1, #206). This
+>    is a Reuse qualification rule; it is recorded here because it qualifies
+>    the #67 amendment above, and [protocol.md](../protocol.md) rule 8 and
+>    [architecture.md](../architecture.md) cite it. With Volatile evaluation
+>    requested and `compare_unrendered_code: true`, a Snowflake model whose
+>    SQL calls a Volatile function is not refused at Reuse qualification
+>    when its template identity (`node_template_hash`) equals the build's.
+>    The ordinary dual rendered/template identity rules then decide, and the
+>    other qualification checks still apply: complete query dependencies,
+>    non-empty SQL and a template body
+>    (`reuse_candidate.rs::volatile_sql_compared_by_unrendered_code`).
+>    Hosted SKIPs that rerun with its values in the map
+>    (`explain_volatile_cells.jsonl` entry 140) and explains it by its
+>    unrendered code, with no volatile lines (entry 198). For exactly that
+>    SKIP the decision records the template comparison in the existing
+>    `node_decisions.template_comparison` evidence
+>    (`submit_decision::ExplainEvidence::of`,
+>    `explain::TemplateComparison::unrendered`), so Explain prints hosted's
+>    template lines; every other Snowflake decision records none. The rule
+>    reads no rendered value, so rendered values still enter no identity,
+>    fingerprint or Reuse qualification. A changed template,
+>    `compare_unrendered_code` off, a data test (the capture is a model only)
+>    and every other Warehouse keep the refusal. The older-match report on a
+>    rebuild (`reuse_candidate::older_build_matches`) keeps the unrelaxed
+>    check.
+> 2. *Explain anchor of a rebuild refused at Reuse qualification*
+>    (decision 3, #205, #206). When a model's latest build in scope has the
+>    workload's identity and Reuse qualification refuses it
+>    (`no_reuse_candidate.failed_reuse_qualification`), the rebuild records
+>    that build as `matched_execution_id`, and the build's age at the submit
+>    as `build_age_ms` (`reuse_candidate::Selection::unqualified`,
+>    `submit_decision::anchor_rejected`). Hosted judges the rebuild's upstream
+>    listing against that build: the `<FRESH>` verdicts and `last updated`
+>    lines of the volatile model rerun over an upstream table
+>    (`explain_volatile_cells.jsonl` entries 189, 190 and 195) and of the
+>    volatile-dependency tree with an upstream table (entry 199). The anchor
+>    is Explain-only: it is chosen after the decision, is never a Reuse
+>    candidate, copy source or input to `decide`, and the wire response,
+>    identity and Reuse qualification are unchanged. Explain still loads only
+>    the row the id names, org-scoped. Data tests keep no anchor
+>    (`reuse_candidate::for_data_test`): no captured data-test tree is judged
+>    against a refused build. `matched_execution_id` is NULL for such a
+>    rebuild recorded before #201. Explain then has no build to judge the
+>    upstreams against, so the trees that need one (the volatile rerun or
+>    volatile-dependency tree over an upstream table) render nothing,
+>    because unknown evidence never proves freshness. A tree without
+>    upstream tables does not read the anchor and renders as before. No
+>    backfill.
+
 ## Why re-derive (not persist the tree)
 
 ### Explain visibility amendment (Databricks #132)
@@ -209,6 +264,9 @@ matched no prior row:
   > **Amended by #83/#90:** so does a rebuild whose latest build had the
   > identity under another execution type, anchored on that build or on the
   > older build of the workload's type it was judged against (see the
+  > amendment under [Decision](#decision)).
+  > **Amended by #201:** so does a model's rebuild refused at Reuse
+  > qualification, anchored on the refused build (Explain only; see the
   > amendment under [Decision](#decision)).
 - the `node_decisions` capture write is best-effort and separate from the
   `executions` write, so the id can legitimately be absent.
