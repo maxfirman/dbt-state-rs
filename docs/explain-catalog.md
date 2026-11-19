@@ -591,9 +591,37 @@ the persisted evaluation flag, migration 0028):
   - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
 ```
 One child per value, in the order the functions first appear in the SQL.
-A data test or a query dependency with evaluation off renders no values
-([protocol.md](protocol.md#volatile-evaluation)), and a model rebuild with
-evaluation off is not captured: neither prints volatile lines.
+A data test's reuse prints the same lines with `test` for `model` (#204,
+`explain_volatile_cells.jsonl` entry 202); its first execution, see
+[DATA TEST](#data-test). A table reused over a view whose definition rendered
+values prints them under its query dependency
+([below](#skip-over-a-volatile-query-dependency-evaluation-off)). A model
+rebuild with evaluation off is not captured and prints no volatile lines.
+
+#### SKIP over a volatile query dependency, evaluation off
+
+#204 (`explain_volatile_cells.jsonl` entry 187, `cdo` over `vw`). A table
+without upstream tables, with no values of its own, over a view whose
+definition rendered values, reused with `evaluate_volatile_sql` off:
+```
+- table analysis ("«FQN»")
+  - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
+- query analysis
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+  - upstream dependencies
+    - "«dependency»"
+      - non-deterministic functions detected in query [INFO]
+        - CURRENT_TIMESTAMP() -> rendered with '«value»'
+  - an upstream model query is not deterministic but this is tolerated by config [INFO]
+  - upstream model queries have not changed           [SUCCESS]
+- data freshness analysis
+  - upstream data is up to date                       [SUCCESS]
+```
+Unlike the [evaluation-on rebuild](#execute-over-a-volatile-query-dependency),
+there is no `a change in rendered value will result in a diff` line
+(`explain.rs::tolerated_volatile_dependency_tree`). The same reuse with an
+upstream table, within Lag tolerance, or of another kind is uncaptured and
+keeps the ordinary SKIP tree.
 
 ### EXECUTE: node query changed (SHAPE 7)
 
@@ -634,8 +662,9 @@ They are printed only where the tree has `the model query has changed`
 (or a data test's `the test query has changed`, [DATA TEST](#data-test)),
 and only for values rendered for the node's own SQL; other shapes with
 rendered values are uncaptured and print none, except the evaluation-off
-reuse ([SKIP](#skip-shapes-0-1-2-4-8)) and the table over a volatile view
-([EXECUTE: over a volatile query dependency](#execute-over-a-volatile-query-dependency)).
+reuse ([SKIP](#skip-shapes-0-1-2-4-8)), the table over a volatile view
+([EXECUTE: over a volatile query dependency](#execute-over-a-volatile-query-dependency))
+and a data test's evaluation-off first execution ([DATA TEST](#data-test)).
 A decision without rendered values, or recorded before migration 0027 or
 0028, prints none. Values exist only in the captured cells
 ([protocol.md](protocol.md#volatile-evaluation)): on Databricks only this
@@ -929,13 +958,18 @@ out of date". Hosted explains it as a query change
 ```
 The wording comes from the persisted values and evaluation flag
 (`explain.rs::volatile_rebuild_lines`); the model's identity is unchanged
-(maintainer decision on #191). Not captured, and keeping the decision's own
-(empty) tree: the same rerun with upstreams, query dependencies, as a view,
-an incremental, a snapshot or a custom node, or under
-`compare_unrendered_code`. A rerun with values in both its own SQL and a
-query dependency, any incremental, snapshot or custom node, and a
-Databricks rerun (#198) render no values at all, so they print no volatile
-lines.
+(maintainer decision on #191). The same tree prints for a view that reads no
+relation (#204, `explain_volatile_cells.jsonl` entry 188, `cvo`). A table
+whose query dependency definitions rendered values too (#204, entry 186,
+`cmb`) prints only its own values, then `upstream model queries have not
+changed` [SUCCESS] after the query line, and `upstream data is up to date`
+[SUCCESS] in place of `no upstream dependencies`; the dependency's value is
+in the map but not in the tree. Not captured, and keeping the decision's own
+(empty) tree: the same rerun with upstream tables, a deterministic query
+dependency, a view over a `ref`, an incremental, a snapshot or a custom node,
+or under `compare_unrendered_code`. Any incremental, snapshot or custom node,
+and a Databricks rerun (#198), render no values at all, so they print no
+volatile lines.
 
 ### EXECUTE: over a volatile query dependency
 
@@ -966,10 +1000,11 @@ in `transformed_nodes_by_query`. There is no `tolerated by config` line, and
 the persisted values (`explain.rs::volatile_dependency_tree`): identity and
 Upstream producers do not change (#67 decision 2). Uncaptured, and empty: a
 first build (`table analysis` only, as captured, entry 23), another model
-kind and a table with an upstream table. A table with values of its own
-too, a data test over a volatile view and a dependency with evaluation off
-render no values ([protocol.md](protocol.md#volatile-evaluation)), so they
-print no volatile lines.
+kind and a table with an upstream table. A table with values of its own too
+prints the [rerun of a volatile model](#execute-rerun-of-a-volatile-model)
+tree, a data test over a volatile view the [DATA TEST](#data-test) one, and
+the reuse with evaluation off
+[its own SKIP tree](#skip-over-a-volatile-query-dependency-evaluation-off).
 
 ### First build
 
@@ -1362,9 +1397,33 @@ and on every rerun, which this server rebuilds for
 ```
 The values are the persisted ones the decision returned. A logic change of
 such a test (`identity_mismatch`) is uncaptured and keeps the tree above
-without the query analysis. A data test with evaluation off, over a
-volatile view, or with a Target relation renders no values
-([protocol.md](protocol.md#volatile-evaluation)) and prints no volatile
+without the query analysis.
+
+With evaluation off (#204, `explain_volatile_cells.jsonl` entry 106, `cto`),
+the first execution's query analysis holds the values only, with no
+tolerance or query verdict line, ahead of the EXECUTE listing:
+```
+- query analysis
+  - non-deterministic functions detected in query     [INFO]
+    - CURRENT_TIMESTAMP() -> rendered with '«value»'
+- data freshness analysis
+  <the EXECUTE listing above>
+```
+Its reuse prints the [evaluation-off SKIP lines](#skip-shapes-0-1-2-4-8)
+with `test` (entry 202). Another rebuild with evaluation off is uncaptured
+and prints no volatile lines.
+
+A test over a query dependency whose definition renders values, with
+evaluation on, no values of its own and no upstream tables (#204, `ctv`),
+prints one `data freshness analysis` line without children on its first
+execution and on every rerun (entries 105, 201); the dependency's value is
+in the map only. This server's first execution of a data test whose only
+input is a deterministic query dependency still says `no upstream
+dependencies`: no capture shows whether hosted prints the bare line there
+too. A data test with values in both its own SQL and a query dependency, a
+data test over a volatile view with evaluation off, and a data test with a
+Target relation render no values
+([protocol.md](protocol.md#volatile-evaluation)) and print no volatile
 lines.
 
 The tree does not depend on the test's outcome: the passing and the failing
@@ -1399,7 +1458,8 @@ replay exactly.
 Rendered for `first_build` and `no_reuse_candidate.identity_mismatch`, and
 for `upstream_outdated` and `upstream_query_changed` (which need an
 upstream), and for `no_reuse_candidate.failed_reuse_qualification` of a test
-whose own SQL rendered values (Volatile evaluation, above). Nothing else:
+whose own SQL, or whose query dependency (without upstream tables), rendered
+values with evaluation on (Volatile evaluation, above). Nothing else:
 
 - **Incomplete cached results** (crafted only). A test confirmed with
   `execution_results: null`, or with only `failures`, is SKIPped by hosted,
@@ -1408,8 +1468,8 @@ whose own SQL rendered values (Volatile evaluation, above). Nothing else:
   `no_reuse_candidate.incomplete_cached_test_results`, which renders nothing
   (accepted divergence #87, keyed gaps `explain_incomplete_test_results.jsonl`
   2, 3, 6, 7). Client 2.0.11 always confirms all three result fields.
-- `no_reuse_candidate.failed_reuse_qualification` without rendered values
-  of the test's own: from `evaluate_volatile_sql: true` over SQL whose
+- `no_reuse_candidate.failed_reuse_qualification` without rendered values:
+  from `evaluate_volatile_sql: true` over SQL whose
   Volatile calls render nothing (`seq4()`, for example), not captured. From
   a malformed request, local-only, empty tree
   (crafted, accepted divergence #114): hosted
