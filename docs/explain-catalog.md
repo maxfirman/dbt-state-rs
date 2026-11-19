@@ -915,7 +915,8 @@ dependencies. Reuse qualification refuses it, so this server rebuilds for
 `no_reuse_candidate.failed_reuse_qualification` with codes 6 / 6 and "model
 was executed because either its query didn't match or its upstream data is
 out of date". Hosted explains it as a query change
-(`explain_volatile_evaluation.jsonl` entries 33, 41):
+(`explain_volatile_evaluation.jsonl` entries 33, 41; the #203 call forms in
+`explain_volatile_cells.jsonl` entries 177–181):
 ```
 - table analysis ("«FQN»")
   - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>

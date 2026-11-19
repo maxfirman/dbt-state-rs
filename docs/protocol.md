@@ -596,17 +596,23 @@ qualification. They are persisted with the decision for Explain only
 
 **Supported functions** (client 2.0.11; run 1 =
 `golden/fixtures/explain_volatile_evaluation.jsonl`, run 2 =
-`golden/fixtures/explain_volatile_evaluation_functions.jsonl`):
+`golden/fixtures/explain_volatile_evaluation_functions.jsonl`, cells =
+`golden/fixtures/explain_volatile_cells.jsonl` from #202):
 
 | Warehouse | SQL form | Function text (inner key) | Value | Evidence |
 |---|---|---|---|---|
 | Snowflake | `current_timestamp()`, `current_timestamp`, `localtimestamp()`, `systimestamp()`, `getdate()` | `CURRENT_TIMESTAMP()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` | run 1 entry 6; run 2 entries 13, 19, 23, 24; `clone_fallback_volatile.jsonl` entries 0, 2 |
+| Snowflake | `current_timestamp(3)` | `CURRENT_TIMESTAMP(3)` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` (six digits whatever the precision) | cells entries 21, 135 |
 | Snowflake | `localtimestamp` (no parentheses) | `CURRENT_TIMESTAMP` | as above | run 2 entry 14 |
 | Snowflake | `sysdate()` | `SYSDATE()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff+00:00` | run 1 entry 6 |
-| Snowflake | `current_time()`, `localtime()` | `CURRENT_TIME` | clock, `HH:MM:SS.ffffff` | run 2 entries 17, 20 |
+| Snowflake | `current_time()`, `localtime()`, `current_time`, `localtime` | `CURRENT_TIME` | clock, `HH:MM:SS.ffffff` | run 2 entries 17, 20; cells entries 23, 28, 138, 139 |
 | Snowflake | `current_date()`, `current_date` | `CURRENT_DATE` | clock, `YYYY-MM-DD` | run 1 entry 6; run 2 entry 15 |
 | Snowflake | `random()`, also nested (`zipf(1, 10, random())`) | `RANDOM()` | decimal in [0, 1) | run 1 entry 6; run 2 entry 16 |
 | Snowflake | `uniform(1, 100, random())` | `UNIFORM(1, 100, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | run 2 entry 18 |
+| Snowflake | `uniform(1, 10, random())`, `randstr(8, random())`, `normal(0, 1, random())` | `UNIFORM(1, 10, RANDOM())`, `RANDSTR(8, RANDOM())`, `NORMAL(0, 1, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | cells entries 33, 36, 131, 134 |
+| Snowflake | `uniform(1, 100, 1234)` | `UNIFORM(1, 100, 1234)` | constant `96` | cells entries 36, 131 |
+| Snowflake | `randstr(5, 1234)` | `RANDSTR(5, 1234)` | constant `9XCha` | cells entries 33, 134 |
+| Snowflake | `normal(5, 2, 42)` | `NORMAL(5, 2, 42)` | constant `4.711819340844143` | cells entries 33, 134 |
 | Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | run 1 entries 6, 8, 33, 34, 50 |
 | Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | as above |
 | Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | run 1 entry 6 |
@@ -616,12 +622,17 @@ Intentional fallbacks, each rendering nothing for that call:
 - Snowflake `zipf(1, 10, 1234)` and `seq1()`, `seq2()`, `seq4()`, `seq8()`:
   hosted renders nothing for them either (run 1 entry 6; run 2 entries 16,
   21). `zipf` keeps the nested `random()`'s value.
-- Uncaptured forms: `current_time` and `localtime` without parentheses,
-  `current_timestamp(n)`, and `uniform`, `randstr` or `normal` with other
-  arguments. Hosted's key and value for them are unknown, so none is
-  invented.
-- Functions outside the Snowflake detector set (for example `CURRENT_USER`):
-  uncaptured; nothing is rendered, and reuse is not refused for them.
+- Uncaptured forms: `current_timestamp(n)` with another precision,
+  `current_time(n)`, and `uniform`, `randstr` or `normal` with arguments
+  other than those above. Hosted's key and value for them are unknown, so
+  none is invented. A constant-generator value is hosted's for exactly the
+  captured arguments.
+- Functions outside the Snowflake detector set: `current_user()`,
+  `current_role()`, `current_warehouse()`, `current_database()`,
+  `current_session()`, `current_statement()` and `last_query_id()`. Hosted
+  renders nothing for them and reuses the unchanged rerun with its ordinary
+  SKIP tree (cells entries 20, 25, 31, 128, 129, 136; Explains 85–87,
+  182–184), and so does this server.
 - DuckDB and every other dialect: nothing. Hosted does not engage for DuckDB.
 
 **Cells.** Values are returned only in the cells hosted was captured
