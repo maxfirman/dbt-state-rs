@@ -631,11 +631,11 @@ no volatile Explain lines.
 
 | Warehouse | Case | Evaluation on | Evaluation off | Evidence |
 |---|---|---|---|---|
-| Snowflake | FULL model, root SQL, `ready_to_execute` | rendered | rendered | run 1 entries 6, 8, 33 |
+| Snowflake | FULL model, root SQL, `ready_to_execute` for the captured reasons below | rendered | rendered | run 1 entries 6, 8, 33; `explain_volatile_cells.jsonl` entries 133, 137, 142, 147, 166 |
 | Snowflake | FULL model, root SQL, `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 34, 50 |
-| Snowflake | view, root SQL | empty, uncaptured | rendered on `ready_to_execute` and `skip_execution` | run 1 entries 7, 32 |
-| Snowflake | data test without a Target relation (`__target_query__`) | rendered | empty, uncaptured | run 1 entries 16, 37 |
-| Snowflake | FULL model, query dependency definition | rendered | empty, uncaptured | run 1 entries 10, 35 |
+| Snowflake | view, root SQL | empty, uncaptured | rendered on a first build and `skip_execution` | run 1 entries 7, 32 |
+| Snowflake | data test without a Target relation (`__target_query__`) | rendered on a first execution, a rerun and a logic change | empty, uncaptured | run 1 entries 16, 37; `explain_volatile_cells.jsonl` entry 148 |
+| Snowflake | FULL model, query dependency definition | rendered on a first build and a rerun | empty, uncaptured | run 1 entries 10, 35; `explain_volatile_cells.jsonl` entries 72, 168 |
 | Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | incremental, snapshot, custom; a data test with a Target relation | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
@@ -643,9 +643,16 @@ no volatile Explain lines.
 | Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
-A Snowflake FULL model renders on a build for any decision reason. Hosted
-was captured on first builds and the unchanged rerun; a query-changed
-rebuild is captured on Databricks only (entries 85, 86).
+A Snowflake build renders only for a captured decision reason
+(`warehouse/snowflake.rs` cells). With evaluation on: a first build
+(`first_build`), a rerun refused at Reuse qualification
+(`failed_reuse_qualification`: unchanged, after an External modification,
+over an upstream table or a query dependency) and a query-changed rebuild
+(`identity_mismatch`; for a data test, a logic change). With evaluation
+off: a first build and a query-changed rebuild (entry 133). A build for any
+other reason, among them upstream data or Upstream producer changes, an
+External modification with evaluation off and an execution type change,
+keeps an empty map (#206).
 
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake
@@ -665,7 +672,8 @@ migration 0027) and whether the submit requested evaluation
 (`node_decisions.volatile_evaluation_requested`, migration 0028). A decision
 recorded before either migration prints no volatile lines. The captured trees
 are in [explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7) (own
-SQL, a model rerun, an evaluation-off reuse), its
+SQL, a query-changed rebuild with evaluation on or off, a model rerun, an
+evaluation-off reuse), its
 [volatile query dependency](explain-catalog.md#execute-over-a-volatile-query-dependency)
 section and its [DATA TEST](explain-catalog.md#data-test) section.
 

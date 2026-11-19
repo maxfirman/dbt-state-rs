@@ -190,16 +190,21 @@ server keeps the conservative behavior described.
     (`current_time` or `localtime` without parentheses,
     `current_timestamp(n)`, `uniform`, `randstr` or `normal` with other
     arguments); a downstream table with zero Lag tolerance.
-  - Snowflake FULL model builds render for any decision reason, with
-    evaluation on or off. Hosted was captured on first builds and the
-    unchanged rerun only; a query-changed or otherwise forced rebuild is
-    uncaptured on Snowflake (captured on Databricks, entries 85, 86).
-  - Snowflake Explain, no open ticket: an evaluation-off rebuild; a volatile
-    data test's logic change; the model rerun tree (#191 cell 2) for a model
-    with upstreams, query dependencies, a view, an incremental or
-    `compare_unrendered_code`; the volatile-dependency tree for a table with
-    an upstream table or values of its own, or another node kind. Each keeps
-    the decision's own tree without volatile lines.
+  - Snowflake builds render only for the captured decision reasons (#206,
+    [protocol.md](protocol.md#volatile-evaluation)): a first build, a rerun
+    refused at Reuse qualification and a query-changed rebuild with
+    evaluation on, and a first build and a query-changed rebuild with
+    evaluation off. Uncaptured, and empty: a build for upstream data or
+    Upstream producer changes, an External modification with evaluation
+    off, an execution type change and every other reason.
+  - Snowflake Explain, no open ticket: an evaluation-off rebuild other than
+    a table's query change without upstreams; the model rerun tree (#191
+    cell 2) or the volatile-dependency tree over an upstream table that
+    drifted or changed producer since the refused build, or over both an
+    upstream table and a query dependency; the model rerun tree for a
+    view, an incremental or `compare_unrendered_code`; the
+    volatile-dependency tree for a table with values of its own, or another
+    node kind. Each keeps the decision's own tree without volatile lines.
   - Hosted reads the clock for each function; this server reads it once per
     submit. The replay compares clock values by format only.
   - `query_hash_metadata_info` stays unset; hosted's use of it is
@@ -329,7 +334,8 @@ server keeps the conservative behavior described.
   dependencies` (`explain_rebuild_reason_gaps.jsonl`, #40 code review). A
   test whose own SQL rendered Volatile function values with evaluation
   requested is captured on its first execution and rerun
-  (`explain_volatile_evaluation.jsonl` entries 24, 46, #195). A test that
+  (`explain_volatile_evaluation.jsonl` entries 24, 46, #195) and after its
+  logic changed (`explain_volatile_cells.jsonl` entry 204, #206). A test that
   fails reuse qualification without rendered values, for example over
   `seq4()` with evaluation requested, was not captured; the server renders
   nothing for it ([explain-catalog.md](explain-catalog.md#data-test)).

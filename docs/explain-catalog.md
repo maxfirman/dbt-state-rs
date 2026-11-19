@@ -592,8 +592,11 @@ the persisted evaluation flag, migration 0028):
 ```
 One child per value, in the order the functions first appear in the SQL.
 A data test or a query dependency with evaluation off renders no values
-([protocol.md](protocol.md#volatile-evaluation)), and a model rebuild with
-evaluation off is not captured: neither prints volatile lines.
+([protocol.md](protocol.md#volatile-evaluation)), so neither prints volatile
+lines. A table's query-changed rebuild with evaluation off prints its values
+without the `tolerated by config` line
+([SHAPE 7](#execute-node-query-changed-shape-7)); other rebuilds with
+evaluation off are not captured and print none.
 
 ### EXECUTE: node query changed (SHAPE 7)
 
@@ -629,6 +632,14 @@ functions first appear in the SQL (Databricks, captured:
     - RAND() -> rendered with '«value»'
   - the model query is not deterministic and this is not tolerated by config [INFO]
 ```
+
+Snowflake, captured (#206, `explain_volatile_cells.jsonl`): the
+query-changed rebuild of a table without upstreams prints the same two lines
+(`rq`, entries 142 and 192). With evaluation off (`ro`, entries 133 and 194)
+it prints only `non-deterministic functions detected in query` and its
+values, with no `tolerated by config` line, ahead of `the model query has
+changed`. This server prints the evaluation-off form only for a FULL table
+without upstreams or query dependencies whose identity did not match.
 
 They are printed only where the tree has `the model query has changed`
 (or a data test's `the test query has changed`, [DATA TEST](#data-test)),
@@ -910,12 +921,14 @@ with the seed noun, or another one over its existing table
 
 Volatile evaluation (#67, #194, #191 cell 2). A FULL model whose own SQL
 renders Volatile function values with `evaluate_volatile_sql: true`, rerun
-unchanged over its existing Target relation, without upstreams or query
-dependencies. Reuse qualification refuses it, so this server rebuilds for
-`no_reuse_candidate.failed_reuse_qualification` with codes 6 / 6 and "model
-was executed because either its query didn't match or its upstream data is
-out of date". Hosted explains it as a query change
-(`explain_volatile_evaluation.jsonl` entries 33, 41):
+over its existing Target relation. Reuse qualification refuses it, so this
+server rebuilds for `no_reuse_candidate.failed_reuse_qualification` with
+codes 6 / 6 and "model was executed because either its query didn't match or
+its upstream data is out of date". Hosted explains it as a query change
+(`explain_volatile_evaluation.jsonl` entries 33, 41, without upstreams or
+query dependencies). The same tree, with no line about the change, explains
+the rebuild after an External modification of the Target relation
+(`explain_volatile_cells.jsonl` `rx`, entries 137 and 193, #206):
 ```
 - table analysis ("«FQN»")
   - the model table exists already                    [SUCCESS] <TARGET_TABLE_EXISTS>
@@ -927,11 +940,21 @@ out of date". Hosted explains it as a query change
 - data freshness analysis
   - no upstream dependencies                          [SUCCESS]
 ```
+Over an upstream table (`eu`, entries 166 and 195) or a deterministic query
+dependency (`eq`, entries 147 and 197), hosted adds `upstream model queries
+have not changed` [SUCCESS] after `the model query has changed`. The
+freshness section then lists each upstream table as a reuse does
+([SKIP](#skip-shapes-0-1-2-4-8)), judged against the refused build, which
+this server records as the Explain anchor; a query dependency alone says
+`upstream data is up to date` [SUCCESS]. In `eu`'s capture the upstream's
+epoch moved back, so its listing has no summary line.
+
 The wording comes from the persisted values and evaluation flag
 (`explain.rs::volatile_rebuild_lines`); the model's identity is unchanged
 (maintainer decision on #191). Not captured, and keeping the decision's own
-(empty) tree: the same rerun with upstreams, query dependencies, as a view,
-an incremental, a snapshot or a custom node, or under
+(empty) tree: the same rerun over an upstream table that drifted or changed
+producer since the refused build, over both an upstream table and a query
+dependency, as a view, an incremental, a snapshot or a custom node, or under
 `compare_unrendered_code`. A rerun with values in both its own SQL and a
 query dependency, any incremental, snapshot or custom node, and a
 Databricks rerun (#198) render no values at all, so they print no volatile
@@ -940,8 +963,8 @@ lines.
 ### EXECUTE: over a volatile query dependency
 
 Volatile evaluation (#67, #195). A table whose own SQL is unchanged and
-renders nothing, with no upstream table, over a view whose definition calls a
-Volatile function, submitted with `evaluate_volatile_sql: true`. Hosted
+renders nothing, over a view whose definition calls a Volatile function,
+submitted with `evaluate_volatile_sql: true`. Hosted
 rebuilds it with codes 1 / 6 and "model was executed because either its query
 didn't match or its upstream data is out of date"
 (`explain_volatile_evaluation.jsonl` entry 45, the rerun of `vd` over `vv`):
@@ -961,12 +984,32 @@ didn't match or its upstream data is out of date"
 ```
 `«dependency»` is the query dependency's name as sent, which keys its values
 in `transformed_nodes_by_query`. There is no `tolerated by config` line, and
-`an upstream model query has changed` has no badge. This server rebuilds for
+`an upstream model query has changed` has no badge. With an upstream table
+too (`explain_volatile_cells.jsonl` `edu`, entries 168 and 199, #206), each
+upstream table follows the dependencies, and the freshness section lists it
+as a reuse does, judged against the refused build:
+```
+  - upstream dependencies
+    - "«dependency»"
+      - non-deterministic functions detected in query [INFO]
+        - CURRENT_TIMESTAMP() -> rendered with '«value»'
+        - a change in rendered value will result in a diff
+    - "«upstream»"
+      - query or upstream query unchanged                     <UPSTREAM_QUERY_UNCHANGED>
+  - an upstream model query has changed               [FAIL]
+- data freshness analysis
+  - upstream dependencies
+    - "«upstream»"                                             <FRESH>
+      - no updates since "«FQN»" last executed
+      - last updated: «rel_time»
+```
+This server rebuilds for
 `no_reuse_candidate.failed_reuse_qualification` and renders this tree from
 the persisted values (`explain.rs::volatile_dependency_tree`): identity and
 Upstream producers do not change (#67 decision 2). Uncaptured, and empty: a
 first build (`table analysis` only, as captured, entry 23), another model
-kind and a table with an upstream table. A table with values of its own
+kind, and an upstream table that drifted or changed producer since the
+refused build. A table with values of its own
 too, a data test over a volatile view and a dependency with evaluation off
 render no values ([protocol.md](protocol.md#volatile-evaluation)), so they
 print no volatile lines.
@@ -1347,10 +1390,12 @@ after drift `last updated` is the new epoch. The listing is the
 
 **Volatile evaluation** (#67, #195). A test whose own SQL renders a Volatile
 function value with `evaluate_volatile_sql: true` (its values keyed
-`__target_query__`) prints a query analysis first, on its first execution
-and on every rerun, which this server rebuilds for
+`__target_query__`) prints a query analysis first, on its first execution,
+on every rerun, which this server rebuilds for
 `no_reuse_candidate.failed_reuse_qualification`
-(`explain_volatile_evaluation.jsonl` entries 24 and 46):
+(`explain_volatile_evaluation.jsonl` entries 24 and 46), and after its logic
+changed (`no_reuse_candidate.identity_mismatch`; `explain_volatile_cells.jsonl`
+`rt`, entries 148 and 204, #206):
 ```
 - query analysis
   - non-deterministic functions detected in query     [INFO]
@@ -1360,9 +1405,8 @@ and on every rerun, which this server rebuilds for
 - data freshness analysis
   <the EXECUTE listing above>
 ```
-The values are the persisted ones the decision returned. A logic change of
-such a test (`identity_mismatch`) is uncaptured and keeps the tree above
-without the query analysis. A data test with evaluation off, over a
+The values are the persisted ones the decision returned. A data test with
+evaluation off, over a
 volatile view, or with a Target relation renders no values
 ([protocol.md](protocol.md#volatile-evaluation)) and prints no volatile
 lines.
@@ -1759,6 +1803,11 @@ last ones were settled.
   query dependency (#195, entry 45,
   [its tree](#execute-over-a-volatile-query-dependency)) and a data test
   whose own SQL rendered values (entries 24, 46, [DATA TEST](#data-test)).
+  Also (#206, `explain_volatile_cells.jsonl`): the FULL model rerun after an
+  External modification (entry 193), over an upstream table (entry 195) or
+  a deterministic query dependency (entry 197), and FULL over a volatile
+  query dependency and an upstream table (entry 199), each over upstream
+  tables that did not change since the refused build.
   Not captured (N): every other kind and situation, including SQL whose
   Volatile calls render nothing (`zipf`, `seqN`) and the cells that render
   no values ([protocol.md](protocol.md#volatile-evaluation)); Databricks
@@ -1844,8 +1893,8 @@ Explain selects a shape from the persisted decision class, Decision reason
 | CLONE | `result_copy` with an anchor and the Target relation present | CLONE over an existing Target relation |
 | CLONE | `result_copy` otherwise (submit Result copy and RegisterClone) | CLONE |
 | EXECUTE | `copy_disabled` for FULL, with the Target relation absent and the equivalent persisted | [copy disabled](#execute-copy-disabled-allow_clones-false) |
-| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, no genuine upstream or query dependency, values rendered for its own SQL and evaluation requested | [rerun of a volatile model](#execute-rerun-of-a-volatile-model) |
-| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, no genuine upstream, and values rendered only for query dependency definitions, with evaluation requested | [over a volatile query dependency](#execute-over-a-volatile-query-dependency) |
+| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, values rendered for its own SQL and evaluation requested, and either no genuine upstream or query dependency, query dependencies only, or genuine upstreams only, none drifted or with a changed producer since the anchor (the refused build) | [rerun of a volatile model](#execute-rerun-of-a-volatile-model) |
+| EXECUTE | `no_reuse_candidate.failed_reuse_qualification` for FULL with the Target relation present, values rendered only for query dependency definitions, with evaluation requested, and no genuine upstream drifted or with a changed producer since the anchor (the refused build) | [over a volatile query dependency](#execute-over-a-volatile-query-dependency) |
 | EXECUTE | `copy_chain_limit` for the captured Databricks MERGE with an existing Target relation, own anchor, proven upstream drift and frozen refused copy name | ordinary own-anchor outdated tree plus the captured table refusal line (#152) |
 | any | every other reason (local-only reasons, `copy_chain_limit` outside the captured scope, uncaptured cells), NULL (row written before migration 0014), unknown, or contradicting the class | empty tree |
 
