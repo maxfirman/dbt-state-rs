@@ -13,7 +13,8 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
 /// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
-/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85).
+/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85;
+/// `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22, #198).
 /// Other Databricks Volatile functions are uncaptured and render nothing.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
@@ -26,19 +27,49 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             key: "RAND()",
             value: Value::UnitRandom,
         }],
-        // The one captured cell: a FULL model's query-changed rebuild over
-        // its existing Target relation, evaluation on (entries 85–86). A
-        // first build, an unchanged rerun (#198), other execution types,
-        // data tests, query dependencies, evaluation off and a reuse are
-        // uncaptured.
-        cells: &[Cell {
-            execution_type: crate::query_cache::ModelExecutionType::Full,
-            evaluation_requested: true,
-            outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-                NoCandidate::IdentityMismatch,
-            )),
-            queries: Queries::Own,
-        }],
+        // FULL query-changed rebuild (controls 85–86), true first build
+        // and unchanged rerun (#198, fixture 5/21), and non-storing data
+        // test first execution/rerun (10/22). Other decision reasons,
+        // execution types, query dependencies, evaluation off and a reuse
+        // remain uncaptured. These rules render telemetry only.
+        cells: &[
+            Cell {
+                execution_type: crate::query_cache::ModelExecutionType::Full,
+                evaluation_requested: true,
+                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+                    NoCandidate::IdentityMismatch,
+                )),
+                queries: Queries::Own,
+            },
+            Cell {
+                execution_type: crate::query_cache::ModelExecutionType::Full,
+                evaluation_requested: true,
+                outcome: Outcome::BuildFor(DecisionReason::FirstBuild),
+                queries: Queries::Own,
+            },
+            Cell {
+                execution_type: crate::query_cache::ModelExecutionType::Full,
+                evaluation_requested: true,
+                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+                    NoCandidate::FailedReuseQualification,
+                )),
+                queries: Queries::Own,
+            },
+            Cell {
+                execution_type: crate::query_cache::ModelExecutionType::DbtDataTest,
+                evaluation_requested: true,
+                outcome: Outcome::BuildFor(DecisionReason::FirstBuild),
+                queries: Queries::Own,
+            },
+            Cell {
+                execution_type: crate::query_cache::ModelExecutionType::DbtDataTest,
+                evaluation_requested: true,
+                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+                    NoCandidate::FailedReuseQualification,
+                )),
+                queries: Queries::Own,
+            },
+        ],
     }
 };
 

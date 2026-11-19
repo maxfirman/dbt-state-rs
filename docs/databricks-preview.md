@@ -71,10 +71,11 @@ exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 
-- Volatile evaluation renders only the captured query-changed FULL rebuild.
-  First build, rerun, data-test and downstream cells in #198 remain uncaptured;
-  the [prepared runner and compute blocker](databricks-volatile.md) record the
-  2026-11-19 attempt. No new volatile decision or Explain parity is claimed.
+- Volatile evaluation covers `RAND()` on a FULL first build, query-changed
+  rebuild and unchanged rerun, plus non-storing data-test first/rerun execution.
+  The downstream one-hour Lag tolerance reuse and all captured Explain trees
+  are verified ([#198 evidence and limits](databricks-volatile.md)). Other
+  functions, volatile dependencies, evaluation off and node kinds remain unverified.
 - Bounded FULL and direct MERGE/check-snapshot Result copy are enabled by
   default. [Shared-copy acceptance](databricks-shared-copy.md) states the tested
   grammar and physical evidence. Client controls remain supported; there are no

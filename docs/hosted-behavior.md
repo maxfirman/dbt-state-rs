@@ -115,7 +115,10 @@ Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 | Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
 | Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (`clone_fallback_volatile.jsonl`) | ✅ |
 | Databricks model calling `rand()`, evaluation on, query-changed rebuild over its existing Target relation | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
-| Databricks first build, unchanged rerun, data test, downstream table, evaluation off | not captured (#198) | conservative rebuild, empty map, no volatile Explain lines |
+| Databricks `rand()` FULL first build / unchanged rerun, evaluation on | EXECUTE both times, `RAND()` under the Target relation; volatile Explain lines only on rerun | ✅ (#198, `databricks_volatile_evaluation.jsonl` 5, 21; Explain 15, 28) |
+| Databricks non-storing data test calling `rand()`, evaluation on | EXECUTE on both runs, `RAND()` under `__target_query__`, volatile Explain lines | ✅ (#198, same fixture 10, 22) |
+| Databricks table downstream of the volatile model, Lag tolerance 3600 s | first EXECUTE, then stale SKIP within tolerance, empty map; retains its first Warehouse value | ✅ (#198, same fixture 9, 26; [physical evidence](databricks-volatile.md)) |
+| Databricks volatile SQL with evaluation off, query dependencies, other node kinds/functions | not captured | conservative behavior; no invented rendering |
 
 ## Result copy (`CLONE`)
 
@@ -152,7 +155,7 @@ Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 
 ## Known gaps
 
-- **Volatile evaluation**: the uncaptured cells, Databricks (#198) and
+- **Volatile evaluation**: the remaining uncaptured cells on Databricks and
   Snowflake, are listed in
   [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
 - **Result copy and upstream producers**: hosted did not copy an equivalent

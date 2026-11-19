@@ -403,6 +403,7 @@ const LOWERCASE_UUID_V4: ValueFormat = ValueFormat {
 /// A value of any other function is compared exactly (`RANDSTR(8, 1234)` and
 /// `NORMAL(0, 1, 1234)` were the same in every captured render).
 const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
+    ("RAND()", UNIT_DECIMAL),
     ("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS),
     ("CURRENT_TIMESTAMP", UTC_TIMESTAMP_MICROS),
     ("SYSDATE()", UTC_TIMESTAMP_MICROS_WITH_OFFSET),
@@ -867,6 +868,7 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
         ("CURRENT_TIME", "16:48:51.782956", "16:48:51"),
         ("CURRENT_DATE", "2026-11-17", "2026-11-17 00:00:00"),
         ("RANDOM()", "0.2496468898543448", "1.5"),
+        ("RAND()", "0.7029237228139773", "1.5"),
         ("UNIFORM(1, 100, RANDOM())", "0.31728658843764224", "71"),
         (
             "UUID_STRING()",
@@ -1156,7 +1158,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        143,
+        144,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1709,6 +1711,11 @@ async fn databricks_append_transitions_exact_public_history() {
     exact_native_history("databricks_append_transitions.jsonl", 97, 14, 7).await;
 }
 
+#[tokio::test]
+async fn databricks_volatile_evaluation_exact_public_history() {
+    exact_native_history("databricks_volatile_evaluation.jsonl", 29, 8, 6).await;
+}
+
 /// Complete hosted composite partition/schema history, including failed builds.
 #[tokio::test]
 async fn databricks_overwrite_recovery_exact_public_history() {
@@ -2193,7 +2200,9 @@ async fn exact_native_history_at(
                         pending_id(&actual).expect("a pending submit response"),
                     );
                 }
-                if normalize_ids(actual.clone()) != normalize_ids(entry.response.clone()) {
+                if comparable(actual.clone(), fixture)
+                    != comparable(entry.response.clone(), fixture)
+                {
                     mismatches.push(format!(
                         "entry {i}: actual={actual} hosted={}",
                         entry.response
@@ -2496,6 +2505,21 @@ fn local_speculative_edid(resp: &qc::SubmitSqlSpeculativeResponse) -> Option<Str
     }
 }
 
+/// Preserve the complete tree, changing only registered volatile value text.
+/// Databricks keeps names, relative times, timestamps, markers and badges exact.
+fn normalize_volatile_tree(lines: &[qc::ExplainLine]) -> Vec<qc::ExplainLine> {
+    lines
+        .iter()
+        .cloned()
+        .map(|mut line| {
+            line.text =
+                normalize_volatile_line(&line.text).expect("captured volatile value format");
+            line.children = normalize_volatile_tree(&line.children);
+            line
+        })
+        .collect()
+}
+
 /// Normalize an explain tree for comparison, masking the three runtime slots the
 /// catalog marks (`«FQN»`, `«rel_time»`, `«gap»`). Recurses into children. The
 /// FQN slot appears in `table analysis ("…")`, in a bare quoted upstream name,
@@ -2714,9 +2738,14 @@ async fn replay_explain_messages(
         let (hosted_tree, local_tree) = if fixture.starts_with("databricks_") {
             // A new complete capture keeps the actual names and full text;
             // it cannot inherit the historical runtime-slot masks either.
+            // Only captured Volatile evaluation values vary per execution.
             (
-                m["explain_lines"].clone(),
-                serde_json::to_value(&local.explain_lines).unwrap(),
+                serde_json::to_value(normalize_volatile_tree(
+                    &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
+                        .unwrap(),
+                ))
+                .unwrap(),
+                serde_json::to_value(normalize_volatile_tree(&local.explain_lines)).unwrap(),
             )
         } else {
             (

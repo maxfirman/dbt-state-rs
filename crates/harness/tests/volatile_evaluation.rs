@@ -28,6 +28,8 @@ use support::scenario::{
 };
 
 const CONTROLS: &str = include_str!("fixtures/databricks_submit_copy_controls.jsonl");
+const DATABRICKS_EVALUATION: &str =
+    include_str!("../../../golden/fixtures/databricks_volatile_evaluation.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
 const RAND_SUBMIT: usize = 85;
 /// Hosted's Explain of that decision.
@@ -1640,8 +1642,7 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
         assert!(!rendered(&ready).is_empty(), "{node}");
     }
 
-    // Databricks has no capture of a dependency or a data test: only a Target
-    // relation's own `rand()` renders.
+    // Databricks query dependencies and tests storing failures are uncaptured.
     let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
     let databricks_dependency = model
         .clone()
@@ -1655,11 +1656,12 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
         );
     let databricks_test = support::scenario::data_test("test.databricks.rand")
         .dialect("databricks")
+        .target("`cdo_demo_db`.`ds_20261112a134ef_prod`.`audit`")
         .sql("select rand() as noise where false")
         .tolerate_nondeterminism(false);
     for (node, submit) in [
         ("Databricks dependency", databricks_dependency),
-        ("Databricks data test", databricks_test),
+        ("Databricks stored-failure test", databricks_test),
     ] {
         let ready = sc.org(node).expect_execute(submit).await;
         assert!(
@@ -1814,34 +1816,128 @@ async fn snowflake_values_in_own_sql_and_a_dependency_or_a_data_test_over_a_vola
 }
 
 #[tokio::test]
-async fn databricks_renders_only_the_captured_query_changed_rebuild() {
+async fn databricks_first_build_renders_rand_without_volatile_explain_lines() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await.org("databricks cells");
-    let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
+    let entry = &entries(DATABRICKS_EVALUATION)[5];
+    let first = sc.expect_execute(captured_submit(&entry.request)).await;
+    let values = rendered(&first);
+    assert_eq!(
+        volatile_map_shape(&values),
+        volatile_map_shape(&hosted_volatile_values(&entry.response)),
+        "the true first build renders the captured RAND() map"
+    );
+    assert!(is_captured_unit_random(
+        &values[&target(&entry.request)]["RAND()"]
+    ));
 
-    let first = sc.expect_execute(model.clone()).await;
-    assert!(
-        rendered(&first).is_empty(),
-        "first build: {:?}",
-        rendered(&first)
-    );
-    assert!(
-        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
-            .await
-    );
-    let rerun = sc.expect_execute(model.clone()).await;
-    assert!(
-        rendered(&rerun).is_empty(),
-        "unchanged rerun (cell 2, #198): {:?}",
-        rendered(&rerun)
-    );
-    let explained = explain(&sc, rerun.execution_decision_id.as_deref().unwrap()).await;
+    let explained = explain(&sc, first.execution_decision_id.as_deref().unwrap()).await;
     assert!(!prints_volatile_lines(&explained), "{explained}");
+}
 
-    // Positive control: the captured query-changed rebuild renders.
-    let control = sc.org("databricks control");
-    deterministic_history(&control).await;
-    assert!(!rendered(&control.expect_execute(model).await).is_empty());
+#[tokio::test]
+async fn databricks_volatile_model_rerun_rebuilds_and_renders_rand() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let responses = replay(&sc, &entries, 28).await;
+    let local = support::scenario::into_execute(responses[&21].clone());
+    let hosted: qc::SubmitSqlResponse =
+        serde_json::from_value(entries[21].response.clone()).unwrap();
+    let hosted = support::scenario::into_execute(hosted);
+    assert_eq!(local.explained_decision, hosted.explained_decision);
+    let values = rendered(&local);
+    assert_eq!(
+        volatile_map_shape(&values),
+        volatile_map_shape(&hosted_volatile_values(&entries[21].response))
+    );
+    assert!(is_captured_unit_random(
+        &values[&target(&entries[21].request)]["RAND()"]
+    ));
+}
+
+#[tokio::test]
+async fn databricks_volatile_data_test_builds_render_the_captured_target_query_key() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let responses = replay(&sc, &entries, 28).await;
+    for index in [10, 22] {
+        let local = support::scenario::into_execute(responses[&index].clone());
+        let hosted: qc::SubmitSqlResponse =
+            serde_json::from_value(entries[index].response.clone()).unwrap();
+        assert_eq!(
+            local.explained_decision,
+            support::scenario::into_execute(hosted).explained_decision
+        );
+        let values = rendered(&local);
+        assert_eq!(
+            volatile_map_shape(&values),
+            volatile_map_shape(&hosted_volatile_values(&entries[index].response))
+        );
+        assert!(is_captured_unit_random(
+            &values["__target_query__"]["RAND()"]
+        ));
+    }
+}
+
+#[tokio::test]
+async fn databricks_captured_cells_explain_exactly_including_after_a_restart() {
+    let database =
+        std::sync::Arc::new(support::TestDatabase::new("databricks_volatile_cells").await);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let responses = replay(&sc, &entries, 28).await;
+    assert_eq!(variant(&responses[&9]), "ready_to_execute");
+    assert_eq!(
+        variant(&responses[&26]),
+        "skip_execution",
+        "same-logic volatile producer data drift stays within Lag tolerance"
+    );
+    assert!(volatile_values(&responses[&26]).is_empty());
+    let cases = [
+        (4, 15),
+        (5, 15),
+        (9, 15),
+        (10, 15),
+        (20, 28),
+        (21, 28),
+        (22, 28),
+        (26, 28),
+    ];
+    let expected: Vec<_> = cases
+        .iter()
+        .map(|&(submit, explained)| {
+            let id = decision_id(&responses[&submit]);
+            let mut expected = hosted_explain_for(
+                &entries[explained],
+                &entries[submit],
+                &id,
+                &volatile_values(&responses[&submit]),
+            );
+            expected["messages"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|message| message["execution_decision_id"] == id);
+            assert_eq!(expected["messages"].as_array().unwrap().len(), 1);
+            (id, expected)
+        })
+        .collect();
+    for (id, expected) in &expected {
+        assert_eq!(&explain(&sc, id).await, expected, "decision {id}");
+    }
+    drop(sc);
+    drop(server);
+    let server = support::start_server_on_database(database.clone()).await;
+    let sc = Scenario::connect(&server).await;
+    for (id, expected) in &expected {
+        assert_eq!(
+            &explain(&sc, id).await,
+            expected,
+            "persisted decision {id} after restart"
+        );
+    }
 }
 
 #[tokio::test]

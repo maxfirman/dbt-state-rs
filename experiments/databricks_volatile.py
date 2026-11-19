@@ -11,18 +11,21 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import re
 import uuid
 
 from databricks_baseline import Baseline, LeaseScope, check_inventory
 from databricks_survey import Campaign, Refused, check_manifest
 
 
-def check_physical(actual, properties, name):
+def check_physical(actual, properties, name, run_id):
     expected = [('id', 'INT', 'INT')]
     if name != 'control':
         expected.append(('value', 'DOUBLE', 'DOUBLE'))
+    expected.append(('run_id', 'STRING', 'STRING'))
     schema = [(c['name'], c['type_name'], c['type_text']) for c in actual['columns']]
-    if schema != expected or len(actual['rows']) != 1 or actual['rows'][0][0] != '1':
+    if (schema != expected or len(actual['rows']) != 1 or actual['rows'][0][0] != '1'
+            or actual['rows'][0][-1] != run_id):
         raise Refused('volatile: physical rows or schema')
     if name != 'control' and not 0 <= float(actual['rows'][0][1]) < 1:
         raise Refused('volatile: Warehouse RAND value outside range')
@@ -84,8 +87,12 @@ class Volatile(Campaign):
         import subprocess
         lo = len(self.wire())
         self.n += 1
+        response_logs = list((self.work / 'logs' / target_path.name / 'run_cache').glob('responses_*.jsonl'))
+        if len(response_logs) != 1:
+            raise Refused('volatile: expected exactly one native build response log')
         command = [self.a.dbt, 'state', 'explain', '--verbose', '--target', 'prod',
                    '--profile', 'survey', '--profiles-dir', str(self.profiles),
+                   '--log-file', str(response_logs[0]),
                    '--target-path', str(target_path), '--log-path', str(self.work / 'logs' / label)]
         self.event('dbt', label=label, argv=command, managed=True)
         try:
@@ -115,10 +122,16 @@ class Volatile(Campaign):
     def baseline(self):
         self.setup_project()
         (self.project / 'models/sources.yml').unlink()
-        self.model('volatile', 'select 1 as id, rand() as value',
+        # Even a non-storing test defaults to <target>_dbt_test__audit in
+        # its manifest. Keep every node in the evidenced existing container.
+        self.save('project/macros/generate_schema_name.sql',
+                  '{% macro generate_schema_name(custom_schema_name, node) %}'
+                  '{{ target.schema }}{% endmacro %}\n')
+        nonce = self.scope.relation_prefix
+        self.model('volatile', f"select 1 as id, rand() as value, '{nonce}' as run_id",
                    "{'evaluate_volatile_sql': true, 'pre_clone': 'never'}")
-        self.model('control', 'select 1 as id', "{'pre_clone': 'never'}")
-        self.model('consumer', "select id, value from {{ ref('volatile') }}",
+        self.model('control', f"select 1 as id, '{nonce}' as run_id", "{'pre_clone': 'never'}")
+        self.model('consumer', "select id, value, run_id from {{ ref('volatile') }}",
                    "{'lag_tolerance': '3600s', 'pre_clone': 'never'}")
         test_name = self.scope.relation_prefix + 'test'
         self.save('project/tests/' + test_name + '.sql',
@@ -150,7 +163,7 @@ class Volatile(Campaign):
             for name in ('volatile', 'control', 'consumer'):
                 physical[name] = self.observe(label + '_' + name, self.scope.relation('prod', name))
                 properties = json.loads((self.work / 'physical' / (label + '_' + name + '_properties.json')).read_text())
-                check_physical(physical[name], properties, name)
+                check_physical(physical[name], properties, name, nonce)
             for name in ('volatile', 'consumer'):
                 own = next(r for r in submits if r['request']['labels']['dbt_node_name'] == name)
                 expected = physical['volatile'] if 'ready_to_execute' in own['response']['response'] else previous[name]
@@ -166,6 +179,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dbt', required=True)
     parser.add_argument('--proxy', required=True)
+    parser.add_argument('--rust-url', help='opt-in owned loopback Rust server, http://127.0.0.1:PORT')
     parser.add_argument('--profiles', default=str(Path.home() / '.dbt/profiles.yml'))
     parser.add_argument('--profile', default='databricks')
     parser.add_argument('--warehouse', default='47fd3fa312624d91')
@@ -174,6 +188,8 @@ def main():
     parser.add_argument('--object-id', default=uuid.uuid4().hex)
     parser.add_argument('--run-id', default=datetime.now(timezone.utc).strftime('%Y%m%d') + uuid.uuid4().hex[:6])
     args = parser.parse_args()
+    if args.rust_url and not re.fullmatch(r'http://127\.0\.0\.1:\d+', args.rust_url):
+        parser.error('--rust-url must be an owned loopback endpoint')
     return Volatile(args).run()
 
 

@@ -1,38 +1,62 @@
-# Databricks Volatile evaluation capture (#198)
+# Databricks Volatile evaluation (#198)
 
-Status on 2026-11-19: prepared, live capture blocked. No new Databricks cell is
-verified and no rendering, identity, Upstream producer or Reuse qualification
-rule has changed. The existing query-changed FULL rebuild remains the only
-captured rendering cell; see the [support matrix](protocol.md#volatile-evaluation).
+Captured 2026-11-19 through pinned dbt 2.0.11 and hosted dbt State, on the
+Databricks Free Edition Serverless Starter Warehouse, Unity Catalog and managed
+Delta tables. The SQL runtime reports `dbsql_version: 2026.45`.
 
-`experiments/databricks_volatile.py` prepares a minimal isolated project with
-fresh UUID-named objects and the pinned dbt 2.0.11 binary (including its digest
-check). Two builds cover a true first build and an unchanged rerun of a table
-calling `rand()` with evaluation requested, a passing singular data test with
-evaluation requested, and a consumer table with a one-hour Lag tolerance. A
-deterministic table supplies the test's input. Each build is followed by native
-`dbt state explain --verbose` using that build's artifacts.
+## Evidence
 
-The runner reads each model's complete typed result and relation properties
-through the SQL API. It checks the one-row `INT, DOUBLE` RAND result, the
-consumer's current or retained value according to its observed decision, and
-managed Delta relation properties. The passing test writes no Target relation;
-its actual outcome is retained in `run_results.json`. The runner retains the
-rendered State values alongside the Warehouse reads for subsequent comparison.
-It does not substitute those values into SQL or infer hosted policy from a
-physical result.
+`golden/fixtures/databricks_volatile_evaluation.jsonl` is the complete, certified
+29-RPC history: eight ordinary submits, six successful execution confirmations,
+four speculative submits, two validation calls, seven telemetry batches and two
+native `dbt state explain --verbose` calls explaining all eight decisions.
+Fixture SHA-256: `ee41de27692643810fa2957b9fe7eaad4408cfe98a50ef57ad43f49b75e62a74`.
 
-## Run after restoring compute
+| Cell | Submit / Explain entries (zero-based) | Observed behavior |
+|---|---|---|
+| True first model build | 5 / 15 | EXECUTE, codes 6 / 6; `RAND()` keyed by the Target relation. Explain lists the missing table and no volatile lines. |
+| 2: unchanged model rerun | 21 / 28 | EXECUTE, codes 6 / 6, same map shape; Explain prints the rendered value, non-deterministic query not tolerated, and model query changed. |
+| 6: passing singular data test, first / rerun | 10, 22 / 15, 28 | EXECUTE both times, codes 6 / 6; `RAND()` under `__target_query__`. Explain prints the value and test query changed above the upstream listing. |
+| 7: table downstream, first / rerun | 9, 26 / 15, 28 | First EXECUTE, then SKIP with `is_stale=true`, within one-hour Lag tolerance. Empty map. Explain says upstream queries unchanged, upstream data outdated, and within tolerance. |
+| Deterministic control, evaluation off | 4, 20 / 15, 28 | First EXECUTE, then fresh SKIP; empty maps. Supplies the test input. |
 
-Build `record-proxy` first. Supply an existing schema lease in the format used
-by `databricks_baseline.py`: `catalog: cdo_demo_db`, distinct `prod` and `ref`
-roles naming existing `ds_<run-id>_ref` containers, `preexisting_objects` for
-each schema, and `source_evidence` paths with SHA-256 digests. Each evidence
-file must list `retained_schemas` and, for each schema, its observed
-`full_name`, `owner` and `schema_id`. A fresh read of Unity Catalog metadata
-can supply this evidence; no old machine's files are required. The runner
-checks that ownership still matches, refuses collisions including temporary
-names, and verifies that preexisting inventory remains present afterwards.
+The same model SQL and upstream definition are sent on both runs. The consumer
+SKIP is evidence that this upstream rebuild is data drift within Lag tolerance,
+not an Upstream producer logic change. No identity, producer or reuse-refusal
+rule changes are needed. Rendering remains telemetry after the decision.
+
+Independent SQL API reads checked complete typed rows, the unique output literal,
+and managed Delta properties after both builds:
+
+| Run | State-rendered model `RAND()` | Warehouse model value | Warehouse consumer value |
+|---|---|---|---|
+| First | `0.7029237228139773` | `0.6458789029656377` | `0.6458789029656377` |
+| Rerun | `0.32878844711181066` | `0.46502475932217` | `0.6458789029656377` |
+
+The model's written values differ from State's rendered values on both builds:
+the Warehouse executes the original SQL. The consumer retains its first value
+on the SKIP. The passing test writes no Target relation; both actual
+`run_results.json` outcomes report `pass`, zero failures. Its State-rendered
+values were `0.3087601569109618` and `0.7997112382714784`.
+
+The same five-invocation scenario also passed against the updated Rust server
+and real Databricks in a separate fresh history. Its certified local capture
+has the same 29-RPC method counts. Rust telemetry values `0.4034455556479022`
+and `0.5214139626089704` differed from Warehouse model values
+`0.24591389802939545` and `0.7545877737284201`; the consumer retained
+`0.24591389802939545` on its SKIP. Both data tests passed. Raw local acceptance
+artifacts, including server binary provenance, are retained under
+`~/projects/databricks-volatile-198-rust-20261119/`, separately from the hosted
+fixture. This local capture is not promoted as hosted evidence.
+
+## Reproduce
+
+The runner creates an isolated project and fresh UUID-named objects in an
+existing evidenced schema lease. A unique output literal prevents equivalents
+from earlier attempts becoming hidden hosted history. Its schema macro keeps
+even non-storing tests in the existing leased container. No schema CREATE or
+DROP occurred; all writes stayed in `cdo_demo_db`, and preexisting inventories
+were preserved. Only its own proxy is stopped; run-owned relations are retained.
 
 ```bash
 cargo build -p dbt-state-harness --bin record-proxy
@@ -42,38 +66,63 @@ python3 experiments/databricks_volatile.py \
 python3 experiments/databricks_volatile_test.py
 ```
 
-The default profile is `databricks` in `~/.dbt/profiles.yml`; the default SQL
-warehouse is `47fd3fa312624d91`. Override the profile, profile path and warehouse
-explicitly when needed. Tokens remain in the existing local Databricks CLI
-configuration and secret environment variables. Only the runner's own proxy
-process is stopped. No schema creation or cleanup is performed. The runner is
-offline-tested preparation; its native build/Explain path still needs execution.
+To repeat against an owned Rust server, add `--rust-url http://127.0.0.1:PORT`
+and use a fresh work directory; no replay clock is enabled in the live server.
 
-The attempted live run read ownership and inventories successfully. The
-warehouse was `STOPPED`; even `SELECT current_version()` was rejected. Its
-start endpoint returned HTTP 400, `BAD_REQUEST`, with reason
-`DENY_NEW_AND_EXISTING_RESOURCES`, domain `resource-gatekeeper`, and
-`denyReason: INACTIVE`. A separate `SELECT 1` was also rejected. No dbt
-invocation, warehouse mutation, or hosted State capture occurred. Local attempt
-artifacts are at `~/projects/databricks-volatile-198-hosted`; ownership evidence
-and the lease are at `~/.dbt/leases/volatile198/` on the capture machine.
+The default profile is `databricks` in `~/.dbt/profiles.yml`; warehouse ID
+`47fd3fa312624d91`. The binary's pinned SHA-256 is checked. Tokens stay in the
+existing CLI configuration and secret environment variables. A lease names
+`catalog: cdo_demo_db`, distinct `prod` and `ref` roles in existing
+`ds_<run-id>_ref` schemas, their `preexisting_objects`, and `source_evidence`
+paths with SHA-256 digests. Each evidence file lists `retained_schemas` and each
+schema's observed `full_name`, `owner` and `schema_id`, checked again live.
 
-## Remaining acceptance
+Raw evidence on the capture machine is under
+`~/projects/databricks-volatile-198-live-20261119-d/`: certified JSONL and sidecar,
+client/runtime provenance, native logs and Explain output, run results, SQL API
+responses, before/after inventories and per-run physical checks. Lease evidence
+is in `~/.dbt/leases/volatile198/`. Earlier attempts are retained separately;
+the original inactive-compute restriction cleared after the maintainer signed
+into the web console. None of those incomplete attempts is promoted.
 
-Re-enable compute, use a fresh work directory, and capture both rounds. Compare
-the State-rendered values with the independent Warehouse values and preserve
-complete causal histories. Promote fixtures only after inspecting every cell.
-Then add failing full-response replay and public protocol scenarios, including
-Explain after a server restart, and implement only the observed response rules.
-If captures require identity or Upstream producer changes, or relaxing a reuse
-refusal, stop for the maintainer's decision under #198's check-in rule. Any
-remaining mismatch is unfinished work under ADR 0009. No replay exception or
-support claim is added by this preparation.
+## Regression coverage and limits
 
-Preparation validation: the two new offline tests and thirteen shared runner
-tests pass, as do workspace typechecking and formatting. The workspace suite
-hits an existing failure in
-`conformance::explain_skip_tree_matches_hosted_oracle_when_history_seeded`, also
-reproduced in isolation: the unchanged server returns the "at least one upstream
-dependency is unchanged" description where the unchanged test expects "within
-lag tolerance". This preparation changes neither Rust code nor fixtures.
+`conformance.rs::databricks_volatile_evaluation_exact_public_history` compares
+every captured RPC, full response and status, including all eight Explain
+trees. The fixture also joins the ordinary corpus replay. Only opaque IDs and
+validated runtime value formats are normalized; Databricks names, relative
+times, timestamps, codes, descriptions, markers and badges remain exact. No
+replay gap or missing-history exemption is added.
+
+`volatile_evaluation.rs` covers first-build/rerun maps, both data-test executions,
+consumer reuse, and exact Explain for all eight decisions before and after a
+server restart. The existing shared rendering, persistence and Explain code is
+reused; Databricks adds only captured rendering cells. Identity and fingerprints
+continue to use original SQL. Reuse qualification remains conservative.
+
+Still uncaptured: other Databricks Volatile functions/forms, evaluation off for
+volatile SQL, volatile query dependencies, stored-failure tests, other node
+kinds and decision reasons, and Databricks outside-tolerance consumer behavior.
+These cases are not promoted to verified support. Any future identity, producer
+or relaxed-refusal implication still requires the maintainer's decision under
+the ticket's check-in rule.
+
+## Validation (2026-11-19)
+
+- All 32 volatile protocol tests pass, including exact restart trees.
+- The new strict 29-RPC replay and the full 144-corpus replay pass.
+- All 25 fixed/generated DuckDB acceptance cases pass, including oracle mutants.
+- The 15 runner/shared offline tests and 25 Explain census checks pass.
+- Workspace typechecking, formatting, and strict all-target fuzz Clippy pass.
+- `cargo test --workspace --no-fail-fast` completes with 819 passed, 76 ignored
+  and one pre-existing failure:
+  `explain_skip_tree_matches_hosted_oracle_when_history_seeded` expects the
+  "within lag tolerance" description but receives "at least one upstream
+  dependency is unchanged". This assertion also failed before the implementation
+  and in isolation during preparation. No exemption or unrelated fix was added;
+  the entire workspace gate therefore remains red despite the passing #198 slice.
+
+Rust checks used `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0`,
+`CARGO_PROFILE_TEST_DEBUG=0` and an isolated `CARGO_TARGET_DIR` to stay within
+the machine's build-artifact quota. No test was filtered from the full workspace
+run. Live server acceptance used the ordinary system clock.

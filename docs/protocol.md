@@ -610,7 +610,7 @@ qualification. They are persisted with the decision for Explain only
 | Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | run 1 entries 6, 8, 33, 34, 50 |
 | Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | as above |
 | Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | run 1 entry 6 |
-| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 |
+| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 |
 
 Intentional fallbacks, each rendering nothing for that call:
 - Snowflake `zipf(1, 10, 1234)` and `seq1()`, `seq2()`, `seq4()`, `seq8()`:
@@ -639,14 +639,15 @@ no volatile Explain lines.
 | Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | incremental, snapshot, custom; a data test with a Target relation | empty, uncaptured | empty, uncaptured | — |
 | Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
-| Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
-| Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured | controls entries 85, 86 |
+| Databricks | FULL model, root SQL, true first build and unchanged rerun | rendered | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 5, 21 |
+| Databricks | data test without a Target relation, first execution and unchanged rerun | rendered under `__target_query__` | empty, uncaptured | same fixture entries 10, 22 |
+| Databricks | table downstream of a volatile model, one-hour Lag tolerance | uncaptured | empty map, first build then stale SKIP | same fixture entries 9, 26 |
+| Databricks | other node kinds, decision reasons, query dependencies, stored-failure tests, `skip_execution` rendering | empty, uncaptured | empty, uncaptured | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
 
-The remaining Databricks cells in #198 have a
-[prepared capture runner](databricks-volatile.md). The 2026-11-19 live attempt
-was blocked by an inactive SQL compute resource before any dbt invocation;
-these cells remain uncaptured.
+The [Databricks characterization](databricks-volatile.md) records the complete
+#198 history, Warehouse values, exact replay and persisted Explain coverage.
 
 A Snowflake FULL model renders on a build for any decision reason. Hosted
 was captured on first builds and the unchanged rerun; a query-changed
@@ -681,8 +682,9 @@ Volatile evaluation.
 
 **Not captured.** The remaining cells, each with its tracking issue where
 one is open, are listed in
-[correctness-handoff.md](correctness-handoff.md#open-hosted-questions)
-(Databricks: #198).
+[correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
+#198's captured Databricks cells and remaining limits are in the
+[characterization note](databricks-volatile.md).
 
 ## Speculative submits: `SQL.SubmitEnrichedSQLSpeculative`
 

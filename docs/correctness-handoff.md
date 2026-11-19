@@ -161,11 +161,12 @@ server keeps the conservative behavior described.
   behavior, which is an empty map, no volatile Explain lines and the
   conservative rebuild unless stated. None has a replay gap, and the
   Warehouse executes the original SQL in every case.
-  - Databricks (#198): the first build, the unchanged rerun over the
-    existing Target relation, other execution types, a data test, a query
-    dependency, a table downstream of the volatile model run twice, their
-    Explain, and evaluation off. Only the query-changed FULL rebuild
-    (entries 85, 86) renders. Databricks never reuses with evaluation
+  - Databricks: other node kinds and decision reasons, stored-failure tests,
+    volatile query dependencies, evaluation off and functions other than
+    unseeded `rand()`. #198 captured first-build/rerun FULL and non-storing
+    data-test rendering, exact Explain including restart, and the downstream
+    table's within-Lag-tolerance reuse ([evidence](databricks-volatile.md)).
+    Databricks never reuses with evaluation
     requested, because it has no checked Volatile function detector.
   - Snowflake, no open ticket: a model with Volatile calls both in its own
     SQL and in a dependency; a data test over a volatile view; a data test

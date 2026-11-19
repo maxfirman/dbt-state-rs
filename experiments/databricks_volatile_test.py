@@ -34,12 +34,13 @@ class VolatileCapture(unittest.TestCase):
 
     def test_full_physical_contract_rejects_wrong_or_incomplete_results(self):
         good = {'columns': [{'name': 'id', 'type_name': 'INT', 'type_text': 'INT'},
-                            {'name': 'value', 'type_name': 'DOUBLE', 'type_text': 'DOUBLE'}],
-                'rows': [['1', '0.25']]}
+                            {'name': 'value', 'type_name': 'DOUBLE', 'type_text': 'DOUBLE'},
+                            {'name': 'run_id', 'type_name': 'STRING', 'type_text': 'STRING'}],
+                'rows': [['1', '0.25', 'unique-run']]}
         properties = {'rows': [['Type', 'MANAGED', ''], ['Provider', 'delta', '']]}
-        check_physical(good, properties, 'volatile')
-        check_physical(good, properties, 'consumer')
-        for mutation in ('empty', 'extra', 'id', 'range', 'nan', 'type', 'kind', 'provider'):
+        check_physical(good, properties, 'volatile', 'unique-run')
+        check_physical(good, properties, 'consumer', 'unique-run')
+        for mutation in ('empty', 'extra', 'id', 'range', 'nan', 'type', 'kind', 'provider', 'wrong-run'):
             actual, props = deepcopy(good), deepcopy(properties)
             if mutation == 'empty': actual['rows'] = []
             if mutation == 'extra': actual['rows'] *= 2
@@ -49,8 +50,9 @@ class VolatileCapture(unittest.TestCase):
             if mutation == 'type': actual['columns'][1]['type_name'] = 'STRING'
             if mutation == 'kind': props['rows'][0][1] = 'VIEW'
             if mutation == 'provider': props['rows'][1][1] = 'parquet'
+            if mutation == 'wrong-run': actual['rows'][0][-1] = 'an-older-run'
             with self.subTest(mutation=mutation), self.assertRaises(Refused):
-                check_physical(actual, props, 'volatile')
+                check_physical(actual, props, 'volatile', 'unique-run')
 
 
 if __name__ == '__main__':
