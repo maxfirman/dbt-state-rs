@@ -267,8 +267,8 @@ exactly, and values of other functions are compared as they are. Explain
 replay. Field-scoped gaps are judged after this normalization, so a map that
 differs only in its runtime values needs no gap. The only Volatile evaluation
 gaps are the #202 capture's (`explain_volatile_cells.jsonl`), each naming the
-follow-up ticket (#203–#207) that resolves it. A field-scoped gap also covers
-a submit `ready_to_clone` payload (#202 entry 207).
+follow-up ticket (#203–#207) that resolves it. A field-scoped gap can also
+cover a submit `ready_to_clone` payload (#202 entry 207 had one until #207).
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the

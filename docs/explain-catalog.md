@@ -591,6 +591,8 @@ the persisted evaluation flag, migration 0028):
   - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
 ```
 One child per value, in the order the functions first appear in the SQL.
+A Result copy of such a model prints the same lines in `query analysis (vs
+clone)` ([CLONE (model)](#clone-model), #207).
 A data test or a query dependency with evaluation off renders no values
 ([protocol.md](protocol.md#volatile-evaluation)), and a model rebuild with
 evaluation off is not captured: neither prints volatile lines.
@@ -1435,6 +1437,24 @@ None: data tests never get a Result copy (see note 15 under
     - "«FQN»"                                          (no badge, no anchor line)
       - last updated: «rel_time»
   - upstream data is up to date                       [SUCCESS]
+```
+
+A copy that reads nothing (no upstream table and no query dependency) has no
+`upstream model queries have not changed` line, and its freshness section is
+`no upstream dependencies` [SUCCESS], as for a reuse without upstreams
+(`explain_volatile_cells.jsonl` entry 209, #207; the one captured copy
+without upstreams). With evaluation off, a Snowflake copy into an absent
+Target relation whose own SQL rendered values prints the
+[evaluation-off volatile block](#skip-shapes-0-1-2-4-8) ahead of the query
+verdict:
+```
+- query analysis (vs clone)
+  - non-deterministic functions detected in query     [INFO]
+    - CURRENT_TIMESTAMP() -> rendered with '«value»'
+  - the model query is not deterministic but this is tolerated by config [INFO]
+  - the model query has not changed                   [SUCCESS] <NODE_QUERY_UNCHANGED>
+- data freshness analysis (vs clone)
+  - no upstream dependencies                          [SUCCESS]
 ```
 
 Without a matched build the listing has no `<FRESH>`/`<OUTDATED>` badge and no
