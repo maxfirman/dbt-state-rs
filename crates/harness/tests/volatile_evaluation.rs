@@ -1752,41 +1752,56 @@ async fn snowflake_volatile_data_test_over_a_volatile_view_renders_nothing() {
 // relation (10), explained in entry 15. Run 2 reruns them (20, 21, 26 and
 // 22), explained in entry 28.
 
-/// The last entry of the Databricks capture: run 2's Explain.
-const DATABRICKS_LAST: usize = 28;
+/// Run 1 of the Databricks capture: the deterministic control table's,
+/// the `rand()` table's and the consumer's first builds, the `rand()` data
+/// test's first execution, and their Explain.
+const DB_CONTROL_FIRST: usize = 4;
+const DB_TABLE_FIRST: usize = 5;
+const DB_CONSUMER_FIRST: usize = 9;
+const DB_TEST_FIRST: usize = 10;
+const DB_RUN_1_EXPLAIN: usize = 15;
+/// Run 2: the reruns, and their Explain (the last entry of the capture).
+const DB_CONTROL_RERUN: usize = 20;
+const DB_TABLE_RERUN: usize = 21;
+const DB_TEST_RERUN: usize = 22;
+const DB_CONSUMER_RERUN: usize = 26;
+const DB_RUN_2_EXPLAIN: usize = 28;
 
 #[tokio::test]
 async fn databricks_cells_return_hosted_codes_and_maps() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     let entries = entries(DATABRICKS_EVALUATION);
-    let responses = replay(&sc, &entries, DATABRICKS_LAST).await;
+    let responses = replay(&sc, &entries, DB_RUN_2_EXPLAIN).await;
     for (entry, case) in [
-        (4, "deterministic control, first build: empty map"),
-        (5, "rand() table, first build"),
-        (9, "consumer, first build: empty map"),
-        (10, "rand() data test, first execution"),
-        (20, "deterministic control, rerun: reused"),
         (
-            21,
+            DB_CONTROL_FIRST,
+            "deterministic control, first build: empty map",
+        ),
+        (DB_TABLE_FIRST, "rand() table, first build"),
+        (DB_CONSUMER_FIRST, "consumer, first build: empty map"),
+        (DB_TEST_FIRST, "rand() data test, first execution"),
+        (DB_CONTROL_RERUN, "deterministic control, rerun: reused"),
+        (
+            DB_TABLE_RERUN,
             "rand() table, unchanged rerun refused for its volatile SQL alone",
         ),
         (
-            22,
+            DB_TEST_RERUN,
             "rand() data test, unchanged rerun refused for its volatile SQL alone",
         ),
         (
-            26,
+            DB_CONSUMER_RERUN,
             "consumer within Lag tolerance after its producer's rebuild: reused, empty map",
         ),
     ] {
         assert_matches_hosted(&responses[&entry], &entries[entry], case);
     }
     for (entry, query) in [
-        (5, target(&entries[5].request)),
-        (10, "__target_query__".to_owned()),
-        (21, target(&entries[21].request)),
-        (22, "__target_query__".to_owned()),
+        (DB_TABLE_FIRST, target(&entries[DB_TABLE_FIRST].request)),
+        (DB_TEST_FIRST, "__target_query__".to_owned()),
+        (DB_TABLE_RERUN, target(&entries[DB_TABLE_RERUN].request)),
+        (DB_TEST_RERUN, "__target_query__".to_owned()),
     ] {
         let value = &volatile_values(&responses[&entry])[&query]["RAND()"];
         assert!(is_captured_unit_random(value), "entry {entry}: {value}");
@@ -1801,14 +1816,34 @@ async fn databricks_cells_explain_as_hosted_including_after_a_restart() {
         "databricks_volatile_cells",
         DATABRICKS_EVALUATION,
         &[
-            (4, 15, "deterministic control, first build"),
-            (5, 15, "rand() table, first build"),
-            (9, 15, "consumer, first build"),
-            (10, 15, "rand() data test, first execution"),
-            (20, 28, "deterministic control, reused"),
-            (21, 28, "rand() table, rerun"),
-            (22, 28, "rand() data test, rerun"),
-            (26, 28, "consumer, reused within Lag tolerance"),
+            (
+                DB_CONTROL_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "deterministic control, first build",
+            ),
+            (
+                DB_TABLE_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "rand() table, first build",
+            ),
+            (DB_CONSUMER_FIRST, DB_RUN_1_EXPLAIN, "consumer, first build"),
+            (
+                DB_TEST_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "rand() data test, first execution",
+            ),
+            (
+                DB_CONTROL_RERUN,
+                DB_RUN_2_EXPLAIN,
+                "deterministic control, reused",
+            ),
+            (DB_TABLE_RERUN, DB_RUN_2_EXPLAIN, "rand() table, rerun"),
+            (DB_TEST_RERUN, DB_RUN_2_EXPLAIN, "rand() data test, rerun"),
+            (
+                DB_CONSUMER_RERUN,
+                DB_RUN_2_EXPLAIN,
+                "consumer, reused within Lag tolerance",
+            ),
         ],
         std::convert::identity,
     )
@@ -1823,8 +1858,8 @@ async fn databricks_uncaptured_cells_render_nothing() {
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
     let entries = entries(DATABRICKS_EVALUATION);
-    let table = captured_submit(&entries[5].request);
-    let test = captured_submit(&entries[10].request);
+    let table = captured_submit(&entries[DB_TABLE_FIRST].request);
+    let test = captured_submit(&entries[DB_TEST_FIRST].request);
     let assert_empty = |case: &str, ready: &qc::ReadyToExecuteResponse| {
         assert!(rendered(ready).is_empty(), "{case}: {:?}", rendered(ready));
     };
@@ -1858,7 +1893,7 @@ async fn databricks_uncaptured_cells_render_nothing() {
     org.build_with(test.clone(), outcome().runtime(10).results(test_results(0)))
         .await;
     let changed = test.clone().sql(
-        &entries[10].request["sql"]
+        &entries[DB_TEST_FIRST].request["sql"]
             .as_str()
             .unwrap()
             .replace("100", "200"),
@@ -1870,7 +1905,7 @@ async fn databricks_uncaptured_cells_render_nothing() {
     // a refusal of volatile SQL compared by its rendered SQL alone.
     let case = "table rerun under compare_unrendered_code";
     let org = sc.org(case);
-    let rerun = captured_submit(&entries[21].request).compare_unrendered_code();
+    let rerun = captured_submit(&entries[DB_TABLE_RERUN].request).compare_unrendered_code();
     let request = rerun.clone().build();
     let epoch = request
         .tables
