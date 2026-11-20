@@ -1927,6 +1927,120 @@ async fn databricks_uncaptured_cells_render_nothing() {
     assert_empty(case, &ready);
 }
 
+/// The Databricks reruns refused for their volatile SQL alone were captured
+/// as unchanged reruns only: the table over its Target relation as built,
+/// the data test over unchanged inputs (`DB_TABLE_RERUN`, `DB_TEST_RERUN`).
+/// The same refusal after the table was dropped or modified externally, or
+/// after the data test's upstream changed, is uncaptured: an empty map and
+/// no volatile Explain lines. Each positive control is the captured rerun
+/// over the same history.
+#[tokio::test]
+async fn databricks_refused_reruns_render_only_unchanged() {
+    use support::scenario::{outcome, test_results};
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let table = captured_submit(&entries[DB_TABLE_FIRST].request);
+    let table_rerun = captured_submit(&entries[DB_TABLE_RERUN].request);
+    let test = captured_submit(&entries[DB_TEST_FIRST].request);
+    let test_rerun = captured_submit(&entries[DB_TEST_RERUN].request);
+    let built = {
+        let request = table_rerun.clone().build();
+        request
+            .tables
+            .iter()
+            .find(|t| Some(&t.name) == request.target_table.as_ref())
+            .and_then(|t| t.last_modified_epoch)
+            .unwrap()
+    };
+    let upstream = entries[DB_TEST_RERUN].request["tables"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let upstream_epoch = entries[DB_TEST_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let complete = || outcome().runtime(10).results(test_results(0));
+
+    for (case, rerun, renders) in [
+        ("table, unchanged rerun", table_rerun.clone(), true),
+        (
+            "table, rerun after the table was dropped",
+            table_rerun.clone().own_epoch(None),
+            false,
+        ),
+        (
+            "table, rerun after an External modification",
+            table_rerun.clone().own_epoch(Some(built + 1_000)),
+            false,
+        ),
+    ] {
+        let org = sc.org(case);
+        org.build(table.clone(), built).await;
+        let ready = org.expect_execute(rerun).await;
+        assert_refused_rerun(&org, case, &ready, renders).await;
+    }
+
+    for (case, history, rerun, renders) in [
+        (
+            "data test, unchanged rerun",
+            complete(),
+            test_rerun.clone(),
+            true,
+        ),
+        (
+            "data test, rerun after its upstream changed",
+            complete(),
+            test_rerun
+                .clone()
+                .upstream(&upstream, upstream_epoch + 1_000),
+            false,
+        ),
+        (
+            "data test, rerun over incomplete cached results",
+            outcome().runtime(10),
+            test_rerun.clone(),
+            false,
+        ),
+    ] {
+        let org = sc.org(case);
+        org.build_with(test.clone(), history).await;
+        let ready = org.expect_execute(rerun).await;
+        assert_refused_rerun(&org, case, &ready, renders).await;
+    }
+}
+
+/// `ready` is a rerun refused at Reuse qualification that renders `RAND()`
+/// and prints volatile Explain lines when `renders`, and neither otherwise.
+async fn assert_refused_rerun(
+    sc: &Scenario,
+    case: &str,
+    ready: &qc::ReadyToExecuteResponse,
+    renders: bool,
+) {
+    assert_eq!(
+        ready
+            .explained_decision
+            .as_ref()
+            .unwrap()
+            .skip_rejection_reason,
+        Some(qc::RejectionReason::NoSuitableMatchFound as i32),
+        "{case}: refused at Reuse qualification"
+    );
+    assert_eq!(
+        !rendered(ready).is_empty(),
+        renders,
+        "{case}: {:?}",
+        rendered(ready)
+    );
+    let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
+    assert_eq!(
+        prints_volatile_lines(&explained),
+        renders,
+        "{case}: {explained}"
+    );
+}
+
 #[tokio::test]
 async fn volatile_sql_of_an_uncaptured_execution_type_renders_nothing() {
     use support::scenario::ExecutionType;

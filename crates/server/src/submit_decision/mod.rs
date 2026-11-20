@@ -251,6 +251,10 @@ pub struct ExplainedOutcome {
     /// enter identity, fingerprints, Upstream producers or Reuse
     /// qualification. `None` when nothing was rendered.
     pub rendered: Option<crate::volatile_evaluation::Rendered>,
+    /// The submit was refused at Reuse qualification in an unchanged rerun
+    /// ([`reuse_candidate::Selection::unchanged_rerun`]). Selects a Volatile
+    /// evaluation cell only; it decides nothing.
+    unchanged_rerun: bool,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -298,7 +302,9 @@ pub async fn submit_sql_explained(
                 )
                 && reuse_candidate::refuses_volatile_sql_alone(req)
             {
-                crate::volatile_evaluation::Decided::RefusedVolatileSql
+                crate::volatile_evaluation::Decided::RefusedVolatileSql {
+                    unchanged_rerun: decided.unchanged_rerun,
+                }
             } else {
                 crate::volatile_evaluation::Decided::Build(record.reason)
             },
@@ -398,25 +404,29 @@ async fn decide_sql(
     let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
-    let outcome = decide_resolved_sql(store, org_id, req, &evidence, now_ms, mode).await?;
+    let selection = select_sql(store, org_id, req, &evidence).await?;
+    let unchanged_rerun = selection.unchanged_rerun;
+    let outcome =
+        decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
         explain: ExplainEvidence::of(req, &evidence, &outcome),
         outcome,
         rendered: None,
+        unchanged_rerun,
     }))
 }
 
-/// [`decide_sql`] for the resolved submit, once its inputs' producers are
-/// resolved.
+/// [`decide_sql`] for the resolved submit and its reuse candidate
+/// `selection`, once its inputs' producers are resolved.
 async fn decide_resolved_sql(
     store: &Store,
     org_id: &str,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
+    selection: reuse_candidate::Selection,
     now_ms: i64,
     mode: Mode,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    let selection = select_sql(store, org_id, req, evidence).await?;
     // Without a reuse candidate the decision never skips
     // (decision_proptest::no_match_always_executes), and the Result copy
     // fallback below would write a pending row.

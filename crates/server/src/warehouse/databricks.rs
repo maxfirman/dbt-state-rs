@@ -24,6 +24,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
         NoCandidate::IdentityMismatch,
     ));
+    const UNCHANGED_RERUN: Outcome = Outcome::RefusedVolatileSqlUnchangedRerun;
     Rules {
         dialect: &DatabricksDialect {},
         functions: &[Rule {
@@ -38,17 +39,21 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
         // qualification for its volatile SQL alone (#198,
         // `databricks_volatile_evaluation.jsonl` entries 5 and 21); a data
         // test without a Target relation, first execution and unchanged
-        // rerun (entries 10 and 22). Every other cell is uncaptured and
-        // renders nothing: other rebuild reasons and refusals, other
-        // execution types, a data test's query-changed rebuild or stored
-        // failures, query dependencies, evaluation off, a reuse and a Result
-        // copy.
+        // rerun (entries 10 and 22). Each rerun was captured over its
+        // Target relation as built and unchanged inputs only, so the same
+        // refusal after the table was dropped or modified externally, or
+        // over changed inputs, is uncaptured
+        // (`reuse_candidate::Selection::unchanged_rerun`). Every other cell
+        // is uncaptured and renders nothing: other rebuild reasons and
+        // refusals, other execution types, a data test's query-changed
+        // rebuild or stored failures, query dependencies, evaluation off, a
+        // reuse and a Result copy.
         cells: &[
             cell(Full, true, QUERY_CHANGED, Queries::Own),
             cell(Full, true, FIRST_BUILD, Queries::Own),
-            cell(Full, true, Outcome::RefusedVolatileSql, Queries::Own),
+            cell(Full, true, UNCHANGED_RERUN, Queries::Own),
             cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
-            cell(DbtDataTest, true, Outcome::RefusedVolatileSql, Queries::Own),
+            cell(DbtDataTest, true, UNCHANGED_RERUN, Queries::Own),
         ],
     }
 };

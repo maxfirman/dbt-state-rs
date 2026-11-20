@@ -183,9 +183,13 @@ server keeps the conservative behavior described.
     tolerance (`databricks_volatile_evaluation.jsonl`,
     [characterization note](databricks-volatile.md)); with the query-changed
     FULL rebuild (controls entries 85, 86) these are the cells that render.
+    The reruns render only as captured, unchanged: the refused build's
+    Target relation as built, a data test's cached results complete, and
+    every upstream unchanged since it (`Selection::unchanged_rerun`).
     Uncaptured: other execution types and rebuild reasons, refusals for
-    another cause (among them under `compare_unrendered_code`), a data
-    test's logic change, a data test with a Target relation, volatile query
+    another cause (among them under `compare_unrendered_code`), the same
+    volatile refusal after the table was dropped or modified externally or
+    over changed inputs, a data test's logic change, a data test with a Target relation, volatile query
     dependencies, evaluation off, and functions other than unseeded
     `rand()`. Databricks never reuses with evaluation
     requested, because it has no checked Volatile function detector.

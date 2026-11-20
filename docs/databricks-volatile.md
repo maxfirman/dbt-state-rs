@@ -98,20 +98,32 @@ replay gap or missing-history exemption is added.
 (`databricks_cells_return_hosted_codes_and_maps`), exact Explain for all eight
 before and after a server restart
 (`databricks_cells_explain_as_hosted_including_after_a_restart`), and empty
-maps in neighbouring uncaptured cells (`databricks_uncaptured_cells_render_nothing`).
+maps in neighbouring uncaptured cells (`databricks_uncaptured_cells_render_nothing`
+and `databricks_refused_reruns_render_only_unchanged`).
 The existing shared rendering, persistence and Explain code is reused;
 Databricks adds only captured rendering cells (`warehouse/databricks.rs`), all
-with evaluation on and values in the node's own SQL: a first build, a rerun
-refused at Reuse qualification for its volatile SQL alone
-(`Outcome::RefusedVolatileSql`, `reuse_candidate::refuses_volatile_sql_alone`)
-for a FULL table and a data test without a Target relation, and the earlier
-query-changed FULL rebuild (#192). Identity and fingerprints continue to use
+with evaluation on and values in the node's own SQL: a first build, an
+unchanged rerun refused at Reuse qualification for its volatile SQL alone
+(`Outcome::RefusedVolatileSqlUnchangedRerun`,
+`reuse_candidate::refuses_volatile_sql_alone`) for a FULL table and a data
+test without a Target relation, and the earlier query-changed FULL rebuild
+(#192). Because Reuse qualification is checked before the Target relation,
+the volatile refusal also answers a rerun after the table was dropped or
+modified externally, or after an upstream changed. Only the unchanged rerun
+was captured (entries 21 and 22: the Target relation as built, the test's
+upstream at its recorded epoch), so a rerun renders only when the refused
+build is an ordinary build, a table's Target relation is as built, a data
+test's cached results are complete, and every upstream has the epoch and
+Upstream producer recorded at the refused build
+(`reuse_candidate::Selection::unchanged_rerun`). Every other refusal keeps
+an empty map and prints no volatile lines. Identity and fingerprints continue to use
 original SQL. Reuse qualification remains conservative.
 
 Still uncaptured: other Databricks Volatile functions/forms, evaluation off for
 volatile SQL, volatile query dependencies, stored-failure tests, a data test's
 logic change, a refusal at Reuse qualification for another cause (among them
-under `compare_unrendered_code`), other node kinds and decision reasons, and
+under `compare_unrendered_code`), the volatile refusal of a table after it was
+dropped or modified externally or of a node over changed inputs, other node kinds and decision reasons, and
 Databricks outside-tolerance consumer behavior.
 These cases are not promoted to verified support. Any future identity, producer
 or relaxed-refusal implication still requires the maintainer's decision under
@@ -133,7 +145,8 @@ the ticket's check-in rule.
   the entire workspace gate therefore remains red despite the passing #198 slice.
 
 After merging main's #201 cell vocabulary (#209), the reruns are the
-`Outcome::RefusedVolatileSql` cells. `cargo test --workspace --no-fail-fast`
+`Outcome::RefusedVolatileSql` cells, narrowed in review to
+`Outcome::RefusedVolatileSqlUnchangedRerun`. `cargo test --workspace --no-fail-fast`
 completes with 848 passed, 76 ignored and no failure (main fixed the
 `explain_skip_tree_matches_hosted_oracle_when_history_seeded` clock
 dependence), including the 145-fixture corpus replay. Strict all-target fuzz

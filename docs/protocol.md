@@ -678,8 +678,8 @@ says "empty".
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
 | Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
-| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification and a query-changed rebuild over its existing Target relation | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
-| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
+| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification (its Target relation as built, its inputs unchanged) and a query-changed rebuild over its existing Target relation; empty for the refusal after the table was dropped, after an External modification or over changed inputs (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
+| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun (its inputs unchanged, its cached results complete); empty for the refusal after an upstream changed or over incomplete cached results (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
 | Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
 | Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
@@ -709,10 +709,20 @@ template (cells entry 140; #211).
 
 A Databricks build renders only in its captured cells
 (`warehouse/databricks.rs`), all with evaluation on and values in the node's
-own SQL: a first build (`first_build`), a rerun refused at Reuse
+own SQL: a first build (`first_build`), an unchanged rerun refused at Reuse
 qualification for its volatile SQL alone (`failed_reuse_qualification`,
-`reuse_candidate::refuses_volatile_sql_alone`) and, for a table, a
-query-changed rebuild (`identity_mismatch`). Databricks has no checked
+`reuse_candidate::refuses_volatile_sql_alone`,
+`Outcome::RefusedVolatileSqlUnchangedRerun`) and, for a table, a
+query-changed rebuild (`identity_mismatch`). Reuse qualification is checked
+before the Target relation, so the same refusal also answers a rerun after
+the table was dropped or modified externally, or over changed inputs. Hosted
+was captured only for the unchanged rerun: the refused build an ordinary
+build, a table's Target relation as built, a data test's cached results
+complete, and every upstream with the epoch and Upstream producer recorded
+at the refused build (`reuse_candidate::Selection::unchanged_rerun`). Every
+other Databricks refusal keeps an empty map and prints no volatile lines;
+the Snowflake refusal cells are not narrowed (its External-modification
+rerun is captured). Databricks has no checked
 Volatile function detector, so with evaluation requested this server
 refuses every Databricks SQL at Reuse qualification. Under
 `compare_unrendered_code` that refusal is not one for volatile SQL compared

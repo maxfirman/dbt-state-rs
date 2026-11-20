@@ -64,6 +64,11 @@ pub(crate) struct Selection {
     /// listing against it (`explain_volatile_cells.jsonl` entries 189, 190
     /// (#205), 195 and 199 (#206)). Never reused, and never a copy's anchor.
     pub unqualified: Option<ExecutionRow>,
+    /// The submit was refused at Reuse qualification against the latest
+    /// row with its identity, and nothing else is against that row
+    /// ([`unchanged_since`]): an unchanged rerun. Selects a Volatile
+    /// evaluation cell only (#198); it decides nothing.
+    pub unchanged_rerun: bool,
 }
 
 impl Selection {
@@ -78,6 +83,7 @@ impl Selection {
             unmatched: None,
             type_changed: None,
             transition_display: None,
+            unchanged_rerun: false,
         }
     }
 
@@ -91,6 +97,7 @@ impl Selection {
         unmatched: None,
         type_changed: None,
         transition_display: None,
+        unchanged_rerun: false,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -140,7 +147,16 @@ impl Selection {
             unmatched,
             type_changed,
             transition_display: None,
+            unchanged_rerun: false,
         }
+    }
+
+    /// Mark a Reuse qualification refusal against a row that nothing else
+    /// is against (`unchanged`) as an unchanged rerun.
+    fn with_unchanged_rerun(mut self, unchanged: bool) -> Selection {
+        self.unchanged_rerun =
+            unchanged && self.why_no_candidate == Some(NoCandidate::FailedReuseQualification);
+        self
     }
 }
 
@@ -219,12 +235,16 @@ pub(crate) fn for_model(
         unmatched = Some(current);
         None
     };
+    let unchanged = identified
+        .as_ref()
+        .is_some_and(|row| unchanged_since(req, evidence, row));
     let mut selected = Selection::of(
         identified,
         unidentified,
         |prev| model_rejection(req, evidence, prev),
         Workload::Model { unmatched },
-    );
+    )
+    .with_unchanged_rerun(unchanged);
     selected.transition_display = transition_display;
     Ok(selected)
 }
@@ -396,6 +416,9 @@ pub(crate) fn for_data_test(
     } else {
         None
     };
+    let unchanged = identified
+        .as_ref()
+        .is_some_and(|row| unchanged_since(req, evidence, row));
     Ok(Selection::of(
         identified,
         NoCandidate::IdentityMismatch,
@@ -409,7 +432,8 @@ pub(crate) fn for_data_test(
             }
         },
         Workload::DataTest,
-    ))
+    )
+    .with_unchanged_rerun(unchanged))
 }
 
 /// Seeds compare values and seed configuration identity, then require the
@@ -644,6 +668,43 @@ enum OwnTarget {
     Missing,
     /// Duplicated, of unknown epoch, or another target.
     Ambiguous,
+}
+
+/// Whether nothing but Reuse qualification is against `prev`, the latest
+/// row with the workload's identity: it is an ordinary build (no copy), a
+/// model's own Target relation is as built ([`own_target`]), a data test's
+/// cached results are complete, and the submit's genuine upstreams are the
+/// ones recorded at `prev`, each with the epoch recorded for it and the same
+/// Upstream producer (none at all also qualifies). Unknown epochs never
+/// qualify. Selects a Volatile evaluation cell only (#198): the captured
+/// Databricks refusals are unchanged reruns
+/// (`databricks_volatile_evaluation.jsonl` entries 21 and 22).
+fn unchanged_since(
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    prev: &ExecutionRow,
+) -> bool {
+    use crate::decision::FreshnessEvidence;
+    let data_test = req.execution_type == ModelExecutionType::DbtDataTest as i32;
+    let own = if data_test {
+        reusable_test_results(prev.execution_results.as_ref())
+    } else {
+        matches!(own_target(req, prev), OwnTarget::AsBuilt)
+    };
+    let inputs = crate::decision::FreshnessInputs {
+        execution_type: req.execution_type,
+        input_tables: &evidence.input_tables,
+        target_table: req.target_table.as_deref().filter(|t| !t.is_empty()),
+    };
+    let freshness = crate::decision::upstream_freshness(inputs, prev);
+    let upstreams_unchanged = match freshness.evidence {
+        FreshnessEvidence::NoUpstreams => true,
+        FreshnessEvidence::Evaluated => freshness.upstreams.iter().all(|u| {
+            !u.unprovable && !u.producer_changed && u.current_epoch == Some(u.anchor_epoch)
+        }),
+        FreshnessEvidence::DependencySetChanged | FreshnessEvidence::NoBuildAnchor => false,
+    };
+    crate::copy_lifecycle::ordinary(prev) && own && upstreams_unchanged
 }
 
 /// Own-target existence and external edits, checked separately from upstream
