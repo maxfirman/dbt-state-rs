@@ -132,6 +132,14 @@ the ticket's check-in rule.
   and in isolation during preparation. No exemption or unrelated fix was added;
   the entire workspace gate therefore remains red despite the passing #198 slice.
 
+After merging main's #201 cell vocabulary (#209), the reruns are the
+`Outcome::RefusedVolatileSql` cells. `cargo test --workspace --no-fail-fast`
+completes with 848 passed, 76 ignored and no failure (main fixed the
+`explain_skip_tree_matches_hosted_oracle_when_history_seeded` clock
+dependence), including the 145-fixture corpus replay. Strict all-target fuzz
+Clippy, formatting, `experiments/databricks_volatile_test.py` and all 25
+DuckDB acceptance cases pass.
+
 Rust checks used `CARGO_INCREMENTAL=0`, `CARGO_PROFILE_DEV_DEBUG=0`,
 `CARGO_PROFILE_TEST_DEBUG=0` and an isolated `CARGO_TARGET_DIR` to stay within
 the machine's build-artifact quota. No test was filtered from the full workspace
