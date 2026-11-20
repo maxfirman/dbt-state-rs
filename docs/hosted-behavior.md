@@ -99,9 +99,11 @@ Client 2.0.11 sends `evaluate_volatile_sql: true` as
 Volatile function in `transformed_nodes_by_query`; no client reads it, and
 the Warehouse executes the original SQL. The supported functions, cells
 and value formats are in [protocol.md](protocol.md#volatile-evaluation).
-Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
-`explain_volatile_evaluation_functions.jsonl` (run 2)
-([characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)).
+Snowflake evidence, client 2.0.11: `explain_volatile_evaluation.jsonl`
+(run 1) and `explain_volatile_evaluation_functions.jsonl` (run 2)
+([characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)),
+and `explain_volatile_cells.jsonl` (cells, #202,
+[characterization note](reports/snowflake-volatile-cells-2026-11-19.md)).
 
 | Scenario | Hosted | Reproduced |
 |---|---|---|
@@ -111,9 +113,13 @@ Snowflake evidence: `explain_volatile_evaluation.jsonl` (run 1) and
 | Volatile Snowflake model or view, evaluation off, unchanged (also a model switched off after an evaluation-on build) | skip with the map filled; Explain "the model query has not changed" with the values and "tolerated by config" (run 1 entries 32, 34, 50) | ✅ (#194) |
 | Snowflake table over a view that calls a Volatile function, evaluation on, rerun | build, 6 / 6; map keyed by the dependency's name only; Explain "an upstream model query has changed" with the dependency's values (run 1 entries 35, 45) | ✅ (#195): identity and Upstream producers are unchanged |
 | Snowflake data test calling a Volatile function, evaluation on | build on every run, 6 / 6, map keyed `__target_query__`; Explain "the test query has changed" with the values (run 1 entries 16, 24, 37, 46) | ✅ (#195) |
-| Snowflake table downstream of a volatile model, Lag tolerance 3600 s, after the upstream's rebuild | skip, `is_stale=true`, "within lag tolerance", empty map (run 1 entries 39, 47) | ✅ (#196): the rebuild is upstream data drift; outside Lag tolerance it rebuilds (offline only) |
+| Snowflake table downstream of a volatile model, Lag tolerance 3600 s, after the upstream's rebuild | skip, `is_stale=true`, "within lag tolerance", empty map (run 1 entries 39, 47) | ✅ (#196): the rebuild is upstream data drift; outside Lag tolerance it rebuilds |
+| Same, zero Lag tolerance, rerun | build, 6 / 6, empty map; Explain lists the volatile upstream `<OUTDATED>` (cells entry 172, Explain 200) | ✅ (#207); the `«gap»` wording rounds differently (#210) |
+| Snowflake table calling a Volatile function, evaluation on, `compare_unrendered_code`, unchanged template | skip, map filled; Explain by its unrendered code with no volatile lines (cells entries 140, 198) | ✅ (#206, maintainer decision 1 on #201) |
+| Snowflake call forms, combinations, views, APPEND, snapshot and custom nodes, rebuild reasons and an evaluation-off copy (#202) | map and Explain per cell ([protocol.md](protocol.md#volatile-evaluation)) | ✅ (#203–#207) |
+| Snowflake data test with evaluation off, unchanged rerun (`cto`) | skip, map filled, echoing another data test's runtime (cells entry 146) | ✅ decision and map; ❌ deliberate for the runtime: the scoped UID floor stays (maintainer decision 2 on #201, #200) |
 | Function name only in a comment, string literal or quoted identifier | nothing rendered (run 2 entry 22) | ✅ |
-| Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (`clone_fallback_volatile.jsonl`) | ✅ |
+| Snowflake model calling `CURRENT_TIMESTAMP()`, evaluation on, equivalent under another name | build, not copied, map filled (crafted `clone_fallback_volatile.jsonl`) | ✅ |
 | Databricks model calling `rand()`, evaluation on, query-changed rebuild over its existing Target relation | build, `RAND()` rendered; Explain prints it (`databricks_submit_copy_controls.jsonl` entries 85, 86) | ✅ (#192) |
 | Databricks `rand()` FULL first build / unchanged rerun, evaluation on | EXECUTE both times, `RAND()` under the Target relation; volatile Explain lines only on rerun | ✅ (#198, `databricks_volatile_evaluation.jsonl` 5, 21; Explain 15, 28) |
 | Databricks non-storing data test calling `rand()`, evaluation on | EXECUTE on both runs, `RAND()` under `__target_query__`, volatile Explain lines | ✅ (#198, same fixture 10, 22) |

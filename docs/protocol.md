@@ -399,9 +399,20 @@ and fingerprints.
    requested (`explain_volatile_evaluation.jsonl` entry 31), and the
    maintainer approved this relaxation on the #191 check-in (#194). Only
    Snowflake has a checked detector; every other Warehouse, Databricks
-   included, never reuses with evaluation requested. On Snowflake the Result
-   copy fallback is suppressed under the same condition; a deterministic
-   model is still copied (fixture `clone_fallback_volatile.jsonl`,
+   included, never reuses with evaluation requested. One exception lifts the
+   refusal (maintainer decision 1 on #201, #206,
+   [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
+   #201"): a Snowflake model under `compare_unrendered_code` whose template
+   identity equals the build's is reused by the ordinary dual
+   rendered/template identity rules, as hosted SKIPs it
+   (`explain_volatile_cells.jsonl` `ecu`, entry 140;
+   `reuse_candidate.rs::volatile_sql_compared_by_unrendered_code`). The
+   other qualification checks (complete query dependencies, non-empty SQL, a
+   template body) still apply. A changed template, `compare_unrendered_code`
+   off, a data test and every other Warehouse keep the refusal. On Snowflake
+   the Result copy fallback is suppressed for volatile SQL with evaluation
+   requested; a deterministic model is still copied (crafted fixture
+   `clone_fallback_volatile.jsonl`,
    `experiments/clone_eligibility.sh`). Evaluation off changes nothing:
    hosted and this server SKIP unchanged volatile SQL. The values rendered
    for the response follow the decision and never change it; the Warehouse
@@ -561,11 +572,12 @@ Client 2.0.11 sends `evaluate_volatile_sql: true` as
 then renders each Volatile function in the SQL to a value when it decides
 and returns the values in `transformed_nodes_by_query`. This server does the
 same for the function forms, cells and Warehouses that hosted was
-captured rendering (#67; Snowflake:
-[characterization note](reports/snowflake-volatile-evaluation-2026-11-17.md)).
+captured rendering (#67, #201; Snowflake characterization notes for
+[#191](reports/snowflake-volatile-evaluation-2026-11-17.md) and
+[#202](reports/snowflake-volatile-cells-2026-11-19.md)).
 No official client reads the map: the pinned client calls it telemetry and
-drops it. **The Warehouse always executes the original SQL.** The
-characterization read back what each captured build wrote and found no
+drops it. **The Warehouse always executes the original SQL.** Both
+characterizations read back what each captured build wrote and found no
 rendered value in it.
 
 The submit decision layer renders the values after the decision is made
@@ -573,15 +585,27 @@ The submit decision layer renders the values after the decision is made
 rules from `Warehouse::volatile_rules`). The pure decision engine never sees
 them, and they enter no identity, fingerprint, Upstream producer or Reuse
 qualification. They are persisted with the decision for Explain only
-([ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md), "Amended by #67").
+([ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md), "Amended by #67"
+and "Amended by #201").
+
+**Evidence.** Every Snowflake row below was captured from client 2.0.11
+(wire `dbt_run_cache_version` 2.0.11) unless marked crafted. "Run 1" is
+`golden/fixtures/explain_volatile_evaluation.jsonl` and "run 2"
+`golden/fixtures/explain_volatile_evaluation_functions.jsonl` (both #191);
+"cells" is `golden/fixtures/explain_volatile_cells.jsonl` (#202). An entry
+is a line index in its fixture. `clone_fallback_volatile.jsonl` is crafted:
+its requests were sent by `experiments/clone_eligibility.sh`, not by a dbt
+client.
 
 **Map shape.** `{query: {"node_to_func": {function_text: value}}}`.
 - `query` is the request's `target_table` as sent. A Snowflake data test,
-  which has no Target relation, uses `__target_query__`. A Snowflake query
-  dependency definition uses the dependency's `name` as sent; dependencies
-  follow the root SQL, in request order. A model whose only Volatile call is
-  in a dependency has only the dependency key (`explain_volatile_evaluation.jsonl`
-  entries 16 and 10).
+  which client 2.0.11 sends without a Target relation, uses
+  `__target_query__` (run 1 entries 16, 37). A query dependency definition
+  uses the dependency's `name` as sent, so a model whose only Volatile call
+  is in a dependency has only the dependency key (run 1 entries 10, 35). A
+  table with values in both has both keys, each with its own values (cells
+  entries 59, 159). The server stores the dependency values first, as hosted
+  listed them there; the wire map has no order.
 - Each function text appears once per query. Repeats and aliases fold into
   one value, from the first call in the SQL.
 - Clock values come from the server clock in UTC, to the microsecond. The
@@ -591,97 +615,158 @@ qualification. They are persisted with the decision for Explain only
   the test-only replay clock sets the instant, to the millisecond.
 - Only an unquoted, unqualified call in a captured form matches. A function
   name in a comment, a string literal or a quoted identifier renders nothing
-  (`explain_volatile_evaluation_functions.jsonl` entry 22), and neither do a
-  qualified name or SQL that does not parse.
+  (run 2 entry 22), and neither do a qualified name or SQL that does not
+  parse.
 
-**Supported functions** (client 2.0.11; run 1 =
-`golden/fixtures/explain_volatile_evaluation.jsonl`, run 2 =
-`golden/fixtures/explain_volatile_evaluation_functions.jsonl`):
+**Supported functions** (`VOLATILE_RULES` in `warehouse/snowflake.rs` and
+`warehouse/databricks.rs`):
 
-| Warehouse | SQL form | Function text (inner key) | Value | Evidence |
-|---|---|---|---|---|
-| Snowflake | `current_timestamp()`, `current_timestamp`, `localtimestamp()`, `systimestamp()`, `getdate()` | `CURRENT_TIMESTAMP()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` | run 1 entry 6; run 2 entries 13, 19, 23, 24; `clone_fallback_volatile.jsonl` entries 0, 2 |
-| Snowflake | `localtimestamp` (no parentheses) | `CURRENT_TIMESTAMP` | as above | run 2 entry 14 |
-| Snowflake | `sysdate()` | `SYSDATE()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff+00:00` | run 1 entry 6 |
-| Snowflake | `current_time()`, `localtime()` | `CURRENT_TIME` | clock, `HH:MM:SS.ffffff` | run 2 entries 17, 20 |
-| Snowflake | `current_date()`, `current_date` | `CURRENT_DATE` | clock, `YYYY-MM-DD` | run 1 entry 6; run 2 entry 15 |
-| Snowflake | `random()`, also nested (`zipf(1, 10, random())`) | `RANDOM()` | decimal in [0, 1) | run 1 entry 6; run 2 entry 16 |
-| Snowflake | `uniform(1, 100, random())` | `UNIFORM(1, 100, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | run 2 entry 18 |
-| Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | run 1 entries 6, 8, 33, 34, 50 |
-| Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | as above |
-| Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | run 1 entry 6 |
-| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 |
+| Warehouse | SQL form | Function text (inner key) | Value | Evidence | Intentional fallback |
+|---|---|---|---|---|---|
+| Snowflake | `current_timestamp()`, `current_timestamp`, `localtimestamp()`, `systimestamp()`, `getdate()` | `CURRENT_TIMESTAMP()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` | 2.0.11: run 1 entry 6; run 2 entries 13, 19, 23, 24. Crafted: `clone_fallback_volatile.jsonl` entries 0, 2 | one clock reading per submit |
+| Snowflake | `current_timestamp(3)` | `CURRENT_TIMESTAMP(3)` | clock, `YYYY-MM-DD HH:MM:SS.ffffff` (six digits whatever the precision) | 2.0.11: cells entries 21, 135 | one clock reading per submit; another precision renders nothing |
+| Snowflake | `localtimestamp` (no parentheses) | `CURRENT_TIMESTAMP` | as above | 2.0.11: run 2 entry 14 | one clock reading per submit |
+| Snowflake | `sysdate()` | `SYSDATE()` | clock, `YYYY-MM-DD HH:MM:SS.ffffff+00:00` | 2.0.11: run 1 entry 6 | one clock reading per submit |
+| Snowflake | `current_time()`, `localtime()`, `current_time`, `localtime` | `CURRENT_TIME` | clock, `HH:MM:SS.ffffff` | 2.0.11: run 2 entries 17, 20; cells entries 23, 28, 138, 139 | one clock reading per submit; `current_time(n)` renders nothing |
+| Snowflake | `current_date()`, `current_date` | `CURRENT_DATE` | clock, `YYYY-MM-DD` | 2.0.11: run 1 entry 6; run 2 entry 15 | one clock reading per submit |
+| Snowflake | `random()`, also nested (`zipf(1, 10, random())`) | `RANDOM()` | decimal in [0, 1) | 2.0.11: run 1 entry 6; run 2 entry 16 | none |
+| Snowflake | `uniform(1, 100, random())` | `UNIFORM(1, 100, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | 2.0.11: run 2 entry 18 | none |
+| Snowflake | `uniform(1, 10, random())`, `randstr(8, random())`, `normal(0, 1, random())` | `UNIFORM(1, 10, RANDOM())`, `RANDSTR(8, RANDOM())`, `NORMAL(0, 1, RANDOM())`, plus `RANDOM()` | decimal in [0, 1) each | 2.0.11: cells entries 33, 36, 131, 134 | other arguments render nothing |
+| Snowflake | `uniform(1, 100, 1234)` | `UNIFORM(1, 100, 1234)` | constant `96` | 2.0.11: cells entries 36, 131 | other arguments render nothing |
+| Snowflake | `randstr(5, 1234)` | `RANDSTR(5, 1234)` | constant `9XCha` | 2.0.11: cells entries 33, 134 | other arguments render nothing |
+| Snowflake | `normal(5, 2, 42)` | `NORMAL(5, 2, 42)` | constant `4.711819340844143` | 2.0.11: cells entries 33, 134 | other arguments render nothing |
+| Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
+| Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
+| Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | 2.0.11: run 1 entry 6; cells entries 59, 159 | none |
+| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 | other Databricks functions render nothing (#198) |
 
-Intentional fallbacks, each rendering nothing for that call:
+A constant is hosted's value for exactly the captured arguments, not a value
+the server computes. The other function forms render nothing:
 - Snowflake `zipf(1, 10, 1234)` and `seq1()`, `seq2()`, `seq4()`, `seq8()`:
   hosted renders nothing for them either (run 1 entry 6; run 2 entries 16,
   21). `zipf` keeps the nested `random()`'s value.
-- Uncaptured forms: `current_time` and `localtime` without parentheses,
-  `current_timestamp(n)`, and `uniform`, `randstr` or `normal` with other
-  arguments. Hosted's key and value for them are unknown, so none is
-  invented.
-- Functions outside the Snowflake detector set (for example `CURRENT_USER`):
-  uncaptured; nothing is rendered, and reuse is not refused for them.
+- Uncaptured forms: `current_timestamp(n)` with another precision,
+  `current_time(n)`, and `uniform`, `randstr` or `normal` with arguments
+  other than those above. Hosted's key and value for them are unknown, so
+  none is invented.
+- Functions outside the Snowflake detector set: `current_user()`,
+  `current_role()`, `current_warehouse()`, `current_database()`,
+  `current_session()`, `current_statement()` and `last_query_id()`. Hosted
+  renders nothing for them and reuses the unchanged rerun with its ordinary
+  SKIP tree (cells entries 20, 25, 31, 128, 129, 136; Explains 85–87,
+  182–184), and so does this server.
 - DuckDB and every other dialect: nothing. Hosted does not engage for DuckDB.
 
 **Cells.** Values are returned only in the cells hosted was captured
 rendering in (`Rules::cells` in `warehouse/snowflake.rs` and
 `warehouse/databricks.rs`). Every other cell keeps an empty map and prints
-no volatile Explain lines.
+no volatile Explain lines: that is the intentional fallback wherever a row
+says "empty".
 
-| Warehouse | Case | Evaluation on | Evaluation off | Evidence |
+| Warehouse | Case | Evaluation on | Evaluation off | Evidence (client 2.0.11 unless marked crafted) |
 |---|---|---|---|---|
-| Snowflake | FULL model, root SQL, `ready_to_execute` | rendered | rendered | run 1 entries 6, 8, 33 |
-| Snowflake | FULL model, root SQL, `skip_execution` | nothing to render: SQL that would render is never reused; a deterministic reuse returns `{}` | rendered | run 1 entries 31, 34, 50 |
-| Snowflake | view, root SQL | empty, uncaptured | rendered on `ready_to_execute` and `skip_execution` | run 1 entries 7, 32 |
-| Snowflake | data test without a Target relation (`__target_query__`) | rendered | empty, uncaptured | run 1 entries 16, 37 |
-| Snowflake | FULL model, query dependency definition | rendered | empty, uncaptured | run 1 entries 10, 35 |
-| Snowflake | values in both the root SQL and a query dependency; a data test over a volatile view | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | incremental, snapshot, custom; a data test with a Target relation | empty, uncaptured | empty, uncaptured | — |
-| Snowflake | `ready_to_clone`, the chain-limit `ready_to_execute` | empty: volatile SQL is not copied | empty, uncaptured | `clone_fallback_volatile.jsonl` |
-| Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured | controls entries 85, 86 |
-| Databricks | FULL model, root SQL, true first build and unchanged rerun | rendered | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 5, 21 |
-| Databricks | data test without a Target relation, first execution and unchanged rerun | rendered under `__target_query__` | empty, uncaptured | same fixture entries 10, 22 |
-| Databricks | table downstream of a volatile model, one-hour Lag tolerance | uncaptured | empty map, first build then stale SKIP | same fixture entries 9, 26 |
-| Databricks | other node kinds, decision reasons, query dependencies, stored-failure tests, `skip_execution` rendering | empty, uncaptured | empty, uncaptured | — |
-| every Warehouse | seeds (`SubmitValues`), `RegisterClone` | empty | empty | — |
+| Snowflake | FULL model, root SQL, `ready_to_execute` | rendered on a first build, a rerun refused at Reuse qualification and a query-changed rebuild | rendered on a first build and a query-changed rebuild | on: run 1 entries 6, 33; cells entries 21, 23, 26–28, 33, 36 (first builds), 137, 142, 147, 166. Off: run 1 entry 8; cells entries 29, 34, 133 |
+| Snowflake | FULL model, root SQL, `skip_execution` | rendered for the only volatile reuse, an unchanged template under `compare_unrendered_code` (#206) | rendered | on: cells entry 140 (a deterministic reuse has nothing to render, run 1 entry 31). Off: run 1 entries 34, 50 |
+| Snowflake | view, root SQL | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: cells entries 19, 141. Off: run 1 entries 7, 32; cells entries 22, 127 |
+| Snowflake | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution, a rerun and a logic change | rendered on a first execution and `skip_execution` | on: run 1 entries 16, 37; cells entries 61, 62, 145, 148. Off: cells entries 60, 146 |
+| Snowflake | FULL model, values only in a query dependency definition | rendered on a first build and a rerun | rendered on a first build and `skip_execution` | on: run 1 entries 10, 35; cells entries 72, 168. Off: cells entries 58, 158 |
+| Snowflake | FULL model, values in both the root SQL and a query dependency (both keys) | rendered on a first build and a rerun | empty, uncaptured | on: cells entries 59, 159 |
+| Snowflake | data test without a Target relation, values only in a query dependency (the dependency's key) | rendered on a first execution and a rerun | empty, uncaptured | on: cells entries 52, 144 |
+| Snowflake | data test with values in both its own SQL and a query dependency | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | APPEND incremental, snapshot, custom node, root SQL | rendered on a first build and a rerun refused at Reuse qualification | empty, uncaptured | on: cells entries 71/167, 69/165, 24/143 (#205) |
+| Snowflake | those types' other rebuild reasons, their values in a query dependency; MERGE, INSERT_OVERWRITE, DELETE_INSERT, MICROBATCH | empty, uncaptured | empty, uncaptured | — |
+| Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
+| Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
+| Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
+| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification and a query-changed rebuild over its existing Target relation | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
+| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
+| Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
+| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
 
 The [Databricks characterization](databricks-volatile.md) records the complete
 #198 history, Warehouse values, exact replay and persisted Explain coverage.
 
-A Snowflake FULL model renders on a build for any decision reason. Hosted
-was captured on first builds and the unchanged rerun; a query-changed
-rebuild is captured on Databricks only (entries 85, 86).
+A Snowflake build renders only for a captured decision reason
+(`warehouse/snowflake.rs` cells). With evaluation on: a first build
+(`first_build`) and a rerun refused at Reuse qualification for its volatile
+SQL alone, compared by its rendered SQL
+(`failed_reuse_qualification`: unchanged, after an External modification,
+over an upstream table or a query dependency;
+`reuse_candidate::refuses_volatile_sql_alone`); for a table's or a data
+test's own SQL also a query-changed rebuild (`identity_mismatch`; for a
+data test, a logic change). With evaluation off: a first build, and for a
+table's own SQL a query-changed rebuild (cells entry 133). A build for any
+other reason, among them upstream data or Upstream producer changes, an
+External modification with evaluation off and an execution type change,
+keeps an empty map (#206). So does a refusal at Reuse qualification that
+was not captured: one for another cause as well (a query dependency
+without a definition, a missing template body), and, under
+`compare_unrendered_code`, a table whose template changed while its
+rendered SQL did not. That table is refused for its volatile SQL and
+explained with no tree; hosted was captured only with an unchanged
+template (cells entry 140; #211).
+
+A Databricks build renders only in its captured cells
+(`warehouse/databricks.rs`), all with evaluation on and values in the node's
+own SQL: a first build (`first_build`), a rerun refused at Reuse
+qualification for its volatile SQL alone (`failed_reuse_qualification`,
+`reuse_candidate::refuses_volatile_sql_alone`) and, for a table, a
+query-changed rebuild (`identity_mismatch`). Databricks has no checked
+Volatile function detector, so with evaluation requested this server
+refuses every Databricks SQL at Reuse qualification. Under
+`compare_unrendered_code` that refusal is not one for volatile SQL compared
+by its rendered SQL alone, and keeps an empty map; so does every other
+uncaptured cell.
 
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake
-model or data test whose SQL calls a Volatile function rebuilds on every
-run with codes 6 / 6 and hosted's description (run 1 entries 33, 35, 37).
-The detector set (`sql_norm::VOLATILE_FUNCTIONS`) is wider than the
+model or data test whose SQL or query dependency definitions call a
+Volatile function rebuilds on every run with codes 6 / 6 and hosted's
+description (run 1 entries 33, 35, 37), except a model reused by its
+unchanged unrendered code under `compare_unrendered_code` (cells entry 140;
+maintainer decision 1 on #201, #206, recorded in
+[ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
+#201"). The detector set (`sql_norm::VOLATILE_FUNCTIONS`) is wider than the
 rendering rules, so `zipf`, `seqN` and the uncaptured forms above also
-rebuild, with an empty map or only the other functions' values. A table
-downstream of a volatile model follows the ordinary
+rebuild, with an empty map or only the other functions' values. Whether
+hosted reuses SQL whose only such call is a constant generator such as
+`uniform(1, 100, 1234)` is not isolated (cells entries 36, 131 also call
+`random()`), so it rebuilds too. A table downstream of a volatile model
+follows the ordinary
 [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md) rules: the
 upstream's rebuild is upstream data drift, not an Upstream producer change,
-so the table is reused within Lag tolerance (run 1 entries 39, 47) and
-rebuilt outside it (offline only, #196). Its own map is empty.
+so the table is reused within Lag tolerance (run 1 entry 39, Explain 47) and
+rebuilt outside it. With zero Lag tolerance hosted rebuilds it on the rerun
+(cells entry 172, Explain 200; #207). Its own map is empty.
 
 **Explain** reads the persisted values (`node_decisions.rendered_volatile_values`,
 migration 0027) and whether the submit requested evaluation
 (`node_decisions.volatile_evaluation_requested`, migration 0028). A decision
-recorded before either migration prints no volatile lines. The captured trees
-are in [explain-catalog.md](explain-catalog.md#execute-node-query-changed-shape-7) (own
-SQL, a model rerun, an evaluation-off reuse), its
+recorded before either migration prints no volatile lines. A model's rebuild
+refused at Reuse qualification records the refused build as its Explain
+anchor (`matched_execution_id`), which its upstream listing is judged
+against (ADR 0005 "Amended by #201"). The captured trees are in
+[explain-catalog.md](explain-catalog.md#execute-rerun-of-a-volatile-model)
+(the model rerun), its
+[SHAPE 7](explain-catalog.md#execute-node-query-changed-shape-7) section
+(query-changed rebuilds with evaluation on or off), its
+[SKIP](explain-catalog.md#skip-shapes-0-1-2-4-8) section (evaluation-off
+reuses, the reuse by unrendered code), its
 [volatile query dependency](explain-catalog.md#execute-over-a-volatile-query-dependency)
-section and its [DATA TEST](explain-catalog.md#data-test) section.
+section, its [DATA TEST](explain-catalog.md#data-test) section and its
+[CLONE (model)](explain-catalog.md#clone-model) section.
 
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
-[testing.md](testing.md#goldenreplay_gapsjson)). No replay gap covers
-Volatile evaluation.
+[testing.md](testing.md#goldenreplay_gapsjson)). The only Volatile
+evaluation replay gap is cells entry 146: its `execution_runtime_ms`, which
+hosted echoes from another data test. The maintainer decided not to match
+it (decision 2 on #201); it is tracked in #200. Every other entry of the
+three Snowflake fixtures replays.
 
-**Not captured.** The remaining cells, each with its tracking issue where
-one is open, are listed in
+**Not captured.** The remaining Snowflake cells, each with its tracking
+issue or whether client 2.0.11 can reach it, are listed in
 [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
 #198's captured Databricks cells and remaining limits are in the
 [characterization note](databricks-volatile.md).

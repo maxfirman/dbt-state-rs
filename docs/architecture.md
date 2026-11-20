@@ -361,7 +361,12 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
    detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
-   (#191 cell 3, maintainer decision, #194).
+   (#191 cell 3, maintainer decision, #194). A Snowflake model under
+   `compare_unrendered_code` whose template identity equals the row's is not
+   refused for volatile SQL (maintainer decision 1 on #201, #206; ADR 0005
+   "Amended by #201"). A model's rebuild refused at Reuse qualification keeps
+   the refused build as its Explain anchor (`Selection::unqualified`,
+   decision 3 on #201); it never becomes a Reuse candidate.
 4. With no Reuse candidate (and no External modification of the Target
    relation), try the Result copy fallback. A copy overrides the verdict.
    Only the execution types the Warehouse rules copy are copied (FULL; DuckDB
@@ -379,12 +384,13 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
 9. `settle`: mint the ids, write the pending row for every outcome except SKIP,
    and return the `SubmitOutcome`.
 10. Volatile evaluation, once decided (`volatile_evaluation::evaluate`, ADR
-    0005 "Amended by #67"): for a build or a reuse, render the Volatile
-    functions the Warehouse has captured rules for
+    0005 "Amended by #67"): for a build, a reuse or a Result copy, render
+    the Volatile functions the Warehouse has captured rules for
     (`Warehouse::volatile_rules`) in the root SQL or the query dependency
     definitions, only in a cell the Warehouse was captured rendering in
-    (`Rules::cells`: execution type, evaluation on or off, build reason or
-    reuse, own SQL or dependencies). Any other submit, a copy and the
+    (`Rules::cells`: execution type, evaluation on or off, build reason,
+    reuse or a copy into an absent Target relation, own SQL or
+    dependencies). Any other submit, a speculative submit and the
     chain-limit build render nothing. The values are returned in
     `transformed_nodes_by_query` and persisted with the decision for
     Explain; the decision above never sees them, and the Warehouse executes

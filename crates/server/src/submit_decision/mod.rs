@@ -209,7 +209,21 @@ impl ExplainEvidence {
         Self {
             display_submitted_at_ms: evidence.display_submitted_at_ms,
             template_comparison: warehouse
-                .template_comparison(req, evidence.node_sql_hash.as_deref().unwrap_or_default()),
+                .template_comparison(req, evidence.node_sql_hash.as_deref().unwrap_or_default())
+                .or_else(|| {
+                    // A reuse of volatile SQL by its unrendered code (#206,
+                    // maintainer decision 1 on #201) is explained by that
+                    // comparison (`explain_volatile_cells.jsonl` entry 198).
+                    // Every other Snowflake decision keeps its tree.
+                    (matches!(outcome, SubmitOutcome::Skip { .. })
+                        && crate::reuse_candidate::volatile_sql_compared_by_unrendered_code(req))
+                    .then(|| {
+                        crate::explain::TemplateComparison::unrendered(
+                            req.dbt_node_state.as_ref(),
+                            evidence.node_sql_hash.as_deref().unwrap_or_default(),
+                        )
+                    })
+                }),
             table_namespace: req.table_namespace.clone(),
             target_table: req.target_table.clone(),
             default_schema: req.default_schema.clone(),
@@ -273,14 +287,27 @@ pub async fn submit_sql_explained(
     let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
-    // Volatile evaluation, once decided: a build or a reuse, in the cells the
-    // Warehouse was captured rendering in. A copy has no capture.
+    // Volatile evaluation, once decided: a build, a reuse or a Result copy,
+    // in the cells the Warehouse was captured rendering in. The chain-limit
+    // build has no capture.
     let decision = match &decided.outcome {
-        SubmitOutcome::Execute { record, .. } => {
-            Some(crate::volatile_evaluation::Decided::Build(record.reason))
-        }
+        SubmitOutcome::Execute { record, .. } => Some(
+            if record.reason
+                == decision::DecisionReason::NoReuseCandidate(
+                    decision::NoCandidate::FailedReuseQualification,
+                )
+                && reuse_candidate::refuses_volatile_sql_alone(req)
+            {
+                crate::volatile_evaluation::Decided::RefusedVolatileSql
+            } else {
+                crate::volatile_evaluation::Decided::Build(record.reason)
+            },
+        ),
         SubmitOutcome::Skip { .. } => Some(crate::volatile_evaluation::Decided::Reuse),
-        _ => None,
+        SubmitOutcome::Copy { .. } => Some(crate::volatile_evaluation::Decided::Copy {
+            target_exists: !own_target_absent(req),
+        }),
+        SubmitOutcome::ChainLimitExecute { .. } => None,
     };
     decided.rendered = decision.and_then(|outcome| {
         crate::volatile_evaluation::evaluate(
@@ -409,10 +436,7 @@ async fn decide_resolved_sql(
         stale_upstream_policy: decision::StaleUpstreamPolicy::from_i32(req.stale_upstream_policy),
         tolerance_ms: req.freshness_tolerance_seconds.max(0).saturating_mul(1000),
         now_ms,
-        own_target_absent: req
-            .target_table
-            .as_deref()
-            .is_some_and(|t| !req.tables.iter().any(|x| x.name == t)),
+        own_target_absent: own_target_absent(req),
     };
     let mut refused_copy = None;
     if copy_considered {
@@ -529,10 +553,23 @@ async fn decide_resolved_sql(
         }));
     }
     log_decision(evidence, &record, candidate.is_some(), &req.labels);
+    // A rebuild refused at Reuse qualification is explained against the
+    // build it refused, with that build's age at the submit, which dates the
+    // upstream listing's `last updated` lines (#205, #206,
+    // `explain_volatile_cells.jsonl` entries 189, 195 and 199). Explain only.
+    let mut record = record;
+    if let (None, Some(row)) = (record.build_age_ms, &selection.unqualified) {
+        record.build_age_ms = Warehouse::from_dialect(&row.dialect)
+            .build_time_ms(row)
+            .map(|built| now_ms.saturating_sub(built));
+    }
     let (record, candidate) = anchor_rejected(
         record,
         candidate,
-        selection.rejected.or(selection.type_changed),
+        selection
+            .rejected
+            .or(selection.type_changed)
+            .or(selection.unqualified),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
     let mut outcome = settle(store, evidence, record, candidate).await?;
@@ -554,7 +591,8 @@ async fn decide_resolved_sql(
 /// A rebuild whose latest build had the workload's identity but whose own
 /// target was missing or modified keeps that build as its Explain anchor; so
 /// does a rebuild whose latest build had the identity under another
-/// execution type (#83).
+/// execution type (#83), and a model's rebuild refused at Reuse
+/// qualification (#205, #206).
 fn anchor_rejected(
     mut record: DecisionRecord,
     candidate: Option<ExecutionRow>,
@@ -754,6 +792,14 @@ pub(crate) async fn resolve_producers(
         input.producer = Producer::of(builds.get(&input.name), input.last_modified_epoch);
     }
     Ok(())
+}
+
+/// Whether `req` sends a Target relation that its reported tables do not
+/// include: the table does not exist.
+fn own_target_absent(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    req.target_table
+        .as_deref()
+        .is_some_and(|t| !req.tables.iter().any(|x| x.name == t))
 }
 
 /// The freshness parameters of one submission, distilled at the boundary.

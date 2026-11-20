@@ -6,19 +6,25 @@ use sqlparser::dialect::SnowflakeDialect;
 
 /// Volatile evaluation (#67): the function forms hosted was captured
 /// rendering, with hosted's key and value format for each. `CURRENT_TIMESTAMP()`
-/// first in #193 (`clone_fallback_volatile.jsonl` entries 0 and 2); every other
-/// form in #191/#194 (`explain_volatile_evaluation.jsonl` entry 6, the forms of
-/// `explain_volatile_evaluation_functions.jsonl` entries 13–24).
+/// first in #193 (`clone_fallback_volatile.jsonl` entries 0 and 2); the forms
+/// of #191/#194 (`explain_volatile_evaluation.jsonl` entry 6, the forms of
+/// `explain_volatile_evaluation_functions.jsonl` entries 13–24); and the call
+/// forms of #202/#203 (`explain_volatile_cells.jsonl` entries 21–36 and
+/// 131–139): a parenless `current_time` or `localtime`, `current_timestamp(3)`,
+/// and `uniform`, `randstr` and `normal` with the captured arguments.
 ///
 /// Several forms fold into one key, and a key is rendered once per submit.
 /// Values are rendered only in the captured cells below; every other
-/// execution type, decision and evaluation setting, and values in both a
-/// node's own SQL and a query dependency, render nothing. A form without a
-/// rule renders nothing: `zipf` and the
-/// `seqN` generators (hosted renders none), a parenless `current_time` or
-/// `localtime`, and calls with other arguments are uncaptured.
+/// execution type, decision reason, evaluation setting and source of values
+/// renders nothing. A form without a rule renders nothing: `zipf` and the
+/// `seqN` generators and functions outside the detector set such as
+/// `current_user()` (hosted renders none, #202 entries 20, 25 and 31), and
+/// calls with other arguments are uncaptured.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
-    use crate::query_cache::ModelExecutionType::{DbtDataTest, Full, View};
+    use crate::decision::{DecisionReason, NoCandidate};
+    use crate::query_cache::ModelExecutionType::{
+        Append, DbtCustom, DbtDataTest, Full, Snapshot, View,
+    };
     use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
         Rule {
@@ -28,6 +34,16 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             value,
         }
     }
+    // The captured build reasons. A build for any other reason (upstream
+    // data or producer changes, an External modification with evaluation
+    // off, an execution type change, a Reuse qualification refusal for any
+    // cause but volatile SQL compared by its rendered SQL, ...) renders
+    // nothing.
+    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
+    const REFUSED_VOLATILE_SQL: Outcome = Outcome::RefusedVolatileSql;
+    const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::IdentityMismatch,
+    ));
     const fn cell(
         execution_type: crate::query_cache::ModelExecutionType,
         evaluation_requested: bool,
@@ -54,6 +70,14 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 "current_timestamp",
                 Call::Parenless,
                 "CURRENT_TIMESTAMP()",
+                Value::UtcTimestampMicros,
+            ),
+            // A precision argument is kept in the key; the value still has six
+            // fractional digits (#202 entries 21 and 135).
+            rule(
+                "current_timestamp",
+                Call::Arguments("3"),
+                "CURRENT_TIMESTAMP(3)",
                 Value::UtcTimestampMicros,
             ),
             rule(
@@ -100,6 +124,20 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 "CURRENT_TIME",
                 Value::UtcTimeMicros,
             ),
+            // Parenless forms fold into the same key (#202 `explain_volatile_cells.jsonl`
+            // entries 23 and 28).
+            rule(
+                "current_time",
+                Call::Parenless,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
+            rule(
+                "localtime",
+                Call::Parenless,
+                "CURRENT_TIME",
+                Value::UtcTimeMicros,
+            ),
             rule("current_date", Call::Empty, "CURRENT_DATE", Value::UtcDate),
             rule(
                 "current_date",
@@ -130,25 +168,126 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
                 "NORMAL(0, 1, 1234)",
                 Value::Constant("1.0542196419272387"),
             ),
+            // #202 `explain_volatile_cells.jsonl` entries 33/134 (`fra`) and
+            // 36/131 (`frb`). With a `random()` generator hosted renders a
+            // unit decimal whatever the outer function, as for
+            // `uniform(1, 100, random())`.
+            rule(
+                "uniform",
+                Call::Arguments("1, 10, random()"),
+                "UNIFORM(1, 10, RANDOM())",
+                Value::UnitRandom,
+            ),
+            rule(
+                "randstr",
+                Call::Arguments("8, random()"),
+                "RANDSTR(8, RANDOM())",
+                Value::UnitRandom,
+            ),
+            rule(
+                "normal",
+                Call::Arguments("0, 1, random()"),
+                "NORMAL(0, 1, RANDOM())",
+                Value::UnitRandom,
+            ),
+            // With a constant generator, hosted's value on both runs.
+            rule(
+                "randstr",
+                Call::Arguments("5, 1234"),
+                "RANDSTR(5, 1234)",
+                Value::Constant("9XCha"),
+            ),
+            rule(
+                "normal",
+                Call::Arguments("5, 2, 42"),
+                "NORMAL(5, 2, 42)",
+                Value::Constant("4.711819340844143"),
+            ),
+            rule(
+                "uniform",
+                Call::Arguments("1, 100, 1234"),
+                "UNIFORM(1, 100, 1234)",
+                Value::Constant("96"),
+            ),
             rule("uuid_string", Call::Empty, "UUID_STRING()", Value::Uuid),
         ],
         cells: &[
-            // Evaluation on: a table's first builds (run 1 entry 6, run 2
-            // entries 13–24, `clone_fallback_volatile.jsonl` entries 0 and 2)
-            // and its unchanged rerun (run 1 entry 33).
-            cell(Full, true, Outcome::AnyBuild, Queries::Own),
+            // Evaluation on, a table: its first builds (run 1 entry 6, run 2
+            // entries 13–24, `clone_fallback_volatile.jsonl` entries 0 and 2),
+            // a rerun refused at Reuse qualification, unchanged (run 1 entry
+            // 33), after an External modification, over an upstream table
+            // or a query dependency (`explain_volatile_cells.jsonl` entries
+            // 137, 166, 147), and a query-changed rebuild (entry 142).
+            cell(Full, true, FIRST_BUILD, Queries::Own),
+            cell(Full, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            cell(Full, true, QUERY_CHANGED, Queries::Own),
+            // Evaluation on, a table's reuse: only an unchanged template
+            // under `compare_unrendered_code` reuses volatile SQL (#206,
+            // maintainer decision 1 on #201; `explain_volatile_cells.jsonl`
+            // `ecu`, entry 140).
+            cell(Full, true, Outcome::Reuse, Queries::Own),
             // A table over a volatile view, first build and rerun (run 1
-            // entries 10 and 35).
-            cell(Full, true, Outcome::AnyBuild, Queries::Dependencies),
-            // A data test without a Target relation, first execution and
-            // rerun (run 1 entries 16 and 37).
-            cell(DbtDataTest, true, Outcome::AnyBuild, Queries::Own),
-            // Evaluation off: a table's first build and reuses (run 1
-            // entries 8, 34 and 50), and a view's (entries 7 and 32).
-            cell(Full, false, Outcome::AnyBuild, Queries::Own),
+            // entries 10 and 35; `explain_volatile_cells.jsonl` entries 72
+            // and 168, over an upstream table too).
+            cell(Full, true, FIRST_BUILD, Queries::Dependencies),
+            cell(Full, true, REFUSED_VOLATILE_SQL, Queries::Dependencies),
+            // A data test without a Target relation: first execution, rerun
+            // (run 1 entries 16 and 37) and after its logic changed
+            // (`explain_volatile_cells.jsonl` entry 148).
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            cell(DbtDataTest, true, QUERY_CHANGED, Queries::Own),
+            // Evaluation off: a table's first build, query-changed rebuild
+            // and reuses (run 1 entries 8, 34 and 50;
+            // `explain_volatile_cells.jsonl` entry 133), and a view's first
+            // build and reuse (run 1 entries 7 and 32).
+            cell(Full, false, FIRST_BUILD, Queries::Own),
+            cell(Full, false, QUERY_CHANGED, Queries::Own),
             cell(Full, false, Outcome::Reuse, Queries::Own),
-            cell(View, false, Outcome::AnyBuild, Queries::Own),
+            cell(View, false, FIRST_BUILD, Queries::Own),
             cell(View, false, Outcome::Reuse, Queries::Own),
+            // Evaluation on: an APPEND incremental, a snapshot and a custom
+            // materialization, first build and unchanged rerun
+            // (`explain_volatile_cells.jsonl` entries 71/167, 69/165 and
+            // 24/143, #205). Their other rebuild reasons, and evaluation off,
+            // are uncaptured.
+            cell(Append, true, FIRST_BUILD, Queries::Own),
+            cell(Append, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            cell(Snapshot, true, FIRST_BUILD, Queries::Own),
+            cell(Snapshot, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            cell(DbtCustom, true, FIRST_BUILD, Queries::Own),
+            cell(DbtCustom, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            // Combinations (#204, `explain_volatile_cells.jsonl`). Evaluation
+            // on, first build and rerun refused at Reuse qualification: a
+            // table with values of its own and in a view dependency (entries
+            // 59 and 159); a data test over a volatile view (52, 144); a view
+            // (19, 141).
+            cell(Full, true, FIRST_BUILD, Queries::OwnAndDependencies),
+            cell(
+                Full,
+                true,
+                REFUSED_VOLATILE_SQL,
+                Queries::OwnAndDependencies,
+            ),
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Dependencies),
+            cell(
+                DbtDataTest,
+                true,
+                REFUSED_VOLATILE_SQL,
+                Queries::Dependencies,
+            ),
+            cell(View, true, FIRST_BUILD, Queries::Own),
+            cell(View, true, REFUSED_VOLATILE_SQL, Queries::Own),
+            // Evaluation off, first build and reuse: a data test (60, 146);
+            // a table over a volatile view (58, 158).
+            cell(DbtDataTest, false, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, false, Outcome::Reuse, Queries::Own),
+            cell(Full, false, FIRST_BUILD, Queries::Dependencies),
+            cell(Full, false, Outcome::Reuse, Queries::Dependencies),
+            // Evaluation off: a table's Result copy into its absent dev
+            // Target relation, keyed by that relation and rendered at the dev
+            // decision (#207; `explain_volatile_cells.jsonl` entry 207).
+            cell(Full, false, Outcome::CopyIntoAbsentTarget, Queries::Own),
         ],
     }
 };

@@ -94,15 +94,25 @@ validated runtime value formats are normalized; Databricks names, relative
 times, timestamps, codes, descriptions, markers and badges remain exact. No
 replay gap or missing-history exemption is added.
 
-`volatile_evaluation.rs` covers first-build/rerun maps, both data-test executions,
-consumer reuse, and exact Explain for all eight decisions before and after a
-server restart. The existing shared rendering, persistence and Explain code is
-reused; Databricks adds only captured rendering cells. Identity and fingerprints
-continue to use original SQL. Reuse qualification remains conservative.
+`volatile_evaluation.rs` covers the codes and maps of all eight decisions
+(`databricks_cells_return_hosted_codes_and_maps`), exact Explain for all eight
+before and after a server restart
+(`databricks_cells_explain_as_hosted_including_after_a_restart`), and empty
+maps in neighbouring uncaptured cells (`databricks_uncaptured_cells_render_nothing`).
+The existing shared rendering, persistence and Explain code is reused;
+Databricks adds only captured rendering cells (`warehouse/databricks.rs`), all
+with evaluation on and values in the node's own SQL: a first build, a rerun
+refused at Reuse qualification for its volatile SQL alone
+(`Outcome::RefusedVolatileSql`, `reuse_candidate::refuses_volatile_sql_alone`)
+for a FULL table and a data test without a Target relation, and the earlier
+query-changed FULL rebuild (#192). Identity and fingerprints continue to use
+original SQL. Reuse qualification remains conservative.
 
 Still uncaptured: other Databricks Volatile functions/forms, evaluation off for
-volatile SQL, volatile query dependencies, stored-failure tests, other node
-kinds and decision reasons, and Databricks outside-tolerance consumer behavior.
+volatile SQL, volatile query dependencies, stored-failure tests, a data test's
+logic change, a refusal at Reuse qualification for another cause (among them
+under `compare_unrendered_code`), other node kinds and decision reasons, and
+Databricks outside-tolerance consumer behavior.
 These cases are not promoted to verified support. Any future identity, producer
 or relaxed-refusal implication still requires the maintainer's decision under
 the ticket's check-in rule.

@@ -849,6 +849,17 @@ impl Warehouse {
         }
     }
 
+    /// Whether a model whose SQL calls a Volatile function, with Volatile
+    /// evaluation requested, is reused by its unchanged unrendered code under
+    /// `compare_unrendered_code` instead of being refused at Reuse
+    /// qualification (maintainer decision 1 on #201, #206). Captured on
+    /// Snowflake only (`explain_volatile_cells.jsonl` `ecu`, entries 140 and
+    /// 198); every other Warehouse keeps the refusal (Databricks has no
+    /// checked Volatile function detector).
+    pub(crate) fn reuses_volatile_sql_by_unrendered_code(self) -> bool {
+        self == Self::Snowflake
+    }
+
     /// The Volatile functions this warehouse has captured rendering rules
     /// for (Volatile evaluation, #67). `None`: nothing is rendered.
     pub fn volatile_rules(self) -> Option<crate::volatile_evaluation::Rules> {

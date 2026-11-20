@@ -14,11 +14,24 @@ pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
 /// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
 /// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85;
-/// `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22, #198).
+/// `databricks_volatile_evaluation.jsonl` entries 5, 10, 21 and 22, #198).
 /// Other Databricks Volatile functions are uncaptured and render nothing.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
+    use crate::query_cache::ModelExecutionType::{DbtDataTest, Full};
     use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
+    const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::IdentityMismatch,
+    ));
+    const fn own(execution_type: crate::query_cache::ModelExecutionType, outcome: Outcome) -> Cell {
+        Cell {
+            execution_type,
+            evaluation_requested: true,
+            outcome,
+            queries: Queries::Own,
+        }
+    }
     Rules {
         dialect: &DatabricksDialect {},
         functions: &[Rule {
@@ -27,48 +40,23 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             key: "RAND()",
             value: Value::UnitRandom,
         }],
-        // FULL query-changed rebuild (controls 85–86), true first build
-        // and unchanged rerun (#198, fixture 5/21), and non-storing data
-        // test first execution/rerun (10/22). Other decision reasons,
-        // execution types, query dependencies, evaluation off and a reuse
-        // remain uncaptured. These rules render telemetry only.
+        // Evaluation on, values in the node's own SQL only. A FULL table's
+        // query-changed rebuild over its existing Target relation (controls
+        // entries 85–86), first build and unchanged rerun refused at Reuse
+        // qualification for its volatile SQL alone (#198,
+        // `databricks_volatile_evaluation.jsonl` entries 5 and 21); a data
+        // test without a Target relation, first execution and unchanged
+        // rerun (entries 10 and 22). Every other cell is uncaptured and
+        // renders nothing: other rebuild reasons and refusals, other
+        // execution types, a data test's query-changed rebuild or stored
+        // failures, query dependencies, evaluation off, a reuse and a Result
+        // copy.
         cells: &[
-            Cell {
-                execution_type: crate::query_cache::ModelExecutionType::Full,
-                evaluation_requested: true,
-                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-                    NoCandidate::IdentityMismatch,
-                )),
-                queries: Queries::Own,
-            },
-            Cell {
-                execution_type: crate::query_cache::ModelExecutionType::Full,
-                evaluation_requested: true,
-                outcome: Outcome::BuildFor(DecisionReason::FirstBuild),
-                queries: Queries::Own,
-            },
-            Cell {
-                execution_type: crate::query_cache::ModelExecutionType::Full,
-                evaluation_requested: true,
-                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-                    NoCandidate::FailedReuseQualification,
-                )),
-                queries: Queries::Own,
-            },
-            Cell {
-                execution_type: crate::query_cache::ModelExecutionType::DbtDataTest,
-                evaluation_requested: true,
-                outcome: Outcome::BuildFor(DecisionReason::FirstBuild),
-                queries: Queries::Own,
-            },
-            Cell {
-                execution_type: crate::query_cache::ModelExecutionType::DbtDataTest,
-                evaluation_requested: true,
-                outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-                    NoCandidate::FailedReuseQualification,
-                )),
-                queries: Queries::Own,
-            },
+            own(Full, QUERY_CHANGED),
+            own(Full, FIRST_BUILD),
+            own(Full, Outcome::RefusedVolatileSql),
+            own(DbtDataTest, FIRST_BUILD),
+            own(DbtDataTest, Outcome::RefusedVolatileSql),
         ],
     }
 };
