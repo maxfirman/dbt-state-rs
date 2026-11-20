@@ -19,19 +19,11 @@ pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
     use crate::query_cache::ModelExecutionType::{DbtDataTest, Full};
-    use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
     const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
     const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
         NoCandidate::IdentityMismatch,
     ));
-    const fn own(execution_type: crate::query_cache::ModelExecutionType, outcome: Outcome) -> Cell {
-        Cell {
-            execution_type,
-            evaluation_requested: true,
-            outcome,
-            queries: Queries::Own,
-        }
-    }
     Rules {
         dialect: &DatabricksDialect {},
         functions: &[Rule {
@@ -52,11 +44,11 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
         // failures, query dependencies, evaluation off, a reuse and a Result
         // copy.
         cells: &[
-            own(Full, QUERY_CHANGED),
-            own(Full, FIRST_BUILD),
-            own(Full, Outcome::RefusedVolatileSql),
-            own(DbtDataTest, FIRST_BUILD),
-            own(DbtDataTest, Outcome::RefusedVolatileSql),
+            cell(Full, true, QUERY_CHANGED, Queries::Own),
+            cell(Full, true, FIRST_BUILD, Queries::Own),
+            cell(Full, true, Outcome::RefusedVolatileSql, Queries::Own),
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, true, Outcome::RefusedVolatileSql, Queries::Own),
         ],
     }
 };

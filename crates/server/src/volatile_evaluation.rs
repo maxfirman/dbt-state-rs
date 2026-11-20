@@ -74,6 +74,21 @@ pub struct Cell {
     pub queries: Queries,
 }
 
+/// A [`Cell`], for the Warehouses' const cell lists.
+pub const fn cell(
+    execution_type: qc::ModelExecutionType,
+    evaluation_requested: bool,
+    outcome: Outcome,
+    queries: Queries,
+) -> Cell {
+    Cell {
+        execution_type,
+        evaluation_requested,
+        outcome,
+        queries,
+    }
+}
+
 /// The decisions a [`Cell`] covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
