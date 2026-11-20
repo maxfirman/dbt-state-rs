@@ -13,11 +13,18 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
 /// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
-/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85).
+/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85;
+/// `databricks_volatile_evaluation.jsonl` entries 5, 10, 21 and 22, #198).
 /// Other Databricks Volatile functions are uncaptured and render nothing.
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
-    use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    use crate::query_cache::ModelExecutionType::{DbtDataTest, Full};
+    use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
+    const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
+    const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
+        NoCandidate::IdentityMismatch,
+    ));
+    const UNCHANGED_RERUN: Outcome = Outcome::RefusedVolatileSqlUnchangedRerun;
     Rules {
         dialect: &DatabricksDialect {},
         functions: &[Rule {
@@ -26,19 +33,28 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             key: "RAND()",
             value: Value::UnitRandom,
         }],
-        // The one captured cell: a FULL model's query-changed rebuild over
-        // its existing Target relation, evaluation on (entries 85–86). A
-        // first build, an unchanged rerun (#198), other execution types,
-        // data tests, query dependencies, evaluation off and a reuse are
-        // uncaptured.
-        cells: &[Cell {
-            execution_type: crate::query_cache::ModelExecutionType::Full,
-            evaluation_requested: true,
-            outcome: Outcome::BuildFor(DecisionReason::NoReuseCandidate(
-                NoCandidate::IdentityMismatch,
-            )),
-            queries: Queries::Own,
-        }],
+        // Evaluation on, values in the node's own SQL only. A FULL table's
+        // query-changed rebuild over its existing Target relation (controls
+        // entries 85–86), first build and unchanged rerun refused at Reuse
+        // qualification for its volatile SQL alone (#198,
+        // `databricks_volatile_evaluation.jsonl` entries 5 and 21); a data
+        // test without a Target relation, first execution and unchanged
+        // rerun (entries 10 and 22). Each rerun was captured over its
+        // Target relation as built and unchanged inputs only, so the same
+        // refusal after the table was dropped or modified externally, or
+        // over changed inputs, is uncaptured
+        // (`reuse_candidate::Selection::unchanged_rerun`). Every other cell
+        // is uncaptured and renders nothing: other rebuild reasons and
+        // refusals, other execution types, a data test's query-changed
+        // rebuild or stored failures, query dependencies, evaluation off, a
+        // reuse and a Result copy.
+        cells: &[
+            cell(Full, true, QUERY_CHANGED, Queries::Own),
+            cell(Full, true, FIRST_BUILD, Queries::Own),
+            cell(Full, true, UNCHANGED_RERUN, Queries::Own),
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
+            cell(DbtDataTest, true, UNCHANGED_RERUN, Queries::Own),
+        ],
     }
 };
 

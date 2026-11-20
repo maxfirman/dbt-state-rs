@@ -1840,6 +1840,7 @@ mod tests {
             unmatched: None,
             type_changed: None,
             transition_display: None,
+            unchanged_rerun: false,
         }
     }
 

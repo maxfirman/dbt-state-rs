@@ -71,6 +71,11 @@ exact fixture assertions remain unchanged.
 
 ## Deliberate limitations
 
+- Volatile evaluation covers `RAND()` on a FULL first build, query-changed
+  rebuild and unchanged rerun, plus non-storing data-test first/rerun execution.
+  The downstream one-hour Lag tolerance reuse and all captured Explain trees
+  are verified ([#198 evidence and limits](databricks-volatile.md)). Other
+  functions, volatile dependencies, evaluation off and node kinds remain unverified.
 - Bounded FULL and direct MERGE/check-snapshot Result copy are enabled by
   default. [Shared-copy acceptance](databricks-shared-copy.md) states the tested
   grammar and physical evidence. Client controls remain supported; there are no

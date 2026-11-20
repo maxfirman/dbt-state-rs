@@ -25,7 +25,7 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::query_cache::ModelExecutionType::{
         Append, DbtCustom, DbtDataTest, Full, Snapshot, View,
     };
-    use crate::volatile_evaluation::{Call, Cell, Outcome, Queries, Rule, Rules, Value};
+    use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
     const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
         Rule {
             name,
@@ -44,19 +44,6 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
         NoCandidate::IdentityMismatch,
     ));
-    const fn cell(
-        execution_type: crate::query_cache::ModelExecutionType,
-        evaluation_requested: bool,
-        outcome: Outcome,
-        queries: Queries,
-    ) -> Cell {
-        Cell {
-            execution_type,
-            evaluation_requested,
-            outcome,
-            queries,
-        }
-    }
     Rules {
         dialect: &SnowflakeDialect {},
         functions: &[

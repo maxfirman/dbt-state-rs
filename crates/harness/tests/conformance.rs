@@ -404,6 +404,7 @@ const LOWERCASE_UUID_V4: ValueFormat = ValueFormat {
 /// `NORMAL(0, 1, 1234)`, `RANDSTR(5, 1234)`, `NORMAL(5, 2, 42)` and
 /// `UNIFORM(1, 100, 1234)` were the same in every captured render).
 const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
+    ("RAND()", UNIT_DECIMAL),
     ("CURRENT_TIMESTAMP()", UTC_TIMESTAMP_MICROS),
     ("CURRENT_TIMESTAMP", UTC_TIMESTAMP_MICROS),
     ("CURRENT_TIMESTAMP(3)", UTC_TIMESTAMP_MICROS),
@@ -874,6 +875,7 @@ fn volatile_values_compare_keys_and_function_text_exactly_and_values_by_format()
         ("CURRENT_TIME", "16:48:51.782956", "16:48:51"),
         ("CURRENT_DATE", "2026-11-17", "2026-11-17 00:00:00"),
         ("RANDOM()", "0.2496468898543448", "1.5"),
+        ("RAND()", "0.7029237228139773", "1.5"),
         ("UNIFORM(1, 100, RANDOM())", "0.31728658843764224", "71"),
         // #202 `explain_volatile_cells.jsonl` entries 21, 33 and 36.
         (
@@ -1176,7 +1178,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        144,
+        145,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1729,6 +1731,11 @@ async fn databricks_append_transitions_exact_public_history() {
     exact_native_history("databricks_append_transitions.jsonl", 97, 14, 7).await;
 }
 
+#[tokio::test]
+async fn databricks_volatile_evaluation_exact_public_history() {
+    exact_native_history("databricks_volatile_evaluation.jsonl", 29, 8, 6).await;
+}
+
 /// Complete hosted composite partition/schema history, including failed builds.
 #[tokio::test]
 async fn databricks_overwrite_recovery_exact_public_history() {
@@ -2213,7 +2220,9 @@ async fn exact_native_history_at(
                         pending_id(&actual).expect("a pending submit response"),
                     );
                 }
-                if normalize_ids(actual.clone()) != normalize_ids(entry.response.clone()) {
+                if comparable(actual.clone(), fixture)
+                    != comparable(entry.response.clone(), fixture)
+                {
                     mismatches.push(format!(
                         "entry {i}: actual={actual} hosted={}",
                         entry.response
@@ -2516,6 +2525,27 @@ fn local_speculative_edid(resp: &qc::SubmitSqlSpeculativeResponse) -> Option<Str
     }
 }
 
+/// An `explain_lines` JSON tree with each line's text replaced by
+/// `text(line text)`, at every depth. Every other field is kept exactly.
+fn map_line_texts(lines: &serde_json::Value, text: &dyn Fn(&str) -> String) -> serde_json::Value {
+    let mut lines = lines.clone();
+    for line in lines.as_array_mut().into_iter().flatten() {
+        if let Some(t) = line["text"].as_str() {
+            line["text"] = text(t).into();
+        }
+        if let Some(children) = line.get("children").map(|c| map_line_texts(c, text)) {
+            line["children"] = children;
+        }
+    }
+    lines
+}
+
+/// The registered Volatile evaluation value in `text` normalized; the rest
+/// of the text exact.
+fn volatile_value_text(text: &str) -> String {
+    normalize_volatile_line(text).expect("captured volatile value format")
+}
+
 /// Normalize an explain tree for comparison, masking the three runtime slots the
 /// catalog marks (`«FQN»`, `«rel_time»`, `«gap»`). Recurses into children. The
 /// FQN slot appears in `table analysis ("…")`, in a bare quoted upstream name,
@@ -2557,15 +2587,7 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
                 .unwrap_or_else(|error| panic!("malformed rendered value in Explain: {error}"))
         }
     }
-    fn conv(l: &qc::ExplainLine) -> serde_json::Value {
-        serde_json::json!({
-            "text": mask_text(&l.text),
-            "marker": l.marker,
-            "badge": l.badge,
-            "children": l.children.iter().map(conv).collect::<Vec<_>>(),
-        })
-    }
-    serde_json::Value::Array(lines.iter().map(conv).collect())
+    map_line_texts(&serde_json::to_value(lines).unwrap(), &mask_text)
 }
 
 /// Replay one `GetExplainMessages` capture: remap the hosted ids to the locally
@@ -2734,9 +2756,13 @@ async fn replay_explain_messages(
         let (hosted_tree, local_tree) = if fixture.starts_with("databricks_") {
             // A new complete capture keeps the actual names and full text;
             // it cannot inherit the historical runtime-slot masks either.
+            // Only captured Volatile evaluation values vary per execution.
             (
-                m["explain_lines"].clone(),
-                serde_json::to_value(&local.explain_lines).unwrap(),
+                map_line_texts(&m["explain_lines"], &volatile_value_text),
+                map_line_texts(
+                    &serde_json::to_value(&local.explain_lines).unwrap(),
+                    &volatile_value_text,
+                ),
             )
         } else {
             (

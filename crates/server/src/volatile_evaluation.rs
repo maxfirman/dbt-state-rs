@@ -74,14 +74,34 @@ pub struct Cell {
     pub queries: Queries,
 }
 
+/// A [`Cell`], for the Warehouses' const cell lists.
+pub const fn cell(
+    execution_type: qc::ModelExecutionType,
+    evaluation_requested: bool,
+    outcome: Outcome,
+    queries: Queries,
+) -> Cell {
+    Cell {
+        execution_type,
+        evaluation_requested,
+        outcome,
+        queries,
+    }
+}
+
 /// The decisions a [`Cell`] covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     /// A build for this reason only ([`Decided::Build`]).
     BuildFor(DecisionReason),
     /// A build refused at Reuse qualification for its volatile SQL alone
-    /// ([`Decided::RefusedVolatileSql`]).
+    /// ([`Decided::RefusedVolatileSql`]), whatever else is against the
+    /// refused build.
     RefusedVolatileSql,
+    /// [`Outcome::RefusedVolatileSql`] in an unchanged rerun only: nothing
+    /// but the volatile SQL is against the refused build
+    /// ([`Decided::RefusedVolatileSql`] `unchanged_rerun`).
+    RefusedVolatileSqlUnchangedRerun,
     /// A reuse (`skip_execution`).
     Reuse,
     /// A Result copy (`ready_to_clone`) into a Target relation that does not
@@ -92,7 +112,13 @@ pub enum Outcome {
 impl Outcome {
     fn covers(self, decided: Decided) -> bool {
         match (self, decided) {
-            (Self::RefusedVolatileSql, Decided::RefusedVolatileSql)
+            (Self::RefusedVolatileSql, Decided::RefusedVolatileSql { .. })
+            | (
+                Self::RefusedVolatileSqlUnchangedRerun,
+                Decided::RefusedVolatileSql {
+                    unchanged_rerun: true,
+                },
+            )
             | (Self::Reuse, Decided::Reuse)
             | (
                 Self::CopyIntoAbsentTarget,
@@ -117,7 +143,13 @@ pub enum Decided {
     /// A build refused at Reuse qualification for its volatile SQL alone,
     /// compared by its rendered SQL
     /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
-    RefusedVolatileSql,
+    RefusedVolatileSql {
+        /// Whether nothing else is against the refused build: its Target
+        /// relation is as built, a data test's cached results are complete,
+        /// and its inputs are unchanged since it
+        /// ([`crate::reuse_candidate::Selection::unchanged_rerun`]).
+        unchanged_rerun: bool,
+    },
     Reuse,
     /// A Result copy, and whether the decision saw the Target relation exist.
     Copy {

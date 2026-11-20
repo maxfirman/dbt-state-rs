@@ -36,6 +36,11 @@ const RUN_2: &str =
 /// The #202 Snowflake capture batch of the cells #191 left open (dbt 2.0.11;
 /// entry indices in `docs/reports/snowflake-volatile-cells-2026-11-19.md`).
 const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cells.jsonl");
+/// The #198 Databricks capture (dbt 2.0.11): a `rand()` table's first build
+/// and unchanged rerun, a non-storing `rand()` data test's first execution
+/// and rerun, deterministic controls and a consumer (`docs/databricks-volatile.md`).
+const DATABRICKS_EVALUATION: &str =
+    include_str!("../../../golden/fixtures/databricks_volatile_evaluation.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
 const RAND_SUBMIT: usize = 85;
 /// Hosted's Explain of that decision.
@@ -1037,11 +1042,17 @@ impl HostedExplain {
         id: &str,
         values: &VolatileValues,
     ) -> Self {
+        // An Explain of several decisions (the Databricks capture asks for
+        // four at once) is compared by the message of this one.
+        let mut expected = hosted_explain_for(explain, submit, id, values);
+        let messages = expected["messages"].as_array_mut().unwrap();
+        messages.retain(|message| message["execution_decision_id"] == id);
+        assert_eq!(messages.len(), 1, "one hosted message for decision {id}");
         Self {
             case: case.into(),
             id: id.to_owned(),
             at: submitted_at(explain),
-            expected: hosted_explain_for(explain, submit, id, values),
+            expected,
         }
     }
 
@@ -1622,8 +1633,7 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
         assert!(!rendered(&ready).is_empty(), "{node}");
     }
 
-    // Databricks has no capture of a dependency or a data test: only a Target
-    // relation's own `rand()` renders.
+    // Databricks query dependencies and tests storing failures are uncaptured.
     let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
     let databricks_dependency = model
         .clone()
@@ -1637,11 +1647,12 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
         );
     let databricks_test = support::scenario::data_test("test.databricks.rand")
         .dialect("databricks")
+        .target("`cdo_demo_db`.`ds_20261112a134ef_prod`.`audit`")
         .sql("select rand() as noise where false")
         .tolerate_nondeterminism(false);
     for (node, submit) in [
         ("Databricks dependency", databricks_dependency),
-        ("Databricks data test", databricks_test),
+        ("Databricks stored-failure test", databricks_test),
     ] {
         let ready = sc.org(node).expect_execute(submit).await;
         assert!(
@@ -1658,9 +1669,11 @@ async fn dependency_and_data_test_sql_without_a_captured_call_renders_nothing() 
 // Snowflake FULL models (own SQL or a query dependency, evaluation on or off;
 // both, evaluation on), views (evaluation off; own SQL, evaluation on), and
 // data tests without a Target relation (own SQL, evaluation on or off; a
-// query dependency, evaluation on); Databricks the query-changed rebuild of a
-// FULL model (entries 85–86). Every other cell keeps an empty map and prints
-// no volatile Explain lines.
+// query dependency, evaluation on); Databricks, evaluation on and its own
+// SQL only, a FULL model's first build, query-changed rebuild and unchanged
+// rerun, and a data test's first execution and unchanged rerun (controls
+// entries 85–86; #198). Every other cell keeps an empty map and prints no
+// volatile Explain lines.
 
 /// The captured `vd` request `entry` with its own SQL also calling
 /// `current_timestamp()`.
@@ -1730,35 +1743,302 @@ async fn snowflake_volatile_data_test_over_a_volatile_view_renders_nothing() {
     assert!(!prints_volatile_lines(&explained), "{explained}");
 }
 
+// ── Databricks cells (#198) ─────────────────────────────────────────────────
+//
+// Evidence: `golden/fixtures/databricks_volatile_evaluation.jsonl` (dbt
+// 2.0.11, `docs/databricks-volatile.md`). Run 1: a deterministic control
+// table (entry 4), a `rand()` table (5), a table over it with an hour's Lag
+// tolerance and evaluation off (9) and a `rand()` data test without a Target
+// relation (10), explained in entry 15. Run 2 reruns them (20, 21, 26 and
+// 22), explained in entry 28.
+
+/// Run 1 of the Databricks capture: the deterministic control table's,
+/// the `rand()` table's and the consumer's first builds, the `rand()` data
+/// test's first execution, and their Explain.
+const DB_CONTROL_FIRST: usize = 4;
+const DB_TABLE_FIRST: usize = 5;
+const DB_CONSUMER_FIRST: usize = 9;
+const DB_TEST_FIRST: usize = 10;
+const DB_RUN_1_EXPLAIN: usize = 15;
+/// Run 2: the reruns, and their Explain (the last entry of the capture).
+const DB_CONTROL_RERUN: usize = 20;
+const DB_TABLE_RERUN: usize = 21;
+const DB_TEST_RERUN: usize = 22;
+const DB_CONSUMER_RERUN: usize = 26;
+const DB_RUN_2_EXPLAIN: usize = 28;
+
 #[tokio::test]
-async fn databricks_renders_only_the_captured_query_changed_rebuild() {
+async fn databricks_cells_return_hosted_codes_and_maps() {
     let server = support::start_server().await;
-    let sc = Scenario::connect(&server).await.org("databricks cells");
-    let model = captured_submit(&request(CONTROLS, RAND_SUBMIT));
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let responses = replay(&sc, &entries, DB_RUN_2_EXPLAIN).await;
+    for (entry, case) in [
+        (
+            DB_CONTROL_FIRST,
+            "deterministic control, first build: empty map",
+        ),
+        (DB_TABLE_FIRST, "rand() table, first build"),
+        (DB_CONSUMER_FIRST, "consumer, first build: empty map"),
+        (DB_TEST_FIRST, "rand() data test, first execution"),
+        (DB_CONTROL_RERUN, "deterministic control, rerun: reused"),
+        (
+            DB_TABLE_RERUN,
+            "rand() table, unchanged rerun refused for its volatile SQL alone",
+        ),
+        (
+            DB_TEST_RERUN,
+            "rand() data test, unchanged rerun refused for its volatile SQL alone",
+        ),
+        (
+            DB_CONSUMER_RERUN,
+            "consumer within Lag tolerance after its producer's rebuild: reused, empty map",
+        ),
+    ] {
+        assert_matches_hosted(&responses[&entry], &entries[entry], case);
+    }
+    for (entry, query) in [
+        (DB_TABLE_FIRST, target(&entries[DB_TABLE_FIRST].request)),
+        (DB_TEST_FIRST, "__target_query__".to_owned()),
+        (DB_TABLE_RERUN, target(&entries[DB_TABLE_RERUN].request)),
+        (DB_TEST_RERUN, "__target_query__".to_owned()),
+    ] {
+        let value = &volatile_values(&responses[&entry])[&query]["RAND()"];
+        assert!(is_captured_unit_random(value), "entry {entry}: {value}");
+    }
+}
 
-    let first = sc.expect_execute(model.clone()).await;
-    assert!(
-        rendered(&first).is_empty(),
-        "first build: {:?}",
-        rendered(&first)
-    );
-    assert!(
-        sc.confirm(&first.request_id, built_at(captured_target_epoch()))
-            .await
-    );
-    let rerun = sc.expect_execute(model.clone()).await;
-    assert!(
-        rendered(&rerun).is_empty(),
-        "unchanged rerun (cell 2, #198): {:?}",
-        rendered(&rerun)
-    );
-    let explained = explain(&sc, rerun.execution_decision_id.as_deref().unwrap()).await;
-    assert!(!prints_volatile_lines(&explained), "{explained}");
+#[tokio::test]
+async fn databricks_cells_explain_as_hosted_including_after_a_restart() {
+    // (submit, its captured Explain, case). Each captured Explain answers
+    // four decisions; each is compared with its own message.
+    assert_replayed_explains_match_hosted(
+        "databricks_volatile_cells",
+        DATABRICKS_EVALUATION,
+        &[
+            (
+                DB_CONTROL_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "deterministic control, first build",
+            ),
+            (
+                DB_TABLE_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "rand() table, first build",
+            ),
+            (DB_CONSUMER_FIRST, DB_RUN_1_EXPLAIN, "consumer, first build"),
+            (
+                DB_TEST_FIRST,
+                DB_RUN_1_EXPLAIN,
+                "rand() data test, first execution",
+            ),
+            (
+                DB_CONTROL_RERUN,
+                DB_RUN_2_EXPLAIN,
+                "deterministic control, reused",
+            ),
+            (DB_TABLE_RERUN, DB_RUN_2_EXPLAIN, "rand() table, rerun"),
+            (DB_TEST_RERUN, DB_RUN_2_EXPLAIN, "rand() data test, rerun"),
+            (
+                DB_CONSUMER_RERUN,
+                DB_RUN_2_EXPLAIN,
+                "consumer, reused within Lag tolerance",
+            ),
+        ],
+        std::convert::identity,
+    )
+    .await;
+}
 
-    // Positive control: the captured query-changed rebuild renders.
-    let control = sc.org("databricks control");
-    deterministic_history(&control).await;
-    assert!(!rendered(&control.expect_execute(model).await).is_empty());
+/// The captured Databricks cells are the only ones that render: each submit
+/// here is a captured one in another cell, and keeps an empty map.
+#[tokio::test]
+async fn databricks_uncaptured_cells_render_nothing() {
+    use support::scenario::{outcome, test_results, ExecutionType};
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let table = captured_submit(&entries[DB_TABLE_FIRST].request);
+    let test = captured_submit(&entries[DB_TEST_FIRST].request);
+    let assert_empty = |case: &str, ready: &qc::ReadyToExecuteResponse| {
+        assert!(rendered(ready).is_empty(), "{case}: {:?}", rendered(ready));
+    };
+
+    // First builds with evaluation off, or of another execution type.
+    for (case, submit) in [
+        (
+            "table, evaluation off",
+            table.clone().tolerate_nondeterminism(true),
+        ),
+        (
+            "data test, evaluation off",
+            test.clone().tolerate_nondeterminism(true),
+        ),
+        ("view", table.clone().execution_type(ExecutionType::View)),
+        (
+            "append incremental",
+            table.clone().execution_type(ExecutionType::Append),
+        ),
+        (
+            "snapshot",
+            table.clone().execution_type(ExecutionType::Snapshot),
+        ),
+    ] {
+        assert_empty(case, &sc.org(case).expect_execute(submit).await);
+    }
+
+    // A data test's query-changed rebuild.
+    let case = "data test, query changed";
+    let org = sc.org(case);
+    org.build_with(test.clone(), outcome().runtime(10).results(test_results(0)))
+        .await;
+    let changed = test.clone().sql(
+        &entries[DB_TEST_FIRST].request["sql"]
+            .as_str()
+            .unwrap()
+            .replace("100", "200"),
+    );
+    assert_empty(case, &org.expect_execute(changed).await);
+
+    // A table's rerun refused at Reuse qualification under
+    // compare_unrendered_code: Databricks keeps the refusal, and it is not
+    // a refusal of volatile SQL compared by its rendered SQL alone.
+    let case = "table rerun under compare_unrendered_code";
+    let org = sc.org(case);
+    let rerun = captured_submit(&entries[DB_TABLE_RERUN].request).compare_unrendered_code();
+    let request = rerun.clone().build();
+    let epoch = request
+        .tables
+        .iter()
+        .find(|t| Some(&t.name) == request.target_table.as_ref())
+        .and_then(|t| t.last_modified_epoch)
+        .unwrap();
+    org.build(rerun.clone(), epoch).await;
+    let ready = org.expect_execute(rerun).await;
+    assert_eq!(
+        ready
+            .explained_decision
+            .as_ref()
+            .unwrap()
+            .skip_rejection_reason,
+        Some(qc::RejectionReason::NoSuitableMatchFound as i32),
+        "{case}: refused at Reuse qualification"
+    );
+    assert_empty(case, &ready);
+}
+
+/// The Databricks reruns refused for their volatile SQL alone were captured
+/// as unchanged reruns only: the table over its Target relation as built,
+/// the data test over unchanged inputs (`DB_TABLE_RERUN`, `DB_TEST_RERUN`).
+/// The same refusal after the table was dropped or modified externally, or
+/// after the data test's upstream changed, is uncaptured: an empty map and
+/// no volatile Explain lines. Each positive control is the captured rerun
+/// over the same history.
+#[tokio::test]
+async fn databricks_refused_reruns_render_only_unchanged() {
+    use support::scenario::{outcome, test_results};
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let entries = entries(DATABRICKS_EVALUATION);
+    let table = captured_submit(&entries[DB_TABLE_FIRST].request);
+    let table_rerun = captured_submit(&entries[DB_TABLE_RERUN].request);
+    let test = captured_submit(&entries[DB_TEST_FIRST].request);
+    let test_rerun = captured_submit(&entries[DB_TEST_RERUN].request);
+    let built = {
+        let request = table_rerun.clone().build();
+        request
+            .tables
+            .iter()
+            .find(|t| Some(&t.name) == request.target_table.as_ref())
+            .and_then(|t| t.last_modified_epoch)
+            .unwrap()
+    };
+    let upstream = entries[DB_TEST_RERUN].request["tables"][0]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let upstream_epoch = entries[DB_TEST_RERUN].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let complete = || outcome().runtime(10).results(test_results(0));
+
+    for (case, rerun, renders) in [
+        ("table, unchanged rerun", table_rerun.clone(), true),
+        (
+            "table, rerun after the table was dropped",
+            table_rerun.clone().own_epoch(None),
+            false,
+        ),
+        (
+            "table, rerun after an External modification",
+            table_rerun.clone().own_epoch(Some(built + 1_000)),
+            false,
+        ),
+    ] {
+        let org = sc.org(case);
+        org.build(table.clone(), built).await;
+        let ready = org.expect_execute(rerun).await;
+        assert_refused_rerun(&org, case, &ready, renders).await;
+    }
+
+    for (case, history, rerun, renders) in [
+        (
+            "data test, unchanged rerun",
+            complete(),
+            test_rerun.clone(),
+            true,
+        ),
+        (
+            "data test, rerun after its upstream changed",
+            complete(),
+            test_rerun
+                .clone()
+                .upstream(&upstream, upstream_epoch + 1_000),
+            false,
+        ),
+        (
+            "data test, rerun over incomplete cached results",
+            outcome().runtime(10),
+            test_rerun.clone(),
+            false,
+        ),
+    ] {
+        let org = sc.org(case);
+        org.build_with(test.clone(), history).await;
+        let ready = org.expect_execute(rerun).await;
+        assert_refused_rerun(&org, case, &ready, renders).await;
+    }
+}
+
+/// `ready` is a rerun refused at Reuse qualification that renders `RAND()`
+/// and prints volatile Explain lines when `renders`, and neither otherwise.
+async fn assert_refused_rerun(
+    sc: &Scenario,
+    case: &str,
+    ready: &qc::ReadyToExecuteResponse,
+    renders: bool,
+) {
+    assert_eq!(
+        ready
+            .explained_decision
+            .as_ref()
+            .unwrap()
+            .skip_rejection_reason,
+        Some(qc::RejectionReason::NoSuitableMatchFound as i32),
+        "{case}: refused at Reuse qualification"
+    );
+    assert_eq!(
+        !rendered(ready).is_empty(),
+        renders,
+        "{case}: {:?}",
+        rendered(ready)
+    );
+    let explained = explain(sc, ready.execution_decision_id.as_deref().unwrap()).await;
+    assert_eq!(
+        prints_volatile_lines(&explained),
+        renders,
+        "{case}: {explained}"
+    );
 }
 
 #[tokio::test]

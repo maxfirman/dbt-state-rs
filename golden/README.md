@@ -27,6 +27,13 @@ Session files at the top level are never tracked. Tests read only
 
 ## Fixtures
 
+`databricks_volatile_evaluation.jsonl` (#198) is the certified whole 29-RPC
+dbt 2.0.11 Databricks history: true first build and rerun of a `rand()` model,
+a passing data test, a downstream table with one-hour Lag tolerance, and a
+deterministic control. Both native Explain calls cover all eight decisions.
+Full replay admits only validated random-value formats; exact restart trees
+are covered by `volatile_evaluation.rs`. [Warehouse evidence and limits](../docs/databricks-volatile.md).
+
 `crates/harness/tests/conformance.rs` replays every fixture except those in its
 `CHARACTERIZATION_ONLY` list ("char-only" below), which the named dedicated
 tests drive instead. Test paths are under `crates/harness/tests/`.

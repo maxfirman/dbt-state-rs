@@ -638,7 +638,7 @@ client.
 | Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | 2.0.11: run 1 entry 6; cells entries 59, 159 | none |
-| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 | see #198 |
+| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 | other Databricks functions render nothing (#198) |
 
 A constant is hosted's value for exactly the captured arguments, not a value
 the server computes. The other function forms render nothing:
@@ -678,9 +678,14 @@ says "empty".
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
 | Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
-| Databricks | FULL model, root SQL, query-changed rebuild over its existing Target relation | rendered | empty, uncaptured (#198) | entries 85, 86 |
-| Databricks | first build, unchanged rerun, other execution types, data test, query dependency, `skip_execution` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification (its Target relation as built, its inputs unchanged) and a query-changed rebuild over its existing Target relation; empty for the refusal after the table was dropped, after an External modification or over changed inputs (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
+| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun (its inputs unchanged, its cached results complete); empty for the refusal after an upstream changed or over incomplete cached results (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
+| Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
+| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
+
+The [Databricks characterization](databricks-volatile.md) records the complete
+#198 history, Warehouse values, exact replay and persisted Explain coverage.
 
 A Snowflake build renders only for a captured decision reason
 (`warehouse/snowflake.rs` cells). With evaluation on: a first build
@@ -701,6 +706,28 @@ without a definition, a missing template body), and, under
 rendered SQL did not. That table is refused for its volatile SQL and
 explained with no tree; hosted was captured only with an unchanged
 template (cells entry 140; #211).
+
+A Databricks build renders only in its captured cells
+(`warehouse/databricks.rs`), all with evaluation on and values in the node's
+own SQL: a first build (`first_build`), an unchanged rerun refused at Reuse
+qualification for its volatile SQL alone (`failed_reuse_qualification`,
+`reuse_candidate::refuses_volatile_sql_alone`,
+`Outcome::RefusedVolatileSqlUnchangedRerun`) and, for a table, a
+query-changed rebuild (`identity_mismatch`). Reuse qualification is checked
+before the Target relation, so the same refusal also answers a rerun after
+the table was dropped or modified externally, or over changed inputs. Hosted
+was captured only for the unchanged rerun: the refused build an ordinary
+build, a table's Target relation as built, a data test's cached results
+complete, and every upstream with the epoch and Upstream producer recorded
+at the refused build (`reuse_candidate::Selection::unchanged_rerun`). Every
+other Databricks refusal keeps an empty map and prints no volatile lines;
+the Snowflake refusal cells are not narrowed (its External-modification
+rerun is captured). Databricks has no checked
+Volatile function detector, so with evaluation requested this server
+refuses every Databricks SQL at Reuse qualification. Under
+`compare_unrendered_code` that refusal is not one for volatile SQL compared
+by its rendered SQL alone, and keeps an empty map; so does every other
+uncaptured cell.
 
 **Decisions.** Rendering never changes a decision (rule 8 for Reuse
 qualification and Result copy). With evaluation requested, a Snowflake
@@ -750,8 +777,9 @@ three Snowflake fixtures replays.
 
 **Not captured.** The remaining Snowflake cells, each with its tracking
 issue or whether client 2.0.11 can reach it, are listed in
-[correctness-handoff.md](correctness-handoff.md#open-hosted-questions)
-(Databricks: #198).
+[correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
+#198's captured Databricks cells and remaining limits are in the
+[characterization note](databricks-volatile.md).
 
 ## Speculative submits: `SQL.SubmitEnrichedSQLSpeculative`
 
