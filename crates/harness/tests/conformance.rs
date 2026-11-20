@@ -2525,19 +2525,25 @@ fn local_speculative_edid(resp: &qc::SubmitSqlSpeculativeResponse) -> Option<Str
     }
 }
 
-/// Preserve the complete tree, changing only registered volatile value text.
-/// Databricks keeps names, relative times, timestamps, markers and badges exact.
-fn normalize_volatile_tree(lines: &[qc::ExplainLine]) -> Vec<qc::ExplainLine> {
+/// An `explain_lines` JSON tree with each line's text replaced by
+/// `text(line text)`, at every depth. Every other field is kept exactly.
+fn map_line_texts(lines: &serde_json::Value, text: &dyn Fn(&str) -> String) -> serde_json::Value {
+    let mut lines = lines.clone();
+    for line in lines.as_array_mut().into_iter().flatten() {
+        if let Some(t) = line["text"].as_str() {
+            line["text"] = text(t).into();
+        }
+        if let Some(children) = line.get("children").map(|c| map_line_texts(c, text)) {
+            line["children"] = children;
+        }
+    }
     lines
-        .iter()
-        .cloned()
-        .map(|mut line| {
-            line.text =
-                normalize_volatile_line(&line.text).expect("captured volatile value format");
-            line.children = normalize_volatile_tree(&line.children);
-            line
-        })
-        .collect()
+}
+
+/// The registered Volatile evaluation value in `text` normalized; the rest
+/// of the text exact.
+fn volatile_value_text(text: &str) -> String {
+    normalize_volatile_line(text).expect("captured volatile value format")
 }
 
 /// Normalize an explain tree for comparison, masking the three runtime slots the
@@ -2581,15 +2587,7 @@ fn normalize_explain_lines(lines: &[qc::ExplainLine]) -> serde_json::Value {
                 .unwrap_or_else(|error| panic!("malformed rendered value in Explain: {error}"))
         }
     }
-    fn conv(l: &qc::ExplainLine) -> serde_json::Value {
-        serde_json::json!({
-            "text": mask_text(&l.text),
-            "marker": l.marker,
-            "badge": l.badge,
-            "children": l.children.iter().map(conv).collect::<Vec<_>>(),
-        })
-    }
-    serde_json::Value::Array(lines.iter().map(conv).collect())
+    map_line_texts(&serde_json::to_value(lines).unwrap(), &mask_text)
 }
 
 /// Replay one `GetExplainMessages` capture: remap the hosted ids to the locally
@@ -2760,12 +2758,11 @@ async fn replay_explain_messages(
             // it cannot inherit the historical runtime-slot masks either.
             // Only captured Volatile evaluation values vary per execution.
             (
-                serde_json::to_value(normalize_volatile_tree(
-                    &serde_json::from_value::<Vec<qc::ExplainLine>>(m["explain_lines"].clone())
-                        .unwrap(),
-                ))
-                .unwrap(),
-                serde_json::to_value(normalize_volatile_tree(&local.explain_lines)).unwrap(),
+                map_line_texts(&m["explain_lines"], &volatile_value_text),
+                map_line_texts(
+                    &serde_json::to_value(&local.explain_lines).unwrap(),
+                    &volatile_value_text,
+                ),
             )
         } else {
             (
