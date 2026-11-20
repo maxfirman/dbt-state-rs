@@ -7,7 +7,8 @@
 //! The Warehouse still executes the original SQL; no official client reads
 //! the map, so it is telemetry. Values are rendered only in the cells a
 //! Warehouse was captured rendering in ([`Cell`]), which on Snowflake include
-//! evaluation off and a reuse; every other submit returns an empty map.
+//! evaluation off, a reuse and a Result copy; every other submit returns an
+//! empty map.
 //!
 //! This module is pure. The submit decision layer calls [`evaluate`] after the
 //! decision is made, with the [`Sources`] the values are drawn from, and the
@@ -69,38 +70,59 @@ pub struct Cell {
     /// Whether the submit requested Volatile evaluation ([`requested`]).
     pub evaluation_requested: bool,
     pub outcome: Outcome,
-    /// The SQL the values come from. Values from both a node's own SQL and a
-    /// query dependency are captured in no cell.
+    /// The SQL the values come from.
     pub queries: Queries,
 }
 
 /// The decisions a [`Cell`] covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// A build (`ready_to_execute`) for any reason.
-    AnyBuild,
-    /// A build for this reason only.
+    /// A build for this reason only ([`Decided::Build`]).
     BuildFor(DecisionReason),
+    /// A build refused at Reuse qualification for its volatile SQL alone
+    /// ([`Decided::RefusedVolatileSql`]).
+    RefusedVolatileSql,
     /// A reuse (`skip_execution`).
     Reuse,
+    /// A Result copy (`ready_to_clone`) into a Target relation that does not
+    /// exist. A copy over an existing Target relation is not covered.
+    CopyIntoAbsentTarget,
 }
 
 impl Outcome {
     fn covers(self, decided: Decided) -> bool {
         match (self, decided) {
-            (Self::AnyBuild, Decided::Build(_)) | (Self::Reuse, Decided::Reuse) => true,
+            (Self::RefusedVolatileSql, Decided::RefusedVolatileSql)
+            | (Self::Reuse, Decided::Reuse)
+            | (
+                Self::CopyIntoAbsentTarget,
+                Decided::Copy {
+                    target_exists: false,
+                },
+            ) => true,
             (Self::BuildFor(captured), Decided::Build(reason)) => captured == reason,
             _ => false,
         }
     }
 }
 
-/// What a submit was decided: values are only ever rendered for a build or
-/// a reuse.
+/// What a submit was decided: values are only ever rendered for a build, a
+/// reuse or a Result copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Decided {
+    /// A build for this reason. A build refused at Reuse qualification for
+    /// any cause other than [`Decided::RefusedVolatileSql`]'s is
+    /// `Build(NoReuseCandidate(FailedReuseQualification))`.
     Build(DecisionReason),
+    /// A build refused at Reuse qualification for its volatile SQL alone,
+    /// compared by its rendered SQL
+    /// ([`crate::reuse_candidate::refuses_volatile_sql_alone`]).
+    RefusedVolatileSql,
     Reuse,
+    /// A Result copy, and whether the decision saw the Target relation exist.
+    Copy {
+        target_exists: bool,
+    },
 }
 
 /// The SQL a [`Cell`]'s values come from.
@@ -111,6 +133,9 @@ pub enum Queries {
     Own,
     /// Query dependency definitions, keyed by the dependency's name.
     Dependencies,
+    /// Both: values in the root SQL and in a query dependency definition,
+    /// each keyed as for [`Queries::Own`] and [`Queries::Dependencies`].
+    OwnAndDependencies,
 }
 
 /// Whether `req` requests Volatile evaluation: current clients send
@@ -274,9 +299,12 @@ impl Evidence {
 /// The root SQL is keyed by the Target relation as sent, or for a data test
 /// without one by [`TARGET_QUERY_KEY`]; each query dependency definition by
 /// the dependency's name, in request order (`explain_volatile_evaluation.jsonl`
-/// entries 10 and 16). Each function is rendered once per query however often
-/// it is called. SQL that does not parse renders nothing, and so does a
-/// submit with values in both its own SQL and a query dependency.
+/// entries 10 and 16). Values in both a node's own SQL and a query dependency
+/// are listed dependencies first, as hosted printed them
+/// (`explain_volatile_cells.jsonl` entries 59 and 159; the wire map has no
+/// order). Each function is rendered once per query however often it is
+/// called. SQL that does not parse renders nothing, and so does a data test
+/// with a Target relation.
 pub fn evaluate(
     req: &qc::SubmitEnrichedSqlRequest,
     rules: Option<Rules>,
@@ -295,7 +323,10 @@ pub fn evaluate(
     let target = req.target_table.as_deref().filter(|t| !t.is_empty());
     // A data test with a Target relation (stored failures) is uncaptured.
     let own = if req.execution_type == qc::ModelExecutionType::DbtDataTest as i32 {
-        target.is_none().then_some(TARGET_QUERY_KEY)
+        if target.is_some() {
+            return None;
+        }
+        Some(TARGET_QUERY_KEY)
     } else {
         target
     };
@@ -327,6 +358,11 @@ pub fn evaluate(
     let values = match (own_values.is_empty(), dependency_values.is_empty()) {
         (false, true) if captured(Queries::Own) => own_values,
         (true, false) if captured(Queries::Dependencies) => dependency_values,
+        (false, false) if captured(Queries::OwnAndDependencies) => {
+            let mut values = dependency_values;
+            values.extend(own_values);
+            values
+        }
         _ => return None,
     };
     Some(Rendered(values))

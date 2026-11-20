@@ -58,6 +58,12 @@ pub(crate) struct Selection {
     /// Databricks APPEND/MERGE response/Explain basis only. Selection still
     /// rejects against the submit type's build; this row is never reusable.
     pub transition_display: Option<ExecutionRow>,
+    /// The latest row when it has the workload's identity but the submit
+    /// (a model) failed Reuse qualification (volatile SQL with Volatile
+    /// evaluation requested, among others): Explain judges the rebuild's freshness
+    /// listing against it (`explain_volatile_cells.jsonl` entries 189, 190
+    /// (#205), 195 and 199 (#206)). Never reused, and never a copy's anchor.
+    pub unqualified: Option<ExecutionRow>,
 }
 
 impl Selection {
@@ -68,6 +74,7 @@ impl Selection {
             target_has_prior_build: true,
             why_no_candidate: None,
             rejected: None,
+            unqualified: None,
             unmatched: None,
             type_changed: None,
             transition_display: None,
@@ -80,6 +87,7 @@ impl Selection {
         target_has_prior_build: false,
         why_no_candidate: None,
         rejected: None,
+        unqualified: None,
         unmatched: None,
         type_changed: None,
         transition_display: None,
@@ -88,14 +96,12 @@ impl Selection {
     /// The outcome for a latest row in scope: the reuse candidate when the
     /// row's identity matched (`identified`) and `rejection` found nothing
     /// against it, otherwise why it is not one.
-    /// `unidentified` says why when the row's identity did not match, and
-    /// `unmatched` is that row (models only).
+    /// `unidentified` says why when the row's identity did not match.
     fn of(
         identified: Option<ExecutionRow>,
         unidentified: NoCandidate,
         rejection: impl FnOnce(&ExecutionRow) -> Option<NoCandidate>,
-        target_has_prior_build: bool,
-        unmatched: Option<ExecutionRow>,
+        workload: Workload,
     ) -> Selection {
         let why_no_candidate = match &identified {
             None => Some(unidentified),
@@ -105,10 +111,20 @@ impl Selection {
             why_no_candidate,
             Some(NoCandidate::OwnTargetModified | NoCandidate::OwnTargetMissing)
         );
-        let (candidate, rejected) = match identified {
-            Some(row) if why_no_candidate.is_none() => (Some(row), None),
-            Some(row) if own_target => (None, Some(row)),
-            _ => (None, None),
+        // Only a model's qualification-refused rebuild is captured explained
+        // against the refused build (#205).
+        let unqualified_build = why_no_candidate == Some(NoCandidate::FailedReuseQualification)
+            && matches!(workload, Workload::Model { .. });
+        let (candidate, rejected, unqualified) = match identified {
+            Some(row) if why_no_candidate.is_none() => (Some(row), None, None),
+            Some(row) if own_target => (None, Some(row), None),
+            Some(row) if unqualified_build => (None, None, Some(row)),
+            _ => (None, None, None),
+        };
+        let (target_has_prior_build, unmatched) = match workload {
+            Workload::Model { unmatched } => (true, unmatched),
+            Workload::DataTest => (false, None),
+            Workload::Seed => (true, None),
         };
         // A row with the identity under another type is no unmatched build.
         let (unmatched, type_changed) = match why_no_candidate {
@@ -120,11 +136,27 @@ impl Selection {
             target_has_prior_build,
             why_no_candidate,
             rejected,
+            unqualified,
             unmatched,
             type_changed,
             transition_display: None,
         }
     }
+}
+
+/// The workload a [`Selection`] is for, which decides what it keeps of a
+/// latest row that is not the reuse candidate.
+#[allow(clippy::large_enum_variant)] // A by-value argument, moved into the Selection.
+enum Workload {
+    /// A model. `unmatched` is the latest row when it does not have the
+    /// workload's identity ([`Selection::unmatched`]), and a build refused
+    /// at Reuse qualification is kept ([`Selection::unqualified`]).
+    Model { unmatched: Option<ExecutionRow> },
+    /// A data test: no physical target, so no prior build to report, and a
+    /// qualification refusal keeps no anchor.
+    DataTest,
+    /// A seed.
+    Seed,
 }
 
 /// Models, views, snapshots and other target-producing SQL submits.
@@ -191,8 +223,7 @@ pub(crate) fn for_model(
         identified,
         unidentified,
         |prev| model_rejection(req, evidence, prev),
-        true,
-        unmatched,
+        Workload::Model { unmatched },
     );
     selected.transition_display = transition_display;
     Ok(selected)
@@ -206,7 +237,15 @@ fn model_rejection(
     evidence: &ExecutionEvidence,
     prev: &ExecutionRow,
 ) -> Option<NoCandidate> {
-    if !sql_qualifies(req, evidence) {
+    let qualifies = if volatile_sql_compared_by_unrendered_code(req)
+        && evidence.node_template_hash.is_some()
+        && prev.node_template_hash == evidence.node_template_hash
+    {
+        sql_evidence_complete(req, evidence)
+    } else {
+        sql_qualifies(req, evidence)
+    };
+    if !qualifies {
         Some(NoCandidate::FailedReuseQualification)
     } else {
         match own_target(req, prev) {
@@ -321,13 +360,19 @@ pub(crate) fn for_model_over_build_of_type(
         databricks_append_merge_transition(req, evidence, &latest).then(|| latest.clone());
     let build = build.into_checked(false)?;
     let mut selected = match model_rejection(req, evidence, &build) {
-        Some(why) => Selection::of(Some(build), why, |_| Some(why), true, None),
+        Some(why) => Selection::of(
+            Some(build),
+            why,
+            |_| Some(why),
+            Workload::Model { unmatched: None },
+        ),
         None => Selection::of(
             None,
             NoCandidate::ExecutionTypeChanged,
             |_| None,
-            true,
-            Some(latest),
+            Workload::Model {
+                unmatched: Some(latest),
+            },
         ),
     };
     selected.transition_display = transition_display;
@@ -363,8 +408,7 @@ pub(crate) fn for_data_test(
                 None
             }
         },
-        false,
-        None,
+        Workload::DataTest,
     ))
 }
 
@@ -404,8 +448,7 @@ pub(crate) fn for_seed(
                 None
             }
         },
-        true,
-        None,
+        Workload::Seed,
     ))
 }
 
@@ -512,8 +555,52 @@ fn adoptable(
 /// template is likewise insufficient evidence.
 fn sql_qualifies(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
     (!crate::volatile_evaluation::requested(req) || !calls_volatile_function(req))
-        && complete_dependencies(req)
-        && !req.sql.trim().is_empty()
+        && sql_evidence_complete(req, evidence)
+}
+
+/// Maintainer decision 1 on #201 (#206): whether `req` is a submit to a
+/// Warehouse that reuses volatile SQL by its unrendered code
+/// ([`Warehouse::reuses_volatile_sql_by_unrendered_code`], Snowflake),
+/// compared by its unrendered code (`compare_unrendered_code`), whose
+/// SQL calls a Volatile function with Volatile evaluation requested. Against
+/// a build with the same template identity, a model is then not refused at
+/// Reuse qualification for its volatile SQL; the ordinary reuse rules of the
+/// dual rendered/template identity apply. Hosted reuses it and explains it by
+/// its unrendered code with no volatile lines (`explain_volatile_cells.jsonl`
+/// `ecu`, entries 140 and 198). A changed template (the compiled SQL
+/// decides), a data test, `compare_unrendered_code` off and every other
+/// Warehouse keep the refusal (uncaptured).
+///
+/// [`Warehouse::reuses_volatile_sql_by_unrendered_code`]: crate::warehouse::Warehouse::reuses_volatile_sql_by_unrendered_code
+pub(crate) fn volatile_sql_compared_by_unrendered_code(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    req.compare_unrendered_code
+        && crate::warehouse::Warehouse::from_dialect(&req.dialect)
+            .reuses_volatile_sql_by_unrendered_code()
+        && crate::volatile_evaluation::requested(req)
+        && calls_volatile_function(req)
+}
+
+/// Whether a Reuse qualification refusal of `req` is the refusal of its
+/// volatile SQL alone, compared by its rendered SQL: Volatile evaluation is
+/// requested, the root SQL or a query dependency definition calls a
+/// Volatile function, `compare_unrendered_code` is off, and the rest of the
+/// evidence Reuse qualification requires is complete. Every refusal hosted
+/// was captured rendering values for is one (`explain_volatile_cells.jsonl`,
+/// `explain_volatile_evaluation.jsonl`); the one capture under
+/// `compare_unrendered_code` is a reuse (`ecu`, entry 140). Selects the
+/// Volatile evaluation cell only; it decides nothing.
+pub(crate) fn refuses_volatile_sql_alone(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    !req.compare_unrendered_code
+        && crate::volatile_evaluation::requested(req)
+        && calls_volatile_function(req)
+        && rendered_sql_evidence_complete(req)
+}
+
+/// The workload evidence Reuse qualification requires whatever the SQL
+/// calls: complete query dependencies, SQL, and a template body when the
+/// template identity is used.
+fn sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest, evidence: &ExecutionEvidence) -> bool {
+    rendered_sql_evidence_complete(req)
         && (!req.compare_unrendered_code
             || evidence.node_template_hash.is_none()
             || evidence
@@ -530,6 +617,12 @@ fn calls_volatile_function(req: &qc::SubmitEnrichedSqlRequest) -> bool {
         &req.sql,
         req.query_dependencies.iter().map(|d| d.query.as_str()),
     )
+}
+
+/// [`sql_evidence_complete`] without the template body: complete query
+/// dependencies and SQL.
+fn rendered_sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest) -> bool {
+    complete_dependencies(req) && !req.sql.trim().is_empty()
 }
 
 fn complete_dependencies(req: &qc::SubmitEnrichedSqlRequest) -> bool {

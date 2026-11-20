@@ -155,38 +155,93 @@ server keeps the conservative behavior described.
   client (`experiments/resolution_context.sh`). The schema-abstracted identity
   is unchanged (`analyzed_workload/identity/tests.rs::ns_uniform_schema_rename_is_cross_env_positive`).
 - **Volatile evaluation: uncaptured cells.** The supported functions,
-  cells and Warehouses are in
-  [protocol.md](protocol.md#volatile-evaluation) (#67). Values are returned
-  only in the captured cells (`Rules::cells`). Each cell below keeps today's
-  behavior, which is an empty map, no volatile Explain lines and the
-  conservative rebuild unless stated. None has a replay gap, and the
-  Warehouse executes the original SQL in every case.
+  cells and Warehouses, with their client 2.0.11 evidence, are in
+  [protocol.md](protocol.md#volatile-evaluation) (#67, #201). Values are
+  returned only in the captured cells (`Rules::cells`). Each cell below
+  keeps the conservative behavior unless stated: an empty map, no volatile
+  Explain lines and, with evaluation on, the rebuild of volatile SQL. The
+  Warehouse executes the original SQL in every case. #202 captured the
+  Snowflake cells #191 left open (`golden/fixtures/explain_volatile_cells.jsonl`,
+  [characterization note](reports/snowflake-volatile-cells-2026-11-19.md)),
+  and #203–#207 implemented them; every entry of that capture replays except
+  entry 146 (#200, below).
+  - Maintainer decisions on the #202 check-in (#201, 2026-11-19).
+    Decision 1: hosted's SKIP of volatile SQL with evaluation on under
+    `compare_unrendered_code` (entry 140) is matched for a Snowflake model
+    with an unchanged template (#206;
+    [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
+    #201"). Decision 2: the data-test SKIP that echoes another data test's
+    runtime (entry 146, `cto`) is not matched. The scoped data-test UID floor
+    stays, the server echoes `cto`'s own runtime, and only
+    `execution_runtime_ms` is keyed in the replay gaps, under #200, which
+    holds the evidence. Decision 3: a model's rebuild refused at Reuse
+    qualification records the refused build as its Explain anchor (ADR 0005
+    "Amended by #201").
   - Databricks (#198): the first build, the unchanged rerun over the
     existing Target relation, other execution types, a data test, a query
     dependency, a table downstream of the volatile model run twice, their
     Explain, and evaluation off. Only the query-changed FULL rebuild
     (entries 85, 86) renders. Databricks never reuses with evaluation
     requested, because it has no checked Volatile function detector.
-  - Snowflake, no open ticket: a model with Volatile calls both in its own
-    SQL and in a dependency; a data test over a volatile view; a data test
-    or query dependency with evaluation off; a view with evaluation on;
-    incremental, snapshot and custom execution types; a data test with a
-    Target relation; `ready_to_clone` with a filled map, and a Result copy
-    of volatile SQL with evaluation off; functions outside the detector set
-    (for example `CURRENT_USER`) and the uncaptured call forms
-    (`current_time` or `localtime` without parentheses,
-    `current_timestamp(n)`, `uniform`, `randstr` or `normal` with other
-    arguments); a downstream table with zero Lag tolerance.
-  - Snowflake FULL model builds render for any decision reason, with
-    evaluation on or off. Hosted was captured on first builds and the
-    unchanged rerun only; a query-changed or otherwise forced rebuild is
-    uncaptured on Snowflake (captured on Databricks, entries 85, 86).
-  - Snowflake Explain, no open ticket: an evaluation-off rebuild; a volatile
-    data test's logic change; the model rerun tree (#191 cell 2) for a model
-    with upstreams, query dependencies, a view, an incremental or
-    `compare_unrendered_code`; the volatile-dependency tree for a table with
-    an upstream table or values of its own, or another node kind. Each keeps
-    the decision's own tree without volatile lines.
+  - Snowflake, not reachable through client 2.0.11: a data test with a
+    Target relation. The client sends `target_table: null` even for a
+    `store_failures` test (cells entries 61, 145), so this server renders
+    nothing for one.
+  - Snowflake, reachable through client 2.0.11 but not captured (#211):
+    the map stays empty for
+    - the call forms `current_timestamp(n)` with another precision than 3,
+      `current_time(n)`, and `uniform`, `randstr` or `normal` with other
+      arguments. Whether a constant-generator call alone, such as
+      `uniform(1, 100, 1234)`, blocks hosted's reuse is not isolated (entries
+      36 and 131 also call `random()`); the detector rebuilds it;
+    - a data test with values in both its own SQL and a query dependency;
+    - evaluation off for a data test over a volatile view, a table with
+      values in both its SQL and a query dependency, and APPEND, snapshot
+      and custom nodes;
+    - APPEND, snapshot and custom rebuilds other than a first build and a
+      rerun refused at Reuse qualification, their values in a query
+      dependency, and the MERGE, INSERT_OVERWRITE, DELETE_INSERT and
+      MICROBATCH strategies;
+    - any build for another decision reason: upstream data or Upstream
+      producer changes, an External modification with evaluation off, an
+      execution type change;
+    - a Result copy over an existing Target relation or with values in a
+      query dependency, and the chain-limit build;
+    - a reuse under `compare_unrendered_code` (decision 1) with values only
+      in a query dependency, or of another kind than FULL; a data test under
+      `compare_unrendered_code`, which keeps the refusal;
+    - under `compare_unrendered_code`, a table whose template changed while
+      its rendered SQL did not: refused at Reuse qualification for its
+      volatile SQL, explained with no tree. Only the unchanged template was
+      captured (entry 140);
+    - a rerun refused at Reuse qualification for another cause besides its
+      volatile SQL (a query dependency without a definition, a missing
+      template body): only the refusal of volatile SQL alone was captured
+      (`reuse_candidate::refuses_volatile_sql_alone`);
+    - a speculative submit, which this server never renders for (the
+      #202 capture's 36 speculative submits were all `undecided`).
+  - Snowflake Explain, reachable but not captured (#211):
+    the decision's own tree without volatile lines for an evaluation-off
+    rebuild other than a table's query change without upstreams; the model
+    rerun tree or the volatile-dependency tree over an upstream table that
+    drifted or changed producer since the refused build, or over both an
+    upstream table and a query dependency; the model rerun tree of a custom
+    node with upstreams, of an APPEND incremental or snapshot without
+    upstreams, of any non-FULL kind with query dependencies, and of a view
+    over a `ref`; the volatile-dependency tree of another node kind; the
+    evaluation-off SKIP over a volatile query dependency with an upstream
+    table, within Lag tolerance or of another kind; a data test's
+    evaluation-off query analysis on anything but a first execution and a
+    reuse. A data test whose only input is a deterministic query dependency
+    keeps `no upstream dependencies`: no capture shows whether hosted's
+    bare `data freshness analysis` line (`ctv`, entries 105, 201) is
+    specific to volatile dependencies. A copy that reads nothing says
+    `no upstream dependencies` whether or not its SQL is volatile; only the
+    volatile copy (entry 209) was captured.
+  - Relative-time wording (#210): for `lz`'s rerun (entry 200) hosted words
+    a 94.992 s gap "updated 2 minutes after …"; this server rounds down to
+    "a minute" outside Databricks. The replay and the `lz` scenario test mask
+    the line (`«gap»`), so it is no replay gap.
   - Hosted reads the clock for each function; this server reads it once per
     submit. The replay compares clock values by format only.
   - `query_hash_metadata_info` stays unset; hosted's use of it is
@@ -316,7 +371,8 @@ server keeps the conservative behavior described.
   dependencies` (`explain_rebuild_reason_gaps.jsonl`, #40 code review). A
   test whose own SQL rendered Volatile function values with evaluation
   requested is captured on its first execution and rerun
-  (`explain_volatile_evaluation.jsonl` entries 24, 46, #195). A test that
+  (`explain_volatile_evaluation.jsonl` entries 24, 46, #195) and after its
+  logic changed (`explain_volatile_cells.jsonl` entry 204, #206). A test that
   fails reuse qualification without rendered values, for example over
   `seq4()` with evaluation requested, was not captured; the server renders
   nothing for it ([explain-catalog.md](explain-catalog.md#data-test)).
@@ -481,6 +537,16 @@ replay fails when an entry becomes unused or resolved
   confirmations (2088, 2164, 2148, 1511 ms), the dev SQL reads
   `dev_clone.customers` at an epoch about 2.5 days older than the capture,
   and no copy occurs (#190).
+- **Data-test runtime echo across unique ids (#200).** `cto`'s unchanged
+  rerun with evaluation off (`explain_volatile_cells.jsonl` entry 146) is a
+  SKIP on both sides, but hosted echoes `execution_runtime_ms` 2136, the
+  confirmed runtime of the data test `rt` (entry 65: the same round 1 SQL,
+  another unique id, evaluation on), not `cto`'s own 1701 (entry 63). This
+  suggests hosted's data-test reuse identity ignores the unique id and the
+  evaluation flag (cf. the Databricks #138 UID difference). By maintainer
+  decision 2 on #201 the server keeps its scoped data-test UID floor (reuse
+  invariant 5) and echoes `cto`'s runtime; only that field is keyed. Any
+  change to data-test reuse identity goes through #200.
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
   and as view DDL in another rebuilds locally where hosted reused.
 - **Safety floor.** The externally modified seed table is reloaded
