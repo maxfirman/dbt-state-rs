@@ -320,8 +320,29 @@ reusable (F56, P30, P44, P52, P58).
 name, dated at the build it stands for, without a verdict (F36–F39, F57,
 F81, F83, F84), and explains a reuse under `compare_unrendered_code` by the
 unrendered code ([ADR 0005](0005-re-derive-explain-tree-on-demand.md) "Amended
-by #200"). Two blind spots of copies carry over: an External modification of
-the source before a submit-time copy is not visible to the server, and a
-source rewritten between the copy decision and the client's clone DDL is not
-detected (the accepted unpinned source race, ADR 0004). Open questions are
-in [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).
+by #200"). Two blind spots of copies carry over as accepted risks:
+
+- *A source modified before a submit-time copy.* An External modification of
+  the source between its build and a Result copy on submit is not visible to
+  the server, so the copy stands for the source build and a data test over
+  it reuses the source's run over the contents before the change. The
+  server has no evidence of the source's epoch at copy time: the submit
+  reports no epoch of the source (the captured dev submit sends no
+  `tables`, `data_test_history.jsonl` entry 27), and the copy's confirmation
+  reports the copy's own epoch, its clone time (1795290449575 at entry 32,
+  against the source build's 1795290435994 at entry 9).
+  `clone_required_last_modified_epoch` is what the server asks of the
+  client, not evidence that the client checked it. This is the risk model
+  copy adoption already accepts for a FULL copy and a seed copy (ADR 0004,
+  [correctness-handoff.md](../correctness-handoff.md) "Seed copy on
+  submit"). A RegisterClone names the source epoch it copied
+  (`clone_source_last_modified_epoch`), and records the source build only
+  when that epoch is the build's. A run of the data test that read the
+  modified source is the latest in the key, and then the copy no longer
+  proves freshness
+  (`data_test_history.rs::a_source_modified_before_a_submit_time_copy_is_not_visible`).
+- *A source rewritten between the copy decision and the client's clone DDL*
+  is not detected (the accepted unpinned source race, ADR 0004).
+
+Open questions are in
+[correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

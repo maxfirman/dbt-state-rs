@@ -371,6 +371,74 @@ async fn a_registered_copy_stands_for_its_source_build() {
     assert_eq!(skip.execution_runtime_ms, Some(77));
 }
 
+/// An accepted risk inherited from model copy adoption (ADR 0004, ADR 0007
+/// "Data-test history key"): the server cannot see an External modification
+/// of a prod source between its build and a submit-time Result copy. The
+/// dev submit reports no epoch of the source, and the copy's confirmation
+/// reports the copy's own epoch, its clone time. So the copy stands for the
+/// source build, and a dev data test over it reuses the prod run that read
+/// the source before the change. A prod run that read the change is the
+/// latest in the key, and then the dev test rebuilds. A RegisterClone names
+/// the source epoch it copied, and a copy of another epoch than the recorded
+/// build's stands for itself.
+#[tokio::test]
+async fn a_source_modified_before_a_submit_time_copy_is_not_visible() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    // Built at 1000 and tested there; then externally modified at 1500,
+    // which nothing reports, and copied into dev.
+    prod_build_copied_to_dev(&sc, "xm", 1_000, 2_000).await;
+    sc.build_with(
+        singular_test("test.p.xm", PROD_SCHEMA, "xm", 1_000),
+        test_run(0, 51),
+    )
+    .await;
+    let skip = sc
+        .expect_skip(singular_test("test.p.xm", DEV_SCHEMA, "xm", 2_000))
+        .await;
+    assert_eq!(
+        skip.execution_runtime_ms,
+        Some(51),
+        "the prod run over the contents before the change is served"
+    );
+
+    let rerun = sc
+        .execute_id(singular_test("test.p.xm", PROD_SCHEMA, "xm", 1_500))
+        .await;
+    assert!(sc.confirm(&rerun, test_run(0, 52)).await);
+    assert_eq!(
+        sc.verdict(singular_test("test.p.xm", DEV_SCHEMA, "xm", 2_000))
+            .await,
+        "ready_to_execute",
+        "once a prod run read the change"
+    );
+
+    let build = sc.execute_id(table_model("xr", PROD_SCHEMA)).await;
+    assert!(sc.confirm(&build, transient_at(1_000)).await);
+    let copy = sc
+        .register_clone(
+            demo::copy(&relation(PROD_SCHEMA, "xr"), &relation(DEV_SCHEMA, "xr"))
+                .source_epoch(1_500)
+                .label("dbt_node_unique_id", "model.jaffle_shop.xr"),
+        )
+        .await
+        .expect("RegisterClone")
+        .ready_to_clone
+        .expect("ready_to_clone");
+    assert!(sc.confirm(&copy.request_id, transient_at(2_000)).await);
+    sc.build_with(
+        singular_test("test.p.xr", PROD_SCHEMA, "xr", 1_000),
+        test_run(0, 53),
+    )
+    .await;
+    assert_eq!(
+        sc.verdict(singular_test("test.p.xr", DEV_SCHEMA, "xr", 2_000))
+            .await,
+        "ready_to_execute",
+        "a RegisterClone of the modified source stands for itself"
+    );
+}
+
 /// P48–P53: a dev relation this server never copied is another input, even
 /// with the prod relation's name and epoch; both histories stay reusable.
 #[tokio::test]

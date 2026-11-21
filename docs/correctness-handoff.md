@@ -59,6 +59,14 @@ Do not weaken these without new evidence.
   (reuse invariant 5's dual identity, retained; uncaptured under the key).
   Databricks, DuckDB and other Warehouses keep one latest run per unique id
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)).
+  **Accepted risk:** an External modification of a source between its build
+  and a submit-time Result copy is not visible, so a data test over the
+  copy reuses the source's run over the contents before the change. Neither
+  the submit nor the copy's confirmation reports the source's epoch at copy
+  time (the confirmation reports the clone time). This is the blind spot of
+  a FULL copy and a seed copy below, inherited. A RegisterClone records the
+  source build only when its `clone_source_last_modified_epoch` is the
+  build's.
 - **Physical completion order defines current state.** The greatest completion
   epoch wins; confirmation receipt then row id break equal-epoch ties
   (`databricks_lifecycle_ordering.jsonl`; the equal-epoch cases in
