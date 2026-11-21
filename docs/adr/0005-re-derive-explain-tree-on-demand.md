@@ -183,7 +183,8 @@ caller already holds this id). Everything else is re-derived.
 > JSON key absent on every other input). A reuse renders that input by the
 > copy's name, dated at the build it stands for, without a verdict or
 > anchor line (`data_test_history.jsonl` F36–F39, F57, F81, F83, F84); other
-> decisions over a stand-in are uncaptured. A Snowflake data test reused
+> decisions over a stand-in are uncaptured and list it by the copy's name
+> in their ordinary shape. A Snowflake data test reused
 > under `compare_unrendered_code` with the run's unrendered body records the
 > template comparison (`submit_decision::unrendered_data_test_reuse`), so
 > Explain prints hosted's unrendered-code lines also when the rendered SQL

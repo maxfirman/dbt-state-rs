@@ -1990,9 +1990,9 @@ fn upstream_dependencies_freshness(
             // the copy, dated at the build it stands for, with no verdict
             // (VERIFIED LIVE 2026-11-21, data_test_history.jsonl F36–F39,
             // F57, F81, F83, F84). Uncaptured outside a reuse.
-            if let (Some(copy), DecisionKind::Skip) = (up.read_copy.as_deref(), node.decision) {
+            if up.read_copy.is_some() && node.decision == DecisionKind::Skip {
                 return qc::ExplainLine {
-                    text: quote(copy),
+                    text: quote(upstream_name(up)),
                     marker: None,
                     badge: None,
                     children: vec![line(anchored_rel_time_line(node, up))],
@@ -2006,7 +2006,7 @@ fn upstream_dependencies_freshness(
             // reports none) has no verdict: no badge, no anchor line.
             if verdict.is_none() && !anchor_records(node, &up.name) {
                 return qc::ExplainLine {
-                    text: quote(&up.name),
+                    text: quote(upstream_name(up)),
                     marker: None,
                     badge: None,
                     children: vec![line(anchored_rel_time_line(node, up))],
@@ -2030,7 +2030,7 @@ fn upstream_dependencies_freshness(
                 _ => fresh_anchor_line(node, &anchor_name),
             };
             qc::ExplainLine {
-                text: quote(&up.name),
+                text: quote(upstream_name(up)),
                 marker: None,
                 badge,
                 children: vec![gap_or_fresh, line(anchored_rel_time_line(node, up))],
@@ -2882,7 +2882,7 @@ fn clone_upstream_dependencies(upstreams: &[&InputTable]) -> qc::ExplainLine {
 /// One upstream without a verdict: its name and `last updated` line only.
 fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
     qc::ExplainLine {
-        text: quote(&up.name),
+        text: quote(upstream_name(up)),
         marker: None,
         badge: None,
         children: vec![line(rel_time_line(up))],
@@ -2890,6 +2890,13 @@ fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
 }
 
 // ── FQN / quoting helpers (the single dialect-specific seam) ────────────────
+
+/// The name an upstream is listed by: a data test's input read through a
+/// copy is listed as the copy the submit reported (#200), every other input
+/// by its name.
+fn upstream_name(up: &InputTable) -> &str {
+    up.read_copy.as_deref().unwrap_or(&up.name)
+}
 
 /// The node's own fully-qualified target, as stored (already quoted by client).
 fn fqn(node: &ExplainNode) -> String {
@@ -3296,6 +3303,51 @@ mod tests {
         );
         assert_eq!(got[4], (1, "upstream dependencies".to_string(), None, None));
         assert_eq!(got[5], (2, "«FQN»".to_string(), None, Some(1)));
+    }
+
+    /// #200 (VERIFIED LIVE 2026-11-21, data_test_history.jsonl F36): a data
+    /// test's reuse through a copy lists the copy, dated at the build it
+    /// stands for, without a verdict, then `upstream data is up to date`
+    /// when that build's epoch is the recorded one. Its EXECUTE listing
+    /// (uncaptured) names the copy too.
+    #[test]
+    fn a_data_test_input_read_through_a_copy_is_listed_as_the_copy() {
+        const SOURCE: &str = "\"DB\".\"PROD\".\"UP\"";
+        const COPY: &str = "\"DB\".\"DEV\".\"UP\"";
+        let read = InputTable {
+            read_copy: Some(COPY.into()),
+            ..tbl(SOURCE)
+        };
+        let mut n = node(
+            DecisionKind::Skip,
+            ModelExecutionType::DbtDataTest as i32,
+            "data test was a no-op because both its query and its upstream data are up to date",
+        );
+        n.target_table = None;
+        n.input_tables = vec![read];
+        n.anchor = Some(ExecutionRow {
+            id: 7,
+            execution_type: ModelExecutionType::DbtDataTest as i32,
+            input_tables: vec![tbl(SOURCE)],
+            status: "confirmed".into(),
+            ..ExecutionRow::default()
+        });
+        let lines = explain_lines(&n);
+        let freshness = &lines[1];
+        let upstream = &freshness.children[0].children[0];
+        assert_eq!(
+            (upstream.text.as_str(), upstream.badge),
+            (COPY, None),
+            "the copy, without a verdict"
+        );
+        assert_eq!(upstream.children.len(), 1);
+        assert!(upstream.children[0].text.starts_with("last updated"));
+        assert_eq!(freshness.children[1].text, "upstream data is up to date");
+
+        n.decision = DecisionKind::Build;
+        n.reason = Some(DecisionReason::UpstreamOutdated);
+        let lines = explain_lines(&n);
+        assert_eq!(lines[0].children[0].children[0].text, COPY);
     }
 
     #[test]
