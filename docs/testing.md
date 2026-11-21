@@ -21,6 +21,7 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings
 python3 experiments/trace_validate_test.py               # warehouse-free experiment-oracle tests
 python3 experiments/explain_census_test.py               # warehouse-free Explain census tests
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
+python3 experiments/data_test_history_test.py            # #200 echo attribution and crafted probe plans
 python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
 python3 experiments/databricks_isolation_test.py         # offline concurrent campaign ownership/physical-peer gates
 python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates

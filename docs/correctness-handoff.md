@@ -149,6 +149,15 @@ server keeps the conservative behavior described.
   decides only the captured case, through the ordinary submit's code, and
   answers `undecided` otherwise, after which the client sends the ordinary
   submit (`crates/harness/tests/speculative_submit.rs`).
+- **Data-test history key, remaining cells (#200).** The capture leaves
+  open whether hosted's data-test key holds the upstream epochs themselves
+  or picks the latest run and then judges freshness (they differ only under
+  Lag tolerance); whether copy provenance or the same producer node at the
+  same build resolves a dev relation to the prod one; whether `fail_calc`,
+  `warn_if`, `error_if`, `store_failures` and query dependencies are in the
+  key; and the 2.0.6 shape with its dev runs captured (a dev upstream built,
+  not copied, with a newer prod run). Databricks and DuckDB are not
+  captured. Until a decision the server keeps its scoped unique-id floor.
 - **Resolution context of dependencies.** Whether hosted keys dependency
   equivalence on anything beyond the definition body and freshness. A
   context-only change could not be isolated from upstream freshness through the
@@ -557,6 +566,20 @@ replay fails when an entry becomes unused or resolved
   decision 2 on #201 the server keeps its scoped data-test UID floor (reuse
   invariant 5) and echoes `cto`'s runtime; only that field is keyed. Any
   change to data-test reuse identity goes through #200.
+- **Data-test history key (#200, captured 2026-11-21, not adopted).**
+  `data_test_history.jsonl` and `data_test_history_probes.jsonl`
+  ([note](reports/snowflake-data-test-history-2026-11-21.md)): hosted reuses
+  the latest confirmed run of the same normalized SQL and inputs in the
+  namespace, across unique ids, `project_id`, `target_name` and
+  `default_schema`, and across Targets when the dev upstream is a hosted copy
+  of the prod upstream; `table_namespace`, `severity` and the input relations
+  separate histories, and an older run in another key stays reusable. The
+  server keeps one latest row per unique id with its rendered identity, so it
+  rebuilds where hosted reuses (whole-response gaps), and echoes its own
+  unique id's run where hosted echoes another's (probes entries 66 and 74:
+  `execution_runtime_ms` and `execution_results`). It never SKIPs where hosted
+  rebuilds in these captures. The key is a maintainer decision under reuse
+  invariant 1.
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
   and as view DDL in another rebuilds locally where hosted reused.
 - **Safety floor.** The externally modified seed table is reloaded
