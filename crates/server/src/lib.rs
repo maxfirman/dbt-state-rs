@@ -9,6 +9,7 @@ mod databricks_submit_copy;
 pub mod decision;
 mod execution;
 pub mod explain;
+pub mod grpc_auth;
 mod request_scope;
 mod result_copy;
 mod reuse_candidate;
@@ -41,6 +42,9 @@ pub struct AppState {
     pub require_org_header: bool,
     /// The clock decisions measure build age against (ADR 0007).
     pub clock: Clock,
+    /// `oidc` mode: authenticates every call but health. `None` is `none`
+    /// mode. See `grpc_auth`.
+    pub(crate) authenticator: Option<Arc<dbt_state_auth::RequestAuthenticator>>,
 }
 
 /// The server clock. Lag tolerance compares a reuse candidate's build age on
@@ -98,6 +102,7 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            authenticator: None,
         })
     }
 
@@ -115,7 +120,16 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            authenticator: None,
         }
+    }
+
+    /// `oidc` mode: every call except `grpc.health.v1` needs a token
+    /// `authenticator` accepts for the Organization it names, and handlers
+    /// take the Organization from the authenticated context.
+    pub fn with_oidc(mut self, authenticator: dbt_state_auth::RequestAuthenticator) -> Self {
+        self.authenticator = Some(Arc::new(authenticator));
+        self
     }
 
     /// Use `clock` for build ages and confirmation receipt times.
@@ -131,9 +145,16 @@ impl AppState {
     }
 }
 
-/// Build the tonic router with all services registered against `state`.
-/// Shared by the binary and by in-process differential tests.
-pub fn build_router(state: AppState) -> tonic::transport::server::Router {
+/// The router [`build_router`] returns: every service behind the
+/// authentication layer.
+pub type GrpcRouter = tonic::transport::server::Router<
+    tower::layer::util::Stack<grpc_auth::GrpcAuthLayer, tower::layer::util::Identity>,
+>;
+
+/// Build the tonic router with all services registered against `state`,
+/// behind the authentication layer (`grpc_auth`). Shared by the binary and by
+/// in-process differential tests.
+pub fn build_router(state: AppState) -> GrpcRouter {
     use crate::query_cache::client_telemetry_server::ClientTelemetryServer;
     use crate::query_cache::client_validation_server::ClientValidationServer;
     use crate::query_cache::clone_server::CloneServer;
@@ -147,6 +168,7 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
     };
 
     tonic::transport::Server::builder()
+        .layer(grpc_auth::GrpcAuthLayer::new(state.authenticator.clone()))
         .add_service(health_service())
         .add_service(SqlServer::new(SqlService(state.clone())))
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))

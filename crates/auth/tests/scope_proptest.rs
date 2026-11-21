@@ -30,17 +30,21 @@ fn role() -> impl Strategy<Value = Role> {
     prop_oneof![Just(Role::Developer), Just(Role::Admin)]
 }
 
+/// Grants of a Role in an Organization.
+type Grants = Vec<(OrganizationId, Role)>;
+/// Declared Organizations as `(id, disabled)`.
+type Declared = Vec<(OrganizationId, bool)>;
+
 /// Declared Organizations, some disabled, and grants that name declared,
 /// repeated and undeclared Organizations.
-fn grants_and_organizations(
-) -> impl Strategy<Value = (Vec<(OrganizationId, Role)>, Vec<(OrganizationId, bool)>)> {
+fn grants_and_organizations() -> impl Strategy<Value = (Grants, Declared)> {
     let declared = prop::collection::btree_map(organization_id(), any::<bool>(), 0..6);
     (
         declared,
         prop::collection::vec((organization_id(), role()), 0..4),
     )
         .prop_flat_map(|(declared, undeclared)| {
-            let declared: Vec<(OrganizationId, bool)> = declared.into_iter().collect();
+            let declared: Declared = declared.into_iter().collect();
             let ids: Vec<OrganizationId> = declared.iter().map(|(id, _)| id.clone()).collect();
             let picked = if ids.is_empty() {
                 Just(Vec::new()).boxed()
