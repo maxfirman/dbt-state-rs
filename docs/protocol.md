@@ -31,6 +31,9 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
     non-empty value (`UNAUTHENTICATED`). This checks presence only; it does not
     authenticate the organization.
   - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
+  - Each call reads them once, into its request scope
+    (`crates/server/src/request_scope.rs`). The handler and the decision
+    capture both take the Organization from that scope.
 - `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
   under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
   that build age is measured against. Never enable that clock in a deployment.
