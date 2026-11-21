@@ -977,18 +977,12 @@ async fn seed_copy_fallback(
     // Snowflake tracks no copy depth: the source counts as a build, as for a
     // FULL copy.
     let source_table = candidate.target_table.clone();
-    let source_id = candidate.id;
     match result_copy::plan_seed_submit(req, CloneEquivalent::new(candidate, 0)) {
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
             // Keyed on the submit target with the seed's own identity, so a
             // later submit reuses the copy once confirmed.
-            write_pending(
-                store,
-                &evidence.copied_from(&copy.source_table, Some(source_id)),
-                &ids,
-            )
-            .await?;
+            write_pending(store, &evidence.copied_from(&copy), &ids).await?;
             let over = match target {
                 SeedCopyTarget::Absent => None,
                 SeedCopyTarget::Over(row) => Some(row),
@@ -1204,7 +1198,6 @@ async fn result_copy_fallback(
     let mut search = copy_search::CopySearch::new(own);
     let mut chosen = None;
     for candidate in copy_candidates(store, org_id, req, &lookup).await? {
-        let source_id = candidate.id;
         let Some(equivalent) = eligible_equivalent(store, org_id, req, &lookup, candidate).await?
         else {
             continue;
@@ -1219,14 +1212,14 @@ async fn result_copy_fallback(
             .await?;
         match search.offer(evidence, freshness, source) {
             copy_search::Offer::Choose(judged) => {
-                chosen = Some((equivalent, judged, source_id));
+                chosen = Some((equivalent, judged));
                 break;
             }
             copy_search::Offer::Next => continue,
             copy_search::Offer::Stop => break,
         }
     }
-    let Some((equivalent, judged, source_id)) = chosen else {
+    let Some((equivalent, judged)) = chosen else {
         return Ok(CopyFallback::Ordinary);
     };
     let source_table = equivalent.source_table.clone();
@@ -1254,12 +1247,7 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
-            write_pending(
-                store,
-                &evidence.copied_from(&copy.source_table, Some(source_id)),
-                &ids,
-            )
-            .await?;
+            write_pending(store, &evidence.copied_from(&copy), &ids).await?;
             let record = match judged {
                 Some((reuse, build_age_ms)) => DecisionRecord::result_copy_judged(
                     anchor,
@@ -1334,6 +1322,7 @@ async fn databricks_result_copy(
         };
         let equivalent = CloneEquivalent {
             source_table: source.target_table.clone(),
+            source_execution_id: source.id,
             execution_type: source.execution_type,
             table_type: None,
             last_modified_epoch: source.last_modified_epoch,

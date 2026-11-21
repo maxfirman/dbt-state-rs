@@ -320,19 +320,20 @@ impl ExecutionEvidence {
         evidence
     }
 
-    /// The same evidence for a Result copy of `source_table` into this target,
-    /// made from its confirmed build `source_execution_id` when known (#200).
-    pub(crate) fn copied_from(&self, source_table: &str, source_execution_id: Option<i64>) -> Self {
+    /// The same evidence for `copy`, a Result copy into this target, made
+    /// from its source's confirmed build (#200).
+    pub(crate) fn copied_from(&self, copy: &crate::result_copy::ResultCopy) -> Self {
         let mut evidence = self.clone();
-        evidence.clone_source_table = Some(source_table.to_owned());
-        evidence.clone_source_execution_id = source_execution_id;
+        evidence.clone_source_table = Some(copy.source_table.clone());
+        evidence.clone_source_execution_id = Some(copy.source_execution_id);
         evidence
     }
 
     pub(crate) fn submit_copied_from(&self, source: &ExecutionRow) -> Self {
         let snapshot = SourceSnapshot::new(source, &source.dialect, &source.target_table);
         let provenance = snapshot.submit_provenance();
-        let mut evidence = self.copied_from(&source.target_table, None);
+        let mut evidence = self.clone();
+        evidence.clone_source_table = Some(source.target_table.clone());
         evidence.input_tables = snapshot.inputs;
         evidence.raw_input_tables = None;
         evidence.submit_copy_provenance = Some(provenance);
