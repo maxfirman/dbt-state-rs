@@ -1,0 +1,1123 @@
+{
+  "case": "A",
+  "prefix": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+  "schemas": {
+    "prod": "ds_20261112c134ef_prod",
+    "dev": "ds_20261112c134ef_dev"
+  },
+  "client": "2.0.11",
+  "client_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31",
+  "steps": {
+    "prod_upstream": {
+      "rpc_counts": {
+        "ValidateClientVersion": 1,
+        "SubmitTelemetryBatch": 3,
+        "SubmitEnrichedSQL": 1,
+        "ConfirmExecution": 1
+      },
+      "rpcs": [
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQL",
+          "recorded_at": "2026-11-21T23:38:25.640206320+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_raw`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_raw`",
+                "last_modified_epoch": 1795304299000
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "file_format": "\"delta\"",
+              "lookback": "1",
+              "on_schema_change": "\"ignore\""
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream",
+              "dbt_node_name": "upstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 0,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream",
+              "target_name": "prod",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "a15d1e5f75b0277a5b76dfcec2b662a6",
+              "node_body_hash": "6c6fb93c8a300857c51a4a022b30af67",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_prod",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": false,
+            "is_defer_to_profile": true,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "ready_to_execute": {
+                "request_id": "01a20079-b3aa-749d-8620-8adbf061d093",
+                "last_modified_query": "",
+                "explained_decision": {
+                  "decision": 1,
+                  "skip_rejection_reason": 6,
+                  "clone_rejection_reason": 6,
+                  "is_stale": false,
+                  "decision_description": "model was executed because its table did not exist"
+                },
+                "transformed_nodes_by_query": {},
+                "query_hash_metadata_info": null,
+                "execution_decision_id": "01a20079-b3a0-7d75-995f-25a38ea2d86a"
+              }
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "104"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "Execution",
+          "method": "ConfirmExecution",
+          "recorded_at": "2026-11-21T23:38:29.999109879+00:00",
+          "request": {
+            "request_id": "01a20079-b3aa-749d-8620-8adbf061d093",
+            "last_modified_epoch": 1795304309000,
+            "failed_to_clone": false,
+            "table_type": null,
+            "execution_results": null,
+            "execution_runtime_ms": 7405,
+            "labels": {
+              "dbt_node_name": "upstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream",
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream"
+            }
+          },
+          "response": {
+            "success": true,
+            "request_id": "01a20079-b3aa-749d-8620-8adbf061d093"
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "29"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        }
+      ],
+      "relation": "cdo_demo_db.ds_20261112c134ef_prod.p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream",
+      "model_state": {
+        "lag_tolerance": {
+          "count": 0,
+          "period": "minute",
+          "updates_on": null
+        },
+        "pre_clone": "never"
+      },
+      "physical": {
+        "columns": [
+          {
+            "name": "marker",
+            "type_text": "STRING",
+            "type_name": "STRING",
+            "position": 0
+          }
+        ],
+        "rows": [
+          [
+            "A_prod"
+          ]
+        ]
+      },
+      "delta": {
+        "version": "0",
+        "timestamp": "2026-11-21T23:38:29.000Z",
+        "operation": "CREATE OR REPLACE TABLE AS SELECT"
+      }
+    },
+    "prod_downstream": {
+      "rpc_counts": {
+        "ValidateClientVersion": 1,
+        "SubmitTelemetryBatch": 3,
+        "SubmitEnrichedSQL": 1,
+        "ConfirmExecution": 1
+      },
+      "rpcs": [
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQL",
+          "recorded_at": "2026-11-21T23:38:37.606441579+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+                "last_modified_epoch": 1795304309000
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "lookback": "1",
+              "file_format": "\"delta\"",
+              "on_schema_change": "\"ignore\""
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 0,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "target_name": "prod",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "85ebbeb32a84e9c040351eeb4aec559c",
+              "node_body_hash": "f830d654fa34fe4be0aca2712d19640e",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_prod",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": false,
+            "is_defer_to_profile": true,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "ready_to_execute": {
+                "request_id": "01a20079-e269-7189-a5b1-b745da85b87c",
+                "last_modified_query": "",
+                "explained_decision": {
+                  "decision": 1,
+                  "skip_rejection_reason": 6,
+                  "clone_rejection_reason": 6,
+                  "is_stale": false,
+                  "decision_description": "model was executed because its table did not exist"
+                },
+                "transformed_nodes_by_query": {},
+                "query_hash_metadata_info": null,
+                "execution_decision_id": "01a20079-e262-7b5a-9e34-3493c0821168"
+              }
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "103"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "Execution",
+          "method": "ConfirmExecution",
+          "recorded_at": "2026-11-21T23:38:41.158165843+00:00",
+          "request": {
+            "request_id": "01a20079-e269-7189-a5b1-b745da85b87c",
+            "last_modified_epoch": 1795304321000,
+            "failed_to_clone": false,
+            "table_type": null,
+            "execution_results": null,
+            "execution_runtime_ms": 5585,
+            "labels": {
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream"
+            }
+          },
+          "response": {
+            "success": true,
+            "request_id": "01a20079-e269-7189-a5b1-b745da85b87c"
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "45"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        }
+      ],
+      "relation": "cdo_demo_db.ds_20261112c134ef_prod.p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream",
+      "model_state": {
+        "lag_tolerance": {
+          "count": 0,
+          "period": "minute",
+          "updates_on": null
+        },
+        "pre_clone": "never"
+      },
+      "physical": {
+        "columns": [
+          {
+            "name": "marker",
+            "type_text": "STRING",
+            "type_name": "STRING",
+            "position": 0
+          }
+        ],
+        "rows": [
+          [
+            "A_prod"
+          ]
+        ]
+      },
+      "delta": {
+        "version": "0",
+        "timestamp": "2026-11-21T23:38:41.000Z",
+        "operation": "CREATE OR REPLACE TABLE AS SELECT"
+      }
+    },
+    "dev_downstream": {
+      "rpc_counts": {
+        "ValidateClientVersion": 1,
+        "ResolveDeferredRelations": 1,
+        "SubmitTelemetryBatch": 3,
+        "SubmitEnrichedSQLSpeculative": 1,
+        "SubmitEnrichedSQL": 1,
+        "ConfirmExecution": 1
+      },
+      "rpcs": [
+        {
+          "service": "Execution",
+          "method": "ResolveDeferredRelations",
+          "recorded_at": "2026-11-21T23:38:44.852790697+00:00",
+          "request": {
+            "profile_name": "survey",
+            "target_name": "prod",
+            "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+            "project_id": null,
+            "node_unique_ids": [
+              "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream"
+            ]
+          },
+          "response": {
+            "fqn_by_unique_id": {
+              "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`"
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "17"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQLSpeculative",
+          "recorded_at": "2026-11-21T23:38:48.436703553+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+                "last_modified_epoch": null
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "file_format": "\"delta\"",
+              "lookback": "1",
+              "on_schema_change": "\"ignore\""
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_name": "downstream",
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 1,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "target_name": "dev",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "85ebbeb32a84e9c040351eeb4aec559c",
+              "node_body_hash": "f830d654fa34fe4be0aca2712d19640e",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_dev",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": true,
+            "is_defer_to_profile": false,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "undecided": {}
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "69"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQL",
+          "recorded_at": "2026-11-21T23:38:48.937434506+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+                "last_modified_epoch": 1795304309000
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "lookback": "1",
+              "on_schema_change": "\"ignore\"",
+              "file_format": "\"delta\""
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 1,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "target_name": "dev",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "85ebbeb32a84e9c040351eeb4aec559c",
+              "node_body_hash": "f830d654fa34fe4be0aca2712d19640e",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_dev",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": true,
+            "is_defer_to_profile": false,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "ready_to_clone": {
+                "request_id": "01a2007a-0ea9-7840-be7f-ffb5b3bbb2f0",
+                "last_modified_query": "",
+                "clone_sqls": [
+                  "\n        CREATE OR REPLACE TABLE `cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream` SHALLOW CLONE `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`\n        "
+                ],
+                "clone_source": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+                "clone_target": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+                "explained_decision": {
+                  "decision": 3,
+                  "skip_rejection_reason": 1,
+                  "clone_rejection_reason": null,
+                  "is_stale": false,
+                  "decision_description": "an equivalent model exists under another name so we cloned that one"
+                },
+                "transformed_nodes_by_query": {},
+                "clone_required_last_modified_epoch": 1795304321000,
+                "clone_execution_results": {
+                  "fields": {}
+                },
+                "execution_runtime_ms": 5585,
+                "execution_decision_id": "01a2007a-0e9d-7305-ba0c-7c2fb0763c15"
+              }
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "114"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "Execution",
+          "method": "ConfirmExecution",
+          "recorded_at": "2026-11-21T23:38:55.316723628+00:00",
+          "request": {
+            "request_id": "01a2007a-0ea9-7840-be7f-ffb5b3bbb2f0",
+            "last_modified_epoch": 1795304332000,
+            "failed_to_clone": false,
+            "table_type": null,
+            "execution_results": {
+              "fields": {}
+            },
+            "execution_runtime_ms": 5585,
+            "labels": {
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream"
+            }
+          },
+          "response": {
+            "success": true,
+            "request_id": "01a2007a-277c-775b-95a1-8e534aafb758"
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "69"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        }
+      ],
+      "relation": "cdo_demo_db.ds_20261112c134ef_dev.p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream",
+      "model_state": {
+        "lag_tolerance": {
+          "count": 0,
+          "period": "minute",
+          "updates_on": null
+        },
+        "pre_clone": "never"
+      },
+      "physical": {
+        "columns": [
+          {
+            "name": "marker",
+            "type_text": "STRING",
+            "type_name": "STRING",
+            "position": 0
+          }
+        ],
+        "rows": [
+          [
+            "A_prod"
+          ]
+        ]
+      },
+      "delta": {
+        "version": "0",
+        "timestamp": "2026-11-21T23:38:52.000Z",
+        "operation": "CLONE"
+      }
+    },
+    "dev_downstream_repeat": {
+      "rpc_counts": {
+        "ValidateClientVersion": 1,
+        "ResolveDeferredRelations": 1,
+        "SubmitTelemetryBatch": 2,
+        "SubmitEnrichedSQLSpeculative": 1,
+        "SubmitEnrichedSQL": 1
+      },
+      "rpcs": [
+        {
+          "service": "Execution",
+          "method": "ResolveDeferredRelations",
+          "recorded_at": "2026-11-21T23:40:26.567684870+00:00",
+          "request": {
+            "profile_name": "survey",
+            "target_name": "prod",
+            "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+            "project_id": null,
+            "node_unique_ids": [
+              "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream"
+            ]
+          },
+          "response": {
+            "fqn_by_unique_id": {
+              "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.upstream": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`"
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "10"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQLSpeculative",
+          "recorded_at": "2026-11-21T23:40:29.098530004+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+                "last_modified_epoch": null
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "lookback": "1",
+              "on_schema_change": "\"ignore\"",
+              "file_format": "\"delta\""
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 1,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "target_name": "dev",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "85ebbeb32a84e9c040351eeb4aec559c",
+              "node_body_hash": "f830d654fa34fe4be0aca2712d19640e",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_dev",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": true,
+            "is_defer_to_profile": false,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "undecided": {}
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "63"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        },
+        {
+          "service": "SQL",
+          "method": "SubmitEnrichedSQL",
+          "recorded_at": "2026-11-21T23:40:29.610365558+00:00",
+          "request": {
+            "target_table": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+            "dialect": "databricks",
+            "default_catalog": "cdo_demo_db",
+            "execution_type": 1,
+            "sql": "\nselect * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+            "tables": [
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_dev`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream`",
+                "last_modified_epoch": 1795304332000
+              },
+              {
+                "name": "`cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`",
+                "last_modified_epoch": 1795304309000
+              }
+            ],
+            "query_dependencies": [],
+            "semantic_extras": {
+              "file_format": "\"delta\"",
+              "on_schema_change": "\"ignore\"",
+              "lookback": "1"
+            },
+            "freshness_tolerance_seconds": 0,
+            "lenient_dependencies": [],
+            "tolerate_nondeterminism": true,
+            "labels": {
+              "dbt_node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "dbt_node_name": "downstream",
+              "dbt_node_fqn": "p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream"
+            },
+            "clone_time_travel_limit": null,
+            "clone_table_properties": null,
+            "stale_upstream_policy": 0,
+            "clone_chain_depth_limit": 1,
+            "dbt_node_state": {
+              "node_unique_id": "model.p238_a_767f693faded47eaa8f2afa162e1d8fa.downstream",
+              "target_name": "dev",
+              "project_name": "p238_a_767f693faded47eaa8f2afa162e1d8fa",
+              "resource_type": "model",
+              "node_hash": "85ebbeb32a84e9c040351eeb4aec559c",
+              "node_body_hash": "f830d654fa34fe4be0aca2712d19640e",
+              "node_configs_hash": "0f054286cdf8646c0efdca06fbaef814",
+              "node_persisted_descriptions_hash": null,
+              "node_macros_hash": null,
+              "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+              "profile_name": "survey",
+              "project_id": null,
+              "node_database_representation": null
+            },
+            "default_schema": "ds_20261112c134ef_dev",
+            "compare_unrendered_code": false,
+            "table_namespace": "f72415cee49eac9b2b28d9ad8e588507",
+            "ignore_external_modifications": false,
+            "allow_clones": true,
+            "is_defer_to_profile": false,
+            "defer_enabled": true
+          },
+          "response": {
+            "response": {
+              "skip_execution": {
+                "explained_decision": {
+                  "decision": 0,
+                  "skip_rejection_reason": null,
+                  "clone_rejection_reason": null,
+                  "is_stale": false,
+                  "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+                },
+                "transformed_nodes_by_query": {},
+                "execution_results": {
+                  "fields": {}
+                },
+                "execution_runtime_ms": 5585,
+                "execution_decision_id": "01a2007b-97f7-7e86-a39c-d5d648cd3980"
+              }
+            }
+          },
+          "status": {
+            "code": 0,
+            "message": "",
+            "details": [],
+            "metadata": {
+              "ascii": [],
+              "binary": []
+            }
+          },
+          "response_metadata": {
+            "ascii": [
+              [
+                "server",
+                "istio-envoy"
+              ],
+              [
+                "strict-transport-security",
+                "max-age=31536000; includeSubDomains"
+              ],
+              [
+                "x-content-type-options",
+                "nosniff"
+              ],
+              [
+                "x-envoy-upstream-service-time",
+                "94"
+              ],
+              [
+                "x-frame-options",
+                "SAMEORIGIN"
+              ]
+            ],
+            "binary": []
+          }
+        }
+      ],
+      "relation": "cdo_demo_db.ds_20261112c134ef_dev.p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream",
+      "model_state": {
+        "lag_tolerance": {
+          "count": 0,
+          "period": "minute",
+          "updates_on": null
+        },
+        "pre_clone": "never"
+      },
+      "physical": {
+        "columns": [
+          {
+            "name": "marker",
+            "type_text": "STRING",
+            "type_name": "STRING",
+            "position": 0
+          }
+        ],
+        "rows": [
+          [
+            "A_prod"
+          ]
+        ]
+      },
+      "delta": {
+        "version": "0",
+        "timestamp": "2026-11-21T23:38:52.000Z",
+        "operation": "CLONE"
+      }
+    }
+  },
+  "initial_inventory": {
+    "prod": {
+      "sql": "SELECT table_name FROM cdo_demo_db.information_schema.tables WHERE table_schema='ds_20261112c134ef_prod' AND table_name IN ('p238_a_767f693faded47eaa8f2afa162e1d8fa_raw','p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream','p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream')",
+      "rows": []
+    },
+    "dev": {
+      "sql": "SELECT table_name FROM cdo_demo_db.information_schema.tables WHERE table_schema='ds_20261112c134ef_dev' AND table_name IN ('p238_a_767f693faded47eaa8f2afa162e1d8fa_raw','p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream','p238_a_767f693faded47eaa8f2afa162e1d8fa_downstream')",
+      "rows": []
+    }
+  },
+  "raw_setup": {
+    "prod": "CREATE TABLE cdo_demo_db.ds_20261112c134ef_prod.p238_a_767f693faded47eaa8f2afa162e1d8fa_raw USING DELTA AS SELECT 'A_prod' AS marker"
+  },
+  "reference": {
+    "command": "dbt show --select downstream --output json --limit -1 --quiet --target dev --no-manage-state",
+    "rpc_count": 0,
+    "rows": [
+      {
+        "marker": "A_prod"
+      }
+    ],
+    "sql": "select * from `cdo_demo_db`.`ds_20261112c134ef_prod`.`p238_a_767f693faded47eaa8f2afa162e1d8fa_upstream`\n  \n;"
+  },
+  "certified_rpcs": 26,
+  "matches_reference": {
+    "dev_downstream": true,
+    "dev_downstream_repeat": true
+  }
+}
