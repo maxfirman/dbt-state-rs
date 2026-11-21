@@ -21,6 +21,8 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
   - `volatile_evaluation.rs`: pure Volatile evaluation (`transformed_nodes_by_query`).
   - `warehouse.rs` + `warehouse/`: dialect policy and the Warehouse rules.
   - `store.rs` + `store/history.rs`: Postgres writes and scoped State history reads.
+  - `request_scope.rs`: the one request scope (Organization, invocation and
+    session ids) each gRPC handler and decision capture takes.
   - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.
 - `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
   and fuzz tools, integration tests.

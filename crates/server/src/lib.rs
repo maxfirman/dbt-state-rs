@@ -9,6 +9,7 @@ mod databricks_submit_copy;
 pub mod decision;
 mod execution;
 pub mod explain;
+mod request_scope;
 mod result_copy;
 mod reuse_candidate;
 pub mod selector;

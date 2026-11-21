@@ -10,6 +10,7 @@ use crate::decision::{
 use crate::execution::RecordError;
 use crate::query_cache as qc;
 use crate::query_cache::ModelExecutionType;
+use crate::request_scope::RequestScope;
 use crate::store::Confirmation;
 use crate::submit_decision::SubmitOutcome;
 use crate::AppState;
@@ -175,62 +176,6 @@ fn store_status(e: sqlx::Error) -> Status {
     Status::internal("internal store error")
 }
 
-/// Extract the org id from the `x-organization-id` metadata header. Defaults to
-/// a sentinel when absent (e.g. insecure local runs that omit it).
-fn org_id_of<T>(req: &Request<T>) -> String {
-    req.metadata()
-        .get("x-organization-id")
-        .and_then(|v| v.to_str().ok())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("local")
-        .to_string()
-}
-
-/// Resolve the organization id, enforcing presence when the deployment requires
-/// it (`AppState::require_org_header`). Returns the scoped org on success, or
-/// `UNAUTHENTICATED` when the header is required but absent/empty. This enforces
-/// org SCOPING presence — it is NOT identity authentication (verifying the org
-/// against a trusted token is deployment work). Local/insecure runs leave the
-/// flag off and fall back to the `local` tenant as before.
-fn org_id_checked<T>(state: &AppState, req: &Request<T>) -> Result<String, Status> {
-    let present = req
-        .metadata()
-        .get("x-organization-id")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    if state.require_org_header && !present {
-        return Err(Status::unauthenticated(
-            "missing required x-organization-id metadata header",
-        ));
-    }
-    Ok(org_id_of(req))
-}
-
-/// Read a string metadata header, if present and valid UTF-8.
-fn meta_str<T>(req: &Request<T>, key: &str) -> Option<String> {
-    req.metadata()
-        .get(key)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-}
-
-/// Grouping metadata captured per request for the UI domain model.
-#[derive(Clone, Default)]
-struct CaptureMeta {
-    org_id: String,
-    invocation_id: Option<String>,
-    session_id: Option<String>,
-}
-
-fn capture_meta_of<T>(req: &Request<T>) -> CaptureMeta {
-    CaptureMeta {
-        org_id: org_id_of(req),
-        invocation_id: meta_str(req, "x-dbt-invocation-id"),
-        session_id: meta_str(req, "x-session-id"),
-    }
-}
-
 /// Spawn a best-effort, non-blocking capture of a decision. Never blocks or
 /// fails the gRPC response.
 fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
@@ -243,7 +188,7 @@ fn spawn_capture(state: &AppState, input: crate::capture::CaptureInput) {
 /// and its decision record, never re-decoded from the wire response. Fields
 /// only some submissions carry start empty for the caller to fill.
 fn submit_capture(
-    meta: &CaptureMeta,
+    scope: &RequestScope,
     outcome: &SubmitOutcome,
     node_state: Option<&qc::DbtNodeState>,
     labels: &std::collections::HashMap<String, String>,
@@ -253,9 +198,9 @@ fn submit_capture(
 ) -> crate::capture::CaptureInput {
     let record = outcome.record();
     crate::capture::CaptureInput {
-        org_id: meta.org_id.clone(),
-        external_invocation_id: meta.invocation_id.clone(),
-        session_id: meta.session_id.clone(),
+        org_id: scope.organization().to_owned(),
+        external_invocation_id: scope.invocation_id().map(str::to_owned),
+        session_id: scope.session_id().map(str::to_owned),
         project_external_id: node_state.and_then(|s| s.project_id.clone()),
         project_name: node_state.map(|s| s.project_name.clone()),
         environment_name: node_state.map(|s| s.target_name.clone()),
@@ -326,7 +271,7 @@ fn submit_capture(
 /// evidence is the decision's own ([`crate::submit_decision::ExplainEvidence`]).
 fn capture_submit(
     state: &AppState,
-    meta: &CaptureMeta,
+    scope: &RequestScope,
     req: &qc::SubmitEnrichedSqlRequest,
     decided: &crate::submit_decision::ExplainedOutcome,
 ) {
@@ -345,7 +290,7 @@ fn capture_submit(
             decided.rendered.as_ref(),
         ),
         ..submit_capture(
-            meta,
+            scope,
             &decided.outcome,
             req.dbt_node_state.as_ref(),
             &req.labels,
@@ -360,8 +305,7 @@ fn capture_submit(
 /// Build + spawn capture for a registered RegisterClone copy.
 fn capture_register(
     state: &AppState,
-    meta: &CaptureMeta,
-    org_id: &str,
+    scope: &RequestScope,
     req: &qc::CloneRequest,
     ids: &crate::submit_decision::DecisionIds,
     clone_sqls: &[String],
@@ -370,9 +314,9 @@ fn capture_register(
     spawn_capture(
         state,
         CaptureInput {
-            org_id: org_id.to_owned(),
-            external_invocation_id: meta.invocation_id.clone(),
-            session_id: meta.session_id.clone(),
+            org_id: scope.organization().to_owned(),
+            external_invocation_id: scope.invocation_id().map(str::to_owned),
+            session_id: scope.session_id().map(str::to_owned),
             project_external_id: None,
             project_name: None,
             environment_name: None,
@@ -421,7 +365,7 @@ fn capture_register(
 /// Build + spawn capture for a SubmitValues (seed) decision.
 fn capture_submit_values(
     state: &AppState,
-    meta: &CaptureMeta,
+    scope: &RequestScope,
     req: &qc::SubmitValuesRequest,
     outcome: &SubmitOutcome,
 ) {
@@ -430,7 +374,7 @@ fn capture_submit_values(
         table_namespace: req.table_namespace.clone(),
         target_table: Some(req.target_table.clone()),
         ..submit_capture(
-            meta,
+            scope,
             outcome,
             req.dbt_node_state.as_ref(),
             &req.labels,
@@ -454,8 +398,7 @@ impl Sql for SqlService {
         &self,
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
-        let cap_meta = capture_meta_of(&request);
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let sources = crate::volatile_evaluation::Sources::system(
             self.0.clock.now_micros(request.metadata()),
         );
@@ -488,14 +431,14 @@ impl Sql for SqlService {
 
         let decided = crate::submit_decision::submit_sql_explained(
             &self.0.store,
-            &org_id,
+            scope.organization(),
             &raw_req,
             &sources,
         )
         .await
         .map_err(store_status)?;
         // Best-effort capture for the UI domain model (non-blocking).
-        capture_submit(&self.0, &cap_meta, &req, &decided);
+        capture_submit(&self.0, &scope, &req, &decided);
         let mut response = submit_response(
             decided.outcome,
             raw_req.target_table.as_deref().unwrap_or_default(),
@@ -521,15 +464,19 @@ impl Sql for SqlService {
         &self,
         request: Request<qc::SubmitValuesRequest>,
     ) -> Result<Response<qc::SubmitSqlResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
-        let cap_meta = capture_meta_of(&request);
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
 
-        let outcome = crate::submit_decision::submit_values(&self.0.store, &org_id, &req, now_ms)
-            .await
-            .map_err(store_status)?;
-        capture_submit_values(&self.0, &cap_meta, &req, &outcome);
+        let outcome = crate::submit_decision::submit_values(
+            &self.0.store,
+            scope.organization(),
+            &req,
+            now_ms,
+        )
+        .await
+        .map_err(store_status)?;
+        capture_submit_values(&self.0, &scope, &req, &outcome);
         Ok(Response::new(submit_response(outcome, &req.target_table)))
     }
 
@@ -538,8 +485,7 @@ impl Sql for SqlService {
         request: Request<qc::SubmitEnrichedSqlRequest>,
     ) -> Result<Response<qc::SubmitSqlSpeculativeResponse>, Status> {
         use qc::submit_sql_speculative_response::Response as Speculative;
-        let org_id = org_id_checked(&self.0, &request)?;
-        let cap_meta = capture_meta_of(&request);
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let now_ms = self.0.clock.now_ms(request.metadata());
         let raw_req = request.into_inner();
         if crate::warehouse::Warehouse::from_dialect(&raw_req.dialect)
@@ -558,7 +504,7 @@ impl Sql for SqlService {
         // or `ready_to_clone`.
         let decided = crate::submit_decision::speculative_sql_explained(
             &self.0.store,
-            &org_id,
+            scope.organization(),
             &raw_req,
             now_ms,
         )
@@ -577,7 +523,7 @@ impl Sql for SqlService {
                 },
             ) => {
                 // Recorded like an ordinary SKIP, for Explain.
-                capture_submit(&self.0, &cap_meta, &req, skip);
+                capture_submit(&self.0, &scope, &req, skip);
                 Speculative::SkipExecution(skip_response(
                     execution_decision_id.clone(),
                     matched_execution.clone(),
@@ -601,14 +547,14 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::ConfirmExecutionRequest>,
     ) -> Result<Response<qc::ConfirmExecutionResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let now_ms = self.0.clock.now_ms(request.metadata());
         let req = request.into_inner();
         let publication = self
             .0
             .store
             .confirm(
-                &org_id,
+                scope.organization(),
                 &req.request_id,
                 req.last_modified_epoch,
                 req.table_type.as_deref(),
@@ -654,19 +600,20 @@ impl Execution for ExecutionService {
         &self,
         request: Request<qc::RecordExecutionsRequest>,
     ) -> Result<Response<qc::RecordExecutionsResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
-        let stored = crate::execution::record_batch(&self.0.store, &org_id, &req.records)
-            .await
-            .map_err(|e| match e {
-                RecordError::MissingInput { index } => {
-                    Status::invalid_argument(format!("Record at index {index} has no input set"))
-                }
-                RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
-                RecordError::InvalidOutcome => Status::internal("Database operation failed"),
-                RecordError::Store(e) => store_status(e),
-            })?;
+        let stored =
+            crate::execution::record_batch(&self.0.store, scope.organization(), &req.records)
+                .await
+                .map_err(|e| match e {
+                    RecordError::MissingInput { index } => Status::invalid_argument(format!(
+                        "Record at index {index} has no input set"
+                    )),
+                    RecordError::InvalidTarget => Status::invalid_argument("Failed to process SQL"),
+                    RecordError::InvalidOutcome => Status::internal("Database operation failed"),
+                    RecordError::Store(e) => store_status(e),
+                })?;
 
         Ok(Response::new(qc::RecordExecutionsResponse {
             records_stored: stored,
@@ -680,7 +627,7 @@ impl Execution for ExecutionService {
         // Fresh Snowflake + Databricks protocol histories pin confirmed-only
         // visibility, exact profile scope, and ID-or-name project resolution.
         // A missing project ID is normal for the pinned Databricks client.
-        let org_id = org_id_checked(&self.0, &request)?;
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
         let project_id = req.project_id.as_deref().filter(|s| !s.is_empty());
         if req.profile_name.is_empty()
@@ -696,7 +643,7 @@ impl Execution for ExecutionService {
             .0
             .store
             .resolve_confirmed_deferred_fqns(
-                &org_id,
+                scope.organization(),
                 &req.profile_name,
                 &req.project_name,
                 project_id,
@@ -721,11 +668,10 @@ impl qc::clone_server::Clone for CloneServiceImpl {
         &self,
         request: Request<qc::CloneRequest>,
     ) -> Result<Response<qc::CloneResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
-        let cap_meta = capture_meta_of(&request);
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
-        let outcome = crate::copy_registration::register(&self.0.store, &org_id, &req)
+        let outcome = crate::copy_registration::register(&self.0.store, scope.organization(), &req)
             .await
             .map_err(|error| match error {
                 RegisterError::Unsupported(reason) => Status::unimplemented(reason),
@@ -751,7 +697,7 @@ impl qc::clone_server::Clone for CloneServiceImpl {
             } => (ids, clone_sqls, required_source_epoch),
         };
         // Best-effort capture (non-blocking) of the clone decision.
-        capture_register(&self.0, &cap_meta, &org_id, &req, &ids, &clone_sqls);
+        capture_register(&self.0, &scope, &req, &ids, &clone_sqls);
 
         let mut ready = ready_to_clone_response(
             ids.request_id,
@@ -834,8 +780,8 @@ impl Explain for ExplainService {
         request: Request<qc::GetExplainMessagesRequest>,
     ) -> Result<Response<qc::GetExplainMessagesResponse>, Status> {
         // Org scoping first (AGENTS.md): never re-derive another tenant's
-        // decisions. Mirrors SelectorServiceImpl's org_id_checked pattern.
-        let org_id = org_id_checked(&self.0, &request)?;
+        // decisions.
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
         // Re-derive each requested decision's tree + description on demand from
@@ -848,12 +794,12 @@ impl Explain for ExplainService {
         // Unknown and other-organization IDs have no tracked write to await.
         self.0
             .captures
-            .wait_for(&org_id, &req.execution_decision_ids)
+            .wait_for(scope.organization(), &req.execution_decision_ids)
             .await;
         let mut rows = self
             .0
             .store
-            .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
+            .fetch_explain_decisions(scope.organization(), &req.execution_decision_ids)
             .await
             .map_err(store_status)?;
 
@@ -866,7 +812,7 @@ impl Explain for ExplainService {
         if !anchor_requests.is_empty() {
             self.0
                 .captures
-                .wait_for_requests(&org_id, &anchor_requests)
+                .wait_for_requests(scope.organization(), &anchor_requests)
                 .await;
             // Always reread: a capture can commit and leave the pending map
             // between the first read and wait lookup. Its absence is not proof
@@ -874,7 +820,7 @@ impl Explain for ExplainService {
             rows = self
                 .0
                 .store
-                .fetch_explain_decisions(&org_id, &req.execution_decision_ids)
+                .fetch_explain_decisions(scope.organization(), &req.execution_decision_ids)
                 .await
                 .map_err(store_status)?;
         }
@@ -930,7 +876,7 @@ impl SelectorService for SelectorServiceImpl {
         &self,
         request: Request<qc::SelectorRequest>,
     ) -> Result<Response<qc::SelectorResponse>, Status> {
-        let org_id = org_id_checked(&self.0, &request)?;
+        let scope = RequestScope::resolve(&self.0, &request)?;
         let req = request.into_inner();
 
         // Decode the criterion. The client only ever sends 1..=10; SC_UNSPECIFIED
@@ -955,7 +901,7 @@ impl SelectorService for SelectorServiceImpl {
         let recorded = self
             .0
             .store
-            .fetch_node_states(&org_id, &req.project_id, &req.target, &uids)
+            .fetch_node_states(scope.organization(), &req.project_id, &req.target, &uids)
             .await
             .map_err(store_status)?;
 
