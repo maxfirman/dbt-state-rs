@@ -1133,6 +1133,12 @@ pub(crate) fn upstream_freshness<'a>(
             recorded_epoch,
             ambiguous_recorded,
         ) {
+            // A data test's input read through a copy stands for the copied
+            // build at that build's epoch (#200): only the run recorded at
+            // exactly that epoch read the copy's contents.
+            (Some(cur), Some(rec), false) if current.read_copy.is_some() && cur < rec => {
+                (true, true)
+            }
             (Some(cur), Some(rec), false) => (cur > rec, false),
             _ => (true, true),
         };

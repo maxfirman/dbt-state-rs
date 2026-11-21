@@ -145,6 +145,9 @@ pub(crate) fn submit_lookup<'a>(
 #[derive(Debug, Clone)]
 pub(crate) struct CloneEquivalent {
     pub source_table: String,
+    /// The source's current confirmed build (`executions.id`), recorded on
+    /// the copy as the build it was made from (#200).
+    pub source_execution_id: i64,
     pub execution_type: i32,
     pub table_type: Option<String>,
     pub last_modified_epoch: Option<i64>,
@@ -158,6 +161,7 @@ impl CloneEquivalent {
     pub(crate) fn new(candidate: CopyCandidate, copy_depth: usize) -> Self {
         Self {
             source_table: candidate.target_table,
+            source_execution_id: candidate.id,
             execution_type: candidate.execution_type,
             table_type: candidate.table_type,
             last_modified_epoch: candidate.last_modified_epoch,
@@ -167,12 +171,14 @@ impl CloneEquivalent {
     }
 }
 
-/// A Result copy of an equivalent into the submit target: the source, the
-/// statements that copy it, and the source build evidence the `ready_to_clone`
-/// response echoes.
+/// A Result copy of an equivalent into the submit target: the source and
+/// the build it is copied from, the statements that copy it, and the source
+/// build evidence the `ready_to_clone` response echoes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResultCopy {
     pub source_table: String,
+    /// The source build (`executions.id`) the copy is made from (#200).
+    pub source_execution_id: i64,
     pub clone_sqls: Vec<String>,
     pub source_last_modified_epoch: Option<i64>,
     pub source_execution_runtime_ms: Option<i64>,
@@ -319,6 +325,7 @@ fn plan_copy(req: &CopyRequest<'_>, equivalent: CloneEquivalent) -> SubmitCopyPl
     match ddl {
         Ok(clone_sqls) => SubmitCopyPlan::Copy(ResultCopy {
             source_table: equivalent.source_table,
+            source_execution_id: equivalent.source_execution_id,
             clone_sqls,
             source_last_modified_epoch: equivalent.last_modified_epoch,
             source_execution_runtime_ms: equivalent.execution_runtime_ms,
@@ -1027,6 +1034,7 @@ mod tests {
                     name: "`cdo_demo_db`.`prod`.`inputs`".into(),
                     last_modified_epoch: Some(7),
                     producer: crate::store::Producer::NoBuild,
+                    read_copy: None,
                 },
                 // An incremental's own observed target is deliberately not a
                 // resolved producer or a genuine upstream of its copied result.
@@ -1034,6 +1042,7 @@ mod tests {
                     name: source_name.into(),
                     last_modified_epoch: Some(20),
                     producer: crate::store::Producer::Unrecorded,
+                    read_copy: None,
                 },
             ],
             ..seed_load()
@@ -1154,6 +1163,7 @@ mod tests {
     fn equivalent(source: &str, depth: usize, epoch: Option<i64>) -> CloneEquivalent {
         CloneEquivalent {
             source_table: source.into(),
+            source_execution_id: 1,
             execution_type: 1,
             table_type: Some("TABLE".into()),
             last_modified_epoch: epoch,
@@ -1271,6 +1281,7 @@ mod tests {
 
     fn candidate(target: &str, logic: Option<&str>) -> CopyCandidate {
         CopyCandidate {
+            id: 0,
             target_table: target.into(),
             execution_type: 1,
             table_type: None,
@@ -1573,6 +1584,7 @@ mod tests {
         let req = submit("snowflake", "select id from DB.DEV.UP");
         let SubmitCopyPlan::Copy(ResultCopy {
             source_table,
+            source_execution_id,
             clone_sqls,
             source_last_modified_epoch,
             source_execution_runtime_ms,
@@ -1581,6 +1593,7 @@ mod tests {
             panic!("expected a copy");
         };
         assert_eq!(source_table, PROD);
+        assert_eq!(source_execution_id, 1, "the equivalent's build");
         assert_eq!(clone_sqls.len(), 1);
         assert!(clone_sqls[0].contains(&format!("CREATE OR REPLACE TABLE {DEV}")));
         assert!(clone_sqls[0].contains(&format!("CLONE {PROD}")));
@@ -1961,6 +1974,8 @@ mod tests {
                 node_namespace_logic_hash: Some("logic".into()),
                 execution_runtime_ms: None,
                 input_names: Vec::new(),
+                execution_id: 1,
+                last_modified_epoch: None,
             })),
         )
         .expect("registered copy");

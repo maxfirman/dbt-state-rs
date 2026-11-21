@@ -366,3 +366,15 @@ async fn forget_decision_column(db: &impl Db, org_id: &str, decision_id: &str, c
     .rows_affected();
     assert_eq!(updated, 1, "exactly the captured decision");
 }
+
+/// Rows recorded before #200: no data test has a history key and no copy
+/// records the build it was made from. Returns the number of rows touched.
+pub async fn forget_data_test_history_keys(db: &impl Db) -> u64 {
+    Rows::All
+        .update(
+            db,
+            "data_test_key = NULL, clone_source_execution_id = NULL",
+            &[],
+        )
+        .await
+}

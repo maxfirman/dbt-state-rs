@@ -16,8 +16,11 @@
 #[path = "support.rs"]
 mod support;
 
-use support::scenario::{model, Scenario};
-use support::{start_server, start_server_require_org};
+use support::scenario::{
+    data_test, into_execute, into_skip, into_speculative_skip, model, outcome, seed, test_results,
+    Scenario,
+};
+use support::{demo, rows, start_server, start_server_require_org};
 
 /// Any decidable submission: these tests only exercise org-header scoping.
 const TARGET: &str = "\"DB\".\"S\".\"T\"";
@@ -74,4 +77,88 @@ async fn require_org_header_rejects_empty_header() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::Unauthenticated);
+}
+
+/// Every decision is recorded under the request's Organization, dbt
+/// invocation and client session: the same Organization the handler decided
+/// in. `dbt state explain` in that Organization finds each decision (an
+/// ordinary BUILD and SKIP, a seed BUILD, a RegisterClone copy and a
+/// speculative SKIP); neither another Organization nor the default `local`
+/// one finds any, and the decisions are counted under one invocation.
+#[tokio::test]
+async fn decisions_are_recorded_under_the_request_organization_and_invocation() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let scoped = sc.org("scope-org").invocation("inv-scope", "sess-scope");
+
+    let built = into_execute(scoped.submit(model(TARGET)).await);
+    assert!(
+        scoped
+            .confirm(&built.request_id, outcome().epoch(100))
+            .await
+    );
+    let skipped = into_skip(scoped.submit(model(TARGET)).await);
+    let seed = into_execute(
+        scoped
+            .submit_values(seed("\"DB\".\"S\".\"SEED\"").values("bytes"))
+            .await,
+    );
+    let copy = scoped
+        .register_clone(demo::copy(TARGET, "\"DB\".\"DEV\".\"T\"").source_epoch(100))
+        .await
+        .expect("RegisterClone")
+        .ready_to_clone
+        .expect("ready_to_clone");
+    let test = data_test("test.p.scope_t")
+        .namespace("scope-ns")
+        .project("p");
+    scoped
+        .build_with(test.clone(), outcome().results(test_results(0)))
+        .await;
+    let speculative = into_speculative_skip(scoped.speculative(test).await);
+
+    let ids: Vec<String> = [
+        built.execution_decision_id,
+        skipped.execution_decision_id,
+        seed.execution_decision_id,
+        copy.execution_decision_id,
+        speculative.execution_decision_id,
+    ]
+    .into_iter()
+    .map(|id| id.expect("an explainable decision"))
+    .collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+
+    let mut expected: Vec<String> = ids.iter().map(|id| (*id).to_owned()).collect();
+    expected.sort();
+    assert_eq!(explained(&scoped, &ids).await, expected);
+    assert!(explained(&sc.org("other-org"), &ids).await.is_empty());
+    assert!(explained(&sc, &ids).await.is_empty(), "nor the `local` org");
+
+    // The data test's build is in the invocation too: three builds.
+    assert_eq!(
+        rows::invocations(&server).await,
+        [rows::StoredInvocation {
+            org_id: "scope-org".into(),
+            external_invocation_id: Some("inv-scope".into()),
+            session_id: Some("sess-scope".into()),
+            built_count: 3,
+            reused_count: 2,
+            cloned_count: 1,
+        }]
+    );
+}
+
+/// The decision ids among `ids` that `dbt state explain` in `sc`'s
+/// Organization finds, sorted.
+async fn explained(sc: &Scenario, ids: &[&str]) -> Vec<String> {
+    let mut found: Vec<String> = sc
+        .explain(ids)
+        .await
+        .messages
+        .into_iter()
+        .map(|m| m.execution_decision_id)
+        .collect();
+    found.sort();
+    found
 }

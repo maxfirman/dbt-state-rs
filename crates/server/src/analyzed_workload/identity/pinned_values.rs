@@ -104,3 +104,21 @@ fn fingerprint_values_are_unchanged() {
     );
     assert_eq!(copy_logic_hash(&bigquery), None);
 }
+
+/// The data-test history key (#200, `dbt-state-data-test-key-v1`).
+#[test]
+fn data_test_history_key_is_unchanged() {
+    let test = qc::SqlExecution {
+        dialect: "snowflake".into(),
+        default_catalog: "CDO".into(),
+        default_schema: Some("prod".into()),
+        execution_type: qc::ModelExecutionType::DbtDataTest as i32,
+        sql: "select id, v from CDO.prod.u where id < 0".into(),
+        semantic_extras: [("severity".into(), "\"ERROR\"".into())].into(),
+        ..Default::default()
+    };
+    assert_eq!(
+        data_test_history_key(&test, &[]).as_deref(),
+        Some("b1cc43e433e1f8a8eedd6b5dd0036c9b99254ef26b04b607913e11bcb240a83f")
+    );
+}

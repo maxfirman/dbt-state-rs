@@ -145,6 +145,30 @@ pub async fn node_states(db: &impl Db) -> Vec<StoredNodeState> {
     .expect("read node_states")
 }
 
+/// One `invocations` row: the dbt invocation a decision was recorded under,
+/// with its decision counts.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StoredInvocation {
+    pub org_id: String,
+    pub external_invocation_id: Option<String>,
+    pub session_id: Option<String>,
+    pub built_count: i32,
+    pub reused_count: i32,
+    pub cloned_count: i32,
+}
+
+/// Every `invocations` row across orgs.
+pub async fn invocations(db: &impl Db) -> Vec<StoredInvocation> {
+    sqlx::query_as(
+        "SELECT org_id, external_invocation_id, session_id, built_count, reused_count, \
+                cloned_count \
+         FROM invocations ORDER BY org_id, external_invocation_id",
+    )
+    .fetch_all(db.pool())
+    .await
+    .expect("read invocations")
+}
+
 /// Establish that an exact decision's audit passed a selective capture fault.
 pub async fn wait_for_decision_capture(db: &impl Db, org: &str, id: &str) {
     for _ in 0..100 {

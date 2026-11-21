@@ -1164,3 +1164,116 @@ fn rehomed_identities_keep_a_different_dev_dependency_definition_apart() {
         assert!(!readings(&dev).contains(&prod), "{changed}");
     }
 }
+
+// ---- data-test history key (#200) ------------------------------------------
+
+fn data_test_exec(sql: &str, schema: &str) -> qc::SqlExecution {
+    qc::SqlExecution {
+        dialect: "snowflake".into(),
+        default_catalog: "CDO".into(),
+        default_schema: Some(schema.into()),
+        execution_type: qc::ModelExecutionType::DbtDataTest as i32,
+        sql: sql.into(),
+        semantic_extras: [("severity".to_string(), "\"ERROR\"".to_string())].into(),
+        ..Default::default()
+    }
+}
+
+fn key(e: &qc::SqlExecution) -> String {
+    data_test_history_key(e, &[]).expect("a keyed data test")
+}
+
+#[test]
+fn data_test_key_is_snowflake_data_tests_only() {
+    let test = data_test_exec("select id from CDO.PROD.U where id < 0", "prod");
+    for (dialect, execution_type) in [
+        ("databricks", qc::ModelExecutionType::DbtDataTest),
+        ("duckdb", qc::ModelExecutionType::DbtDataTest),
+        ("snowflake", qc::ModelExecutionType::Full),
+    ] {
+        let other = qc::SqlExecution {
+            dialect: dialect.into(),
+            execution_type: execution_type as i32,
+            ..test.clone()
+        };
+        assert_eq!(data_test_history_key(&other, &[]), None, "{dialect}");
+    }
+}
+
+#[test]
+fn data_test_key_omits_the_context_of_fully_qualified_sql_only() {
+    let qualified = |schema| data_test_exec("select id, v from CDO.prod.u where id < 0", schema);
+    assert_eq!(key(&qualified("prod")), key(&qualified("dev")));
+    assert_eq!(
+        key(&qualified("prod")),
+        key(&data_test_exec(
+            "\n  SELECT id, v FROM \"CDO\".\"PROD\".\"U\" WHERE id < 0  ",
+            "dev"
+        )),
+        "normalized SQL"
+    );
+    // Anything that can resolve through the session's context keeps it.
+    for sql in [
+        "select id from u where id < 0",
+        "select id from prod.u where id < 0",
+        "with a as (select id from CDO.prod.u) select id from a",
+        "select count(*) from CDO.prod.u",
+        "select s.nextval from CDO.prod.u",
+        "select * from table(flatten(input => parse_json('[1]')))",
+        "not sql at all (",
+    ] {
+        assert_ne!(
+            key(&data_test_exec(sql, "prod")),
+            key(&data_test_exec(sql, "dev")),
+            "{sql}"
+        );
+    }
+}
+
+#[test]
+fn data_test_key_holds_the_relations_and_result_setting_config() {
+    let base = data_test_exec("select id from CDO.prod.u where id < 0", "prod");
+    assert_ne!(
+        key(&base),
+        key(&data_test_exec(
+            "select id from CDO.dev.u where id < 0",
+            "prod"
+        )),
+        "another relation, even with a schema-abstracted equivalent"
+    );
+    for (k, v) in [
+        ("severity", "\"WARN\""),
+        ("warn_if", "\"> 1\""),
+        ("store_failures", "true"),
+        ("limit", "1"),
+    ] {
+        let mut changed = base.clone();
+        changed.semantic_extras.insert(k.into(), v.into());
+        assert_ne!(key(&base), key(&changed), "{k}");
+    }
+    let mut dependency = base.clone();
+    dependency.query_dependencies = vec![dep("CDO.PROD.V", "select 1", "CDO", "prod")];
+    assert_ne!(key(&base), key(&dependency));
+}
+
+#[test]
+fn data_test_key_reads_a_stand_in_as_its_source() {
+    let prod = data_test_exec("select id from CDO.prod.u where id < 0", "prod");
+    let dev = data_test_exec("select id from CDO.dev_clone.u where id < 0", "dev_clone");
+    // Named as the client reports them in `tables`.
+    let stand_in = StandIn {
+        copy: crate::sql_norm::canonical_identifiers("\"CDO\".\"DEV_CLONE\".\"U\""),
+        source: crate::sql_norm::canonical_identifiers("\"CDO\".\"PROD\".\"U\""),
+    };
+    assert_ne!(key(&prod), key(&dev));
+    assert_eq!(
+        data_test_history_key(&dev, std::slice::from_ref(&stand_in)),
+        Some(key(&prod))
+    );
+    // Only the named copy is read as its source.
+    let other = data_test_exec("select id from CDO.dev_clone.w where id < 0", "dev_clone");
+    assert_eq!(
+        data_test_history_key(&other, std::slice::from_ref(&stand_in)),
+        Some(key(&other))
+    );
+}

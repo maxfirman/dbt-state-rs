@@ -1150,7 +1150,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        149,
+        151,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1398,6 +1398,22 @@ async fn conformance_replay_all_corpora() {
                                 seen_gaps.insert((gap.fixture.clone(), i));
                                 gaps += 1;
                             } else if ours != real {
+                                mismatches.push(format!("{context}: ours={ours} real={real}"));
+                            }
+                            asserted += 1;
+                        }
+                        // #200: a Snowflake data test reuses the latest run of
+                        // its history key, whatever the unique id, so a local
+                        // SKIP without confirmed history for the unique id is
+                        // compared too.
+                        "skip_execution"
+                            if e.request["execution_type"].as_i64() == Some(8)
+                                && support::response_variant(&response) == "skip_execution" =>
+                        {
+                            let ours =
+                                comparable(serde_json::to_value(&response).unwrap(), &context);
+                            let real = comparable(e.response.clone(), &context);
+                            if ours != real {
                                 mismatches.push(format!("{context}: ours={ours} real={real}"));
                             }
                             asserted += 1;
@@ -1650,10 +1666,15 @@ async fn conformance_replay_all_corpora() {
         );
     }
     assert!(total_asserted > 0);
+    let unused: Vec<_> = known
+        .iter()
+        .filter(|gap| !seen_gaps.contains(&(gap.fixture.clone(), gap.entry)))
+        .map(|gap| format!("{} entry {}", gap.fixture, gap.entry))
+        .collect();
     assert_eq!(
         seen_gaps.len(),
         known.len(),
-        "every known gap must be exercised exactly once"
+        "every known gap must be exercised exactly once; unused: {unused:?}"
     );
     // The history-dependent rebuild-rationale exemption is a replay-state
     // artifact (an empty store lacks the hosted prior history), NOT an exact

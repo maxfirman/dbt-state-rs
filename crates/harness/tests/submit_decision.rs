@@ -201,6 +201,7 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
         copy:
             ResultCopy {
                 source_table,
+                source_execution_id: _,
                 clone_sqls,
                 source_last_modified_epoch,
                 source_execution_runtime_ms,

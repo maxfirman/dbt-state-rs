@@ -441,6 +441,94 @@ fn schema_abstracted_hash(
     hex::encode(h.finalize())
 }
 
+/// A relation a data test reads that stands for another (#200): `copy`, a
+/// copy this server recorded and unchanged since, stands for `source`, the
+/// build it was copied from. Both are canonical identifiers
+/// (`sql_norm::canonical_identifiers`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StandIn {
+    pub copy: Vec<String>,
+    pub source: Vec<String>,
+}
+
+/// A data test's history key (#200, ADR 0007 "Data-test history key"), for
+/// a Warehouse that keys data-test history
+/// (`Warehouse::keys_data_test_history`, Snowflake); `None`
+/// otherwise and for every other execution type. The organization, warehouse
+/// family and `table_namespace` scope the history separately.
+///
+/// The key holds the normalized SQL with each relation in `stand_ins` read
+/// as its source, and every `semantic_extras` entry and query dependency
+/// (name, definition and context): the result-setting configuration
+/// (`severity`, VERIFIED LIVE `data_test_history_probes.jsonl` P26–P31, and
+/// conservatively `fail_calc`, `warn_if`, `error_if`, `store_failures`,
+/// `limit`, `where` and the rest). The default catalog and schema are part
+/// of the key unless the SQL is context free
+/// (`sql_norm::KeyedSql::context_free`): hosted ignores
+/// `default_schema` for fully qualified SQL (P4–P7), and nothing proves
+/// that for other SQL. Unparseable SQL keys its exact text with its
+/// context. The unique id, `project_id`, `target_name`, the evaluation flag
+/// and the client node hashes are not in the key (P0–P15, P22–P25, P32–P35).
+pub fn data_test_history_key(req: &qc::SqlExecution, stand_ins: &[StandIn]) -> Option<String> {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if req.execution_type != qc::ModelExecutionType::DbtDataTest as i32
+        || !warehouse.keys_data_test_history()
+    {
+        return None;
+    }
+    let mut h = Sha256::new();
+    field(&mut h, crate::warehouse::DATA_TEST_HISTORY_KEY_VERSION);
+    field(
+        &mut h,
+        Warehouse::rendered_identity_dialect(&req.dialect).as_bytes(),
+    );
+    let substitute = |parts: &[String]| {
+        stand_ins
+            .iter()
+            .find(|s| s.copy == parts)
+            .map(|s| s.source.clone())
+    };
+    let context = |h: &mut Sha256| {
+        field(h, b"context");
+        field(h, req.default_catalog.as_bytes());
+        field(h, req.default_schema.as_deref().unwrap_or("").as_bytes());
+    };
+    match crate::sql_norm::keyed_relations_sql(&req.sql, &substitute) {
+        Some(keyed) => {
+            if keyed.context_free {
+                field(&mut h, b"context-free");
+            } else {
+                context(&mut h);
+            }
+            field(&mut h, b"normalized");
+            field(&mut h, keyed.sql.as_bytes());
+        }
+        None => {
+            context(&mut h);
+            field(&mut h, b"exact");
+            field(&mut h, req.sql.as_bytes());
+        }
+    }
+    extras(&mut h, &req.semantic_extras);
+    let mut dependencies: Vec<_> = req
+        .query_dependencies
+        .iter()
+        .map(|d| {
+            let (query, catalog, schema) =
+                warehouse.sql_identity(&d.query, &d.default_catalog, &d.default_schema);
+            (d.name.as_str(), query, catalog, schema)
+        })
+        .collect();
+    dependencies.sort();
+    field(&mut h, &(dependencies.len() as u64).to_le_bytes());
+    for (name, query, catalog, schema) in dependencies {
+        for value in [name, query.as_str(), catalog.as_str(), schema.as_str()] {
+            field(&mut h, value.as_bytes());
+        }
+    }
+    Some(hex::encode(h.finalize()))
+}
+
 pub fn seed_logic_hash(
     dialect: &str,
     catalog: &str,

@@ -9,6 +9,8 @@ only with External modifications of dbt-managed upstreams. Amended by
 execution type changed ([below](#execution-type-change)), and by #116
 (2026-11-11): only over the submit's genuine upstream names. Amended by
 #158 (2026-11-14): physical completion ordering and unknown-epoch safety.
+Amended by #200 (2026-11-21, maintainer decision option A): a Snowflake data
+test's State history is its history key ([below](#data-test-history-key)).
 
 ## Decision
 
@@ -238,10 +240,139 @@ confirmation. Ordinary same-identity builds retain an established revision
 across further input edits or missing evidence. A same-identity
 `RecordExecutions` build at or after the current build's epoch retains its
 revision. Consumers recorded in the same batch resolve against the revised
-producer identity. History before migration 0029 has no revision.
+producer identity. History before migration 0030 has no revision.
 Revisions leave SQL identity and Reuse qualification unchanged and carry no
 rendered values. The usual producer comparison then explains the upstream
 query change and applies the same Lag-tolerance rule to consumers. Broader
 transitive producer rules remain uncaptured.
 
 [Hosted capture and physical readback](../reports/databricks-volatile-priority-2026-11-21.md)
+
+## Data-test history key
+
+Amendment (#200, maintainer decision option A, 2026-11-21). It amends reuse
+invariant 1 (AGENTS.md) for data tests.
+
+**Evidence.** Live on Snowflake with client 2.0.11
+(`golden/fixtures/data_test_history.jsonl`,
+`data_test_history_probes.jsonl`;
+[characterization note](../reports/snowflake-data-test-history-2026-11-21.md)).
+Hosted reuses the latest confirmed run of the same normalized SQL over the
+same input relations, with the same `severity`, in the same
+`table_namespace`, whatever the unique id, `project_id`, `target_name`,
+`default_schema` (fully qualified SQL), evaluation flag and client node
+hashes. A dev relation hosted copied from prod, unchanged since, counts as
+the prod relation. Within one key only the later-confirmed run is served,
+failures included (P66, P74, F79); an older run under another key stays
+reusable (F56, P30, P44, P52, P58).
+
+**Rule.** For a Snowflake data test (`Warehouse::keys_data_test_history`):
+
+- *The unit of history is the key.* State history is scoped by
+  organization, warehouse family, `table_namespace` and the versioned key
+  `dbt-state-data-test-key-v1` (`analyzed_workload::identity::data_test_history_key`,
+  `executions.data_test_key`, migration 0029). The key holds the normalized
+  SQL with each input relation read as the relation it stands for (below),
+  every `semantic_extras` entry, and the query dependencies (name,
+  definition and context). `severity` is captured; `fail_calc`, `warn_if`,
+  `error_if`, `store_failures`, `store_failures_as`, `limit`, `where` and any
+  other entry are kept conservatively, since over-separating only costs a
+  rebuild. The default catalog and schema are in the key unless the SQL is
+  context free: it parses, names every relation in three parts (a CTE
+  reference does not count), and calls no function, table function or
+  sequence, any of which can resolve through the session's schema.
+  Unparseable SQL keys its exact text with its context. The unique id and
+  `project_id` are not in the key; the organization always is.
+- *Latest run per key.* Only the latest confirmed run under the key
+  (`confirmed_at`, as before for data tests) is a reuse candidate. Nothing
+  older in the key is resurrected: a newer failing run is served as such.
+  The ordinary per-input freshness check then applies (invariant 2).
+- *Other keys stay reusable.* An older run of the same unique id under
+  another key stays reusable after a newer run under this key. A data test
+  has no Target relation a later run overwrites, so an older run still
+  describes the inputs it read, and its inputs are judged exactly as before.
+- *Copies stand for their source only while unchanged.* An input whose
+  current physical state is a copy this server recorded (a Result copy on
+  submit or a RegisterClone) with its source build recorded
+  (`executions.clone_source_execution_id`, migration 0029) stands for that
+  build, at its epoch and with its Upstream producer, while the copy is
+  unchanged: its reported epoch is known and no later than the copy's
+  confirmation epoch, the rule a Target relation as built already follows
+  (invariant 3). The source must be an ordinary confirmed build of the copy's
+  source relation in the same organization, warehouse family and namespace;
+  a copy of a copy stands for itself. A stand-in proves freshness only at
+  exactly the epoch recorded for its source: an earlier one means the copy
+  holds an older build than the run read, which is unprovable
+  (`decision::upstream_freshness`). Any other input stands for itself;
+  names and schema abstraction never make two relations one (P48–P59).
+- *`compare_unrendered_code`* does not change the key (F35, F80, P54–P59).
+  The dual rendered/template identity data tests had before #200 (reuse
+  invariant 5) is retained, restricted to keyed rows: when the key has no
+  run, the latest run of the submit's unique id in its project, organization,
+  warehouse family and `table_namespace` is a reuse candidate when it was
+  recorded with a key and has the submit's template identity
+  (`submit_decision::select_sql`,
+  `reuse_candidate::data_test_identity_matches`). This alternative is not
+  captured under the key: the one #200 cell that changes the rendered SQL
+  under `compare_unrendered_code` with the client hashes unchanged (P54–P59)
+  also changes `default_schema`, which the server's template identity
+  holds, so both sides build there. It keeps the
+  unique-id and project scope because a generic test's unrendered body is
+  shared by every test of its kind. A row recorded before the key never
+  matches through it
+  (`data_test_history.rs::a_template_match_under_another_key_reuses_the_unique_ids_keyed_run`).
+- *Rows recorded before the key.* A data test without a key never matches,
+  through the template alternative either, and a copy without a recorded
+  source build stands for itself: each rebuilds once. No row is rehashed
+  (ADR 0004).
+- *Other Warehouses.* Databricks, DuckDB and every other Warehouse keep one
+  latest run per unique id in its project and physical scope (uncaptured).
+
+**Considered.**
+
+- *Keep `project_id` as a stricter scope.* Rejected by the decision: hosted
+  reuses across projects (P12–P15), and the organization boundary already
+  isolates tenants.
+- *Unchanged since the copy as an exact epoch match.* Rejected: Snowflake
+  reports a copy's metadata epoch slightly before its confirmation on later
+  reads (F50, F76: 1795290449321 against 1795290449575), and hosted still
+  reads the copy as its source. The as-built rule is the bound this server
+  already trusts for a Target relation.
+- *Schema-abstracted SQL, as the Snowflake Result copy logic identity.*
+  Rejected: hosted separates a dev relation of the prod relation's name and
+  epoch that it did not copy (P50, P56).
+- *Epochs in the key (a content address).* Not distinguished by the capture
+  from choosing the latest run and then judging freshness; they differ only
+  under Lag tolerance, which clients send as 0 for data tests. The decision
+  takes the latest run first.
+
+**Consequences.** Explain lists an input read through a copy by the copy's
+name, dated at the build it stands for, without a verdict (F36–F39, F57,
+F81, F83, F84), and explains a reuse under `compare_unrendered_code` by the
+unrendered code ([ADR 0005](0005-re-derive-explain-tree-on-demand.md) "Amended
+by #200"). Two blind spots of copies carry over as accepted risks:
+
+- *A source modified before a submit-time copy.* An External modification of
+  the source between its build and a Result copy on submit is not visible to
+  the server, so the copy stands for the source build and a data test over
+  it reuses the source's run over the contents before the change. The
+  server has no evidence of the source's epoch at copy time: the submit
+  reports no epoch of the source (the captured dev submit sends no
+  `tables`, `data_test_history.jsonl` entry 27), and the copy's confirmation
+  reports the copy's own epoch, its clone time (1795290449575 at entry 32,
+  against the source build's 1795290435994 at entry 9).
+  `clone_required_last_modified_epoch` is what the server asks of the
+  client, not evidence that the client checked it. This is the risk model
+  copy adoption already accepts for a FULL copy and a seed copy (ADR 0004,
+  [correctness-handoff.md](../correctness-handoff.md) "Seed copy on
+  submit"). A RegisterClone names the source epoch it copied
+  (`clone_source_last_modified_epoch`), and records the source build only
+  when that epoch is the build's. A run of the data test that read the
+  modified source is the latest in the key, and then the copy no longer
+  proves freshness
+  (`data_test_history.rs::a_source_modified_before_a_submit_time_copy_is_not_visible`).
+- *A source rewritten between the copy decision and the client's clone DDL*
+  is not detected (the accepted unpinned source race, ADR 0004).
+
+Open questions are in
+[correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

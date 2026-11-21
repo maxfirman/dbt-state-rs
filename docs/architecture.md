@@ -37,10 +37,12 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_REQUIRE_ORG_HEADER` (reject requests without `x-organization-id`). |
 | `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations. |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
-| `services.rs` | gRPC handlers. They extract org and metadata, call `submit_decision`, `copy_registration` or the store, map outcomes to the wire (both clone oneofs) and spawn capture. Re-exports `sql_execution` for upgrade tests. |
+| `request_scope.rs` | One `RequestScope` per gRPC call: the Organization (`x-organization-id`, default `local`; `UNAUTHENTICATED` when `require_org_header` is set and it is missing), the dbt invocation id and the session id. `request_scope::organization` is the only place the Organization is resolved. |
+| `services.rs` | gRPC handlers. Each one that scopes by Organization first resolves its `RequestScope`, then calls `submit_decision`, `copy_registration` or the store with its Organization, maps outcomes to the wire (both clone oneofs) and spawns capture from the same scope. Re-exports `sql_execution` for upgrade tests. |
 | `submit_decision/` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`; `submit_sql_explained` also returns the `ExplainEvidence` capture persists, in the decision's resolved naming. Pure internal seams: `copy_search.rs` (which equivalent the Result copy fallback copies) and `diagnostics.rs` (which refusal diagnostic asks State history what, in hosted's precedence order). |
 | `copy_registration.rs` | How one RegisterClone request is decided and recorded: `result_copy::register_lookup`, the one matching State history read, `result_copy::plan_register`, and the pending copy row. Returns a `RegisterOutcome`. |
 | `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
+| `data_test_history.rs` | Snowflake data-test history by key (#200): which build each input of a data test stands for (`stand_in`, pure: an unchanged copy this server recorded stands for its source build) and the key recomputed over those readings (`read_through_copies`). |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
@@ -56,7 +58,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `sql_norm.rs` | Restricted Snowflake AST canonicalization; unsupported syntax stays exact ([sql-normalization.md](sql-normalization.md)). |
 | `warehouse.rs`, `warehouse/` | Interprets the wire dialect. The Warehouse rules answer each warehouse-specific question (fingerprint version tags, namespace identity, Result copy eligibility, DDL, relation checks, chain and candidate limits, provenance walk, incremental contract, build time), with `warehouse/snowflake.rs`, `warehouse/duckdb.rs` and `warehouse/databricks.rs`. Databricks identifier resolution and SQL equivalences are bounded to the characterized subset; other warehouses get conservative defaults (ADR 0004). |
 | `store.rs` | Postgres via sqlx: pending inserts, confirm-once, Record batches with `node_states` in one transaction, `node_states` upsert/fetch for selectors, confirmed execution scope reads for deferral, and `fetch_explain_decisions` (node decisions with their matched execution) for Explain. |
-| `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest scoped outcome, copy candidates, copy-chain depth and copy-source lookups. Derives warehouse-family and canonical physical lookup keys through the centralized Warehouse naming rules to match generated persisted keys ([ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md)); Reuse qualification, freshness assessment and Result copy policy remain outside storage. |
+| `store/history.rs` | Scoped State history reads: a Target relation's current physical state (one or many), its history, a data test's latest run under its history key or its latest scoped outcome by UID, copy candidates, copy-chain depth and copy-source lookups. Derives warehouse-family and canonical physical lookup keys through the centralized Warehouse naming rules to match generated persisted keys ([ADR 0010](adr/0010-preserve-raw-identifiers-with-physical-history-keys.md)); Reuse qualification, freshness assessment and Result copy policy remain outside storage. |
 
 ### Shared analyzed workload contract (#181–#186)
 
@@ -354,9 +356,14 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
 1. Record the node's selector state in `node_states` (best effort; a failure
    is counted, never fails the submit).
 2. Build the execution evidence and resolve each input's Upstream producer
-   from State history (`resolve_producers`).
+   from State history (`resolve_producers`). A Snowflake data test then reads
+   each input that is an unchanged copy this server recorded as the build it
+   was copied from, and recomputes its history key over those readings
+   (`data_test_history::read_through_copies`, #200).
 3. Read State history once: the Target relation's current physical state, or a
-   data test's latest outcome by scoped UID. `reuse_candidate` decides on that
+   data test's latest run under its history key (Snowflake; under
+   `compare_unrendered_code` a key without a run falls back to the unique
+   id's latest run) or by scoped UID (other Warehouses). `reuse_candidate` decides on that
    row alone whether it is a Reuse candidate. With Volatile evaluation
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
@@ -429,7 +436,11 @@ return query diagnostics from outside a physical reuse scope; those reads
 return only booleans or a name and never feed a reuse/copy candidate, producer
 or freshness anchor. A hosted absent-to-named fallback conflicts with this
 required self-hosted isolation and remains [an explicit incomplete
-contract](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). Data tests select by org, project, warehouse scope and UID.
+contract](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-isolation-2026-11-13.md). A data test has no Target relation: on Snowflake it selects the latest
+confirmed run by org, warehouse family, namespace and history key (ADR 0007
+"Data-test history key", #200); an older run under another key stays
+reusable. Other Warehouses' data tests select by org, project, warehouse
+scope and UID.
 Every store query is org-scoped; neither this nor the UI's
 `DBT_STATE_UI_ORG_ID` filter is authentication.
 
@@ -439,7 +450,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 
 | Table | Contents |
 |---|---|
-| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`). |
+| `executions` | State history: pending and confirmed rows with identity/context hashes, generated `warehouse_family`, `table_namespace`, recorded inputs with producers, outcome, cached result bytes, copy provenance (`clone_source_table`, `node_namespace_logic_hash`; a RegisterClone copy also keeps its source build's runtime and recorded upstream names, `clone_source_inputs`; a Snowflake copy recorded since #200 keeps the build it was made from, `clone_source_execution_id`), a Snowflake data test's history key (`data_test_key`, migration 0029), and a Databricks build's producer revision (`producer_revision`, migration 0030, #213). |
 | `node_states` | Latest client-supplied node hashes per (org, project, Target, node) for `state:*` selectors, plus retained `target_table` snapshot metadata. |
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
