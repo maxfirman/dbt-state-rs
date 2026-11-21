@@ -147,7 +147,7 @@ scheduled/manual generated run is a separate gate, not claimed by a main run.
   it still BUILDs over the original SQL. #198 also captures the true first
   build, rerun, non-storing data test and Lag-tolerant downstream table,
   with exact replay and persisted Explain ([evidence and remaining limits](databricks-volatile.md)).
-  Volatile SQL with evaluation off remains uncaptured. One crafted unknown-input Explain
+  Volatile SQL with evaluation off remains uncaptured (#213). One crafted unknown-input Explain
   differs by one second because the captured client submit and UUIDv7 decision
   cross a second boundary. That boundary grants no copy, and no timestamp or
   response field is masked.

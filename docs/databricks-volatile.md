@@ -119,7 +119,7 @@ Upstream producer recorded at the refused build
 an empty map and prints no volatile lines. Identity and fingerprints continue to use
 original SQL. Reuse qualification remains conservative.
 
-Still uncaptured: other Databricks Volatile functions/forms, evaluation off for
+Still uncaptured (tracked in #213): other Databricks Volatile functions/forms, evaluation off for
 volatile SQL, volatile query dependencies, stored-failure tests, a data test's
 logic change, a refusal at Reuse qualification for another cause (among them
 under `compare_unrendered_code`), the volatile refusal of a table after it was

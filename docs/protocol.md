@@ -681,7 +681,7 @@ says "empty".
 | Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification (its Target relation as built, its inputs unchanged) and a query-changed rebuild over its existing Target relation; empty for the refusal after the table was dropped, after an External modification or over changed inputs (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
 | Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun (its inputs unchanged, its cached results complete); empty for the refusal after an upstream changed or over incomplete cached results (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
 | Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
-| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#198) | empty, uncaptured (#198) | — |
+| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
 
 The [Databricks characterization](databricks-volatile.md) records the complete
@@ -779,7 +779,8 @@ three Snowflake fixtures replays.
 issue or whether client 2.0.11 can reach it, are listed in
 [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
 #198's captured Databricks cells and remaining limits are in the
-[characterization note](databricks-volatile.md).
+[characterization note](databricks-volatile.md); the remaining Databricks
+cells are tracked in #213.
 
 ## Speculative submits: `SQL.SubmitEnrichedSQLSpeculative`
 

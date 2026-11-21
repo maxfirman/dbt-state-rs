@@ -124,7 +124,7 @@ and `explain_volatile_cells.jsonl` (cells, #202,
 | Databricks `rand()` FULL first build / unchanged rerun, evaluation on | EXECUTE both times, `RAND()` under the Target relation; volatile Explain lines only on rerun | ✅ (#198, `databricks_volatile_evaluation.jsonl` 5, 21; Explain 15, 28) |
 | Databricks non-storing data test calling `rand()`, evaluation on | EXECUTE on both runs, `RAND()` under `__target_query__`, volatile Explain lines | ✅ (#198, same fixture 10, 22) |
 | Databricks table downstream of the volatile model, Lag tolerance 3600 s | first EXECUTE, then stale SKIP within tolerance, empty map; retains its first Warehouse value | ✅ (#198, same fixture 9, 26; [physical evidence](databricks-volatile.md)) |
-| Databricks volatile SQL with evaluation off, query dependencies, other node kinds/functions | not captured | conservative behavior; no invented rendering |
+| Databricks volatile SQL with evaluation off, query dependencies, other node kinds/functions | not captured | conservative behavior; no invented rendering (#213) |
 
 ## Result copy (`CLONE`)
 
@@ -161,8 +161,8 @@ and `explain_volatile_cells.jsonl` (cells, #202,
 
 ## Known gaps
 
-- **Volatile evaluation**: the remaining uncaptured cells on Databricks and
-  Snowflake, are listed in
+- **Volatile evaluation**: the remaining uncaptured cells on Databricks (#213)
+  and Snowflake (#211) are listed in
   [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
 - **Result copy and upstream producers**: hosted did not copy an equivalent
   whose consumed upstream had since been externally modified, then later copied

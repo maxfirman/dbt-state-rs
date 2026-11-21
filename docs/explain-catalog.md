@@ -1979,7 +1979,7 @@ last ones were settled.
   Volatile calls render nothing (`zipf`, `seqN`) and the cells that render
   no values ([protocol.md](protocol.md#volatile-evaluation)). Databricks #198
   verifies the FULL rerun and non-storing test first/rerun trees with `RAND()`
-  (fixture entries 15, 28); other Databricks cells remain unverified. From a malformed request it is
+  (fixture entries 15, 28); other Databricks cells remain unverified (#213). From a malformed request it is
   local-only, empty tree (crafted `experiments/malformed_requests.py`,
   accepted divergence #114). For a model of every kind and a data test,
   hosted rejects empty SQL with `INVALID_ARGUMENT` ("Failed to process SQL"), and
