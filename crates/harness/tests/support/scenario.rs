@@ -912,6 +912,9 @@ pub fn into_speculative_skip(resp: qc::SubmitSqlSpeculativeResponse) -> qc::Skip
 pub struct Scenario {
     channel: Channel,
     org: Option<String>,
+    /// The `x-dbt-invocation-id` and `x-session-id` sent with each request,
+    /// when set.
+    invocation: Option<(String, String)>,
     /// The replay clock (Unix ms) sent with each request, when set.
     now_ms: Option<i64>,
     builds: std::sync::Arc<std::sync::Mutex<Builds>>,
@@ -932,6 +935,7 @@ impl Scenario {
         Self {
             channel: super::channel(server.addr).await,
             org: None,
+            invocation: None,
             now_ms: None,
             builds: Default::default(),
         }
@@ -941,6 +945,15 @@ impl Scenario {
     pub fn org(&self, org: &str) -> Self {
         Self {
             org: Some(org.into()),
+            ..self.clone()
+        }
+    }
+
+    /// The same server, sending each request as part of dbt invocation
+    /// `invocation_id` in client session `session_id`.
+    pub fn invocation(&self, invocation_id: &str, session_id: &str) -> Self {
+        Self {
+            invocation: Some((invocation_id.into(), session_id.into())),
             ..self.clone()
         }
     }
@@ -995,6 +1008,17 @@ impl Scenario {
             Some(org) => super::request_with_org(body, org),
             None => tonic::Request::new(body),
         };
+        if let Some((invocation_id, session_id)) = &self.invocation {
+            let metadata = req.metadata_mut();
+            metadata.insert(
+                "x-dbt-invocation-id",
+                invocation_id.parse().expect("valid metadata value"),
+            );
+            metadata.insert(
+                "x-session-id",
+                session_id.parse().expect("valid metadata value"),
+            );
+        }
         if let Some(now_ms) = self.now_ms {
             req.metadata_mut().insert(
                 dbt_state_server::REPLAY_NOW_HEADER,
