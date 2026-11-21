@@ -123,6 +123,16 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
     `transformed_nodes_by_query` map) and `hosted_volatile_values` (a
     captured response) read Volatile evaluation values as query → function
     → value; `volatile_map_shape` drops the values.
+- `oidc.rs` supports `oidc` mode. `TestAuth::new(&[(org, disabled)])`
+  writes and loads a real auth config over the test-only keys in
+  `crates/auth/testdata/`, and `start_server_oidc(&auth)` serves it. A
+  `TestSigner` (`auth.signer()`, or `auth.signer_with(SignerOptions { issuer,
+  audience, key, organizations })` for wrong issuers, audiences, keys or a
+  stale view of the Organizations) issues person (`.person(sub, sid)`) and
+  machine (`.machine(sub)`) tokens with `.grant(org, role)` and
+  `.issued_ago(d)`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
+  send them. `capture_logs()` / `captured_logs()` capture the process's log
+  lines.
 - `rows.rs` reads `executions` and `node_states` back for assertions.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.

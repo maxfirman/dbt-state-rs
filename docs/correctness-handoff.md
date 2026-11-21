@@ -693,11 +693,14 @@ local-only and renders no Explain tree.
 
 ## Deployment gaps
 
-- **Auth and TLS.** Header-based organization selection is isolation, not
-  authentication. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without
-  `x-organization-id` but does not verify it against a trusted token. OAuth,
-  TLS and identity mapping are deployment work. The UI reads one configured
-  organization (`DBT_STATE_UI_ORG_ID`).
+- **Auth and TLS.** In the default `DBT_STATE_AUTH=none` mode,
+  header-based organization selection is isolation, not authentication, and
+  the server refuses a non-loopback address unless
+  `DBT_STATE_ALLOW_INSECURE=true`. `DBT_STATE_AUTH=oidc` verifies a
+  Token-broker-signed token and its Organization on every RPC except health
+  ([protocol.md](protocol.md#authentication-oidc-mode)). The Token broker,
+  TLS, session checks and Principal recording are still open (#218–#226). The
+  UI reads one configured organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`

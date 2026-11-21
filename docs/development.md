@@ -65,6 +65,17 @@ export DBT_STATE_REQUIRE_ORG_HEADER=false      # optional; true rejects requests
 RUST_LOG=info cargo run -p dbt-state-server
 ```
 
+That is `DBT_STATE_AUTH=none` (the default): no tokens. It refuses to start
+on a non-loopback address (for example `0.0.0.0:50051`) unless
+`DBT_STATE_ALLOW_INSECURE=true`.
+
+`DBT_STATE_AUTH=oidc` requires a Token-broker-signed token on every RPC
+except health, for an Organization in the TOML auth config at
+`DBT_STATE_AUTH_CONFIG` ([example](../examples/auth/auth.toml),
+[wire contract](protocol.md#authentication-oidc-mode)).
+`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode. The Token
+broker that issues these tokens is not built yet (#218).
+
 ## Running the UI
 
 ```bash
