@@ -214,9 +214,15 @@ impl ExplainEvidence {
                     // A reuse of volatile SQL by its unrendered code (#206,
                     // maintainer decision 1 on #201) is explained by that
                     // comparison (`explain_volatile_cells.jsonl` entry 198).
-                    // Every other Snowflake decision keeps its tree.
+                    // So is a Snowflake data test's reuse under
+                    // `compare_unrendered_code` with its unchanged unrendered
+                    // body (#200, `data_test_history.jsonl` F39, F67, F84,
+                    // `data_test_history_probes.jsonl` P59), even when its
+                    // rendered SQL also matches. Every other Snowflake
+                    // decision keeps its tree.
                     (matches!(outcome, SubmitOutcome::Skip { .. })
-                        && crate::reuse_candidate::volatile_sql_compared_by_unrendered_code(req))
+                        && (crate::reuse_candidate::volatile_sql_compared_by_unrendered_code(req)
+                            || unrendered_data_test_reuse(req, outcome)))
                     .then(|| {
                         crate::explain::TemplateComparison::unrendered(
                             req.dbt_node_state.as_ref(),
@@ -238,6 +244,23 @@ impl ExplainEvidence {
                 .flatten(),
         }
     }
+}
+
+/// Whether `outcome` reuses, for a data test of a Warehouse that keys
+/// data-test history (Snowflake, #200) compared by its unrendered code, a
+/// run with the submit's unrendered body: hosted explains that reuse by the
+/// unrendered code. A reuse of a run with another body is uncaptured.
+fn unrendered_data_test_reuse(req: &qc::SubmitEnrichedSqlRequest, outcome: &SubmitOutcome) -> bool {
+    let body = decision::node_body_hash_of(req);
+    req.execution_type == ModelExecutionType::DbtDataTest as i32
+        && req.compare_unrendered_code
+        && Warehouse::from_dialect(&req.dialect)
+            .data_test_history_key_version()
+            .is_some()
+        && body.as_deref().is_some_and(|b| !b.is_empty())
+        && outcome
+            .matched_execution()
+            .is_some_and(|run| run.node_body_hash == body)
 }
 
 /// A decided SQL submit with the Explain evidence its capture persists.
@@ -404,6 +427,7 @@ async fn decide_sql(
     let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
+    crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
     let unchanged_rerun = selection.unchanged_rerun;
     let outcome =
@@ -955,12 +979,18 @@ async fn seed_copy_fallback(
     // Snowflake tracks no copy depth: the source counts as a build, as for a
     // FULL copy.
     let source_table = candidate.target_table.clone();
+    let source_id = candidate.id;
     match result_copy::plan_seed_submit(req, CloneEquivalent::new(candidate, 0)) {
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
             // Keyed on the submit target with the seed's own identity, so a
             // later submit reuses the copy once confirmed.
-            write_pending(store, &evidence.copied_from(&copy.source_table), &ids).await?;
+            write_pending(
+                store,
+                &evidence.copied_from(&copy.source_table, Some(source_id)),
+                &ids,
+            )
+            .await?;
             let over = match target {
                 SeedCopyTarget::Absent => None,
                 SeedCopyTarget::Over(row) => Some(row),
@@ -1040,20 +1070,24 @@ async fn select_sql(
 ) -> sqlx::Result<Selection> {
     let table_namespace = execution::non_blank_namespace(req.table_namespace.as_deref());
     if req.execution_type == ModelExecutionType::DbtDataTest as i32 {
-        let latest = match evidence.node_unique_id.as_deref() {
-            Some(uid) => {
-                store
-                    .latest_data_test(
-                        org_id,
-                        uid,
-                        evidence.project_id.as_deref(),
-                        table_namespace,
-                        &req.dialect,
-                    )
-                    .await?
-            }
-            None => None,
-        };
+        // A keyed data test (Snowflake, #200): the latest run under its key.
+        // Under `compare_unrendered_code`, a key without a run falls back to
+        // the unique id's latest run, reused only with the same template
+        // identity (`reuse_candidate::for_data_test`).
+        if let Some(key) = evidence.data_test_key.as_deref() {
+            let latest = match store
+                .latest_data_test_by_key(org_id, key, table_namespace, &req.dialect)
+                .await?
+            {
+                Some(row) => Some(row),
+                None if evidence.node_template_hash.is_some() => {
+                    latest_data_test_of_unique_id(store, org_id, req, evidence).await?
+                }
+                None => None,
+            };
+            return reuse_candidate::for_data_test(req, evidence, latest);
+        }
+        let latest = latest_data_test_of_unique_id(store, org_id, req, evidence).await?;
         reuse_candidate::for_data_test(req, evidence, latest)
     } else {
         let current = store
@@ -1089,6 +1123,30 @@ async fn select_sql(
             }
         }
         reuse_candidate::for_model(req, evidence, current)
+    }
+}
+
+/// The latest confirmed run of a data test's unique id in its project and
+/// physical scope; `None` without a unique id.
+async fn latest_data_test_of_unique_id(
+    store: &Store,
+    org_id: &str,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+) -> sqlx::Result<Option<ExecutionRow>> {
+    match evidence.node_unique_id.as_deref() {
+        Some(uid) => {
+            store
+                .latest_data_test(
+                    org_id,
+                    uid,
+                    evidence.project_id.as_deref(),
+                    execution::non_blank_namespace(req.table_namespace.as_deref()),
+                    &req.dialect,
+                )
+                .await
+        }
+        None => Ok(None),
     }
 }
 
@@ -1147,6 +1205,7 @@ async fn result_copy_fallback(
     let mut search = copy_search::CopySearch::new(own);
     let mut chosen = None;
     for candidate in copy_candidates(store, org_id, req, &lookup).await? {
+        let source_id = candidate.id;
         let Some(equivalent) = eligible_equivalent(store, org_id, req, &lookup, candidate).await?
         else {
             continue;
@@ -1161,14 +1220,14 @@ async fn result_copy_fallback(
             .await?;
         match search.offer(evidence, freshness, source) {
             copy_search::Offer::Choose(judged) => {
-                chosen = Some((equivalent, judged));
+                chosen = Some((equivalent, judged, source_id));
                 break;
             }
             copy_search::Offer::Next => continue,
             copy_search::Offer::Stop => break,
         }
     }
-    let Some((equivalent, judged)) = chosen else {
+    let Some((equivalent, judged, source_id)) = chosen else {
         return Ok(CopyFallback::Ordinary);
     };
     let source_table = equivalent.source_table.clone();
@@ -1196,7 +1255,12 @@ async fn result_copy_fallback(
             let ids = DecisionIds::mint();
             // Keyed on the submit target and inheriting the equivalent's logic
             // identity, so later submits reuse the copy once confirmed.
-            write_pending(store, &evidence.copied_from(&copy.source_table), &ids).await?;
+            write_pending(
+                store,
+                &evidence.copied_from(&copy.source_table, Some(source_id)),
+                &ids,
+            )
+            .await?;
             let record = match judged {
                 Some((reuse, build_age_ms)) => DecisionRecord::result_copy_judged(
                     anchor,

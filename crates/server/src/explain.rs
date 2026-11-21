@@ -1986,6 +1986,18 @@ fn upstream_dependencies_freshness(
             if verdict_unrecorded_by_copy_source(node, up) {
                 return clone_upstream_line(up);
             }
+            // A data test's input read through a copy (#200): hosted lists
+            // the copy, dated at the build it stands for, with no verdict
+            // (VERIFIED LIVE 2026-11-21, data_test_history.jsonl F36–F39,
+            // F57, F81, F83, F84). Uncaptured outside a reuse.
+            if let (Some(copy), DecisionKind::Skip) = (up.read_copy.as_deref(), node.decision) {
+                return qc::ExplainLine {
+                    text: quote(copy),
+                    marker: None,
+                    badge: None,
+                    children: vec![line(anchored_rel_time_line(node, up))],
+                };
+            }
             let verdict = verdicts
                 .as_ref()
                 .and_then(|v| v.iter().find(|u| u.name == up.name));
@@ -4464,6 +4476,7 @@ mod tests {
                 name: "\"DB\".\"S\".\"UP\"".into(),
                 last_modified_epoch: Some(5_000),
                 producer: producers.1,
+                read_copy: None,
             }];
             let mut recorded = tbl("\"DB\".\"S\".\"UP\"");
             recorded.producer = producers.0;
@@ -4586,6 +4599,7 @@ mod tests {
                 name: "\"DB\".\"S\".\"UP2\"".into(),
                 last_modified_epoch: Some(epoch),
                 producer: Producer::Build("b".into()),
+                read_copy: None,
             };
             n.input_tables.push(other(5_000));
             n.anchor.as_mut().unwrap().input_tables.push(other(900));
@@ -4607,6 +4621,7 @@ mod tests {
             name: "\"DB\".\"S\".\"UP\"".into(),
             last_modified_epoch: Some(epoch),
             producer: Producer::Build("a".into()),
+            read_copy: None,
         };
         n.input_tables = vec![tbl("\"DB\".\"S\".\"T\""), up(current)];
         n.anchor = Some(ExecutionRow {

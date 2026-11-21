@@ -1027,6 +1027,7 @@ mod tests {
                     name: "`cdo_demo_db`.`prod`.`inputs`".into(),
                     last_modified_epoch: Some(7),
                     producer: crate::store::Producer::NoBuild,
+                    read_copy: None,
                 },
                 // An incremental's own observed target is deliberately not a
                 // resolved producer or a genuine upstream of its copied result.
@@ -1034,6 +1035,7 @@ mod tests {
                     name: source_name.into(),
                     last_modified_epoch: Some(20),
                     producer: crate::store::Producer::Unrecorded,
+                    read_copy: None,
                 },
             ],
             ..seed_load()
@@ -1271,6 +1273,7 @@ mod tests {
 
     fn candidate(target: &str, logic: Option<&str>) -> CopyCandidate {
         CopyCandidate {
+            id: 0,
             target_table: target.into(),
             execution_type: 1,
             table_type: None,
@@ -1960,6 +1963,8 @@ mod tests {
                 node_namespace_logic_hash: Some("logic".into()),
                 execution_runtime_ms: None,
                 input_names: Vec::new(),
+                execution_id: None,
+                last_modified_epoch: None,
             })),
         )
         .expect("registered copy");

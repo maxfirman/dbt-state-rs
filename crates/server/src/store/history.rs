@@ -1,6 +1,7 @@
 //! Scoped State history reads. Physical reuse always selects current state before
-//! eligibility; data tests use logical UID scope, and provenance walks historical
-//! state at the child's submission time. Keep these distinctions explicit.
+//! eligibility; Snowflake data tests use their history key and other data tests
+//! the logical UID scope, and provenance walks historical state at the child's
+//! submission time. Keep these distinctions explicit.
 
 use super::*;
 use crate::query_cache::ModelExecutionType;
@@ -354,6 +355,56 @@ impl Store {
         .await
     }
 
+    /// The latest confirmed run under a Snowflake data test's history key
+    /// (#200, ADR 0007 "Data-test history key"), whatever its unique id,
+    /// project or Target, within the organization, warehouse family and
+    /// connection namespace. Only this run in the key is ever reused: an
+    /// older run in the key is never resurrected. Runs recorded before the
+    /// key have none and are never returned.
+    pub async fn latest_data_test_by_key(
+        &self,
+        org_id: &str,
+        data_test_key: &str,
+        table_namespace: Option<&str>,
+        dialect: &str,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        sqlx::query_as::<_, ExecutionRow>(&format!(
+            r#"
+            SELECT {} FROM executions
+            WHERE org_id = $1 AND data_test_key = $2 AND execution_type = $5
+              AND NULLIF(table_namespace, '') IS NOT DISTINCT FROM $3
+              AND warehouse_family = $4
+              AND status = 'confirmed'
+            ORDER BY confirmed_at DESC NULLS LAST, id DESC LIMIT 1
+            "#,
+            ExecutionRow::COLUMNS
+        ))
+        .bind(org_id)
+        .bind(data_test_key)
+        .bind(crate::execution::non_blank_namespace(table_namespace))
+        .bind(warehouse_family(dialect))
+        .bind(ModelExecutionType::DbtDataTest as i32)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// One execution of the organization, by id; `None` when it belongs to
+    /// no row of this organization.
+    pub(crate) async fn execution_by_id(
+        &self,
+        org_id: &str,
+        id: i64,
+    ) -> sqlx::Result<Option<ExecutionRow>> {
+        sqlx::query_as::<_, ExecutionRow>(&format!(
+            "SELECT {} FROM executions WHERE org_id = $1 AND id = $2",
+            ExecutionRow::COLUMNS
+        ))
+        .bind(org_id)
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     /// Current seed loads with a seed's reuse identity under other names
     /// (#91): the latest confirmed row of each other target in the physical
     /// scope, kept only when it is a seed with these values and this seed
@@ -366,7 +417,7 @@ impl Store {
     ) -> sqlx::Result<Vec<CopyCandidate>> {
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
         query
-            .push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND execution_type = ")
+            .push("SELECT id, target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND execution_type = ")
             .push_bind(ModelExecutionType::Values as i32)
             .push(" AND node_sql_hash = ")
             .push_bind(q.seed_logic_hash)
@@ -408,7 +459,7 @@ impl Store {
         // (DISTINCT ON), then filter the current states by logic and (when asked)
         // execution type. Another connection's same-named target is a different object.
         let mut query = current_physical_state(org_id, Some(q.table_namespace), q.dialect, None);
-        query.push("SELECT target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND node_namespace_logic_hash = ANY(")
+        query.push("SELECT id, target_table, execution_type, table_type, last_modified_epoch, execution_runtime_ms, node_namespace_logic_hash, input_tables FROM current_state WHERE last_modified_epoch IS NOT NULL AND physical_target_key <> '' AND node_namespace_logic_hash = ANY(")
             .push_bind(
                 q.node_namespace_logic_hashes
                     .iter()
@@ -575,6 +626,10 @@ pub struct CopySourceBuild {
     /// The upstream relations it recorded, by physical name. `dbt state
     /// explain` gives a FRESH verdict only to an upstream the source recorded.
     pub input_names: Vec<String>,
+    /// The build itself (`executions.id`) and its epoch: a data test reads
+    /// the copy, while unchanged, as this build (#200).
+    pub execution_id: Option<i64>,
+    pub last_modified_epoch: Option<i64>,
 }
 
 impl CopySourceBuild {
@@ -594,6 +649,8 @@ impl CopySourceBuild {
             node_namespace_logic_hash: source.node_namespace_logic_hash,
             execution_runtime_ms: source.execution_runtime_ms,
             input_names,
+            execution_id: Some(source.id),
+            last_modified_epoch: source.last_modified_epoch,
         }
     }
 }

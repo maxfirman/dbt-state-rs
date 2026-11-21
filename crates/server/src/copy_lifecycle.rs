@@ -301,6 +301,14 @@ impl ExecutionEvidence {
         evidence.node_namespace_logic_hash = inherited_ns_logic;
         evidence.inherited_runtime_ms = source.and_then(|s| s.execution_runtime_ms);
         evidence.clone_source_inputs = source.map(|s| s.input_names.clone());
+        // The build the copy is made from (#200): the source's current build,
+        // unless the request names another epoch for it.
+        evidence.clone_source_execution_id = source
+            .filter(|s| {
+                req.clone_source_last_modified_epoch
+                    .is_none_or(|epoch| s.last_modified_epoch == Some(epoch))
+            })
+            .and_then(|s| s.execution_id);
         evidence.node_unique_id = req.labels.get("dbt_node_unique_id").cloned();
         evidence.clone_source_table = Some(req.clone_source_table.clone());
         if let Some(direct) = direct {
@@ -312,17 +320,19 @@ impl ExecutionEvidence {
         evidence
     }
 
-    /// The same evidence for a Result copy of `source_table` into this target.
-    pub(crate) fn copied_from(&self, source_table: &str) -> Self {
+    /// The same evidence for a Result copy of `source_table` into this target,
+    /// made from its confirmed build `source_execution_id` when known (#200).
+    pub(crate) fn copied_from(&self, source_table: &str, source_execution_id: Option<i64>) -> Self {
         let mut evidence = self.clone();
         evidence.clone_source_table = Some(source_table.to_owned());
+        evidence.clone_source_execution_id = source_execution_id;
         evidence
     }
 
     pub(crate) fn submit_copied_from(&self, source: &ExecutionRow) -> Self {
         let snapshot = SourceSnapshot::new(source, &source.dialect, &source.target_table);
         let provenance = snapshot.submit_provenance();
-        let mut evidence = self.copied_from(&source.target_table);
+        let mut evidence = self.copied_from(&source.target_table, None);
         evidence.input_tables = snapshot.inputs;
         evidence.raw_input_tables = None;
         evidence.submit_copy_provenance = Some(provenance);
@@ -359,6 +369,7 @@ pub(crate) fn adopt_current_inputs(anchor: &mut ExecutionRow, current: &[InputTa
                     _ => built,
                 },
                 producer: Producer::Unrecorded,
+                read_copy: None,
             })
             .collect();
     }

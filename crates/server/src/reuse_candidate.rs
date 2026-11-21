@@ -1,7 +1,8 @@
 //! Reuse candidate selection: which recorded result, if any, a submit may reuse.
 //!
 //! The caller fetches the latest execution in scope
-//! ([`Store::current_target_state`](crate::store::Store::current_target_state)
+//! ([`Store::current_target_state`](crate::store::Store::current_target_state),
+//! [`Store::latest_data_test_by_key`](crate::store::Store::latest_data_test_by_key)
 //! or [`Store::latest_data_test`](crate::store::Store::latest_data_test)) and
 //! passes it in. This module then decides, without I/O:
 //!
@@ -399,8 +400,11 @@ pub(crate) fn for_model_over_build_of_type(
     Ok(selected)
 }
 
-/// Data tests: no physical target. `latest` is the latest confirmed outcome
-/// for the test's node UID in its project and physical scope. The target's
+/// Data tests: no physical target. `latest` is the latest confirmed run under
+/// the test's history key (Snowflake, #200), or, under
+/// `compare_unrendered_code` when the key has none, and on every other
+/// Warehouse, the latest confirmed outcome for the test's node UID in its
+/// project and physical scope ([`data_test_identity_matches`]). The target's
 /// existence does not affect a data test's response, so it is not reported.
 pub(crate) fn for_data_test(
     req: &qc::SubmitEnrichedSqlRequest,
@@ -411,7 +415,7 @@ pub(crate) fn for_data_test(
     let Some(latest) = latest else {
         return Ok(Selection::FIRST_BUILD);
     };
-    let identified = if identity_matches(evidence, &latest) {
+    let identified = if data_test_identity_matches(evidence, &latest) {
         Some(latest.into_checked(true)?)
     } else {
         None
@@ -504,6 +508,25 @@ pub(crate) fn older_seed_matches(
 }
 
 use crate::copy_lifecycle::{adopt_current_inputs, copy_logic_matches, is_copy_registration};
+
+/// A data test's identity. A keyed test (Snowflake, #200) has a run's
+/// identity when the run has its history key, or, under
+/// `compare_unrendered_code`, its template identity on a run recorded with
+/// a key (the unique id's latest run; a generic test's template is shared
+/// by every test of its kind, so that alternative stays scoped by unique
+/// id). Runs recorded before the key never match. Every other test keeps
+/// the dual rendered/template identity ([`identity_matches`]).
+fn data_test_identity_matches(evidence: &ExecutionEvidence, row: &ExecutionRow) -> bool {
+    match evidence.data_test_key.as_deref() {
+        Some(key) => {
+            row.data_test_key.as_deref() == Some(key)
+                || (evidence.node_template_hash.is_some()
+                    && row.data_test_key.is_some()
+                    && row.node_template_hash == evidence.node_template_hash)
+        }
+        None => identity_matches(evidence, row),
+    }
+}
 
 /// Rendered identity, or (only in `compare_unrendered_code` mode, when the
 /// submit carries a template hash) the unrendered-template identity. A
@@ -844,6 +867,7 @@ mod tests {
             status: "confirmed".into(),
             request_id: "r".into(),
             clone_source_table: None,
+            data_test_key: ev.data_test_key.clone(),
             ..ExecutionRow::default()
         }
         .with_encoded_evidence(
@@ -1289,9 +1313,39 @@ mod tests {
             .candidate
             .is_none());
 
+        // A Snowflake data test is identified by its history key (#200): a
+        // run under another key, or recorded before the key, is not one.
+        assert!(ev.data_test_key.is_some());
+        let mut changed = recorded(&ev);
+        changed.data_test_key = Some("other".into());
+        assert!(for_data_test(&req, &ev, Some(changed))
+            .unwrap()
+            .candidate
+            .is_none());
+        let mut legacy = recorded(&ev);
+        legacy.data_test_key = None;
+        assert!(for_data_test(&req, &ev, Some(legacy))
+            .unwrap()
+            .candidate
+            .is_none());
+        let mut other_sql = recorded(&ev);
+        other_sql.node_sql_hash = Some("other".into());
+        assert!(
+            for_data_test(&req, &ev, Some(other_sql))
+                .unwrap()
+                .candidate
+                .is_some(),
+            "the rendered identity holds the default schema; the key does not"
+        );
+
+        // Other Warehouses keep the rendered identity.
+        let mut duckdb = req.clone();
+        duckdb.dialect = "duckdb".into();
+        let ev = evidence(&duckdb);
+        assert_eq!(ev.data_test_key, None);
         let mut changed = recorded(&ev);
         changed.node_sql_hash = Some("other".into());
-        assert!(for_data_test(&req, &ev, Some(changed))
+        assert!(for_data_test(&duckdb, &ev, Some(changed))
             .unwrap()
             .candidate
             .is_none());
@@ -1432,7 +1486,7 @@ mod tests {
             Some(NoCandidate::IncompleteCachedTestResults)
         );
         let mut changed = recorded(&ev);
-        changed.node_sql_hash = Some("other".into());
+        changed.data_test_key = Some("other".into());
         assert_eq!(why(Some(changed)), Some(NoCandidate::IdentityMismatch));
 
         let mut volatile = data_test_req();

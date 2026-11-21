@@ -835,6 +835,18 @@ impl Warehouse {
         }
     }
 
+    /// The version tag of a data test's history key (#200, ADR 0007
+    /// "Data-test history key"), for a Warehouse whose data-test State
+    /// history is keyed by it: Snowflake, as captured
+    /// (`data_test_history.jsonl`). `None` keeps the history of each test
+    /// unique id (Databricks and DuckDB, uncaptured).
+    pub(crate) fn data_test_history_key_version(self) -> Option<&'static [u8]> {
+        match self {
+            Self::Snowflake => Some(snowflake::DATA_TEST_HISTORY_KEY_VERSION),
+            _ => None,
+        }
+    }
+
     pub fn has_volatile_sql<'a>(
         self,
         root: &str,
