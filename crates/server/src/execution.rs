@@ -11,7 +11,8 @@
 
 use crate::analyzed_workload::Purpose;
 use crate::query_cache as qc;
-use crate::store::{logic_identity, InputTable, Producer, Store};
+use crate::store::{producer_identity, InputTable, Producer, Store};
+use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
 /// A blank `table_namespace` is read as absent when scoping State history
@@ -406,6 +407,10 @@ pub(crate) async fn record_batch(
         }
     }
 
+    retain_recorded_producer_revisions(store, org_id, &mut batch)
+        .await
+        .map_err(RecordError::Store)?;
+
     // Producers are resolved against State history AND the batch itself: a
     // consumer recorded alongside the upstream build it read records that
     // build, as the batch's builds are not yet in history (ADR 0007).
@@ -441,6 +446,50 @@ pub(crate) async fn record_batch(
     Ok(stored)
 }
 
+/// RecordExecutions carries existing Databricks FULL producer revisions
+/// forward for the same rendered identity. A historical record predating
+/// the current build cannot inherit its revision.
+async fn retain_recorded_producer_revisions(
+    store: &Store,
+    org_id: &str,
+    batch: &mut [(ExecutionEvidence, qc::ExecutionOutcome)],
+) -> sqlx::Result<()> {
+    let eligible = |e: &ExecutionEvidence| {
+        e.execution_type == qc::ModelExecutionType::Full as i32
+            && !e.target_table.is_empty()
+            && Warehouse::from_dialect(&e.dialect) == Warehouse::Databricks
+    };
+    let mut targets_by_namespace: HashMap<_, Vec<_>> = HashMap::new();
+    for (e, _) in batch.iter().filter(|(e, _)| eligible(e)) {
+        targets_by_namespace
+            .entry(e.table_namespace.clone().filter(|name| !name.is_empty()))
+            .or_default()
+            .push(e.target_table.clone());
+    }
+    let mut history = HashMap::new();
+    for (namespace, targets) in targets_by_namespace {
+        let builds = store
+            .current_target_states(org_id, &targets, namespace.as_deref(), "databricks")
+            .await?;
+        history.insert(namespace, builds);
+    }
+    for (e, outcome) in batch.iter_mut().filter(|(e, _)| eligible(e)) {
+        let namespace = e.table_namespace.clone().filter(|name| !name.is_empty());
+        e.producer_revision = history
+            .get(&namespace)
+            .and_then(|builds| builds.get(&e.target_table))
+            .filter(|build| {
+                build.execution_type == e.execution_type
+                    && build
+                        .last_modified_epoch
+                        .zip(outcome.last_modified_epoch)
+                        .is_some_and(|(previous, recorded)| previous <= recorded)
+            })
+            .and_then(|build| build.retained_producer_revision(e.node_sql_hash.as_deref()));
+    }
+    Ok(())
+}
+
 /// The physical scope a producer is resolved in: connection namespace and
 /// warehouse family (the organization is the batch's).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -471,10 +520,11 @@ fn batch_builds(
 ) -> HashMap<(String, BatchScope), BatchBuilds> {
     let mut builds: HashMap<_, Vec<_>> = HashMap::new();
     for (e, outcome) in batch.iter().filter(|(e, _)| !e.target_table.is_empty()) {
-        let Some(identity) = logic_identity(
+        let Some(identity) = producer_identity(
             e.node_sql_hash.as_deref(),
             e.node_namespace_logic_hash.as_deref(),
             e.values_hash.as_deref(),
+            e.producer_revision,
         ) else {
             continue;
         };

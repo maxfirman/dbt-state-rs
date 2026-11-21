@@ -96,19 +96,25 @@ impl From<&qc::TableModifiedInfo> for InputTable {
     }
 }
 
-/// The logic identity a producer is recorded by (ADR 0007): the rendered
-/// logic hash with a seed's values, else a copy's schema-abstracted logic.
-/// `None` when the execution has neither (its identity is then its id).
-pub(crate) fn logic_identity(
+/// The identity a producer is recorded by (ADR 0007): the rendered logic
+/// hash with a seed's values, else a copy's schema-abstracted logic, with
+/// any established producer revision. Without either hash the caller may
+/// fall back to the execution's ID.
+pub(crate) fn producer_identity(
     node_sql_hash: Option<&str>,
     node_namespace_logic_hash: Option<&str>,
     values_hash: Option<&str>,
+    producer_revision: Option<i64>,
 ) -> Option<String> {
-    match (node_sql_hash, node_namespace_logic_hash) {
+    let logic = match (node_sql_hash, node_namespace_logic_hash) {
         (Some(sql), _) => Some(format!("sql:{sql}:{}", values_hash.unwrap_or(""))),
         (None, Some(ns)) => Some(format!("ns:{ns}")),
         (None, None) => None,
-    }
+    }?;
+    Some(match producer_revision {
+        Some(revision) => format!("revised:{revision}:{logic}"),
+        None => logic,
+    })
 }
 
 /// A stored execution: the one read type for the `executions` table. State
@@ -178,21 +184,24 @@ pub(crate) struct Undecodable {
 }
 
 impl ExecutionRow {
-    /// The logic identity a producer is recorded by (ADR 0007): the rendered
-    /// logic hash with a seed's values, else the copy's schema-abstracted
-    /// logic, else the execution itself.
     fn producer_identity(&self) -> String {
-        let logic = logic_identity(
+        producer_identity(
             self.node_sql_hash.as_deref(),
             self.node_namespace_logic_hash.as_deref(),
             self.values_hash.as_deref(),
+            self.producer_revision,
         )
-        .unwrap_or_else(|| format!("execution:{}", self.id));
-        match self.producer_revision {
-            Some(revision) => format!("revised:{revision}:{logic}"),
-            None => logic,
+        .unwrap_or_else(|| format!("execution:{}", self.id))
+    }
+
+    pub(crate) fn retained_producer_revision(&self, rendered_hash: Option<&str>) -> Option<i64> {
+        if self.node_sql_hash.as_deref() == rendered_hash && crate::copy_lifecycle::ordinary(self) {
+            self.producer_revision
+        } else {
+            None
         }
     }
+
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \

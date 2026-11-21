@@ -1997,6 +1997,43 @@ async fn databricks_producer_revision_requires_a_confirmed_source_and_cannot_rev
     }
 }
 
+#[tokio::test]
+async fn databricks_record_preserves_the_producer_revision_in_and_after_the_batch() {
+    let capture = entries(DATABRICKS_PRODUCER);
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    replay(&sc, &capture, 26).await;
+
+    let producer = target(&capture[30].request);
+    let first_build = capture[31].request["last_modified_epoch"].as_i64().unwrap();
+    sc.at(submitted_at(&capture[30]))
+        .build(captured_submit(&capture[30].request), first_build)
+        .await;
+
+    let recorded_build = first_build + 1_000;
+    let recorded_consumer = recorded_build + 1_000;
+    let strict = captured_submit(&capture[32].request).upstream(&producer, recorded_build);
+    let sc = sc.at(submitted_at(&capture[44]));
+    assert_eq!(
+        sc.record([
+            captured_submit(&capture[42].request).record(built_at(recorded_build)),
+            strict.record(built_at(recorded_consumer)),
+        ])
+        .await
+        .unwrap(),
+        2
+    );
+
+    // The untouched consumer still sees a producer change. The consumer
+    // recorded in the batch already holds the revised producer.
+    let tolerant = captured_submit(&capture[33].request).upstream(&producer, recorded_build);
+    sc.expect_execute(tolerant).await;
+    let skip = sc
+        .expect_skip(strict.own_epoch(Some(recorded_consumer)))
+        .await;
+    assert!(!skip.explained_decision.unwrap().is_stale);
+}
+
 /// Neighbouring uncaptured Databricks cells keep an empty map.
 #[tokio::test]
 async fn databricks_uncaptured_cells_render_nothing() {

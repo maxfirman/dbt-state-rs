@@ -235,8 +235,10 @@ input. The Delta requirement follows the tested Databricks scope, since the
 pinned client omitted the table type when confirming this managed input.
 The producing model's pending row stores the revision and publishes it on
 confirmation. Ordinary same-identity builds retain an established revision
-across further input edits or missing evidence. History before migration
-0029 has no revision.
+across further input edits or missing evidence. A same-identity
+`RecordExecutions` build at or after the current build's epoch retains its
+revision. Consumers recorded in the same batch resolve against the revised
+producer identity. History before migration 0029 has no revision.
 Revisions leave SQL identity and Reuse qualification unchanged and carry no
 rendered values. The usual producer comparison then explains the upstream
 query change and applies the same Lag-tolerance rule to consumers. Broader

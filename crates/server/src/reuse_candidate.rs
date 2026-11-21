@@ -241,13 +241,9 @@ pub(crate) fn for_model(
         .as_ref()
         .map(|row| rerun_evidence(req, evidence, row))
         .unwrap_or_default();
-    let producer_revision = identified.as_ref().and_then(|row| {
-        if crate::copy_lifecycle::ordinary(row) && row.node_sql_hash == evidence.node_sql_hash {
-            row.producer_revision
-        } else {
-            None
-        }
-    });
+    let producer_revision = identified
+        .as_ref()
+        .and_then(|row| row.retained_producer_revision(evidence.node_sql_hash.as_deref()));
     let mut selected = Selection::of(
         identified,
         unidentified,
