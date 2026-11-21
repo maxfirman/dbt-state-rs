@@ -28,6 +28,7 @@ const MIGRATED: &[&str] = &[
     "conformance_materializations.rs",
     "correctness.rs",
     "data_test_freshness.rs",
+    "data_test_history.rs",
     "data_test_template.rs",
     "deferral.rs",
     "differential.rs",

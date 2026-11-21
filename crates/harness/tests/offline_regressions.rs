@@ -100,10 +100,13 @@ async fn data_test_identity_logic_and_results_round_trip() {
     assert_eq!(sc.verdict(changed).await, "ready_to_execute");
     let changed = req.clone().extra("severity", "\"warn\"");
     assert_eq!(sc.verdict(changed).await, "ready_to_execute");
+    // A Snowflake data test's history is keyed by its SQL, inputs and
+    // result-setting config, not its project (#200, P12–P15).
     let other_project = req.clone().project("other");
-    assert_eq!(sc.verdict(other_project).await, "ready_to_execute");
-    // Older clients publish the unique id only in labels.
-    let unlabelled = req.without_node_state();
+    assert_eq!(sc.verdict(other_project).await, "skip_execution");
+    // Older clients publish the unique id only in labels; it scopes the
+    // history of a Warehouse that keeps it per unique id (Databricks).
+    let unlabelled = req.without_node_state().dialect("databricks");
     let first = unlabelled
         .clone()
         .label("dbt_node_unique_id", "test.python.first");

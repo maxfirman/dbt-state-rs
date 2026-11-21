@@ -412,8 +412,23 @@ and fingerprints.
    by `ALL` or within Lag tolerance). On an EXECUTE it is false, except a
    rebuild reporting 8 / 7, where it is set as the older build would be reused.
    On a Result copy it is set as the copied equivalent would be reused.
-7. **Data tests.** Matched by project, `table_namespace` and node unique ID,
-   plus SQL/config/context identity. Reuse needs complete cached results
+7. **Data tests.** On Snowflake, matched by the data-test history key
+   (#200, [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)):
+   the latest confirmed run in the organization, warehouse family and
+   `table_namespace` with the same normalized SQL, `semantic_extras` and
+   query dependencies, and the same default catalog and schema unless the
+   SQL is context free (fully qualified relations, no function or sequence
+   call). The unique id, `project_id`, `target_name` and the evaluation flag
+   are not in the key, so another unique id's run of the same SQL is served
+   with its runtime and cached results (`data_test_history.jsonl` Q6,
+   probes P60–P75, `explain_volatile_cells.jsonl` entry 146). An input that
+   is an unchanged copy this server recorded (Result copy on submit or
+   RegisterClone) is read as the build it was copied from, so a dev test
+   over a copy of the prod upstream reuses the prod run (F34). Under
+   `compare_unrendered_code` a key without a run falls back to the unique
+   id's latest run with the same template identity. Databricks and DuckDB
+   match by project, `table_namespace` and node unique ID, plus
+   SQL/config/context identity. Reuse needs complete cached results
    (numeric `failures` and boolean `should_error` and `should_warn`), which
    the SKIP echoes in `execution_results`. Freshness uses the recorded
    upstream epochs. Data tests never get a Result copy. A failing test is
@@ -810,11 +825,10 @@ section, its [DATA TEST](explain-catalog.md#data-test) section and its
 
 **Conformance.** The replay compares map keys and function text exactly and
 each runtime value by its format (`conformance.rs::normalize_volatile_values`,
-[testing.md](testing.md#goldenreplay_gapsjson)). The only Volatile
-evaluation replay gap is cells entry 146: its `execution_runtime_ms`, which
-hosted echoes from another data test. The maintainer decided not to match
-it (decision 2 on #201); it is tracked in #200. Every other entry of the
-three Snowflake fixtures replays.
+[testing.md](testing.md#goldenreplay_gapsjson)). Every entry of the three
+Snowflake fixtures replays. Cells entry 146 echoes the runtime of another
+data test with the same SQL, the later-confirmed run of its history key
+(#200; it was keyed until then, decision 2 on #201).
 
 **Not captured.** The remaining Snowflake cells, each with its tracking
 issue or whether client 2.0.11 can reach it, are listed in
@@ -839,7 +853,7 @@ ordinary submit and no `ConfirmExecution`.
 
 This server answers `skip_execution` only when the decision needs no table
 evidence at all: a data test with no Target relation and no reported tables
-that the ordinary submit would SKIP (complete cached results, scoped UID
+that the ordinary submit would SKIP (complete cached results, its scoped
 identity). It decides that submit through the ordinary submit's code
 (`submit_decision::speculative_sql`), returns the ordinary SKIP's payload, and
 records the decision, reason and node state as the ordinary SKIP does. Every

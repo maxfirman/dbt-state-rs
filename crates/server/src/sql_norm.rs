@@ -421,6 +421,16 @@ pub(crate) fn canonical_identifier(raw: &str) -> String {
     }
 }
 
+/// A relation name's canonical identifiers: its components
+/// ([`split_object_name_components`]), each canonicalized with
+/// [`canonical_identifier`].
+pub(crate) fn canonical_identifiers(name: &str) -> Vec<String> {
+    split_object_name_components(name)
+        .iter()
+        .map(|c| canonical_identifier(c))
+        .collect()
+}
+
 /// Canonical key for a schema component. Thin wrapper over
 /// [`canonical_identifier`] retained for the schema-token map call sites.
 pub(crate) fn canonical_schema_key(raw: &str) -> String {
@@ -667,6 +677,116 @@ impl VisitorMut for SchemaCollector {
         }
         ControlFlow::Continue(())
     }
+}
+
+/// A data test's SQL as its history key reads it (#200,
+/// [`crate::analyzed_workload::identity::data_test_history_key`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyedSql {
+    /// [`normalize_sql`] of the SQL, each substituted relation replaced first.
+    pub sql: String,
+    /// Nothing in the SQL can resolve through the session's default catalog
+    /// or schema: every relation is named in three parts (no CTE reference
+    /// either), and the SQL calls no function, reads no table function and
+    /// no sequence. Only such SQL is keyed without its resolution context.
+    pub context_free: bool,
+}
+
+/// [`normalize_sql`] of a data test's `sql` with each three-part relation
+/// whose canonical components (`canonical_identifier`) `substitute` maps
+/// replaced by the mapped components, and whether the SQL is
+/// [`KeyedSql::context_free`]. `None` when the SQL does not parse: the
+/// caller then keys the exact text with its context.
+pub(crate) fn keyed_relations_sql(
+    sql: &str,
+    substitute: &dyn Fn(&[String]) -> Option<Vec<String>>,
+) -> Option<KeyedSql> {
+    use sqlparser::ast::{Statement, TableFactor};
+    struct Keying<'a> {
+        substitute: &'a dyn Fn(&[String]) -> Option<Vec<String>>,
+        context_free: bool,
+    }
+    impl VisitorMut for Keying<'_> {
+        type Break = ();
+        fn pre_visit_statement(&mut self, s: &mut Statement) -> ControlFlow<()> {
+            if !matches!(s, Statement::Query(_)) {
+                self.context_free = false;
+            }
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_table_factor(&mut self, t: &mut TableFactor) -> ControlFlow<()> {
+            let plain = match t {
+                TableFactor::Table { args, .. } => args.is_none(),
+                TableFactor::Derived { .. } | TableFactor::NestedJoin { .. } => true,
+                _ => false,
+            };
+            if !plain {
+                self.context_free = false;
+            }
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_relation(&mut self, name: &mut sqlparser::ast::ObjectName) -> ControlFlow<()> {
+            let parts: Option<Vec<String>> = name
+                .0
+                .iter()
+                .map(|part| match part {
+                    ObjectNamePart::Identifier(id) if id.quote_style.is_some() => Some(
+                        canonical_identifier(&format!("\"{}\"", id.value.replace('"', "\"\""))),
+                    ),
+                    ObjectNamePart::Identifier(id) => Some(canonical_identifier(&id.value)),
+                    _ => None,
+                })
+                .collect();
+            match parts.filter(|p| p.len() == 3) {
+                Some(parts) => {
+                    if let Some(replacement) = (self.substitute)(&parts) {
+                        name.0 = replacement
+                            .into_iter()
+                            .map(|c| ObjectNamePart::Identifier(Ident::with_quote('"', c)))
+                            .collect();
+                    }
+                }
+                None => self.context_free = false,
+            }
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &mut Expr) -> ControlFlow<()> {
+            let resolves = match e {
+                Expr::Function(_) => true,
+                // `seq.nextval` reads a sequence resolved by schema.
+                Expr::CompoundIdentifier(parts) => parts.last().is_some_and(|id| {
+                    id.quote_style.is_none() && id.value.eq_ignore_ascii_case("nextval")
+                }),
+                _ => false,
+            };
+            if resolves {
+                self.context_free = false;
+            }
+            ControlFlow::Continue(())
+        }
+    }
+    let mut statements = Parser::parse_sql(&SnowflakeDialect {}, sql).ok()?;
+    let mut keying = Keying {
+        substitute,
+        context_free: !statements.is_empty(),
+    };
+    let mut canonical = Canonicalizer {
+        abstract_schema: false,
+        schemas: None,
+    };
+    for statement in &mut statements {
+        if statement.visit(&mut keying).is_break() || statement.visit(&mut canonical).is_break() {
+            return None;
+        }
+    }
+    Some(KeyedSql {
+        sql: statements
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("; "),
+        context_free: keying.context_free,
+    })
 }
 
 /// Legacy lexical helper; not used for persisted fingerprints.

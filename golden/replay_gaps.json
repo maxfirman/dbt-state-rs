@@ -377,14 +377,5 @@
     "entry": 28,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
-  },
-  {
-    "fixture": "explain_volatile_cells.jsonl",
-    "entry": 146,
-    "local_variant": "skip_execution",
-    "ignore_fields": [
-      "execution_runtime_ms"
-    ],
-    "reason": "RUNTIME ECHO GAP (#202, #204; maintainer decision 2 on #201: not implemented, tracked in #200) cto data test with evaluation off, unchanged rerun SKIP: hosted echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm, entry 65), not cto's own 1701 (entry 63), which the local server echoes because the scoped data-test UID floor stays (cf. the #138 UID difference). Everything else, the transformed_nodes_by_query map included, matches exactly."
   }
 ]

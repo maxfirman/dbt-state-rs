@@ -271,7 +271,7 @@ other reason is in [Decision reason coverage](#decision-reason-coverage). The ev
 capture metadata. The current table includes the Databricks identity, freshness,
 deferral and isolation campaigns as well as the Snowflake captures listed above.
 
-| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-19) |
+| `execution_type` | Node kind | SKIP | EXECUTE | CLONE | Fence | Evidence (tracked trees, 2026-11-21) |
 |---|---|---|---|---|---|---|
 | 1 | FULL (table / model) | characterized (live) | characterized (live)¹ ⁶ | characterized (live) | S E C | EXECUTE 308 (171 client 2.0.11, 135 crafted, 1 client (version unrecorded), 1 client 2.0.6), SKIP 267 (147 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded)), CLONE 11 (7 crafted, 3 client 2.0.11, 1 client 2.0.6) |
 | 2 | APPEND (incremental) | characterized (live)¹¹ | characterized (live)¹² | unreachable on 2.0.11¹³ | S E | EXECUTE 31 (27 client 2.0.11, 4 crafted), SKIP 19 (18 client 2.0.11, 1 crafted) |
@@ -280,7 +280,7 @@ deferral and isolation campaigns as well as the Snowflake captures listed above.
 | 5 | DELETE_INSERT (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 25 (23 client 2.0.11, 2 crafted), SKIP 11 (11 client 2.0.11) |
 | 6 | MICROBATCH (incremental) | characterized (live) | characterized (live)⁶ | unreachable on 2.0.11¹³ | S E | EXECUTE 30 (28 client 2.0.11, 2 crafted), SKIP 16 (16 client 2.0.11) |
 | 7 | SNAPSHOT | characterized (live)¹¹ | characterized (live)⁶ | unreachable on 2.0.11⁷ | S E | EXECUTE 39 (33 client 2.0.11, 6 crafted), SKIP 28 (27 client 2.0.11, 1 crafted) |
-| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | —¹⁵ | S E | EXECUTE 50 (48 client 2.0.11, 2 crafted), SKIP 49 (43 client 2.0.11, 5 crafted, 1 client 2.0.6) |
+| 8 | DBT_DATA_TEST | characterized (live) | characterized (live)⁹ | —¹⁵ | S E | EXECUTE 59 (57 client 2.0.11, 2 crafted), SKIP 88 (65 client 2.0.11, 22 crafted, 1 client 2.0.6) |
 | 9 | VALUES (seed) | characterized (live)² | characterized (live)² | characterized (live)⁸ | S E C | EXECUTE 13 (8 client 2.0.11, 5 crafted), SKIP 7 (6 client 2.0.11, 1 crafted), CLONE 3 (3 client 2.0.11) |
 | 10 | VIEW | characterized (live)¹⁴ | characterized (live)³ ¹⁴ | unreachable on 2.0.11⁴ | S E | EXECUTE 112 (92 crafted, 20 client 2.0.11), SKIP 43 (30 crafted, 12 client 2.0.11, 1 client 2.0.6) |
 | 11 | DBT_CUSTOM | characterized (live) | characterized (live) | unreachable on 2.0.11¹⁰ | S E | EXECUTE 33 (29 client 2.0.11, 4 crafted), SKIP 17 (16 client 2.0.11, 1 crafted) |
@@ -410,28 +410,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 1225 trees in the
-tracked fixtures (2026-11-19). A line without a marker or badge is "none"
-(6546 lines without a marker, 7947 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 1273 trees in the
+tracked fixtures (2026-11-21). A line without a marker or badge is "none"
+(6808 lines without a marker, 8260 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 3174 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 3287 lines |
 | ExplainMarker | FAIL (2) | ✅ 823 lines |
-| ExplainMarker | INFO (3) | ✅ 133 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1225 trees (2026-11-19; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainMarker | INFO (3) | ✅ 137 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1273 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 | ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 965 lines |
 | ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 177 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 25 `databricks_*.jsonl` captures) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 737 lines |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 772 lines |
 | ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 38 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 15 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 505 lines |
+| ExplainBadge | FRESH (1) | ✅ 536 lines |
 | ExplainBadge | OUTDATED (3) | ✅ 247 lines |
 | ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 45 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1225 trees (2026-11-19; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1273 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 1225 tracked trees: 795 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
+1. Origins across the 1273 tracked trees: 826 client 2.0.11, 438 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -451,7 +451,7 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-19 (1225 trees in 156 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-21 (1273 trees in 158 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
@@ -470,8 +470,8 @@ Tracked fixtures, 2026-11-19 (1225 trees in 156 files, none empty; INFO catalogu
 | MICROBATCH | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 28 | 27 client 2.0.11, 1 crafted |
 | SNAPSHOT | EXECUTE | 39 | 33 client 2.0.11, 6 crafted |
-| DBT_DATA_TEST | SKIP | 49 | 43 client 2.0.11, 5 crafted, 1 client 2.0.6 |
-| DBT_DATA_TEST | EXECUTE | 50 | 48 client 2.0.11, 2 crafted |
+| DBT_DATA_TEST | SKIP | 88 | 65 client 2.0.11, 22 crafted, 1 client 2.0.6 |
+| DBT_DATA_TEST | EXECUTE | 59 | 57 client 2.0.11, 2 crafted |
 | VALUES | SKIP | 7 | 6 client 2.0.11, 1 crafted |
 | VALUES | EXECUTE | 13 | 8 client 2.0.11, 5 crafted |
 | VALUES | CLONE | 3 | 3 client 2.0.11 |
@@ -1464,6 +1464,31 @@ One `upstream dependencies` child per tested upstream, in the order of the
 decision-time inputs (two upstreams: `explain_rebuild_reason_gaps.jsonl`
 `r40t2`). A failing test SKIPs like a passing one and is served its cached
 failure (`explain_data_test_history.jsonl`).
+
+Two SKIP variants from the #200 capture (`data_test_history.jsonl`, client
+2.0.11, [note](reports/snowflake-data-test-history-2026-11-21.md)):
+
+- A SKIP that reuses another Target's run, through an upstream hosted copied
+  from the relation that run read (dev reads the dev copy of a prod table),
+  prints the tree above **without** the `<FRESH>` badge and the `no updates
+  since test last executed` line; the upstream (named as the copy) is dated
+  at the copy source's build time, and `upstream data is up to date`
+  [SUCCESS] follows the listing when that build's epoch is the one the
+  reused run recorded (F36–F38, F57, F81, F83). The tree does not name the
+  reused run. This server renders it for a copy it recorded (#200,
+  `InputTable::read_copy`).
+- Under `compare_unrendered_code` (Snowflake), the query analysis is the
+  template comparison in model wording, as on Databricks: `the model was
+  compared to state based on its unrendered code` [INFO], `the unrendered
+  model code has not changed` [SUCCESS] (no badge), then `upstream model
+  queries have not changed` [SUCCESS]. Hosted prints it also when the
+  rendered SQL is unchanged (entry 67), with either freshness listing (F39,
+  F84 through a copy; P59). This server prints it for a reuse of a run with
+  the same unrendered body (#200); a reuse of a run with another body is
+  uncaptured and keeps the rendered lines.
+
+A SKIP that reuses another unique id's run (same SQL) prints the ordinary
+tree.
 
 A test with no upstreams (`r40t0`, a singular test without `ref` or
 `source`) omits the upstream-queries line, like a FULL model (SHAPE 0):

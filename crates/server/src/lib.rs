@@ -5,6 +5,7 @@ pub mod capture;
 pub mod config;
 mod copy_lifecycle;
 mod copy_registration;
+mod data_test_history;
 mod databricks_submit_copy;
 pub mod decision;
 mod execution;
