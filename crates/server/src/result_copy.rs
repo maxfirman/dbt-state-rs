@@ -1973,7 +1973,7 @@ mod tests {
                 node_namespace_logic_hash: Some("logic".into()),
                 execution_runtime_ms: None,
                 input_names: Vec::new(),
-                execution_id: None,
+                execution_id: 1,
                 last_modified_epoch: None,
             })),
         )

@@ -628,7 +628,7 @@ pub struct CopySourceBuild {
     pub input_names: Vec<String>,
     /// The build itself (`executions.id`) and its epoch: a data test reads
     /// the copy, while unchanged, as this build (#200).
-    pub execution_id: Option<i64>,
+    pub execution_id: i64,
     pub last_modified_epoch: Option<i64>,
 }
 
@@ -649,7 +649,7 @@ impl CopySourceBuild {
             node_namespace_logic_hash: source.node_namespace_logic_hash,
             execution_runtime_ms: source.execution_runtime_ms,
             input_names,
-            execution_id: Some(source.id),
+            execution_id: source.id,
             last_modified_epoch: source.last_modified_epoch,
         }
     }

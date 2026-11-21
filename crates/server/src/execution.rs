@@ -1374,7 +1374,7 @@ mod tests {
             node_namespace_logic_hash: Some("logic".into()),
             execution_runtime_ms: Some(3826),
             input_names: vec!["\"DB\".\"PROD\".\"UP\"".into()],
-            execution_id: None,
+            execution_id: 1,
             last_modified_epoch: None,
         };
         let row = ExecutionEvidence::copy_registration(

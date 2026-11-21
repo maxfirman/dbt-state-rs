@@ -308,7 +308,7 @@ impl ExecutionEvidence {
                 req.clone_source_last_modified_epoch
                     .is_none_or(|epoch| s.last_modified_epoch == Some(epoch))
             })
-            .and_then(|s| s.execution_id);
+            .map(|s| s.execution_id);
         evidence.node_unique_id = req.labels.get("dbt_node_unique_id").cloned();
         evidence.clone_source_table = Some(req.clone_source_table.clone());
         if let Some(direct) = direct {
