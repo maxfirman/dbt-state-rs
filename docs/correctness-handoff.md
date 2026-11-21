@@ -165,6 +165,11 @@ Do not weaken these without new evidence.
 Each item needs a controlled capture before the server changes. Until then the
 server keeps the conservative behavior described.
 
+- Which source does a Databricks FULL submit copy when two eligible builds
+  have the same physical completion epoch? With distinct epochs, hosted
+  selected the later one in all three two-source ordering controls.
+  [Captured decisions and confirmation order](reports/databricks-copy-candidates-2026-11-21.md)
+
 - **Speculative decisions beyond a data test without upstreams (#103).**
   Hosted SKIPs an unchanged data test with no upstreams on the
   `SubmitEnrichedSQLSpeculative` call (`explain_rebuild_reason_gaps.jsonl`
