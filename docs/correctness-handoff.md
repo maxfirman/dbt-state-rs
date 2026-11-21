@@ -41,6 +41,21 @@ Do not weaken these without new evidence.
   the submit's type, which is never reused
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#execution-type-change)). See
   [architecture.md](architecture.md#physical-scope-rule).
+- **Data-test history key (#200).** A data test has no Target relation. On
+  Snowflake its State history is its key: organization, warehouse family,
+  `table_namespace` and the versioned key over its normalized SQL (each
+  input read through an unchanged copy this server recorded as that copy's
+  source build), every `semantic_extras` entry and its query dependencies,
+  plus its default catalog and schema unless the SQL is context free. Only
+  the latest confirmed run under the key is reusable, failures included; an
+  older run under another key stays reusable, because no later run
+  overwrites what it read. A copy stands for its source only while unchanged
+  since the copy (reported epoch no later than its confirmation), only for
+  an ordinary source build, and proves freshness only at exactly the
+  source's recorded epoch. Rows without a key, and copies without a recorded
+  source build, cold-miss once. Databricks, DuckDB and other Warehouses keep
+  one latest run per unique id
+  ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)).
 - **Physical completion order defines current state.** The greatest completion
   epoch wins; confirmation receipt then row id break equal-epoch ties
   (`databricks_lifecycle_ordering.jsonl`; the equal-epoch cases in
@@ -149,15 +164,31 @@ server keeps the conservative behavior described.
   decides only the captured case, through the ordinary submit's code, and
   answers `undecided` otherwise, after which the client sends the ordinary
   submit (`crates/harness/tests/speculative_submit.rs`).
-- **Data-test history key, remaining cells (#200).** The capture leaves
-  open whether hosted's data-test key holds the upstream epochs themselves
-  or picks the latest run and then judges freshness (they differ only under
-  Lag tolerance); whether copy provenance or the same producer node at the
-  same build resolves a dev relation to the prod one; whether `fail_calc`,
-  `warn_if`, `error_if`, `store_failures` and query dependencies are in the
-  key; and the 2.0.6 shape with its dev runs captured (a dev upstream built,
-  not copied, with a newer prod run). Databricks and DuckDB are not
-  captured. Until a decision the server keeps its scoped unique-id floor.
+- **Data-test history key, remaining cells (#200).** Implemented as decided
+  (option A); these cells stay open and the server keeps the conservative
+  choice named:
+  - whether hosted's key holds the upstream epochs (a content address) or
+    picks the latest run and then judges freshness. They differ only under
+    Lag tolerance, which clients send as 0 for data tests; the server picks
+    the latest run first;
+  - whether copy provenance or the same producer at the same build makes a
+    dev relation stand for the prod one. The server uses only copies it
+    recorded (Result copy on submit, RegisterClone) of an ordinary build;
+    a copy of a copy, a copy recorded before #200 and a relation built
+    rather than copied stand for themselves;
+  - whether `fail_calc`, `warn_if`, `error_if`, `store_failures`, `limit`,
+    `where` and query dependencies are in hosted's key. The server keeps
+    them all in the key;
+  - whether hosted ignores `default_schema` for SQL that names a relation
+    without its schema, reads a CTE, or calls a function or sequence. The
+    server keeps the default catalog and schema in the key there, so a dev
+    test of a generic `unique` or `accepted_values` test (which calls
+    `count`) does not reuse the prod run through a copy;
+  - the 2.0.6 shape with its dev runs captured: a dev upstream built, not
+    copied, with a newer prod run (`golden_20261009T083754.534Z.jsonl`
+    entries 13–16 stay Missing history);
+  - more than one organization (one was captured), and Databricks and DuckDB,
+    which keep one latest run per unique id.
 - **Resolution context of dependencies.** Whether hosted keys dependency
   equivalence on anything beyond the definition body and freshness. A
   context-only change could not be isolated from upstream freshness through the
@@ -172,18 +203,17 @@ server keeps the conservative behavior described.
   Warehouse executes the original SQL in every case. #202 captured the
   Snowflake cells #191 left open (`golden/fixtures/explain_volatile_cells.jsonl`,
   [characterization note](reports/snowflake-volatile-cells-2026-11-19.md)),
-  and #203–#207 implemented them; every entry of that capture replays except
-  entry 146 (#200, below).
+  and #203–#207 implemented them; every entry of that capture replays,
+  entry 146 since #200.
   - Maintainer decisions on the #202 check-in (#201, 2026-11-19).
     Decision 1: hosted's SKIP of volatile SQL with evaluation on under
     `compare_unrendered_code` (entry 140) is matched for a Snowflake model
     with an unchanged template (#206;
     [ADR 0005](adr/0005-re-derive-explain-tree-on-demand.md) "Amended by
     #201"). Decision 2: the data-test SKIP that echoes another data test's
-    runtime (entry 146, `cto`) is not matched. The scoped data-test UID floor
-    stays, the server echoes `cto`'s own runtime, and only
-    `execution_runtime_ms` is keyed in the replay gaps, under #200, which
-    holds the evidence. Decision 3: a model's rebuild refused at Reuse
+    runtime (entry 146, `cto`) was not matched pending #200; since #200
+    (option A) the server echoes `rt`'s later-confirmed run of the same key,
+    as hosted does, and the entry replays. Decision 3: a model's rebuild refused at Reuse
     qualification records the refused build as its Explain anchor (ADR 0005
     "Amended by #201").
   - Databricks (#198): #198 captured a FULL table's first build and
@@ -556,30 +586,6 @@ replay fails when an entry becomes unused or resolved
   confirmations (2088, 2164, 2148, 1511 ms), the dev SQL reads
   `dev_clone.customers` at an epoch about 2.5 days older than the capture,
   and no copy occurs (#190).
-- **Data-test runtime echo across unique ids (#200).** `cto`'s unchanged
-  rerun with evaluation off (`explain_volatile_cells.jsonl` entry 146) is a
-  SKIP on both sides, but hosted echoes `execution_runtime_ms` 2136, the
-  confirmed runtime of the data test `rt` (entry 65: the same round 1 SQL,
-  another unique id, evaluation on), not `cto`'s own 1701 (entry 63). This
-  suggests hosted's data-test reuse identity ignores the unique id and the
-  evaluation flag (cf. the Databricks #138 UID difference). By maintainer
-  decision 2 on #201 the server keeps its scoped data-test UID floor (reuse
-  invariant 5) and echoes `cto`'s runtime; only that field is keyed. Any
-  change to data-test reuse identity goes through #200.
-- **Data-test history key (#200, captured 2026-11-21, not adopted).**
-  `data_test_history.jsonl` and `data_test_history_probes.jsonl`
-  ([note](reports/snowflake-data-test-history-2026-11-21.md)): hosted reuses
-  the latest confirmed run of the same normalized SQL and inputs in the
-  namespace, across unique ids, `project_id`, `target_name` and
-  `default_schema`, and across Targets when the dev upstream is a hosted copy
-  of the prod upstream; `table_namespace`, `severity` and the input relations
-  separate histories, and an older run in another key stays reusable. The
-  server keeps one latest row per unique id with its rendered identity, so it
-  rebuilds where hosted reuses (whole-response gaps), and echoes its own
-  unique id's run where hosted echoes another's (probes entries 66 and 74:
-  `execution_runtime_ms` and `execution_results`). It never SKIPs where hosted
-  rebuilds in these captures. The key is a maintainer decision under reuse
-  invariant 1.
 - **Conservative identity.** A dependency sent as `SELECT` text in one submit
   and as view DDL in another rebuilds locally where hosted reused.
 - **Safety floor.** The externally modified seed table is reloaded

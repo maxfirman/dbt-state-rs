@@ -1471,15 +1471,21 @@ Two SKIP variants from the #200 capture (`data_test_history.jsonl`, client
 - A SKIP that reuses another Target's run, through an upstream hosted copied
   from the relation that run read (dev reads the dev copy of a prod table),
   prints the tree above **without** the `<FRESH>` badge and the `no updates
-  since test last executed` line; the upstream's `last updated` is the copy
-  source's build time. The tree does not name the reused run.
+  since test last executed` line; the upstream (named as the copy) is dated
+  at the copy source's build time, and `upstream data is up to date`
+  [SUCCESS] follows the listing when that build's epoch is the one the
+  reused run recorded (F36–F38, F57, F81, F83). The tree does not name the
+  reused run. This server renders it for a copy it recorded (#200,
+  `InputTable::read_copy`).
 - Under `compare_unrendered_code` (Snowflake), the query analysis is the
   template comparison in model wording, as on Databricks: `the model was
   compared to state based on its unrendered code` [INFO], `the unrendered
   model code has not changed` [SUCCESS] (no badge), then `upstream model
   queries have not changed` [SUCCESS]. Hosted prints it also when the
-  rendered SQL is unchanged (entry 67); the local server prints the rendered
-  lines then (keyed as an `explain` gap).
+  rendered SQL is unchanged (entry 67), with either freshness listing (F39,
+  F84 through a copy; P59). This server prints it for a reuse of a run with
+  the same unrendered body (#200); a reuse of a run with another body is
+  uncaptured and keeps the rendered lines.
 
 A SKIP that reuses another unique id's run (same SQL) prints the ordinary
 tree.

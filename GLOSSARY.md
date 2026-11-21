@@ -112,6 +112,14 @@ workload's identity and passes reuse qualification. Freshness is assessed
 afterwards, so a reuse candidate is not yet a decision to reuse it.
 _Avoid_: Match, confirmed row
 
+**Data-test history key**:
+What a data test's State history is grouped by on Snowflake: its normalized
+SQL over the relations it reads, a copy unchanged since it was made read as
+its source, and its result-setting configuration, within the organization
+and connection namespace. Only the latest confirmed run under a key is
+reused.
+_Avoid_: Test identity, test UID scope
+
 **Decision reason**:
 The one cause a decision records for building, reusing or copying a workload's
 result, such as a first build, no reuse candidate, an outdated upstream or a

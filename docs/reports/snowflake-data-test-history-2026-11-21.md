@@ -8,6 +8,11 @@ hosted rule, not proven). This note changes no server code; any change to
 the data-test history key waits for a maintainer decision under reuse
 invariant 1 (AGENTS.md, ADR 0007).
 
+> **Outcome (2026-11-21).** The maintainer chose K1 (option A on #200). The
+> server implements it ([ADR 0007 "Data-test history key"](../adr/0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)),
+> and both fixtures replay without gaps. The "Current server" columns and
+> the "Replay" section below describe the server before that change.
+
 ## Provenance
 
 | | Real-client run | Crafted one-factor probes | Crafted same-key probes |

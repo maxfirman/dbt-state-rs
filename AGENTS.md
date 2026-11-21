@@ -14,6 +14,7 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 - `crates/server`: the server. Modules to know:
   - `decision.rs`: the pure decision engine (`decide`), freshness, descriptions.
   - `reuse_candidate.rs`: pure Reuse candidate selection and Reuse qualification.
+  - `data_test_history.rs`: Snowflake data-test inputs read through recorded copies (#200).
   - `submit_decision/`: how one submit is decided, end to end.
   - `copy_registration.rs`: how one RegisterClone request is decided and recorded.
   - `result_copy.rs`: pure Result copy planning (submit fallback and RegisterClone).
@@ -55,7 +56,12 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      row has the submit's identity under another execution type and recorded
      the submit's genuine upstream names, the rebuild is judged against the
      latest row of the submit's type, never reused (ADR 0007 "Execution type
-     change"); other upstream names are another identity (#116).
+     change"); other upstream names are another identity (#116). A Snowflake
+     data test has no Target relation: its history is its key (normalized
+     SQL with inputs read through unchanged copies this server recorded,
+     result-setting config) in the organization, family and namespace; only
+     the latest confirmed run per key is reusable, and an older run under
+     another key stays reusable (ADR 0007 "Data-test history key", #200).
   2. Upstream drift is measured against the epoch recorded for each upstream at
      the build, by exact physical name; unknown epochs never prove freshness. A
      changed Upstream producer always rebuilds. Lag tolerance only turns a
@@ -74,9 +80,11 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other
      dialects keep exact SQL and do no automatic cross-target reuse. A namespace
      alone never justifies SKIP.
-  5. Data tests require scoped UID identity and complete cached results. Under
+  5. Data tests require their scoped identity (the history key on
+     Snowflake, the unique id elsewhere) and complete cached results. Under
      `compare_unrendered_code`, models and data tests both use the dual
-     rendered/template identity. A Snowflake `store_failures` test's audit
+     rendered/template identity (a data test's template alternative stays
+     scoped by unique id). A Snowflake `store_failures` test's audit
      relation is not an input: named exactly (#88), or as the only reported
      table in its schema its SQL and query dependencies never mention (#123,
      ADR 0008).

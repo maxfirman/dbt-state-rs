@@ -129,7 +129,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
   `legacy::forget_rendered_volatile_values` and
   `legacy::forget_volatile_evaluation_flag` make a captured decision look
-  recorded before migration 0027 or 0028.
+  recorded before migration 0027 or 0028, and
+  `legacy::forget_data_test_history_keys` makes State history look recorded
+  before migration 0029 (#200).
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 
@@ -149,6 +151,15 @@ Postgres.
 - `warehouse_portability.rs`: independent physical histories across connection
   namespaces and conservative same-target reuse for unverified warehouses. It
   does not show hosted or warehouse parity.
+- `data_test_history.rs`: the Snowflake data-test history key (#200, ADR
+  0007): alternating Targets through a copy this server recorded, a copy
+  changed after the copy, a newer failing run in the key (no
+  resurrection), an older run under another key, two unique ids sharing a
+  key (the later-confirmed run is served), severity, namespace and other
+  result-setting config separating keys, organization isolation, a copy of
+  an older source build, a RegisterClone copy, a relation never copied,
+  rows recorded before the key (`legacy::forget_data_test_history_keys`)
+  and unchanged per-unique-id history on Databricks and DuckDB.
 - `speculative_submit.rs`: `SubmitEnrichedSQLSpeculative` SKIPs only an
   unchanged data test without upstreams, with the ordinary SKIP's payload and
   an explainable decision id, and stays `undecided` for a data test with an
@@ -219,7 +230,10 @@ corpus size is pinned there. Invalid trace lines fail with a line number.
   only when the local store has no confirmed history for that workload, and
   only for the exact (fixture, entry) set listed in the test.
 - A hosted SKIP is compared in full when the replay has confirmed history for
-  that workload. Otherwise it depends on unknown hosted history and is counted
+  that workload. A data test's workload is its unique id, but a Snowflake
+  data test reuses the latest run of its history key under any unique id
+  (#200), so a data-test SKIP the local server also SKIPs is compared in
+  full too. Otherwise it depends on unknown hosted history and is counted
   as an unknown baseline, never hydrated with guessed epochs.
 - A hosted SQL-submit `ready_to_clone` is compared in full and its confirm is
   correlated. A `RegisterClone` is driven and its full response compared
