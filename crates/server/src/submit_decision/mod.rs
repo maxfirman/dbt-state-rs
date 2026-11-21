@@ -1079,13 +1079,14 @@ async fn select_sql(
             {
                 Some(row) => Some(row),
                 None if evidence.node_template_hash.is_some() => {
-                    latest_data_test_of_unique_id(store, org_id, req, evidence).await?
+                    latest_data_test_of_unique_id(store, org_id, table_namespace, evidence).await?
                 }
                 None => None,
             };
             return reuse_candidate::for_data_test(req, evidence, latest);
         }
-        let latest = latest_data_test_of_unique_id(store, org_id, req, evidence).await?;
+        let latest =
+            latest_data_test_of_unique_id(store, org_id, table_namespace, evidence).await?;
         reuse_candidate::for_data_test(req, evidence, latest)
     } else {
         let current = store
@@ -1125,11 +1126,11 @@ async fn select_sql(
 }
 
 /// The latest confirmed run of a data test's unique id in its project and
-/// physical scope; `None` without a unique id.
+/// physical scope (`table_namespace`, non-blank); `None` without a unique id.
 async fn latest_data_test_of_unique_id(
     store: &Store,
     org_id: &str,
-    req: &qc::SubmitEnrichedSqlRequest,
+    table_namespace: Option<&str>,
     evidence: &ExecutionEvidence,
 ) -> sqlx::Result<Option<ExecutionRow>> {
     match evidence.node_unique_id.as_deref() {
@@ -1139,8 +1140,8 @@ async fn latest_data_test_of_unique_id(
                     org_id,
                     uid,
                     evidence.project_id.as_deref(),
-                    execution::non_blank_namespace(req.table_namespace.as_deref()),
-                    &req.dialect,
+                    table_namespace,
+                    &evidence.dialect,
                 )
                 .await
         }

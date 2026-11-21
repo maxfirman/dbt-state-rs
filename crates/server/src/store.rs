@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 mod history;
 pub use history::CopySourceBuild;
-pub(crate) use history::{QueryDiagnosticNamespaces, QueryDiagnosticReference};
+pub(crate) use history::{warehouse_family, QueryDiagnosticNamespaces, QueryDiagnosticReference};
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.

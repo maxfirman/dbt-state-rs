@@ -32,7 +32,7 @@ const PHYSICAL_ORDER: &str =
 
 /// The physical warehouse family a dialect's history is scoped by; matches the
 /// generated `executions.warehouse_family` column.
-fn warehouse_family(dialect: &str) -> String {
+pub(crate) fn warehouse_family(dialect: &str) -> String {
     crate::warehouse::Warehouse::from_dialect(dialect).family_key(dialect)
 }
 

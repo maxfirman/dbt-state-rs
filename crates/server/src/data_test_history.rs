@@ -16,7 +16,7 @@
 
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
-use crate::store::{ExecutionRow, InputTable, Producer, Store};
+use crate::store::{warehouse_family, ExecutionRow, InputTable, Producer, Store};
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
@@ -33,8 +33,6 @@ pub(crate) fn stand_in(
     source: &ExecutionRow,
 ) -> Option<InputTable> {
     let copied_from = copy.clone_source_table.as_deref()?;
-    let family =
-        |row: &ExecutionRow| Warehouse::from_dialect(&row.dialect).family_key(&row.dialect);
     // Unchanged since the copy, by the rule that a Target relation is as
     // built (AGENTS.md reuse invariant 3): a known epoch no later than the
     // copy's confirmation, an upper bound for its write. Snowflake reports a
@@ -50,7 +48,7 @@ pub(crate) fn stand_in(
         && crate::copy_lifecycle::ordinary(source)
         && source.last_modified_epoch.is_some_and(|e| e > 0)
         && source.org_id == copy.org_id
-        && family(source) == family(copy)
+        && warehouse_family(&source.dialect) == warehouse_family(&copy.dialect)
         && execution::non_blank_namespace(source.table_namespace.as_deref())
             == execution::non_blank_namespace(copy.table_namespace.as_deref())
         && Warehouse::physical_scope_key(&source.dialect, &source.target_table)
