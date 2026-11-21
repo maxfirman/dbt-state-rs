@@ -276,10 +276,21 @@ reusable (F56, P30, P44, P52, P58).
   (`decision::upstream_freshness`). Any other input stands for itself;
   names and schema abstraction never make two relations one (P48–P59).
 - *`compare_unrendered_code`* does not change the key (F35, F80, P54–P59).
-  When the key has no run, the unique id's latest run in its project and
-  physical scope is reused only with the same template identity, as before:
-  a generic test's unrendered body is shared by every test of its kind, so
-  that alternative keeps the unique-id scope.
+  The dual rendered/template identity data tests had before #200 (reuse
+  invariant 5) is retained, restricted to keyed rows: when the key has no
+  run, the latest run of the submit's unique id in its project, organization,
+  warehouse family and `table_namespace` is a reuse candidate when it was
+  recorded with a key and has the submit's template identity
+  (`submit_decision::select_sql`,
+  `reuse_candidate::data_test_identity_matches`). This alternative is not
+  captured under the key: the one #200 cell that changes the rendered SQL
+  under `compare_unrendered_code` with the client hashes unchanged (P54–P59)
+  also changes `default_schema`, which the server's template identity
+  holds, so both sides build there. It keeps the
+  unique-id and project scope because a generic test's unrendered body is
+  shared by every test of its kind. A row recorded before the key never
+  matches through it
+  (`data_test_history.rs::a_template_match_under_another_key_reuses_the_unique_ids_keyed_run`).
 - *Rows recorded before the key.* A data test without a key never matches,
   through the template alternative either, and a copy without a recorded
   source build stands for itself: each rebuilds once. No row is rehashed

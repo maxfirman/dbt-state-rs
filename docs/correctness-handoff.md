@@ -53,8 +53,11 @@ Do not weaken these without new evidence.
   since the copy (reported epoch no later than its confirmation), only for
   an ordinary source build, and proves freshness only at exactly the
   source's recorded epoch. Rows without a key, and copies without a recorded
-  source build, cold-miss once. Databricks, DuckDB and other Warehouses keep
-  one latest run per unique id
+  source build, cold-miss once. Under `compare_unrendered_code` a key without
+  a run falls back, as before #200, to the latest keyed run of the unique id
+  in its project and physical scope with the submit's template identity
+  (reuse invariant 5's dual identity, retained; uncaptured under the key).
+  Databricks, DuckDB and other Warehouses keep one latest run per unique id
   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)).
 - **Physical completion order defines current state.** The greatest completion
   epoch wins; confirmation receipt then row id break equal-epoch ties
@@ -188,7 +191,12 @@ server keeps the conservative behavior described.
     copied, with a newer prod run (`golden_20261009T083754.534Z.jsonl`
     entries 13–16 stay Missing history);
   - more than one organization (one was captured), and Databricks and DuckDB,
-    which keep one latest run per unique id.
+    which keep one latest run per unique id;
+  - whether hosted reuses a data test under `compare_unrendered_code` whose
+    rendered SQL changed (another key) and whose template did not. The
+    server keeps the pre-#200 dual identity for it: the latest keyed run of
+    the same unique id in its project and physical scope, with the same
+    template identity, is reused.
 - **Resolution context of dependencies.** Whether hosted keys dependency
   equivalence on anything beyond the definition body and freshness. A
   context-only change could not be isolated from upstream freshness through the

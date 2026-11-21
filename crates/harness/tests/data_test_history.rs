@@ -442,6 +442,60 @@ async fn rows_recorded_before_the_key_miss_safely() {
     assert_eq!(skip.execution_runtime_ms, Some(3));
 }
 
+/// `compare_unrendered_code` keeps the dual identity data tests had before
+/// the key (AGENTS.md reuse invariant 5, ADR 0007 "Data-test history key"):
+/// when the submit's key has no run, the latest keyed run of its unique id
+/// in its project and physical scope is reused when its unrendered template
+/// matches. That alternative is scoped by unique id and project, not by the
+/// key, and is uncaptured under the key. A run recorded before the key never
+/// matches through it.
+#[tokio::test]
+async fn a_template_match_under_another_key_reuses_the_unique_ids_keyed_run() {
+    use support::legacy;
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let cuc = |uid: &str, bound: i64| {
+        singular_test(uid, PROD_SCHEMA, "tpl", 100)
+            .sql(&format!(
+                "select id, v from {CATALOG}.{PROD_SCHEMA}.tpl where id < {bound}"
+            ))
+            .body("body-tpl")
+            .compare_unrendered_code()
+    };
+    sc.build_with(cuc("test.p.tpl", 0), test_run(0, 31)).await;
+
+    let skip = sc.expect_skip(cuc("test.p.tpl", -1)).await;
+    assert_eq!(
+        skip.execution_runtime_ms,
+        Some(31),
+        "another key with the same template reuses the unique id's run"
+    );
+    for (other, why) in [
+        (cuc("test.p.tpl2", -1), "another unique id"),
+        (
+            cuc("test.p.tpl", -1).project("99999999999999"),
+            "another project",
+        ),
+        (
+            singular_test("test.p.tpl", PROD_SCHEMA, "tpl", 100)
+                .sql(&format!(
+                    "select id, v from {CATALOG}.{PROD_SCHEMA}.tpl where id < -1"
+                ))
+                .body("body-tpl"),
+            "without compare_unrendered_code",
+        ),
+    ] {
+        assert_eq!(sc.verdict(other).await, "ready_to_execute", "{why}");
+    }
+
+    assert!(legacy::forget_data_test_history_keys(&server).await > 0);
+    assert_eq!(
+        sc.verdict(cuc("test.p.tpl", -2)).await,
+        "ready_to_execute",
+        "a run recorded before the key never matches through its template"
+    );
+}
+
 /// Databricks and DuckDB data tests keep the history of each unique id in
 /// its project (uncaptured): the same SQL under another unique id or
 /// project builds.
