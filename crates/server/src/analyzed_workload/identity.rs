@@ -453,7 +453,7 @@ pub struct StandIn {
 
 /// A data test's history key (#200, ADR 0007 "Data-test history key"), for
 /// a Warehouse that keys data-test history
-/// (`Warehouse::data_test_history_key_version`, Snowflake); `None`
+/// (`Warehouse::keys_data_test_history`, Snowflake); `None`
 /// otherwise and for every other execution type. The organization, warehouse
 /// family and `table_namespace` scope the history separately.
 ///
@@ -470,13 +470,14 @@ pub struct StandIn {
 /// context. The unique id, `project_id`, `target_name`, the evaluation flag
 /// and the client node hashes are not in the key (P0–P15, P22–P25, P32–P35).
 pub fn data_test_history_key(req: &qc::SqlExecution, stand_ins: &[StandIn]) -> Option<String> {
-    if req.execution_type != qc::ModelExecutionType::DbtDataTest as i32 {
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if req.execution_type != qc::ModelExecutionType::DbtDataTest as i32
+        || !warehouse.keys_data_test_history()
+    {
         return None;
     }
-    let warehouse = Warehouse::from_dialect(&req.dialect);
-    let version = warehouse.data_test_history_key_version()?;
     let mut h = Sha256::new();
-    field(&mut h, version);
+    field(&mut h, crate::warehouse::DATA_TEST_HISTORY_KEY_VERSION);
     field(
         &mut h,
         Warehouse::rendered_identity_dialect(&req.dialect).as_bytes(),

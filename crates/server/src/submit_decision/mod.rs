@@ -254,9 +254,7 @@ fn unrendered_data_test_reuse(req: &qc::SubmitEnrichedSqlRequest, outcome: &Subm
     let body = decision::node_body_hash_of(req);
     req.execution_type == ModelExecutionType::DbtDataTest as i32
         && req.compare_unrendered_code
-        && Warehouse::from_dialect(&req.dialect)
-            .data_test_history_key_version()
-            .is_some()
+        && Warehouse::from_dialect(&req.dialect).keys_data_test_history()
         && body.as_deref().is_some_and(|b| !b.is_empty())
         && outcome
             .matched_execution()

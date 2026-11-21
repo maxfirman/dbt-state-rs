@@ -236,7 +236,7 @@ the prod relation. Within one key only the later-confirmed run is served,
 failures included (P66, P74, F79); an older run under another key stays
 reusable (F56, P30, P44, P52, P58).
 
-**Rule.** For a Snowflake data test (`Warehouse::data_test_history_key_version`):
+**Rule.** For a Snowflake data test (`Warehouse::keys_data_test_history`):
 
 - *The unit of history is the key.* State history is scoped by
   organization, warehouse family, `table_namespace` and the versioned key

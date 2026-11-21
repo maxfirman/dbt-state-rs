@@ -84,7 +84,9 @@ pub(crate) async fn read_through_copies(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &mut ExecutionEvidence,
 ) -> sqlx::Result<()> {
-    if evidence.data_test_key.is_none() || evidence.input_tables.is_empty() {
+    let keyed = evidence.execution_type == qc::ModelExecutionType::DbtDataTest as i32
+        && Warehouse::from_dialect(&evidence.dialect).keys_data_test_history();
+    if !keyed || evidence.input_tables.is_empty() {
         return Ok(());
     }
     let names: Vec<String> = evidence

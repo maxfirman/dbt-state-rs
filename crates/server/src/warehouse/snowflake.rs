@@ -284,10 +284,6 @@ pub(super) const NAMESPACE_IDENTITY: NamespaceIdentity = NamespaceIdentity::Sche
     version: b"dbt-state-ns-logic-v4",
 };
 
-/// The data-test history key (#200). New with #200: no data test recorded
-/// before it has a key, so all of them cold-miss once.
-pub(super) const DATA_TEST_HISTORY_KEY_VERSION: &[u8] = b"dbt-state-data-test-key-v1";
-
 /// Every Snowflake submission can take part in a result copy, paired with its
 /// equivalent by the schema-abstracted namespace logic identity.
 pub(super) fn copy_identity() -> CopyIdentity {

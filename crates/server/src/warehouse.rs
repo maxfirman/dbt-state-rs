@@ -21,6 +21,11 @@ const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-sql-v4";
 
 /// The exact namespace identity's version tag.
 const EXACT_NAMESPACE_IDENTITY_VERSION: &[u8] = b"dbt-state-exact-ns-v1";
+/// The version tag of the data-test history key (#200) of a Warehouse that
+/// [keys data-test history](Warehouse::keys_data_test_history). New with
+/// #200: no data test recorded before it has a key, so all of them cold-miss
+/// once.
+pub(crate) const DATA_TEST_HISTORY_KEY_VERSION: &[u8] = b"dbt-state-data-test-key-v1";
 
 /// The namespace logic identity a warehouse records
 /// ([`Warehouse::namespace_identity`]).
@@ -835,16 +840,13 @@ impl Warehouse {
         }
     }
 
-    /// The version tag of a data test's history key (#200, ADR 0007
-    /// "Data-test history key"), for a Warehouse whose data-test State
-    /// history is keyed by it: Snowflake, as captured
-    /// (`data_test_history.jsonl`). `None` keeps the history of each test
-    /// unique id (Databricks and DuckDB, uncaptured).
-    pub(crate) fn data_test_history_key_version(self) -> Option<&'static [u8]> {
-        match self {
-            Self::Snowflake => Some(snowflake::DATA_TEST_HISTORY_KEY_VERSION),
-            _ => None,
-        }
+    /// Whether this Warehouse's data-test State history is keyed by the
+    /// data-test history key (#200, ADR 0007 "Data-test history key"):
+    /// Snowflake, as captured (`data_test_history.jsonl`). Every other
+    /// Warehouse keeps the history of each test unique id (Databricks and
+    /// DuckDB, uncaptured).
+    pub(crate) fn keys_data_test_history(self) -> bool {
+        matches!(self, Self::Snowflake)
     }
 
     pub fn has_volatile_sql<'a>(
