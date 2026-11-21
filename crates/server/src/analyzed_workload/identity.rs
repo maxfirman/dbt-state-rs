@@ -443,8 +443,8 @@ fn schema_abstracted_hash(
 
 /// A relation a data test reads that stands for another (#200): `copy`, a
 /// copy this server recorded and unchanged since, stands for `source`, the
-/// build it was copied from. Both are canonical name components
-/// (`sql_norm::canonical_identifier`).
+/// build it was copied from. Both are canonical identifiers
+/// (`sql_norm::canonical_identifiers`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StandIn {
     pub copy: Vec<String>,

@@ -59,14 +59,6 @@ pub(crate) fn stand_in(
     })
 }
 
-/// A relation's canonical name components (`sql_norm::canonical_identifier`).
-fn components(name: &str) -> Vec<String> {
-    crate::sql_norm::split_object_name_components(name)
-        .iter()
-        .map(|c| crate::sql_norm::canonical_identifier(c))
-        .collect()
-}
-
 /// For a data test of a Warehouse that keys data-test history (Snowflake),
 /// read each input through the copies this server recorded ([`stand_in`])
 /// and recompute the history key with each stand-in's relation read as its
@@ -108,8 +100,8 @@ pub(crate) async fn read_through_copies(
         };
         if let Some(read) = stand_in(input, copy, source) {
             stand_ins.push(crate::analyzed_workload::identity::StandIn {
-                copy: components(&input.name),
-                source: components(&read.name),
+                copy: crate::sql_norm::canonical_identifiers(&input.name),
+                source: crate::sql_norm::canonical_identifiers(&read.name),
             });
             *input = read;
         }

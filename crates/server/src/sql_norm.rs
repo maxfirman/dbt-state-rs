@@ -421,6 +421,16 @@ pub(crate) fn canonical_identifier(raw: &str) -> String {
     }
 }
 
+/// A relation name's canonical identifiers: its components
+/// ([`split_object_name_components`]), each canonicalized with
+/// [`canonical_identifier`].
+pub(crate) fn canonical_identifiers(name: &str) -> Vec<String> {
+    split_object_name_components(name)
+        .iter()
+        .map(|c| canonical_identifier(c))
+        .collect()
+}
+
 /// Canonical key for a schema component. Thin wrapper over
 /// [`canonical_identifier`] retained for the schema-token map call sites.
 pub(crate) fn canonical_schema_key(raw: &str) -> String {

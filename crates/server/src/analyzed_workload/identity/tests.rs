@@ -1183,10 +1183,6 @@ fn key(e: &qc::SqlExecution) -> String {
     data_test_history_key(e, &[]).expect("a keyed data test")
 }
 
-fn parts(name: &str) -> Vec<String> {
-    name.split('.').map(str::to_owned).collect()
-}
-
 #[test]
 fn data_test_key_is_snowflake_data_tests_only() {
     let test = data_test_exec("select id from CDO.PROD.U where id < 0", "prod");
@@ -1264,9 +1260,10 @@ fn data_test_key_holds_the_relations_and_result_setting_config() {
 fn data_test_key_reads_a_stand_in_as_its_source() {
     let prod = data_test_exec("select id from CDO.prod.u where id < 0", "prod");
     let dev = data_test_exec("select id from CDO.dev_clone.u where id < 0", "dev_clone");
+    // Named as the client reports them in `tables`.
     let stand_in = StandIn {
-        copy: parts("CDO.DEV_CLONE.U"),
-        source: parts("CDO.PROD.U"),
+        copy: crate::sql_norm::canonical_identifiers("\"CDO\".\"DEV_CLONE\".\"U\""),
+        source: crate::sql_norm::canonical_identifiers("\"CDO\".\"PROD\".\"U\""),
     };
     assert_ne!(key(&prod), key(&dev));
     assert_eq!(
