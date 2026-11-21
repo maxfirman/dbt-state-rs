@@ -202,6 +202,19 @@ impl ExecutionRow {
         )
         .unwrap_or_else(|| format!("execution:{}", self.id))
     }
+
+    /// Whether this row records Target relation `relation` in `scope`'s
+    /// physical State history scope: its organization, warehouse family and
+    /// connection namespace (AGENTS.md reuse invariant 1), with `relation`
+    /// compared by physical key.
+    pub(crate) fn records_in_scope_of(&self, scope: &ExecutionRow, relation: &str) -> bool {
+        self.org_id == scope.org_id
+            && warehouse_family(&self.dialect) == warehouse_family(&scope.dialect)
+            && crate::execution::non_blank_namespace(self.table_namespace.as_deref())
+                == crate::execution::non_blank_namespace(scope.table_namespace.as_deref())
+            && crate::warehouse::Warehouse::physical_scope_key(&self.dialect, &self.target_table)
+                == crate::warehouse::Warehouse::physical_scope_key(&scope.dialect, relation)
+    }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \

@@ -16,7 +16,7 @@
 
 use crate::execution::{self, ExecutionEvidence};
 use crate::query_cache as qc;
-use crate::store::{warehouse_family, ExecutionRow, InputTable, Producer, Store};
+use crate::store::{ExecutionRow, InputTable, Producer, Store};
 use crate::warehouse::Warehouse;
 use std::collections::HashMap;
 
@@ -47,12 +47,7 @@ pub(crate) fn stand_in(
         && source.status == "confirmed"
         && crate::copy_lifecycle::ordinary(source)
         && source.last_modified_epoch.is_some_and(|e| e > 0)
-        && source.org_id == copy.org_id
-        && warehouse_family(&source.dialect) == warehouse_family(&copy.dialect)
-        && execution::non_blank_namespace(source.table_namespace.as_deref())
-            == execution::non_blank_namespace(copy.table_namespace.as_deref())
-        && Warehouse::physical_scope_key(&source.dialect, &source.target_table)
-            == Warehouse::physical_scope_key(&copy.dialect, copied_from);
+        && source.records_in_scope_of(copy, copied_from);
     (unchanged && copied_build).then(|| InputTable {
         name: source
             .raw_target_table
