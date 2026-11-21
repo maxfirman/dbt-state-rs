@@ -56,6 +56,10 @@ or whitespace edits are normalized away and still SKIP
 Promote a useful capture into `golden/fixtures/` and drive it from a test
 ([golden/README.md](../golden/README.md)).
 
+Databricks uses this same recording proxy. Start with the
+[connection setup](development.md#databricks-live-setup), then use the
+[dedicated experiment drivers](#databricks-capability-campaign) for captures.
+
 ## Experiment drivers (`experiments/`)
 
 The drivers start from a clean `jaffle-shop` tree, run one focused scenario
