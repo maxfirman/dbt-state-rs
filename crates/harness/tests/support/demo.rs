@@ -5,7 +5,8 @@
 //! `scenario` builders, so every setter there still applies.
 
 use super::scenario::{
-    clone_request, model as scenario_model, outcome, CopyRequest, Outcome, Submit,
+    clone_request, data_test, model as scenario_model, outcome, test_results, CopyRequest, Outcome,
+    Submit,
 };
 
 /// The demo database every capture builds in.
@@ -81,4 +82,59 @@ pub fn copy(source: &str, target: &str) -> CopyRequest {
 /// table type), without a runtime.
 pub fn transient_at(epoch: i64) -> Outcome {
     outcome().epoch(epoch).table_type("TRANSIENT TABLE")
+}
+
+/// The `project_id` of the #200 data-test history capture
+/// (`golden/fixtures/data_test_history.jsonl`).
+pub const HISTORY_PROJECT: &str = "70437463667433";
+
+/// The physical name of the demo relation `name` in `schema`, as the client
+/// reports it in `tables` (`"CDO_DEMO_DB"."PROD_STATE_DEMO"."U"`).
+pub fn relation(schema: &str, name: &str) -> String {
+    format!(
+        "\"{CATALOG}\".\"{}\".\"{}\"",
+        schema.to_uppercase(),
+        name.to_uppercase()
+    )
+}
+
+/// A demo table model `name` on the Target whose schema is `schema`, as the
+/// #200 capture builds it: `select 1 as id, '<name>' as v` in namespace
+/// [`NS`].
+pub fn table_model(name: &str, schema: &str) -> Submit {
+    model(
+        &relation(schema, name),
+        schema,
+        &format!("model.jaffle_shop.{name}"),
+    )
+    .sql(&format!("select 1 as id, '{name}' as v"))
+    .namespace(NS)
+}
+
+/// A singular data test `unique_id` as client 2.0.11 sends it on the Target
+/// whose default schema is `schema` (`data_test_history.jsonl`): it reads
+/// `name` in `schema` at `epoch`, fully qualified, in namespace [`NS`] and
+/// project [`HISTORY_PROJECT`], with the captured result-setting config.
+pub fn singular_test(unique_id: &str, schema: &str, name: &str, epoch: i64) -> Submit {
+    data_test(unique_id)
+        .catalog(CATALOG)
+        .schema(schema)
+        .sql(&format!(
+            "select id, v from {CATALOG}.{schema}.{name} where id < 0"
+        ))
+        .namespace(NS)
+        .project(HISTORY_PROJECT)
+        .target_name(schema)
+        .extra("fail_calc", "\"count(*)\"")
+        .extra("warn_if", "\"!= 0\"")
+        .extra("error_if", "\"!= 0\"")
+        .extra("severity", "\"ERROR\"")
+        .upstream(&relation(schema, name), epoch)
+}
+
+/// A data test's confirm: `failures` and `runtime_ms`, no epoch.
+pub fn test_run(failures: i64, runtime_ms: i64) -> Outcome {
+    outcome()
+        .results(test_results(failures))
+        .runtime(runtime_ms)
 }
