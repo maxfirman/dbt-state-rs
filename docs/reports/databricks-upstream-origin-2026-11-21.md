@@ -25,13 +25,13 @@ For every grant the client's Confirm request referenced the grant ID, the servic
 
 Each linked JSON file contains the pre-run inventory, raw input setup, per-step physical rows and column types, Delta operation and version, effective model state, and RPC counts. It includes complete request and response bodies, gRPC status and response metadata for ordinary submits, confirmations, deferral and speculative submits. The recorder certified 118 RPCs, including version checks and telemetry. A and B each span two certified sessions because the collector initially expected a copy confirmation response to echo the grant ID. The **Confirm request** carries that ID. The continuation used the original tables and issued only the outstanding commands.
 
-Read the dev decisions, grant sources and physical rows locally from the repository root with `jq`.
+From the repository root, run `python3 experiments/databricks_upstream_origin_test.py` to check the retained decisions and row comparisons offline. The test also substitutes `D_prod` for the first dev read and checks that the driver reports the wrong marker. To list the dev decisions, grant sources and physical rows, run the following command.
 
 ```bash
 jq -r '.case as $case | .steps | to_entries[] | select(.key | startswith("dev_")) |
   . as $step | .value.rpcs[] | select(.method == "SubmitEnrichedSQL") |
   .response.response | to_entries[] |
-  [$case, $step.key, .key, (.value.clone_source // ""), $step.value.physical.rows[0][0]] | @tsv' \\
+  [$case, $step.key, .key, (.value.clone_source // ""), $step.value.physical.rows[0][0]] | @tsv' \
   docs/reports/evidence/databricks-upstream-origin/*.json
 ```
 
@@ -41,6 +41,6 @@ To repeat the live experiment, use the [Databricks setup](../development.md#data
 cargo build -p dbt-state-harness --bin record-proxy
 work=$(mktemp -d)
 for arm in A B C D; do
-  python3 experiments/databricks_upstream_origin.py --case "$arm" --work-dir "$work/$arm" || exit 1
+  uv run --with pyyaml python experiments/databricks_upstream_origin.py --case "$arm" --work-dir "$work/$arm" || exit 1
 done
 ```

@@ -730,7 +730,8 @@
         "version": "0",
         "timestamp": "2026-11-21T23:39:42.000Z",
         "operation": "CLONE"
-      }
+      },
+      "copy_outcome": "confirmed_copy"
     },
     "dev_downstream": {
       "rpc_counts": {
@@ -1000,7 +1001,8 @@
         "version": "0",
         "timestamp": "2026-11-21T23:40:39.000Z",
         "operation": "CLONE"
-      }
+      },
+      "copy_outcome": "confirmed_copy"
     },
     "dev_downstream_repeat": {
       "rpc_counts": {

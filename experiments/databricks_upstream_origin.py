@@ -8,8 +8,6 @@ import re
 import shutil
 import uuid
 
-import yaml
-
 from capture_integrity import verify_capture
 from databricks_survey import Campaign, DIGEST, Refused
 
@@ -41,6 +39,19 @@ def compare_reference(record):
     return {label: steps[label]['physical']['rows'] == rows for label in labels}
 
 
+def check_case(record):
+    count = sum(sum(step['rpc_counts'].values()) for step in record['steps'].values())
+    if count != record['certified_rpcs']:
+        raise Refused('certified capture contains unattributed calls')
+    mismatches = [label for label, equal in compare_reference(record).items() if not equal]
+    if mismatches:
+        observed = {label: record['steps'][label]['physical']['rows'] for label in mismatches}
+        raise Refused(f"wrong marker for policy review: dev reference {record['reference']['rows']}, "
+                      f"served {observed} (evidence.json)")
+    if record['case'] == 'A' and record['steps']['dev_downstream'].get('copy_outcome') != 'confirmed_copy':
+        raise Refused('same-input positive control did not perform automatic copy')
+
+
 class OriginScope:
     profile_roles = ('prod', 'dev')
 
@@ -70,6 +81,7 @@ class Origin(Campaign):
         scope = OriginScope(args.case, {'prod': args.prod_schema, 'dev': args.dev_schema})
         args.run_id = scope.prefix
         super().__init__(args, scope)
+        self.shared_upstream = args.case == 'A'
         self.profile = json.loads((self.profiles / 'profiles.yml').read_text())
         self.record = {'case': args.case, 'prefix': scope.prefix, 'schemas': scope.roles,
                        'client': '2.0.11', 'client_sha256': DIGEST, 'steps': {}}
@@ -102,7 +114,7 @@ class Origin(Campaign):
         self.save('project/models/sources.yml', {'version': 2, 'sources': [
             {'name': 'inputs', 'database': 'cdo_demo_db', 'schema': prod_schema,
              'tables': [{'name': 'raw', 'identifier': scope.prefix + '_raw'}]}]})
-        upstream_schema = ', schema=' + repr(prod_schema) if self.a.case == 'A' else ''
+        upstream_schema = ', schema=' + repr(prod_schema) if self.shared_upstream else ''
         self.write_model('upstream', config + f", alias='{scope.prefix}_upstream'" + upstream_schema,
                          "select * from {{ source('inputs', 'raw') }}")
         self.write_model('downstream', config + f", alias='{scope.prefix}_downstream'",
@@ -132,7 +144,7 @@ class Origin(Campaign):
             raise Refused('direct pre-copy or unsuccessful RPC: ' + label)
         submit = ordinary_submit(step)
         req = submit['request']
-        source_role = 'prod' if self.a.case == 'A' or node == 'upstream' else role
+        source_role = 'prod' if self.shared_upstream or node == 'upstream' else role
         source = self.scope.relation(source_role, 'raw' if node == 'upstream' else 'upstream')
         inputs = {t['name'].replace('`', '') for t in req['tables']}
         if inputs != ({source, relation} if repeat else {source}):
@@ -148,8 +160,13 @@ class Origin(Campaign):
             if (len(confirms) != 1 or not confirms[0]['response']['success']
                     or confirms[0]['request']['request_id'] != value['request_id']):
                 raise Refused('missing correlated confirmation: ' + label)
-        if variant == 'ready_to_clone' and value['clone_source'].replace('`', '') != self.scope.relation('prod', node):
-            raise Refused('copy grant named an unexpected source: ' + label)
+        if variant == 'ready_to_clone':
+            if value['clone_source'].replace('`', '') != self.scope.relation('prod', node):
+                raise Refused('copy grant named an unexpected source: ' + label)
+            fallback = confirms[0]['request']['failed_to_clone']
+            step['copy_outcome'] = 'client_fallback' if fallback else 'confirmed_copy'
+            if not fallback and latest['operation'] != 'CLONE':
+                raise Refused('confirmed copy lacks a matching Delta operation: ' + label)
         if role == 'prod' or node == 'upstream':
             want_copy = role == 'dev' and self.a.case == 'B'
             expected = 'ready_to_clone' if want_copy else 'ready_to_execute'
@@ -157,7 +174,6 @@ class Origin(Campaign):
             if (variant != expected or confirms[0]['request']['failed_to_clone']
                     or rows['rows'] != [[marker]]):
                 raise Refused('upstream history or production build did not establish setup: ' + label)
-        return variant
 
     def reference(self):
         command = ['show', '--select', 'downstream', '--output', 'json', '--limit', '-1', '--quiet']
@@ -182,9 +198,9 @@ class Origin(Campaign):
                 query = f"UPDATE {self.scope.relation('prod', 'raw')} SET marker='D_dev' WHERE marker='D_prod'"
                 self.sql('change_raw_marker', query)
                 self.record['raw_setup']['after_prod_downstream'] = query
-            if self.a.case != 'A':
+            if not self.shared_upstream:
                 self.managed('dev', 'upstream', copies=self.a.case == 'B')
-            first = self.managed('dev', 'downstream', copies=True)
+            self.managed('dev', 'downstream', copies=True)
             self.managed('dev', 'downstream', copies=True, repeat=True)
             self.reference()
         finally:
@@ -192,15 +208,12 @@ class Origin(Campaign):
         path, = (self.work / 'golden').glob('*.jsonl')
         self.record['certified_rpcs'] = len(verify_capture(path))
         self.save('evidence.json', self.record)
-        count = sum(sum(step['rpc_counts'].values()) for step in self.record['steps'].values())
-        if count != self.record['certified_rpcs']:
-            raise Refused('certified capture contains unattributed calls')
-        if self.a.case == 'A' and (first != 'ready_to_clone'
-                                   or self.record['steps']['dev_downstream']['delta']['operation'] != 'CLONE'):
-            raise Refused('same-input positive control did not perform automatic copy')
+        check_case(self.record)
 
 
 def main():
+    import yaml
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--case', required=True, choices=list('ABCD'))
     parser.add_argument('--work-dir', required=True)
