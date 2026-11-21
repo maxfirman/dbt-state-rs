@@ -59,9 +59,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      change"); other upstream names are another identity (#116). A Snowflake
      data test has no Target relation: its history is its key (normalized
      SQL with inputs read through unchanged copies this server recorded,
-     result-setting config) in the organization, family and namespace; only
-     the latest confirmed run per key is reusable, and an older run under
-     another key stays reusable (ADR 0007 "Data-test history key", #200).
+     result-setting config) in the organization, family and namespace. Each
+     key's latest confirmed run is reusable; an older run of the same test
+     under another key is that key's latest, so it stays reusable (ADR 0007
+     "Data-test history key", #200).
   2. Upstream drift is measured against the epoch recorded for each upstream at
      the build, by exact physical name; unknown epochs never prove freshness. A
      changed Upstream producer always rebuilds. Lag tolerance only turns a
