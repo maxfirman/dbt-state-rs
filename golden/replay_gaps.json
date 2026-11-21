@@ -386,5 +386,271 @@
       "execution_runtime_ms"
     ],
     "reason": "RUNTIME ECHO GAP (#202, #204; maintainer decision 2 on #201: not implemented, tracked in #200) cto data test with evaluation off, unchanged rerun SKIP: hosted echoes execution_runtime_ms 2136, the confirmed runtime of the other data test rt (same SQL, other unique id, evaluation on; its round-1 confirm, entry 65), not cto's own 1701 (entry 63), which the local server echoes because the scoped data-test UID floor stays (cf. the #138 UID difference). Everything else, the transformed_nodes_by_query map included, matches exactly."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 29,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): ts on dev_clone (R2) SKIPs, echoing 1847 ms, the prod run of the same UID (entry 6); ts reads only the shared source, so its SQL is identical on both Targets; hosted keeps one history for it. The local rendered identity includes default_schema (dev_clone_demo vs prod_state_demo), so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 31,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tf on dev_clone (R2) SKIPs, echoing 1014 ms, the prod run of the same UID (entry 10); the dev SQL reads the dev copy of uf, which hosted copied from prod (ready_to_clone, entry 28) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 33,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tr on dev_clone (R2) SKIPs, echoing 1060 ms, the prod run of the same UID (entry 12); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 34,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): ta on dev_clone (R2) SKIPs, echoing 969 ms, the prod run of the same UID (entry 11); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 35,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tc on dev_clone (R2) SKIPs, echoing 1150 ms, the prod run of the same UID (entry 13); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 56,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tr on dev_clone, S1 again after the newer failing S2 dev run (entry 50): hosted SKIPs, echoing 1060 ms, the prod S1 run (entry 12), read through the unchanged dev copy of u. The local latest row for the UID is the S2 run, whose SQL differs, so it executes (invariant 1: no older row is reused)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 62,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tf on prod_demo (R3) after the newer failing dev run (entry 44): hosted SKIPs from the prod pass (1014 ms, entry 10). The local latest row for the UID is the dev failing run, whose rendered identity differs, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 63,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tr on prod_demo (R3) after the newer dev S2 and S1 runs: hosted SKIPs from the prod S1 pass (1060 ms, entry 12). The local latest row for the UID is the dev S2 run, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 76,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): ta on dev_clone (R4) SKIPs, echoing 969 ms, the prod run (entry 11); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 77,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): ts on dev_clone (R4) SKIPs, echoing 1847 ms, the prod run (entry 6); its SQL is identical on both Targets; the local identity includes default_schema."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 78,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tr on dev_clone (R4) SKIPs, echoing 1060 ms, the prod run (entry 12); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 80,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): tc on dev_clone (R4) SKIPs, echoing 1150 ms, the prod run (entry 13); the dev SQL reads the dev copy of u, which hosted copied from prod (ready_to_clone, entry 27) and which is unchanged since; hosted reuses the prod run across Targets. The local server keys data-test reuse by the test UID's latest row and a rendered identity that includes default_schema and the relation names, so it executes."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 36,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 34: hosted explains its SKIP; the local server explains the decision it made instead (first-build EXECUTE of ta on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 37,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 31: hosted explains its SKIP; the local server explains the decision it made instead (first-build EXECUTE of tf on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 38,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 33: hosted explains its SKIP; the local server explains the decision it made instead (first-build EXECUTE of tr on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 39,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 35: hosted explains its SKIP; the local server explains the decision it made instead (first-build EXECUTE of tc on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 40,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 29: hosted explains its SKIP; the local server explains the decision it made instead (first-build EXECUTE of ts on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 57,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 56: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of tr S1 on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 65,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 62: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of tf on prod)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 66,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 63: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of tr on prod)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 81,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 76: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of ta on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 83,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 78: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of tr on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 84,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 80: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of tc on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 85,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 77: hosted explains its SKIP; the local server explains the decision it made instead (rebuild of ts on dev)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 97,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 95: hosted explains its SKIP; the local server explains the decision it made instead (first execution of xb: hosted reused xa's run (same SQL, other UID))."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 98,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 96: hosted explains its SKIP; the local server explains the decision it made instead (first execution of yb: hosted reused ya's run (same SQL, other UID, evaluation on))."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 109,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 108: hosted explains its SKIP; the local server explains the decision it made instead (xb: the local store holds no xb run, since hosted SKIPped xb's first submit)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 110,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 107: hosted explains its SKIP; the local server explains the decision it made instead (yb: the local store holds no yb run, since hosted SKIPped yb's first submit)."
+  },
+  {
+    "fixture": "data_test_history.jsonl",
+    "entry": 67,
+    "local_variant": "explain",
+    "reason": "EXPLAIN WORDING (#200 capture, separate from the history key): explain of entry 61, tc under compare_unrendered_code, SKIP on prod_demo. Decision and description match. Hosted prints 'the model was compared to state based on its unrendered code' [INFO] and 'the unrendered model code has not changed'; the local server matched the rendered identity and prints 'the test query has not changed' <NODE_QUERY_UNCHANGED>. The freshness subtree matches."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 6,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted default_schema cell: the variant changes only default_schema (prod_state_demo -> dev_clone_demo; the SQL is fully qualified). Hosted SKIPs from the base run (41111 ms, entry 4). The local rendered identity includes default_schema, so it executes."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 30,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted severity cell, base again after the variant's newer run (entry 28): hosted SKIPs from the older base run (41611 ms, entry 26), so the factor separates two histories that both stay reusable. The local latest row for the UID is the variant's, so it executes (invariant 1)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 44,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted input_relation cell, base again after the variant's newer run (entry 42): hosted SKIPs from the older base run (41911 ms, entry 40), so the factor separates two histories that both stay reusable. The local latest row for the UID is the variant's, so it executes (invariant 1)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 52,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted dev_target cell, base again after the variant's newer run (entry 50): hosted SKIPs from the older base run (42011 ms, entry 48), so the factor separates two histories that both stay reusable. The local latest row for the UID is the variant's, so it executes (invariant 1)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 58,
+    "local_variant": "ready_to_execute",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted dev_target_unrendered cell, base again after the variant's newer run (entry 56): hosted SKIPs from the older base run (42111 ms, entry 54), so the factor separates two histories that both stay reusable. The local latest row for the UID is the variant's, so it executes (invariant 1)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 66,
+    "local_variant": "skip_execution",
+    "ignore_fields": [
+      "execution_runtime_ms",
+      "execution_results"
+    ],
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted fail_confirmed_last cell: two UIDs with one SQL, both submitted before either confirmed, confirmed second-first. The second UID's SKIP echoes 43011 ms and its failures, the later-confirmed run of the other UID (entry 60), not its own 43022 ms, which the local server echoes (scoped UID floor, as explain_volatile_cells.jsonl entry 146). The rest of the response matches."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 74,
+    "local_variant": "skip_execution",
+    "ignore_fields": [
+      "execution_runtime_ms",
+      "execution_results"
+    ],
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): crafted fail_submitted_last cell: two UIDs with one SQL, both submitted before either confirmed, confirmed second-first. The second UID's SKIP echoes 43111 ms and its failures, the later-confirmed run of the other UID (entry 68), not its own 43122 ms, which the local server echoes (scoped UID floor, as explain_volatile_cells.jsonl entry 146). The rest of the response matches."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 7,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 6: hosted explains its SKIP; the local server explains the decision it made instead (default_schema variant: local EXECUTE)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 11,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 10: hosted explains its SKIP; the local server explains the decision it made instead (unique_id variant: hosted reused the other UID's run; local first-build EXECUTE)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 15,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 14: hosted explains its SKIP; the local server explains the decision it made instead (project_id variant: hosted reused the other project's run; local first-build EXECUTE)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 31,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 30: hosted explains its SKIP; the local server explains the decision it made instead (severity base again: local rebuild)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 45,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 44: hosted explains its SKIP; the local server explains the decision it made instead (input_relation base again: local rebuild)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 53,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 52: hosted explains its SKIP; the local server explains the decision it made instead (dev_target base again: local rebuild)."
+  },
+  {
+    "fixture": "data_test_history_probes.jsonl",
+    "entry": 59,
+    "local_variant": "explain",
+    "reason": "HOSTED DATA-TEST HISTORY (#200, not adopted pending the maintainer decision): explain of entry 58: hosted explains its SKIP; the local server explains the decision it made instead (dev_target_unrendered base again: local rebuild)."
   }
 ]
