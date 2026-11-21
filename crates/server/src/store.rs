@@ -8,7 +8,7 @@ use sqlx::PgPool;
 
 mod history;
 pub use history::CopySourceBuild;
-pub(crate) use history::{QueryDiagnosticNamespaces, QueryDiagnosticReference};
+pub(crate) use history::{warehouse_family, QueryDiagnosticNamespaces, QueryDiagnosticReference};
 
 /// One upstream input table's freshness, as sent in SubmitEnrichedSQLRequest.tables,
 /// and the build that produced it when the decision recorded one.
@@ -18,6 +18,14 @@ pub struct InputTable {
     pub last_modified_epoch: Option<i64>,
     #[serde(default, skip_serializing_if = "Producer::is_unrecorded")]
     pub producer: Producer,
+    /// A Snowflake data test's input read through a copy (#200): the copy
+    /// the submit reported, unchanged since this server recorded it, which
+    /// stands for `name` (the build it was copied from, at that build's
+    /// epoch and producer). It proves freshness only at exactly the epoch
+    /// recorded for `name` (`decision::upstream_freshness`). `None` for
+    /// every other input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_copy: Option<String>,
 }
 
 impl InputTable {
@@ -27,6 +35,7 @@ impl InputTable {
             name: name.into(),
             last_modified_epoch: epoch,
             producer: Producer::Unrecorded,
+            read_copy: None,
         }
     }
 }
@@ -158,6 +167,13 @@ pub struct ExecutionRow {
     /// relations its source build recorded, by physical name
     /// ([`CopySourceBuild`]). Explain evidence only; never a decision input.
     pub clone_source_inputs: Option<Vec<String>>,
+    /// Set only for a Snowflake copy recorded since #200: the confirmed build
+    /// it was made from. A data test reads the copy, while unchanged since
+    /// the copy, as that build (`data_test_history`).
+    pub clone_source_execution_id: Option<i64>,
+    /// A Snowflake data test's versioned history key (#200); `None` on every
+    /// other row and on data tests recorded before the key, which never match.
+    pub data_test_key: Option<String>,
     /// When the server recorded the confirmation (Unix ms, server clock).
     pub confirmed_at_ms: Option<i64>,
     /// Original submit clock for Explain only; unknown on legacy/Record rows.
@@ -186,12 +202,26 @@ impl ExecutionRow {
         )
         .unwrap_or_else(|| format!("execution:{}", self.id))
     }
+
+    /// Whether this row records Target relation `relation` in `scope`'s
+    /// physical State history scope: its organization, warehouse family and
+    /// connection namespace (AGENTS.md reuse invariant 1), with `relation`
+    /// compared by physical key.
+    pub(crate) fn records_in_scope_of(&self, scope: &ExecutionRow, relation: &str) -> bool {
+        self.org_id == scope.org_id
+            && warehouse_family(&self.dialect) == warehouse_family(&scope.dialect)
+            && crate::execution::non_blank_namespace(self.table_namespace.as_deref())
+                == crate::execution::non_blank_namespace(scope.table_namespace.as_deref())
+            && crate::warehouse::Warehouse::physical_scope_key(&self.dialect, &self.target_table)
+                == crate::warehouse::Warehouse::physical_scope_key(&scope.dialect, relation)
+    }
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
         clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, \
+        clone_source_execution_id, data_test_key, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
     /// Decode the stored encodings of the recorded inputs (JSONB) and cached
@@ -276,6 +306,8 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             clone_source_inputs: row
                 .try_get::<Option<serde_json::Value>, _>("clone_source_inputs")?
                 .and_then(|v| serde_json::from_value(v).ok()),
+            clone_source_execution_id: row.try_get("clone_source_execution_id")?,
+            data_test_key: row.try_get("data_test_key")?,
             confirmed_at_ms: row.try_get("confirmed_at_ms")?,
             display_submitted_at_ms: row.try_get("display_submitted_at_ms")?,
             ..ExecutionRow::default()
@@ -293,6 +325,8 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
 /// name: a candidate source for a result copy.
 #[derive(Debug, Clone)]
 pub struct CopyCandidate {
+    /// The candidate's current confirmed build (`executions.id`).
+    pub id: i64,
     pub target_table: String,
     pub execution_type: i32,
     pub table_type: Option<String>,
@@ -308,6 +342,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for CopyCandidate {
     fn from_row(row: &'r sqlx::postgres::PgRow) -> sqlx::Result<Self> {
         use sqlx::Row;
         Ok(Self {
+            id: row.try_get("id")?,
             target_table: row.try_get("target_table")?,
             execution_type: row.try_get("execution_type")?,
             table_type: row.try_get("table_type")?,
@@ -487,9 +522,11 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof,
+                data_test_key, clone_source_execution_id
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
-                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+                      $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33,$34,
+                      $35,$36)
             "#,
         )
         .bind(&e.org_id)
@@ -540,6 +577,8 @@ impl Store {
         .bind(e.direct_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize direct provenance")))
         .bind(e.submit_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize submit provenance")))
         .bind(e.analyzed_copy_proof.as_ref().map(|p| serde_json::to_value(p).expect("serialize analyzed proof")))
+        .bind(&e.data_test_key)
+        .bind(e.clone_source_execution_id)
         .execute(executor)
         .await?;
         Ok(())
@@ -631,6 +670,7 @@ impl Store {
                 execution_results = $6,
                 clone_source_table = CASE WHEN $7 THEN NULL ELSE clone_source_table END,
                 clone_source_inputs = CASE WHEN $7 THEN NULL ELSE clone_source_inputs END,
+                clone_source_execution_id = CASE WHEN $7 THEN NULL ELSE clone_source_execution_id END,
                 -- A registered Databricks copy must still refer to the same
                 -- current physical source at publication. A raced source write
                 -- invalidates adoption evidence, without inventing a hosted

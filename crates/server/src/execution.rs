@@ -93,6 +93,13 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) inherited_runtime_ms: Option<i64>,
     /// A client-requested copy's inherited source build upstream names.
     pub(crate) clone_source_inputs: Option<Vec<String>>,
+    /// A Snowflake copy's source build (#200), written on its pending row.
+    pub(crate) clone_source_execution_id: Option<i64>,
+    /// A Snowflake data test's history key (#200,
+    /// [`crate::analyzed_workload::identity::data_test_history_key`]); a
+    /// submit's is recomputed once its inputs are read through copies
+    /// ([`crate::data_test_history::read_through_copies`]).
+    pub(crate) data_test_key: Option<String>,
     sealed: (),
 }
 
@@ -176,6 +183,7 @@ impl ExecutionEvidence {
             node_template_hash: analysis.template_hash,
             input_tables: analysis.inputs,
             sql_reads_relation: analysis.reads_relation,
+            data_test_key: crate::analyzed_workload::identity::data_test_history_key(req, &[]),
             ..Self::node(
                 org_id,
                 req.target_table.clone().unwrap_or_default(),
@@ -226,6 +234,8 @@ impl ExecutionEvidence {
             clone_source_table: None,
             inherited_runtime_ms: None,
             clone_source_inputs: None,
+            clone_source_execution_id: None,
+            data_test_key: None,
             sealed: (),
         }
     }
@@ -1364,6 +1374,8 @@ mod tests {
             node_namespace_logic_hash: Some("logic".into()),
             execution_runtime_ms: Some(3826),
             input_names: vec!["\"DB\".\"PROD\".\"UP\"".into()],
+            execution_id: 1,
+            last_modified_epoch: None,
         };
         let row = ExecutionEvidence::copy_registration(
             "org",

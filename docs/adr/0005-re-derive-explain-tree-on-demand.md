@@ -14,7 +14,11 @@ records whether its SQL reads a relation ([below](#decision)). Amended by #67
 and whether the submit requested evaluation ([below](#decision)). Amended by
 #201 (maintainer decisions 1 and 3, 2026-11-19): a Snowflake reuse of
 volatile SQL by its unrendered code, and the Explain anchor of a model's
-rebuild refused at Reuse qualification ([below](#decision)).
+rebuild refused at Reuse qualification ([below](#decision)). Amended by #200
+(2026-11-21): a Snowflake data test's input read through a copy keeps the
+copy's name in the decision-time inputs, and its reuse under
+`compare_unrendered_code` is explained by the unrendered code
+([below](#decision)).
 
 ## Decision
 
@@ -170,6 +174,22 @@ caller already holds this id). Everything else is re-derived.
 >    because unknown evidence never proves freshness. A tree without
 >    upstream tables does not read the anchor and renders as before. No
 >    backfill.
+
+> **Amended by #200** (maintainer decision option A, 2026-11-21; [ADR
+> 0007](0007-lag-tolerance-and-upstream-producers.md#data-test-history-key)).
+> A Snowflake data test's input read through a copy is persisted in the
+> decision-time inputs (`node_decisions.input_tables`) under the relation it
+> stands for, with the copy's name as reported (`InputTable::read_copy`, a
+> JSON key absent on every other input). A reuse renders that input by the
+> copy's name, dated at the build it stands for, without a verdict or
+> anchor line (`data_test_history.jsonl` F36–F39, F57, F81, F83, F84); other
+> decisions over a stand-in are uncaptured and list it by the copy's name
+> in their ordinary shape. A Snowflake data test reused
+> under `compare_unrendered_code` with the run's unrendered body records the
+> template comparison (`submit_decision::unrendered_data_test_reuse`), so
+> Explain prints hosted's unrendered-code lines also when the rendered SQL
+> matches (F39, F67, F84, P59). Only evidence is stored; inputs recorded
+> before #200 carry no copy name and render as before.
 
 ## Why re-derive (not persist the tree)
 

@@ -3000,11 +3000,11 @@ mod rebuild_reasons {
 
 /// The last combination submit of the run (`cmb`'s rerun).
 const COMBINATIONS_THROUGH: usize = 159;
-/// `cto`'s rerun SKIP. Hosted echoes the runtime another data test confirmed
-/// (not matched, maintainer decision 2 on #201, tracked in #200); the local
-/// server echoes `cto`'s own confirmed runtime.
+/// `cto`'s rerun SKIP. It echoes the runtime of `rt` (entry 65), the
+/// later-confirmed run of the same SQL under another unique id: a Snowflake
+/// data test reuses the latest run of its history key (#200).
 const CTO_SKIP: usize = 146;
-const CTO_CONFIRM: usize = 63;
+const RT_CONFIRM: usize = 65;
 
 #[tokio::test]
 async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
@@ -3031,15 +3031,11 @@ async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
 
     let skip = support::scenario::into_skip(responses[&CTO_SKIP].clone());
     let hosted = &entries[CTO_SKIP].response["response"]["skip_execution"];
-    let mut local = codes(&serde_json::to_value(&skip).unwrap());
-    let mut expected = codes(hosted);
-    for payload in [&mut local, &mut expected] {
-        payload
-            .as_object_mut()
-            .unwrap()
-            .remove("execution_runtime_ms");
-    }
-    assert_eq!(local, expected, "cto reuse, evaluation off");
+    assert_eq!(
+        codes(&serde_json::to_value(&skip).unwrap()),
+        codes(hosted),
+        "cto reuse, evaluation off"
+    );
     assert_eq!(
         volatile_map_shape(&volatile_values(&responses[&CTO_SKIP])),
         volatile_map_shape(&hosted_volatile_values(&entries[CTO_SKIP].response)),
@@ -3047,8 +3043,8 @@ async fn snowflake_combination_cells_return_hosted_codes_and_maps() {
     );
     assert_eq!(
         skip.execution_runtime_ms,
-        entries[CTO_CONFIRM].request["execution_runtime_ms"].as_i64(),
-        "cto's own confirmed runtime, not another data test's"
+        entries[RT_CONFIRM].request["execution_runtime_ms"].as_i64(),
+        "the later-confirmed run of the same SQL, rt's"
     );
 }
 

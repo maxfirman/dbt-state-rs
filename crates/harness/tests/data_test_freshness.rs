@@ -231,12 +231,15 @@ async fn store_failures_audit_relation_is_ignored_but_a_new_upstream_rebuilds() 
 async fn tables_resembling_the_audit_relation_still_count() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
-    // One test (own unique id, so its own State history) per case.
+    // One test (own unique id and SQL, so its own State history, #200) per
+    // case.
     let test = |case: usize, store_failures: &str| {
         data_test(&format!("test.jaffle_shop.sf_test.{case}"))
             .catalog("CDO_DEMO_DB")
             .schema("prod_state_demo")
-            .sql("select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < 0")
+            .sql(&format!(
+                "select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < -{case}"
+            ))
             .namespace(NS)
             .project(PROJECT)
             .target_name("prod_demo")
@@ -332,7 +335,7 @@ async fn explain_never_lists_the_audit_relation_of_a_test_without_upstreams() {
         let test = data_test(&format!("test.jaffle_shop.sf_test.{case}"))
             .catalog("CDO_DEMO_DB")
             .schema("prod_state_demo")
-            .sql("select 1 as id where false")
+            .sql(&format!("select {case} as id where false"))
             .namespace(NS)
             .project(PROJECT)
             .target_name("prod_demo")
@@ -412,7 +415,12 @@ async fn audit_relation_in_a_separate_schema_is_ignored_but_lookalikes_rebuild()
         "the audit relation in the test's own schema is its own write"
     );
 
-    let lookalike = sf_test_in("test.jaffle_shop.sf_test.1", SF_AUDIT_SCHEMA, sql);
+    // Another test (its own SQL, so its own State history, #200).
+    let lookalike = sf_test_in(
+        "test.jaffle_shop.sf_test.1",
+        SF_AUDIT_SCHEMA,
+        "select id from CDO_DEMO_DB.prod_state_demo.sf_src where id < -1",
+    );
     sc.build_with(lookalike.clone(), outcome().results(test_results(0)))
         .await;
     assert_eq!(

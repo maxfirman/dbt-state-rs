@@ -494,22 +494,24 @@ async fn record_executions_duplicate_fingerprint_newest_wins() {
 /// store/handler level, independent of the golden fixture.
 ///
 /// Each data-test submit has an empty target_table and a body hash shared
-/// across all tests of the same generic type, distinguished only by
-/// node_unique_id — just like the real dbt client sends. `table_namespace` is
-/// present (adapter-level) to prove the fix does not fall back to a
-/// namespace+body collision either.
+/// across all tests of the same generic type; the tests' rendered SQL tells
+/// them apart (each tests its own column), just like the real dbt client
+/// sends. `table_namespace` is present (adapter-level) to prove the fix does
+/// not fall back to a namespace+body collision either. (Two tests with the
+/// same SQL share one Snowflake history, #200.)
 #[tokio::test]
 async fn data_tests_do_not_collide_on_shared_body_hash() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
 
     let t1 = data_test("test.proj.not_null_customers_customer_id.aaaa")
-        .sql("select * from x where c is null")
+        .sql("select * from x where customer_id is null")
         .body("934c4ef4sharednotnullbody")
         .namespace("adapter-ns");
     let t2 = t1
         .clone()
-        .unique_id("test.proj.not_null_customers_customer_name.bbbb");
+        .unique_id("test.proj.not_null_customers_customer_name.bbbb")
+        .sql("select * from x where customer_name is null");
 
     // Execute + confirm test #1.
     let r1 = sc.submit(t1.clone()).await;
