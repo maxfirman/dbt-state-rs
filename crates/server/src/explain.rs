@@ -1966,6 +1966,13 @@ pub(crate) fn humanize_duration(ms: i64) -> String {
     }
 }
 
+/// The name an upstream is listed by: a data test's input read through a
+/// copy is listed as the copy the submit reported (#200), every other input
+/// by its name.
+fn upstream_name(up: &InputTable) -> &str {
+    up.read_copy.as_deref().unwrap_or(&up.name)
+}
+
 /// The per-upstream `upstream dependencies` listing with FRESH/OUTDATED badges,
 /// the anchor-relative `«gap»` / `no updates since …` line and the humanized
 /// `last updated: «rel_time»`. THIS is the subtree that requires the matched
@@ -2890,13 +2897,6 @@ fn clone_upstream_line(up: &InputTable) -> qc::ExplainLine {
 }
 
 // ── FQN / quoting helpers (the single dialect-specific seam) ────────────────
-
-/// The name an upstream is listed by: a data test's input read through a
-/// copy is listed as the copy the submit reported (#200), every other input
-/// by its name.
-fn upstream_name(up: &InputTable) -> &str {
-    up.read_copy.as_deref().unwrap_or(&up.name)
-}
 
 /// The node's own fully-qualified target, as stored (already quoted by client).
 fn fqn(node: &ExplainNode) -> String {
