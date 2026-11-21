@@ -47,6 +47,7 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [0006](adr/0006-persist-the-decision-reason.md) | Persist the Decision reason; it selects the Explain tree shape. |
 | [0007](adr/0007-lag-tolerance-and-upstream-producers.md) | Freshness against recorded upstream epochs and producers, gated by Lag tolerance. |
 | [0008](adr/0008-store-failures-audit-relation-by-elimination.md) | Recognize an aliased `store_failures` audit relation as the one unnamed table in the test's schema. |
+| [0012](adr/0012-token-broker-delegates-identity-to-upstream-idp.md) | A Token broker issues dbt client tokens and delegates identity to the Upstream IdP. Evidence: [hosted auth](reports/hosted-auth-2026-11-21.md), [build or adopt](reports/auth-build-vs-adopt-2026-11-21.md). |
 
 ## Databricks preview
 

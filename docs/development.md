@@ -91,9 +91,55 @@ Client auth, metadata headers and configuration are described in
 
 ### Warehouse note
 
-Hosted dbt State does not engage for DuckDB, so Fusion validation against the
-hosted service needs Snowflake; local DuckDB runs use the
-[DuckDB workflow](duckdb.md).
+Hosted dbt State does not engage for DuckDB. Live validation against the
+hosted service uses Snowflake or [Databricks](databricks-preview.md); local
+DuckDB runs use the [DuckDB workflow](duckdb.md).
+
+### Databricks live setup
+
+Databricks characterization uses **dbt 2.0.11**, Unity Catalog and managed
+Delta tables on the tested Free Edition serverless workspace. The
+[support matrix](databricks-preview.md) and [acceptance report](databricks-acceptance.md)
+record the verified cases and remaining limits.
+
+Use a `databricks` base profile in `~/.dbt/profiles.yml`. Replace the host,
+warehouse ID and schema below with existing demo resources:
+
+```yaml
+databricks:
+  target: prod_demo
+  outputs:
+    prod_demo:
+      type: databricks
+      host: <workspace-host>
+      http_path: /sql/1.0/warehouses/<warehouse-id>
+      catalog: cdo_demo_db
+      schema: <existing-demo-schema>
+      token: "{{ env_var('DBT_ENV_SECRET_DATABRICKS_TOKEN') }}"
+      threads: 1
+```
+
+Keep the token in the Databricks CLI's `DEFAULT` profile in
+`~/.databrickscfg` (mode `0600`). The campaign runners read it and set
+`DBT_ENV_SECRET_DATABRICKS_TOKEN` for their child processes. The CLI host must
+match the dbt profile's host, and the profile's HTTP path must name the same
+warehouse used by the runner's `--warehouse` option.
+
+The local demo at `~/projects/jaffle-shop-databricks` has a `dbt-local` wrapper
+that reads the same token, sets the secret environment variable and invokes
+`dbt` from the project directory. With the pinned binary on `PATH`, check its
+connection with:
+
+```bash
+cd ~/projects/jaffle-shop-databricks
+./dbt-local debug --target prod_demo
+```
+
+For new captures, use the [Databricks experiment drivers](harness.md#databricks-capability-campaign)
+and the relevant feature's documented ownership and schema-lease requirements.
+Keep all Warehouse mutations in `cdo_demo_db` and preserve existing experiment
+objects. The [volatile evaluation runner](databricks-volatile.md#reproduce)
+is one example using fresh UUID-named objects in evidenced existing schemas.
 
 ## Capturing real traffic
 
