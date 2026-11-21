@@ -221,6 +221,16 @@ two volatile data-test executions, and first-build/reuse trees for the control
 and Lag-tolerant consumer. Every tree matches before and after restart;
 [Warehouse evidence](databricks-volatile.md).
 
+Databricks #213 adds 51 trees across the four priority histories. FULL
+evaluation-off reuses print the tolerated-config line. The approved
+evaluation-on `rand(42)` reuse prints its value without a tolerance line.
+The source-less APPEND, MERGE and DELETE_INSERT reruns print the model
+query change and have no upstreams. The FULL rerun with a changed input
+prints its outdated upstream. After a drop, the map is filled and the
+tree only describes the absent table. The paired consumers explain the
+dated producer transition as an upstream query change.
+[Evidence and check-ins](reports/databricks-volatile-priority-2026-11-21.md).
+
 - **Tree vs string.** The tree and the `decision_description` are separate
   outputs. The model SKIP tree is the same for all three SKIP descriptions;
   never derive the string from the tree.
@@ -410,28 +420,28 @@ copy was registered for another kind.
 
 ## Observed vocabulary
 
-Line counts from the [census](#explain-tree-census) over the 1225 trees in the
-tracked fixtures (2026-11-19). A line without a marker or badge is "none"
-(6546 lines without a marker, 7947 without a badge). Only an explicit `0` is
+Line counts from the [census](#explain-tree-census) over the 1276 trees in the
+tracked fixtures (2026-11-21). A line without a marker or badge is "none"
+(6723 lines without a marker, 8229 without a badge). Only an explicit `0` is
 counted as unspecified.
 
 | Enum | Value | Observed? |
 |---|---|---|
-| ExplainMarker | SUCCESS (1) | ✅ 3174 lines |
-| ExplainMarker | FAIL (2) | ✅ 823 lines |
-| ExplainMarker | INFO (3) | ✅ 133 lines |
-| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1225 trees (2026-11-19; clients 2.0.6 and 2.0.11, crafted probes)¹ |
-| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 965 lines |
-| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 177 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 25 `databricks_*.jsonl` captures) |
-| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 737 lines |
-| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 38 lines |
+| ExplainMarker | SUCCESS (1) | ✅ 3243 lines |
+| ExplainMarker | FAIL (2) | ✅ 897 lines |
+| ExplainMarker | INFO (3) | ✅ 164 lines |
+| ExplainMarker | EM_UNSPECIFIED (0) | not observed across 1276 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | TARGET_TABLE_EXISTS (8) | ✅ 991 lines |
+| ExplainBadge | NODE_QUERY_CHANGED (4) | ✅ 190 lines (SHAPE 7, `explain_snapshot_history.jsonl`, `explain_custom_history.jsonl`, `explain_incremental_*.jsonl`, `explain_rebuild_reason_gaps.jsonl`, `explain_freshness_cells.jsonl`, `explain_copy_logic_*.jsonl`, `explain_reason_kind_cells*.jsonl`, `explain_view_reads_no_relation.jsonl`, `explain_execution_type_change.jsonl`, `explain_volatile_*.jsonl`, and 27 `databricks_*.jsonl` captures) |
+| ExplainBadge | NODE_QUERY_UNCHANGED (5) | ✅ 750 lines |
+| ExplainBadge | UPSTREAM_QUERY_CHANGED (6) | ✅ 40 lines |
 | ExplainBadge | UPSTREAM_QUERY_UNCHANGED (7) | ✅ 15 lines (SHAPE 9 per-upstream query listing only) |
-| ExplainBadge | FRESH (1) | ✅ 505 lines |
-| ExplainBadge | OUTDATED (3) | ✅ 247 lines |
-| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 45 lines (Lag tolerance line) |
-| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1225 trees (2026-11-19; clients 2.0.6 and 2.0.11, crafted probes)¹ |
+| ExplainBadge | FRESH (1) | ✅ 509 lines |
+| ExplainBadge | OUTDATED (3) | ✅ 256 lines |
+| ExplainBadge | WITHIN_TOLERANCE (2) | ✅ 47 lines (Lag tolerance line) |
+| ExplainBadge | EB_UNSPECIFIED (0) | not observed across 1276 trees (2026-11-21; clients 2.0.6 and 2.0.11, crafted probes)¹ |
 
-1. Origins across the 1225 tracked trees: 795 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
+1. Origins across the 1276 tracked trees: 846 client 2.0.11, 421 crafted, 7 client 2.0.6, 2 client (version unrecorded). INFO is observed in template comparisons and Volatile evaluation; no unspecified or unmapped value is observed.
 
 Client rendering (`a0fc53e`): the client renders `INFO` as `[INFO]` and
 renders `EM_UNSPECIFIED` and `EB_UNSPECIFIED` as nothing. No client code path
@@ -451,21 +461,21 @@ submit came from `state-probe`, otherwise the client version. The census
 names the fixture and entry of every `INFO`, unspecified or unmapped value.
 How to rerun it: [testing.md](testing.md#explain-tree-census).
 
-Tracked fixtures, 2026-11-19 (1225 trees in 156 files, none empty; INFO catalogued below):
+Tracked fixtures, 2026-11-21 (1276 trees in 160 files, none empty; INFO catalogued below):
 
 | Node kind | Decision | Trees | Origin |
 |---|---|---|---|
-| FULL | SKIP | 267 | 147 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
-| FULL | EXECUTE | 308 | 171 client 2.0.11, 135 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
+| FULL | SKIP | 275 | 155 client 2.0.11, 116 crafted, 3 client 2.0.6, 1 client (version unrecorded) |
+| FULL | EXECUTE | 345 | 208 client 2.0.11, 135 crafted, 1 client (version unrecorded), 1 client 2.0.6 |
 | FULL | CLONE | 11 | 7 crafted, 3 client 2.0.11, 1 client 2.0.6 |
 | APPEND | SKIP | 19 | 18 client 2.0.11, 1 crafted |
-| APPEND | EXECUTE | 31 | 27 client 2.0.11, 4 crafted |
+| APPEND | EXECUTE | 33 | 29 client 2.0.11, 4 crafted |
 | MERGE | SKIP | 24 | 24 client 2.0.11 |
-| MERGE | EXECUTE | 40 | 38 client 2.0.11, 2 crafted |
+| MERGE | EXECUTE | 42 | 40 client 2.0.11, 2 crafted |
 | INSERT_OVERWRITE | SKIP | 17 | 16 client 2.0.11, 1 crafted |
 | INSERT_OVERWRITE | EXECUTE | 32 | 28 client 2.0.11, 4 crafted |
 | DELETE_INSERT | SKIP | 11 | 11 client 2.0.11 |
-| DELETE_INSERT | EXECUTE | 25 | 23 client 2.0.11, 2 crafted |
+| DELETE_INSERT | EXECUTE | 27 | 25 client 2.0.11, 2 crafted |
 | MICROBATCH | SKIP | 16 | 16 client 2.0.11 |
 | MICROBATCH | EXECUTE | 30 | 28 client 2.0.11, 2 crafted |
 | SNAPSHOT | SKIP | 28 | 27 client 2.0.11, 1 crafted |

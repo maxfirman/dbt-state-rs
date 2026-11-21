@@ -849,6 +849,22 @@ impl Warehouse {
         }
     }
 
+    pub(crate) fn checked_volatile_reuse(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> bool {
+        self == Self::Databricks && databricks::checked_volatile_reuse(req)
+    }
+
+    pub(crate) fn volatile_producer_input(
+        self,
+        req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    ) -> Option<String> {
+        (self == Self::Databricks)
+            .then(|| databricks::volatile_producer_input(req))
+            .flatten()
+    }
+
     /// Whether a model whose SQL calls a Volatile function, with Volatile
     /// evaluation requested, is reused by its unchanged unrendered code under
     /// `compare_unrendered_code` instead of being refused at Reuse

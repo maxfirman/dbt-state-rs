@@ -251,10 +251,8 @@ pub struct ExplainedOutcome {
     /// enter identity, fingerprints, Upstream producers or Reuse
     /// qualification. `None` when nothing was rendered.
     pub rendered: Option<crate::volatile_evaluation::Rendered>,
-    /// The submit was refused at Reuse qualification in an unchanged rerun
-    /// ([`reuse_candidate::Selection::unchanged_rerun`]). Selects a Volatile
-    /// evaluation cell only; it decides nothing.
-    unchanged_rerun: bool,
+    /// Evidence for a rendering cell after Reuse qualification refused a build.
+    rerun_evidence: crate::reuse_candidate::RerunEvidence,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -303,7 +301,7 @@ pub async fn submit_sql_explained(
                 && reuse_candidate::refuses_volatile_sql_alone(req)
             {
                 crate::volatile_evaluation::Decided::RefusedVolatileSql {
-                    unchanged_rerun: decided.unchanged_rerun,
+                    rerun: decided.rerun_evidence,
                 }
             } else {
                 crate::volatile_evaluation::Decided::Build(record.reason)
@@ -405,14 +403,14 @@ async fn decide_sql(
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
     let selection = select_sql(store, org_id, req, &evidence).await?;
-    let unchanged_rerun = selection.unchanged_rerun;
+    let rerun_evidence = selection.rerun_evidence;
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
         explain: ExplainEvidence::of(req, &evidence, &outcome),
         outcome,
         rendered: None,
-        unchanged_rerun,
+        rerun_evidence,
     }))
 }
 
@@ -573,6 +571,11 @@ async fn decide_resolved_sql(
             .build_time_ms(row)
             .map(|built| now_ms.saturating_sub(built));
     }
+    let producer_revision = if record.class == DecisionKind::Build {
+        databricks_producer_revision(store, req, evidence, &selection).await?
+    } else {
+        None
+    };
     let (record, candidate) = anchor_rejected(
         record,
         candidate,
@@ -582,7 +585,11 @@ async fn decide_resolved_sql(
             .or(selection.unqualified),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
-    let mut outcome = settle(store, evidence, record, candidate).await?;
+    let mut revised_evidence = std::borrow::Cow::Borrowed(evidence);
+    if let Some(revision) = producer_revision {
+        revised_evidence.to_mut().producer_revision = Some(revision);
+    }
+    let mut outcome = settle(store, &revised_evidence, record, candidate).await?;
     if req.execution_type == ModelExecutionType::Merge as i32 {
         if let (
             Some(reference),
@@ -596,6 +603,60 @@ async fn decide_resolved_sql(
         }
     }
     Ok(Some(outcome))
+}
+
+/// #213: a confirmed FULL RAND build over an external modification to
+/// its single managed input changes what its downstreams consume. Ordinary
+/// reruns retain that revision. Rendering is independent of this proof.
+async fn databricks_producer_revision(
+    store: &Store,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    selection: &reuse_candidate::Selection,
+) -> sqlx::Result<Option<i64>> {
+    use crate::reuse_candidate::RerunEvidence;
+
+    let warehouse = Warehouse::from_dialect(&req.dialect);
+    if warehouse != Warehouse::Databricks || req.execution_type != ModelExecutionType::Full as i32 {
+        return Ok(None);
+    }
+    let source = (selection.rerun_evidence == RerunEvidence::InputModifiedExternally)
+        .then(|| warehouse.volatile_producer_input(req))
+        .flatten();
+    let Some((source, prior)) = source.zip(selection.unqualified.as_ref()) else {
+        return Ok(selection.producer_revision);
+    };
+    let recorded = prior.input_tables.iter().find(|input| input.name == source);
+    let current = evidence
+        .input_tables
+        .iter()
+        .find(|input| input.name == source);
+    let Some((recorded, current)) = recorded.zip(current) else {
+        return Ok(selection.producer_revision);
+    };
+    let built = store
+        .current_delta_state_without_pending_writes(
+            &evidence.org_id,
+            &source,
+            evidence.table_namespace.as_deref(),
+            &evidence.dialect,
+        )
+        .await?;
+    let changed = built.is_some_and(|row| {
+        row.execution_type == ModelExecutionType::Full as i32
+            && crate::copy_lifecycle::ordinary(&row)
+            && row.last_modified_epoch == recorded.last_modified_epoch
+            && row
+                .last_modified_epoch
+                .zip(current.last_modified_epoch)
+                .is_some_and(|(built, observed)| built < observed)
+            && Producer::of(Some(&row), recorded.last_modified_epoch) == recorded.producer
+    });
+    Ok(if changed {
+        Some(prior.id)
+    } else {
+        selection.producer_revision
+    })
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own

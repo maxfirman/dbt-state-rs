@@ -143,6 +143,13 @@ pub struct ExplainNode {
 }
 
 impl ExplainNode {
+    fn has_databricks_anchor(&self) -> bool {
+        self.anchor.as_ref().is_some_and(|prior| {
+            crate::warehouse::Warehouse::from_dialect(&prior.dialect)
+                == crate::warehouse::Warehouse::Databricks
+        })
+    }
+
     fn noun(&self) -> &'static str {
         match ModelExecutionType::try_from(self.execution_type) {
             Ok(ModelExecutionType::DbtDataTest) => "test",
@@ -993,12 +1000,20 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             == Some(DecisionReason::NoReuseCandidate(
                 NoCandidate::FailedReuseQualification,
             ))
-        && node.template_comparison.as_ref().is_none_or(|c| !c.enabled)
-        && node.own_target_exists();
+        && node.template_comparison.as_ref().is_none_or(|c| !c.enabled);
     if !captured {
         return None;
     }
     let kind = K::try_from(node.execution_type).ok()?;
+    // #213: a Databricks FULL refusal after a drop still renders its map,
+    // while Explain only describes the absent Target relation.
+    let databricks = node.has_databricks_anchor();
+    if databricks && kind == K::Full && node.own_target_absent() {
+        return Some(vec![first_build_table_analysis(node)]);
+    }
+    if !node.own_target_exists() {
+        return None;
+    }
     let mut query = vec![leaf(
         format!("the {} query has changed", node.noun()),
         Some(MARKER_FAIL),
@@ -1014,8 +1029,10 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
         node.genuine_upstreams().is_empty(),
         node.query_dependencies.is_empty(),
     ) {
-        (K::Full | K::DbtCustom | K::View, true, true)
-            if kind != K::View || view_reads_no_relation(node) =>
+        (kind, true, true)
+            if matches!(kind, K::Full | K::DbtCustom)
+                || kind == K::View && view_reads_no_relation(node)
+                || databricks && matches!(kind, K::Append | K::Merge | K::DeleteInsert) =>
         {
             section(
                 "data freshness analysis",
@@ -1027,10 +1044,10 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             upstream_data_up_to_date()
         }
         (K::Full | K::Append | K::Snapshot, false, true)
-            if upstreams_fresh_against_anchor(node) =>
+            if databricks && kind == K::Full || upstreams_fresh_against_anchor(node) =>
         {
             query.push(upstream_queries_unchanged);
-            data_freshness_analysis_fresh(node)
+            data_freshness_analysis_against_anchor(node)
         }
         _ => return None,
     };
@@ -1084,6 +1101,11 @@ fn add_volatile_lines(node: &ExplainNode, lines: &mut [qc::ExplainLine]) {
         return;
     }
     let (verdict, badge, tolerance) = match node.volatile_evaluation.requested {
+        Some(true) if node.decision == DecisionKind::Skip && node.has_databricks_anchor() => (
+            format!("the {noun} query has not changed"),
+            BADGE_NODE_QUERY_UNCHANGED,
+            None,
+        ),
         Some(true) => (
             format!("the {noun} query has changed"),
             BADGE_NODE_QUERY_CHANGED,
@@ -1192,7 +1214,7 @@ fn volatile_dependency_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
     let freshness = if upstreams.is_empty() {
         upstream_data_up_to_date()
     } else {
-        data_freshness_analysis_fresh(node)
+        data_freshness_analysis_against_anchor(node)
     };
     vec![
         table_analysis_exists(node),
@@ -1531,7 +1553,7 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             table_analysis_exists(node),
             section("query analysis", Vec::new()),
             if node.genuine_upstreams().is_empty() {
-                data_freshness_analysis_fresh(node)
+                data_freshness_analysis_against_anchor(node)
             } else {
                 // #150: a partial physical result has no confirmed build to
                 // judge freshness against. List current source timestamps,
@@ -1560,13 +1582,13 @@ fn base_explain_lines(node: &ExplainNode) -> Vec<qc::ExplainLine> {
             vec![
                 table,
                 query_analysis_unchanged(node),
-                data_freshness_analysis_fresh(node),
+                data_freshness_analysis_against_anchor(node),
             ]
         }
         Some(Shape::QueryObservedOutsideScope) => vec![
             table_analysis_exists(node),
             query_analysis_unchanged(node),
-            data_freshness_analysis_fresh(node),
+            data_freshness_analysis_against_anchor(node),
         ],
         Some(Shape::QueryChanged) => query_changed_tree(node),
         Some(Shape::ResolutionContextChanged) => resolution_context_changed_tree(node),
@@ -1689,7 +1711,7 @@ fn skip_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         out.push(table_analysis_exists(node));
     }
     out.push(query_analysis_unchanged(node));
-    out.push(data_freshness_analysis_fresh(node));
+    out.push(data_freshness_analysis_against_anchor(node));
     out
 }
 
@@ -1762,8 +1784,8 @@ fn says_no_upstream_dependencies(node: &ExplainNode) -> bool {
         )
 }
 
-/// `data freshness analysis` body for a SKIP, by upstream situation.
-fn data_freshness_analysis_fresh(node: &ExplainNode) -> qc::ExplainLine {
+/// `data freshness analysis` body against an anchored build, by upstream situation.
+fn data_freshness_analysis_against_anchor(node: &ExplainNode) -> qc::ExplainLine {
     let upstreams = node.genuine_upstreams();
     if upstreams.is_empty() {
         // No genuine upstreams. A FULL model, custom node, data test or a
@@ -2287,7 +2309,7 @@ fn query_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
         if table_to_view {
             section("data freshness analysis", Vec::new())
         } else {
-            data_freshness_analysis_fresh(&judged)
+            data_freshness_analysis_against_anchor(&judged)
         },
     ]
 }
@@ -2380,7 +2402,7 @@ fn input_binding_changed_tree(node: &ExplainNode) -> Vec<qc::ExplainLine> {
                 ),
             ],
         ),
-        data_freshness_analysis_fresh(&judged),
+        data_freshness_analysis_against_anchor(&judged),
     ]
 }
 

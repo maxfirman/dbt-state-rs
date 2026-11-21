@@ -361,7 +361,9 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    requested, Reuse qualification refuses only SQL whose root or query
    dependency definitions call a Volatile function per the Warehouse's
    detector (`Warehouse::has_volatile_sql`); deterministic SQL qualifies
-   (#191 cell 3, maintainer decision, #194). A Snowflake model under
+   (#191 cell 3, maintainer decision, #194). Databricks also qualifies the
+   checked source-less FULL literal projection shape with an ordinary matching
+   build, including `rand(42)` (#213). A Snowflake model under
    `compare_unrendered_code` whose template identity equals the row's is not
    refused for volatile SQL (maintainer decision 1 on #201, #206; ADR 0005
    "Amended by #201"). A model's rebuild refused at Reuse qualification keeps
@@ -382,7 +384,9 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    (`diagnostics::decorate`). They only decorate codes and descriptions; none
    selects a reuse candidate, copy source or Explain anchor.
 9. `settle`: mint the ids, write the pending row for every outcome except SKIP,
-   and return the `SubmitOutcome`.
+   and return the `SubmitOutcome`. A confirmed Databricks FULL build
+   can publish the bounded producer revision from an externally modified input
+   ([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#databricks-volatile-producer-after-external-modification-213)).
 10. Volatile evaluation, once decided (`volatile_evaluation::evaluate`, ADR
     0005 "Amended by #67"): for a build, a reuse or a Result copy, render
     the Volatile functions the Warehouse has captured rules for

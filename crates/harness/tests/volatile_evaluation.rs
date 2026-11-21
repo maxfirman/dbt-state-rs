@@ -41,6 +41,8 @@ const CELLS: &str = include_str!("../../../golden/fixtures/explain_volatile_cell
 /// and rerun, deterministic controls and a consumer (`docs/databricks-volatile.md`).
 const DATABRICKS_EVALUATION: &str =
     include_str!("../../../golden/fixtures/databricks_volatile_evaluation.jsonl");
+const DATABRICKS_PRODUCER: &str =
+    include_str!("../../../golden/fixtures/databricks_volatile_producer.jsonl");
 /// The captured submit whose SQL calls `rand()` with evaluation requested.
 const RAND_SUBMIT: usize = 85;
 /// Hosted's Explain of that decision.
@@ -138,11 +140,16 @@ async fn replay_where(
             "SubmitEnrichedSQL" if !submits(entry) => left_out.extend(hosted),
             "SubmitEnrichedSQL" => {
                 let req = captured_submit(&entry.request).build();
-                let response = sql
-                    .submit_enriched_sql(support::captured_request(req, entry))
-                    .await
-                    .unwrap()
-                    .into_inner();
+                let request = if entry.request["dialect"] == "databricks" {
+                    support::captured_request_at(
+                        req,
+                        entry,
+                        support::databricks_decision_time(entry).unwrap(),
+                    )
+                } else {
+                    support::captured_request(req, entry)
+                };
+                let response = sql.submit_enriched_sql(request).await.unwrap().into_inner();
                 if let (Some(hosted), Some(local)) = (hosted, ready_request_id(&response)) {
                     local_ids.insert(hosted.to_owned(), local);
                 }
@@ -1850,8 +1857,147 @@ async fn databricks_cells_explain_as_hosted_including_after_a_restart() {
     .await;
 }
 
-/// The captured Databricks cells are the only ones that render: each submit
-/// here is a captured one in another cell, and keeps an empty map.
+/// The four promoted #213 histories also match after reopening State.
+#[tokio::test]
+async fn databricks_priority_cells_match_hosted_including_after_a_restart() {
+    for (name, fixture, count) in [
+        (
+            "databricks_volatile_priority",
+            include_str!("../../../golden/fixtures/databricks_volatile_priority.jsonl"),
+            27,
+        ),
+        (
+            "databricks_volatile_function_builds",
+            include_str!("../../../golden/fixtures/databricks_volatile_function_builds.jsonl"),
+            6,
+        ),
+        (
+            "databricks_volatile_checked_reuse",
+            include_str!("../../../golden/fixtures/databricks_volatile_checked_reuse.jsonl"),
+            4,
+        ),
+        ("databricks_volatile_producer", DATABRICKS_PRODUCER, 14),
+    ] {
+        let database = std::sync::Arc::new(support::TestDatabase::new(name).await);
+        let server = support::start_server_on_database(database.clone()).await;
+        let capture = entries(fixture);
+        let responses = replay(
+            &Scenario::connect(&server).await,
+            &capture,
+            capture.len() - 1,
+        )
+        .await;
+        let mut explains = Vec::new();
+        for (index, submit) in capture.iter().enumerate() {
+            let Some(response) = responses.get(&index) else {
+                continue;
+            };
+            let case = format!("{name} entry {index}");
+            assert_matches_hosted(response, submit, &case);
+            let id = support::hosted_submit_edid(&submit.response).unwrap();
+            let explain = capture
+                .iter()
+                .find(|entry| {
+                    entry.method == "GetExplainMessages"
+                        && entry.response["messages"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|message| message["execution_decision_id"] == id)
+                })
+                .expect("native Explain for each ordinary submit");
+            explains.push(HostedExplain::of_response(case, explain, submit, response));
+        }
+        assert_eq!(explains.len(), count);
+        assert_explains_match_hosted(&database, server, &explains, std::convert::identity).await;
+    }
+}
+
+#[tokio::test]
+async fn databricks_checked_reuse_refuses_unproven_sql() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let submit = captured_submit(&request(DATABRICKS_EVALUATION, DB_TABLE_FIRST));
+    for sql in [
+        "select rand()",
+        "select rand(0)",
+        "select current_date()",
+        "select current_timestamp",
+        "select rand(42), uuid()",
+        "select example.rand(42)",
+        "select rand(42) from values (1)",
+    ] {
+        let org = sc.org(sql);
+        let request = submit.clone().sql(sql);
+        org.build(request.clone(), OWN_EPOCH).await;
+        org.expect_execute(request.own_epoch(Some(OWN_EPOCH))).await;
+    }
+}
+
+#[tokio::test]
+async fn databricks_producer_revision_requires_a_confirmed_source_and_cannot_revert() {
+    let capture = entries(DATABRICKS_PRODUCER);
+    let producer = target(&capture[30].request);
+    let source = target(&capture[3].request);
+    let first_edit_epoch = capture[30].request["tables"][0]["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    let consumer = captured_submit(&capture[33].request);
+    for (pending_source, ambiguous_target) in [(true, false), (false, false), (false, true)] {
+        let server = support::start_server().await;
+        let sc = Scenario::connect(&server).await;
+        replay(&sc, &capture, 26).await;
+        if pending_source {
+            sc.at(submitted_at(&capture[30]) - 1)
+                .expect_execute(
+                    captured_submit(&capture[3].request)
+                        .sql("select 1 as id, 9 as revision")
+                        .own_epoch(Some(
+                            capture[6].request["tables"][0]["last_modified_epoch"]
+                                .as_i64()
+                                .unwrap(),
+                        )),
+                )
+                .await;
+        }
+        let built = capture[31].request["last_modified_epoch"].as_i64().unwrap();
+        sc.at(submitted_at(&capture[30]))
+            .build(captured_submit(&capture[30].request), built)
+            .await;
+        if pending_source {
+            // The source epoch can belong to an unconfirmed write. The
+            // consumer sees drift and can Reuse within Lag tolerance.
+            let skip = sc
+                .at(submitted_at(&capture[33]))
+                .expect_skip(consumer.clone())
+                .await;
+            assert!(skip.explained_decision.unwrap().is_stale);
+        } else {
+            // Leave the consumer on its first result across both edits.
+            // A later edit of the already external input cannot restore the
+            // producer identity the consumer recorded before either edit.
+            let built_again = capture[43].request["last_modified_epoch"].as_i64().unwrap();
+            let mut submit =
+                captured_submit(&capture[42].request).upstream(&source, first_edit_epoch + 1_000);
+            if ambiguous_target {
+                submit = submit.tolerate_nondeterminism(true).table(&producer, None);
+            }
+            sc.at(submitted_at(&capture[42]))
+                .build(submit, built_again)
+                .await;
+            let sc = sc.at(submitted_at(&capture[44]));
+            let ready = sc
+                .expect_execute(consumer.clone().upstream(&producer, built_again))
+                .await;
+            let tree = explain(&sc, ready.execution_decision_id.as_deref().unwrap()).await;
+            assert!(texts(&tree)
+                .iter()
+                .any(|line| line == "an upstream model query has changed"));
+        }
+    }
+}
+
+/// Neighbouring uncaptured Databricks cells keep an empty map.
 #[tokio::test]
 async fn databricks_uncaptured_cells_render_nothing() {
     use support::scenario::{outcome, test_results, ExecutionType};
@@ -1864,20 +2010,52 @@ async fn databricks_uncaptured_cells_render_nothing() {
         assert!(rendered(ready).is_empty(), "{case}: {:?}", rendered(ready));
     };
 
-    // First builds with evaluation off, or of another execution type.
+    // First builds of uncaptured node kinds or with uncaptured functions.
     for (case, submit) in [
-        (
-            "table, evaluation off",
-            table.clone().tolerate_nondeterminism(true),
-        ),
         (
             "data test, evaluation off",
             test.clone().tolerate_nondeterminism(true),
         ),
         ("view", table.clone().execution_type(ExecutionType::View)),
         (
-            "append incremental",
-            table.clone().execution_type(ExecutionType::Append),
+            "append incremental over an upstream table",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .upstream("catalog.schema.input", OWN_EPOCH),
+        ),
+        (
+            "append incremental with UUID()",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .sql("select uuid()"),
+        ),
+        (
+            "mixed recognized call forms",
+            table.clone().sql("select rand(), uuid()"),
+        ),
+        (
+            "recognized and uncaptured RAND forms",
+            table.clone().sql("select rand(), rand(17)"),
+        ),
+        (
+            "uncaptured alias with evaluation off",
+            table
+                .clone()
+                .tolerate_nondeterminism(true)
+                .sql("select now()"),
+        ),
+        (
+            "incremental with uncaptured RAND alias",
+            table
+                .clone()
+                .execution_type(ExecutionType::Append)
+                .sql("select random()"),
+        ),
+        (
+            "table with an uncaptured RAND seed",
+            table.clone().sql("select rand(17)"),
         ),
         (
             "snapshot",
@@ -1928,7 +2106,7 @@ async fn databricks_uncaptured_cells_render_nothing() {
 }
 
 /// The Databricks reruns refused for their volatile SQL alone were captured
-/// as unchanged reruns only: the table over its Target relation as built,
+/// as unchanged reruns for this graph: the table has no upstreams,
 /// the data test over unchanged inputs (`DB_TABLE_RERUN`, `DB_TEST_RERUN`).
 /// The same refusal after the table was dropped or modified externally, or
 /// after the data test's upstream changed, is uncaptured: an empty map and

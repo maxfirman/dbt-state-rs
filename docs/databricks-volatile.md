@@ -1,6 +1,6 @@
-# Databricks Volatile evaluation (#198)
+# Databricks Volatile evaluation (#198, #213)
 
-Captured 2026-11-19 through pinned dbt 2.0.11 and hosted dbt State, on the
+The initial capture (#198) ran 2026-11-19 through pinned dbt 2.0.11 and hosted dbt State, on the
 Databricks Free Edition Serverless Starter Warehouse, Unity Catalog and managed
 Delta tables. The SQL runtime reports `dbsql_version: 2026.45`.
 
@@ -100,8 +100,8 @@ before and after a server restart
 (`databricks_cells_explain_as_hosted_including_after_a_restart`), and empty
 maps in neighbouring uncaptured cells (`databricks_uncaptured_cells_render_nothing`
 and `databricks_refused_reruns_render_only_unchanged`).
-The existing shared rendering, persistence and Explain code is reused;
-Databricks adds only captured rendering cells (`warehouse/databricks.rs`), all
+The initial implementation reused shared rendering, persistence and Explain;
+#198 added the following rendering cells (`warehouse/databricks.rs`), all
 with evaluation on and values in the node's own SQL: a first build, an
 unchanged rerun refused at Reuse qualification for its volatile SQL alone
 (`Outcome::RefusedVolatileSqlUnchangedRerun`,
@@ -115,19 +115,80 @@ upstream at its recorded epoch), so a rerun renders only when the refused
 build is an ordinary build, a table's Target relation is as built, a data
 test's cached results are complete, and every upstream has the epoch and
 Upstream producer recorded at the refused build
-(`reuse_candidate::Selection::unchanged_rerun`). Every other refusal keeps
-an empty map and prints no volatile lines. Identity and fingerprints continue to use
+(`RerunEvidence::Unchanged`). At #198, every other refusal kept
+an empty map and printed no volatile lines. Identity and fingerprints continue to use
 original SQL. Reuse qualification remains conservative.
 
-Still uncaptured (tracked in #213): other Databricks Volatile functions/forms, evaluation off for
-volatile SQL, volatile query dependencies, stored-failure tests, a data test's
-logic change, a refusal at Reuse qualification for another cause (among them
-under `compare_unrendered_code`), the volatile refusal of a table after it was
-dropped or modified externally or of a node over changed inputs, other node kinds and decision reasons, and
-Databricks outside-tolerance consumer behavior.
-These cases are not promoted to verified support. Any future identity, producer
-or relaxed-refusal implication still requires the maintainer's decision under
-the ticket's check-in rule.
+## Priority follow-up (#213)
+
+The November 21 campaign expanded the captured rendering cells through dbt
+2.0.11. For FULL builds and their ordinary reruns it observed `random()`,
+`uuid()`, `current_timestamp()` and `now()` with evaluation on. Separate
+first builds covered bare timestamp and both date forms, plus the literal
+RAND seeds `0`, `-7` and `42`. With evaluation off, FULL first builds and
+reuses rendered `RAND()` and `CURRENT_TIMESTAMP()`.
+
+APPEND, MERGE and DELETE_INSERT over source-less `rand()` rendered on a
+first build and unchanged rerun with evaluation on. A FULL `rand()` model
+with a managed input rendered on an unchanged rerun, after an External
+modification to its input, after an External modification to its Target
+relation, and after that Target relation was dropped. The drop returned a
+map and only the absent-table Explain tree. Its zero-tolerance consumer
+rebuilt after the ordinary volatile rerun, with an empty map and outdated
+upstream data.
+
+The maintainer approved two changes after reviewing the live results.
+Source-less FULL models that project only numeric or string literals and
+the captured `rand(42)` form can now qualify for Reuse with evaluation on.
+They still require the latest matching ordinary build and normal Target
+relation and freshness evidence. The seeded SKIP returns a filled map and
+detector lines without a config-tolerance line. The seeded capture used the
+builtin binding in a stock session. The wire protocol carries no routine
+binding evidence. Sessions that shadow the builtin with a temporary
+function are outside the verified scope. An unchanged
+`current_date()` also reused in the same-day exploratory run. It retains
+the conservative rebuild until a date-boundary capture establishes policy.
+
+After an external edit to the sole confirmed input of the captured FULL
+`rand()` producer, hosted rebuilt both a zero-tolerance and a one-hour
+consumer and attributed it to an upstream query change. The one-hour
+consumer resumed stale Reuse on the next ordinary volatile rebuild over
+unchanged inputs. The implementation records that bounded producer
+transition independently of rendered values.
+
+The [priority characterization](reports/databricks-volatile-priority-2026-11-21.md)
+records Warehouse readbacks, hosted maps, reproduction, and observations
+and inferences. Four complete histories replay in the ordinary corpus and
+dedicated strict runs. Protocol scenarios compare all 51 decisions and
+Explain before and after a restart on the same Postgres database.
+
+### Still uncaptured under #213
+
+- Function forms beyond the pinned cases above, including other RAND seeds
+  and arguments, other time functions and mixed-function expressions. Date
+  Reuse across a calendar boundary is also unverified.
+- Evaluation off outside the captured FULL first-build and Reuse cases,
+  including data tests, incrementals, other reasons and Result copy.
+- Volatile query dependencies with evaluation on or off, including
+  consumers of views and data tests that read them.
+- Stored-failure data tests and changed test logic. A volatile data test
+  after an input changed, with incomplete cached results, or with a
+  reported Target relation remains uncaptured.
+- FULL target lifecycle without exactly one known unchanged input, simultaneous changes
+  to its inputs and target, and changes to a confirmed input producer's
+  SQL. Other functions on the changed-input and target lifecycle reruns
+  remain uncaptured.
+- Reuse qualification refusals for another cause, including
+  `compare_unrendered_code`.
+- Views, snapshots, custom materializations, INSERT_OVERWRITE and MICROBATCH.
+  Other incremental reasons, shapes with inputs, and other decision reasons
+  and copy combinations remain uncaptured.
+- Downstream behavior outside the zero- and one-hour tolerance graph above,
+  including ordinary reruns with other node kinds and other changes to input lineage.
+
+Every uncaptured rendering cell keeps an empty map. Rendered values stay
+outside identity, fingerprints, Upstream producers and Reuse qualification.
+The Warehouse executes the original SQL.
 
 ## Validation (2026-11-19)
 

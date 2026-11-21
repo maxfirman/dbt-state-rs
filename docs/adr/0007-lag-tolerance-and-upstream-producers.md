@@ -215,3 +215,31 @@ unresolved protocol boundary: Confirm and the adopter carry no new observation
 of the source relation. This narrow offline implementation is not a completed
 Databricks copy-safety or hosted-conformance claim; see the
 [implementation report](../reports/databricks-direct-precopy-2026-11-15.md).
+
+
+## Databricks volatile producer after External modification (#213)
+
+The paired hosted history showed a zero-tolerance consumer rebuild and a
+one-hour consumer reuse after an ordinary volatile FULL rebuild over unchanged
+inputs. After an External modification to that model's only managed input, both
+consumers rebuilt and Explain reported an upstream query change. On the next
+rerun with the edited input unchanged, the one-hour consumer reused again.
+The producer's original SQL and the consumers' original SQL were unchanged.
+
+The maintainer approved this specific Databricks transition. An ordinary FULL
+`rand()` projection over one directly read managed input can establish a
+producer revision if the Target relation is as built, the sole input's epoch
+advanced, and the same ordinary FULL input producer still has a confirmed
+row at the recorded epoch. There must be no pending State write for the
+input. The Delta requirement follows the tested Databricks scope, since the
+pinned client omitted the table type when confirming this managed input.
+The producing model's pending row stores the revision and publishes it on
+confirmation. Ordinary same-identity builds retain an established revision
+across further input edits or missing evidence. History before migration
+0029 has no revision.
+Revisions leave SQL identity and Reuse qualification unchanged and carry no
+rendered values. The usual producer comparison then explains the upstream
+query change and applies the same Lag-tolerance rule to consumers. Broader
+transitive producer rules remain uncaptured.
+
+[Hosted capture and physical readback](../reports/databricks-volatile-priority-2026-11-21.md)

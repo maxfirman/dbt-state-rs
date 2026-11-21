@@ -102,6 +102,50 @@ pub fn captured_org(entry: &dbt_state_harness::diff::GoldenEntry) -> &str {
         .unwrap_or("local")
 }
 
+/// Extract the hosted decision ID from any captured submit variant.
+pub fn hosted_submit_edid(resp: &serde_json::Value) -> Option<String> {
+    let variants = resp.get("response")?.as_object()?;
+    for payload in variants.values() {
+        if let Some(id) = payload
+            .get("execution_decision_id")
+            .and_then(|v| v.as_str())
+        {
+            return Some(id.to_string());
+        }
+    }
+    None
+}
+
+/// New Databricks captures expose the actual hosted decision instant in a
+/// UUIDv7 decision ID. Request/response transit can straddle a second; using
+/// response recorded_at would change otherwise exact relative-age Explain text.
+/// Decoding is solely a replay clock source, never a production ID contract.
+pub fn databricks_decision_time(
+    entry: &dbt_state_harness::diff::GoldenEntry,
+) -> Result<i64, String> {
+    let raw = hosted_submit_edid(&entry.response).ok_or("missing decision ID")?;
+    let id = uuid::Uuid::parse_str(&raw).map_err(|_| "invalid decision UUID")?;
+    if id.get_version_num() != 7 || id.get_variant() != uuid::Variant::RFC4122 {
+        return Err("unsupported decision UUID version/variant".into());
+    }
+    let at = (id.as_u128() >> 80) as i64;
+    let submitted = entry
+        .metadata
+        .iter()
+        .find(|(name, _)| name == "x-submitted-at-epoch")
+        .and_then(|(_, value)| value.parse::<i64>().ok())
+        .ok_or("missing captured submit instant")?;
+    let recorded = entry
+        .recorded_at_ms()
+        .ok_or("missing captured response instant")?;
+    if at < submitted || at > recorded {
+        return Err(format!(
+            "decision instant {at} outside captured interval {submitted}..={recorded}"
+        ));
+    }
+    Ok(at)
+}
+
 /// The captured request, scoped to its org and decided at its recorded time
 /// (test servers use `Clock::Replay`).
 pub fn captured_request<T>(
@@ -116,6 +160,20 @@ pub fn captured_request<T>(
         );
     }
     req
+}
+
+/// A captured request at a separately evidenced decision instant.
+pub fn captured_request_at<T>(
+    body: T,
+    entry: &dbt_state_harness::diff::GoldenEntry,
+    at: i64,
+) -> tonic::Request<T> {
+    let mut request = request_with_org(body, captured_org(entry));
+    request.metadata_mut().insert(
+        dbt_state_server::REPLAY_NOW_HEADER,
+        at.to_string().parse().expect("valid metadata value"),
+    );
+    request
 }
 
 /// Preserve the captured outcome, correlating by the hosted request ID. Only

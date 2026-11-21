@@ -61,6 +61,8 @@ pub(crate) struct ExecutionEvidence {
     pub(crate) node_hash: Option<String>,
     pub(crate) node_body_hash: Option<String>,
     pub(crate) node_sql_hash: Option<String>,
+    /// Witness of the input producer transition on an ordinary FULL build (#213).
+    pub(crate) producer_revision: Option<i64>,
     pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
@@ -213,6 +215,7 @@ impl ExecutionEvidence {
             node_contract_hash: state.and_then(|s| s.node_contract_hash.clone()),
             node_unique_id: state.map(|s| s.node_unique_id.clone()),
             node_sql_hash: None,
+            producer_revision: None,
             analyzed_copy_proof: None,
             direct_copy_provenance: None,
             submit_copy_provenance: None,
