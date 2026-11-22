@@ -126,6 +126,13 @@ DBT_STATE_BROKER_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_BROKER_TLS_KEY_FILE=/r
 A client trusts a private CA without patches: the Python client's gRPC
 channel through `RUN_CACHE_CA_BUNDLE`, and its token requests (Python
 `requests`) through `REQUESTS_CA_BUNDLE`.
+Pinned Fusion (`dbt-fusion@9977b6c`) trusts a private CA only for its gRPC
+channel (native roots: the host's store, or `SSL_CERT_FILE`). Its token
+requests trust only the public Mozilla roots built into it, and no setting
+adds a CA, so the Token broker's URLs must present a certificate from a
+publicly trusted CA for Fusion (or a TLS-terminating proxy must). The
+[pinned Fusion driver](../crates/harness/fusion-driver/README.md) works
+around this only for its tests.
 
 A CI machine authenticates with its Upstream IdP app registration: point the
 dbt client's token URL (`RUN_CACHE_TOKEN_URL`) at `<broker>/token` and set

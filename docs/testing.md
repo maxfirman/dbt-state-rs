@@ -198,6 +198,23 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   public PyPI, and `UV_*` variables pass through (for example
   `UV_NO_CONFIG=1` under a uv config naming another index). Tests:
   `tests/python_client.rs`.
+- `fusion_client.rs` runs the opt-in [pinned Fusion driver](#pinned-fusion-driver)
+  against a TLS test server: `FusionClient::available(&server)` is `None`
+  (the test returns) unless `DBT_STATE_FUSION_DRIVER` names the built
+  driver, and points Fusion's own settings at the server
+  (`RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `SSL_CERT_FILE` for the test CA, a temp `HOME`)
+  in an otherwise cleared environment; `.machine(id, secret)` adds the
+  client id and secret. `.person().await` puts the harness's `xdg-open`
+  (which runs the driver's harness browser) first on `PATH` and takes the
+  same loopback port lock as the Python driver; `.token_file()` is the
+  token Fusion keeps on disk (`$HOME/.dbt/state_auth.json`), and
+  `.browser_visits()`, `.run(..)` and `.start(..)` (with the same `Driver`
+  pause protocol) work as for the Python driver. Tests:
+  `tests/fusion_client.rs`.
+- `client_driver.rs` is what both client drivers share: `Driver` (a
+  running driver and its `wait` pauses), `DriverRun`, the browser's visit
+  log and the loopback port lock (`hold_loopback_port`, `LOOPBACK_LOCK`).
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
   Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
@@ -319,6 +336,46 @@ crates, broker migrations or the suite. The realm's objects and the
 Keycloak configuration lessons the suite established (mappers, audiences,
 `offline_access`) are in
 [crates/harness/keycloak/README.md](../crates/harness/keycloak/README.md).
+
+## Pinned Fusion driver
+
+`crates/harness/tests/fusion_client.rs` runs pinned dbt Fusion's own dbt
+State client code (`dbt-run-cache` at `dbt-labs/dbt-fusion@9977b6c`)
+through a small driver, `crates/harness/fusion-driver`, against a TLS test
+server with the fake Upstream IdP: a machine's `client_credentials` login
+and RPCs, a person's browser sign-in, the next invocation refreshing from
+the token on disk without a browser, the token on disk read once per
+process (a fresh token another invocation wrote is ignored; the process
+signs in through the browser again once its in-memory token is within
+300 s of expiry), a run shorter than the person token lifetime minus 5
+minutes needing no new token, and two consecutive credential lookups at
+the 15-minute minimum lifetime making no second IdP call. Time passes in
+the driver through its wall clock, which the harness moves with the Token
+broker's test clock; no lifetime validation is relaxed.
+
+dbt-fusion is licensed under the Elastic License 2.0. The driver only
+compiles against it, as a git dependency fetched at build time; its source
+is never vendored, copied or redistributed, and neither the built driver
+nor Cargo's checkout of dbt-fusion is published or kept as a CI artifact or
+cache. So the driver sits outside the Cargo workspace (`cargo test` never
+builds it) and every test skips unless `DBT_STATE_FUSION_DRIVER` names the
+built binary:
+
+```bash
+CARGO_TARGET_DIR=/tmp/fusion-driver \
+  cargo build --locked --manifest-path crates/harness/fusion-driver/Cargo.toml
+DBT_STATE_FUSION_DRIVER=/tmp/fusion-driver/debug/fusion-driver \
+  cargo test -p dbt-state-harness --test fusion_client
+```
+
+How the driver configures Fusion, opens its browser, moves its clock and
+trusts the test CA (pinned Fusion's token requests trust only public
+roots, so the driver adds native roots through a reqwest build feature) is
+in [crates/harness/fusion-driver/README.md](../crates/harness/fusion-driver/README.md).
+CI's `fusion` job builds the driver (in the runner's temp directory,
+outside the Actions cache) and runs the suite on the weekly schedule, on
+manual dispatch, and on pull requests that change the driver, the suite or
+the auth code.
 
 ## Offline regressions
 

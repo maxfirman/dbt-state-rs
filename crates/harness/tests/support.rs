@@ -34,6 +34,9 @@ pub mod fake_idp;
 /// Raw-SQL fault injection (the only DDL tests run against State tables).
 #[path = "support/fault.rs"]
 pub mod fault;
+/// The pinned Fusion driver (opt-in), built outside the workspace.
+#[path = "support/fusion_client.rs"]
+pub mod fusion_client;
 /// HTTP test servers on their own thread.
 #[path = "support/http.rs"]
 pub mod http;
