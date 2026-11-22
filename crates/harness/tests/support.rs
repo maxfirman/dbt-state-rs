@@ -28,6 +28,9 @@ pub mod legacy;
 /// Exact real clock evidence retained for supplemental native replays.
 #[path = "support/native_clock.rs"]
 pub mod native_clock;
+/// `oidc` mode: test auth config, test signer and log capture.
+#[path = "support/oidc.rs"]
+pub mod oidc;
 #[path = "support/python.rs"]
 mod python;
 #[path = "support/resources.rs"]
@@ -41,8 +44,8 @@ pub mod scenario;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{
-    start_server, start_server_native, start_server_on_database, start_server_require_org,
-    TestDatabase, TestServer,
+    start_server, start_server_native, start_server_oidc, start_server_on_database,
+    start_server_require_org, TestDatabase, TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";

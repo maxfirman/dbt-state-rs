@@ -8,10 +8,10 @@
 //! rather than silently bucketed into `local`. This pins that scoping-presence
 //! enforcement.
 //!
-//! NOTE: this enforces that an org is SCOPED, not that the caller is
-//! AUTHENTICATED as that org — verifying the claimed org against a trusted
-//! bearer token remains deployment work (documented in
-//! docs/correctness-handoff.md "Deployment gaps" and docs/protocol.md).
+//! These are `DBT_STATE_AUTH=none` tests: this enforces that an org is
+//! SCOPED, not that the caller is AUTHENTICATED as that org. Verifying the
+//! claimed org against a Token-broker-signed bearer token is `oidc` mode,
+//! tested in `oidc.rs`.
 
 #[path = "support.rs"]
 mod support;
