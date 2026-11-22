@@ -193,18 +193,29 @@ SCENARIO = Scenario(
   followed by the per-run relation it writes. Unqualified names are allowed; two- or four-part names,
   `IDENTIFIER(...)`, Jinja braces, comments and `;` are refused.
 - `Read(relation, target="prod_demo")`: one `dbt show --no-manage-state --inline
-  "select * from <relation>" --limit -1 --output json` with dbt State disabled
-  (no proxy, no RPC, and project or user settings cannot enable it). The relation must be a three-part per-run object in a demo schema of
+  "select * from <relation>" --limit -1 --output json` with dbt State disabled.
+  The relation must be a three-part per-run object in a demo schema of
   `CDO_DEMO_DB`. The rows go to `reads.json`, so a capture can compare what the
   Warehouse wrote with what the service returned (`volatile_evaluation.py`,
   #191).
 - `Reference(*select, target="prod_demo")`: one `dbt build --no-manage-state
-  --full-refresh --select …` with dbt State disabled (no proxy, no RPC, no
-  metering): a Reference execution of per-run nodes. Each selector must be
-  exactly one of the run's node names, because dbt reads one string as
-  several selectors and a full refresh must not reach a shared model. It
-  overwrites those relations, so put it after every State step that depends
-  on them, then `Read` them (`upstream_origin.py`, #237).
+  --full-refresh --select …` with dbt State disabled (no metering): a
+  Reference execution of per-run nodes. Each selector must be exactly one of
+  the run's node names, because dbt reads one string as several selectors and
+  a full refresh must not reach a shared model. It overwrites those relations,
+  so put it after every State step that depends on them, then `Read` them
+  (`upstream_origin.py`, #237).
+- **State-free steps.** `Read` and `Reference` run without
+  `DBT_ENGINE_MANAGE_STATE` and pass `--no-manage-state`, so project or user
+  settings cannot enable State. Their State URL still names the run's proxy,
+  as a trap: a step during which the proxy records an RPC fails the run. Each
+  invocation is kept in `state_free.json` (argv with `--profiles-dir`
+  sanitized, exit code, RPCs recorded). A scenario of only `Write`, `Read`
+  and `Reference` steps is State-free. Its capture must hold no RPC at all,
+  and it needs no `ValidateClientVersion` call. `upstream_origin_reference`
+  and `upstream_origin_table_reference` are such follow-ups (`--run-id` of
+  an `upstream_origin` run): the inputs read back, then the Reference of the
+  run's dev nodes, read back (#237).
 - `Explain(select, intent, node=None, decision=None, execution_type=None,
   history=True, target="prod_demo")`: one `dbt state explain --verbose` per
   node. Set `node` to the `dbt_node_name` when the selector is not the name

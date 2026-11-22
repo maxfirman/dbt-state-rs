@@ -22,9 +22,11 @@ independent build with a dev marker):
 
 Usage:
   upstream_origin.py WORK_DIR [--json]
-  upstream_origin.py extract OUT_DIR LABEL=SERVICE=WORK_DIR ...
+  upstream_origin.py extract OUT_DIR LABEL=SERVICE=WORK_DIR[=REFERENCE_DIR] ...
       one credential-free evidence document per case (OUT_DIR/<case>.json);
-      SERVICE `hosted` names the scenario's promoted fixture
+      SERVICE `hosted` names the scenario's promoted fixture; REFERENCE_DIR is
+      the run's State-free Reference follow-up (`*_reference` scenario,
+      `--run-id` of the run)
 Self-test: python3 experiments/upstream_origin_test.py
 """
 import json
@@ -298,12 +300,65 @@ def _case_rpcs(rows, nodes):
     return [{k: v for k, v in r.items() if k not in drop} for r in keep]
 
 
+def _verified_reference(run, follow, case, served):
+    """The State-free Reference follow-up (`--run-id`) of `run` for one case.
+
+    Refuses a follow-up of another run, one whose capture recorded any RPC,
+    or one with a Read or Reference invocation that did not pass
+    `--no-manage-state` or failed.
+    """
+    run_id = run["steps"].get("run")
+    if follow["steps"].get("run") != run_id:
+        raise ValueError(f"the Reference follow-up is of run {follow['steps'].get('run')}, "
+                         f"not {run_id}")
+    calls = follow["state_free"]
+    rpcs = sum(x["state_rpcs"] for x in calls)
+    if follow["rows"] or rpcs:
+        raise ValueError(f"the Reference follow-up of {run_id} reached dbt State "
+                         f"({len(follow['rows'])} captured RPC(s))")
+    for x in calls:
+        if "--no-manage-state" not in x["argv"] or x["exit"] != 0:
+            raise ValueError(f"follow-up step {x['step']} of {run_id} did not run State-free: "
+                             f"{x['argv']} exit {x['exit']}")
+    ref = [x for x in calls if x["kind"] == "Reference"]
+    if len(ref) != 1:
+        raise ValueError(f"the follow-up of {run_id} has {len(ref)} Reference invocations")
+    names = follow["steps"]["names"]
+    by_read = {(rd["step"], rd["relation"]): rd["rows"] for rd in follow["reads"]}
+    inputs = [{"phase": "input", "step": i, "relation": st["relation"],
+               "rows": by_read.get((i, st["relation"]))}
+              for i, st in enumerate(follow["steps"]["steps"])
+              if st.get("kind") == "Read"
+              and st["relation"].split(".")[2].upper() == names[f"o{case}_in"].upper()]
+    rows_dn, reads_dn = _rows_by_phase(follow["steps"], follow["reads"], names[f"o{case}_dn"])
+    reads_up = ([] if case == "a" else
+                _rows_by_phase(follow["steps"], follow["reads"], names[f"o{case}_up"])[1])
+    reference = rows_dn["reference"]
+    missing = [p for p, got in (("served", served["served"]),
+                                ("after_next", served["after_next"]),
+                                ("reference", reference)) if got is None]
+    return {
+        "run": run_id, "scenario": follow["steps"].get("scenario"),
+        "client": {k: follow["client"][k] for k in ("dbt_version", "dbt_sha256")},
+        "invocation": {k: ref[0][k] for k in ("argv", "exit", "state_rpcs")},
+        "state_rpcs": rpcs, "capture_rpcs": len(follow["rows"]),
+        "inputs": inputs, "reads": [x for x in reads_dn if x["phase"] == "reference"],
+        "upstream_reads": [x for x in reads_up if x["phase"] == "reference"],
+        "missing": missing,
+        "wrong_marker": None if missing else any(
+            _canon(served[p]) != _canon(reference) for p in ("served", "after_next")),
+    }
+
+
 def extract(runs):
     """One evidence document per case across `runs`, keyed by the case letter.
 
-    Each run is {label, service, fixture, rows, steps, reads}. A document holds,
-    per run, the decisions' record summary, every planned read with its run
-    step, phase, relation and rows, and the case's RPCs without call metadata.
+    Each run is {label, service, fixture, rows, steps, reads}, optionally with
+    `verified_reference`: its State-free Reference follow-up {rows, steps,
+    reads, state_free, client}. A document holds, per run, the decisions'
+    record summary, every planned read with its run step, phase, relation and
+    rows, the case's RPCs without call metadata, and the verified Reference
+    with its inputs, invocation and verdict.
     """
     docs = {}
     for run in runs:
@@ -329,6 +384,9 @@ def extract(runs):
                 "rpcs": _case_rpcs(run["rows"], {r["names"]["upstream"],
                                                  r["names"]["downstream"]}),
             })
+            if run.get("verified_reference"):
+                doc["runs"][-1]["verified_reference"] = _verified_reference(
+                    run, run["verified_reference"], c, r["rows"])
     return docs
 
 
@@ -345,11 +403,20 @@ def main(argv):
     if argv[:1] == ["extract"] and len(argv) >= 3:
         out_dir, runs = argv[1], []
         for spec in argv[2:]:
-            label, service, work = spec.split("=", 2)
+            label, service, work, *ref_dir = spec.split("=", 3)
             rows, steps, reads = _load(work)
             fixture = FIXTURES.get(steps.get("scenario")) if service == "hosted" else None
-            runs.append({"label": label, "service": service, "fixture": fixture,
-                         "rows": rows, "steps": steps, "reads": reads})
+            run = {"label": label, "service": service, "fixture": fixture,
+                   "rows": rows, "steps": steps, "reads": reads}
+            if ref_dir:
+                f_rows, f_steps, f_reads = _load(ref_dir[0])
+                with open(os.path.join(ref_dir[0], "state_free.json")) as fh:
+                    state_free = json.load(fh)
+                with open(os.path.join(ref_dir[0], "client.json")) as fh:
+                    client = json.load(fh)
+                run["verified_reference"] = {"rows": f_rows, "steps": f_steps, "reads": f_reads,
+                                             "state_free": state_free, "client": client}
+            runs.append(run)
         os.makedirs(out_dir, exist_ok=True)
         for case, doc in extract(runs).items():
             with open(os.path.join(out_dir, f"{case}.json"), "w") as fh:

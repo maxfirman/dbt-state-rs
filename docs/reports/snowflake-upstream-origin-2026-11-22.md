@@ -18,9 +18,10 @@ code. The comparison with Databricks (#238) and any policy change belong to
   table upstream (run 2). Origin did not separate the cases: hosted refused
   the confirmed copy (B) just as it refused the independent builds.
 - **Observed.** Hosted served the right rows in every case. Every dev
-  downstream held the rows measured after the Reference step, after
+  downstream held the rows of the State-disabled Reference execution, after
   both the first and the next dev build. Hosted shows no wrong-marker
-  result.
+  result. The Reference was verified with State explicitly disabled
+  (`--no-manage-state`, no State RPC) in a follow-up of each run (below).
 - **Observed, correctness finding (this server).** This server copies prod's
   downstream in B, C and D in both runs. In D that serves the prod marker:
   replaying run 2 natively against this server (dbt 2.0.11, Snowflake)
@@ -98,12 +99,23 @@ downstream `ox_dn` ([`_upstream_origin.py`](../../experiments/capture_scenarios/
   on `dev_noclone`.
 - After the next unchanged dev build, the original driver ran a full refresh
   of every dev node and read the rows back. It cleared the State environment
-  override and the recording proxy URL. The effective project and user State
-  settings for those three runs were not retained, so whether State was
-  disabled during the original Reference steps remains unverified. The
-  current driver passes `--no-manage-state` on each Reference and Read.
-  Repeat the Reference comparison on Snowflake with this driver to verify
-  independence and retain the command and per-phase row evidence.
+  override and the recording proxy URL, but did not pass `--no-manage-state`,
+  and the effective project and user State settings of those runs were not
+  retained. That original Reference is therefore not the one the verdicts
+  rest on.
+- **Verified Reference (2026-11-22 20:14–20:17 UTC).** Each run was followed
+  by a State-free re-execution of the same run's nodes (`--run-id`):
+  `upstream_origin_reference` for run 1, `upstream_origin_table_reference`
+  for run 2 and for the rehearsal. dbt 2.0.11 (same SHA-256) first read the
+  case inputs back. It then ran `dbt build --no-manage-state --target
+  dev_clone --select <the run's dev nodes> --full-refresh` and read every dev
+  relation back with `dbt show --no-manage-state`. The State URL pointed at
+  the run's own recording proxy as a trap. The driver fails a step during
+  which the proxy records an RPC. All 14 invocations of each follow-up
+  exited 0, and none recorded an RPC; each follow-up capture holds zero
+  RPCs. The sanitized invocations, the input rows and the Reference rows are
+  in each case's evidence document under `verified_reference`, linked to the
+  original run id, relation and phase.
 
 ## Results
 
@@ -126,14 +138,23 @@ because both its query and its upstream data are up to date". I*n* =
 | D run 1 | EXEC (I42), confirmed (I43) | EXEC (I44) | SKIP (I67) | prod / **dev** / dev / dev | CLONE (gap I44) |
 | D run 2 | EXEC on `dev_noclone` (T51), confirmed (T52); SKIP on `dev_clone` (T56) | EXEC (T57) | SKIP (T80) | prod / **dev** / dev / dev | CLONE (gap T57); **rehearsal served prod, wrong marker** |
 
-An offline check of the recorded inputs also establishes the expected marker
-in B, C and D. Each captured downstream SQL selects only `id, v` from the
-dev upstream. Running those SELECTs in DuckDB against the corresponding
-retained upstream rows reproduced the recorded Reference rows in all three
-runs, both after the first build and after the unchanged submit. In the
-Rust rehearsal of D, the expected row was `(1, 'dev')` on both occasions
-and the downstream served `(1, 'prod')`. The Snowflake Reference setting
-remains a separate verification item.
+The Reference column is the verified Reference. In every run and case it
+equals the original Reference rows. D's dev input holds `(1, 'dev')` and
+its prod input `(1, 'prod')` (`verified_reference.inputs`). The verified
+Reference of D produced `(1, 'dev')` for both the dev upstream and the dev
+downstream in all three runs.
+
+| Case | Hosted run 1 | Hosted run 2 | dbt-state-server rehearsal |
+|---|---|---|---|
+| A | served prod / Reference prod | prod / prod | prod / prod |
+| B | prod / prod | prod / prod | prod / prod |
+| C | same / same | same / same | same / same |
+| D | dev / dev | dev / dev | **prod / dev (wrong marker)** |
+
+An offline check agrees. Each captured downstream SQL selects only `id, v`
+from the dev upstream. Running those SELECTs in DuckDB against the retained
+upstream rows reproduced the Reference rows in all three runs, both after
+the first build and after the unchanged submit.
 
 Every confirmation answered `success: true` with `failed_to_clone: false`,
 so no copy fell back to a build on the client.
@@ -227,10 +248,14 @@ python3 experiments/upstream_origin_test.py        # per-case record self-test
 python3 experiments/explain_capture.py upstream_origin --port <p> --work-dir <dir1>
 python3 experiments/explain_capture.py upstream_origin_table --port <p> --work-dir <dir2>
 python3 experiments/upstream_origin.py <dir>       # per-case record (--json for all fields)
+# the State-free Reference follow-ups, each with the run id of the run it verifies
+python3 experiments/explain_capture.py upstream_origin_reference --port <p> --run-id <run 1 id> --work-dir <ref1>
+python3 experiments/explain_capture.py upstream_origin_table_reference --port <p> --run-id <run 2 id> --work-dir <ref2>
+python3 experiments/explain_capture.py upstream_origin_table_reference --port <p> --run-id <rehearsal id> --work-dir <ref3>
 python3 experiments/upstream_origin.py extract docs/reports/evidence/snowflake-upstream-origin \
-  "hosted run 1 (merge-incremental upstream)=hosted=<dir1>" \
-  "hosted run 2 (table upstream)=hosted=<dir2>" \
-  "dbt-state-server rehearsal of run 2=dbt-state-server=<rehearsal dir>"
+  "hosted run 1 (merge-incremental upstream)=hosted=<dir1>=<ref1>" \
+  "hosted run 2 (table upstream)=hosted=<dir2>=<ref2>" \
+  "dbt-state-server rehearsal of run 2=dbt-state-server=<rehearsal dir>=<ref3>"
 ```
 
 For a rehearsal against this server, start `dbt-state-server` on another

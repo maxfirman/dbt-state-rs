@@ -420,8 +420,10 @@ server keeps the conservative behavior described.
   when it read prod's physical upstream (byte-identical SQL). It built the
   downstream when its dev upstream was a confirmed copy of prod's (RegisterClone
   or submit copy) or an independent build of the same logic, for a merge
-  incremental and a table upstream alike. Its rows matched the read after the Reference step
-  in every case. The original Reference's effective State setting is unverified. Older captures copied a downstream over a dev upstream
+  incremental and a table upstream alike. Its rows matched the Reference
+  execution in every case, verified with State explicitly disabled
+  (`--no-manage-state`, zero State RPCs) in a State-free follow-up of each
+  run. Older captures copied a downstream over a dev upstream
   copy: `explain_clone_history.jsonl` entry 12 (client 2.0.6, the source
   built and confirmed in the capture, B's run-2 shape) and
   `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source

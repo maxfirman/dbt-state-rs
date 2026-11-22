@@ -365,6 +365,11 @@ class Plan:
     references: int = 0
 
     @property
+    def state_free(self):
+        """Only Write, Read and Reference steps: no step may reach dbt State."""
+        return not (self.builds or self.run_operations or self.explains or self.probe_explains)
+
+    @property
     def total(self):
         """dbt invocations (probe explains are not dbt invocations)."""
         return self.builds + self.run_operations + self.explains + self.reads + self.references
@@ -666,6 +671,8 @@ class Run:
         self.invocations = Counter()
         self.prior = []  # an earlier run's window (--prior-window), for probe explains
         self.reads = []  # rows each Read step read back from the Warehouse
+        self.state_free = []  # each Read / Reference invocation, sanitized, with its State RPCs
+        self.last_cmd = None
 
     # environment
     def client_env(self):
@@ -676,11 +683,29 @@ class Run:
         return env
 
     def read_env(self):
-        """A Read or Reference runs without dbt State: no proxy, no State RPC, no metering."""
+        """A Read or Reference runs without dbt State (it also passes `--no-manage-state`).
+
+        The State URL still names this run's proxy, as a trap: if project or
+        user settings enabled State anyway, the call is recorded (and fails
+        the step) instead of reaching hosted State unseen.
+        """
         env = dict(os.environ)
-        for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL", "RUN_CACHE_API_SECURE", "PROBE_URL"):
+        for k in ("DBT_ENGINE_MANAGE_STATE", "PROBE_URL"):
             env.pop(k, None)
+        env.update(RUN_CACHE_API_URL=f"127.0.0.1:{self.port}", RUN_CACHE_API_SECURE="false")
         return env
+
+    def state_free_dbt(self, k, label, kind, args):
+        """One State-free dbt invocation; any RPC the proxy records meanwhile fails the step."""
+        before = len(self.rows())
+        rc, log = self.dbt(k, label, args, env=self.read_env())
+        rpcs = len(self.rows()) - before
+        self.state_free.append({
+            "step": k, "kind": kind, "exit": rc, "state_rpcs": rpcs,
+            "argv": [("<profiles-dir>" if a == self.profiles_dir else a) for a in self.last_cmd]})
+        if rpcs:
+            raise CaptureError(f"{kind} step {k} reached dbt State ({rpcs} RPC(s)); see {log}")
+        return rc, log
 
     def copy_project(self):
         subprocess.run(["git", "clone", "-q", self.shared, self.project], check=True)
@@ -719,6 +744,8 @@ class Run:
             self.proxy.wait()
 
     def golden_file(self):
+        if not os.path.isdir(self.golden_dir):
+            return None
         files = sorted(f for f in os.listdir(self.golden_dir) if f.startswith("golden_") and f.endswith(".jsonl"))
         if len(files) > 1:
             raise CaptureError(f"more than one golden file in {self.golden_dir}")
@@ -737,6 +764,7 @@ class Run:
         cmd = ["dbt", *args, "--profiles-dir", self.profiles_dir, "--profile", PROFILE,
                "--skip-semantic-manifest-validation"]
         print(f"  $ {' '.join(cmd)}")
+        self.last_cmd = cmd
         with open(log, "w") as fh:
             rc = subprocess.run(cmd, cwd=self.project, env=env or self.client_env(),
                                 stdout=fh, stderr=subprocess.STDOUT).returncode
@@ -784,15 +812,16 @@ class Run:
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
         elif isinstance(step, Reference):
-            rc, log = self.dbt(k, "reference", ["build", "--no-manage-state", "--target",
-                                                step.target, "--select", *step.select,
-                                                "--full-refresh"], env=self.read_env())
+            rc, log = self.state_free_dbt(k, "reference", "Reference",
+                                          ["build", "--no-manage-state", "--target", step.target,
+                                           "--select", *step.select, "--full-refresh"])
             if rc:
                 raise CaptureError(f"State-disabled reference build exited {rc}; see {log}")
         elif isinstance(step, Read):
-            rc, log = self.dbt(k, "show", ["show", "--no-manage-state", "--target", step.target,
-                                           "--inline", step.query,
-                                           "--limit", "-1", "--output", "json"], env=self.read_env())
+            rc, log = self.state_free_dbt(k, "show", "Read",
+                                          ["show", "--no-manage-state", "--target", step.target,
+                                           "--inline", step.query, "--limit", "-1", "--output",
+                                           "json"])
             if rc:
                 raise CaptureError(f"dbt show exited {rc}; see {log}")
             with open(log) as fh:
@@ -840,7 +869,20 @@ def off_demo_submits(rows):
             and not r["request"]["target_table"].upper().startswith(f'"{DEMO_DB}".')]
 
 
-def report(bound, rows, marks, work, prior=(), client=None, reads=()):
+def capture_problem(plan, rows, client):
+    """Why a finished capture is unusable, or None.
+
+    A State-free plan must record no RPC at all; any other plan must hold the
+    client's ValidateClientVersion call.
+    """
+    if plan.state_free:
+        return f"a State-free scenario recorded {len(rows)} RPC(s)" if rows else None
+    if not client["wire_dbt_run_cache_versions"]:
+        return "the capture holds no ValidateClientVersion call"
+    return None
+
+
+def report(bound, rows, marks, work, prior=(), client=None, reads=(), state_free=()):
     sys.path.insert(0, HERE)
     import explain_slice  # noqa: E402
 
@@ -854,6 +896,11 @@ def report(bound, rows, marks, work, prior=(), client=None, reads=()):
         with open(os.path.join(work, "reads.json"), "w") as fh:
             json.dump(list(reads), fh, indent=1)
         print(f"## warehouse reads: {len(reads)} (reads.json)")
+    if state_free:
+        with open(os.path.join(work, "state_free.json"), "w") as fh:
+            json.dump(list(state_free), fh, indent=1)
+        print(f"## State-free invocations: {len(state_free)}, State RPCs during them: "
+              f"{sum(x['state_rpcs'] for x in state_free)} (state_free.json)")
     kept, dropped = trim(rows)
     cand = os.path.join(work, "fixture_candidate.jsonl")
     with open(cand, "w") as fh:
@@ -984,12 +1031,13 @@ def main(argv=None):
     client = None
     try:
         client = client_record(dbt_version_text, dbt_path, dbt_sha, rows)
-        if not client["wire_dbt_run_cache_versions"]:
-            raise CaptureError("the capture holds no ValidateClientVersion call")
+        problem = capture_problem(p, rows, client)
+        if problem:
+            raise CaptureError(problem)
     except CaptureError as error:
         failure = failure or error
         print(f"CLIENT VERSION: {error}")
-    ok = report(bound, rows, marks, work, run.prior, client, run.reads)
+    ok = report(bound, rows, marks, work, run.prior, client, run.reads, run.state_free)
     after = shared_status(a.jaffle_shop)
     if after != before:
         print(f"WARNING: {a.jaffle_shop} status changed during the run:\n{after}")

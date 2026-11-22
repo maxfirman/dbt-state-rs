@@ -133,3 +133,21 @@ def steps(kind):
         Reference(*[f"${{{n}}}" for c in CASES for n in dev_nodes(c)], target="dev_clone"),
         *[Read(f"{DEV}.${{{n}}}", target="dev_clone") for c in CASES for n in dev_nodes(c)],
     ]
+
+
+def reference_steps(kind):
+    """A State-free follow-up of an earlier run (`--run-id`): its project files, the inputs
+    read back, then the Reference execution of every dev node with `--no-manage-state`, read
+    back. No step contacts dbt State, and the driver fails the run if the proxy records an RPC.
+    """
+    if kind not in UP:
+        raise ValueError(f"upstream kind {kind!r} is not one of {sorted(UP)}")
+    inputs = [f"{PROD}.${{o{c}_in}}" for c in CASES] + [f"{DEV}.${{o{c}_in}}" for c in ("c", "d")]
+    return [
+        Write("models/upstream_origin_${run}.yml", SOURCES),
+        *[_up(kind, c) for c in CASES],
+        *[_dn(c) for c in CASES],
+        *[Read(rel, target="prod_demo" if rel.startswith(PROD) else "dev_clone") for rel in inputs],
+        Reference(*[f"${{{n}}}" for c in CASES for n in dev_nodes(c)], target="dev_clone"),
+        *[Read(f"{DEV}.${{{n}}}", target="dev_clone") for c in CASES for n in dev_nodes(c)],
+    ]

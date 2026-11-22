@@ -992,7 +992,94 @@
       }
      }
     }
-   ]
+   ],
+   "verified_reference": {
+    "run": "234451b8ea12",
+    "scenario": "upstream_origin_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_234451b8ea12",
+      "ob_up_234451b8ea12",
+      "ob_dn_234451b8ea12",
+      "oc_up_234451b8ea12",
+      "oc_dn_234451b8ea12",
+      "od_up_234451b8ea12",
+      "od_dn_234451b8ea12",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 11,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oc_in_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     },
+     {
+      "phase": "input",
+      "step": 13,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_in_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 20,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_dn_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [
+     {
+      "phase": "reference",
+      "step": 19,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_up_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "missing": [],
+    "wrong_marker": false
+   }
   },
   {
    "label": "hosted run 2 (table upstream)",
@@ -2138,7 +2225,94 @@
       }
      }
     }
-   ]
+   ],
+   "verified_reference": {
+    "run": "000858964de8",
+    "scenario": "upstream_origin_table_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_000858964de8",
+      "ob_up_000858964de8",
+      "ob_dn_000858964de8",
+      "oc_up_000858964de8",
+      "oc_dn_000858964de8",
+      "od_up_000858964de8",
+      "od_dn_000858964de8",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 11,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oc_in_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     },
+     {
+      "phase": "input",
+      "step": 13,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_in_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 20,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_dn_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [
+     {
+      "phase": "reference",
+      "step": 19,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_up_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "missing": [],
+    "wrong_marker": false
+   }
   },
   {
    "label": "dbt-state-server rehearsal of run 2",
@@ -3295,7 +3469,94 @@
       }
      }
     }
-   ]
+   ],
+   "verified_reference": {
+    "run": "002752a5958d",
+    "scenario": "upstream_origin_table_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_002752a5958d",
+      "ob_up_002752a5958d",
+      "ob_dn_002752a5958d",
+      "oc_up_002752a5958d",
+      "oc_dn_002752a5958d",
+      "od_up_002752a5958d",
+      "od_dn_002752a5958d",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 11,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oc_in_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     },
+     {
+      "phase": "input",
+      "step": 13,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_in_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 20,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_dn_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [
+     {
+      "phase": "reference",
+      "step": 19,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oc_up_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "same"
+       }
+      ]
+     }
+    ],
+    "missing": [],
+    "wrong_marker": false
+   }
   }
  ]
 }

@@ -238,4 +238,57 @@ check("each run carries the verdict for the case",
       [(x["label"], x["wrong_marker"]) for x in docs["D"]["runs"]],
       [("hosted run 2", True), ("rust rehearsal", True)])
 
+# --- a State-free Reference follow-up of the same run (`--run-id`), linked per case ---
+FOLLOW_STEPS = {"run": RUN, "names": NAMES, "scenario": "upstream_origin_table_reference",
+                "steps": [
+                    read_step("PROD_STATE_DEMO", "od_in", "prod_demo"),            # 0
+                    read_step("DEV_CLONE_DEMO", "od_in"),                           # 1
+                    {"kind": "Reference", "target": "dev_clone",
+                     "select": [NAMES[n] for n in ("ob_up", "ob_dn", "od_up", "od_dn")]},  # 2
+                    read_step("DEV_CLONE_DEMO", "ob_dn"),                           # 3
+                    read_step("DEV_CLONE_DEMO", "od_dn"),                           # 4
+                ]}
+FOLLOW_READS = [read(0, "PROD_STATE_DEMO", "od_in", "prod"), read(1, "DEV_CLONE_DEMO", "od_in", "dev"),
+                read(3, "DEV_CLONE_DEMO", "ob_dn", "prod"), read(4, "DEV_CLONE_DEMO", "od_dn", "dev")]
+FOLLOW_FREE = [{"step": i, "kind": "Reference" if i == 2 else "Read", "exit": 0, "state_rpcs": 0,
+                "argv": ["dbt", "build" if i == 2 else "show", "--no-manage-state", "--profiles-dir",
+                         "<profiles-dir>"]} for i in range(5)]
+CLIENT = {"dbt_version": "2.0.11", "dbt_path": "/home/someone/bin/dbt", "dbt_sha256": "ab" * 32,
+          "wire_dbt_run_cache_versions": []}
+follow = {"rows": [], "steps": FOLLOW_STEPS, "reads": FOLLOW_READS, "state_free": FOLLOW_FREE,
+          "client": CLIENT, "fixture": None}
+base = {"label": "rust rehearsal", "service": "dbt-state-server", "fixture": None, "rows": ROWS,
+        "steps": STEPS, "reads": READS}
+vr = uo.extract([dict(base, verified_reference=follow)])["D"]["runs"][0]["verified_reference"]
+check("the verified Reference names the same run, its client and its sanitized invocation",
+      (vr["run"], vr["client"], vr["invocation"]["argv"][:3], vr["invocation"]["state_rpcs"]),
+      (RUN, {"dbt_version": "2.0.11", "dbt_sha256": "ab" * 32}, ["dbt", "build", "--no-manage-state"], 0))
+check("the verified Reference records no State RPC across the follow-up",
+      (vr["state_rpcs"], vr["capture_rpcs"]), (0, 0))
+check("the case's inputs and verified Reference reads are listed with step, phase and relation",
+      ([(x["phase"], x["step"], x["relation"].split(".")[1], x["rows"][0]["V"]) for x in vr["inputs"]],
+       [(x["phase"], x["step"], x["rows"][0]["V"]) for x in vr["reads"]]),
+      ([("input", 0, "PROD_STATE_DEMO", "prod"), ("input", 1, "DEV_CLONE_DEMO", "dev")],
+       [("reference", 4, "dev")]))
+check("the served rows are judged against the verified Reference",
+      (vr["wrong_marker"], vr["missing"]), (True, []))
+other_run = dict(follow, steps=dict(FOLLOW_STEPS, run="999999abcdef"))
+try:
+    uo.extract([dict(base, verified_reference=other_run)])
+    check("a follow-up of another run is refused", "accepted", "refused")
+except ValueError:
+    check("a follow-up of another run is refused", "refused", "refused")
+leaky = dict(follow, rows=[{"method": "ValidateClientVersion"}])
+try:
+    uo.extract([dict(base, verified_reference=leaky)])
+    check("a follow-up that reached dbt State is refused", "accepted", "refused")
+except ValueError:
+    check("a follow-up that reached dbt State is refused", "refused", "refused")
+no_flag = dict(follow, state_free=[dict(x, argv=["dbt", "build"]) for x in FOLLOW_FREE])
+try:
+    uo.extract([dict(base, verified_reference=no_flag)])
+    check("a follow-up Reference without --no-manage-state is refused", "accepted", "refused")
+except ValueError:
+    check("a follow-up Reference without --no-manage-state is refused", "refused", "refused")
+
 print(f"\nALL {passed} UPSTREAM ORIGIN TESTS PASSED")
