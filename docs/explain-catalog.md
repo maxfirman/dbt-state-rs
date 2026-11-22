@@ -66,6 +66,10 @@ Source fixtures (`golden/fixtures/`):
 - `lag_copy_candidates.jsonl`: CLONE over an existing Target relation, anchored
   CLONE listing, absent-target rebuilds.
 - `lag_dropped_targets.jsonl`: stale CLONE into a dropped Target relation.
+- `explain_upstream_origin_incremental.jsonl`, `explain_upstream_origin_table.jsonl`
+  (#237, client 2.0.11): CLONE of a downstream that reads prod's upstream in
+  place, and `there is no other table that the model could be cloned from` for
+  one whose dev upstream is a copy of prod's or an independent build.
 - `lag_tolerance_matrix.jsonl`, `lag_upstream_query_listing.jsonl`: Lag
   tolerance lines and the per-upstream query listing.
 - `explain_snapshot_history.jsonl` (client 2.0.11): snapshot first build,

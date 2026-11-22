@@ -414,6 +414,58 @@ with tempfile.TemporaryDirectory() as work:
         fail("a Read records the rows it read", run.reads)
     ok("a Read records the rows it read")
 
+# --- State-disabled Reference execution (#237) ---------------------------------------------
+# `Reference` rebuilds per-run nodes from scratch with dbt State off, so a capture
+# can compare the rows State served with the rows an independent run produces.
+REFS = ec.Scenario("ref", "", ("fa", "fb"), [
+    ec.Build("${fa}", "${fb}", target="dev_clone"),
+    ec.Reference("${fa}", "${fb}", target="dev_clone"),
+    ec.Explain("${fb}", intent="probe", via="probe"),
+])
+fb_ = ec.bind(REFS, RUN)
+if fb_.steps[1].select != (f"fa_{RUN}", f"fb_{RUN}") or fb_.steps[1].target != "dev_clone":
+    fail("a Reference binds its per-run selectors and target", fb_.steps[1])
+ok("a Reference binds its per-run selectors and target")
+fp = ec.plan(fb_)
+if (fp.builds, fp.references, fp.total, fp.targets) != (1, 1, 2, {"dev_clone"}):
+    fail("a Reference is a dbt invocation on its target, not a State build", fp)
+ok("a Reference is a dbt invocation on its target, not a State build")
+for bad in ("orders", "+${fa}"):
+    expect_refusal(f"a Reference selecting {bad!r} is refused",
+                   lambda: ec.bind(ec.Scenario("bad", "", ("fa",), [ec.Reference(bad)]), RUN))
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(fb_, 50999, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    calls = []
+    real_run = ec.subprocess.run
+
+    class _Rc0:
+        returncode = 0
+
+    ec.subprocess.run = lambda cmd, **kw: calls.append((cmd, kw)) or _Rc0()
+    try:
+        run.run_step(1, fb_.steps[1])
+    finally:
+        ec.subprocess.run = real_run
+    cmd, kw = calls[0]
+    if (cmd[:2] != ["dbt", "build"] or "--full-refresh" not in cmd
+            or cmd[cmd.index("--target") + 1] != "dev_clone"
+            or cmd[cmd.index("--select") + 1:cmd.index("--select") + 3] != [f"fa_{RUN}", f"fb_{RUN}"]):
+        fail("a Reference runs dbt build --full-refresh of its nodes", cmd)
+    ok("a Reference runs dbt build --full-refresh of its nodes")
+    if any(k in kw["env"] for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL")):
+        fail("a Reference runs without dbt State", kw["env"])
+    ok("a Reference runs without dbt State")
+
+    class _Rc1:
+        returncode = 1
+
+    ec.subprocess.run = lambda cmd, **kw: _Rc1()
+    try:
+        expect_refusal("a failed Reference stops the run", lambda: run.run_step(1, fb_.steps[1]))
+    finally:
+        ec.subprocess.run = real_run
+
 # --- client version (#191) ----------------------------------------------------------------
 if ec.parse_dbt_version("       dbt 2.0.11\n") != "2.0.11":
     fail("the dbt version is parsed from `dbt --version`", ec.parse_dbt_version("dbt 2.0.11"))

@@ -186,6 +186,27 @@ _RELATION = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){2}
 
 
 @dataclass(init=False)
+class Reference:
+    """One State-disabled `dbt build --full-refresh --select ...`: a Reference execution.
+
+    No proxy, no State RPC, no metering. It rebuilds the selected per-run nodes
+    from their inputs, so a capture can compare the rows State served with the
+    rows an independent run produces (#237). It overwrites those relations, so
+    put it after every State step that depends on them.
+    """
+    select: tuple
+    target: str = "prod_demo"
+
+    def __init__(self, *select, target="prod_demo"):
+        self.select = tuple(select)
+        self.target = target
+
+    def bind(self, m, run):
+        b = Build(*self.select, target=self.target).bind(m, run)
+        return Reference(*b.select, target=b.target)
+
+
+@dataclass(init=False)
 class Read:
     """Read every row of one per-run demo relation with `dbt show --inline`, without dbt State.
 
@@ -328,11 +349,12 @@ class Plan:
     targets: set
     probe_explains: int = 0
     reads: int = 0
+    references: int = 0
 
     @property
     def total(self):
         """dbt invocations (probe explains are not dbt invocations)."""
-        return self.builds + self.run_operations + self.explains + self.reads
+        return self.builds + self.run_operations + self.explains + self.reads + self.references
 
 
 def new_run_id():
@@ -351,10 +373,11 @@ def plan(bound):
         builds=sum(isinstance(s, Build) for s in steps),
         run_operations=sum(isinstance(s, Sql) for s in steps),
         explains=sum(isinstance(s, Explain) and s.via == "dbt" for s in steps),
-        targets={s.target for s in steps if isinstance(s, (Build, Sql, Read))
+        targets={s.target for s in steps if isinstance(s, (Build, Sql, Read, Reference))
                  or (isinstance(s, Explain) and s.via == "dbt")},
         probe_explains=sum(isinstance(s, Explain) and s.via == "probe" for s in steps),
         reads=sum(isinstance(s, Read) for s in steps),
+        references=sum(isinstance(s, Reference) for s in steps),
     )
 
 
@@ -747,6 +770,11 @@ class Run:
                 raise CaptureError(f"dbt build exited {rc}; see {log}")
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
+        elif isinstance(step, Reference):
+            rc, log = self.dbt(k, "reference", ["build", "--target", step.target, "--select",
+                                                *step.select, "--full-refresh"], env=self.read_env())
+            if rc:
+                raise CaptureError(f"State-disabled reference build exited {rc}; see {log}")
         elif isinstance(step, Read):
             rc, log = self.dbt(k, "show", ["show", "--target", step.target, "--inline", step.query,
                                            "--limit", "-1", "--output", "json"], env=self.read_env())
@@ -871,7 +899,8 @@ def main(argv=None):
     print(f"scenario {bound.scenario.name}: {bound.scenario.summary}")
     print(f"run id {bound.run}; nodes: {', '.join(bound.names.values())}")
     print(f"dbt invocations: {p.total} ({p.builds} build, {p.run_operations} run-operation, "
-          f"{p.explains} state explain, {p.reads} show); targets: {', '.join(sorted(p.targets))}")
+          f"{p.explains} state explain, {p.reads} show, "
+          f"{p.references} State-disabled reference build); targets: {', '.join(sorted(p.targets))}")
     if p.probe_explains:
         print(f"state-probe explains: {p.probe_explains} (GetExplainMessages, no dbt invocation)")
 
