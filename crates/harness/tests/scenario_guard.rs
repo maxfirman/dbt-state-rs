@@ -46,6 +46,7 @@ const MIGRATED: &[&str] = &[
     "principals.rs",
     "robustness.rs",
     "selector_conformance.rs",
+    "session_revocation.rs",
     "selector_offline.rs",
     "speculative_submit.rs",
     "sql_normalization.rs",

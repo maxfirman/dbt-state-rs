@@ -133,8 +133,23 @@ impl AppState {
     /// set an in-process Token broker publishes. Without it, against the
     /// Token broker's published keys, fetched and cached
     /// (`dbt_state_broker::RemoteKeys`).
-    pub fn with_oidc(mut self, config: &dbt_state_auth::AuthConfig) -> anyhow::Result<Self> {
-        self.oidc = Some(Arc::new(grpc_auth::Oidc::new(config)?));
+    ///
+    /// A person token also needs an active Token broker session in this
+    /// state's Postgres (`grpc_auth`).
+    pub fn with_oidc(self, config: &dbt_state_auth::AuthConfig) -> anyhow::Result<Self> {
+        self.with_oidc_clock(config, dbt_state_broker::Clock::system())
+    }
+
+    /// [`Self::with_oidc`], with `clock` deciding how old a cached person
+    /// session status is and when a session reaches its cap (tests move
+    /// it; nothing a client sends can).
+    pub fn with_oidc_clock(
+        mut self,
+        config: &dbt_state_auth::AuthConfig,
+        clock: dbt_state_broker::Clock,
+    ) -> anyhow::Result<Self> {
+        let pool = self.store.pool().clone();
+        self.oidc = Some(Arc::new(grpc_auth::Oidc::new(config, pool, clock)?));
         Ok(self)
     }
 

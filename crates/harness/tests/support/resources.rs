@@ -165,7 +165,8 @@ pub struct TestServer {
     pub state: AppState,
     /// The in-process Token broker's listener, when it runs one.
     pub broker: Option<SocketAddr>,
-    /// The in-process Token broker's clock.
+    /// The in-process Token broker's clock, which also ages the gRPC
+    /// server's cached person session statuses and decides their cap.
     pub broker_clock: TestClock,
     _lifetime: ServerLifetime,
 }
@@ -338,7 +339,9 @@ async fn start_server_with_database_clock(
                 let mut state = database.state(require_org_header).await.with_clock(clock);
                 let mut broker = None;
                 if let Some(oidc) = oidc {
-                    state = state.with_oidc(&oidc.config).expect("oidc mode");
+                    state = state
+                        .with_oidc_clock(&oidc.config, broker_clock.broker_clock())
+                        .expect("oidc mode");
                     if oidc.broker {
                         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind broker");
                         let instance = dbt_state_broker::Broker::with_clock(

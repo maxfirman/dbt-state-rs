@@ -225,3 +225,12 @@ pub async fn fail_principal_records(db: &impl Db) {
     .await
     .expect("inject principal record failure");
 }
+
+/// Make every read of person session status fail: the column the check
+/// reads is gone.
+pub async fn fail_session_status(db: &impl Db) {
+    sqlx::query("ALTER TABLE broker_person_sessions RENAME COLUMN revoked_at TO fault_revoked_at")
+        .execute(db.pool())
+        .await
+        .expect("inject session status failure");
+}

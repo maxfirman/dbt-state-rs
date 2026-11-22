@@ -46,6 +46,28 @@ impl OrganizationRefusal {
     }
 }
 
+/// Why a person token's broker session (`sid`) is not active.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRefusal {
+    /// The Token broker recorded no such session.
+    Unknown,
+    /// Revoked: by an admin, or by a replayed authorization code.
+    Revoked,
+    /// Past its 12-hour cap.
+    Expired,
+}
+
+impl SessionRefusal {
+    /// The reason recorded in server logs.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Unknown => "session_unknown",
+            Self::Revoked => "session_revoked",
+            Self::Expired => "session_expired",
+        }
+    }
+}
+
 /// The gRPC status class of a [`Rejection`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectionCode {
@@ -64,12 +86,20 @@ pub enum Rejection {
         principal: PrincipalId,
         client_id: String,
     },
+    /// A valid person token whose broker session is no longer active:
+    /// `UNAUTHENTICATED`.
+    Session {
+        refusal: SessionRefusal,
+        principal: PrincipalId,
+        client_id: String,
+        session: String,
+    },
 }
 
 impl Rejection {
     pub fn code(&self) -> RejectionCode {
         match self {
-            Self::Token(_) => RejectionCode::Unauthenticated,
+            Self::Token(_) | Self::Session { .. } => RejectionCode::Unauthenticated,
             Self::Organization { .. } => RejectionCode::PermissionDenied,
         }
     }
@@ -85,6 +115,7 @@ impl Rejection {
                 ..
             } => "missing x-organization-id metadata",
             Self::Organization { .. } => "access to the organization is denied",
+            Self::Session { .. } => "bearer token session is not active",
         }
     }
 
@@ -93,22 +124,37 @@ impl Rejection {
         match self {
             Self::Token(error) => error.reason(),
             Self::Organization { refusal, .. } => refusal.reason(),
+            Self::Session { refusal, .. } => refusal.reason(),
         }
     }
 
-    /// The Principal of a valid token, when the Organization was refused.
+    /// The Principal of a valid token, when its Organization or session
+    /// was refused.
     pub fn principal(&self) -> Option<&PrincipalId> {
         match self {
             Self::Token(_) => None,
-            Self::Organization { principal, .. } => Some(principal),
+            Self::Organization { principal, .. } | Self::Session { principal, .. } => {
+                Some(principal)
+            }
         }
     }
 
-    /// The client id of a valid token, when the Organization was refused.
+    /// The client id of a valid token, when its Organization or session
+    /// was refused.
     pub fn client_id(&self) -> Option<&str> {
         match self {
             Self::Token(_) => None,
-            Self::Organization { client_id, .. } => Some(client_id),
+            Self::Organization { client_id, .. } | Self::Session { client_id, .. } => {
+                Some(client_id)
+            }
+        }
+    }
+
+    /// The broker session of a person token whose session was refused.
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Self::Session { session, .. } => Some(session),
+            Self::Token(_) | Self::Organization { .. } => None,
         }
     }
 }
