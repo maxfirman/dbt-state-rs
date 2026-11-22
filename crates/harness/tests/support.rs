@@ -53,12 +53,18 @@ mod resources;
 /// Read-only row assertions for executions and node states.
 #[path = "support/rows.rs"]
 pub mod rows;
+/// Every RPC of the dbt State protocol.
+#[path = "support/rpcs.rs"]
+pub mod rpcs;
 /// Request builders and the submit/confirm/expect protocol client.
 #[path = "support/scenario.rs"]
 pub mod scenario;
 /// The test-only TLS certificate both listeners serve, and its CA.
 #[path = "support/tls.rs"]
 pub mod tls;
+/// The UI as the Token broker's confidential OIDC client.
+#[path = "support/ui_client.rs"]
+pub mod ui_client;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{

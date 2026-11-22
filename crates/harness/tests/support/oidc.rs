@@ -261,6 +261,23 @@ impl TestAuthBuilder {
         self
     }
 
+    /// `[clients.ui]`: the UI registered as [`super::ui_client::UI_CLIENT_ID`]
+    /// with its one callback [`super::ui_client::UI_REDIRECT_URI`] and its
+    /// test public key.
+    pub fn ui_client(mut self) -> Self {
+        self.extra.push_str(&format!(
+            "\n[clients.ui]\nclient_id = {}\nredirect_uri = {}\npublic_key_file = {}\n",
+            toml_string(super::ui_client::UI_CLIENT_ID),
+            toml_string(super::ui_client::UI_REDIRECT_URI),
+            toml_string(
+                super::ui_client::ui_public_key_file()
+                    .to_str()
+                    .expect("UTF-8 path")
+            ),
+        ));
+        self
+    }
+
     /// `[broker] max_pending_logins_per_ip`.
     pub fn max_pending_logins_per_ip(mut self, cap: u32) -> Self {
         self.broker

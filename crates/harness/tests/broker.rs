@@ -432,14 +432,25 @@ async fn the_broker_serves_discovery_and_jwks() {
         discovery["code_challenge_methods_supported"],
         json!(["S256"])
     );
+    // `none` for the dbt client, HTTP Basic for machines, and
+    // `private_key_jwt` (RS256) for the UI.
     assert_eq!(
         discovery["token_endpoint_auth_methods_supported"],
-        json!(["none", "client_secret_basic"])
+        json!(["none", "client_secret_basic", "private_key_jwt"])
+    );
+    assert_eq!(
+        discovery["token_endpoint_auth_signing_alg_values_supported"],
+        json!(["RS256"])
     );
     assert_eq!(
         discovery["id_token_signing_alg_values_supported"],
         json!(["RS256"])
     );
+    assert_eq!(discovery["scopes_supported"], json!(["openid"]));
+    let claims = discovery["claims_supported"].as_array().unwrap();
+    for claim in ["iss", "sub", "aud", "exp", "iat", "sid", "nonce", "scope"] {
+        assert!(claims.contains(&json!(claim)), "{claim}: {claims:?}");
+    }
 
     let jwks: Value = http
         .get(format!("{}/jwks", server.broker_url()))
