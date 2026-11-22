@@ -82,6 +82,11 @@ pub mod callback {
                 StatusCode::FORBIDDEN,
                 "You have no access to an Organization this console shows.",
             ),
+            CallbackError::TooLarge => (
+                StatusCode::FORBIDDEN,
+                "You are in too many Organizations for this console's session. Ask your dbt \
+                 State administrator.",
+            ),
             CallbackError::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Sign-in is unavailable. Try again later.",

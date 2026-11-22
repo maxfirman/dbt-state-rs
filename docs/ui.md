@@ -88,8 +88,8 @@ The callback then:
    and `azp` the UI's client id, expiry with 60 s skew, the nonce, and a
    `sid`.
 
-The verified claims (Principal, session, email, name, `scope`, expiry) and
-the refresh token become the session, and the browser returns to the page
+The verified claims (Principal, session, email, name, the active
+Organizations of `scope`, expiry) and the refresh token become the session, and the browser returns to the page
 it opened. A person the broker denies (no person mapping rule) gets a 403
 page with fixed text. A callback without its pending sign-in, for example
 one opened in another browser, gets a 400 page and its code is never used.
@@ -116,6 +116,13 @@ sends them to no other host.
 - **CSRF.** The only state-changing request, the Organization switch, is a
   POST that must carry the session's CSRF token. It also passes Topcoat's
   default origin check, which refuses cross-origin POSTs.
+- **Size.** A browser keeps at most 4096 bytes of a cookie's name and
+  value. The session therefore holds the token's active Organizations
+  compactly (`<id>:<role>`), and its plaintext is capped at 2700 bytes,
+  about 3.8 KiB once sealed. That fits over a hundred Organizations with
+  short ids. A person in more is refused at the callback with a 403 page,
+  rather than given a cookie the browser would drop, which would loop
+  back to sign-in.
 - Signed-in pages are sent with `Cache-Control: no-store`.
 - Behind a proxy, serve the console over https. Browsers accept `Secure`
   cookies over plain http only on `localhost` and loopback addresses.
@@ -170,9 +177,9 @@ environment variables, the test server's schema and broker clock), with the
 fake Upstream IdP and the in-process broker. It covers the login redirect
 (state, nonce, PKCE), cookie attributes, filtering, switching and its
 refusals, renewal, a failed renewal, revocation within 30 s, an Organization
-disabled after a restart, signing in with the broker's published keys, and
-`none` mode. `crates/ui/tests/startup.rs` runs the binary for the startup
-refusals.
+disabled after a restart, signing in with the broker's published keys, the
+cookie size limit, and `none` mode. `crates/ui/tests/startup.rs` runs the
+binary for the startup refusals.
 
 ## Data
 

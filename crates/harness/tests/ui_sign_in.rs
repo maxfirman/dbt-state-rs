@@ -679,3 +679,66 @@ async fn in_none_mode_the_console_shows_one_organization_without_sign_in() {
         .await;
     assert_eq!(shown_projects(&page), [RESEARCH_PROJECT]);
 }
+
+/// `count` active Organizations `org-000`, `org-001`, …, each granting
+/// people in `data-eng` the developer Role, and the UI registered.
+fn many_organizations(idp: &FakeIdp, count: usize) -> TestAuth {
+    let ids: Vec<String> = (0..count).map(|n| format!("org-{n:03}")).collect();
+    let declared: Vec<(&str, bool)> = ids.iter().map(|id| (id.as_str(), false)).collect();
+    ids.iter()
+        .fold(
+            TestAuth::builder(&declared).upstream(idp).ui_client(),
+            |builder, id| builder.rule("person", "groups", "data-eng", id, "developer"),
+        )
+        .build()
+}
+
+/// Every cookie the console sets fits a browser's 4096-byte limit on a
+/// cookie's name and value: a person in 60 Organizations signs in and can
+/// pick any of them.
+#[tokio::test]
+async fn a_person_in_many_organizations_gets_a_session_cookie_a_browser_keeps() {
+    let idp = FakeIdp::start().await;
+    idp.sign_in(alice());
+    let auth = many_organizations(&idp, 60);
+    let server = start_server_with_broker(&auth).await;
+    let ui = start_ui(&server, &auth);
+    let browser = ConsoleBrowser::new(&ui, &server);
+
+    let page = sign_in(&browser, "/").await;
+    assert_eq!(page.body.matches("<option value=\"").count(), 60);
+    for header in browser.set_cookies() {
+        let pair = header.split(';').next().unwrap();
+        assert!(pair.len() <= 4096, "{} bytes: {header}", pair.len());
+    }
+    let page = switch(&browser, &page, "org-059").await;
+    assert_eq!(page.status, 200, "{page:?}");
+    assert!(
+        page.body.contains("value=\"org-059\" selected"),
+        "{}",
+        page.body
+    );
+}
+
+/// A person in more Organizations than one session cookie can hold is told
+/// so at the callback and gets no session, rather than a cookie the
+/// browser drops and an endless sign-in loop.
+#[tokio::test]
+async fn a_person_in_too_many_organizations_for_one_cookie_is_told_so() {
+    let idp = FakeIdp::start().await;
+    idp.sign_in(alice());
+    let auth = many_organizations(&idp, 400);
+    let server = start_server_with_broker(&auth).await;
+    let ui = start_ui(&server, &auth);
+    let browser = ConsoleBrowser::new(&ui, &server);
+
+    let page = browser.open("/").await;
+    assert_eq!(page.status, 403, "{page:?}");
+    assert!(page.url.starts_with(UI_REDIRECT_URI), "{}", page.url);
+    assert!(
+        page.body.contains("too many Organizations"),
+        "{}",
+        page.body
+    );
+    assert!(!browser.cookies().contains_key(SESSION));
+}

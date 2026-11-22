@@ -43,7 +43,7 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use dbt_state_auth::{
     AuthConfig, CLIENT_ASSERTION_TYPE, ClientAssertionKey, OrganizationId, Organizations, Role,
-    Scope, TokenError, TokenVerifier, VerifiedToken,
+    TokenError, TokenVerifier, VerifiedToken,
 };
 use dbt_state_broker::{
     Clock, KeyLocation, RemoteKeys, SESSION_STATUS_MAX_AGE, SessionCheck, SessionCheckError,
@@ -69,6 +69,13 @@ const SESSION_COOKIE: &str = "dbt-state-ui-session";
 const PENDING_COOKIE: &str = "dbt-state-ui-sign-in";
 /// The scopes the console asks the broker for.
 const SCOPE: &str = "openid email profile";
+/// The longest session cookie plaintext. Sealed, it grows by a 12-byte
+/// nonce and a 16-byte tag, then by a third in base64, and a few `/` and
+/// `=` are percent-encoded: about 3.8 KiB with the cookie's name, under
+/// the 4096 bytes browsers keep of a cookie's name and value. A person in
+/// more Organizations than fit (over a hundred with short ids) is refused
+/// at sign-in rather than given a cookie the browser drops.
+const MAX_SESSION_BYTES: usize = 2700;
 /// The longest local path the console returns to after sign-in.
 const MAX_RETURN_PATH: usize = 2048;
 
@@ -93,8 +100,9 @@ pub(crate) struct Session {
     sid: String,
     email: Option<String>,
     name: Option<String>,
-    /// The person token's `scope` claim.
-    scope: String,
+    /// The person token's active Organizations with the Role in each,
+    /// compactly: `<id>:<role>` entries, space-separated.
+    organizations: String,
     /// The person token's `exp`, Unix seconds.
     expires_at: u64,
     refresh_token: String,
@@ -128,6 +136,7 @@ enum BrokerFailure {
     NotAPerson,
     NoRefreshToken,
     OtherPerson,
+    TooLarge,
 }
 
 impl BrokerFailure {
@@ -142,6 +151,7 @@ impl BrokerFailure {
             Self::NotAPerson => "not_a_person_token",
             Self::NoRefreshToken => "no_refresh_token",
             Self::OtherPerson => "other_person",
+            Self::TooLarge => "session_too_large",
         }
     }
 }
@@ -173,6 +183,8 @@ pub(crate) enum CallbackError {
     Unavailable,
     /// The person has no Organization this console shows.
     NoOrganization,
+    /// The session would not fit in a cookie (too many Organizations).
+    TooLarge,
     /// Anything else.
     Failed,
 }
@@ -369,6 +381,7 @@ impl Oidc {
             Err(failure) => {
                 let outcome = match failure {
                     BrokerFailure::Unreachable => CallbackError::Unavailable,
+                    BrokerFailure::TooLarge => CallbackError::TooLarge,
                     _ => CallbackError::Failed,
                 };
                 return refuse(failure.reason(), outcome);
@@ -423,17 +436,27 @@ impl Oidc {
             .filter(|token| !token.is_empty())
             .or_else(|| previous.map(|session| session.refresh_token.clone()))
             .ok_or(BrokerFailure::NoRefreshToken)?;
-        Ok(Session {
+        let organizations = token
+            .scope
+            .active()
+            .map(|(id, role)| format!("{id}:{role}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let session = Session {
             principal: token.principal.as_str().to_owned(),
             sid,
             email: token.email,
             name: token.name,
-            scope: token.scope.to_string(),
+            organizations,
             expires_at: unix(token.expires_at),
             refresh_token,
             organization: previous.and_then(|session| session.organization.clone()),
             csrf: previous.map_or_else(|| random(16), |session| session.csrf.clone()),
-        })
+        };
+        if session.encode().len() > MAX_SESSION_BYTES {
+            return Err(BrokerFailure::TooLarge);
+        }
+        Ok(session)
     }
 
     /// Check `token` with the broker's keys, refetching them once when it
@@ -621,25 +644,33 @@ impl Oidc {
     /// The Organizations `session` shows: active in its token and in this
     /// console's config, by id.
     fn shown(&self, session: &Session) -> Vec<(String, Role)> {
-        let Ok(scope) = Scope::parse(&session.scope) else {
-            return Vec::new();
-        };
-        scope
-            .active()
-            .filter(|(id, _)| self.organizations.is_active(id))
-            .map(|(id, role): (&OrganizationId, Role)| (id.as_str().to_owned(), role))
+        session
+            .organizations
+            .split(' ')
+            .filter_map(|entry| {
+                let (id, role) = entry.rsplit_once(':')?;
+                let id = OrganizationId::new(id).ok()?;
+                let role: Role = role.parse().ok()?;
+                self.organizations
+                    .is_active(&id)
+                    .then(|| (id.as_str().to_owned(), role))
+            })
             .collect()
     }
 
     fn write_session(&self, cx: &Cx, session: &Session) {
         self.jar(cx).add(
-            Cookie::build((
-                SESSION_COOKIE,
-                serde_json::to_string(session).expect("session JSON"),
-            ))
-            .max_age(seconds(SESSION_COOKIE_MAX_AGE))
-            .build(),
+            Cookie::build((SESSION_COOKIE, session.encode()))
+                .max_age(seconds(SESSION_COOKIE_MAX_AGE))
+                .build(),
         );
+    }
+}
+
+impl Session {
+    /// The session cookie's plaintext.
+    fn encode(&self) -> String {
+        serde_json::to_string(self).expect("session JSON")
     }
 }
 
