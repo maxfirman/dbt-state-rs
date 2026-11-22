@@ -459,6 +459,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 | `node_decisions` | One row per decision: class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `actors`, `roles`, `role_bindings` | Reserved for future auth; nothing writes them. |
+| `broker_pending_logins`, `broker_person_sessions`, `broker_authorization_codes`, `broker_refresh_tokens` | Token broker state (migration 0031, #220): browser sign-ins in progress, person sessions (Principal as upstream issuer, subject and `principal_id`; client id; last granted scope; 12 h cap; `revoked_at`; the upstream refresh token sealed; `upstream_renewed_at`), single-use codes and refresh-token family members. Bearer values only as SHA-256 hashes. Not State history and not org-scoped. |
 
 ### Lifecycle
 
@@ -508,7 +509,7 @@ listener (`DBT_STATE_BROKER_LISTEN`), sharing the config's key set and the
 server's Postgres pool, or alone (`dbt-state-broker`, env
 `DBT_STATE_BROKER_LISTEN` default `127.0.0.1:8080`, `DBT_STATE_AUTH_CONFIG`
 and `DATABASE_URL`). Its tables live in the server's schema: their migrations
-are in `crates/server/migrations` (from `0030_broker_person_login.sql`), and
+are in `crates/server/migrations` (from `0031_broker_person_login.sql`), and
 a standalone broker runs the same migrator at startup (`MIGRATOR`), so any
 number of brokers and servers share one schema. It makes no request to the
 Upstream IdP at startup.

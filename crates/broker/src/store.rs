@@ -1,6 +1,6 @@
 //! The Token broker's Postgres state: pending logins, person sessions,
 //! authorization codes and refresh-token family members
-//! (`crates/server/migrations/0030_broker_person_login.sql`).
+//! (`crates/server/migrations/0031_broker_person_login.sql`).
 //!
 //! Every bearer value is looked up by its SHA-256 hash; none is stored.
 
