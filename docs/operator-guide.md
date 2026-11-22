@@ -358,8 +358,8 @@ Config: [`examples/auth/keycloak.toml`](../examples/auth/keycloak.toml).
    Idle" (30 minutes by default). Only people with the `offline_access`
    realm role (in the realm's default roles) can sign in; others get
    `not_allowed` at the code exchange. Keycloak returns a fresh ID token on
-   every refresh, so a group change or a disabled person applies at the next
-   renewal.
+   every refresh, so a group change applies at the next renewal; a disabled
+   person's refresh is refused (`upstream_refused_grant`).
 5. **CI clients.** Each pipeline is a confidential client with only
    "Service account roles" on. Add an "Audience" mapper (included custom
    audience = `[upstream] api_audience`, "Add to access token" on) to each
@@ -500,8 +500,9 @@ From Okta's documentation; not run by any test here. Config:
 - The dbt client sends credentials only over TLS. It uses TLS when the API
   URL starts with `https://` (Fusion) or ends in `:443`, or when
   `RUN_CACHE_API_SECURE=true`. Over a plain channel it sends no token and no
-  `x-organization-id`, and an `oidc` server refuses every RPC.
-- `RUN_CACHE_AUTH_URL` and `RUN_CACHE_TOKEN_URL` must be https.
+  `x-organization-id`, and an `oidc` server refuses every RPC but health.
+- Serve `RUN_CACHE_AUTH_URL` and `RUN_CACHE_TOKEN_URL` over https: they
+  carry authorization codes, refresh tokens and CI client secrets.
 - **Pinned Fusion's token requests trust only the public Mozilla roots
   built into it**, and no setting adds a CA (`dbt-fusion@9977b6c`, found by
   the pinned Fusion driver, #223). The broker's token URL must therefore
