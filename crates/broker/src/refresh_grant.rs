@@ -15,15 +15,27 @@
 //! `expires_in`. On any refusal both fall back to a browser sign-in once
 //! their token has expired.
 //!
-//! A renewal goes back to the Upstream IdP every time, in one transaction
-//! over the session's row (spec #215, "Token endpoint, by grant"):
+//! A renewal runs in one transaction over the session's row (spec #215,
+//! "Token endpoint, by grant"):
 //!
 //! 1. **Lock and check the session**: the row lock serializes renewals of
 //!    one session across replicas. A revoked session, or one past its
-//!    12-hour cap, does not renew.
-//! 2. *(The 60 s rotation grace window is #224; see [`assess`].)*
-//! 3. **Detect replay**: a refresh token is used up by the renewal it
-//!    starts. Presenting a rotated one again revokes the whole session.
+//!    12-hour cap, does not renew, whatever token it is presented with.
+//! 2. **Handle the rotation grace window**: a refresh token is rotated by
+//!    the first renewal it starts, but is still accepted for
+//!    [`GRACE_WINDOW`] (60 s) from that rotation, so two dbt processes
+//!    sharing one login, or a client retrying after a lost response, both
+//!    renew. Each such renewal issues another refresh token in the family
+//!    (one more live member; those issued before stay valid) and leaves
+//!    the presented token's rotation time alone, so renewing through the
+//!    window never extends it. When the session's upstream evidence was
+//!    renewed within the window too (as the renewal that rotated the token
+//!    did), its recorded grant (scope, email, name) is reissued without
+//!    asking the Upstream IdP, which therefore sees each of its refresh
+//!    tokens at most once. Otherwise (only replica clocks that disagree
+//!    get here) the renewal continues at step 4.
+//! 3. **Detect replay**: a rotated refresh token presented after the window
+//!    revokes the whole session.
 //! 4. **Renew upstream and collect fresh evidence**: refresh at the IdP
 //!    with the session's sealed upstream refresh token (keeping the IdP's
 //!    rotated one, sealed, when it rotates). The evidence is the refresh
@@ -47,7 +59,7 @@ use std::collections::BTreeMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use chrono::{DateTime, Utc};
-use dbt_state_auth::{PrincipalId, PrincipalKind, TokenRequest, UpstreamClaims};
+use dbt_state_auth::{PrincipalId, PrincipalKind, Scope, TokenRequest, UpstreamClaims};
 use serde_json::json;
 
 use crate::oauth::{no_store, OAuthError};
@@ -57,6 +69,9 @@ use crate::upstream::{UpstreamError, Userinfo};
 use crate::Broker;
 
 pub(crate) const REFRESH_TOKEN: &str = "refresh_token";
+
+/// How long a rotated refresh token is still accepted (step 2).
+pub(crate) const GRACE_WINDOW: chrono::Duration = chrono::Duration::seconds(60);
 
 /// What a refusal log line says.
 #[derive(Default)]
@@ -147,9 +162,15 @@ struct Evidence {
 
 /// What a renewal comes to.
 enum Outcome {
+    /// Renewed on fresh upstream evidence.
     Renewed {
         evidence: Evidence,
-        scope: dbt_state_auth::Scope,
+        scope: Scope,
+    },
+    /// Renewed through the grace window on the session's evidence, renewed
+    /// within the window: its recorded `scope`.
+    Reissued {
+        scope: Scope,
     },
     Denied(Denial),
 }
@@ -192,8 +213,39 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
         ..refusal(reason)
     };
 
-    let (evidence, scope) = match assess(broker, &renewal, client_id, now).await {
-        Outcome::Renewed { evidence, scope } => (evidence, scope),
+    let grace_window = renewal.presented.rotated_at.is_some();
+    let outcome = assess(broker, &renewal, client_id, now).await;
+    let refresh_token = secret::random();
+    let principal = PrincipalId::new(session.principal_id.clone());
+    let (scope, email, name, evidence, recorded) = match outcome {
+        Outcome::Renewed { evidence, scope } => {
+            let email = evidence.claims.string("email").or(session.email.as_deref());
+            let name = evidence.claims.string("name").or(session.name.as_deref());
+            let recorded = renewal
+                .renew(&Renewed {
+                    principal: &Principal {
+                        id: &principal,
+                        issuer: broker.0.upstream.issuer(),
+                        subject: &session.upstream_subject,
+                        kind: PrincipalKind::Person,
+                        email,
+                    },
+                    scope: &scope.to_string(),
+                    email,
+                    name,
+                    sealed_upstream_refresh_token: evidence.sealed_upstream_refresh_token.clone(),
+                    next_token_hash: &secret::hash(&refresh_token),
+                    now: at,
+                })
+                .await;
+            let (email, name) = (email.map(str::to_owned), name.map(str::to_owned));
+            (scope, email, name, evidence.source, recorded)
+        }
+        Outcome::Reissued { scope } => {
+            let recorded = renewal.reissue(&secret::hash(&refresh_token), at).await;
+            let (email, name) = (session.email.clone(), session.name.clone());
+            (scope, email, name, "recent_renewal", recorded)
+        }
         Outcome::Denied(denial) => {
             let applied = if denial.end_session {
                 renewal.end_session(at).await
@@ -215,40 +267,17 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
             .respond(denial.error);
         }
     };
-
-    let upstream = &broker.0.upstream;
-    let principal = PrincipalId::new(session.principal_id.clone());
-    let email = evidence.claims.string("email").or(session.email.as_deref());
-    let name = evidence.claims.string("name").or(session.name.as_deref());
-    let scope_text = scope.to_string();
-    let refresh_token = secret::random();
-    let renewed = renewal
-        .renew(&Renewed {
-            principal: &Principal {
-                id: &principal,
-                issuer: upstream.issuer(),
-                subject: &session.upstream_subject,
-                kind: PrincipalKind::Person,
-                email,
-            },
-            scope: &scope_text,
-            email,
-            name,
-            sealed_upstream_refresh_token: evidence.sealed_upstream_refresh_token.clone(),
-            next_token_hash: &secret::hash(&refresh_token),
-            now: at,
-        })
-        .await;
-    if let Err(error) = renewed {
+    if let Err(error) = recorded {
         tracing::error!(%error, "cannot record a session renewal");
         return bound("database_unavailable").respond(OAuthError::TemporarilyUnavailable);
     }
+    let scope_text = scope.to_string();
 
     let client_id = session.client_id.as_str();
     let mut request =
         TokenRequest::person(principal.clone(), session.id.to_string(), client_id, scope);
-    request.email = email.map(str::to_owned);
-    request.name = name.map(str::to_owned);
+    request.email = email;
+    request.name = name;
     let issued = broker.0.tokens.issue(&request, now);
     tracing::info!(
         grant = REFRESH_TOKEN,
@@ -258,7 +287,8 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
         client_id,
         session = %session.id,
         scope = scope_text.as_str(),
-        evidence = evidence.source,
+        evidence,
+        grace_window,
         expires_in = issued.expires_in.as_secs(),
         "token issued"
     );
@@ -276,13 +306,6 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
 
 /// Steps 1 to 5 of the module docs, over the locked session of `renewal`.
 /// Changes nothing: the caller applies the outcome to the renewal.
-///
-/// #224 adds the rotation grace window between the session check and the
-/// replay check: a presented token rotated less than 60 s ago is accepted,
-/// and when the session's upstream evidence was renewed less than 60 s ago
-/// (`broker_person_sessions.upstream_renewed_at`, which every renewal sets)
-/// its stored grant (`scope`, `email`, `name`) is reissued as another
-/// outcome, without asking the IdP again.
 async fn assess(
     broker: &Broker,
     renewal: &Renewal,
@@ -303,12 +326,16 @@ async fn assess(
         return Outcome::Denied(Denial::keep("session_expired", OAuthError::RenewalDenied));
     }
 
-    // 3. Detect replay.
-    if renewal.presented.rotated_at.is_some() {
-        return Outcome::Denied(Denial::end("refresh_token_replayed_session_revoked"));
-    }
+    // 2. Handle the rotation grace window, and 3. detect replay. Replica
+    // clocks may disagree slightly, so a rotation "in the future" is
+    // within the window.
+    let within_window = |time: DateTime<Utc>| at - time < GRACE_WINDOW;
+    let in_grace_window = match renewal.presented.rotated_at {
+        None => false,
+        Some(rotated_at) if within_window(rotated_at) => true,
+        Some(_) => return Outcome::Denied(Denial::end("refresh_token_replayed_session_revoked")),
+    };
 
-    // 4. Renew upstream and collect fresh evidence.
     let upstream = &broker.0.upstream;
     // Sessions outlive a config: this deployment may have been restarted
     // without the broker's registration for browser sign-in.
@@ -321,6 +348,18 @@ async fn assess(
     if session.upstream_issuer != upstream.issuer() {
         return Outcome::Denied(Denial::end("upstream_issuer_changed"));
     }
+    if in_grace_window && within_window(session.upstream_renewed_at) {
+        let Ok(scope) = Scope::parse(&session.scope) else {
+            tracing::error!(session = %session.id, "a stored session scope does not parse");
+            return Outcome::Denied(Denial::keep(
+                "stored_scope_invalid",
+                OAuthError::TemporarilyUnavailable,
+            ));
+        };
+        return Outcome::Reissued { scope };
+    }
+
+    // 4. Renew upstream and collect fresh evidence.
     let key = login.refresh_token_key();
     let context = session.id.as_bytes();
     let Some(upstream_refresh_token) = key
