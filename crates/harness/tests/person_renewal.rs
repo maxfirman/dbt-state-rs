@@ -475,6 +475,42 @@ async fn renewal_waits_out_an_unavailable_idp_without_ending_the_session() {
     assert_eq!(renewed.status(), 200, "{:?}", json(renewed).await);
 }
 
+/// A refreshed ID token signed under a key id the broker has not loaded,
+/// while the IdP's key set cannot be refetched (here: fetched less than
+/// 30 s ago), is no proof either way: renewal waits, the session stays,
+/// and the IdP's rotated refresh token is kept for the next attempt.
+#[tokio::test]
+async fn an_id_token_under_a_key_not_yet_loaded_waits_instead_of_ending_the_session() {
+    capture_logs();
+    let idp = FakeIdp::start().await;
+    let server = start_server_with_broker(&deployment(&idp).build()).await;
+    let login = signed_in(&server, &idp, alice()).await;
+
+    idp.update(alice().signed_with_unpublished_key());
+    let response = renew(&server, field(&login, "refresh_token")).await;
+    assert_refused(
+        response,
+        503,
+        "temporarily_unavailable",
+        "upstream_unavailable",
+    )
+    .await;
+    assert!(refusal_logged(
+        "upstream_unavailable",
+        &["session_ended=false"]
+    ));
+
+    idp.update(alice());
+    let renewed = renew(&server, field(&login, "refresh_token")).await;
+    assert_eq!(renewed.status(), 200, "{:?}", json(renewed).await);
+    let issued = idp.issued_refresh_tokens();
+    assert_eq!(
+        upstream_refreshes(&idp),
+        [issued[0].clone(), issued[1].clone()],
+        "the second attempt used the refresh token the IdP rotated to in the first"
+    );
+}
+
 /// Renewal is denied once the session reaches its 12-hour cap, without
 /// asking the IdP; until then it renews.
 #[tokio::test]

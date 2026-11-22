@@ -432,7 +432,10 @@ impl UpstreamIdp {
 
     /// Check an ID token the IdP returned when refreshing a person's
     /// sign-in: as at sign-in, for the broker's client id, but with no
-    /// nonce (OIDC Core §12.2).
+    /// nonce (OIDC Core §12.2). A token under a key id the IdP's keys still
+    /// lack after the refetch (it failed, or one ran less than
+    /// [`crate::MIN_INTERVAL`] ago) proves nothing either way: the IdP is
+    /// [`UpstreamError::Unavailable`] for now.
     pub(crate) async fn verify_refreshed_id_token(
         &self,
         token: &str,
@@ -443,20 +446,28 @@ impl UpstreamIdp {
             .id_token_verifier
             .as_ref()
             .expect("browser sign-in is configured");
-        Ok(checked(endpoints, || verifier.verify_id_token(token, None, now)).await)
+        match checked(endpoints, || verifier.verify_id_token(token, None, now)).await {
+            Err(UpstreamTokenError::UnknownKey) => Err(UpstreamError::Unavailable(
+                "the ID token's signing key is not among the Upstream IdP's loaded keys".into(),
+            )),
+            result => Ok(result),
+        }
     }
 }
 
-/// `verify()`, after refetching the IdP's keys when stale; a token signed by
-/// a key not yet loaded refreshes the keys once (rate-limited) and is
-/// checked again.
+/// `verify()`, after refetching the IdP's keys when stale; a token whose
+/// signature fails refreshes the keys once (rate-limited) and is checked
+/// again.
 async fn checked(
     endpoints: &Endpoints,
     verify: impl Fn() -> Result<UpstreamClaims, UpstreamTokenError>,
 ) -> Result<UpstreamClaims, UpstreamTokenError> {
     endpoints.keys.refresh_if_stale().await;
     let result = verify();
-    if matches!(result, Err(UpstreamTokenError::BadSignature)) {
+    if matches!(
+        result,
+        Err(UpstreamTokenError::BadSignature | UpstreamTokenError::UnknownKey)
+    ) {
         endpoints.keys.refresh_after_miss().await;
         return verify();
     }

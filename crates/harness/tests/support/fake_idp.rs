@@ -110,6 +110,8 @@ struct IdTokenShape {
     missing: bool,
     wrong_nonce: bool,
     impostor: bool,
+    /// Signed under a key id the IdP's JWKS does not publish (yet).
+    unpublished: bool,
     audience: Option<Value>,
     issuer: Option<String>,
 }
@@ -161,6 +163,13 @@ impl UpstreamPerson {
     /// The ID token is signed by a key the IdP never published.
     pub fn signed_by_impostor(mut self) -> Self {
         self.id_token.impostor = true;
+        self
+    }
+
+    /// The ID token is signed under a key id the IdP's JWKS does not
+    /// (yet) publish, as just after a key rotation.
+    pub fn signed_with_unpublished_key(mut self) -> Self {
+        self.id_token.unpublished = true;
         self
     }
 
@@ -891,12 +900,12 @@ fn refresh_grant(
         claims.insert("aud".into(), json!(BROKER_CLIENT_ID));
         claims.insert("iat".into(), json!(iat));
         claims.insert("exp".into(), json!(iat + 3600));
-        let key = if person.id_token.impostor {
-            &keys.impostor
-        } else {
-            &keys.published
-        };
-        body["id_token"] = json!(sign(key, &Value::Object(claims)));
+        let claims = Value::Object(claims);
+        body["id_token"] = json!(match &person.id_token {
+            shape if shape.unpublished => sign_as(&keys.impostor, UNPUBLISHED_KEY_ID, &claims),
+            shape if shape.impostor => sign(&keys.impostor, &claims),
+            _ => sign(&keys.published, &claims),
+        });
     }
     if !renewal.keeps_refresh_token {
         state.refresh_tokens.remove(&presented);
@@ -931,9 +940,17 @@ async fn userinfo(State((state, _)): State<AppState>, headers: HeaderMap) -> Res
     Json(Value::Object(claims)).into_response()
 }
 
+/// The key id of [`UpstreamPerson::signed_with_unpublished_key`].
+const UNPUBLISHED_KEY_ID: &str = "idp-key-2";
+
 /// A compact RS256 JWS of `claims`, under [`IDP_KEY_ID`].
 fn sign(key: &RsaKeyPair, claims: &Value) -> String {
-    let header = json!({"alg": "RS256", "typ": "JWT", "kid": IDP_KEY_ID});
+    sign_as(key, IDP_KEY_ID, claims)
+}
+
+/// A compact RS256 JWS of `claims`, under `kid`.
+fn sign_as(key: &RsaKeyPair, kid: &str, claims: &Value) -> String {
+    let header = json!({"alg": "RS256", "typ": "JWT", "kid": kid});
     let encode = |value: &Value| URL_SAFE_NO_PAD.encode(serde_json::to_vec(value).unwrap());
     let input = format!("{}.{}", encode(&header), encode(claims));
     let mut signature = vec![0; key.public().modulus_len()];
