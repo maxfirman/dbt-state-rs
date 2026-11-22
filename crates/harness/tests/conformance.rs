@@ -1244,7 +1244,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        153,
+        155,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This

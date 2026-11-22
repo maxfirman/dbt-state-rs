@@ -415,6 +415,21 @@ server keeps the conservative behavior described.
   a source whose upstream is in its own Target's schema, as a dbt `ref`
   resolves it, was not among the candidates
   ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
+- **Upstream origin and submit-time copy (#237, live, 2026-11-22).** With
+  dbt 2.0.11 on Snowflake, hosted copied an absent FULL dev downstream only
+  when it read prod's physical upstream (byte-identical SQL). It built the
+  downstream when its dev upstream was a confirmed copy of prod's (RegisterClone
+  or submit copy) or an independent build of the same logic, for a merge
+  incremental and a table upstream alike. Its rows matched the Reference
+  execution in every case, verified with State explicitly disabled
+  (`--no-manage-state`, zero State RPCs) in a State-free follow-up of each
+  run. Older captures copied a downstream over a dev upstream
+  copy: `explain_clone_history.jsonl` entry 12 (client 2.0.6, the source
+  built and confirmed in the capture, B's run-2 shape) and
+  `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
+  built in an earlier session). What separates those from #237 case B is
+  open; the report lists the observed differences
+  ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
 - **Seed copy, uncaptured cases (#91).** A seed whose target forbids copies
   with `clone_chain_depth_limit: 0` alone (client 2.0.11 sends it only with
   `allow_clones: false`, which is captured: 1 / 10, the ordinary load
@@ -673,6 +688,27 @@ after later valid deliveries ([lifecycle report](https://github.com/maxfirman/db
 Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
 test that pins each.
+
+**Open — copy over a dev upstream of another origin (#237, live,
+2026-11-22).** `explain_upstream_origin_incremental.jsonl` and
+`explain_upstream_origin_table.jsonl` submit an absent FULL dev downstream
+whose dev upstream is a confirmed copy of prod's (B), or an independent dev
+build of the same logic over a dev input with the same row (C) or another row
+(D). Hosted builds all three, and this server copies prod's downstream (keyed
+gaps I28, I36, I44, T34, T45, T57, with their Explains). For C and D's dev
+upstream, this server also reports prod's upstream as an equivalent where
+hosted reports none (field-scoped gaps I34, I42, T39, T51, and the Explains
+T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
+(I23, T29, T36), the rendering gap #239 also reports.
+**Correctness finding:** in D the copy
+serves rows computed from prod's input. A native run of the table scenario
+against this server served `v='prod'` where the measured dev upstream and the
+Reference-step read both held `v='dev'`. #239's middle source shows the same outcome
+(a source that read another relation of the same name, there in a third
+schema); a shared cause is inferred from `copy_search.rs`, not observed.
+Evidence: `docs/reports/evidence/snowflake-upstream-origin/`. Open for #242 and
+#243, not an accepted divergence
+([report](reports/snowflake-upstream-origin-2026-11-22.md)).
 
 **Open — copy source choice among competing sources (#239, crafted,
 2026-11-21).** `copy_source_choice.jsonl` crafts thirteen Snowflake histories

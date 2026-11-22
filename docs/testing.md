@@ -23,6 +23,7 @@ python3 experiments/explain_census_test.py               # warehouse-free Explai
 python3 experiments/explain_capture_test.py              # warehouse-free capture driver tests
 python3 experiments/data_test_history_test.py            # #200 echo attribution and crafted probe plans
 python3 experiments/copy_source_choice_test.py           # #239 copy source choice plan and capture table
+python3 experiments/upstream_origin_test.py              # #237 per-case upstream-origin record
 python3 experiments/databricks_survey_test.py            # offline Databricks campaign guards/results
 python3 experiments/databricks_isolation_test.py         # offline concurrent campaign ownership/physical-peer gates
 python3 experiments/databricks_deferral_test.py          # offline deferral history/ownership gates

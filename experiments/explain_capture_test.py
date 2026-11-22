@@ -41,6 +41,14 @@ def expect_refusal(name, fn):
     fail(name, "expected CaptureError, got none")
 
 
+def _state_env(env):
+    """Only the State-related variables of an environment (never print the rest: it may hold
+    credentials)."""
+    return {k: v for k, v in env.items()
+            if k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL", "RUN_CACHE_API_SECURE",
+                     "PROBE_URL")}
+
+
 def expect_accept(name, fn):
     try:
         fn()
@@ -345,7 +353,8 @@ with tempfile.TemporaryDirectory() as work:
     if (len(calls) != 1 or calls[0][0] != [ec.PROBE_BIN, "explain"]
             or json.loads(calls[0][1]["input"]) != {"execution_decision_ids": ["new"]}
             or calls[0][1]["env"].get("PROBE_URL") != "http://127.0.0.1:50999"):
-        fail("a probe explain asks the run's proxy for the node's latest decision", calls)
+        fail("a probe explain asks the run's proxy for the node's latest decision",
+             [(c, kw.get("input"), _state_env(kw.get("env") or {})) for c, kw in calls])
     ok("a probe explain asks the run's proxy for the node's latest decision")
 
 
@@ -407,12 +416,115 @@ with tempfile.TemporaryDirectory() as work:
     if cmd[:2] != ["dbt", "show"] or cmd[cmd.index("--inline") + 1] != rb.steps[1].query:
         fail("a Read runs dbt show --inline with its query", cmd)
     ok("a Read runs dbt show --inline with its query")
-    if any(k in kw["env"] for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL")):
-        fail("a Read runs without dbt State", kw["env"])
-    ok("a Read runs without dbt State")
+    if "DBT_ENGINE_MANAGE_STATE" in kw["env"] or kw["env"].get("RUN_CACHE_API_URL") != "127.0.0.1:50999":
+        fail("a Read runs without dbt State, any State call trapped by the run's proxy", _state_env(kw["env"]))
+    ok("a Read runs without dbt State, any State call trapped by the run's proxy")
+    if "--no-manage-state" not in cmd:
+        fail("a Read disables dbt State on the command line", cmd)
+    ok("a Read disables dbt State on the command line")
     if run.reads != [{"step": 1, "relation": rb.steps[1].relation, "rows": ec.parse_show_rows(SHOW_LOG)}]:
         fail("a Read records the rows it read", run.reads)
     ok("a Read records the rows it read")
+
+# --- State-disabled Reference execution (#237) ---------------------------------------------
+# `Reference` rebuilds per-run nodes from scratch with dbt State off, so a capture
+# can compare the rows State served with the rows an independent run produces.
+REFS = ec.Scenario("ref", "", ("fa", "fb"), [
+    ec.Build("${fa}", "${fb}", target="dev_clone"),
+    ec.Reference("${fa}", "${fb}", target="dev_clone"),
+    ec.Explain("${fb}", intent="probe", via="probe"),
+])
+fb_ = ec.bind(REFS, RUN)
+if fb_.steps[1].select != (f"fa_{RUN}", f"fb_{RUN}") or fb_.steps[1].target != "dev_clone":
+    fail("a Reference binds its per-run selectors and target", fb_.steps[1])
+ok("a Reference binds its per-run selectors and target")
+fp = ec.plan(fb_)
+if (fp.builds, fp.references, fp.total, fp.targets) != (1, 1, 2, {"dev_clone"}):
+    fail("a Reference is a dbt invocation on its target, not a State build", fp)
+ok("a Reference is a dbt invocation on its target, not a State build")
+# A Reference full-refreshes what it selects, so each selector must be exactly
+# one of the run's node names: dbt reads one string as several selectors.
+for bad in ("orders", "+${fa}", "${fa}+", "orders ${fa}", "${fa} orders", "${fa},orders",
+            "tag:${fa}", "${run}"):
+    expect_refusal(f"a Reference selecting {bad!r} is refused",
+                   lambda: ec.bind(ec.Scenario("bad", "", ("fa",), [ec.Reference(bad)]), RUN))
+expect_refusal("a Reference selecting nothing is refused",
+               lambda: ec.bind(ec.Scenario("bad", "", ("fa",), [ec.Reference()]), RUN))
+with tempfile.TemporaryDirectory() as work:
+    run = ec.Run(fb_, 50999, work, "/nonexistent", False, "/validated/dir")
+    os.makedirs(run.logs)
+    calls = []
+    real_run = ec.subprocess.run
+
+    class _Rc0:
+        returncode = 0
+
+    ec.subprocess.run = lambda cmd, **kw: calls.append((cmd, kw)) or _Rc0()
+    try:
+        run.run_step(1, fb_.steps[1])
+    finally:
+        ec.subprocess.run = real_run
+    cmd, kw = calls[0]
+    if (cmd[:2] != ["dbt", "build"] or "--full-refresh" not in cmd
+            or cmd[cmd.index("--target") + 1] != "dev_clone"
+            or cmd[cmd.index("--select") + 1:cmd.index("--select") + 3] != [f"fa_{RUN}", f"fb_{RUN}"]):
+        fail("a Reference runs dbt build --full-refresh of its nodes", cmd)
+    ok("a Reference runs dbt build --full-refresh of its nodes")
+    if "DBT_ENGINE_MANAGE_STATE" in kw["env"] or kw["env"].get("RUN_CACHE_API_URL") != "127.0.0.1:50999":
+        fail("a Reference runs without dbt State, any State call trapped by the run's proxy", _state_env(kw["env"]))
+    ok("a Reference runs without dbt State, any State call trapped by the run's proxy")
+    inv = run.state_free[-1]
+    if (inv["step"], inv["kind"], inv["exit"], inv["state_rpcs"]) != (1, "Reference", 0, 0) \
+            or "/validated/dir" in inv["argv"] or "<profiles-dir>" not in inv["argv"] \
+            or "--no-manage-state" not in inv["argv"]:
+        fail("a Reference's invocation is recorded, sanitized, with its State RPC count", inv)
+    ok("a Reference's invocation is recorded, sanitized, with its State RPC count")
+    if "--no-manage-state" not in cmd:
+        fail("a Reference disables dbt State on the command line", cmd)
+    ok("a Reference disables dbt State on the command line (project or user settings cannot enable it)")
+
+    class _Rc1:
+        returncode = 1
+
+    ec.subprocess.run = lambda cmd, **kw: _Rc1()
+    try:
+        expect_refusal("a failed Reference stops the run", lambda: run.run_step(1, fb_.steps[1]))
+    finally:
+        ec.subprocess.run = real_run
+
+    # Any State RPC the proxy records during a State-free step fails the run.
+    seen = [[], [{"method": "ValidateClientVersion"}]]
+    run.rows = lambda: seen.pop(0) if len(seen) > 1 else seen[0]
+    ec.subprocess.run = lambda cmd, **kw: _Rc0()
+    try:
+        expect_refusal("a Reference during which the proxy saw a State RPC stops the run",
+                       lambda: run.run_step(1, fb_.steps[1]))
+    finally:
+        ec.subprocess.run = real_run
+    if run.state_free[-1]["state_rpcs"] != 1:
+        fail("the trapped State RPC is counted in the invocation record", run.state_free[-1])
+    ok("the trapped State RPC is counted in the invocation record")
+
+# A scenario of only Write, Read and Reference steps is State-free: its capture
+# must hold no RPC at all, and it needs no ValidateClientVersion call.
+FREE = ec.Scenario("free", "", ("fa",), [
+    ec.Write("models/${fa}.sql", "select 1 as id\n"),
+    ec.Reference("${fa}", target="dev_clone"),
+    ec.Read("CDO_DEMO_DB.DEV_CLONE_DEMO.${fa}", target="dev_clone"),
+])
+fp2 = ec.plan(ec.bind(FREE, RUN))
+if not fp2.state_free or ec.plan(fb_).state_free:
+    fail("a plan is State-free only without Build, Sql and Explain steps", (fp2, ec.plan(fb_)))
+ok("a plan is State-free only without Build, Sql and Explain steps")
+if ec.capture_problem(fp2, [], {"wire_dbt_run_cache_versions": []}) is not None:
+    fail("an empty capture is the expected result of a State-free scenario", fp2)
+ok("an empty capture is the expected result of a State-free scenario")
+if ec.capture_problem(fp2, [{"method": "SubmitTelemetryBatch"}], {"wire_dbt_run_cache_versions": []}) is None:
+    fail("a State-free scenario that recorded an RPC is a failed capture", fp2)
+ok("a State-free scenario that recorded an RPC is a failed capture")
+if ec.capture_problem(ec.plan(fb_), [], {"wire_dbt_run_cache_versions": []}) is None:
+    fail("a State scenario still needs a ValidateClientVersion call", fb_)
+ok("a State scenario still needs a ValidateClientVersion call")
 
 # --- client version (#191) ----------------------------------------------------------------
 if ec.parse_dbt_version("       dbt 2.0.11\n") != "2.0.11":
@@ -614,7 +726,7 @@ for name in names:
     sc = ec.load_scenario(name)
     b = ec.bind(sc, ec.new_run_id())
     p = ec.plan(b)
-    if p.total <= 0 or not any(isinstance(s, ec.Explain) for s in b.steps):
+    if p.total <= 0 or not (p.state_free or any(isinstance(s, ec.Explain) for s in b.steps)):
         fail(f"scenario {name} plans dbt invocations and explains", p)
     ok(f"scenario {name} binds and plans ({p.total} dbt invocations)")
 

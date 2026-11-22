@@ -1,0 +1,2461 @@
+{
+ "case": "A",
+ "description": "A same physical upstream",
+ "runs": [
+  {
+   "label": "hosted run 1 (merge-incremental upstream)",
+   "service": "hosted",
+   "fixture": "golden/fixtures/explain_upstream_origin_incremental.jsonl",
+   "run": "234451b8ea12",
+   "scenario": "upstream_origin",
+   "names": {
+    "input": "oa_in_234451b8ea12",
+    "upstream": "oa_up_234451b8ea12",
+    "downstream": "oa_dn_234451b8ea12"
+   },
+   "dev_upstream_origin": null,
+   "dev_downstream_decisions": [
+    {
+     "decision": "CLONE",
+     "codes": [
+      1,
+      null
+     ],
+     "description": "an equivalent model exists under another name so we cloned that one",
+     "source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_234451B8EA12\"",
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": {
+      "success": true,
+      "failed_to_clone": false,
+      "last_modified_epoch": 1795304752235
+     }
+    },
+    {
+     "decision": "SKIP",
+     "codes": [
+      null,
+      null
+     ],
+     "description": "model was a no-op because both its query and its upstream data are up to date",
+     "source": null,
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": null
+    }
+   ],
+   "wrong_marker": false,
+   "missing": [],
+   "reads": [
+    {
+     "phase": "prod",
+     "step": 12,
+     "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_dn_234451b8ea12",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "served",
+     "step": 18,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_234451b8ea12",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "after_next",
+     "step": 36,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_234451b8ea12",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "reference",
+     "step": 53,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_234451b8ea12",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    }
+   ],
+   "upstream_reads": [],
+   "rpcs": [
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-21T23:45:17.783638304+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 3,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_in_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_IN_234451B8EA12\"",
+        "last_modified_epoch": 1795304706141
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "unique_key": "\"id\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_234451b8ea12",
+       "dbt_node_name": "oa_up_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_up_234451b8ea12",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "6fc4b1dd63e3b7752cea05d9ef28d7a5",
+       "node_body_hash": "36fa6e31fd2abcddcc916c01080b6a2d",
+       "node_configs_hash": "9697136bccf0b4e31df8a8d70db3b2b8",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a2007f-fd8c-706a-8bda-f13a0ce8cef6",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a2007f-fd83-7166-9363-e92aa7fd2c5e"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-21T23:45:20.020476694+00:00",
+     "request": {
+      "request_id": "01a2007f-fd8c-706a-8bda-f13a0ce8cef6",
+      "last_modified_epoch": 1795304720176,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 3713,
+      "labels": {
+       "dbt_node_name": "oa_up_234451b8ea12",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_234451b8ea12"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a2007f-fd8c-706a-8bda-f13a0ce8cef6"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-21T23:45:27.584051186+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+        "last_modified_epoch": 1795304719441
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "dbt_node_name": "oa_dn_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "71f90c1074689551f372b70fd1e4a7e5",
+       "node_body_hash": "07ea54e2c4836810bb1c81417b3eefa6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a20080-23c3-7c2a-9082-a0250da42a03",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a20080-23bb-7183-867d-0b7147d1e734"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-21T23:45:29.291117455+00:00",
+     "request": {
+      "request_id": "01a20080-23c3-7c2a-9082-a0250da42a03",
+      "last_modified_epoch": 1795304729573,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 3081,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12",
+       "dbt_node_name": "oa_dn_234451b8ea12"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a20080-23c3-7c2a-9082-a0250da42a03"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-21T23:45:47.678154464+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "dbt_node_name": "oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "71f90c1074689551f372b70fd1e4a7e5",
+       "node_body_hash": "07ea54e2c4836810bb1c81417b3eefa6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-21T23:45:49.516096246+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+        "last_modified_epoch": 1795304719441
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12",
+       "dbt_node_name": "oa_dn_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "71f90c1074689551f372b70fd1e4a7e5",
+       "node_body_hash": "07ea54e2c4836810bb1c81417b3eefa6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_clone": {
+        "request_id": "01a20080-7981-7f2e-a960-0e00adce86ee",
+        "last_modified_query": "",
+        "clone_sqls": [
+         "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"\n            CLONE \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_234451B8EA12\"\n            COPY GRANTS"
+        ],
+        "clone_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_234451B8EA12\"",
+        "clone_target": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+        "explained_decision": {
+         "decision": 3,
+         "skip_rejection_reason": 1,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "an equivalent model exists under another name so we cloned that one"
+        },
+        "transformed_nodes_by_query": {},
+        "clone_required_last_modified_epoch": 1795304729573,
+        "clone_execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 3081,
+        "execution_decision_id": "01a20080-7977-7abf-aa7f-a7f2780c4fa3"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-21T23:45:52.348663116+00:00",
+     "request": {
+      "request_id": "01a20080-7981-7f2e-a960-0e00adce86ee",
+      "last_modified_epoch": 1795304752235,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": {
+       "fields": {}
+      },
+      "execution_runtime_ms": 3081,
+      "labels": {
+       "dbt_node_name": "oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a20080-848d-763e-9d2b-578fc776350c"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-21T23:46:45.843588807+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "71f90c1074689551f372b70fd1e4a7e5",
+       "node_body_hash": "07ea54e2c4836810bb1c81417b3eefa6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-21T23:46:47.945721026+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_234451b8ea12",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_234451B8EA12\"",
+        "last_modified_epoch": 1795304752039
+       },
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_234451B8EA12\"",
+        "last_modified_epoch": 1795304719441
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "dbt_node_name": "oa_dn_234451b8ea12",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_234451b8ea12"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_234451b8ea12",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "71f90c1074689551f372b70fd1e4a7e5",
+       "node_body_hash": "07ea54e2c4836810bb1c81417b3eefa6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "skip_execution": {
+        "explained_decision": {
+         "decision": 0,
+         "skip_rejection_reason": null,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+        },
+        "transformed_nodes_by_query": {},
+        "execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 3081,
+        "execution_decision_id": "01a20081-5dc8-7be3-9eaa-55247a6709d9"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    }
+   ],
+   "verified_reference": {
+    "run": "234451b8ea12",
+    "scenario": "upstream_origin_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_234451b8ea12",
+      "ob_up_234451b8ea12",
+      "ob_dn_234451b8ea12",
+      "oc_up_234451b8ea12",
+      "oc_dn_234451b8ea12",
+      "od_up_234451b8ea12",
+      "od_dn_234451b8ea12",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 9,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_in_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 16,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_234451b8ea12",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [],
+    "missing": [],
+    "wrong_marker": false
+   }
+  },
+  {
+   "label": "hosted run 2 (table upstream)",
+   "service": "hosted",
+   "fixture": "golden/fixtures/explain_upstream_origin_table.jsonl",
+   "run": "000858964de8",
+   "scenario": "upstream_origin_table",
+   "names": {
+    "input": "oa_in_000858964de8",
+    "upstream": "oa_up_000858964de8",
+    "downstream": "oa_dn_000858964de8"
+   },
+   "dev_upstream_origin": null,
+   "dev_downstream_decisions": [
+    {
+     "decision": "CLONE",
+     "codes": [
+      1,
+      null
+     ],
+     "description": "an equivalent model exists under another name so we cloned that one",
+     "source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_000858964DE8\"",
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": {
+      "success": true,
+      "failed_to_clone": false,
+      "last_modified_epoch": 1795306186564
+     }
+    },
+    {
+     "decision": "SKIP",
+     "codes": [
+      null,
+      null
+     ],
+     "description": "model was a no-op because both its query and its upstream data are up to date",
+     "source": null,
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": null
+    }
+   ],
+   "wrong_marker": false,
+   "missing": [],
+   "reads": [
+    {
+     "phase": "prod",
+     "step": 12,
+     "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_dn_000858964de8",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "served",
+     "step": 18,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_000858964de8",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "after_next",
+     "step": 40,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_000858964de8",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "reference",
+     "step": 57,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_000858964de8",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    }
+   ],
+   "upstream_reads": [],
+   "rpcs": [
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:09:16.055680937+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_in_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_IN_000858964DE8\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "oa_up_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_up_000858964de8",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b5efacf3304aee1a6351e46861a532ac",
+       "node_body_hash": "54f5e6fae90f1195e571ee12103778bb",
+       "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:09:17.617307175+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_in_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_IN_000858964DE8\"",
+        "last_modified_epoch": 1795306147157
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_000858964de8",
+       "dbt_node_name": "oa_up_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_up_000858964de8",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b5efacf3304aee1a6351e46861a532ac",
+       "node_body_hash": "54f5e6fae90f1195e571ee12103778bb",
+       "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a20095-f5e1-71f3-88af-984ad39b872e",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a20095-f5d2-7118-a21b-79da5feed80b"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:09:19.649425316+00:00",
+     "request": {
+      "request_id": "01a20095-f5e1-71f3-88af-984ad39b872e",
+      "last_modified_epoch": 1795306159448,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 4267,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_000858964de8",
+       "dbt_node_name": "oa_up_000858964de8"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a20095-f5e1-71f3-88af-984ad39b872e"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:09:24.929200153+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:09:25.162960442+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": 1795306159228
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8",
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a20096-1355-7d97-863d-5594bf1a976f",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a20096-134a-7090-8dca-df5b668eef53"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:09:26.756847057+00:00",
+     "request": {
+      "request_id": "01a20096-1355-7d97-863d-5594bf1a976f",
+      "last_modified_epoch": 1795306166657,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 3286,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a20096-1355-7d97-863d-5594bf1a976f"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:09:41.502922474+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:09:43.820750573+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": 1795306159228
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_clone": {
+        "request_id": "01a20096-5c3d-72ee-8b08-878cce9d36f1",
+        "last_modified_query": "",
+        "clone_sqls": [
+         "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"\n            CLONE \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_000858964DE8\"\n            COPY GRANTS"
+        ],
+        "clone_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_000858964DE8\"",
+        "clone_target": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+        "explained_decision": {
+         "decision": 3,
+         "skip_rejection_reason": 1,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "an equivalent model exists under another name so we cloned that one"
+        },
+        "transformed_nodes_by_query": {},
+        "clone_required_last_modified_epoch": 1795306166657,
+        "clone_execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 3286,
+        "execution_decision_id": "01a20096-5c32-72a4-a1ad-fa063bcbcb3f"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:09:46.672115526+00:00",
+     "request": {
+      "request_id": "01a20096-5c3d-72ee-8b08-878cce9d36f1",
+      "last_modified_epoch": 1795306186564,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": {
+       "fields": {}
+      },
+      "execution_runtime_ms": 3286,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_name": "oa_dn_000858964de8"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a20096-675d-7b3a-853a-97a48e0212cc"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:10:52.438165372+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:10:54.913818150+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_000858964de8",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_000858964DE8\"",
+        "last_modified_epoch": 1795306186350
+       },
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_000858964DE8\"",
+        "last_modified_epoch": 1795306159228
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_name": "oa_dn_000858964de8",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_000858964de8"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_000858964de8",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "b4703bfe414144d8a0e90007adfc1fdf",
+       "node_body_hash": "0e7ba5176771e0eb8e3ce84ac5203cd5",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "skip_execution": {
+        "explained_decision": {
+         "decision": 0,
+         "skip_rejection_reason": null,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+        },
+        "transformed_nodes_by_query": {},
+        "execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 3286,
+        "execution_decision_id": "01a20097-71fe-72f5-ab47-d3453500de6b"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    }
+   ],
+   "verified_reference": {
+    "run": "000858964de8",
+    "scenario": "upstream_origin_table_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_000858964de8",
+      "ob_up_000858964de8",
+      "ob_dn_000858964de8",
+      "oc_up_000858964de8",
+      "oc_dn_000858964de8",
+      "od_up_000858964de8",
+      "od_dn_000858964de8",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 9,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_in_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 16,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_000858964de8",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [],
+    "missing": [],
+    "wrong_marker": false
+   }
+  },
+  {
+   "label": "dbt-state-server rehearsal of run 2",
+   "service": "dbt-state-server",
+   "fixture": null,
+   "run": "002752a5958d",
+   "scenario": "upstream_origin_table",
+   "names": {
+    "input": "oa_in_002752a5958d",
+    "upstream": "oa_up_002752a5958d",
+    "downstream": "oa_dn_002752a5958d"
+   },
+   "dev_upstream_origin": null,
+   "dev_downstream_decisions": [
+    {
+     "decision": "CLONE",
+     "codes": [
+      1,
+      null
+     ],
+     "description": "an equivalent model exists under another name so we cloned that one",
+     "source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_002752A5958D\"",
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": {
+      "success": true,
+      "failed_to_clone": false,
+      "last_modified_epoch": 1795307318718
+     }
+    },
+    {
+     "decision": "SKIP",
+     "codes": [
+      null,
+      null
+     ],
+     "description": "model was a no-op because both its query and its upstream data are up to date",
+     "source": null,
+     "allow_clones": true,
+     "clone_chain_depth_limit": null,
+     "freshness_tolerance_seconds": 0,
+     "confirm": null
+    }
+   ],
+   "wrong_marker": false,
+   "missing": [],
+   "reads": [
+    {
+     "phase": "prod",
+     "step": 12,
+     "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_dn_002752a5958d",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "served",
+     "step": 18,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_002752a5958d",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "after_next",
+     "step": 40,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_002752a5958d",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    },
+    {
+     "phase": "reference",
+     "step": 57,
+     "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_002752a5958d",
+     "rows": [
+      {
+       "ID": 1,
+       "V": "prod"
+      }
+     ]
+    }
+   ],
+   "upstream_reads": [],
+   "rpcs": [
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:28:10.457740435+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_in_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_IN_002752A5958D\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_002752a5958d",
+       "dbt_node_name": "oa_up_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_up_002752a5958d",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "eed35cb4bc57496825ce699f4b0b7618",
+       "node_body_hash": "499d451c5fdce23d39a0e770e6d600c4",
+       "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:28:11.444954433+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_in_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_IN_002752A5958D\"",
+        "last_modified_epoch": 1795307281378
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_002752a5958d",
+       "dbt_node_name": "oa_up_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_up_002752a5958d",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "eed35cb4bc57496825ce699f4b0b7618",
+       "node_body_hash": "499d451c5fdce23d39a0e770e6d600c4",
+       "node_configs_hash": "6e24c4c839b6b9a0525904a04c959846",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a200a7-4325-7351-9768-681aa5710f00",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a200a7-4325-7351-9768-681b4868f99b"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:28:12.999568386+00:00",
+     "request": {
+      "request_id": "01a200a7-4325-7351-9768-681aa5710f00",
+      "last_modified_epoch": 1795307292992,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 3225,
+      "labels": {
+       "dbt_node_name": "oa_up_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_up_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_up_002752a5958d"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a200a7-4325-7351-9768-681aa5710f00"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:28:17.944068393+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+        "last_modified_epoch": 1795307292755
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "target_name": "prod_demo",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "26b0bdf19528838a61ac076489108dfd",
+       "node_body_hash": "11fcf8dcc9653a699342ffa41bda99b6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "prod_state_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_execute": {
+        "request_id": "01a200a7-5c8c-76e5-a383-810c5b233cd9",
+        "last_modified_query": "",
+        "explained_decision": {
+         "decision": 1,
+         "skip_rejection_reason": 6,
+         "clone_rejection_reason": 6,
+         "is_stale": false,
+         "decision_description": "model was executed because its table did not exist"
+        },
+        "transformed_nodes_by_query": {},
+        "query_hash_metadata_info": null,
+        "execution_decision_id": "01a200a7-5c8c-76e5-a383-810d1514769c"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:28:19.133645685+00:00",
+     "request": {
+      "request_id": "01a200a7-5c8c-76e5-a383-810c5b233cd9",
+      "last_modified_epoch": 1795307299153,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": null,
+      "execution_runtime_ms": 2878,
+      "labels": {
+       "dbt_node_name": "oa_dn_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a200a7-5c8c-76e5-a383-810c5b233cd9"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:28:35.118946127+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "26b0bdf19528838a61ac076489108dfd",
+       "node_body_hash": "11fcf8dcc9653a699342ffa41bda99b6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:28:35.233520828+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+        "last_modified_epoch": 1795307292755
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "on_schema_change": "\"ignore\"",
+       "lookback": "1"
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "26b0bdf19528838a61ac076489108dfd",
+       "node_body_hash": "11fcf8dcc9653a699342ffa41bda99b6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "ready_to_clone": {
+        "request_id": "01a200a7-a01e-7556-a987-a8a79980709b",
+        "last_modified_query": "",
+        "clone_sqls": [
+         "\n            CREATE OR REPLACE TRANSIENT TABLE \"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"\n            CLONE \"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_002752A5958D\"\n            COPY GRANTS"
+        ],
+        "clone_source": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_DN_002752A5958D\"",
+        "clone_target": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+        "explained_decision": {
+         "decision": 3,
+         "skip_rejection_reason": 1,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "an equivalent model exists under another name so we cloned that one"
+        },
+        "transformed_nodes_by_query": {},
+        "clone_required_last_modified_epoch": 1795307299153,
+        "clone_execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 2878,
+        "execution_decision_id": "01a200a7-a01e-7556-a987-a8a8c2462f1c"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "Execution",
+     "method": "ConfirmExecution",
+     "recorded_at": "2026-11-22T00:28:37.680678583+00:00",
+     "request": {
+      "request_id": "01a200a7-a01e-7556-a987-a8a79980709b",
+      "last_modified_epoch": 1795307318718,
+      "failed_to_clone": false,
+      "table_type": "TRANSIENT TABLE",
+      "execution_results": {
+       "fields": {}
+      },
+      "execution_runtime_ms": 2878,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d"
+      }
+     },
+     "response": {
+      "success": true,
+      "request_id": "01a200a7-a01e-7556-a987-a8a79980709b"
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQLSpeculative",
+     "recorded_at": "2026-11-22T00:29:53.473166950+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+        "last_modified_epoch": null
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "26b0bdf19528838a61ac076489108dfd",
+       "node_body_hash": "11fcf8dcc9653a699342ffa41bda99b6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "undecided": {}
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    },
+    {
+     "service": "SQL",
+     "method": "SubmitEnrichedSQL",
+     "recorded_at": "2026-11-22T00:29:55.419520890+00:00",
+     "request": {
+      "target_table": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+      "dialect": "snowflake",
+      "default_catalog": "CDO_DEMO_DB",
+      "execution_type": 1,
+      "sql": "\nselect id, v from CDO_DEMO_DB.prod_state_demo.oa_up_002752a5958d",
+      "tables": [
+       {
+        "name": "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"OA_DN_002752A5958D\"",
+        "last_modified_epoch": 1795307317517
+       },
+       {
+        "name": "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"OA_UP_002752A5958D\"",
+        "last_modified_epoch": 1795307292755
+       }
+      ],
+      "query_dependencies": [],
+      "semantic_extras": {
+       "lookback": "1",
+       "on_schema_change": "\"ignore\""
+      },
+      "freshness_tolerance_seconds": 0,
+      "lenient_dependencies": [],
+      "tolerate_nondeterminism": true,
+      "labels": {
+       "dbt_node_fqn": "jaffle_shop.marts.oa_dn_002752a5958d",
+       "dbt_node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "dbt_node_name": "oa_dn_002752a5958d"
+      },
+      "clone_time_travel_limit": null,
+      "clone_table_properties": null,
+      "stale_upstream_policy": 0,
+      "clone_chain_depth_limit": null,
+      "dbt_node_state": {
+       "node_unique_id": "model.jaffle_shop.oa_dn_002752a5958d",
+       "target_name": "dev_clone",
+       "project_name": "jaffle_shop",
+       "resource_type": "model",
+       "node_hash": "26b0bdf19528838a61ac076489108dfd",
+       "node_body_hash": "11fcf8dcc9653a699342ffa41bda99b6",
+       "node_configs_hash": "b4f78a0cebe7c72f15fb8125579533c3",
+       "node_persisted_descriptions_hash": null,
+       "node_macros_hash": null,
+       "node_contract_hash": "298a88779c630d09cfb26e926f3af91b",
+       "profile_name": "snowflake",
+       "project_id": "70437463667433",
+       "node_database_representation": null
+      },
+      "default_schema": "dev_clone_demo",
+      "compare_unrendered_code": false,
+      "table_namespace": "fc38a5ba0eceb701c6ab7c6b882e28b0",
+      "ignore_external_modifications": false,
+      "allow_clones": true,
+      "is_defer_to_profile": false,
+      "defer_enabled": true
+     },
+     "response": {
+      "response": {
+       "skip_execution": {
+        "explained_decision": {
+         "decision": 0,
+         "skip_rejection_reason": null,
+         "clone_rejection_reason": null,
+         "is_stale": false,
+         "decision_description": "model was a no-op because both its query and its upstream data are up to date"
+        },
+        "transformed_nodes_by_query": {},
+        "execution_results": {
+         "fields": {}
+        },
+        "execution_runtime_ms": 2878,
+        "execution_decision_id": "01a200a8-d95a-746e-a0ca-d4c09af9d6a4"
+       }
+      }
+     },
+     "status": {
+      "code": 0,
+      "message": "",
+      "details": [],
+      "metadata": {
+       "ascii": [],
+       "binary": []
+      }
+     }
+    }
+   ],
+   "verified_reference": {
+    "run": "002752a5958d",
+    "scenario": "upstream_origin_table_reference",
+    "client": {
+     "dbt_version": "2.0.11",
+     "dbt_sha256": "f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31"
+    },
+    "invocation": {
+     "argv": [
+      "dbt",
+      "build",
+      "--no-manage-state",
+      "--target",
+      "dev_clone",
+      "--select",
+      "oa_dn_002752a5958d",
+      "ob_up_002752a5958d",
+      "ob_dn_002752a5958d",
+      "oc_up_002752a5958d",
+      "oc_dn_002752a5958d",
+      "od_up_002752a5958d",
+      "od_dn_002752a5958d",
+      "--full-refresh",
+      "--profiles-dir",
+      "<profiles-dir>",
+      "--profile",
+      "snowflake",
+      "--skip-semantic-manifest-validation"
+     ],
+     "exit": 0,
+     "state_rpcs": 0
+    },
+    "state_rpcs": 0,
+    "capture_rpcs": 0,
+    "inputs": [
+     {
+      "phase": "input",
+      "step": 9,
+      "relation": "CDO_DEMO_DB.PROD_STATE_DEMO.oa_in_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "reads": [
+     {
+      "phase": "reference",
+      "step": 16,
+      "relation": "CDO_DEMO_DB.DEV_CLONE_DEMO.oa_dn_002752a5958d",
+      "rows": [
+       {
+        "ID": 1,
+        "V": "prod"
+       }
+      ]
+     }
+    ],
+    "upstream_reads": [],
+    "missing": [],
+    "wrong_marker": false
+   }
+  }
+ ]
+}
