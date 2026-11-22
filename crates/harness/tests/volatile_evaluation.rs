@@ -1934,41 +1934,68 @@ async fn databricks_checked_reuse_refuses_unproven_sql() {
     }
 }
 
+// ── Databricks producer history (#213) ──────────────────────────────────────
+//
+// Evidence: `golden/fixtures/databricks_volatile_producer.jsonl`
+// (`docs/reports/databricks-volatile-priority-2026-11-21.md`). The managed
+// input's first build (entry 3, confirmed in 5) and the FULL `rand()` model
+// over it (6). The rerun phase ends with its Explain (26). After an External
+// modification of the input, the model rebuilds (30, confirmed in 31) and both
+// consumers rebuild (strict 32, tolerant 33). On the next rerun the model
+// rebuilds again (42, confirmed in 43) and the tolerant consumer reuses (44).
+
+const INPUT_FIRST: usize = 3;
+const PRODUCER_FIRST: usize = 6;
+const PRODUCER_RERUN_EXPLAIN: usize = 26;
+const PRODUCER_AFTER_INPUT_EDIT: usize = 30;
+const PRODUCER_AFTER_INPUT_EDIT_CONFIRM: usize = 31;
+const STRICT_AFTER_INPUT_EDIT: usize = 32;
+const TOLERANT_AFTER_INPUT_EDIT: usize = 33;
+const PRODUCER_AFTER_TRANSITION: usize = 42;
+const PRODUCER_AFTER_TRANSITION_CONFIRM: usize = 43;
+const TOLERANT_AFTER_TRANSITION: usize = 44;
+
 #[tokio::test]
 async fn databricks_producer_revision_requires_a_confirmed_source_and_cannot_revert() {
     let capture = entries(DATABRICKS_PRODUCER);
-    let producer = target(&capture[30].request);
-    let source = target(&capture[3].request);
-    let first_edit_epoch = capture[30].request["tables"][0]["last_modified_epoch"]
+    let producer = target(&capture[PRODUCER_AFTER_INPUT_EDIT].request);
+    let source = target(&capture[INPUT_FIRST].request);
+    let first_edit_epoch = capture[PRODUCER_AFTER_INPUT_EDIT].request["tables"][0]
+        ["last_modified_epoch"]
         .as_i64()
         .unwrap();
-    let consumer = captured_submit(&capture[33].request);
+    let consumer = captured_submit(&capture[TOLERANT_AFTER_INPUT_EDIT].request);
     for (pending_source, ambiguous_target) in [(true, false), (false, false), (false, true)] {
         let server = support::start_server().await;
         let sc = Scenario::connect(&server).await;
-        replay(&sc, &capture, 26).await;
+        replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
         if pending_source {
-            sc.at(submitted_at(&capture[30]) - 1)
+            sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]) - 1)
                 .expect_execute(
-                    captured_submit(&capture[3].request)
+                    captured_submit(&capture[INPUT_FIRST].request)
                         .sql("select 1 as id, 9 as revision")
                         .own_epoch(Some(
-                            capture[6].request["tables"][0]["last_modified_epoch"]
+                            capture[PRODUCER_FIRST].request["tables"][0]["last_modified_epoch"]
                                 .as_i64()
                                 .unwrap(),
                         )),
                 )
                 .await;
         }
-        let built = capture[31].request["last_modified_epoch"].as_i64().unwrap();
-        sc.at(submitted_at(&capture[30]))
-            .build(captured_submit(&capture[30].request), built)
+        let built = capture[PRODUCER_AFTER_INPUT_EDIT_CONFIRM].request["last_modified_epoch"]
+            .as_i64()
+            .unwrap();
+        sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+            .build(
+                captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request),
+                built,
+            )
             .await;
         if pending_source {
             // The source epoch can belong to an unconfirmed write. The
             // consumer sees drift and can Reuse within Lag tolerance.
             let skip = sc
-                .at(submitted_at(&capture[33]))
+                .at(submitted_at(&capture[TOLERANT_AFTER_INPUT_EDIT]))
                 .expect_skip(consumer.clone())
                 .await;
             assert!(skip.explained_decision.unwrap().is_stale);
@@ -1976,16 +2003,19 @@ async fn databricks_producer_revision_requires_a_confirmed_source_and_cannot_rev
             // Leave the consumer on its first result across both edits.
             // A later edit of the already external input cannot restore the
             // producer identity the consumer recorded before either edit.
-            let built_again = capture[43].request["last_modified_epoch"].as_i64().unwrap();
-            let mut submit =
-                captured_submit(&capture[42].request).upstream(&source, first_edit_epoch + 1_000);
+            let built_again = capture[PRODUCER_AFTER_TRANSITION_CONFIRM].request
+                ["last_modified_epoch"]
+                .as_i64()
+                .unwrap();
+            let mut submit = captured_submit(&capture[PRODUCER_AFTER_TRANSITION].request)
+                .upstream(&source, first_edit_epoch + 1_000);
             if ambiguous_target {
                 submit = submit.tolerate_nondeterminism(true).table(&producer, None);
             }
-            sc.at(submitted_at(&capture[42]))
+            sc.at(submitted_at(&capture[PRODUCER_AFTER_TRANSITION]))
                 .build(submit, built_again)
                 .await;
-            let sc = sc.at(submitted_at(&capture[44]));
+            let sc = sc.at(submitted_at(&capture[TOLERANT_AFTER_TRANSITION]));
             let ready = sc
                 .expect_execute(consumer.clone().upstream(&producer, built_again))
                 .await;
@@ -2002,21 +2032,28 @@ async fn databricks_record_preserves_the_producer_revision_in_and_after_the_batc
     let capture = entries(DATABRICKS_PRODUCER);
     let server = support::start_server().await;
     let sc = Scenario::connect(&server).await;
-    replay(&sc, &capture, 26).await;
+    replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
 
-    let producer = target(&capture[30].request);
-    let first_build = capture[31].request["last_modified_epoch"].as_i64().unwrap();
-    sc.at(submitted_at(&capture[30]))
-        .build(captured_submit(&capture[30].request), first_build)
+    let producer = target(&capture[PRODUCER_AFTER_INPUT_EDIT].request);
+    let first_build = capture[PRODUCER_AFTER_INPUT_EDIT_CONFIRM].request["last_modified_epoch"]
+        .as_i64()
+        .unwrap();
+    sc.at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+        .build(
+            captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request),
+            first_build,
+        )
         .await;
 
     let recorded_build = first_build + 1_000;
     let recorded_consumer = recorded_build + 1_000;
-    let strict = captured_submit(&capture[32].request).upstream(&producer, recorded_build);
-    let sc = sc.at(submitted_at(&capture[44]));
+    let strict = captured_submit(&capture[STRICT_AFTER_INPUT_EDIT].request)
+        .upstream(&producer, recorded_build);
+    let sc = sc.at(submitted_at(&capture[TOLERANT_AFTER_TRANSITION]));
     assert_eq!(
         sc.record([
-            captured_submit(&capture[42].request).record(built_at(recorded_build)),
+            captured_submit(&capture[PRODUCER_AFTER_TRANSITION].request)
+                .record(built_at(recorded_build)),
             strict.record(built_at(recorded_consumer)),
         ])
         .await
@@ -2026,7 +2063,8 @@ async fn databricks_record_preserves_the_producer_revision_in_and_after_the_batc
 
     // The untouched consumer still sees a producer change. The consumer
     // recorded in the batch already holds the revised producer.
-    let tolerant = captured_submit(&capture[33].request).upstream(&producer, recorded_build);
+    let tolerant = captured_submit(&capture[TOLERANT_AFTER_INPUT_EDIT].request)
+        .upstream(&producer, recorded_build);
     sc.expect_execute(tolerant).await;
     let skip = sc
         .expect_skip(strict.own_epoch(Some(recorded_consumer)))
