@@ -275,9 +275,12 @@ async fn start_server_with_database_clock(
                     state = state.with_oidc(&oidc.config).expect("oidc mode");
                     if oidc.broker {
                         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind broker");
-                        let router = dbt_state_broker::Broker::new(&oidc.config)
-                            .expect("broker config")
-                            .router();
+                        let router = dbt_state_broker::Broker::with_database(
+                            &oidc.config,
+                            state.store.pool().clone(),
+                        )
+                        .expect("broker config")
+                        .router();
                         broker = Some(listener.local_addr().expect("broker address"));
                         tokio::spawn(async move { axum::serve(listener, router).await });
                     }

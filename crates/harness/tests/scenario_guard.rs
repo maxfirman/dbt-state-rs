@@ -43,6 +43,7 @@ const MIGRATED: &[&str] = &[
     "lag_policy.rs",
     "offline_regressions.rs",
     "oidc.rs",
+    "principals.rs",
     "robustness.rs",
     "selector_conformance.rs",
     "selector_offline.rs",

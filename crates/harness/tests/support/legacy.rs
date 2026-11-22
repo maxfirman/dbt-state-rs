@@ -378,3 +378,40 @@ pub async fn forget_data_test_history_keys(db: &impl Db) -> u64 {
         )
         .await
 }
+
+/// Migrate `database` only up to migration 0029 and record State history as
+/// a server from before Principals were recorded (#226) did: a confirmed
+/// execution and a decision in `org`, and a row in the reserved `actors`
+/// table that migration 0030 drops. Start a server on `database` afterwards
+/// to upgrade it.
+pub async fn record_history_before_principals(database: &super::TestDatabase, org: &str) {
+    let pool = sqlx::PgPool::connect(&database.scoped_dsn())
+        .await
+        .expect("connect");
+    let mut before = sqlx::migrate!("../server/migrations");
+    before.migrations = before
+        .migrations
+        .iter()
+        .filter(|migration| migration.version < 30)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into();
+    before.run(&pool).await.expect("migrate to 0029");
+    for statement in [
+        "INSERT INTO executions (org_id, target_table, execution_type, dialect, status, request_id) \
+         VALUES ($1, 'DB.S.T', 1, 'snowflake', 'confirmed', 'old-request')",
+        "INSERT INTO projects (org_id, name) VALUES ($1, 'p')",
+        "INSERT INTO environments (org_id, project_id, name) SELECT $1, id, 'prod' FROM projects",
+        "INSERT INTO node_decisions (org_id, environment_id, execution_type, decision, \
+                                     execution_decision_id, actor_id) \
+         SELECT $1, id, 1, 'build', 'old-decision', 7 FROM environments",
+        "INSERT INTO actors (org_id, kind) VALUES ($1, 'user')",
+    ] {
+        sqlx::query(statement)
+            .bind(org)
+            .execute(&pool)
+            .await
+            .expect(statement);
+    }
+    pool.close().await;
+}

@@ -15,6 +15,11 @@
 //! when present. `client_credentials` therefore answers `id_token`, `scope`,
 //! `token_type` and `expires_in`, and no refresh token.
 //!
+//! With a database, a token's Principal is recorded before the token is
+//! issued (`principals`); a failed record refuses the request as
+//! `temporarily_unavailable`, so every Principal on a decision this broker
+//! enabled can be named.
+//!
 //! Every token issued is logged at `info`, and every refusal at `warn`, with
 //! the grant, the Principal when known, the client id and the reason. Token
 //! values and secrets are never logged.
@@ -33,6 +38,7 @@ use dbt_state_auth::{PrincipalId, PrincipalKind, TokenRequest};
 use serde_json::json;
 
 use crate::oauth::{no_store, OAuthError};
+use crate::principals::{self, Principal};
 use crate::upstream::UpstreamError;
 use crate::Broker;
 
@@ -256,6 +262,28 @@ async fn client_credentials(broker: &Broker, headers: &HeaderMap) -> Response {
             ..Refusal::default()
         }
         .respond(OAuthError::UnauthorizedClient);
+    }
+
+    if let Some(database) = &broker.0.database {
+        let record = Principal {
+            id: &principal,
+            issuer: broker.0.upstream.issuer(),
+            subject,
+            kind: PrincipalKind::Machine,
+            email: None,
+        };
+        if let Err(error) = principals::record(database, &record).await {
+            tracing::error!(%error, "cannot record the Principal");
+            return Refusal {
+                grant,
+                reason: "principal_not_recorded",
+                client_id,
+                principal: Some(&principal),
+                subject: Some(subject),
+                ..Refusal::default()
+            }
+            .respond(OAuthError::TemporarilyUnavailable);
+        }
     }
 
     let client_id = client.as_str();

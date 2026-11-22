@@ -13,6 +13,7 @@ pub(crate) use crate::result_copy::RegisterRejection;
 use crate::result_copy::{self, RegisterHistory, RegisterLookup, RegisterRefusal};
 use crate::store::{CopySourceQuery, Store};
 use crate::submit_decision::DecisionIds;
+use dbt_state_auth::PrincipalId;
 
 /// How a RegisterClone request was decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,10 +44,12 @@ impl From<sqlx::Error> for RegisterError {
     }
 }
 
-/// Decide and record one client-requested copy.
+/// Decide and record one client-requested copy; its pending row names
+/// `principal`.
 pub(crate) async fn register(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::CloneRequest,
 ) -> Result<RegisterOutcome, RegisterError> {
     let lookup = match result_copy::register_lookup(req) {
@@ -70,13 +73,14 @@ pub(crate) async fn register(
     let ids = DecisionIds::mint();
     // Persist a pending row so the subsequent ConfirmExecution finalizes the
     // clone into skippable history, keyed on the clone target.
-    let evidence = ExecutionEvidence::copy_registration(
+    let mut evidence = ExecutionEvidence::copy_registration(
         org_id,
         req,
         plan.inherited_ns_logic,
         plan.source_build.as_ref(),
         plan.direct,
     );
+    evidence.principal = principal.cloned();
     store
         .insert_execution(&evidence.pending(&ids.request_id, &ids.execution_decision_id))
         .await?;

@@ -214,3 +214,14 @@ pub async fn wait_for_physical_source_audit_hold(db: &impl Db) {
     }
     panic!("prior audit did not reach the selective trigger");
 }
+
+/// Make every `principals` write fail: a check no row passes (`NOT VALID`
+/// leaves existing rows, and applies to every insert and update).
+pub async fn fail_principal_records(db: &impl Db) {
+    sqlx::query(
+        "ALTER TABLE principals ADD CONSTRAINT fault_no_principal_records CHECK (false) NOT VALID",
+    )
+    .execute(db.pool())
+    .await
+    .expect("inject principal record failure");
+}

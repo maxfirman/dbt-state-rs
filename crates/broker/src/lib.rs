@@ -14,9 +14,14 @@
 //!
 //! It holds no credentials of the Principals it serves: a machine's client
 //! secret is forwarded to the Upstream IdP and never stored or logged.
+//!
+//! With a database ([`Broker::with_database`]), it records each Principal it
+//! issues a token to (`principals`), keyed by Upstream IdP issuer and
+//! subject, before issuing the token.
 
 mod discovery;
 mod oauth;
+mod principals;
 mod remote_keys;
 mod token_endpoint;
 mod upstream;
@@ -58,12 +63,32 @@ struct Inner {
     organizations: Organizations,
     rules: MappingRules,
     upstream: UpstreamIdp,
+    /// Where Principals are recorded; `None` records none.
+    database: Option<sqlx::PgPool>,
 }
 
 impl Broker {
     /// The broker `config` describes; it needs `[signing]` and `[upstream]`.
-    /// Makes no request: the Upstream IdP is discovered on first use.
+    /// Makes no request: the Upstream IdP is discovered on first use. It
+    /// records no Principals.
     pub fn new(config: &AuthConfig) -> Result<Self, BrokerConfigError> {
+        Self::build(config, None)
+    }
+
+    /// [`Broker::new`], recording each Principal it issues a token to in
+    /// `database`'s `principals` table (migrated by the server). A token is
+    /// issued only once its Principal is recorded.
+    pub fn with_database(
+        config: &AuthConfig,
+        database: sqlx::PgPool,
+    ) -> Result<Self, BrokerConfigError> {
+        Self::build(config, Some(database))
+    }
+
+    fn build(
+        config: &AuthConfig,
+        database: Option<sqlx::PgPool>,
+    ) -> Result<Self, BrokerConfigError> {
         let tokens = config
             .token_issuer()
             .ok_or(BrokerConfigError::NoSigningKeys)?;
@@ -81,6 +106,7 @@ impl Broker {
             organizations: config.organizations().clone(),
             rules: config.mapping_rules().clone(),
             upstream: UpstreamIdp::new(upstream, http_client()?),
+            database,
         })))
     }
 
