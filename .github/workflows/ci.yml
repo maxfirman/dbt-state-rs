@@ -164,3 +164,75 @@ jobs:
           name: duckdb-extended
           path: artifacts/duckdb
           retention-days: 30
+
+  # The opt-in Keycloak suite (crates/harness/tests/keycloak.rs) runs on the
+  # weekly schedule, on manual dispatch, and on pull requests that change the
+  # auth code or the suite.
+  keycloak-changes:
+    name: Keycloak suite trigger
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          printf '%s\n' "$changed"
+          pattern='^(crates/(auth|broker)/|crates/server/migrations/|crates/server/src/grpc_auth\.rs$|crates/harness/keycloak/|crates/harness/tests/keycloak\.rs$|crates/harness/tests/support/(keycloak|browser|oidc|broker_client|resources)\.rs$|scripts/keycloak\.sh$|Cargo\.lock$|\.github/workflows/ci\.yml$)'
+          if grep -qE "$pattern" <<<"$changed"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
+  keycloak:
+    name: Keycloak upstream suite
+    needs: keycloak-changes
+    if: >-
+      !cancelled() && (github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || needs.keycloak-changes.outputs.run == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dbtstate
+          POSTGRES_PASSWORD: dbtstate
+          POSTGRES_DB: dbtstate
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U dbtstate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+      # Without it every Keycloak test skips.
+      DBT_STATE_KEYCLOAK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start Keycloak (pinned image, test realm)
+        run: ./scripts/keycloak.sh start
+      - name: Keycloak suite
+        run: cargo test -p dbt-state-harness --test keycloak
+      - name: Keycloak logs
+        if: failure()
+        run: docker logs dbt-state-keycloak
+      - name: Stop Keycloak
+        if: always()
+        run: ./scripts/keycloak.sh stop
