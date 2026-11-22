@@ -76,6 +76,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # uv runs the pinned Python client driver in `cargo test` and the
+      # DuckDB acceptance cases below.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: |
+            integrations/duckdb/uv.lock
+            crates/harness/python-client/uv.lock
+
       - name: Build (workspace)
         run: cargo build --workspace --all-targets
 
@@ -83,7 +94,11 @@ jobs:
         # The differential-fuzz tool (feature "fuzz") is intentionally excluded:
         # it calls the real hosted service and needs credentials. CI runs the
         # unit + integration tests, including the conformance replay of the
-        # committed golden fixtures against a fresh Postgres.
+        # committed golden fixtures against a fresh Postgres, and the pinned
+        # Python client driver (crates/harness/tests/python_client.rs), which
+        # must not skip here.
+        env:
+          DBT_STATE_REQUIRE_PYTHON_CLIENT: '1'
         run: cargo test --workspace
 
       - name: Retain generated Databricks modeled-safety traces
@@ -94,12 +109,6 @@ jobs:
           path: artifacts/databricks-generated
           retention-days: 14
 
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: '0.8.22'
-          python-version: '3.12'
-          enable-cache: true
-          cache-dependency-glob: integrations/duckdb/uv.lock
       - name: All fixed real-dbt cases and bounded generation (four seeds, four episodes)
         run: ./scripts/duckdb-ci.sh --jobs 4
       - name: Retain logs, timing, seeds and replayable traces
@@ -155,3 +164,167 @@ jobs:
           name: duckdb-extended
           path: artifacts/duckdb
           retention-days: 30
+
+  # The opt-in Keycloak suite (crates/harness/tests/keycloak.rs) runs on the
+  # weekly schedule, on manual dispatch, and on pull requests that change the
+  # auth code or the suite.
+  keycloak-changes:
+    name: Keycloak suite trigger
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          printf '%s\n' "$changed"
+          pattern='^(crates/(auth|broker)/|crates/server/migrations/|crates/server/src/grpc_auth\.rs$|crates/harness/keycloak/|crates/harness/tests/keycloak\.rs$|crates/harness/tests/support/(keycloak|browser|oidc|broker_client|resources)\.rs$|scripts/keycloak\.sh$|Cargo\.lock$|\.github/workflows/ci\.yml$)'
+          if grep -qE "$pattern" <<<"$changed"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
+  keycloak:
+    name: Keycloak upstream suite
+    needs: keycloak-changes
+    if: >-
+      !cancelled() && (github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || needs.keycloak-changes.outputs.run == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dbtstate
+          POSTGRES_PASSWORD: dbtstate
+          POSTGRES_DB: dbtstate
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U dbtstate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+      # Without it every Keycloak test skips.
+      DBT_STATE_KEYCLOAK: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Start Keycloak (pinned image, test realm)
+        run: ./scripts/keycloak.sh start
+      - name: Keycloak suite
+        run: cargo test -p dbt-state-harness --test keycloak
+      - name: Keycloak logs
+        if: failure()
+        run: docker logs dbt-state-keycloak
+      - name: Stop Keycloak
+        if: always()
+        run: ./scripts/keycloak.sh stop
+
+  # The opt-in pinned Fusion driver suite (crates/harness/tests/fusion_client.rs)
+  # runs on the weekly schedule, on manual dispatch, and on pull requests that
+  # change the driver, the suite or the auth code.
+  #
+  # License constraint: dbt-fusion is licensed under the Elastic License 2.0.
+  # The driver (crates/harness/fusion-driver, outside the workspace) only
+  # compiles against it: Cargo fetches dbt-run-cache from dbt-labs' repository
+  # at the pinned commit. Fusion's source is never vendored or redistributed,
+  # so the driver build uses its own CARGO_HOME and target directory in the
+  # runner's temp directory: neither Cargo's checkout of dbt-fusion nor the
+  # built driver enters the Actions cache or an artifact.
+  fusion-changes:
+    name: Fusion driver trigger
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          changed=$(git diff --name-only "$BASE...$HEAD")
+          printf '%s\n' "$changed"
+          pattern='^(crates/(auth|broker)/|crates/server/migrations/|crates/server/src/grpc_auth\.rs$|crates/harness/fusion-driver/|crates/harness/tests/fusion_client\.rs$|crates/harness/tests/support/(fusion_client|client_driver|fake_idp|oidc|tls|resources)\.rs$|Cargo\.lock$|\.github/workflows/ci\.yml$)'
+          if grep -qE "$pattern" <<<"$changed"; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
+  fusion:
+    name: Pinned Fusion driver
+    needs: fusion-changes
+    if: >-
+      !cancelled() && (github.event_name == 'schedule'
+      || github.event_name == 'workflow_dispatch'
+      || needs.fusion-changes.outputs.run == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: dbtstate
+          POSTGRES_PASSWORD: dbtstate
+          POSTGRES_DB: dbtstate
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -U dbtstate"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://dbtstate:dbtstate@localhost:55441/dbtstate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      # Caches the workspace build only (see the license note above).
+      - uses: Swatinem/rust-cache@v2
+      # rustfmt itself: `cargo fmt` would resolve (and fetch) dbt-fusion
+      # into the cached CARGO_HOME.
+      - name: Driver formatting
+        run: rustfmt --check --edition 2021 crates/harness/fusion-driver/src/main.rs
+      - name: Build the driver against dbt-fusion@9977b6c (uncached)
+        env:
+          CARGO_HOME: ${{ runner.temp }}/fusion-cargo-home
+          CARGO_TARGET_DIR: ${{ runner.temp }}/fusion-driver-target
+        run: |
+          start=$(date +%s)
+          cargo build --locked --manifest-path crates/harness/fusion-driver/Cargo.toml
+          echo "driver build took $(( $(date +%s) - start )) s"
+      - name: Driver clippy
+        env:
+          CARGO_HOME: ${{ runner.temp }}/fusion-cargo-home
+          CARGO_TARGET_DIR: ${{ runner.temp }}/fusion-driver-target
+        run: cargo clippy --locked --manifest-path crates/harness/fusion-driver/Cargo.toml -- -D warnings
+      - name: Pinned Fusion driver suite
+        env:
+          DBT_STATE_FUSION_DRIVER: ${{ runner.temp }}/fusion-driver-target/debug/fusion-driver
+        run: cargo test -p dbt-state-harness --test fusion_client

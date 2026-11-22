@@ -173,9 +173,30 @@ pub type GrpcRouter = tonic::transport::server::Router<
 >;
 
 /// Build the tonic router with all services registered against `state`,
-/// behind the authentication layer (`grpc_auth`). Shared by the binary and by
-/// in-process differential tests.
+/// behind the authentication layer (`grpc_auth`), serving plain HTTP/2.
+/// Shared by the binary and by in-process differential tests.
 pub fn build_router(state: AppState) -> GrpcRouter {
+    routes(tonic::transport::Server::builder(), state)
+}
+
+/// [`build_router`], serving gRPC over TLS with `identity`.
+pub fn build_tls_router(
+    state: AppState,
+    identity: &dbt_state_broker::TlsIdentity,
+) -> anyhow::Result<GrpcRouter> {
+    let tls = tonic::transport::ServerTlsConfig::new()
+        .identity(tonic::transport::Identity::from_pem(
+            identity.certificate_chain_pem(),
+            identity.private_key_pem(),
+        ))
+        .timeout(dbt_state_broker::tls::HANDSHAKE_TIMEOUT);
+    let server = tonic::transport::Server::builder()
+        .tls_config(tls)
+        .map_err(|error| anyhow::anyhow!("gRPC TLS: {error}"))?;
+    Ok(routes(server, state))
+}
+
+fn routes(server: tonic::transport::Server, state: AppState) -> GrpcRouter {
     use crate::query_cache::client_telemetry_server::ClientTelemetryServer;
     use crate::query_cache::client_validation_server::ClientValidationServer;
     use crate::query_cache::clone_server::CloneServer;
@@ -188,7 +209,7 @@ pub fn build_router(state: AppState) -> GrpcRouter {
         ExplainService, SelectorServiceImpl, SqlService,
     };
 
-    tonic::transport::Server::builder()
+    server
         .layer(grpc_auth::GrpcAuthLayer::new(state.oidc.clone()))
         .add_service(health_service())
         .add_service(SqlServer::new(SqlService(state.clone())))

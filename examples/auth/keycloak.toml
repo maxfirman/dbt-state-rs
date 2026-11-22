@@ -1,0 +1,58 @@
+# Auth config with Keycloak as the Upstream IdP: the shape the opt-in
+# Keycloak suite (crates/harness/tests/keycloak.rs) runs against, set up as
+# in docs/operator-guide.md#keycloak. Every key is explained in
+# examples/auth/auth.toml. Relative paths resolve from this file's
+# directory.
+
+[broker]
+issuer = "https://auth.state.example.com"
+client_ip_header = "x-forwarded-for"
+
+[api]
+audience = "https://state.example.com"
+
+[signing]
+active_key_id = "2026-11"
+
+[[signing.keys]]
+id = "2026-11"
+private_key_file = "keys/signing-2026-11.pem"
+
+[[organizations]]
+id = "analytics"
+
+[upstream]
+# The realm URL. Keycloak builds it from the request's host, so set
+# Keycloak's `hostname` option: the broker and the CI runners must see the
+# same issuer.
+issuer = "https://keycloak.example.com/realms/dbt-state"
+# The audience an "Audience" mapper adds to each CI client's access tokens.
+api_audience = "dbt-state-api"
+# client_credentials_scope stays unset: Keycloak answers a scope the client
+# was not given with invalid_scope, and its default scopes apply without one.
+# The default subject_claim ("sub") is Keycloak's user id, for a CI client
+# its service account's user id.
+# The confidential "dbt-state-broker" client (standard flow only, redirect
+# URI https://auth.state.example.com/callback, PKCE S256).
+client_id = "dbt-state-broker"
+# Its secret (client authenticator "Client Id and Secret"); for "Signed
+# JWT" set private_key_file instead.
+client_secret_file = "keys/idp-client-secret"
+refresh_token_key_file = "keys/refresh-token.key"
+
+# People: a "Group Membership" mapper with token claim name `groups` and
+# "Full group path" off.
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "data-eng"
+organization = "analytics"
+role = "developer"
+
+# Machines: each CI client by its client id, which Keycloak puts in `azp`.
+[[rules]]
+kind = "machine"
+claim = "azp"
+value = "dbt-state-ci"
+organization = "analytics"
+role = "developer"

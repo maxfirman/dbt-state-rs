@@ -12,18 +12,25 @@
 //! the refresh token (Fusion `oauth.rs` `CachedToken`; Python
 //! `_update_token_info`).
 //!
-//! The code is used up by its first presentation, whatever the outcome; a
-//! second presentation revokes the session it started (RFC 6749 §4.1.2).
+//! The UI (`clients`) posts the same form with a `private_key_jwt`
+//! assertion (`client_assertion_type`, `client_assertion`) instead of, or
+//! as well as, `client_id`, and gets standard OIDC tokens: an `id_token`
+//! echoing its authorize nonce and an `access_token`, for its own audience.
+//!
+//! The client is authenticated before the code is looked at, so a request
+//! failing client authentication leaves the code as it was. Otherwise the
+//! code is used up by its first presentation, whatever the outcome; a
+//! second presentation revokes the session it started (RFC 6749 §4.1.2). A
+//! code is bound to the client it was issued to.
 
 use std::collections::BTreeMap;
 
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use dbt_state_auth::{PrincipalId, PrincipalKind, Scope, TokenRequest};
-use serde_json::json;
 
-use crate::oauth::{no_store, OAuthError};
+use crate::clients::{self, person_token_response};
+use crate::oauth::OAuthError;
 use crate::secret;
 use crate::store::Redeemed;
 use crate::Broker;
@@ -56,19 +63,24 @@ impl Refusal<'_> {
 /// See the module docs.
 pub(crate) async fn exchange(broker: &Broker, form: &BTreeMap<String, String>) -> Response {
     let get = |key: &str| form.get(key).map(String::as_str);
-    let client_id = get("client_id");
+    let registration = match clients::authenticate(broker, form).await {
+        Ok(registration) => registration,
+        Err(refused) => {
+            return Refusal {
+                reason: refused.reason,
+                client_id: refused.client_id,
+                ..Refusal::default()
+            }
+            .respond(refused.error)
+        }
+    };
+    let client = registration.client;
+    let client_id = Some(registration.client_id);
     let refusal = |reason| Refusal {
         reason,
         client_id,
         ..Refusal::default()
     };
-    match client_id {
-        None => return refusal("missing_client_id").respond(OAuthError::InvalidClient),
-        Some(id) if id != broker.0.dbt_client_id => {
-            return refusal("unknown_client").respond(OAuthError::InvalidClient)
-        }
-        Some(_) => {}
-    }
     let (Some(code), Some(redirect_uri), Some(verifier)) =
         (get("code"), get("redirect_uri"), get("code_verifier"))
     else {
@@ -138,7 +150,14 @@ pub(crate) async fn exchange(broker: &Broker, form: &BTreeMap<String, String>) -
     );
     request.email = session.email.clone();
     request.name = session.name.clone();
-    let issued = broker.0.tokens.issue(&request, now);
+    let (response, expires_in) = person_token_response(
+        broker,
+        client,
+        &request,
+        grant.nonce.as_deref(),
+        &refresh_token,
+        now,
+    );
     let scope = scope.to_string();
     tracing::info!(
         grant = AUTHORIZATION_CODE,
@@ -148,17 +167,8 @@ pub(crate) async fn exchange(broker: &Broker, form: &BTreeMap<String, String>) -
         client_id,
         session = %session.id,
         scope = scope.as_str(),
-        expires_in = issued.expires_in.as_secs(),
+        expires_in,
         "token issued"
     );
-    no_store(
-        Json(json!({
-            "id_token": issued.token,
-            "refresh_token": refresh_token,
-            "scope": scope,
-            "token_type": "Bearer",
-            "expires_in": issued.expires_in.as_secs(),
-        }))
-        .into_response(),
-    )
+    response
 }

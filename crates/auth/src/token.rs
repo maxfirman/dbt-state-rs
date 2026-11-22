@@ -5,6 +5,11 @@
 //! runcache grammar, [`Scope`]), `iat` and `exp`; person tokens add `sid`
 //! (their broker session), and `email` and `name` appear when the Upstream
 //! IdP provides them. The JOSE header names the signing key id (`kid`).
+//!
+//! Tokens for another registered client of the Token broker (the UI) are
+//! standard OIDC tokens in the same shape, but for that client's audience
+//! ([`TokenIssuer::issue_oidc`]): `aud` is its client id, never the dbt
+//! State API audience, so the gRPC server refuses them.
 
 use std::fmt;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -138,6 +143,26 @@ impl fmt::Debug for IssuedToken {
     }
 }
 
+/// The tokens an OIDC client (the UI) gets for a person: an ID token and a
+/// JWT access token, both with `aud` the client id. `Debug` never shows
+/// them.
+#[derive(Clone)]
+pub struct OidcTokens {
+    pub id_token: String,
+    pub access_token: String,
+    pub expires_in: Duration,
+}
+
+impl fmt::Debug for OidcTokens {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OidcTokens")
+            .field("id_token", &"<redacted>")
+            .field("access_token", &"<redacted>")
+            .field("expires_in", &self.expires_in)
+            .finish()
+    }
+}
+
 #[derive(Serialize)]
 struct Header<'a> {
     alg: &'a str,
@@ -166,6 +191,8 @@ struct Claims<'a> {
     email: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nonce: Option<&'a str>,
 }
 
 #[derive(Deserialize)]
@@ -181,6 +208,12 @@ struct ReceivedClaims {
     exp: u64,
     #[serde(default)]
     sid: Option<String>,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 /// Signs tokens with the active signing key.
@@ -210,6 +243,38 @@ impl TokenIssuer {
     /// A token for `request`, issued at `now`, living for its Principal
     /// kind's configured lifetime.
     pub fn issue(&self, request: &TokenRequest, now: SystemTime) -> IssuedToken {
+        let (token, expires_in) = self.sign(request, &self.audience, None, now);
+        IssuedToken { token, expires_in }
+    }
+
+    /// The OIDC tokens for `request`, a person signed in to another client
+    /// of the Token broker (the UI), issued at `now`: `aud` is the request's
+    /// client id. The ID token carries `nonce` when given (a code exchange
+    /// echoes the authorize request's; a refresh has none, OIDC Core §12.2);
+    /// the access token never does.
+    pub fn issue_oidc(
+        &self,
+        request: &TokenRequest,
+        nonce: Option<&str>,
+        now: SystemTime,
+    ) -> OidcTokens {
+        let audience = &request.client_id;
+        let (id_token, expires_in) = self.sign(request, audience, nonce, now);
+        let (access_token, _) = self.sign(request, audience, None, now);
+        OidcTokens {
+            id_token,
+            access_token,
+            expires_in,
+        }
+    }
+
+    fn sign(
+        &self,
+        request: &TokenRequest,
+        audience: &str,
+        nonce: Option<&str>,
+        now: SystemTime,
+    ) -> (String, Duration) {
         let lifetime = match request.kind() {
             PrincipalKind::Person => self.lifetimes.person,
             PrincipalKind::Machine => self.lifetimes.machine,
@@ -217,7 +282,7 @@ impl TokenIssuer {
         let iat = unix_seconds(now);
         let claims = Claims {
             iss: &self.issuer,
-            aud: &self.audience,
+            aud: audience,
             azp: &request.client_id,
             sub: request.principal.as_str(),
             scope: request.scope.to_string(),
@@ -226,6 +291,7 @@ impl TokenIssuer {
             sid: request.session.as_deref(),
             email: request.email.as_deref(),
             name: request.name.as_deref(),
+            nonce,
         };
         let header = Header {
             alg: ALGORITHM,
@@ -234,10 +300,7 @@ impl TokenIssuer {
         };
         let signing_input = format!("{}.{}", encode_json(&header), encode_json(&claims));
         let signature = URL_SAFE_NO_PAD.encode(self.key.sign(signing_input.as_bytes()));
-        IssuedToken {
-            token: format!("{signing_input}.{signature}"),
-            expires_in: lifetime,
-        }
+        (format!("{signing_input}.{signature}"), lifetime)
     }
 }
 
@@ -292,10 +355,18 @@ pub struct VerifiedToken {
     pub session: Option<String>,
     pub client_id: String,
     pub scope: Scope,
+    /// Its `exp`.
+    pub expires_at: SystemTime,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    /// The `nonce` an OIDC client's ID token echoes from its authorize
+    /// request; checking it is that client's job.
+    pub nonce: Option<String>,
 }
 
-/// Checks tokens: signature by a loaded key, issuer, the dbt State API
-/// audience, and expiry with [`CLOCK_SKEW`].
+/// Checks tokens: signature by a loaded key, issuer, one audience (the dbt
+/// State API's, or the UI's for the UI, [`crate::AuthConfig::ui_token_verifier`]),
+/// and expiry with [`CLOCK_SKEW`].
 #[derive(Debug, Clone)]
 pub struct TokenVerifier {
     issuer: String,
@@ -333,6 +404,9 @@ impl TokenVerifier {
             return Err(TokenError::Malformed);
         }
         let scope = Scope::parse(&claims.scope).map_err(|_| TokenError::Malformed)?;
+        let expires_at = UNIX_EPOCH
+            .checked_add(Duration::from_secs(claims.exp))
+            .ok_or(TokenError::Malformed)?;
         let kind = match &claims.sid {
             Some(sid) if sid.is_empty() => return Err(TokenError::Malformed),
             Some(_) => PrincipalKind::Person,
@@ -344,6 +418,10 @@ impl TokenVerifier {
             session: claims.sid,
             client_id: claims.azp,
             scope,
+            expires_at,
+            email: claims.email,
+            name: claims.name,
+            nonce: claims.nonce,
         })
     }
 }

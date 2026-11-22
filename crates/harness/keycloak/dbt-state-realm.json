@@ -1,0 +1,246 @@
+{
+  "realm": "dbt-state",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "groups": [
+    {
+      "name": "data-eng"
+    },
+    {
+      "name": "marketing"
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.test",
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "alice-password",
+          "temporary": false
+        }
+      ],
+      "groups": [
+        "/data-eng"
+      ],
+      "realmRoles": [
+        "default-roles-dbt-state"
+      ]
+    },
+    {
+      "username": "service-account-harness-admin",
+      "enabled": true,
+      "serviceAccountClientId": "harness-admin",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "query-groups"
+        ]
+      }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "dbt-state-broker",
+      "name": "dbt State Token broker",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "keycloak-broker-secret-Q4m9",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "https://broker.dbt-state.test/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "dbt-state-broker-jwt",
+      "name": "dbt State Token broker (private_key_jwt)",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-jwt",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": [
+        "https://broker.dbt-state.test/callback"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+",
+        "token.endpoint.auth.signing.alg": "RS256",
+        "use.jwks.url": "false",
+        "use.jwks.string": "true",
+        "jwks.string": "{\"keys\": [{\"kty\": \"RSA\", \"kid\": \"broker-rp-key\", \"use\": \"sig\", \"alg\": \"RS256\", \"n\": \"rjgq5u8T4G03iVa_fil_cAkq9h0CgDW1YHJZHHC0R18QOXVJR9hrA8dkYbZGzsf2PGpgTW18-89EsZbcDFb2veLTTEPP77a3fFc3Fl-ASxWeNqzWd-S0L8iEKKY8GiUy3okMBsQbZUWkdo7OgVRQ7e8DIn9lBSuFcJhUxkwunEoVnVenodccUg6ZZKvHxNabM6PTYruqrcaT0DAE3GPo0NaKClrVcQtFpulF7KZzCVrzJ6BhrvTmwWyD0YC7MvFxfNEIMn1QdVTdkG7nwJ_Vb_JdmhnRPp6cS3XorlBa_gK4EklYGgbuhoqEyONX3Rwyel15pQq_BysWLDcceQ0KBQ\", \"e\": \"AQAB\"}]}"
+      },
+      "defaultClientScopes": [
+        "basic",
+        "profile",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "dbt-state-ci",
+      "name": "A CI pipeline's app registration",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "keycloak-ci-secret-Jw27",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "implicitFlowEnabled": false,
+      "defaultClientScopes": [
+        "basic",
+        "service_account"
+      ],
+      "optionalClientScopes": [],
+      "protocolMappers": [
+        {
+          "name": "dbt-state-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "dbt-state-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "other-service",
+      "name": "An app registration for another API",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "keycloak-other-secret-Lp53",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "implicitFlowEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "other-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "other-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": [
+        "basic",
+        "service_account"
+      ],
+      "optionalClientScopes": [],
+      "fullScopeAllowed": false
+    },
+    {
+      "clientId": "harness-admin",
+      "name": "The test harness's user administration",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "keycloak-admin-secret-Vb61",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "implicitFlowEnabled": false,
+      "defaultClientScopes": [
+        "basic",
+        "roles",
+        "kc-admin-api"
+      ],
+      "optionalClientScopes": [],
+      "fullScopeAllowed": false
+    }
+  ],
+  "clientScopeMappings": {
+    "realm-management": [
+      {
+        "client": "harness-admin",
+        "roles": [
+          "manage-users",
+          "view-users",
+          "query-groups",
+          "query-users"
+        ]
+      }
+    ]
+  }
+}

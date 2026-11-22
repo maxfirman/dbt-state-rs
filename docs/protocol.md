@@ -13,15 +13,27 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 ## Transport and auth
 
 - Default endpoint `api.state.dbt.com:443` (TLS). The client uses TLS when the
-  URL is https or ends in `:443`. Otherwise it opens an insecure channel and
-  sends **no** OAuth token, which is how the client is pointed at a local server.
+  URL is https or ends in `:443`, or when `RUN_CACHE_API_SECURE=true`. Over
+  TLS it obtains a token from its token URL and sends `authorization: Bearer
+  <id_token>` with `x-organization-id: <org_id>` (an Organization from the
+  token scope `runcache:scope:org:<ORG_ID>:...`). Over a plain channel it
+  sends neither, which is how the client reaches a `none`-mode server on
+  loopback.
 - Client configuration: `RUN_CACHE_*` environment variables (for example
-  `RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`) and
-  `DBT_ENGINE_MANAGE_STATE=true`.
+  `RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `RUN_CACHE_ORG_ID`) and
+  `DBT_ENGINE_MANAGE_STATE=true`
+  ([operator guide](operator-guide.md#pointing-dbt-clients-at-the-deployment)).
 - Hosted auth: an OAuth token exchange of the dbt Cloud credential at
-  `https://auth.state.dbt.com/token` yields an `id_token`, sent as
-  `authorization: Bearer <id_token>` with `x-organization-id: <org_id>` (parsed
-  from the token scope `runcache:scope:org:<ORG_ID>:...`).
+  `https://auth.state.dbt.com/token` yields the `id_token`.
+- Self-hosted auth: `DBT_STATE_AUTH=oidc` requires a token from this
+  server's Token broker on every RPC except health, and checks
+  `x-organization-id` against it ([below](#authentication-oidc-mode)). The
+  broker signs people in through the operator's Upstream IdP and passes CI
+  credentials through to it; deploying it is described in the
+  [operator guide](operator-guide.md). The default `DBT_STATE_AUTH=none`
+  authenticates nothing and serves only loopback addresses unless
+  `DBT_STATE_ALLOW_INSECURE=true`.
 - Client request metadata: `x-request-id`, `x-session-id`,
   `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, and in newer clients
   `x-dbt-invocation-id`.
@@ -72,7 +84,9 @@ auth config (`DBT_STATE_AUTH_CONFIG`, example in
   `sid` and are not checked. A status that cannot be read fails closed.
 - An operator revokes every session of a Principal with
   `dbt-state-server revoke-sessions --issuer <upstream issuer> --subject
-  <upstream subject>` ([development.md](development.md#revoking-a-principals-sessions)).
+  <upstream subject>` ([operator guide](operator-guide.md#offboarding-and-incidents));
+  the [revocation bounds](operator-guide.md#revocation-bounds) list how
+  long access survives each kind of revocation.
 
 Refusals use fixed messages; the reason is logged at `warn`, never with the
 token (session refusals log `session_unknown`, `session_revoked`,
@@ -103,8 +117,23 @@ verbatim, as hosted's is its issuer root), the Upstream IdP's return at
 `RUN_CACHE_TOKEN_URL`). Discovery advertises `authorization_endpoint`,
 `response_types_supported: ["code"]`, `grant_types_supported:
 ["authorization_code", "client_credentials", "refresh_token"]`,
-`code_challenge_methods_supported: ["S256"]` and
-`token_endpoint_auth_methods_supported: ["none", "client_secret_basic"]`.
+`code_challenge_methods_supported: ["S256"]`,
+`token_endpoint_auth_methods_supported: ["none", "client_secret_basic",
+"private_key_jwt"]` (the dbt client, machines' `client_credentials`, the UI),
+`token_endpoint_auth_signing_alg_values_supported: ["RS256"]`,
+`scopes_supported: ["openid"]` and `claims_supported`.
+
+The broker knows two client registrations. The **dbt client**
+(`[clients.dbt]`) is public: redirect URI exactly
+`http://127.0.0.1:29525/handler`, no client authentication. The **UI**
+(`[clients.ui]`, optional) is a confidential OIDC client: its own
+`client_id` (neither the dbt client's nor `[api] audience`, which its tokens
+would otherwise carry), exactly one `redirect_uri` (https, or
+plain http on loopback, no fragment), and `private_key_jwt` with the RSA
+public key in `public_key_file` (PEM `BEGIN PUBLIC KEY`, 2048 to 4096 bits);
+no secret can be configured for it. Both use PKCE S256 and the same sign-in,
+code and person session; a code or refresh token is bound to its client, so
+a UI login never yields a dbt-shaped token.
 
 **Browser sign-in.** Both pinned clients open the browser at
 `<auth URL>?response_type=code&client_id&redirect_uri=http://127.0.0.1:29525/handler&scope=runcache:scope:orgs&state&code_challenge&code_challenge_method=S256`
@@ -112,10 +141,13 @@ and check that the loopback redirect echoes `state`
 (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/browser_flow.rs`;
 `dbt-state==2.62.6` `auth/sso.py` `_login` with authlib). The broker:
 
-- accepts only the dbt client registration's client id (`[clients.dbt]
-  client_id`, default the clients' built-in
-  `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`) and exactly that redirect URI;
+- accepts only a registered client id (`[clients.dbt] client_id`, default
+  the clients' built-in `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`, or
+  `[clients.ui] client_id`) and exactly that client's redirect URI;
   otherwise it answers an HTML error page (400) and never redirects;
+- for the UI, also requires `openid` in `scope` (`invalid_scope`) and a
+  `nonce` (1 to 512 visible ASCII characters, `invalid_request`): the UI's
+  request is a standard OIDC one (OIDC Core §3.1.2.1), `response_type=code&client_id&redirect_uri&scope=openid ...&state&nonce&code_challenge&code_challenge_method=S256`;
 - requires PKCE S256, and caps pending sign-ins per client IP
   (`[broker] max_pending_logins_per_ip`, default 20; behind a proxy, the last
   entry of `[broker] client_ip_header`); a pending sign-in lasts 10 minutes;
@@ -134,18 +166,19 @@ and check that the loopback redirect echoes `state`
 - applies the `kind = "person"` rules only, and requires an upstream refresh
   token; then creates a person session (12-hour cap) storing the upstream
   refresh token AES-256-GCM-encrypted (`[upstream] refresh_token_key_file`);
-- redirects to the loopback handler with a single-use `code`, valid 60 s and
-  bound to the client id, redirect URI and PKCE challenge, and the client's
-  `state`.
+- redirects to the client's redirect URI with a single-use `code`, valid 60
+  s and bound to the client id, redirect URI, PKCE challenge and (for the
+  UI) nonce, and the client's `state`.
 
-After the redirect URI is checked, every refusal goes back to the loopback
-handler as `error`, `error_description` (fixed) and `state`, and is logged at
+After the redirect URI is checked, every refusal goes back to the client's
+redirect URI as `error`, `error_description` (fixed) and `state`, and is logged at
 `warn` as `sign-in refused` with `step`, `reason` and, when known,
 Principal, subject, client id and `missing_claims`:
 
 | `error` | Cause (log `reason`) |
 |---|---|
-| `invalid_request` | no PKCE S256 (`pkce_s256_required`) |
+| `invalid_request` | no PKCE S256 (`pkce_s256_required`); the UI sent no nonce (`nonce_required`) |
+| `invalid_scope` | the UI's `scope` lacks `openid` (`openid_scope_required`) |
 | `unsupported_response_type` | `response_type` is not `code` |
 | `unauthorized_client` | no `[upstream] client_id` (`sign_in_not_configured`) |
 | `access_denied` | the IdP returned an error (`upstream_error`) or no code; refused the code (`upstream_refused_grant`); no or an untrusted ID token (`upstream_missing_id_token`, `upstream_token_*`, including `upstream_token_wrong_nonce`); no subject claim (`upstream_token_missing_subject`); no person rule matches (`no_matching_rule`, with `missing_claims`, for example `groups` under Entra group overage) |
@@ -154,7 +187,29 @@ Principal, subject, client id and `missing_claims`:
 
 An unknown, used or expired `state` at `/callback` gets an error page.
 
-**Token endpoint.** `/token` serves three grants:
+**Token endpoint.** `/token` serves three grants. The dbt client
+authenticates with `none` (its `client_id`). The UI authenticates
+`authorization_code` and `refresh_token` with `private_key_jwt` (RFC 7523
+§2.2, OIDC Core §9): `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`
+and `client_assertion`, an RS256 JWS signed by its registered key with `iss`
+and `sub` its client id, `aud` the broker's issuer or `<issuer>/token` (one
+string), `exp`, a `jti`, and optionally `iat` and `nbf`. The assertion must be
+current (60 s skew), valid for at most 5 minutes (`exp` at most 5 minutes
+after `iat`, and at most 5 minutes plus the skew after the request), and
+its `jti` is accepted once: the broker keeps each accepted `jti` (hashed, in
+`broker_client_assertions`) until `exp` plus the skew, on every replica. A
+`client_id` sent beside an assertion must be the UI's. The client is
+authenticated before the code or refresh token is looked at.
+
+For the UI both grants answer `{"access_token", "id_token",
+"refresh_token", "scope", "token_type": "Bearer", "expires_in"}`. The
+`id_token` and `access_token` are person tokens in the dbt token's shape
+(`iss`, `sub`, `azp`, `sid`, `scope`, `iat`, `exp`, `email`, `name`) but with
+`aud` the UI's client id, so the gRPC server refuses both (`bearer token
+has the wrong audience`); the code exchange's `id_token` also carries the
+authorize request's `nonce`, a refreshed one none (OIDC Core §12.2). The UI's
+refresh token renews its person session exactly as the dbt client's does
+(steps below), and only with the UI's assertion.
 
 - `authorization_code`, as both pinned clients send it: the form
   `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`
@@ -180,10 +235,25 @@ An unknown, used or expired `state` at `/callback` gets an error page.
   same session (`sid`) and a new refresh token in its family. In one
   transaction holding the session's row lock (`FOR UPDATE`), the broker:
   1. refuses a revoked session or one past its 12-hour cap, and a refresh
-     token bound to another client id;
-  2. treats a refresh token presented again after its renewal as a replay,
-     and revokes the whole session (the 60 s grace window for shared logins
-     and retries is #224);
+     token bound to another client id, whatever token is presented (the
+     grace window below never renews such a session);
+  2. accepts a refresh token already rotated (used to renew) less than 60 s
+     ago, so two dbt processes sharing one login, or a client retrying
+     after a lost response, renew through any replica. Each such renewal
+     returns the usual response with another new refresh token in the
+     session's family: every refresh token issued and not yet used renews,
+     so each process keeps its own, and a retry's token works whether or
+     not the lost one ever arrived. The presented token's window runs from
+     its first rotation and renewing through it does not extend it. When
+     the session's upstream evidence was renewed less than 60 s ago (as by
+     the renewal that rotated the token), the response carries the grant
+     that renewal recorded (scope, email, name) and the Upstream IdP is not
+     asked, so it sees each of its refresh tokens at most once (log
+     `evidence="recent_renewal"`, `grace_window=true`); otherwise, which
+     only replica clocks that disagree reach, the renewal continues at
+     step 4. A rotated refresh token presented 60 s or more after its
+     rotation is a replay and revokes the whole session, including every
+     refresh token the window issued;
   3. refreshes at the Upstream IdP with the session's upstream refresh
      token and its own credential (as at `/callback`), and stores the IdP's
      rotated refresh token encrypted when it rotates;
@@ -223,17 +293,19 @@ descriptions), logged at `warn` with the reason:
 
 | Status | `error` | Cause (log `reason`) |
 |---|---|---|
-| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without the dbt client id (`missing_client_id`, `unknown_client`) |
-| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client id or redirect URI than the authorize request (`client_mismatch`, `redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without a registered client id (`missing_client_id`, `unknown_client`), the UI's without an assertion (`client_authentication_required`); an assertion of another type (`unsupported_client_assertion_type`), none (`missing_client_assertion`), with another `client_id` (`client_id_mismatch`), malformed or not RS256 (`client_assertion_malformed`), not signed by the UI's key (`client_assertion_bad_signature`), `iss` or `sub` not the UI (`client_assertion_wrong_issuer`), `aud` neither the issuer nor the token endpoint (`client_assertion_wrong_audience`), expired (`client_assertion_expired`), valid for more than 5 minutes (`client_assertion_too_long_lived`), `iat` or `nbf` in the future (`client_assertion_not_yet_valid`), no `jti` (`client_assertion_missing_jti`), or presented before (`client_assertion_replayed`) |
+| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client than the authorize request's (`client_mismatch`: the UI's code from the dbt client, or the reverse) or redirect URI (`redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
 | 400 | `invalid_grant` | `refresh_token`, with the description "the session has ended or cannot be renewed; sign in again": an unknown refresh token (`unknown_refresh_token`), another client id than the session's (`client_mismatch`), a revoked session (`session_revoked`) or one past its 12-hour cap (`session_expired`), a broker without `[upstream] client_id` (`sign_in_not_configured`). These end the session (log `session_ended=true`): a replay (`refresh_token_replayed_session_revoked`); the IdP refused the refresh, for example a disabled person (`upstream_refused_grant`, with the IdP's `upstream` error); an untrusted refreshed ID token (`upstream_token_*`); neither an ID token nor a userinfo endpoint and access token (`upstream_missing_evidence`); userinfo refused or not JSON (`upstream_userinfo_refused`, `upstream_userinfo_unusable`); no subject claim (`upstream_evidence_missing_subject`) or another subject (`upstream_subject_mismatch`); no person rule matches (`no_matching_rule`, with `missing_claims`); another `[upstream] issuer` than the session's (`upstream_issuer_changed`); a stored upstream refresh token that does not decrypt (`upstream_refresh_token_unreadable`) |
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
 | 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
 | 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier`; `refresh_token` without `refresh_token` (`missing_parameter`) |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); the database (`database_unavailable`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); a stored session scope that does not parse (`stored_scope_invalid`); the database (`database_unavailable`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
 subject, client id, scope, lifetime and (for a person) session, and for a
-renewal the `evidence` (`id_token` or `userinfo`); each completed sign-in as
+renewal the `evidence` (`id_token`, `userinfo`, or `recent_renewal`
+through the grace window) and `grace_window` (whether the presented refresh
+token was already rotated); each completed sign-in as
 `sign-in completed`. Secrets and token values are never
 logged, and stored only as hashes or, for the upstream refresh token,
 encrypted.
@@ -269,8 +341,9 @@ respectively; auxiliary replay compares the complete responses, statuses and
 application metadata. Session-end duration preserves seconds/nanoseconds and
 optional presence in new captures. Older captures omitted that field; it is
 not reconstructed. The deprecated standalone `RegisterSessionStart` was not
-called and remains unimplemented. OAuth, accounts and billing remain outside
-the self-hosted service. See the dated [auxiliary RPC evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md).
+called and remains unimplemented. Accounts and billing remain outside the
+self-hosted service; the [Token broker](#token-broker-cratesbroker) serves
+its OAuth. See the dated [auxiliary RPC evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md).
 
 Wire service names must be preserved exactly. The service named `Clone`
 collides with Rust's `std::clone::Clone`; the proto build patches the generated

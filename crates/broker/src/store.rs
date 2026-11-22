@@ -1,7 +1,9 @@
 //! The Token broker's Postgres state: pending logins, person sessions,
 //! authorization codes and refresh-token family members
 //! (`crates/server/migrations/0031_broker_person_login.sql`), and the
-//! Principals it issues tokens to (`0032_principals.sql`).
+//! Principals it issues tokens to (`0032_principals.sql`), and the UI's
+//! authorize nonces and accepted client assertions
+//! (`0033_broker_ui_client.sql`).
 //!
 //! Every bearer value is looked up by its SHA-256 hash; none is stored.
 
@@ -23,6 +25,9 @@ pub(crate) struct PendingLogin {
     pub redirect_uri: String,
     pub client_state: Option<String>,
     pub code_challenge: String,
+    /// The UI's `nonce`, which its code and `id_token` echo; `None` for
+    /// the dbt client.
+    pub client_nonce: Option<String>,
     pub upstream_nonce: String,
     pub upstream_code_verifier: String,
     pub client_ip: String,
@@ -86,6 +91,8 @@ pub(crate) struct NewCode {
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
+    /// The UI's authorize `nonce`.
+    pub nonce: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -119,6 +126,7 @@ pub(crate) struct CodeGrant {
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
+    pub nonce: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -130,10 +138,15 @@ pub(crate) struct RenewingSession {
     pub upstream_issuer: String,
     pub upstream_subject: String,
     pub client_id: String,
+    /// The grant of the last upstream evidence.
+    pub scope: String,
     /// The last email and name, for display.
     pub email: Option<String>,
     pub name: Option<String>,
     pub sealed_upstream_refresh_token: Vec<u8>,
+    /// When the upstream evidence was last renewed (at sign-in, then at
+    /// each renewal that asked the Upstream IdP).
+    pub upstream_renewed_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
 }
@@ -148,7 +161,7 @@ pub(crate) struct PresentedToken {
 
 /// One renewal of a person session: a transaction holding the session's
 /// row lock (`FOR UPDATE`), so renewals of one session serialize across
-/// replicas. It ends with exactly one of [`Self::renew`],
+/// replicas. It ends with exactly one of [`Self::renew`], [`Self::reissue`],
 /// [`Self::end_session`] or [`Self::keep_upstream_refresh_token`], each of
 /// which commits; dropping it rolls back and changes nothing.
 pub(crate) struct Renewal {
@@ -172,25 +185,13 @@ pub(crate) struct Renewed<'a> {
 }
 
 impl Renewal {
-    /// Record the renewal: the presented token is rotated, the next one
-    /// joins the family, the session takes the fresh evidence (scope,
-    /// email, name, renewal time and any rotated upstream refresh token),
-    /// and the Principal's record is refreshed.
+    /// Record the renewal: the presented token is rotated (one already
+    /// rotated keeps its first rotation time, which its grace window runs
+    /// from), the next one joins the family, the session takes the fresh
+    /// evidence (scope, email, name, renewal time and any rotated upstream
+    /// refresh token), and the Principal's record is refreshed.
     pub(crate) async fn renew(mut self, renewed: &Renewed<'_>) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE broker_refresh_tokens SET rotated_at = $2 WHERE token_hash = $1")
-            .bind(&self.presented.hash)
-            .bind(renewed.now)
-            .execute(&mut *self.tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO broker_refresh_tokens (token_hash, session_id, issued_at) \
-             VALUES ($1, $2, $3)",
-        )
-        .bind(renewed.next_token_hash)
-        .bind(self.session.id)
-        .bind(renewed.now)
-        .execute(&mut *self.tx)
-        .await?;
+        self.rotate(renewed.next_token_hash, renewed.now).await?;
         sqlx::query(
             "UPDATE broker_person_sessions SET scope = $2, email = $3, name = $4, \
              upstream_refresh_token = COALESCE($5, upstream_refresh_token), \
@@ -206,6 +207,45 @@ impl Renewal {
         .await?;
         record_principal(&mut *self.tx, renewed.principal).await?;
         self.tx.commit().await
+    }
+
+    /// Record a renewal through the grace window on the session's recent
+    /// evidence: the next refresh token joins the family and nothing else
+    /// changes (the presented token stays rotated as it was).
+    pub(crate) async fn reissue(
+        mut self,
+        next_token_hash: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        self.rotate(next_token_hash, now).await?;
+        self.tx.commit().await
+    }
+
+    /// Rotate the presented token at `now` unless it already was, and add
+    /// the token hashing to `next_token_hash` to the family.
+    async fn rotate(
+        &mut self,
+        next_token_hash: &[u8],
+        now: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE broker_refresh_tokens SET rotated_at = $2 \
+             WHERE token_hash = $1 AND rotated_at IS NULL",
+        )
+        .bind(&self.presented.hash)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO broker_refresh_tokens (token_hash, session_id, issued_at) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(next_token_hash)
+        .bind(self.session.id)
+        .bind(now)
+        .execute(&mut *self.tx)
+        .await?;
+        Ok(())
     }
 
     /// End the session: nothing issued in it renews again.
@@ -244,9 +284,11 @@ fn renewing_session(row: &PgRow) -> Result<RenewingSession, sqlx::Error> {
         upstream_issuer: row.try_get("upstream_issuer")?,
         upstream_subject: row.try_get("upstream_subject")?,
         client_id: row.try_get("client_id")?,
+        scope: row.try_get("scope")?,
         email: row.try_get("email")?,
         name: row.try_get("name")?,
         sealed_upstream_refresh_token: row.try_get("upstream_refresh_token")?,
+        upstream_renewed_at: row.try_get("upstream_renewed_at")?,
         expires_at: row.try_get("expires_at")?,
         revoked_at: row.try_get("revoked_at")?,
     })
@@ -302,7 +344,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO broker_pending_logins (state_hash, client_id, redirect_uri, \
              client_state, code_challenge, upstream_nonce, upstream_code_verifier, client_ip, \
-             created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             created_at, expires_at, client_nonce) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&login.state_hash)
         .bind(&login.client_id)
@@ -314,6 +357,7 @@ impl Store {
         .bind(&login.client_ip)
         .bind(login.created_at)
         .bind(login.expires_at)
+        .bind(&login.client_nonce)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -329,7 +373,7 @@ impl Store {
         let row = sqlx::query(
             "DELETE FROM broker_pending_logins WHERE state_hash = $1 RETURNING state_hash, \
              client_id, redirect_uri, client_state, code_challenge, upstream_nonce, \
-             upstream_code_verifier, client_ip, created_at, expires_at",
+             upstream_code_verifier, client_ip, created_at, expires_at, client_nonce",
         )
         .bind(state_hash)
         .fetch_optional(&self.pool)
@@ -341,6 +385,7 @@ impl Store {
                 redirect_uri: row.try_get("redirect_uri")?,
                 client_state: row.try_get("client_state")?,
                 code_challenge: row.try_get("code_challenge")?,
+                client_nonce: row.try_get("client_nonce")?,
                 upstream_nonce: row.try_get("upstream_nonce")?,
                 upstream_code_verifier: row.try_get("upstream_code_verifier")?,
                 client_ip: row.try_get("client_ip")?,
@@ -387,8 +432,8 @@ impl Store {
         .await?;
         sqlx::query(
             "INSERT INTO broker_authorization_codes (code_hash, session_id, client_id, \
-             redirect_uri, code_challenge, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             redirect_uri, code_challenge, created_at, expires_at, nonce) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&code.code_hash)
         .bind(session.id)
@@ -397,6 +442,7 @@ impl Store {
         .bind(&code.code_challenge)
         .bind(session.created_at)
         .bind(code.expires_at)
+        .bind(&code.nonce)
         .execute(&mut *tx)
         .await?;
         tx.commit().await
@@ -415,7 +461,7 @@ impl Store {
         let used = sqlx::query(
             "UPDATE broker_authorization_codes SET used_at = $2 \
              WHERE code_hash = $1 AND used_at IS NULL \
-             RETURNING session_id, client_id, redirect_uri, code_challenge, expires_at",
+             RETURNING session_id, client_id, redirect_uri, code_challenge, nonce, expires_at",
         )
         .bind(code_hash)
         .bind(now)
@@ -445,7 +491,7 @@ impl Store {
         let session_id: Uuid = code.try_get("session_id")?;
         let row = sqlx::query(
             "SELECT id, principal_id, upstream_subject, scope, email, name, expires_at, \
-             revoked_at FROM broker_person_sessions WHERE id = $1",
+             revoked_at FROM broker_person_sessions WHERE id = $1 FOR UPDATE",
         )
         .bind(session_id)
         .fetch_one(&mut *tx)
@@ -465,6 +511,7 @@ impl Store {
             client_id: code.try_get("client_id")?,
             redirect_uri: code.try_get("redirect_uri")?,
             code_challenge: code.try_get("code_challenge")?,
+            nonce: code.try_get("nonce")?,
             expires_at: code.try_get("expires_at")?,
         })))
     }
@@ -472,7 +519,8 @@ impl Store {
     /// Begin renewing the session of the refresh token hashing to
     /// `token_hash`: lock the session's row, then read the token as it is
     /// under that lock (a concurrent renewal of the same session has
-    /// committed or rolled back by then). `None` for an unknown token.
+    /// committed or rolled back by then, and the locked row is its latest
+    /// version). `None` for an unknown token.
     pub(crate) async fn begin_renewal(
         &self,
         token_hash: &[u8],
@@ -488,8 +536,8 @@ impl Store {
             return Ok(None);
         };
         let row = sqlx::query(
-            "SELECT id, principal_id, upstream_issuer, upstream_subject, client_id, email, \
-             name, upstream_refresh_token, expires_at, revoked_at \
+            "SELECT id, principal_id, upstream_issuer, upstream_subject, client_id, scope, \
+             email, name, upstream_refresh_token, upstream_renewed_at, expires_at, revoked_at \
              FROM broker_person_sessions WHERE id = $1 FOR UPDATE",
         )
         .bind(session)
@@ -531,5 +579,32 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Accept the client assertion `jti_hash` of `client_id`, remembered
+    /// until `remember_until` (the first moment it is no longer
+    /// acceptable), unless it was accepted before: returns whether it is
+    /// new. Assertions no longer acceptable at `now` are forgotten first.
+    pub(crate) async fn accept_client_assertion(
+        &self,
+        client_id: &str,
+        jti_hash: &[u8],
+        remember_until: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query("DELETE FROM broker_client_assertions WHERE remember_until <= $1")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        let inserted = sqlx::query(
+            "INSERT INTO broker_client_assertions (client_id, jti_hash, remember_until) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(client_id)
+        .bind(jti_hash)
+        .bind(remember_until)
+        .execute(&self.pool)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
     }
 }

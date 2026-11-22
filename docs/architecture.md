@@ -10,7 +10,7 @@ crates/auth      auth core: scope format, TOML auth config, RS256 tokens and JWK
 crates/broker    Token broker: OIDC discovery, JWKS, browser sign-in through the Upstream IdP, client_credentials pass-through
 crates/server    the dbt State server (decision engine + Postgres store + gRPC)
 crates/harness   recording proxy, state probe, golden fixtures, differential + fuzz tooling, tests
-crates/ui        optional read-only console, scoped to one configured organization
+crates/ui        optional read-only console: one configured organization, or (oidc) sign-in through the Token broker
 ```
 
 ## proto crate
@@ -37,9 +37,9 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 | Module | Responsibility |
 |---|---|
-| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_AUTH` (`none` or `oidc`), `DBT_STATE_AUTH_CONFIG` (`oidc`: TOML auth config, loaded here), `DBT_STATE_ALLOW_INSECURE` (`none` on a non-loopback address), `DBT_STATE_REQUIRE_ORG_HEADER` (`none`: reject requests without `x-organization-id`; a startup error in `oidc`), `DBT_STATE_BROKER_LISTEN` (`oidc`: run the Token broker in-process on this HTTP address; a startup error in `none` or when the config cannot run a broker). Every startup refusal happens before connecting. |
+| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_AUTH` (`none` or `oidc`), `DBT_STATE_AUTH_CONFIG` (`oidc`: TOML auth config, loaded here), `DBT_STATE_ALLOW_INSECURE` (`none` on a non-loopback address), `DBT_STATE_REQUIRE_ORG_HEADER` (`none`: reject requests without `x-organization-id`; a startup error in `oidc`), `DBT_STATE_BROKER_LISTEN` (`oidc`: run the Token broker in-process on this HTTP address; a startup error in `none` or when the config cannot run a broker), `DBT_STATE_TLS_CERT_FILE` + `DBT_STATE_TLS_KEY_FILE` (gRPC over TLS) and `DBT_STATE_BROKER_TLS_CERT_FILE` + `DBT_STATE_BROKER_TLS_KEY_FILE` (the broker listener over TLS; a startup error without `DBT_STATE_BROKER_LISTEN`), loaded and checked here (`dbt_state_broker::TlsIdentity`). Every startup refusal happens before connecting. |
 | `main.rs`, `admin.rs` | The binary. No arguments serves gRPC; `revoke-sessions --issuer <i> --subject <s>` (`admin.rs`, needs only `DATABASE_URL`) revokes every Token broker session of a Principal (`dbt_state_broker::revoke_sessions`), prints the count and logs on stderr; an unknown Principal is an error. Any other argument is refused, so a misspelled command never serves. |
-| `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`, the `oidc` authenticator), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations; `with_oidc` selects `oidc` mode (`with_oidc_clock` with the clock the person session check reads; tests move it). |
+| `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`, the `oidc` authenticator), `Clock` (`System`, test-only `Replay`), `build_router()` (plain HTTP/2) and `build_tls_router(state, &identity)` (gRPC over TLS). `AppState::connect` opens the pool and runs the migrations; `with_oidc` selects `oidc` mode (`with_oidc_clock` with the clock the person session check reads; tests move it). |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
 | `grpc_auth.rs` | The authentication layer in front of every service except `grpc.health.v1`. In `oidc` mode it verifies the token and the Organization (`dbt_state_auth::RequestAuthenticator`), puts the `AuthenticatedContext` in the request extensions, and refuses with `UNAUTHENTICATED` / `PERMISSION_DENIED` (logged at `warn`). Without `[signing]` it checks against the Token broker's keys (`dbt_state_broker::RemoteKeys`), refreshed when stale or after a signature miss. In `none` mode it passes calls through. A person token also needs an active Token broker session (`dbt_state_broker::SessionCheck`: not revoked, not past its 12-hour cap; each status cached on the replica for at most 30 s): an inactive one is `UNAUTHENTICATED`, an unreadable status `UNAVAILABLE`. Machine tokens (no `sid`) are not checked. |
 | `request_scope.rs` | One `RequestScope` per gRPC call: the Organization, the Principal (`oidc` mode; from the `AuthenticatedContext`), the dbt invocation id and the session id. `request_scope::organization` is the only place the Organization is resolved: in `oidc` mode from the `AuthenticatedContext`; in `none` mode from `x-organization-id`, default `local` (`UNAUTHENTICATED` when `require_org_header` is set and it is missing). |
@@ -446,8 +446,10 @@ confirmed run by org, warehouse family, namespace and history key (ADR 0007
 "Data-test history key", #200); an older run under another key stays
 reusable. Other Warehouses' data tests select by org, project, warehouse
 scope and UID.
-Every store query is org-scoped; neither this nor the UI's
-`DBT_STATE_UI_ORG_ID` filter is authentication.
+Every store query is org-scoped; neither this nor the UI's `none`-mode
+`DBT_STATE_UI_ORG_ID` filter is authentication. In `oidc` mode the UI
+scopes its queries to the signed-in person's selected Organization
+([ui.md](ui.md#organization-scope)).
 
 ### Store tables
 
@@ -460,7 +462,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 | `node_decisions` | One row per decision: the Principal whose request made it (`principal_id`, migration 0032, #226; NULL in `none` mode and for older rows), class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `principals` | Each Principal the Token broker issued a token to (migration 0032, #226): a machine before its token, a person with its session. Keyed by Upstream IdP `issuer` and `subject`; the opaque `id` tokens carry as `sub` (the `principal_id` of decisions and executions, with no foreign key, so a decision is recorded even when its Principal has no record), `kind` (`person` or `machine`), a display `email` when known. Not scoped by Organization. Replaces the reserved, never-written `actors`, `roles` and `role_bindings`. |
-| `broker_pending_logins`, `broker_person_sessions`, `broker_authorization_codes`, `broker_refresh_tokens` | Token broker state (migration 0031, #220): browser sign-ins in progress, person sessions (Principal as upstream issuer, subject and `principal_id`; client id; last granted scope; 12 h cap; `revoked_at`; the upstream refresh token sealed; `upstream_renewed_at`), single-use codes and refresh-token family members. Bearer values only as SHA-256 hashes. Not State history and not org-scoped. |
+| `broker_pending_logins`, `broker_person_sessions`, `broker_authorization_codes`, `broker_refresh_tokens`, `broker_client_assertions` | Token broker state (migration 0031, #220; 0033, #228): browser sign-ins in progress, person sessions (Principal as upstream issuer, subject and `principal_id`; client id; last granted scope; 12 h cap; `revoked_at`; the upstream refresh token sealed; `upstream_renewed_at`), single-use codes (with the UI's nonce) and refresh-token family members, and the UI's accepted client assertion ids until they expire. Bearer values only as SHA-256 hashes. Sessions and refresh tokens are never deleted. Not State history and not org-scoped. |
 
 ### Lifecycle
 
@@ -485,7 +487,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 ## auth crate
 
 `crates/auth` (`dbt-state-auth`) is shared by the gRPC server, the Token
-broker and, later, the UI. It is pure apart from reading the config and key
+broker and the UI. It is pure apart from reading the config and key
 files; fetching keys and talking to the Upstream IdP live in the broker
 crate.
 
@@ -493,12 +495,13 @@ crate.
 |---|---|
 | `organization.rs` | `OrganizationId` (non-empty visible ASCII, no `:`, not `*`), `Role` (`developer` < `admin`), declared `Organizations` (active or disabled). |
 | `scope.rs` | The `scope` claim: `Scope::issue` (highest Role per declared Organization; active ones as `org` + `app` entries, disabled ones as `app` only) and the strict `Scope::parse`. `tests/scope_proptest.rs` checks both against ports of the pinned clients' scope rules (`tests/client_scope/`). |
-| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer` and optional `jwks_url`, `max_pending_logins_per_ip` (default 20), `client_ip_header`; `[api] audience`; `[tokens]` lifetimes; optional `[signing]` keys; `[[organizations]]`; optional `[upstream]` (`issuer`, `api_audience`, `client_credentials_scope`, `subject_claim` (default `sub`), and for browser sign-in `client_id`, exactly one of `private_key_file` (+ optional `private_key_id`) or `client_secret_file`, `refresh_token_key_file`, `login_scope`); `[[rules]]`; optional `[clients.dbt] client_id` (default `DEFAULT_DBT_CLIENT_ID`, the dbt client's built-in id)), unknown keys refused. Builds the `TokenIssuer` (with `[signing]`), `TokenVerifier` and `RequestAuthenticator` over a `VerificationKeys`. |
+| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer` and optional `jwks_url`, `max_pending_logins_per_ip` (default 20), `client_ip_header`; `[api] audience`; `[tokens]` lifetimes; optional `[signing]` keys; `[[organizations]]`; optional `[upstream]` (`issuer`, `api_audience`, `client_credentials_scope`, `subject_claim` (default `sub`), and for browser sign-in `client_id`, exactly one of `private_key_file` (+ optional `private_key_id`) or `client_secret_file`, `refresh_token_key_file`, `login_scope`); `[[rules]]`; optional `[clients.dbt] client_id` (default `DEFAULT_DBT_CLIENT_ID`, the dbt client's built-in id); optional `[clients.ui]` (`client_id`, one `redirect_uri`, `public_key_file`; `AuthConfig::ui_client`)), unknown keys refused. Builds the `TokenIssuer` (with `[signing]`), `TokenVerifier` and `RequestAuthenticator` over a `VerificationKeys`, and `ui_token_verifier` (the same checks for the UI's client id as `aud`). |
 | `keys.rs` | RS256 keys from PEM files (PKCS#8 or PKCS#1), several key ids, one active; never echoes key material. `VerificationKeys`: a shared, replaceable public key set, published and read as a JWKS. |
-| `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId` (`PrincipalId::upstream(issuer, subject)`: an opaque hash of the Upstream IdP pair), `PrincipalKind` (person tokens carry `sid`). |
+| `ui_client.rs` | `UiClient`: the UI's registration (client id, its one callback, its RS256 public key from a PEM `SubjectPublicKeyInfo`). `UiClient::verify_assertion` checks a `private_key_jwt` client assertion (signature, `iss` = `sub` = client id, `aud` one of the given audiences, `exp` with 60 s skew, at most `MAX_ASSERTION_LIFETIME` (5 min), `iat`/`nbf` not in the future, a `jti`) and returns the `jti` with how long to remember it; the replay check is the broker's. |
+| `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId` (`PrincipalId::upstream(issuer, subject)`: an opaque hash of the Upstream IdP pair), `PrincipalKind` (person tokens carry `sid`). `TokenIssuer::issue_oidc`: the UI's `id_token` (with the authorize `nonce` on a code exchange) and JWT `access_token`, the same shape but `aud` the client id, so gRPC refuses them. |
 | `mapping.rs` | Mapping rules (`kind`, `claim`, `value`, Organization, Role): `MappingRules::scope` evaluates only the Principal kind's rules; a claim matches as a string or an array of strings; highest Role wins; no match is an empty scope. `tests/mapping_proptest.rs`. |
 | `upstream.rs` | `UpstreamTokenVerifier`: an Upstream IdP access token must be an RS256 JWT signed by a published key, with the IdP's issuer, `aud` holding the upstream API audience, and current (`exp`, `nbf`, 60 s skew). Opaque tokens are refused. `verify_id_token` checks an ID token for the broker's client id: also `azp` (required with several audiences) and the `nonce` it sent. |
-| `credential.rs` | `UpstreamCredential`: the broker's own credential at the Upstream IdP, from a mounted file. `ClientAssertionKey::assertion` signs a `private_key_jwt` assertion (RS256, `iss` = `sub` = client id, `aud` the token endpoint, random `jti`, 5 min); `ClientSecret::basic_authorization` (RFC 6749 §2.3.1). `Debug` redacts both. |
+| `credential.rs` | `UpstreamCredential`: the broker's own credential at the Upstream IdP, from a mounted file. `ClientAssertionKey::assertion` signs a `private_key_jwt` assertion (RS256, `iss` = `sub` = client id, `aud` the token endpoint, random `jti`, 5 min); `ClientAssertionKey::load(path, kid)` loads one for another client (the UI); `ClientSecret::basic_authorization` (RFC 6749 §2.3.1). `Debug` redacts both. |
 | `sealing.rs` | `RefreshTokenKey`: AES-256-GCM (`ring::aead`) under the `refresh_token_key_file` key (base64 of 32 bytes), a random nonce per value, associated data binding a value to its row. Layout: version byte, nonce, ciphertext and tag. |
 | `context.rs` | `RequestAuthenticator::authenticate`: token, then Organization; an `AuthenticatedContext` (Principal, Principal kind, Organization, Role, client id, session) or a `Rejection` with its gRPC class, fixed message and log reason. |
 
@@ -510,17 +513,21 @@ listener (`DBT_STATE_BROKER_LISTEN`), sharing the config's key set and the
 server's Postgres pool, or alone (`dbt-state-broker`, env
 `DBT_STATE_BROKER_LISTEN` default `127.0.0.1:8080`, `DBT_STATE_AUTH_CONFIG`
 and `DATABASE_URL`). Its tables live in the server's schema: their migrations
-are in `crates/server/migrations` (from `0031_broker_person_login.sql`), and
+are in `crates/server/migrations` (from `0031_broker_person_login.sql`;
+`0033_broker_ui_client.sql` adds the UI's nonces and `broker_client_assertions`), and
 a standalone broker runs the same migrator at startup (`MIGRATOR`), so any
 number of brokers and servers share one schema. It makes no request to the
-Upstream IdP at startup.
+Upstream IdP at startup. Deployment shapes, configuration and IdP setup are
+in the [operator guide](operator-guide.md).
 
 | Module | Responsibility |
 |---|---|
 | `lib.rs` | `Broker::check(&AuthConfig)` (needs `[signing]` and `[upstream]`), `Broker::new(&AuthConfig, PgPool)` and `Broker::with_clock(.., Clock)`, `Broker::router()`: `GET /` (authorize), `GET /callback`, `GET /.well-known/openid-configuration`, `GET /jwks`, `POST /token`; `serve` supplies the peer address the pending-login cap needs. `http_client()`: timeouts, no redirects. |
-| `sign_in.rs` | Browser sign-in. `GET /`: the dbt client registration (client id, exact redirect `http://127.0.0.1:29525/handler`; a mismatch is an error page), PKCE S256 required, a pending login stored (10 min, capped per client IP), then a redirect to the Upstream IdP with the broker's own `state`, `nonce` and PKCE. `GET /callback`: the pending login taken once by `state`, the code exchanged with the broker's credential, the ID token checked, the Principal named by the issuer and `subject_claim`, `kind = "person"` rules applied, a person session created with its Principal recorded (12 h cap, upstream refresh token sealed), and a 60 s code sent to the loopback handler. Refusals go back to the client as OAuth errors with fixed descriptions and are logged (`sign-in refused`). |
-| `code_grant.rs` | `POST /token` `authorization_code`: the code used up on first presentation (a replay revokes its session), bound to the client id, redirect URI and PKCE challenge, valid 60 s; returns a person token (`sid`) and a refresh token whose hash is the session's first refresh-token family member. |
-| `refresh_grant.rs` | `POST /token` `refresh_token` (spec #215 steps 1, 3–5; the grace window is #224): in one transaction holding the session's row lock (`Store::begin_renewal` → `Renewal`), refuses another client id, a revoked or capped (12 h) session; a rotated refresh token presented again revokes the session; refreshes at the Upstream IdP with the sealed upstream refresh token (re-sealing a rotated one); the evidence is the refreshed ID token (no nonce) or, without one, userinfo for the new access token, naming the session's subject; re-applies `kind = "person"` rules. Success rotates the refresh token and records the new scope, email, name and `upstream_renewed_at` (`Renewal::renew`); an IdP refusal, bad or missing evidence or no grant ends the session (`Renewal::end_session`); an unreachable IdP is 503 and keeps it. `assess` computes the outcome without writing; #224's grace window is one more outcome there. |
+| `tls.rs` | Native TLS from mounted PEM files, for both binaries: `TlsIdentity::from_env(cert_var, key_var)` / `load` (both or neither; chain, key and their match checked at startup; the key never logged) and `serve_tls` (HTTP/1.1 over rustls with `ring`, each handshake on its own task within `HANDSHAKE_TIMEOUT`, peer address supplied as `serve` does). The server's `build_tls_router` gives tonic the same identity. |
+| `clients.rs` | The registered clients: the dbt client (public, redirect `http://127.0.0.1:29525/handler`) and the UI (`[clients.ui]`). `Broker::registration(client_id)`; `authenticate` (token endpoint client authentication: `none` for the dbt client, `private_key_jwt` for the UI, each accepted `jti` recorded once in `broker_client_assertions`); `person_token_response` (the dbt-shaped `id_token`, or the UI's `id_token` and `access_token` for its own audience, with the next refresh token). |
+| `sign_in.rs` | Browser sign-in. `GET /`: a registered client (client id, its exact redirect URI; a mismatch is an error page), PKCE S256 required, for the UI also `openid` and a nonce (stored with the pending login and bound to the code), a pending login stored (10 min, capped per client IP), then a redirect to the Upstream IdP with the broker's own `state`, `nonce` and PKCE. `GET /callback`: the pending login taken once by `state`, the code exchanged with the broker's credential, the ID token checked, the Principal named by the issuer and `subject_claim`, `kind = "person"` rules applied, a person session created with its Principal recorded (12 h cap, upstream refresh token sealed), and a 60 s code sent to the loopback handler. Refusals go back to the client as OAuth errors with fixed descriptions and are logged (`sign-in refused`). |
+| `code_grant.rs` | `POST /token` `authorization_code`: the client authenticated first (`clients::authenticate`), then the code used up on first presentation (a replay revokes its session), bound to the client id, redirect URI and PKCE challenge, valid 60 s; returns a person token (`sid`) and a refresh token whose hash is the session's first refresh-token family member. |
+| `refresh_grant.rs` | `POST /token` `refresh_token` (spec #215 steps 1–5): in one transaction holding the session's row lock (`Store::begin_renewal` → `Renewal`), so replicas serialize, refuses another client id, a revoked or capped (12 h) session; a refresh token rotated less than `GRACE_WINDOW` (60 s) ago still renews, with another family member, and when the session's `upstream_renewed_at` is that recent too its recorded scope, email and name are reissued without asking the IdP (`Outcome::Reissued`, `Renewal::reissue`); a rotated token presented after the window revokes the session; otherwise refreshes at the Upstream IdP with the sealed upstream refresh token (re-sealing a rotated one); the evidence is the refreshed ID token (no nonce) or, without one, userinfo for the new access token, naming the session's subject; re-applies `kind = "person"` rules. Success rotates the refresh token (keeping a first rotation time) and records the new scope, email, name and `upstream_renewed_at` (`Renewal::renew`); an IdP refusal, bad or missing evidence or no grant ends the session (`Renewal::end_session`); an unreachable IdP is 503 and keeps it. `assess` computes the outcome without writing. |
 | `store.rs` | Postgres: pending logins, person sessions, authorization codes, refresh tokens (a `Renewal` is one renewal's transaction over the locked session row), and `principals` (upserted by issuer and subject; a known email is kept when a later sign-in has none). Bearer values only as SHA-256 hashes. |
 | `sessions.rs` | Person sessions outside the broker's endpoints. `SessionCheck::check(sid)`: the gRPC server's check that a person token's session is active (not revoked, before its 12-hour cap), each status cached per replica for at most `SESSION_STATUS_MAX_AGE` (30 s) from when its read began, on the given `Clock`; a failed read is `Unavailable`, never a pass. `revoke_sessions(pool, issuer, subject, at)`: sets `revoked_at` on every session of the Principal (the admin command), logged `person sessions revoked`; the refresh grant then refuses the session. |
 | `clock.rs`, `secret.rs` | The broker clock (tests move it); random bearer values, their hashes, PKCE S256. |
@@ -532,8 +539,13 @@ Upstream IdP at startup.
 
 ## ui crate
 
-`crates/ui` (bin `dbt-state-ui`) reads the capture tables read-only. See
-[ui.md](ui.md).
+`crates/ui` (`dbt-state-ui`, lib `dbt_state_ui` and bin) reads the capture
+tables read-only. `settings.rs` reads the environment (`Settings::from_env`
+/ `from_vars`); `sign_in.rs` is `oidc` mode (sign-in through the Token
+broker as `[clients.ui]`, encrypted session cookie, session check, renewal,
+Organization filtering); `app.rs::access` is the layer that applies it to
+every page. `dbt_state_ui::router(pool, settings, clock)` builds the app.
+See [ui.md](ui.md).
 
 ## harness crate
 

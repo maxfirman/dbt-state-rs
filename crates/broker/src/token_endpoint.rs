@@ -12,6 +12,10 @@
 //! - otherwise, after browser sign-in, `authorization_code` (`code_grant`),
 //!   and then `refresh_token` to renew (`refresh_grant`).
 //!
+//! The UI, the broker's other registered client (`clients`), posts
+//! `authorization_code` and `refresh_token` too, authenticated with a
+//! `private_key_jwt` assertion.
+//!
 //! Both read `id_token` (whose `scope` claim names the Organizations),
 //! `token_type` (Python requires it), and `expires_in`; `refresh_token` only
 //! when present. `client_credentials` therefore answers `id_token`, `scope`,

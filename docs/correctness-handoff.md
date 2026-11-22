@@ -780,19 +780,60 @@ local-only and renders no Explain tree.
 
 ## Deployment gaps
 
-- **Auth and TLS.** In the default `DBT_STATE_AUTH=none` mode,
-  header-based organization selection is isolation, not authentication, and
-  the server refuses a non-loopback address unless
-  `DBT_STATE_ALLOW_INSECURE=true`. `DBT_STATE_AUTH=oidc` verifies a
-  Token-broker-signed token and its Organization on every RPC except health
-  ([protocol.md](protocol.md#authentication-oidc-mode)). Each decision and
-  execution names its Principal (`principal_id`, #226), whom the Token
-  broker records by Upstream IdP issuer and subject. Person sessions renew
-  only on fresh Upstream IdP evidence (#221). Person tokens need an active
-  broker session on every RPC (cached at most 30 s per replica), and
-  `dbt-state-server revoke-sessions` revokes a Principal's sessions (#225).
-  TLS and the refresh grace window are still open (#219, #222–#224). The UI reads one
-  configured organization (`DBT_STATE_UI_ORG_ID`).
+- **Auth and TLS.** `DBT_STATE_AUTH=oidc` authenticates every RPC except
+  health: a Token-broker-signed token for the dbt State API audience, an
+  `x-organization-id` among its active Organizations, and for a person an
+  active broker session (cached at most 30 s per replica)
+  ([protocol.md](protocol.md#authentication-oidc-mode)). The Token broker
+  signs people in through the operator's Upstream IdP, renews them only on
+  fresh IdP evidence, passes CI credentials through, and records each
+  Principal; decisions and executions name it (`principal_id`). Both
+  listeners serve native TLS or plain HTTP behind a TLS-terminating proxy.
+  Deployment, IdP recipes, client settings and the revocation bounds with
+  the tests that verify them are in the
+  [operator guide](operator-guide.md). Evidence: the fake Upstream IdP in
+  every `cargo test`, Keycloak 26.8.2 in the opt-in `keycloak` job (#227),
+  the pinned Python client's own auth code over TLS in CI (#219, #222), and
+  pinned Fusion's in the opt-in `fusion` job (#223), and the released dbt
+  2.0.11 binary building on Snowflake (`CDO_DEMO_DB`) as a machine and as a
+  person, each build's decisions under its own Principal, in an opt-in live
+  run (#232, `crates/harness/tests/fusion_snowflake.rs`). The default
+  `DBT_STATE_AUTH=none` mode authenticates nothing: header-based
+  Organization selection is isolation, and the server refuses a
+  non-loopback address unless `DBT_STATE_ALLOW_INSECURE=true`. What remains
+  open:
+  - **Entra ID and Okta are untested.** Their recipes follow vendor
+    documentation only. For Entra ID, two points are unverified: Microsoft
+    documents an `x5t#S256` header for certificate client assertions, which
+    the broker's `private_key_jwt` does not send (the recipe uses a client
+    secret), and it describes a refresh response's `id_token` as unsigned,
+    which the broker would refuse and end the session over.
+  - **Public roots only.** Pinned Fusion's token requests trust only the
+    public Mozilla roots (`dbt-fusion@9977b6c`, #223), so the broker's token
+    URL needs a publicly trusted certificate for a client built from that
+    source. The released dbt 2.0.11 binary also trusts `SSL_CERT_FILE` there
+    (#232). The broker, a gRPC server
+    fetching the broker's keys, and the console also trust only public
+    roots for their outbound requests, so the Upstream IdP and any internal
+    broker URL need one too (or plain http on loopback).
+  - **Retention.** `broker_person_sessions` and `broker_refresh_tokens`
+    rows are never deleted.
+  - **Bounds that differ from spec #215** (all documented in the guide): an
+    unreachable Upstream IdP answers 503 and keeps the session, though both
+    pinned clients then discard an expired token and open the browser; the
+    grace window can reuse evidence up to 60 s old, so a person disabled at
+    the IdP keeps gRPC access for up to the person token lifetime plus 2
+    minutes; gRPC refuses a person token within 30 s of its session's
+    12-hour cap even before `exp`; any failed console renewal ends the
+    console session; a revoked person can sign in again until disabled at
+    the IdP.
+  - **Not built:** hot reload, refresh-token key rotation, a second console
+    public key, logout endpoints, rate limiting beyond the pending sign-in
+    cap, more than one Upstream IdP, and dbt platform token exchange
+    (refused, so a person whose environment holds a dbt platform credential
+    cannot use the browser flow).
+  - Hosted dbt State's own status codes and messages for auth failures are
+    not characterized ([hosted auth report](reports/hosted-auth-2026-11-21.md#5-unknowns-not-answerable-offline)).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`

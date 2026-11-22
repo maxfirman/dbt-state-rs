@@ -26,7 +26,8 @@
 //!   and a new refresh token (the presented one is used up) unless the IdP
 //!   keeps it ([`UpstreamPerson::keeps_refresh_token`]). A disabled person
 //!   ([`FakeIdp::disable`]) or a used refresh token gets `invalid_grant`,
-//!   and [`FakeIdp::fail_refresh`] makes every refresh fail;
+//!   [`FakeIdp::fail_refresh`] makes every refresh fail and
+//!   [`FakeIdp::delay_refresh`] makes every refresh slow;
 //! - `GET /userinfo`: the current claims of the person an access token was
 //!   issued to (OIDC Core §5.3), by `Authorization: Bearer`.
 //!
@@ -373,6 +374,8 @@ pub struct IdpState {
     disabled: BTreeSet<String>,
     /// What every refresh answers instead, while set.
     refresh_failure: Option<(StatusCode, &'static str)>,
+    /// How long every refresh takes to answer, while set.
+    refresh_delay: Option<Duration>,
     /// The bearer token of every userinfo request.
     userinfo_requests: Vec<Option<String>>,
     /// What every userinfo request answers instead, while set.
@@ -517,6 +520,13 @@ impl FakeIdp {
         self
     }
 
+    /// Every refresh answers `delay` after it is received (and recorded),
+    /// as a slow IdP would: a renewal holds its session's lock that long.
+    pub fn delay_refresh(&self, delay: Duration) -> &Self {
+        self.state.lock().unwrap().refresh_delay = Some(delay);
+        self
+    }
+
     /// Every userinfo request answers `status` until
     /// [`Self::restore_userinfo`].
     pub fn fail_userinfo(&self, status: u16) -> &Self {
@@ -651,7 +661,23 @@ async fn token(
     body: axum::body::Bytes,
 ) -> Response {
     let form: BTreeMap<String, String> = form_urlencoded::parse(&body).into_owned().collect();
-    let basic = basic_credentials(&headers);
+    let response = answer_token(&state, &keys, &headers, &form);
+    let delay = state.lock().unwrap().refresh_delay;
+    if let Some(delay) =
+        delay.filter(|_| form.get("grant_type").map(String::as_str) == Some("refresh_token"))
+    {
+        tokio::time::sleep(delay).await;
+    }
+    response
+}
+
+fn answer_token(
+    state: &Shared,
+    keys: &Keys,
+    headers: &HeaderMap,
+    form: &BTreeMap<String, String>,
+) -> Response {
+    let basic = basic_credentials(headers);
     let mut state = state.lock().unwrap();
     state.token_requests.push(UpstreamTokenRequest {
         form: form.clone(),
@@ -659,8 +685,8 @@ async fn token(
     });
     match form.get("grant_type").map(String::as_str) {
         Some("client_credentials") => {}
-        Some("authorization_code") => return code_grant(&mut state, &keys, &form, basic),
-        Some("refresh_token") => return refresh_grant(&mut state, &keys, &form, basic),
+        Some("authorization_code") => return code_grant(&mut state, keys, form, basic),
+        Some("refresh_token") => return refresh_grant(&mut state, keys, form, basic),
         _ => return oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     }
     let Some((client_id, secret)) = basic else {

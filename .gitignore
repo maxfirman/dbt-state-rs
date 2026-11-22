@@ -13,8 +13,14 @@ __pycache__/
 # Local DuckDB compatibility environment
 /integrations/duckdb/.venv/
 
+# The pinned Python client driver's environment (uv)
+/crates/harness/python-client/.venv/
+
 # Credential-free DuckDB CI artifacts
 /artifacts/
 
 # dbt default log output when run from the repo root
 /logs/
+
+# The pinned Fusion driver's default build output (it is outside the workspace)
+/crates/harness/fusion-driver/target/

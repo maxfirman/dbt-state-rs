@@ -22,6 +22,9 @@ pub mod broker_client;
 /// A browser following a dbt client's sign-in redirects.
 #[path = "support/browser.rs"]
 pub mod browser;
+/// What the pinned dbt client drivers share: process, pauses, port lock.
+#[path = "support/client_driver.rs"]
+pub mod client_driver;
 /// Request shapes from the live clone captures in the demo database.
 #[path = "support/demo.rs"]
 pub mod demo;
@@ -31,9 +34,15 @@ pub mod fake_idp;
 /// Raw-SQL fault injection (the only DDL tests run against State tables).
 #[path = "support/fault.rs"]
 pub mod fault;
+/// The pinned Fusion driver (opt-in), built outside the workspace.
+#[path = "support/fusion_client.rs"]
+pub mod fusion_client;
 /// HTTP test servers on their own thread.
 #[path = "support/http.rs"]
 pub mod http;
+/// Keycloak in Docker as the Upstream IdP (opt-in suite).
+#[path = "support/keycloak.rs"]
+pub mod keycloak;
 /// Raw-SQL legacy, frozen, corrupt and captured State (the only raw writers).
 #[path = "support/legacy.rs"]
 pub mod legacy;
@@ -45,20 +54,32 @@ pub mod native_clock;
 pub mod oidc;
 #[path = "support/python.rs"]
 mod python;
+/// The pinned dbt-state Python client's driver, run through `uv`.
+#[path = "support/python_client.rs"]
+pub mod python_client;
 #[path = "support/resources.rs"]
 mod resources;
 /// Read-only row assertions for executions and node states.
 #[path = "support/rows.rs"]
 pub mod rows;
+/// Every RPC of the dbt State protocol.
+#[path = "support/rpcs.rs"]
+pub mod rpcs;
 /// Request builders and the submit/confirm/expect protocol client.
 #[path = "support/scenario.rs"]
 pub mod scenario;
+/// The test-only TLS certificate both listeners serve, and its CA.
+#[path = "support/tls.rs"]
+pub mod tls;
+/// The UI as the Token broker's confidential OIDC client.
+#[path = "support/ui_client.rs"]
+pub mod ui_client;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{
     start_broker, start_broker_beside, start_server, start_server_native, start_server_oidc,
-    start_server_on_database, start_server_require_org, start_server_with_broker, TestBroker,
-    TestClock, TestDatabase, TestServer,
+    start_server_on_database, start_server_require_org, start_server_tls, start_server_with_broker,
+    TestBroker, TestClock, TestDatabase, TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";

@@ -12,7 +12,7 @@
 //! example, one from before an Organization was disabled).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use dbt_state_auth::{
@@ -69,11 +69,11 @@ pub type Declared<'a> = &'a [(&'a str, bool)];
 
 /// The test refresh-token encryption key (`openssl rand -base64 32`).
 const REFRESH_TOKEN_KEY: &str = "3m2pQm0x1i4lL6m6c8iCqv0wN3m8z5k2Jg7Yt1yH4aE=";
-/// Files a test config with an Upstream IdP names, written next to it.
-const SECRET_FILES: &[(&str, &str)] = &[
-    ("upstream-client-secret", BROKER_CLIENT_SECRET),
-    ("refresh-token.key", REFRESH_TOKEN_KEY),
-];
+/// The file a test config names for the Token broker's client secret at
+/// the Upstream IdP, written next to it.
+const CLIENT_SECRET_FILE: &str = "upstream-client-secret";
+/// The file a test config names for the refresh-token encryption key.
+const REFRESH_TOKEN_KEY_FILE: &str = "refresh-token.key";
 
 /// The TOML text of a config. `keys` empty leaves out `[signing]`;
 /// `broker` is added to `[broker]`, and `extra` appended (for example
@@ -117,30 +117,76 @@ fn config_text(
 }
 
 /// Load `text` through a config file, as the server binary does, with the
-/// secret files it may name beside it.
-fn load(text: &str) -> AuthConfig {
+/// secret files it may name beside it (`client_secret` is the broker's
+/// client secret at the Upstream IdP).
+fn load(text: &str, client_secret: &str) -> AuthConfig {
+    load_file(text, client_secret).0
+}
+
+/// [`load`], keeping the config file (and the secret files beside it) for
+/// as long as the returned [`ConfigFile`] lives.
+fn load_file(text: &str, client_secret: &str) -> (AuthConfig, ConfigFile) {
     let dir = tempfile::tempdir().expect("config dir");
-    for (file, contents) in SECRET_FILES {
+    for (file, contents) in [
+        (CLIENT_SECRET_FILE, client_secret),
+        (REFRESH_TOKEN_KEY_FILE, REFRESH_TOKEN_KEY),
+    ] {
         std::fs::write(dir.path().join(file), contents).expect("write secret file");
     }
     let path = dir.path().join("auth.toml");
     std::fs::write(&path, text).expect("write config");
-    AuthConfig::load(&path).expect("valid test auth config")
+    let config = AuthConfig::load(&path).expect("valid test auth config");
+    (config, ConfigFile(Arc::new((dir, path))))
 }
 
-/// How the Token broker authenticates at the fake Upstream IdP.
+/// A written auth config file; removed when the last clone drops.
+#[derive(Clone)]
+struct ConfigFile(Arc<(tempfile::TempDir, PathBuf)>);
+
+/// How the Token broker authenticates at the Upstream IdP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrokerCredential {
-    /// [`BROKER_CLIENT_SECRET`], from a mounted file.
+    /// Its client secret ([`BROKER_CLIENT_SECRET`] at the fake IdP), from a
+    /// mounted file.
     ClientSecret,
     /// `private_key_jwt` with `upstream-rp-key.pem`.
     PrivateKeyJwt,
 }
 
+/// An Upstream IdP and the Token broker's registrations there: what an
+/// operator copies from the IdP into `[upstream]`.
+#[derive(Debug, Clone)]
+pub struct UpstreamRegistration {
+    pub issuer: String,
+    /// `api_audience`: the `aud` its `client_credentials` access tokens
+    /// carry for dbt State.
+    pub api_audience: String,
+    /// `client_credentials_scope`, if any.
+    pub client_credentials_scope: Option<String>,
+    /// The broker's own client id for browser sign-in, and its secret.
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+impl UpstreamRegistration {
+    /// The fake Upstream IdP `idp`: [`UPSTREAM_AUDIENCE`],
+    /// [`UPSTREAM_SCOPE`], and the broker as [`BROKER_CLIENT_ID`] with
+    /// [`BROKER_CLIENT_SECRET`].
+    pub fn fake(idp: &FakeIdp) -> Self {
+        Self {
+            issuer: idp.issuer(),
+            api_audience: UPSTREAM_AUDIENCE.into(),
+            client_credentials_scope: Some(UPSTREAM_SCOPE.into()),
+            client_id: BROKER_CLIENT_ID.into(),
+            client_secret: BROKER_CLIENT_SECRET.into(),
+        }
+    }
+}
+
 /// The `[upstream]` table of a test config.
 #[derive(Clone)]
 struct Upstream {
-    issuer: String,
+    registration: UpstreamRegistration,
     credential: BrokerCredential,
     subject_claim: Option<String>,
     /// Register the broker for browser sign-in.
@@ -151,7 +197,7 @@ impl Upstream {
     fn text(&self) -> String {
         let credential = match self.credential {
             BrokerCredential::ClientSecret => {
-                "client_secret_file = \"upstream-client-secret\"\n".into()
+                format!("client_secret_file = {}\n", toml_string(CLIENT_SECRET_FILE))
             }
             BrokerCredential::PrivateKeyJwt => format!(
                 "private_key_file = {}\n",
@@ -167,20 +213,25 @@ impl Upstream {
             .as_deref()
             .map(|claim| format!("subject_claim = {}\n", toml_string(claim)))
             .unwrap_or_default();
+        let registration = &self.registration;
         let login = if self.login {
             format!(
-                "client_id = {}\n{credential}refresh_token_key_file = \"refresh-token.key\"\n",
-                toml_string(BROKER_CLIENT_ID)
+                "client_id = {}\n{credential}refresh_token_key_file = {}\n",
+                toml_string(&registration.client_id),
+                toml_string(REFRESH_TOKEN_KEY_FILE),
             )
         } else {
             String::new()
         };
+        let scope = registration
+            .client_credentials_scope
+            .as_deref()
+            .map(|scope| format!("client_credentials_scope = {}\n", toml_string(scope)))
+            .unwrap_or_default();
         format!(
-            "\n[upstream]\nissuer = {}\napi_audience = {}\nclient_credentials_scope = {}\n\
-             {login}{subject_claim}",
-            toml_string(&self.issuer),
-            toml_string(UPSTREAM_AUDIENCE),
-            toml_string(UPSTREAM_SCOPE),
+            "\n[upstream]\nissuer = {}\napi_audience = {}\n{scope}{login}{subject_claim}",
+            toml_string(&registration.issuer),
+            toml_string(&registration.api_audience),
         )
     }
 }
@@ -192,6 +243,7 @@ impl Upstream {
 #[derive(Clone)]
 pub struct TestAuth {
     config: AuthConfig,
+    file: ConfigFile,
     issuer: String,
     organizations: Vec<(String, bool)>,
 }
@@ -220,9 +272,16 @@ impl TestAuthBuilder {
     /// [`UPSTREAM_SCOPE`], and the Token broker registered there for
     /// browser sign-in as [`BROKER_CLIENT_ID`] with
     /// [`BROKER_CLIENT_SECRET`] (or [`Self::broker_credential`]).
-    pub fn upstream(mut self, idp: &FakeIdp) -> Self {
+    pub fn upstream(self, idp: &FakeIdp) -> Self {
+        self.upstream_registration(UpstreamRegistration::fake(idp))
+    }
+
+    /// The Upstream IdP `registration` (for example Keycloak, in
+    /// `support/keycloak.rs`), with the broker registered there for browser
+    /// sign-in with its client secret.
+    pub fn upstream_registration(mut self, registration: UpstreamRegistration) -> Self {
         self.upstream = Some(Upstream {
-            issuer: idp.issuer(),
+            registration,
             credential: BrokerCredential::ClientSecret,
             subject_claim: None,
             login: true,
@@ -257,6 +316,28 @@ impl TestAuthBuilder {
         self.extra.push_str(&format!(
             "\n[clients.dbt]\nclient_id = {}\n",
             toml_string(client_id)
+        ));
+        self
+    }
+
+    /// `[clients.ui]`: the UI registered as [`super::ui_client::UI_CLIENT_ID`]
+    /// with its one callback [`super::ui_client::UI_REDIRECT_URI`] and its
+    /// test public key.
+    pub fn ui_client(self) -> Self {
+        self.ui_client_at(super::ui_client::UI_REDIRECT_URI)
+    }
+
+    /// [`Self::ui_client`] with the callback `redirect_uri`.
+    pub fn ui_client_at(mut self, redirect_uri: &str) -> Self {
+        self.extra.push_str(&format!(
+            "\n[clients.ui]\nclient_id = {}\nredirect_uri = {}\npublic_key_file = {}\n",
+            toml_string(super::ui_client::UI_CLIENT_ID),
+            toml_string(redirect_uri),
+            toml_string(
+                super::ui_client::ui_public_key_file()
+                    .to_str()
+                    .expect("UTF-8 path")
+            ),
         ));
         self
     }
@@ -340,8 +421,13 @@ impl TestAuthBuilder {
             .as_ref()
             .map(Upstream::text)
             .unwrap_or_default();
-        TestAuth {
-            config: load(&config_text(
+        let client_secret = self
+            .upstream
+            .as_ref()
+            .map(|upstream| upstream.registration.client_secret.as_str())
+            .unwrap_or_default();
+        let (config, file) = load_file(
+            &config_text(
                 &self.issuer,
                 AUDIENCE,
                 keys,
@@ -349,7 +435,12 @@ impl TestAuthBuilder {
                 &tokens,
                 &self.broker,
                 &format!("{upstream}{}", self.extra),
-            )),
+            ),
+            client_secret,
+        );
+        TestAuth {
+            config,
+            file,
             issuer: self.issuer,
             organizations: self.organizations,
         }
@@ -403,6 +494,13 @@ impl TestAuth {
         &self.config
     }
 
+    /// The config file [`Self::config`] was loaded from, for a component
+    /// that reads `DBT_STATE_AUTH_CONFIG` itself (the UI). It lives as long
+    /// as this `TestAuth` or a clone.
+    pub fn config_path(&self) -> &Path {
+        &self.file.0 .1
+    }
+
     /// The Token broker's issuer.
     pub fn issuer(&self) -> &str {
         &self.issuer
@@ -424,15 +522,18 @@ impl TestAuth {
             .map(|(id, disabled)| (id.as_str(), *disabled))
             .collect();
         let organizations = options.organizations.unwrap_or(&server);
-        let config = load(&config_text(
-            options.issuer,
-            options.audience,
-            &[options.key],
-            organizations,
+        let config = load(
+            &config_text(
+                options.issuer,
+                options.audience,
+                &[options.key],
+                organizations,
+                "",
+                "",
+                "",
+            ),
             "",
-            "",
-            "",
-        ));
+        );
         TestSigner {
             lifetimes: config.token_lifetimes(),
             issuer: config.token_issuer().expect("signing keys"),

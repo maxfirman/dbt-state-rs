@@ -1,0 +1,92 @@
+# Auth config with Microsoft Entra ID as the Upstream IdP. The app
+# registrations it names are set up as in docs/operator-guide.md#entra-id;
+# every key is explained in examples/auth/auth.toml. Every id below is a
+# placeholder. Relative paths resolve from this file's directory.
+
+[broker]
+issuer = "https://auth.state.example.com"
+# Behind a load balancer that appends the client IP to X-Forwarded-For.
+client_ip_header = "x-forwarded-for"
+
+[api]
+audience = "https://state.example.com"
+
+[signing]
+active_key_id = "2026-11"
+
+[[signing.keys]]
+id = "2026-11"
+private_key_file = "keys/signing-2026-11.pem"
+
+[[organizations]]
+id = "analytics"
+
+[[organizations]]
+id = "finance"
+
+[upstream]
+# The tenant's v2.0 issuer, with the tenant id (a GUID): a domain name in
+# this URL makes discovery return an issuer that does not match.
+issuer = "https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0"
+# The Application (client) ID of the "dbt State API" app registration. Its
+# manifest sets requestedAccessTokenVersion = 2, so CI access tokens carry
+# this GUID as `aud` and the v2.0 issuer above as `iss`.
+api_audience = "33333333-4444-5555-6666-777777777777"
+# The API's Application ID URI plus /.default.
+client_credentials_scope = "api://dbt-state/.default"
+# `oid` is the same for a person in every app of the tenant, and for a
+# machine it is its service principal's object id. (`sub` is pairwise per
+# app.)
+subject_claim = "oid"
+# The "dbt State broker" app registration (Web platform, redirect URI
+# https://auth.state.example.com/callback).
+client_id = "22222222-3333-4444-5555-666666666666"
+# A client secret of that registration. Entra ID documents an `x5t#S256`
+# header for certificate assertions, which the broker does not send, so
+# private_key_jwt with Entra ID is untested (see the operator guide).
+client_secret_file = "keys/idp-client-secret"
+refresh_token_key_file = "keys/refresh-token.key"
+# The default login_scope ("openid offline_access email profile") is what
+# Entra ID needs: offline_access for a refresh token, profile for `oid`.
+
+# People: app roles of the broker's app registration, assigned to users or
+# groups in Enterprise applications. A `roles` claim has no group overage.
+[[rules]]
+kind = "person"
+claim = "roles"
+value = "dbt-state.analytics.developer"
+organization = "analytics"
+role = "developer"
+
+[[rules]]
+kind = "person"
+claim = "roles"
+value = "dbt-state.analytics.admin"
+organization = "analytics"
+role = "admin"
+
+# Or a security group's object id, when the registration emits a `groups`
+# claim (a person in more than 200 groups then gets none: group overage).
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "44444444-5555-6666-7777-888888888888"
+organization = "finance"
+role = "developer"
+
+# Machines: an app role of the dbt State API (allowed member type
+# Applications), granted to the CI app registration with admin consent.
+[[rules]]
+kind = "machine"
+claim = "roles"
+value = "dbt-state.analytics.ci"
+organization = "analytics"
+role = "developer"
+
+# Or one CI app registration by its Application (client) ID.
+[[rules]]
+kind = "machine"
+claim = "azp"
+value = "55555555-6666-7777-8888-999999999999"
+organization = "finance"
+role = "developer"

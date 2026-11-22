@@ -138,6 +138,118 @@ fn the_example_config_loads() {
     assert_eq!(login.credential().method(), "private_key_jwt");
 }
 
+/// The operator guide's Upstream IdP recipes (`docs/operator-guide.md`)
+/// load as written, and their rules grant what the guide says for the
+/// claims each IdP puts in its tokens.
+#[test]
+fn the_upstream_idp_recipes_load_and_map_as_documented() {
+    struct Recipe {
+        file: &'static str,
+        credential: &'static str,
+        subject_claim: &'static str,
+        person: serde_json::Value,
+        machine: serde_json::Value,
+    }
+    let recipes = [
+        Recipe {
+            file: "entra-id.toml",
+            credential: "client_secret_basic",
+            subject_claim: "oid",
+            // An app role assigned to the person on the broker's app
+            // registration; an app role of the API granted to the CI app.
+            person: serde_json::json!({"roles": ["dbt-state.analytics.developer"]}),
+            machine: serde_json::json!({"roles": ["dbt-state.analytics.ci"]}),
+        },
+        Recipe {
+            file: "okta.toml",
+            credential: "private_key_jwt",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["dbt-state-analytics"]}),
+            machine: serde_json::json!({"cid": "0oa1ci0analytics0000"}),
+        },
+        Recipe {
+            file: "keycloak.toml",
+            credential: "client_secret_basic",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["data-eng"]}),
+            machine: serde_json::json!({"azp": "dbt-state-ci"}),
+        },
+    ];
+    for recipe in recipes {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/auth")
+            .join(recipe.file);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("keys")).unwrap();
+        std::fs::copy(
+            testdata("signing-key-1.pem"),
+            dir.path().join("keys/signing-2026-11.pem"),
+        )
+        .unwrap();
+        std::fs::copy(
+            testdata("upstream-rp-key.pem"),
+            dir.path().join("keys/idp-client.pem"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("keys/idp-client-secret"), "secret\n").unwrap();
+        std::fs::write(dir.path().join("keys/refresh-token.key"), REFRESH_TOKEN_KEY).unwrap();
+        let path = dir.path().join("auth.toml");
+        std::fs::copy(&example, &path).unwrap();
+
+        let config = AuthConfig::load(&path)
+            .unwrap_or_else(|error| panic!("{} loads: {error}", recipe.file));
+        let upstream = config.upstream().expect("an Upstream IdP");
+        assert_eq!(
+            upstream.subject_claim(),
+            recipe.subject_claim,
+            "{}",
+            recipe.file
+        );
+        let login = upstream.login().expect("browser sign-in");
+        assert_eq!(
+            login.credential().method(),
+            recipe.credential,
+            "{}",
+            recipe.file
+        );
+
+        let organizations = config.organizations();
+        let grant = |kind, claims: &serde_json::Value| {
+            let claims = UpstreamClaims::new(claims.as_object().unwrap().clone());
+            config.mapping_rules().scope(kind, &claims, organizations)
+        };
+        let person = grant(PrincipalKind::Person, &recipe.person);
+        assert_eq!(
+            person.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a person",
+            recipe.file
+        );
+        let machine = grant(PrincipalKind::Machine, &recipe.machine);
+        assert_eq!(
+            machine.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a machine",
+            recipe.file
+        );
+        // Each kind's claims grant the other kind nothing.
+        assert!(
+            grant(PrincipalKind::Machine, &recipe.person)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: person claims for a machine",
+            recipe.file
+        );
+        assert!(
+            grant(PrincipalKind::Person, &recipe.machine)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: machine claims for a person",
+            recipe.file
+        );
+    }
+}
+
 /// Each refusal names what is wrong.
 #[test]
 fn invalid_configs_are_refused() {
@@ -622,9 +734,9 @@ fn invalid_person_sign_in_settings_are_refused() {
         (
             person_login(
                 dir.path(),
-                &format!("{secret}[clients.ui]\nclient_id = \"ui\"\n"),
+                &format!("{secret}[clients.other]\nclient_id = \"other\"\n"),
             ),
-            "ui",
+            "other",
         ),
         (
             person_login(dir.path(), secret).replace(
@@ -649,5 +761,133 @@ fn invalid_person_sign_in_settings_are_refused() {
         );
         assert!(!error.contains("rp-secret-9f2"), "{error}");
         assert!(!error.contains(REFRESH_TOKEN_KEY.trim()), "{error}");
+    }
+}
+
+/// `[clients.ui]` for the console, with its public key from the test data.
+fn ui_client(dir: &Path, table: &str) -> String {
+    format!(
+        "{}\n[clients.ui]\n{table}",
+        person_login(dir, "client_secret_file = \"idp-secret\"\n")
+    )
+}
+
+/// The UI registration: its own client id, exactly one callback, and the
+/// public key its `private_key_jwt` assertions are checked with. No shared
+/// secret can be configured for it.
+#[test]
+fn the_ui_client_registration_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let public_key = toml_string(testdata("ui-client-public.pem").to_str().unwrap());
+    let config = load_in(
+        dir.path(),
+        &person_login(dir.path(), "client_secret_file = \"idp-secret\"\n"),
+    )
+    .expect("valid config");
+    assert!(
+        config.ui_client().is_none(),
+        "the UI is registered only when configured"
+    );
+
+    std::fs::copy(testdata("ui-client-public.pem"), dir.path().join("ui.pem")).unwrap();
+    let config = load_in(
+        dir.path(),
+        &ui_client(
+            dir.path(),
+            "client_id = \"dbt-state-ui\"\n\
+             redirect_uri = \"https://console.example.test/auth/callback\"\n\
+             public_key_file = \"ui.pem\"\n",
+        ),
+    )
+    .expect("valid config");
+    let ui = config.ui_client().expect("the UI registration");
+    assert_eq!(ui.client_id(), "dbt-state-ui");
+    assert_eq!(
+        ui.redirect_uri(),
+        "https://console.example.test/auth/callback"
+    );
+
+    let valid = format!(
+        "client_id = \"dbt-state-ui\"\nredirect_uri = \"https://console.example.test/cb\"\n\
+         public_key_file = {public_key}\n"
+    );
+    std::fs::write(
+        dir.path().join("not-a-key.pem"),
+        "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n",
+    )
+    .unwrap();
+    let cases: Vec<(String, &str)> = vec![
+        (
+            valid.replace("client_id = \"dbt-state-ui\"", "client_id = \"\""),
+            "clients.ui.client_id",
+        ),
+        // The dbt client's id names the dbt client registration.
+        (
+            valid.replace("dbt-state-ui", "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"),
+            "clients.ui.client_id",
+        ),
+        // UI tokens carry it as `aud`: the API audience would let them call
+        // gRPC.
+        (
+            valid.replace("dbt-state-ui", "dbt-state-api"),
+            "clients.ui.client_id",
+        ),
+        (
+            valid.replace("redirect_uri = \"https://console.example.test/cb\"\n", ""),
+            "redirect_uri",
+        ),
+        // Exactly one callback: a string, never a list.
+        (
+            valid.replace(
+                "\"https://console.example.test/cb\"",
+                "[\"https://console.example.test/cb\", \"https://other.example.test/cb\"]",
+            ),
+            "expected a string",
+        ),
+        // https only (plain http on loopback), no fragment.
+        (
+            valid.replace(
+                "https://console.example.test/cb",
+                "http://console.example.test/cb",
+            ),
+            "clients.ui.redirect_uri",
+        ),
+        (
+            valid.replace(
+                "https://console.example.test/cb",
+                "https://console.example.test/cb#x",
+            ),
+            "clients.ui.redirect_uri",
+        ),
+        (
+            valid.replace("https://console.example.test/cb", "console.example.test/cb"),
+            "clients.ui.redirect_uri",
+        ),
+        // A public key, never a secret.
+        (
+            valid.replace(&format!("public_key_file = {public_key}\n"), ""),
+            "public_key_file",
+        ),
+        (
+            format!("{valid}client_secret_file = \"idp-secret\"\n"),
+            "client_secret_file",
+        ),
+        (
+            valid.replace("ui-client-public.pem", "ui-client-key.pem"),
+            "clients.ui.public_key_file",
+        ),
+        (
+            valid.replace(&public_key, "\"not-a-key.pem\""),
+            "clients.ui.public_key_file",
+        ),
+        (valid.replace(&public_key, "\"missing.pem\""), "missing.pem"),
+    ];
+    for (table, needle) in cases {
+        let error = load_in(dir.path(), &ui_client(dir.path(), &table)).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+        assert!(!error.contains("rp-secret-9f2"), "{error}");
     }
 }

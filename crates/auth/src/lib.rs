@@ -12,6 +12,7 @@ mod organization;
 mod scope;
 mod sealing;
 mod token;
+mod ui_client;
 mod upstream;
 
 pub use config::{
@@ -32,7 +33,10 @@ pub use organization::{
 pub use scope::{Scope, ScopeError};
 pub use sealing::{RefreshTokenKey, SealingKeyError};
 pub use token::{
-    IssuedToken, PrincipalId, PrincipalKind, TokenError, TokenIssuer, TokenRequest, TokenVerifier,
-    VerifiedToken, CLOCK_SKEW,
+    IssuedToken, OidcTokens, PrincipalId, PrincipalKind, TokenError, TokenIssuer, TokenRequest,
+    TokenVerifier, VerifiedToken, CLOCK_SKEW,
+};
+pub use ui_client::{
+    ClientAssertionError, PublicKeyFileError, UiClient, VerifiedAssertion, MAX_ASSERTION_LIFETIME,
 };
 pub use upstream::{UpstreamTokenError, UpstreamTokenVerifier};

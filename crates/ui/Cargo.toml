@@ -6,11 +6,17 @@ rust-version.workspace = true
 license.workspace = true
 description = "Read-only web console for the dbt State server (Topcoat)."
 
+[lib]
+name = "dbt_state_ui"
+path = "src/lib.rs"
+
 [[bin]]
 name = "dbt-state-ui"
 path = "src/main.rs"
 
 [dependencies]
+dbt-state-auth = { path = "../auth" }
+dbt-state-broker = { path = "../broker" }
 topcoat = "0.10"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 sqlx.workspace = true
@@ -20,6 +26,13 @@ serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+base64.workspace = true
+form_urlencoded.workspace = true
 # Backend lineage layout (Sugiyama / dagre.js port) over petgraph.
 dagre-rs = "0.1"
 petgraph = "0.8"
+
+[dev-dependencies]
+tempfile.workspace = true

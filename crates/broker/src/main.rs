@@ -5,6 +5,7 @@
 //! | `DBT_STATE_BROKER_LISTEN` | HTTP listen address (default `127.0.0.1:8080`) |
 //! | `DBT_STATE_AUTH_CONFIG` | path of the TOML auth config; needs `[signing]` and `[upstream]` |
 //! | `DATABASE_URL` | the gRPC server's Postgres, where the broker keeps its state; migrated at startup |
+//! | `DBT_STATE_BROKER_TLS_CERT_FILE`, `DBT_STATE_BROKER_TLS_KEY_FILE` | serve HTTPS with this PEM certificate chain and private key (both or neither; plain HTTP behind a TLS-terminating proxy without) |
 //!
 //! A gRPC server pointed at this broker (its auth config without
 //! `[signing]`, `broker.issuer` this broker's public URL) fetches and caches
@@ -15,7 +16,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use dbt_state_auth::AuthConfig;
-use dbt_state_broker::Broker;
+use dbt_state_broker::{Broker, TlsIdentity};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,6 +36,10 @@ async fn main() -> anyhow::Result<()> {
         .into();
     let config = AuthConfig::load(&path)?;
     Broker::check(&config)?;
+    let tls = TlsIdentity::from_env(
+        "DBT_STATE_BROKER_TLS_CERT_FILE",
+        "DBT_STATE_BROKER_TLS_KEY_FILE",
+    )?;
     let database_url = var("DATABASE_URL")
         .context("the Token broker needs DATABASE_URL, the dbt State server's Postgres")?;
 
@@ -54,8 +59,12 @@ async fn main() -> anyhow::Result<()> {
         addr = %listen,
         issuer = config.broker_issuer(),
         config = %path.display(),
+        tls = tls.is_some(),
         "dbt-state-broker listening"
     );
-    dbt_state_broker::serve(listener, broker).await?;
+    match tls {
+        Some(identity) => dbt_state_broker::serve_tls(listener, broker, &identity).await?,
+        None => dbt_state_broker::serve(listener, broker).await?,
+    }
     Ok(())
 }

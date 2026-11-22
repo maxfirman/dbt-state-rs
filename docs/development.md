@@ -9,7 +9,16 @@
   protobuf-compiler`), or set `PROTOC`.
 - **Postgres** reachable at `DATABASE_URL`. CI uses `postgres:17-alpine`.
 - **uv** and **Python 3.12** for the DuckDB acceptance cases
-  (`scripts/duckdb-ci.sh`).
+  (`scripts/duckdb-ci.sh`) and for the pinned Python client driver that
+  `cargo test` runs (`crates/harness/tests/python_client.rs`; it skips
+  without `uv` unless `DBT_STATE_REQUIRE_PYTHON_CLIENT=1`, as CI sets).
+  Both `uv.lock` files pin public PyPI. If your uv config names another
+  package index, `--locked` refuses them; run with `UV_NO_CONFIG=1` (the
+  driver passes `UV_*` variables through).
+- **Docker**, only for the opt-in Keycloak suite
+  (`scripts/keycloak.sh start`, then `DBT_STATE_KEYCLOAK=1`; see
+  [testing.md](testing.md#keycloak-upstream-suite)). Without
+  `DBT_STATE_KEYCLOAK=1` its tests skip.
 
 ## Build, lint and test
 
@@ -73,74 +82,34 @@ on a non-loopback address (for example `0.0.0.0:50051`) unless
 except health, for an Organization in the TOML auth config at
 `DBT_STATE_AUTH_CONFIG` ([example](../examples/auth/auth.toml),
 [wire contract](protocol.md#authentication-oidc-mode)).
-`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode.
-
-The Token broker issues those tokens. Set `DBT_STATE_BROKER_LISTEN` (for
-example `127.0.0.1:8080`) to run it in the server process on its own HTTP/1.1
-listener, sharing the config's `[signing]` keys and the server's Postgres;
-the gRPC listener stays HTTP/2. It needs `[signing]` and `[upstream]` in the
-auth config, and is a startup error in `none` mode. To run it on its own
-instead (it keeps its state in the server's schema and migrates it at
-startup, so several brokers can share it):
+`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode. Deploying
+it (the Token broker in process or standalone, the Upstream IdP, TLS, the
+dbt client's settings, revocation and the admin command) is described in
+the [operator guide](operator-guide.md). From a checkout:
 
 ```bash
+# gRPC and the Token broker in one process, both over TLS
+DBT_STATE_AUTH=oidc DBT_STATE_AUTH_CONFIG=auth.toml \
+DBT_STATE_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_TLS_KEY_FILE=/run/tls/tls.key \
+DBT_STATE_BROKER_LISTEN=127.0.0.1:8443 \
+DBT_STATE_BROKER_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_BROKER_TLS_KEY_FILE=/run/tls/tls.key \
+  cargo run -p dbt-state-server
+
+# or the Token broker on its own, on the server's database and schema
 DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
 DBT_STATE_AUTH_CONFIG=auth.toml DBT_STATE_BROKER_LISTEN=127.0.0.1:8080 \
   cargo run -p dbt-state-broker
-```
 
-A gRPC server whose auth config has no `[signing]` then checks tokens
-against that broker's published keys: fetched from `broker.jwks_url`, or by
-OIDC discovery at `broker.issuer` (https, or plain http only on loopback),
-and cached (refetched after 5 minutes, or
-when a token's key is unknown, at most every 30 s).
-
-A CI machine authenticates with its Upstream IdP app registration: point the
-dbt client's token URL (`RUN_CACHE_TOKEN_URL`) at `<broker>/token` and set
-its client id and secret (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
-`DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`). The broker forwards the
-credentials to the IdP's `client_credentials` grant, checks the access token
-it returns, and applies the `kind = "machine"` mapping rules.
-
-A person signs in through the browser: point the dbt client's auth URL
-(`RUN_CACHE_AUTH_URL`) at the broker's issuer and its token URL at
-`<broker>/token`, and set no client id or secret (the client's built-in id
-is the dbt client registration's default, `[clients.dbt] client_id`). The
-broker must be registered at the Upstream IdP as an OIDC client
-(`[upstream] client_id`, with `private_key_file` or `client_secret_file`,
-and `refresh_token_key_file`; see the [example](../examples/auth/auth.toml))
-with redirect URI `<broker.issuer>/callback`. It applies the
-`kind = "person"` mapping rules, and the code exchange returns a person
-token (`sid`) and a refresh token, which the `refresh_token` grant renews
-after re-checking the person at the Upstream IdP (#221).
-
-Every RPC with a person token also checks that the token's broker session
-is active: not revoked and not past its 12-hour cap. The gRPC server reads
-the session from its own Postgres, so a standalone broker must share the
-server's database and schema. Each replica caches a session's status for
-at most 30 s.
-
-### Revoking a Principal's sessions
-
-In an incident, revoke every session of a person with the server binary
-(only `DATABASE_URL` is read):
-
-```bash
+# revoke every session of a person (only DATABASE_URL is read)
 DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
   cargo run -p dbt-state-server -- revoke-sessions \
     --issuer https://login.example.com/tenant/v2.0 --subject 6b1f...
-# revoked 2 sessions of Principal Zt9...
 ```
 
-The issuer is the `[upstream] issuer` and the subject the person's value
-of `[upstream] subject_claim` (default `sub`), which the broker's
-`token issued` log lines show as `subject`. No revoked session renews, and every gRPC
-replica refuses its person tokens (`UNAUTHENTICATED`) within 30 s. The
-command logs `person sessions revoked` on stderr, and fails when no
-Principal with that issuer and subject is known. A later browser sign-in
-starts a new session; to keep the person out, disable them at the
-Upstream IdP. Machine tokens have no session: disable the app registration
-at the IdP instead (they end within the machine token lifetime).
+The harness's tests run all of this against a fake Upstream IdP
+([testing.md](testing.md)); the Keycloak suite, the pinned Fusion driver and
+the [live Fusion acceptance on Snowflake](testing.md#live-fusion-acceptance-on-snowflake)
+are opt-in.
 
 ## Running the UI
 
@@ -149,7 +118,8 @@ HOST=127.0.0.1 PORT=4000 DBT_STATE_UI_ORG_ID=local cargo run -p dbt-state-ui
 ```
 
 It reads the same `DATABASE_URL`. `HOST`/`PORT` default to `127.0.0.1:3000`;
-`DBT_STATE_UI_ORG_ID` defaults to `local`. See [ui.md](ui.md).
+`DBT_STATE_UI_ORG_ID` defaults to `local`. With `DBT_STATE_AUTH=oidc` it
+signs people in through the Token broker instead. See [ui.md](ui.md).
 
 ## Pointing the dbt client at the server
 
@@ -164,7 +134,9 @@ dbt build --profile <profile> --target <target> --skip-semantic-manifest-validat
 ```
 
 Client auth, metadata headers and configuration are described in
-[protocol.md](protocol.md).
+[protocol.md](protocol.md). Against an `oidc` deployment the client uses TLS
+and the Token broker's URLs instead
+([operator guide](operator-guide.md#pointing-dbt-clients-at-the-deployment)).
 
 ### Warehouse note
 
