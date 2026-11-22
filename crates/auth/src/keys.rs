@@ -126,6 +126,10 @@ impl fmt::Debug for PublicKeys {
 }
 
 impl PublicKeys {
+    fn contains(&self, kid: &str) -> bool {
+        self.0.contains_key(kid)
+    }
+
     /// Whether `signature` is a valid RS256 signature of `message` by the key
     /// `kid`.
     fn verify(&self, kid: &str, message: &[u8], signature: &[u8]) -> bool {
@@ -186,6 +190,11 @@ impl VerificationKeys {
 
     fn current(&self) -> Arc<PublicKeys> {
         Arc::clone(&self.0.read().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Whether the set holds a key `kid`.
+    pub(crate) fn contains(&self, kid: &str) -> bool {
+        self.current().contains(kid)
     }
 
     /// Whether `signature` is a valid RS256 signature of `message` by the

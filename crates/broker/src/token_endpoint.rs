@@ -9,7 +9,8 @@
 //!   `grant_type=client_credentials&scope=runcache:scope:orgs`;
 //! - with a dbt platform credential, token exchange
 //!   (`urn:ietf:params:oauth:grant-type:token-exchange`), refused here;
-//! - otherwise, after browser sign-in, `authorization_code` (`code_grant`).
+//! - otherwise, after browser sign-in, `authorization_code` (`code_grant`),
+//!   and then `refresh_token` to renew (`refresh_grant`).
 //!
 //! Both read `id_token` (whose `scope` claim names the Organizations),
 //! `token_type` (Python requires it), and `expires_in`; `refresh_token` only
@@ -38,6 +39,7 @@ use std::collections::BTreeMap;
 
 use crate::code_grant::{self, AUTHORIZATION_CODE};
 use crate::oauth::{no_store, OAuthError};
+use crate::refresh_grant::{self, REFRESH_TOKEN};
 use crate::store::Principal;
 use crate::upstream::UpstreamError;
 use crate::Broker;
@@ -90,6 +92,7 @@ pub(crate) async fn token(
     match form.get("grant_type").map(String::as_str) {
         Some(CLIENT_CREDENTIALS) => client_credentials(&broker, &headers).await,
         Some(AUTHORIZATION_CODE) => code_grant::exchange(&broker, &form).await,
+        Some(REFRESH_TOKEN) => refresh_grant::renew(&broker, &form).await,
         Some(TOKEN_EXCHANGE) => Refusal {
             grant: Some(TOKEN_EXCHANGE),
             reason: "token_exchange_unsupported",

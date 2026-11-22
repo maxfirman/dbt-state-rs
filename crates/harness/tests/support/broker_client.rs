@@ -16,6 +16,12 @@
 //!   client's authlib `fetch_token(..., include_client_id=True)` body with
 //!   no client secret ([`authorization_code_python`]; `dbt_state/auth/
 //!   sso.py` `_login`).
+//! - renewal ([`refresh_token`]): both clients post
+//!   `grant_type=refresh_token&refresh_token=<token>&client_id=<id>` with no
+//!   client authentication and no scope (Fusion `oauth.rs` `fetch_refresh`;
+//!   the Python client's authlib `OAuth2Session.refresh_token(token_url,
+//!   refresh_token=..., scope=None)` in `sso.py` `_refresh_token`, whose
+//!   `none` client auth appends `client_id`).
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
@@ -145,6 +151,24 @@ pub async fn authorization_code_python(
             ("include_client_id", "True"),
             ("code", code),
             ("client_id", sign_in.client_id.as_str()),
+        ])
+        .send()
+        .await
+        .expect("token request")
+}
+
+/// POST the `refresh_token` grant both clients send.
+pub async fn refresh_token(
+    broker: &str,
+    client_id: &str,
+    refresh_token: &str,
+) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{broker}/token"))
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", client_id),
         ])
         .send()
         .await

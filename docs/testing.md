@@ -139,15 +139,18 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
   `.subject_claim(c)`, `.dbt_client_id(id)`,
   `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
+  `.without_browser_sign_in()` (no `[upstream] client_id`),
   `.rule(kind, claim, value, org, role)`, `.person_lifetime_minutes(m)`,
   `.machine_lifetime_minutes(m)`, `.issuer(url)` and `.without_signing()`.
 - `start_server_with_broker(&auth)` runs the gRPC server and the Token
   broker in one process on separate listeners (`server.broker_url()`), as
   `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
   standalone broker on its own migrated schema whose issuer is its own URL
-  (`TestBroker::url()`, `.auth`, `.clock`). `server.broker_clock` (a
+  (`TestBroker::url()`, `.auth`, `.clock`), and
+  `start_broker_beside(&broker, builder)` another one on the same schema (a
+  replica, or the deployment restarted with another config). `server.broker_clock` (a
   `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
-  codes and pending logins.
+  codes, pending logins and sessions.
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
   Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
@@ -160,14 +163,23 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `.without_id_token()` and `.without_refresh_token()` spoil its token
   response. The `authorization_code` grant authenticates the broker by
   `BROKER_CLIENT_SECRET` or a `private_key_jwt` assertion
-  (`upstream-rp-key.pem`) and checks redirect URI and PKCE.
-  `idp.token_requests()`, `idp.authorize_requests()`,
-  `idp.issued_refresh_tokens()` and `idp.jwks_fetches()` report what the
-  broker sent and got. `IdpState::people` and `refresh_tokens` are where
-  renewal (#221) plugs in.
+  (`upstream-rp-key.pem`) and checks redirect URI and PKCE. The
+  `refresh_token` grant renews a person with their current claims, rotating
+  the refresh token, and `/userinfo` answers for a person's access token:
+  `idp.update(person)` changes a person's claims, `idp.disable(sub)` /
+  `idp.enable(sub)` a person, `idp.fail_refresh(status, error)` /
+  `idp.restore_refresh()` every refresh; `UpstreamPerson`
+  `.without_refresh_id_token()`, `.without_refresh_access_token()`,
+  `.keeps_refresh_token()`, `.renewed_as(sub)` and `.userinfo_without(claim)`
+  shape renewal, and `idp.follow(&server.broker_clock)` issues person tokens
+  at the broker's test clock. `idp.token_requests()`,
+  `idp.authorize_requests()`, `idp.issued_refresh_tokens()`,
+  `idp.issued_access_tokens()`, `idp.userinfo_requests()` and
+  `idp.jwks_fetches()` report what the broker sent and got.
 - `broker_client.rs` sends token requests exactly as the pinned dbt clients
   do (`client_credentials`, `token_exchange`, and the browser sign-in's
-  `authorization_code` as Fusion and as the Python client post it), and
+  `authorization_code` as Fusion and as the Python client post it, and
+  `refresh_token`, whose form both clients share), and
   `claims(jwt)` reads a token's claims unverified, as the clients do.
   `SignIn::new()` is one browser sign-in as the clients start it (client id
   `DBT_CLIENT_ID`, redirect `LOOPBACK_REDIRECT_URI`, PKCE S256, `state`);
@@ -177,7 +189,8 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
 - `browser.rs`: `Browser::new().route(ISSUER, &server.broker_url())`
   follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
   client's loopback handler (`Landing::Loopback(query)`) or a page
-  (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`.
+  (`Landing::Page { status, body }`). Tests: `tests/person_login.rs`, and
+  renewal in `tests/person_renewal.rs`.
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions,
   `decisions(&server, n)` the `node_decisions` rows once `n` are captured,

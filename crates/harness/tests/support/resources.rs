@@ -259,7 +259,7 @@ pub struct TestBroker {
     pub auth: super::oidc::TestAuth,
     pub clock: TestClock,
     server: super::http::HttpServer,
-    _database: TestDatabase,
+    database: std::sync::Arc<TestDatabase>,
 }
 
 impl TestBroker {
@@ -274,6 +274,20 @@ impl TestBroker {
 pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
     let database = TestDatabase::new("broker").await;
     database.migrate().await;
+    start_broker_on(std::sync::Arc::new(database), auth)
+}
+
+/// Start another standalone Token broker on `other`'s database, with the
+/// config `auth` builds and its own URL as issuer: another replica of the
+/// deployment, or the deployment restarted with a changed config.
+pub fn start_broker_beside(other: &TestBroker, auth: super::oidc::TestAuthBuilder) -> TestBroker {
+    start_broker_on(std::sync::Arc::clone(&other.database), auth)
+}
+
+fn start_broker_on(
+    database: std::sync::Arc<TestDatabase>,
+    auth: super::oidc::TestAuthBuilder,
+) -> TestBroker {
     let listener = super::http::HttpServer::bind();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let auth = auth.issuer(&url).build();
@@ -289,7 +303,7 @@ pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
         auth,
         clock,
         server,
-        _database: database,
+        database,
     }
 }
 
