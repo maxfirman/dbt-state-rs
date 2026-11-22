@@ -8,11 +8,10 @@
 //! 1. records the node's comparison state for `state:*` selectors (best effort);
 //! 2. selects a reuse candidate from State history (one scoped read, then the
 //!    pure [`reuse_candidate`] selection);
-//! 3. tries the Result copy fallback, which is considered only when there is
-//!    NO reuse candidate and, when it applies, overrides the verdict (a SQL
-//!    submit whose execution type is not copied keeps the verdict and reports
-//!    the equivalent in its rejection codes; a seed is copied on Snowflake
-//!    only, #91);
+//! 3. tries the Result copy fallback when no reuse candidate qualified or a
+//!    SQL submit must rebuild for freshness (a SQL submit whose execution type
+//!    is not copied keeps the verdict and reports the equivalent in its
+//!    rejection codes). Snowflake also copies seeds (#91);
 //! 4. otherwise builds the decision context and calls the pure
 //!    [`decide`](crate::decision::decide);
 //! 5. decorates an ordinary SQL rebuild with the refusal diagnostics hosted
@@ -20,10 +19,9 @@
 //! 6. mints the request and execution decision ids and writes the pending row
 //!    for every outcome the client will confirm.
 //!
-//! The rules behind the reads are pure internal seams, unit-tested without a
-//! store: which equivalent the copy fallback copies ([`copy_search`]) and
-//! which diagnostic asks State history what ([`diagnostics`]). The functions
-//! here sequence the reads and writes.
+//! The functions here sequence the reads and writes. The copy-source freshness
+//! and generic search rules in [`copy_search`] and the rules in [`diagnostics`]
+//! are pure and unit-tested without a store.
 //!
 //! The gRPC adapter keeps org and metadata extraction, maps the outcome to the
 //! wire (both clone oneofs) and captures it.
@@ -1228,11 +1226,11 @@ enum CopyFallback {
 ///
 /// An equivalent that read the same upstream relations as this submit is
 /// judged exactly as if it were the reuse candidate, for an existing or a
-/// dropped target (VERIFIED LIVE 2026-11-10, lag_copy_candidates: an
-/// equivalent whose consumed upstream was since externally modified is not
-/// copied; lag_dropped_targets `dset0`/`dset600`). One in another environment reads
-/// other relations and is copied without that judgment, as verified earlier
-/// (clone_fallback_stale_source, clone_fallback_zero_tolerance).
+/// dropped target (see `lag_copy_candidates` and `lag_dropped_targets`
+/// `dset0`/`dset600`).
+/// Snowflake and DuckDB may choose a source with different inputs under the
+/// conditions in [`copy_search`]. Databricks requires exact current inputs
+/// and the source build's evidence for publication.
 async fn result_copy_fallback(
     store: &Store,
     org_id: &str,
@@ -1242,43 +1240,84 @@ async fn result_copy_fallback(
     judgement: (Option<&ExecutionRow>, Option<&ExecutionRow>),
 ) -> sqlx::Result<CopyFallback> {
     let (own, anchor) = judgement;
-    if Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks {
-        return databricks_result_copy(store, org_id, req, evidence, freshness, anchor).await;
+    let requires_checked_source = Warehouse::from_dialect(&req.dialect) == Warehouse::Databricks;
+    if requires_checked_source && !crate::databricks_submit_copy::request_admits(req, evidence) {
+        return Ok(CopyFallback::Ordinary);
     }
     let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
         return Ok(CopyFallback::Ordinary);
     };
-    // The first equivalent, in preference order, that the warehouse rules
-    // accept and that qualifies for this submit ([`copy_search`]).
     let mut search = copy_search::CopySearch::new(own);
     let mut chosen = None;
     for candidate in copy_candidates(store, org_id, req, &lookup).await? {
-        let Some(equivalent) = eligible_equivalent(store, org_id, req, &lookup, candidate).await?
-        else {
-            continue;
-        };
-        let source = store
-            .current_target_state(
-                org_id,
-                &equivalent.source_table,
-                Some(lookup.table_namespace),
-                &req.dialect,
-            )
-            .await?;
-        match search.offer(evidence, freshness, source) {
-            copy_search::Offer::Choose(judged) => {
-                chosen = Some((equivalent, judged));
-                break;
+        let (equivalent, judged, publication_source) = if requires_checked_source {
+            // A pending write blocks this source. Once the current row proves
+            // exact inputs, it supplies both the plan and publication evidence.
+            let Some(source) = store
+                .current_direct_copy_source(
+                    org_id,
+                    &candidate.target_table,
+                    lookup.table_namespace,
+                    &req.dialect,
+                )
+                .await?
+            else {
+                continue;
+            };
+            if !crate::copy_lifecycle::source_admits(evidence, &source) {
+                continue;
             }
-            copy_search::Offer::Next => continue,
-            copy_search::Offer::Stop => break,
+            let Some(judged) = copy_search::judge_equivalent(evidence, freshness, source.clone())
+            else {
+                continue;
+            };
+            let equivalent = CloneEquivalent {
+                source_table: source.target_table.clone(),
+                source_execution_id: source.id,
+                execution_type: source.execution_type,
+                table_type: None,
+                last_modified_epoch: source.last_modified_epoch,
+                execution_runtime_ms: source.execution_runtime_ms,
+                copy_depth: 0,
+            };
+            (equivalent, Some(judged), Some(source))
+        } else {
+            let Some(equivalent) =
+                eligible_equivalent(store, org_id, req, &lookup, candidate).await?
+            else {
+                continue;
+            };
+            // The lookup row supplies the plan and recorded source. The later
+            // physical-state read is used only for the freshness judgment.
+            let source = store
+                .current_target_state(
+                    org_id,
+                    &equivalent.source_table,
+                    Some(lookup.table_namespace),
+                    &req.dialect,
+                )
+                .await?;
+            let judged = match search.offer(evidence, freshness, source) {
+                copy_search::Offer::Choose(judged) => judged,
+                copy_search::Offer::Next => continue,
+                copy_search::Offer::Stop => break,
+            };
+            (equivalent, judged, None)
+        };
+        let source_table = equivalent.source_table.clone();
+        let plan = result_copy::plan_submit(req, equivalent);
+        // Databricks can try an older source when planning fails. The first
+        // qualified lookup source makes the planner's outcome final.
+        if publication_source.is_some() && !matches!(plan, SubmitCopyPlan::Copy(_)) {
+            continue;
         }
+        chosen = Some((plan, source_table, judged, publication_source));
+        break;
     }
-    let Some((equivalent, judged)) = chosen else {
+    let Some((plan, source_table, judged, publication_source)) = chosen else {
         return Ok(CopyFallback::Ordinary);
     };
-    let source_table = equivalent.source_table.clone();
-    match result_copy::plan_submit(req, equivalent) {
+    match plan {
         plan @ (SubmitCopyPlan::ChainLimitExecute | SubmitCopyPlan::CopiesDisabled)
             if own.is_none() =>
         {
@@ -1300,12 +1339,16 @@ async fn result_copy_fallback(
         }
         SubmitCopyPlan::Copy(copy) => {
             let ids = DecisionIds::mint();
-            // Keyed on the submit target and inheriting the equivalent's logic
-            // identity, so later submits reuse the copy once confirmed.
-            write_pending(store, &evidence.copied_from(&copy), &ids).await?;
+            // Keep the checked source's original inputs and execution evidence
+            // for confirmation. Otherwise record the source named by the plan.
+            let pending = match publication_source.as_ref() {
+                Some(source) => evidence.submit_copied_from(source),
+                None => evidence.copied_from(&copy),
+            };
+            write_pending(store, &pending, &ids).await?;
             let record = match judged {
                 Some((reuse, build_age_ms)) => DecisionRecord::result_copy_judged(
-                    anchor,
+                    anchor.or(publication_source.as_ref()),
                     reuse,
                     freshness.tolerance_ms,
                     build_age_ms,
@@ -1337,70 +1380,6 @@ async fn result_copy_fallback(
             Ok(CopyFallback::Ordinary)
         }
     }
-}
-
-/// Databricks never takes the generic unjudged cross-input path. Its source
-/// is read with a pending-write barrier, and its build inputs are frozen into
-/// both the pending copy and its publication proof.
-async fn databricks_result_copy(
-    store: &Store,
-    org_id: &str,
-    req: &qc::SubmitEnrichedSqlRequest,
-    evidence: &ExecutionEvidence,
-    freshness: &Freshness<'_>,
-    anchor: Option<&ExecutionRow>,
-) -> sqlx::Result<CopyFallback> {
-    if !crate::databricks_submit_copy::request_admits(req, evidence) {
-        return Ok(CopyFallback::Ordinary);
-    }
-    let Some(lookup) = result_copy::submit_lookup(req, evidence, false) else {
-        return Ok(CopyFallback::Ordinary);
-    };
-    for candidate in copy_candidates(store, org_id, req, &lookup).await? {
-        let Some(source) = store
-            .current_direct_copy_source(
-                org_id,
-                &candidate.target_table,
-                lookup.table_namespace,
-                &req.dialect,
-            )
-            .await?
-        else {
-            continue;
-        };
-        if !crate::copy_lifecycle::source_admits(evidence, &source) {
-            continue;
-        }
-        let Some((reuse, age)) = copy_search::judge_equivalent(evidence, freshness, source.clone())
-        else {
-            continue;
-        };
-        let equivalent = CloneEquivalent {
-            source_table: source.target_table.clone(),
-            source_execution_id: source.id,
-            execution_type: source.execution_type,
-            table_type: None,
-            last_modified_epoch: source.last_modified_epoch,
-            execution_runtime_ms: source.execution_runtime_ms,
-            copy_depth: 0,
-        };
-        if let SubmitCopyPlan::Copy(copy) = result_copy::plan_submit(req, equivalent) {
-            let ids = DecisionIds::mint();
-            write_pending(store, &evidence.submit_copied_from(&source), &ids).await?;
-            return Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
-                ids,
-                copy,
-                record: DecisionRecord::result_copy_judged(
-                    anchor.or(Some(&source)),
-                    reuse,
-                    freshness.tolerance_ms,
-                    age,
-                    &evidence.input_tables,
-                ),
-            })));
-        }
-    }
-    Ok(CopyFallback::Ordinary)
 }
 
 /// How many current equivalents the Result copy fallback considers, newest
