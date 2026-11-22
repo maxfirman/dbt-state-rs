@@ -73,7 +73,8 @@ pub struct Cell {
     pub outcome: Outcome,
     /// The SQL the values come from.
     pub queries: Queries,
-    /// A Databricks cell captured with one distinct function form.
+    /// The function forms a cell was captured with, one per submit
+    /// ([`Cell::with_functions`]). `None`: any rule.
     functions: Option<&'static [Rule]>,
     without_upstream_tables: bool,
 }
@@ -96,6 +97,11 @@ pub const fn cell(
 }
 
 impl Cell {
+    /// Narrow the cell to the function forms it was captured with: it then
+    /// renders only SQL that calls exactly one distinct form of `functions`
+    /// and no other function, as a single query without query dependencies
+    /// (the Databricks cells, #213). Calling one listed form beside another,
+    /// listed or not, is uncaptured and renders nothing.
     pub const fn with_functions(mut self, functions: &'static [Rule]) -> Self {
         self.functions = Some(functions);
         self
@@ -409,6 +415,8 @@ pub(crate) fn evaluate(
             && cell.evaluation_requested == requested(req)
             && cell.outcome.covers(decided)
             && cell.queries == queries
+            // `Cell::with_functions`: exactly one distinct listed form, in
+            // one checked query without dependencies.
             && cell.functions.is_none_or(|functions| {
                 !root.unchecked
                     && req.query_dependencies.is_empty()
