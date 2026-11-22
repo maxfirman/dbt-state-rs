@@ -378,17 +378,20 @@ pub(crate) fn evaluate(
     } else {
         target
     };
-    let (root_calls, unchecked_root) = called_rules(rules, &req.sql);
+    let root = called_rules(rules, &req.sql);
     let own_calls: Vec<_> = own
         .into_iter()
-        .flat_map(|query| root_calls.iter().copied().map(move |rule| (query, rule)))
+        .flat_map(|query| root.rules.iter().copied().map(move |rule| (query, rule)))
         .collect();
     let dependency_calls: Vec<_> = req
         .query_dependencies
         .iter()
         .flat_map(|dep| {
+            // A dependency's shape is never read: a `Cell::with_functions`
+            // cell, the only reader of `unchecked`, admits no query
+            // dependencies at all.
             called_rules(rules, &dep.query)
-                .0
+                .rules
                 .into_iter()
                 .map(|rule| (dep.name.as_str(), rule))
         })
@@ -407,7 +410,7 @@ pub(crate) fn evaluate(
             && cell.outcome.covers(decided)
             && cell.queries == queries
             && cell.functions.is_none_or(|functions| {
-                !unchecked_root
+                !root.unchecked
                     && req.query_dependencies.is_empty()
                     && count == 1
                     && calls.clone().all(|(_, rule)| functions.contains(rule))
@@ -438,11 +441,22 @@ pub(crate) fn evaluate(
     Some(Rendered(values))
 }
 
-/// The rules `sql` calls, first call first, and whether it contains an
-/// unrecognized function or is outside the checked single-query shape.
-fn called_rules(rules: Rules, sql: &str) -> (Vec<&'static Rule>, bool) {
+/// The rules one query calls.
+struct Calls {
+    /// Each rule the SQL calls, once, first call first.
+    rules: Vec<&'static Rule>,
+    /// Whether the SQL contains an unrecognized function or is outside the
+    /// checked single-query shape (it does not parse, or is not one query).
+    unchecked: bool,
+}
+
+/// The rules `sql` calls.
+fn called_rules(rules: Rules, sql: &str) -> Calls {
     let Ok(statements) = Parser::parse_sql(rules.dialect, sql) else {
-        return (Vec::new(), true);
+        return Calls {
+            rules: Vec::new(),
+            unchecked: true,
+        };
     };
     let mut finder = Finder {
         rules: rules.functions,
@@ -450,7 +464,10 @@ fn called_rules(rules: Rules, sql: &str) -> (Vec<&'static Rule>, bool) {
         unchecked: !matches!(statements.as_slice(), [sqlparser::ast::Statement::Query(_)]),
     };
     let _ = statements.visit(&mut finder);
-    (finder.found, finder.unchecked)
+    Calls {
+        rules: finder.found,
+        unchecked: finder.unchecked,
+    }
 }
 
 /// Collects the rules whose function the SQL calls, first call first.
