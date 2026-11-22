@@ -10,7 +10,7 @@ crates/auth      auth core: scope format, TOML auth config, RS256 tokens and JWK
 crates/broker    Token broker: OIDC discovery, JWKS, browser sign-in through the Upstream IdP, client_credentials pass-through
 crates/server    the dbt State server (decision engine + Postgres store + gRPC)
 crates/harness   recording proxy, state probe, golden fixtures, differential + fuzz tooling, tests
-crates/ui        optional read-only console, scoped to one configured organization
+crates/ui        optional read-only console: one configured organization, or (oidc) sign-in through the Token broker
 ```
 
 ## proto crate
@@ -446,8 +446,10 @@ confirmed run by org, warehouse family, namespace and history key (ADR 0007
 "Data-test history key", #200); an older run under another key stays
 reusable. Other Warehouses' data tests select by org, project, warehouse
 scope and UID.
-Every store query is org-scoped; neither this nor the UI's
-`DBT_STATE_UI_ORG_ID` filter is authentication.
+Every store query is org-scoped; neither this nor the UI's `none`-mode
+`DBT_STATE_UI_ORG_ID` filter is authentication. In `oidc` mode the UI
+scopes its queries to the signed-in person's selected Organization
+([ui.md](ui.md#organization-scope)).
 
 ### Store tables
 
@@ -485,7 +487,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 ## auth crate
 
 `crates/auth` (`dbt-state-auth`) is shared by the gRPC server, the Token
-broker and, later, the UI. It is pure apart from reading the config and key
+broker and the UI. It is pure apart from reading the config and key
 files; fetching keys and talking to the Upstream IdP live in the broker
 crate.
 
@@ -493,7 +495,7 @@ crate.
 |---|---|
 | `organization.rs` | `OrganizationId` (non-empty visible ASCII, no `:`, not `*`), `Role` (`developer` < `admin`), declared `Organizations` (active or disabled). |
 | `scope.rs` | The `scope` claim: `Scope::issue` (highest Role per declared Organization; active ones as `org` + `app` entries, disabled ones as `app` only) and the strict `Scope::parse`. `tests/scope_proptest.rs` checks both against ports of the pinned clients' scope rules (`tests/client_scope/`). |
-| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer` and optional `jwks_url`, `max_pending_logins_per_ip` (default 20), `client_ip_header`; `[api] audience`; `[tokens]` lifetimes; optional `[signing]` keys; `[[organizations]]`; optional `[upstream]` (`issuer`, `api_audience`, `client_credentials_scope`, `subject_claim` (default `sub`), and for browser sign-in `client_id`, exactly one of `private_key_file` (+ optional `private_key_id`) or `client_secret_file`, `refresh_token_key_file`, `login_scope`); `[[rules]]`; optional `[clients.dbt] client_id` (default `DEFAULT_DBT_CLIENT_ID`, the dbt client's built-in id); optional `[clients.ui]` (`client_id`, one `redirect_uri`, `public_key_file`; `AuthConfig::ui_client`)), unknown keys refused. Builds the `TokenIssuer` (with `[signing]`), `TokenVerifier` and `RequestAuthenticator` over a `VerificationKeys`. |
+| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer` and optional `jwks_url`, `max_pending_logins_per_ip` (default 20), `client_ip_header`; `[api] audience`; `[tokens]` lifetimes; optional `[signing]` keys; `[[organizations]]`; optional `[upstream]` (`issuer`, `api_audience`, `client_credentials_scope`, `subject_claim` (default `sub`), and for browser sign-in `client_id`, exactly one of `private_key_file` (+ optional `private_key_id`) or `client_secret_file`, `refresh_token_key_file`, `login_scope`); `[[rules]]`; optional `[clients.dbt] client_id` (default `DEFAULT_DBT_CLIENT_ID`, the dbt client's built-in id); optional `[clients.ui]` (`client_id`, one `redirect_uri`, `public_key_file`; `AuthConfig::ui_client`)), unknown keys refused. Builds the `TokenIssuer` (with `[signing]`), `TokenVerifier` and `RequestAuthenticator` over a `VerificationKeys`, and `ui_token_verifier` (the same checks for the UI's client id as `aud`). |
 | `keys.rs` | RS256 keys from PEM files (PKCS#8 or PKCS#1), several key ids, one active; never echoes key material. `VerificationKeys`: a shared, replaceable public key set, published and read as a JWKS. |
 | `ui_client.rs` | `UiClient`: the UI's registration (client id, its one callback, its RS256 public key from a PEM `SubjectPublicKeyInfo`). `UiClient::verify_assertion` checks a `private_key_jwt` client assertion (signature, `iss` = `sub` = client id, `aud` one of the given audiences, `exp` with 60 s skew, at most `MAX_ASSERTION_LIFETIME` (5 min), `iat`/`nbf` not in the future, a `jti`) and returns the `jti` with how long to remember it; the replay check is the broker's. |
 | `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId` (`PrincipalId::upstream(issuer, subject)`: an opaque hash of the Upstream IdP pair), `PrincipalKind` (person tokens carry `sid`). `TokenIssuer::issue_oidc`: the UI's `id_token` (with the authorize `nonce` on a code exchange) and JWT `access_token`, the same shape but `aud` the client id, so gRPC refuses them. |
@@ -536,8 +538,13 @@ Upstream IdP at startup.
 
 ## ui crate
 
-`crates/ui` (bin `dbt-state-ui`) reads the capture tables read-only. See
-[ui.md](ui.md).
+`crates/ui` (`dbt-state-ui`, lib `dbt_state_ui` and bin) reads the capture
+tables read-only. `settings.rs` reads the environment (`Settings::from_env`
+/ `from_vars`); `sign_in.rs` is `oidc` mode (sign-in through the Token
+broker as `[clients.ui]`, encrypted session cookie, session check, renewal,
+Organization filtering); `app.rs::access` is the layer that applies it to
+every page. `dbt_state_ui::router(pool, settings, clock)` builds the app.
+See [ui.md](ui.md).
 
 ## harness crate
 

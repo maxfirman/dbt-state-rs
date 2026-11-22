@@ -2,20 +2,47 @@
 
 use topcoat::{
     context::Cx,
-    router::{RouterBuilder, Slot, href, layout, module_router, page},
+    router::{
+        Body, Next, RouterBuilder, Slot, href, layer, layout, module_router, page, request::uri,
+        response::Response,
+    },
     view::{View, class, view},
 };
 
 use crate::db;
 use crate::view_helpers::{fmt_time, stat_card};
 
+pub mod auth;
 pub mod environments;
 pub mod invocations;
+pub mod organization;
 pub mod projects;
 
 /// Build the route tree. Pages are collected from this module and submodules.
 pub fn router() -> RouterBuilder {
     module_router!()
+}
+
+/// In `oidc` mode, every page but the sign-in routes (`/auth/...`) needs a
+/// signed-in person, and is scoped to their selected Organization
+/// (`crate::sign_in`). In `none` mode every request passes.
+#[layer]
+async fn access(cx: &Cx, body: Body, next: Next<'_>) -> topcoat::Result<Response> {
+    let Some(oidc) = crate::oidc(cx) else {
+        return next.run(cx, body).await;
+    };
+    if uri(cx).path().starts_with("/auth/") {
+        return next.run(cx, body).await;
+    }
+    let viewer = oidc.authenticate(cx).await?;
+    let cx = cx.with(viewer);
+    let mut response = next.run(&cx, body).await?;
+    // A signed-in person's pages are theirs alone: no cache keeps them.
+    response.headers_mut().insert(
+        topcoat::router::header::CACHE_CONTROL,
+        topcoat::router::HeaderValue::from_static("no-store"),
+    );
+    Ok(response)
 }
 
 /// Root layout: the accessible app shell wrapping every page.
@@ -62,6 +89,7 @@ async fn root_layout(cx: &Cx, slot: Slot<'_>) -> topcoat::Result<impl View> {
                             aria-current=(invocations_current.then_some("page"))
                         >"Invocations"</a>
                     </nav>
+                    organization_switcher()
                 </header>
                 <main id="main" class="app-main" tabindex="-1">
                     (slot)
@@ -71,6 +99,38 @@ async fn root_layout(cx: &Cx, slot: Slot<'_>) -> topcoat::Result<impl View> {
                 </footer>
             </body>
         </html>
+    })
+}
+
+/// The signed-in person and their Organization (`oidc` mode): a switcher
+/// when they have more than one.
+#[topcoat::view::component]
+async fn organization_switcher(cx: &Cx) -> topcoat::Result<impl View> {
+    let viewer = crate::viewer(cx);
+    Ok(view! {
+        if let Some(viewer) = viewer {
+            <div class="org">
+                if viewer.organizations.len() > 1 {
+                    <form class="org-switch" method="post" action=(href!(organization::switch))>
+                        <input type="hidden" name="csrf" value=(&viewer.csrf) />
+                        <label for="organization">"Organization"</label>
+                        <select id="organization" name="organization">
+                            for (id, role) in &viewer.organizations {
+                                <option value=(id) selected=(*id == viewer.organization)>
+                                    (id)" ("(role.as_str())")"
+                                </option>
+                            }
+                        </select>
+                        <button type="submit">"Switch"</button>
+                    </form>
+                } else {
+                    <span class="org-name">"Organization: "<strong>(&viewer.organization)</strong></span>
+                }
+                if let Some(who) = viewer.email.as_ref().or(viewer.name.as_ref()) {
+                    <span class="muted">"Signed in as "(who)</span>
+                }
+            </div>
+        }
     })
 }
 
@@ -228,5 +288,7 @@ pre.sql { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 8px
 .node-list { list-style: none; padding: 0; display: grid; gap: .4rem; }
 .node-list li { display: flex; align-items: center; gap: .6rem; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: .5rem .75rem; }
 .lineage-svg { display: block; }
+.org { margin-left: auto; display: flex; align-items: center; gap: 1rem; font-size: .9rem; }
+.org-switch { display: flex; align-items: center; gap: .4rem; }
 .lineage-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); padding: 1rem; }
 "#;

@@ -586,6 +586,16 @@ impl AuthConfig {
         TokenVerifier::new(self.issuer.clone(), self.audience.clone(), keys)
     }
 
+    /// Checks the tokens the Token broker issues the UI (`[clients.ui]`):
+    /// [`Self::token_verifier`]'s checks, but for the UI's client id as
+    /// `aud` instead of the dbt State API audience. `None` without
+    /// `[clients.ui]`.
+    pub fn ui_token_verifier(&self, keys: VerificationKeys) -> Option<TokenVerifier> {
+        self.ui_client.as_ref().map(|client| {
+            TokenVerifier::new(self.issuer.clone(), client.client_id().to_owned(), keys)
+        })
+    }
+
     /// Authenticates gRPC requests: [`AuthConfig::token_verifier`] plus the
     /// declared Organizations.
     pub fn request_authenticator(&self, keys: VerificationKeys) -> RequestAuthenticator {

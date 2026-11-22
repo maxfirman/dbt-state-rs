@@ -12,7 +12,7 @@
 //! example, one from before an Organization was disabled).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use dbt_state_auth::{
@@ -120,6 +120,12 @@ fn config_text(
 /// secret files it may name beside it (`client_secret` is the broker's
 /// client secret at the Upstream IdP).
 fn load(text: &str, client_secret: &str) -> AuthConfig {
+    load_file(text, client_secret).0
+}
+
+/// [`load`], keeping the config file (and the secret files beside it) for
+/// as long as the returned [`ConfigFile`] lives.
+fn load_file(text: &str, client_secret: &str) -> (AuthConfig, ConfigFile) {
     let dir = tempfile::tempdir().expect("config dir");
     for (file, contents) in [
         (CLIENT_SECRET_FILE, client_secret),
@@ -129,8 +135,13 @@ fn load(text: &str, client_secret: &str) -> AuthConfig {
     }
     let path = dir.path().join("auth.toml");
     std::fs::write(&path, text).expect("write config");
-    AuthConfig::load(&path).expect("valid test auth config")
+    let config = AuthConfig::load(&path).expect("valid test auth config");
+    (config, ConfigFile(Arc::new((dir, path))))
 }
+
+/// A written auth config file; removed when the last clone drops.
+#[derive(Clone)]
+struct ConfigFile(Arc<(tempfile::TempDir, PathBuf)>);
 
 /// How the Token broker authenticates at the Upstream IdP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +243,7 @@ impl Upstream {
 #[derive(Clone)]
 pub struct TestAuth {
     config: AuthConfig,
+    file: ConfigFile,
     issuer: String,
     organizations: Vec<(String, bool)>,
 }
@@ -414,19 +426,21 @@ impl TestAuthBuilder {
             .as_ref()
             .map(|upstream| upstream.registration.client_secret.as_str())
             .unwrap_or_default();
-        TestAuth {
-            config: load(
-                &config_text(
-                    &self.issuer,
-                    AUDIENCE,
-                    keys,
-                    &organizations,
-                    &tokens,
-                    &self.broker,
-                    &format!("{upstream}{}", self.extra),
-                ),
-                client_secret,
+        let (config, file) = load_file(
+            &config_text(
+                &self.issuer,
+                AUDIENCE,
+                keys,
+                &organizations,
+                &tokens,
+                &self.broker,
+                &format!("{upstream}{}", self.extra),
             ),
+            client_secret,
+        );
+        TestAuth {
+            config,
+            file,
             issuer: self.issuer,
             organizations: self.organizations,
         }
@@ -478,6 +492,13 @@ impl TestAuth {
 
     pub fn config(&self) -> &AuthConfig {
         &self.config
+    }
+
+    /// The config file [`Self::config`] was loaded from, for a component
+    /// that reads `DBT_STATE_AUTH_CONFIG` itself (the UI). It lives as long
+    /// as this `TestAuth` or a clone.
+    pub fn config_path(&self) -> &Path {
+        &self.file.0 .1
     }
 
     /// The Token broker's issuer.

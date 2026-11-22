@@ -261,6 +261,17 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   one to spoil (`.claim`, `.without`, `.issued(ago, lifetime)`,
   `.signed_by_another_key()`, `.alg`); `exchange`, `refresh` and
   `token_request` post the token requests. Tests: `tests/ui_client.rs`.
+- `console.rs` (included only by `tests/ui_sign_in.rs`, so other test
+  binaries do not link the UI): `start_ui(&server, &auth)` serves the UI
+  console in `oidc` mode from the operator's environment variables
+  (`oidc_vars`; `start_ui_with(&server, vars)` for others), over the
+  server's schema and broker clock. `TestAuth::config_path()` is the config
+  file it reads. `ConsoleBrowser::new(&ui, &server)` routes `CONSOLE` (the
+  UI's callback origin) and `ISSUER` to the listeners, keeps the console's
+  cookies and records its `Set-Cookie` headers; `open`/`submit` follow
+  redirects, `request`/`request_from(.., site)` make one request, and
+  `.against(&ui)` carries the cookies to a restarted console. Tests:
+  `tests/ui_sign_in.rs`.
 - `rpcs.rs`: `call_every_rpc(&scenario)` calls each RPC of the protocol with
   a default body (`tests/oidc.rs`, `tests/ui_client.rs`).
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
