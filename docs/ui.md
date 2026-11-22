@@ -55,7 +55,8 @@ a single-organization filter, not authentication or tenant selection. The
 sign-in never starts without it.
 
 **`oidc`.** People sign in through the Token broker
-([ADR 0012](adr/0012-token-broker-delegates-identity-to-upstream-idp.md)),
+([ADR 0012](adr/0012-token-broker-delegates-identity-to-upstream-idp.md);
+deployment in the [operator guide](operator-guide.md#the-console)),
 and each sees only their own Organizations (`crates/ui/src/sign_in.rs`).
 `DBT_STATE_UI_ORG_ID` is a startup error in this mode, like
 `DBT_STATE_REQUIRE_ORG_HEADER` for the server: an operator who sets it

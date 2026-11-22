@@ -55,8 +55,9 @@ For credential-free local runs with a real Python dbt project, see the
 
 ## Documentation
 
-Start with [`docs/README.md`](docs/README.md). [`AGENTS.md`](AGENTS.md) is a
-compact orientation for coding agents.
+Start with [`docs/README.md`](docs/README.md). To deploy with sign-in through
+your identity provider, see the [operator guide](docs/operator-guide.md).
+[`AGENTS.md`](AGENTS.md) is a compact orientation for coding agents.
 
 ## License
 

@@ -138,6 +138,118 @@ fn the_example_config_loads() {
     assert_eq!(login.credential().method(), "private_key_jwt");
 }
 
+/// The operator guide's Upstream IdP recipes (`docs/operator-guide.md`)
+/// load as written, and their rules grant what the guide says for the
+/// claims each IdP puts in its tokens.
+#[test]
+fn the_upstream_idp_recipes_load_and_map_as_documented() {
+    struct Recipe {
+        file: &'static str,
+        credential: &'static str,
+        subject_claim: &'static str,
+        person: serde_json::Value,
+        machine: serde_json::Value,
+    }
+    let recipes = [
+        Recipe {
+            file: "entra-id.toml",
+            credential: "client_secret_basic",
+            subject_claim: "oid",
+            // An app role assigned to the person on the broker's app
+            // registration; an app role of the API granted to the CI app.
+            person: serde_json::json!({"roles": ["dbt-state.analytics.developer"]}),
+            machine: serde_json::json!({"roles": ["dbt-state.analytics.ci"]}),
+        },
+        Recipe {
+            file: "okta.toml",
+            credential: "private_key_jwt",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["dbt-state-analytics"]}),
+            machine: serde_json::json!({"cid": "0oa1ci0analytics0000"}),
+        },
+        Recipe {
+            file: "keycloak.toml",
+            credential: "client_secret_basic",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["data-eng"]}),
+            machine: serde_json::json!({"azp": "dbt-state-ci"}),
+        },
+    ];
+    for recipe in recipes {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/auth")
+            .join(recipe.file);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("keys")).unwrap();
+        std::fs::copy(
+            testdata("signing-key-1.pem"),
+            dir.path().join("keys/signing-2026-11.pem"),
+        )
+        .unwrap();
+        std::fs::copy(
+            testdata("upstream-rp-key.pem"),
+            dir.path().join("keys/idp-client.pem"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("keys/idp-client-secret"), "secret\n").unwrap();
+        std::fs::write(dir.path().join("keys/refresh-token.key"), REFRESH_TOKEN_KEY).unwrap();
+        let path = dir.path().join("auth.toml");
+        std::fs::copy(&example, &path).unwrap();
+
+        let config = AuthConfig::load(&path)
+            .unwrap_or_else(|error| panic!("{} loads: {error}", recipe.file));
+        let upstream = config.upstream().expect("an Upstream IdP");
+        assert_eq!(
+            upstream.subject_claim(),
+            recipe.subject_claim,
+            "{}",
+            recipe.file
+        );
+        let login = upstream.login().expect("browser sign-in");
+        assert_eq!(
+            login.credential().method(),
+            recipe.credential,
+            "{}",
+            recipe.file
+        );
+
+        let organizations = config.organizations();
+        let grant = |kind, claims: &serde_json::Value| {
+            let claims = UpstreamClaims::new(claims.as_object().unwrap().clone());
+            config.mapping_rules().scope(kind, &claims, organizations)
+        };
+        let person = grant(PrincipalKind::Person, &recipe.person);
+        assert_eq!(
+            person.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a person",
+            recipe.file
+        );
+        let machine = grant(PrincipalKind::Machine, &recipe.machine);
+        assert_eq!(
+            machine.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a machine",
+            recipe.file
+        );
+        // Each kind's claims grant the other kind nothing.
+        assert!(
+            grant(PrincipalKind::Machine, &recipe.person)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: person claims for a machine",
+            recipe.file
+        );
+        assert!(
+            grant(PrincipalKind::Person, &recipe.machine)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: machine claims for a person",
+            recipe.file
+        );
+    }
+}
+
 /// Each refusal names what is wrong.
 #[test]
 fn invalid_configs_are_refused() {

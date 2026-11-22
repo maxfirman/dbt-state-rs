@@ -13,15 +13,27 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
 ## Transport and auth
 
 - Default endpoint `api.state.dbt.com:443` (TLS). The client uses TLS when the
-  URL is https or ends in `:443`. Otherwise it opens an insecure channel and
-  sends **no** OAuth token, which is how the client is pointed at a local server.
+  URL is https or ends in `:443`, or when `RUN_CACHE_API_SECURE=true`. Over
+  TLS it obtains a token from its token URL and sends `authorization: Bearer
+  <id_token>` with `x-organization-id: <org_id>` (an Organization from the
+  token scope `runcache:scope:org:<ORG_ID>:...`). Over a plain channel it
+  sends neither, which is how the client reaches a `none`-mode server on
+  loopback.
 - Client configuration: `RUN_CACHE_*` environment variables (for example
-  `RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`) and
-  `DBT_ENGINE_MANAGE_STATE=true`.
+  `RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `RUN_CACHE_ORG_ID`) and
+  `DBT_ENGINE_MANAGE_STATE=true`
+  ([operator guide](operator-guide.md#pointing-dbt-clients-at-the-deployment)).
 - Hosted auth: an OAuth token exchange of the dbt Cloud credential at
-  `https://auth.state.dbt.com/token` yields an `id_token`, sent as
-  `authorization: Bearer <id_token>` with `x-organization-id: <org_id>` (parsed
-  from the token scope `runcache:scope:org:<ORG_ID>:...`).
+  `https://auth.state.dbt.com/token` yields the `id_token`.
+- Self-hosted auth: `DBT_STATE_AUTH=oidc` requires a token from this
+  server's Token broker on every RPC except health, and checks
+  `x-organization-id` against it ([below](#authentication-oidc-mode)). The
+  broker signs people in through the operator's Upstream IdP and passes CI
+  credentials through to it; deploying it is described in the
+  [operator guide](operator-guide.md). The default `DBT_STATE_AUTH=none`
+  authenticates nothing and serves only loopback addresses unless
+  `DBT_STATE_ALLOW_INSECURE=true`.
 - Client request metadata: `x-request-id`, `x-session-id`,
   `x-submitted-at-epoch`, `x-system-user-id`, `x-os-name`, and in newer clients
   `x-dbt-invocation-id`.
@@ -72,7 +84,9 @@ auth config (`DBT_STATE_AUTH_CONFIG`, example in
   `sid` and are not checked. A status that cannot be read fails closed.
 - An operator revokes every session of a Principal with
   `dbt-state-server revoke-sessions --issuer <upstream issuer> --subject
-  <upstream subject>` ([development.md](development.md#revoking-a-principals-sessions)).
+  <upstream subject>` ([operator guide](operator-guide.md#offboarding-and-incidents));
+  the [revocation bounds](operator-guide.md#revocation-bounds) list how
+  long access survives each kind of revocation.
 
 Refusals use fixed messages; the reason is logged at `warn`, never with the
 token (session refusals log `session_unknown`, `session_revoked`,
@@ -327,8 +341,9 @@ respectively; auxiliary replay compares the complete responses, statuses and
 application metadata. Session-end duration preserves seconds/nanoseconds and
 optional presence in new captures. Older captures omitted that field; it is
 not reconstructed. The deprecated standalone `RegisterSessionStart` was not
-called and remains unimplemented. OAuth, accounts and billing remain outside
-the self-hosted service. See the dated [auxiliary RPC evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md).
+called and remains unimplemented. Accounts and billing remain outside the
+self-hosted service; the [Token broker](#token-broker-cratesbroker) serves
+its OAuth. See the dated [auxiliary RPC evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md).
 
 Wire service names must be preserved exactly. The service named `Clone`
 collides with Rust's `std::clone::Clone`; the proto build patches the generated

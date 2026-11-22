@@ -6,7 +6,7 @@ State ("query cache") gRPC decision service. Domain terms are defined in
 
 Reading order for a newcomer: **overview → protocol → architecture → testing**.
 For hands-on work: **development → harness**. For local DuckDB runs:
-**duckdb**.
+**duckdb**. To deploy with sign-in: **operator-guide**.
 
 ## Core
 
@@ -23,6 +23,7 @@ For hands-on work: **development → harness**. For local DuckDB runs:
 | [sql-normalization.md](sql-normalization.md) | How SQL text enters the Snowflake logic identity. |
 | [explain-catalog.md](explain-catalog.md) | `dbt state explain` trees, lines and badges, and how a shape is selected. |
 | [ui.md](ui.md) | The read-only web console: pages, running it, data it reads. |
+| [operator-guide.md](operator-guide.md) | Deploying `oidc` mode: deployment shapes, auth config, Upstream IdP recipes (Keycloak, Entra ID, Okta), TLS and HTTP/2 through load balancers, dbt client settings, when people sign in again, revocation bounds and the tests behind them, audit logs. |
 
 ## DuckDB
 

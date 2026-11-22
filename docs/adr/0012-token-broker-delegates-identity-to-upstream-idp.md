@@ -148,3 +148,14 @@ The build-versus-adopt report predates the spec review. Two of its
 recommendations were replaced: 15-minute person tokens became the 60-minute
 default above, and its fallback registry of argon2-hashed machine secrets was
 dropped in favor of pass-through only.
+
+## Operating it
+
+The [operator guide](../operator-guide.md) describes the deployment as
+built: configuration, Upstream IdP recipes, TLS, client settings, and the
+[revocation bounds](../operator-guide.md#revocation-bounds) with the test
+that verifies each. Two bounds differ from the consequences above. The
+60 s refresh grace window can reissue a token from evidence up to 60 s old,
+so a person disabled at the IdP keeps gRPC access for at most the lifetime
+plus 2 minutes. A person token is refused within 30 s of its session's
+12-hour cap, even before it expires.
