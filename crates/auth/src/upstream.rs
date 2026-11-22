@@ -20,8 +20,11 @@ use crate::{UpstreamClaims, CLOCK_SKEW};
 pub enum UpstreamTokenError {
     /// Not a compact RS256 JWS with a `kid` (for example an opaque token).
     NotSignedJwt,
-    /// Not signed by a key the IdP publishes.
+    /// Its key id names a key the IdP publishes, which did not sign it.
     BadSignature,
+    /// Its key id names no key the IdP published when its keys were last
+    /// loaded (for example one it has just rotated to).
+    UnknownKey,
     WrongIssuer,
     /// `aud` does not hold the configured upstream API audience.
     WrongAudience,
@@ -42,6 +45,7 @@ impl UpstreamTokenError {
         match self {
             Self::NotSignedJwt => "upstream_token_not_a_signed_jwt",
             Self::BadSignature => "upstream_token_bad_signature",
+            Self::UnknownKey => "upstream_token_unknown_key",
             Self::WrongIssuer => "upstream_token_wrong_issuer",
             Self::WrongAudience => "upstream_token_wrong_audience",
             Self::Expired => "upstream_token_expired",
@@ -132,6 +136,7 @@ impl UpstreamTokenVerifier {
         let payload = verify_signature(token, &self.keys).map_err(|error| match error {
             SignatureError::Malformed => UpstreamTokenError::NotSignedJwt,
             SignatureError::BadSignature => UpstreamTokenError::BadSignature,
+            SignatureError::UnknownKey => UpstreamTokenError::UnknownKey,
         })?;
         let claims: Map<String, Value> =
             decode_json(payload).map_err(|_| UpstreamTokenError::NotSignedJwt)?;

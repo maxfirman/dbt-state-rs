@@ -111,8 +111,8 @@ broker must be registered at the Upstream IdP as an OIDC client
 and `refresh_token_key_file`; see the [example](../examples/auth/auth.toml))
 with redirect URI `<broker.issuer>/callback`. It applies the
 `kind = "person"` mapping rules, and the code exchange returns a person
-token (`sid`) and a refresh token. Refreshing it is not implemented yet
-(#221).
+token (`sid`) and a refresh token, which the `refresh_token` grant renews
+after re-checking the person at the Upstream IdP (#221).
 
 Every RPC with a person token also checks that the token's broker session
 is active: not revoked and not past its 12-hour cap. The gRPC server reads

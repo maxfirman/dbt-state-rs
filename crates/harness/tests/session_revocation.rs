@@ -16,7 +16,9 @@ use std::time::{Duration, SystemTime};
 
 use dbt_state_auth::Role;
 use serde_json::json;
-use support::broker_client::{authorization_code, claims, json, SignIn, LOOPBACK_REDIRECT_URI};
+use support::broker_client::{
+    authorization_code, claims, json, refresh_token, SignIn, LOOPBACK_REDIRECT_URI,
+};
 use support::browser::Browser;
 use support::fake_idp::{FakeIdp, UpstreamPerson};
 use support::oidc::{capture_logs, captured_logs, TestAuth, TestAuthBuilder, ISSUER};
@@ -158,21 +160,41 @@ async fn revoking_a_principal_s_sessions_refuses_their_rpcs_within_30_seconds() 
     }
 }
 
-/// A sign-in still in progress when its Principal is revoked yields no
-/// token: the code exchange finds the session revoked.
+/// A revoked session issues no more tokens: its refresh token no longer
+/// renews, and a sign-in still in progress when its Principal is revoked
+/// gets no token from its code.
 #[tokio::test]
 async fn a_revoked_session_issues_no_more_tokens() {
     capture_logs();
     let idp = FakeIdp::start().await;
     let server = start_server_with_broker(&deployment(&idp).build()).await;
-    let (sign_in, code) = sign_in_code(&server, &idp, "alice-sub").await;
-    assert_eq!(revoke(&server, &idp, "alice-sub").await.sessions, 1);
+    let (signed_in, code) = sign_in_code(&server, &idp, "alice-sub").await;
+    let login = json(authorization_code(&server.broker_url(), &signed_in, &code).await).await;
+    let refresh = login["refresh_token"].as_str().expect("a refresh token");
+    let (in_progress, pending_code) = sign_in_code(&server, &idp, "alice-sub").await;
+    assert_eq!(revoke(&server, &idp, "alice-sub").await.sessions, 2);
 
-    let response = authorization_code(&server.broker_url(), &sign_in, &code).await;
-    assert_eq!(response.status(), 400);
-    let body = json(response).await;
-    assert_eq!(body["error"], "invalid_grant", "{body:?}");
-    assert!(!body.contains_key("id_token"), "{body:?}");
+    for (case, response) in [
+        (
+            "refresh",
+            refresh_token(&server.broker_url(), &signed_in.client_id, refresh).await,
+        ),
+        (
+            "code exchange",
+            authorization_code(&server.broker_url(), &in_progress, &pending_code).await,
+        ),
+    ] {
+        assert_eq!(response.status(), 400, "{case}");
+        let body = json(response).await;
+        assert_eq!(body["error"], "invalid_grant", "{case}: {body:?}");
+        assert!(!body.contains_key("id_token"), "{case}: {body:?}");
+    }
+    assert!(
+        idp.token_requests()
+            .iter()
+            .all(|request| request.grant_type() != Some("refresh_token")),
+        "a revoked session is never renewed at the IdP"
+    );
 }
 
 /// A session ends at its 12-hour cap: its person tokens are refused even

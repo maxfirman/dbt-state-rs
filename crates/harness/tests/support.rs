@@ -56,9 +56,9 @@ pub mod scenario;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{
-    start_broker, start_server, start_server_native, start_server_oidc, start_server_on_database,
-    start_server_require_org, start_server_with_broker, TestBroker, TestClock, TestDatabase,
-    TestServer,
+    start_broker, start_broker_beside, start_server, start_server_native, start_server_oidc,
+    start_server_on_database, start_server_require_org, start_server_with_broker, TestBroker,
+    TestClock, TestDatabase, TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";

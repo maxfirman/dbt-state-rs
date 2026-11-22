@@ -316,7 +316,7 @@ impl TokenVerifier {
     pub fn verify(&self, token: &str, now: SystemTime) -> Result<VerifiedToken, TokenError> {
         let payload = verify_signature(token, &self.keys).map_err(|error| match error {
             SignatureError::Malformed => TokenError::Malformed,
-            SignatureError::BadSignature => TokenError::BadSignature,
+            SignatureError::BadSignature | SignatureError::UnknownKey => TokenError::BadSignature,
         })?;
 
         let claims: ReceivedClaims = decode_json(payload)?;
@@ -353,8 +353,10 @@ impl TokenVerifier {
 pub(crate) enum SignatureError {
     /// Not a compact JWS, or not RS256 with a `kid`.
     Malformed,
-    /// Not signed by a key of the set.
+    /// Its `kid` names a key of the set, which did not sign it.
     BadSignature,
+    /// Its `kid` names no key of the set.
+    UnknownKey,
 }
 
 /// The encoded payload of the compact RS256 JWS `token`, if one of `keys`
@@ -379,7 +381,11 @@ pub(crate) fn verify_signature<'t>(
         .map_err(|_| SignatureError::Malformed)?;
     let signing_input = &token[..encoded_header.len() + 1 + payload.len()];
     if !keys.verify(&header.kid, signing_input.as_bytes(), &signature) {
-        return Err(SignatureError::BadSignature);
+        return Err(if keys.contains(&header.kid) {
+            SignatureError::BadSignature
+        } else {
+            SignatureError::UnknownKey
+        });
     }
     Ok(payload)
 }

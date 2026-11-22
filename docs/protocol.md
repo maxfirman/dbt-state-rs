@@ -102,7 +102,7 @@ verbatim, as hosted's is its issuer root), the Upstream IdP's return at
 `/callback`, and the token endpoint at `/token` (the dbt client's
 `RUN_CACHE_TOKEN_URL`). Discovery advertises `authorization_endpoint`,
 `response_types_supported: ["code"]`, `grant_types_supported:
-["authorization_code", "client_credentials"]`,
+["authorization_code", "client_credentials", "refresh_token"]`,
 `code_challenge_methods_supported: ["S256"]` and
 `token_endpoint_auth_methods_supported: ["none", "client_secret_basic"]`.
 
@@ -154,7 +154,7 @@ Principal, subject, client id and `missing_claims`:
 
 An unknown, used or expired `state` at `/callback` gets an error page.
 
-**Token endpoint.** `/token` serves two grants:
+**Token endpoint.** `/token` serves three grants:
 
 - `authorization_code`, as both pinned clients send it: the form
   `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`
@@ -167,7 +167,41 @@ An unknown, used or expired `state` at `/callback` gets an error page.
   `azp` the dbt client id, `email` and `name` when the IdP gave them, and
   `[tokens] person_lifetime_minutes` (default 60). The refresh token is
   opaque; only its SHA-256 is stored, as the first member of the session's
-  refresh-token family (the `refresh_token` grant is #221).
+  refresh-token family.
+- `refresh_token`, as both pinned clients send it: the form
+  `grant_type=refresh_token&refresh_token&client_id` with no client
+  authentication and no scope (`dbt-fusion@9977b6c` `oauth.rs`
+  `fetch_refresh`; `dbt-state==2.62.6` `auth/sso.py` `_refresh_token`,
+  authlib's `refresh_token(..., scope=None)` with auth method `none`). Both
+  persist the response's `refresh_token` (Fusion keeps none when it is
+  absent; authlib keeps the presented one), so the `200` response is the
+  code exchange's: `{"id_token", "refresh_token", "scope", "token_type":
+  "Bearer", "expires_in"}`, `Cache-Control: no-store`, a person token in the
+  same session (`sid`) and a new refresh token in its family. In one
+  transaction holding the session's row lock (`FOR UPDATE`), the broker:
+  1. refuses a revoked session or one past its 12-hour cap, and a refresh
+     token bound to another client id;
+  2. treats a refresh token presented again after its renewal as a replay,
+     and revokes the whole session (the 60 s grace window for shared logins
+     and retries is #224);
+  3. refreshes at the Upstream IdP with the session's upstream refresh
+     token and its own credential (as at `/callback`), and stores the IdP's
+     rotated refresh token encrypted when it rotates;
+  4. takes fresh evidence: the refresh response's ID token, checked as at
+     sign-in but without a nonce (OIDC Core §12.2), or, when the IdP returns
+     none, the discovered `userinfo_endpoint`'s JSON for the new access
+     token (OIDC Core §5.3). The evidence must name the session's subject
+     (`[upstream] subject_claim`); its issuer is the configured Upstream
+     IdP, which must still be the session's;
+  5. re-applies the `kind = "person"` rules to the evidence, so Role and
+     Organization changes at the IdP take effect, and records the new
+     scope, email and name on the session and the Principal.
+
+  An IdP refusal, missing, untrusted or unusable evidence, another subject,
+  or no grant denies renewal and ends the session (`revoked_at`); the
+  person signs in again. When the broker cannot ask the IdP (unreachable,
+  failing, or refusing the broker's own credential) it answers 503 and
+  leaves the session as it was, so the same refresh token can be retried.
 - `client_credentials`, as both pinned clients send it: HTTP Basic
   `client_id:secret` and the form `grant_type=client_credentials&scope=runcache:scope:orgs`
   (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/oauth.rs`
@@ -189,16 +223,18 @@ descriptions), logged at `warn` with the reason:
 
 | Status | `error` | Cause (log `reason`) |
 |---|---|---|
-| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` without the dbt client id (`missing_client_id`, `unknown_client`) |
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without the dbt client id (`missing_client_id`, `unknown_client`) |
 | 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client id or redirect URI than the authorize request (`client_mismatch`, `redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
+| 400 | `invalid_grant` | `refresh_token`, with the description "the session has ended or cannot be renewed; sign in again": an unknown refresh token (`unknown_refresh_token`), another client id than the session's (`client_mismatch`), a revoked session (`session_revoked`) or one past its 12-hour cap (`session_expired`), a broker without `[upstream] client_id` (`sign_in_not_configured`). These end the session (log `session_ended=true`): a replay (`refresh_token_replayed_session_revoked`); the IdP refused the refresh, for example a disabled person (`upstream_refused_grant`, with the IdP's `upstream` error); an untrusted refreshed ID token (`upstream_token_*`); neither an ID token nor a userinfo endpoint and access token (`upstream_missing_evidence`); userinfo refused or not JSON (`upstream_userinfo_refused`, `upstream_userinfo_unusable`); no subject claim (`upstream_evidence_missing_subject`) or another subject (`upstream_subject_mismatch`); no person rule matches (`no_matching_rule`, with `missing_claims`); another `[upstream] issuer` than the session's (`upstream_issuer_changed`); a stored upstream refresh token that does not decrypt (`upstream_refresh_token_unreadable`) |
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
-| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant (`refresh_token` until #221) |
-| 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier` |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded, including a discovered token endpoint or `jwks_uri` that is plain http off loopback (`upstream_unavailable`); the machine's Principal cannot be recorded (`principal_not_recorded`) |
+| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
+| 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier`; `refresh_token` without `refresh_token` (`missing_parameter`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); the database (`database_unavailable`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
-subject, client id, scope, lifetime and (for a person) session; each
-completed sign-in as `sign-in completed`. Secrets and token values are never
+subject, client id, scope, lifetime and (for a person) session, and for a
+renewal the `evidence` (`id_token` or `userinfo`); each completed sign-in as
+`sign-in completed`. Secrets and token values are never
 logged, and stored only as hashes or, for the upstream refresh token,
 encrypted.
 
