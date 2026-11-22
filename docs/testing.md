@@ -374,13 +374,25 @@ gap is `explain_volatile_cells.jsonl` entry 146, a field-scoped
 [correctness-handoff.md](correctness-handoff.md#known-divergences)). A
 field-scoped gap can also cover a submit `ready_to_clone` payload when
 both sides copy from different sources (`copy_source_choice.jsonl` entries
-20 and 26, #239; #202 entry 207 had one until #207).
+20 and 26, #239; #202 entry 207 had one until #207). Such a gap must pin every
+field it ignores in `local_payload_fields`.
+- **Pinned local answer** (`local_payload_fields`): for a submit gap, each
+  named top-level field of the local decision-variant payload must equal the
+  given value, so the characterized local decision cannot drift while the gap
+  still passes. The #239 gaps pin the copied source, clone SQL, epoch and
+  runtime (`copy_source_choice.jsonl` entries 10, 20, 26, 78).
 - **Line-scoped Explain gap** (`ignore_explain_lines`): hosted Explain lines
   whose text is exactly one of the named texts are removed, with their
   children, from the hosted tree only. The decision, the description and the
   rest of the tree must then match exactly, and at least one named line must
   be present. The #191 and #202 volatile lines it was used for are rendered
-  since #194, #195 and #203–#207; no gap uses it now.
+  since #194, #195 and #203–#207.
+- **Badge-scoped Explain gap** (`ignore_explain_badges`, `{text, badge}`): on
+  hosted lines with that normalized text and badge the badge is cleared before
+  comparing; at least one must be cleared. With `ignore_explain_lines` it
+  scopes hosted's `<FRESH>` listing of a same-input upstream in a Snowflake
+  copy tree (`copy_source_choice.jsonl` entries 3, 7, 33, 39, 61, 67, 75,
+  #252): the decision, the description and the rest of the tree must match.
 - **Empty-tree Explain gap** (`local_variant: "empty_tree"`): a hosted
   decision this server makes differently (spec #40). The local Explain tree
   for it must be empty, and must differ from hosted's.

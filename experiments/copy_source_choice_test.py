@@ -15,8 +15,12 @@ No warehouse, no proxy, no dbt. Exit 0 on success.
 
 Run: python3 experiments/copy_source_choice_test.py
 """
+import contextlib
+import io
+import json
 import os
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -366,7 +370,109 @@ check("histories are separated by object name", [r["object"] for r in both]
       == [csc.object_name(RUN, "old_mid_new_rev"), csc.object_name(RUN, "old_new")],
       [r["object"] for r in both])
 check("a source that was never confirmed makes the history inconclusive",
-      csc.history_rows(rows[:4] + rows[5:])[0]["inconclusive"] == ["mid not confirmed"],
+      csc.history_rows(rows[:4] + rows[5:])[0]["inconclusive"]
+      == ["mid not confirmed before the destination submit"],
       csc.history_rows(rows[:4] + rows[5:])[0]["inconclusive"])
+
+# Review of PR #254: a history is conclusive only when every planned source
+# submitted a first build and was confirmed before the destination submitted.
+early = rows[:3] + [rows[6]] + rows[3:6] + rows[7:]
+check("a destination submitted before its sources were confirmed is inconclusive",
+      csc.history_rows(early)[0]["inconclusive"]
+      == [f"{r} not confirmed before the destination submit" for r in ("new", "old", "mid")],
+      csc.history_rows(early)[0]["inconclusive"])
+no_mid = [e for k, e in enumerate(rows) if k not in (2, 4)]
+(row,) = csc.history_rows(no_mid)
+check("a planned source missing from the capture makes a three-source history inconclusive",
+      row["inconclusive"] == ["mid never submitted"] and row["result"] == "CLONE old", row)
+extra = csc.model_request(RUN, "old_new", "mid", csc.upstream(RUN, "old_new", True),
+                         BASE - 60_000)
+(_, row) = csc.history_rows(rows + other[:2] + [entry("SubmitEnrichedSQL", extra, execute("qm"), "u2b"),
+                                                 confirm("qm", 2000, 666)] + other[2:])
+check("a source the history does not plan makes it inconclusive",
+      row["inconclusive"] == ["mid is not in the plan of old_new"], row["inconclusive"])
+renamed = [dict(e, request=json.loads(json.dumps(e["request"]).replace(
+    "OLD_MID_NEW_REV", "NOT_A_HISTORY").replace("old_mid_new_rev", "not_a_history"))) for e in rows]
+check("a history the plan does not name is inconclusive",
+      "unknown history not_a_history" in csc.history_rows(renamed)[0]["inconclusive"],
+      csc.history_rows(renamed)[0]["inconclusive"])
+
+# The promoted hosted capture, and the two negative controls from the PR #254 review.
+FIXTURE = os.path.join(os.path.dirname(HERE), "golden", "fixtures", "copy_source_choice.jsonl")
+with open(FIXTURE) as fh:
+    hosted = [json.loads(line) for line in fh if line.strip()]
+results = {r["object"]: r for r in csc.history_rows(hosted)}
+check("every history of the hosted capture is conclusive",
+      len(results) == 14 and not any(r["inconclusive"] for r in results.values()),
+      {k: r["inconclusive"] for k, r in results.items() if r["inconclusive"]})
+check("the hosted capture covers every planned history",
+      {r["history"] for r in results.values()} == set(csc.HISTORIES))
+OMN = "csc2346130f59d0_old_mid_new"
+check("the hosted old_mid_new destination is entry 46, after confirms 43-45",
+      results[OMN]["dest_entry"] == 46 and results[OMN]["result"] == "CLONE old")
+moved = hosted[:43] + [hosted[46]] + hosted[43:46] + hosted[47:]
+check("moving hosted entry 46 ahead of confirms 43-45 makes old_mid_new inconclusive",
+      {r["object"]: r for r in csc.history_rows(moved)}[OMN]["inconclusive"]
+      == [f"{r} not confirmed before the destination submit" for r in ("new", "old", "mid")],
+      {r["object"]: r for r in csc.history_rows(moved)}[OMN]["inconclusive"])
+dropped = [e for k, e in enumerate(hosted) if k not in (42, 44)]
+check("removing hosted entries 42 and 44 (mid's submit and confirm) makes old_mid_new inconclusive",
+      {r["object"]: r for r in csc.history_rows(dropped)}[OMN]["inconclusive"]
+      == ["mid never submitted"],
+      {r["object"]: r for r in csc.history_rows(dropped)}[OMN]["inconclusive"])
+other_results = {k: r["inconclusive"] for k, r in
+                 {r["object"]: r for r in csc.history_rows(dropped)}.items() if k != OMN}
+check("those mutations leave every other history conclusive",
+      not any(other_results.values()), other_results)
+
+# --- the command line -----------------------------------------------------------------------
+
+
+def run_main(argv, env=None):
+    out = io.StringIO()
+    saved = dict(os.environ)
+    os.environ.update(env or {})
+    try:
+        with contextlib.redirect_stdout(out):
+            code = csc.main(argv)
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+    return code, out.getvalue()
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    good, bad = os.path.join(tmp, "good.jsonl"), os.path.join(tmp, "bad.jsonl")
+    for path, data in ((good, rows), (bad, early)):
+        with open(path, "w") as fh:
+            fh.writelines(json.dumps(e) + "\n" for e in data)
+    check("table exits 0 when every history is conclusive", run_main(["table", good])[0] == 0)
+    code, text = run_main(["table", bad])
+    check("table exits 1 and names the history when one is inconclusive",
+          code == 1 and "old_mid_new_rev" in text, (code, text))
+    code, text = run_main(["table", "--certified", good])
+    check("table --certified refuses a capture without its integrity sidecar",
+          code == 1 and "cannot certify" in text, (code, text))
+    with open(good + ".capture.json", "w") as fh:
+        json.dump({"started": len(rows), "recorded": len(rows), "complete": True, "failed": False}, fh)
+    check("table --certified reads a certified capture", run_main(["table", "--certified", good])[0] == 0)
+
+
+def refuse(op, body, invocation):
+    raise RuntimeError("state-probe submit failed: transport error")
+
+
+real_probe, real_sleep = csc._probe, csc.time.sleep
+csc._probe, csc.time.sleep = refuse, lambda s: None
+try:
+    code, text = run_main(["run", "old_alone", "mid_alone"], {"PROBE_URL": "http://127.0.0.1:1"})
+finally:
+    csc._probe, csc.time.sleep = real_probe, real_sleep
+failed = [json.loads(l) for l in text.splitlines() if '"failed"' in l]
+check("a transport error fails the run with a nonzero exit, naming the history",
+      code == 1 and [f["failed"] for f in failed] == ["old_alone"]
+      and "transport error" in failed[0]["error"], (code, text))
+check("the run stops at the failed history", '"mid_alone"' not in "".join(
+    l for l in text.splitlines() if '"step"' in l), text)
 
 print(f"\nALL {passed} COPY SOURCE CHOICE TESTS PASSED")

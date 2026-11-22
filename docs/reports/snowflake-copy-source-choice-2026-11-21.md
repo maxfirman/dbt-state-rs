@@ -33,10 +33,14 @@ code. The comparison with Databricks (#240) and any policy change belong to
   It names the source a grant copies (`clone_source`) and checks that the
   grant's `clone_required_last_modified_epoch` and `execution_runtime_ms` are
   that source's confirmed completion epoch and runtime. It flags a history as
-  inconclusive when a source submit is not a first build, a source confirm is
-  refused or missing, the destination reports its own Target relation, or an
-  epoch is later than the moment its request was sent. No history was
-  flagged.
+  inconclusive, and exits 1, when the history is not in the plan, a planned
+  source was never submitted or another source appears, a source submit is
+  not a first build, a source was not confirmed successfully before the
+  destination submitted, the destination reports its own Target relation, or
+  an epoch is later than the moment its request was sent. No history was
+  flagged. `copy_source_choice_test.py` runs it over the fixture, and over
+  the fixture with destination entry 46 moved ahead of confirms 43–45 and with
+  entries 42 and 44 removed; both mutations flag `old_mid_new`.
 - The "This server" column comes from the conformance replay of the fixture
   (`conformance.rs::conformance_replay_all_corpora`, which asserts each keyed
   local variant), and agrees with two rehearsals of the plan against this
@@ -113,9 +117,11 @@ Entries are the destination's submit and Explain.
 
 Every hosted CLONE is `ready_to_clone`, decision 3, codes 1 / null,
 `is_stale: false`, "an equivalent model exists under another name so we
-cloned that one", with `clone_source` the `CSC_OLD` relation and its
-`clone_required_last_modified_epoch` and `execution_runtime_ms` equal to
-`old`'s confirm. Every hosted BUILD is `ready_to_execute`, decision 1,
+cloned that one". Each grant's `clone_source` names its own history's
+`CSC_OLD` relation, and its `clone_required_last_modified_epoch` and
+`execution_runtime_ms` are the epoch and runtime confirmed for that history's
+`old`. They differ between histories (for example 51,011 ms at entry 6 and
+51,511 ms at entry 32). Every hosted BUILD is `ready_to_execute`, decision 1,
 codes 6 / 6, `is_stale: false`, "model was executed because its table did
 not exist".
 
@@ -212,8 +218,13 @@ entry 13). The seven CLONE trees whose decisions agree are keyed as Explain
 gaps (entries 3, 7, 33, 39, 61, 67, 75). Tracked in #252.
 
 Replay: `copy_source_choice.jsonl` is in the generic conformance replay
-(corpus 153). Every other response, confirmation and Explain matches hosted
-exactly.
+(corpus 153). Each divergent destination gap pins the local answer
+(`local_payload_fields`: the copied source, its clone SQL, epoch and
+runtime), so a change of the source this server chooses fails the replay.
+The seven Explain-only gaps clear only hosted's `<FRESH>` badge on the
+upstream line and its `no updates since «FQN» last executed` line; the
+decision, description and the rest of each tree must match hosted. Every
+other response, confirmation and Explain matches hosted exactly.
 
 ## Reproduce
 
@@ -221,11 +232,18 @@ exactly.
 cargo build -p dbt-state-harness --bin state-probe --bin record-proxy
 python3 experiments/copy_source_choice_test.py      # warehouse-free self-test
 python3 experiments/copy_source_choice.py plan      # 13 histories, 38 submits, no RPC
-GOLDEN_DIR=<dir> PROXY_LISTEN=127.0.0.1:<port> ./target/debug/record-proxy &
+
+GOLDEN_DIR=<dir> PROXY_LISTEN=127.0.0.1:<port> ./target/debug/record-proxy & PROXY=$!
+until (exec 3<>/dev/tcp/127.0.0.1/<port>) 2>/dev/null; do sleep 1; done   # wait for the proxy
 PROBE_URL=http://127.0.0.1:<port> python3 experiments/copy_source_choice.py run [HISTORY ...]
-kill -TERM <proxy pid>                              # writes the integrity sidecar
-python3 experiments/copy_source_choice.py table <dir>/golden_*.jsonl
+RUN=$?                                              # 1: an RPC failed or a history is inconclusive
+kill -TERM $PROXY; wait $PROXY                      # drains calls and writes the sidecar
+python3 experiments/copy_source_choice.py table --certified <dir>/golden_*.jsonl   # 1 unless certified and conclusive
 ```
+
+`run` stops at the first failed RPC and prints `{"failed": <history>, "error": …,
+"not_run": […]}`. A nonzero `run` or `table --certified` means the recording
+is not evidence; promote only a capture for which both exit 0.
 
 For a rehearsal against this server, start `dbt-state-server` on another
 port and give the proxy `PROXY_LOCAL_UPSTREAM=http://127.0.0.1:<server port>`.

@@ -42,7 +42,13 @@ Usage:
   copy_source_choice.py plan                 print the plan and submit count (no RPC)
   copy_source_choice.py run [HISTORY ...]    send it through `PROBE_URL` (your own
                                              recording proxy, or a local server)
-  copy_source_choice.py table CAPTURE.jsonl  one result per history in a capture
+  copy_source_choice.py table [--certified] CAPTURE.jsonl
+                                             one result per history in a capture; exits 1
+                                             when any history is inconclusive, or (with
+                                             --certified) when the proxy's sidecar does not
+                                             certify the capture complete
+  `run` exits 1 when an RPC fails (naming the history and stopping there) or
+  when any history it sent is inconclusive.
 
 Self-test: python3 experiments/copy_source_choice_test.py
 """
@@ -290,7 +296,7 @@ def history_rows(rows):
                           "runtime": {}, "dest_entry": None, "result": None, "codes": None,
                           "description": None, "is_stale": None, "agrees": None,
                           "explain_names": None, "inconclusive": [], "_fqn": {},
-                          "_flagged": set()}
+                          "_flagged": set(), "_confirmed_at": {}}
             order.append(name)
         return hist[name]
 
@@ -340,6 +346,7 @@ def history_rows(rows):
             if sent is not None and (req.get("last_modified_epoch") or 0) > sent:
                 h["inconclusive"].append(f"{role} confirmed at entry {i} with a future epoch")
             h["confirm_order"].append(role)
+            h["_confirmed_at"][role] = i
             h["completion"][role] = req.get("last_modified_epoch")
             h["runtime"][role] = req.get("execution_runtime_ms")
         elif r.get("method") == "GetExplainMessages":
@@ -350,10 +357,8 @@ def history_rows(rows):
     out = []
     for name in order:
         h = hist[name]
-        flagged = h.pop("_flagged")
-        for s in h["sources"]:
-            if s["role"] not in h["completion"] and s["role"] not in flagged:
-                h["inconclusive"].append(f"{s['role']} not confirmed")
+        flagged, confirmed_at = h.pop("_flagged"), h.pop("_confirmed_at")
+        h["inconclusive"].extend(_incomplete(h, flagged, confirmed_at))
         roles_of = {v: k for k, v in h.pop("_fqn").items()}
         h["completion_order"] = sorted(h["completion"], key=h["completion"].get)
         variant, body = h.pop("_dest", (None, {}))
@@ -378,9 +383,36 @@ def history_rows(rows):
     return out
 
 
+def _incomplete(h, flagged, confirmed_at):
+    """Why a history's evidence is incomplete: every planned source must have
+    submitted a first build and been confirmed before the destination
+    submitted, and no other source may appear."""
+    plan = HISTORIES.get(h["history"])
+    if plan is None:
+        return [f"unknown history {h['history']}"]
+    submitted = [s["role"] for s in h["sources"]]
+    out = [f"{r} is not in the plan of {h['history']}" for r in submitted
+           if r not in plan["sources"]]
+    for role in sorted(plan["sources"], key=SUBMIT_AT.get):
+        if role not in submitted:
+            out.append(f"{role} never submitted")
+        elif role not in flagged and (
+                role not in confirmed_at or h["dest_entry"] is None
+                or confirmed_at[role] > h["dest_entry"]):
+            out.append(f"{role} not confirmed before the destination submit")
+    return out
+
+
 def print_table(rows):
+    """Print one result per history; False when any history is inconclusive."""
+    conclusive = True
     for h in history_rows(rows):
         print(json.dumps(h))
+        if h["inconclusive"]:
+            conclusive = False
+            print(json.dumps({"inconclusive": h["history"], "object": h["object"],
+                              "why": h["inconclusive"]}))
+    return conclusive
 
 
 # --- running it ----------------------------------------------------------------------------------
@@ -399,8 +431,18 @@ METHOD = {"submit": "SubmitEnrichedSQL", "confirm": "ConfirmExecution",
           "explain": "GetExplainMessages"}
 
 
+class RunFailed(Exception):
+    """An RPC of a history failed; the history and the error are in the message."""
+
+    def __init__(self, history, step, role, error, rows):
+        super().__init__(f"{history}: {step} {role} failed: {error}")
+        self.history, self.error, self.rows = history, error, rows
+
+
 def run_history(run, history, out=print):
-    """Send one history on schedule; return its rows in the capture format."""
+    """Send one history on schedule; return its rows in the capture format.
+
+    Raises `RunFailed` (with the rows sent so far) when an RPC fails."""
     plan = plan_history(run, history, int(time.time() * 1000) + 500)
     out(json.dumps({"history": history, "what": plan["what"], "base": plan["base"]}))
     invocations = {r: str(uuid.uuid4()) for r in list(ROLES) + ["dest"]}
@@ -424,9 +466,7 @@ def run_history(run, history, out=print):
         try:
             resp = _probe(s["op"], body, invocations[s["role"]])
         except RuntimeError as e:
-            out(json.dumps({"history": history, "step": s["op"], "role": s["role"],
-                            "error": str(e)}))
-            break
+            raise RunFailed(history, s["op"], s["role"], str(e), rows) from e
         late = sent - s["at"]
         out(json.dumps({"history": history, "step": s["op"], "role": s["role"],
                         "planned": s["at"], "sent": sent, "late_ms": late, "response": resp}))
@@ -441,12 +481,34 @@ def run_history(run, history, out=print):
     return rows
 
 
+def read_capture(path, certified):
+    """The rows of a capture; with `certified`, only if its proxy sidecar
+    certifies it complete (`capture_integrity.verify_capture`)."""
+    if certified:
+        import capture_integrity
+
+        return capture_integrity.verify_capture(path)
+    with open(path) as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
 def main(argv):
-    if argv[:1] == ["table"] and len(argv) > 1:
-        for path in argv[1:]:
-            with open(path) as fh:
-                print_table([json.loads(line) for line in fh if line.strip()])
-        return 0
+    if argv[:1] == ["table"]:
+        certified = "--certified" in argv[1:]
+        paths = [a for a in argv[1:] if a != "--certified"]
+        if not paths:
+            print(__doc__)
+            return 2
+        ok = True
+        for path in paths:
+            try:
+                rows = read_capture(path, certified)
+            except Exception as e:  # capture_integrity.CaptureIntegrityError, OSError
+                print(json.dumps({"capture": path, "error": str(e)}))
+                ok = False
+                continue
+            ok = print_table(rows) and ok
+        return 0 if ok else 1
     if argv[:1] == ["plan"]:
         run = "000000plan00"
         for name in HISTORIES:
@@ -467,12 +529,21 @@ def main(argv):
             return 2
         run = time.strftime("%H%M%S") + uuid.uuid4().hex[:6]
         print(json.dumps({"run": run, "histories": names, "max_submits": max_submits(names)}))
-        rows = []
+        rows, failed = [], None
         for n in names:
-            rows += run_history(run, n)
+            try:
+                rows += run_history(run, n)
+            except RunFailed as e:
+                rows += e.rows
+                failed = e
+                print(json.dumps({"failed": e.history, "error": e.error,
+                                  "not_run": names[names.index(n) + 1:]}))
+                break
+        conclusive = True
         for h in history_rows(rows):
             print(json.dumps({"summary": h}))
-        return 0
+            conclusive = conclusive and not h["inconclusive"]
+        return 1 if failed or not conclusive else 0
     print(__doc__)
     return 2
 
