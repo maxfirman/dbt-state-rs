@@ -8,6 +8,9 @@ members = [
     "crates/harness",
     "crates/ui",
 ]
+# The pinned Fusion driver builds against dbt-fusion (ELv2) outside the
+# workspace; see crates/harness/fusion-driver/README.md.
+exclude = ["crates/harness/fusion-driver"]
 
 [workspace.package]
 version = "0.1.0"

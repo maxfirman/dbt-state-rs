@@ -21,3 +21,6 @@ __pycache__/
 
 # dbt default log output when run from the repo root
 /logs/
+
+# The pinned Fusion driver's default build output (it is outside the workspace)
+/crates/harness/fusion-driver/target/

@@ -22,6 +22,9 @@ pub mod broker_client;
 /// A browser following a dbt client's sign-in redirects.
 #[path = "support/browser.rs"]
 pub mod browser;
+/// What the pinned dbt client drivers share: process, pauses, port lock.
+#[path = "support/client_driver.rs"]
+pub mod client_driver;
 /// Request shapes from the live clone captures in the demo database.
 #[path = "support/demo.rs"]
 pub mod demo;
@@ -31,6 +34,9 @@ pub mod fake_idp;
 /// Raw-SQL fault injection (the only DDL tests run against State tables).
 #[path = "support/fault.rs"]
 pub mod fault;
+/// The pinned Fusion driver (opt-in), built outside the workspace.
+#[path = "support/fusion_client.rs"]
+pub mod fusion_client;
 /// HTTP test servers on their own thread.
 #[path = "support/http.rs"]
 pub mod http;

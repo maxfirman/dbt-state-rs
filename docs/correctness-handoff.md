@@ -777,8 +777,18 @@ local-only and renders no Explain tree.
   in through Keycloak's login form, denies renewal once Keycloak disables
   them or drops them from the mapped group, passes `client_credentials`
   through, and refuses a token for another audience (#227,
-  `crates/harness/tests/keycloak.rs`, CI job `keycloak`). The pinned
-  Fusion driver (#223) is still open. The broker registers the UI as its
+  `crates/harness/tests/keycloak.rs`, CI job `keycloak`). Pinned Fusion's
+  own client code (`dbt-fusion@9977b6c` `dbt-run-cache`, ELv2, compiled
+  against by an out-of-workspace driver, never vendored) logs in as a
+  machine, signs a person in through the browser, refreshes from the token
+  on disk in the next invocation, reads that token once per process and
+  signs in through the browser again only within 300 s of its in-memory
+  token's expiry, so a run shorter than the person lifetime minus 5
+  minutes needs no new token (#223, `crates/harness/tests/fusion_client.rs`,
+  opt-in CI job `fusion`). Its token requests trust only public roots, so
+  a Token broker needs a publicly trusted certificate for Fusion; the
+  driver adds native roots through a reqwest build feature to reach the
+  test CA. The broker registers the UI as its
   own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
   tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`). In
   `oidc` mode the UI signs people in as that client and shows only their

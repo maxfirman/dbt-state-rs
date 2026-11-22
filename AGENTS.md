@@ -34,6 +34,8 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
   pass-through to the Upstream IdP); in-process or standalone binary.
 - `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
   and fuzz tools, integration tests.
+  `crates/harness/fusion-driver` (outside the workspace) compiles against
+  dbt-fusion (ELv2) for an opt-in suite: never vendor or copy Fusion source.
 - `crates/ui`: optional read-only web console.
 → full module table in [docs/architecture.md](docs/architecture.md)
 
