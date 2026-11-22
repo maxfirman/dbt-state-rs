@@ -20,6 +20,7 @@ pub use config::{
 };
 pub use context::{
     AuthenticatedContext, OrganizationRefusal, Rejection, RejectionCode, RequestAuthenticator,
+    SessionRefusal,
 };
 pub use credential::{ClientAssertionKey, ClientSecret, UpstreamCredential, CLIENT_ASSERTION_TYPE};
 pub use keys::{JwksError, KeyFileError, VerificationKeys};

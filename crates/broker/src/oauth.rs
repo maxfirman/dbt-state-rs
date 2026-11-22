@@ -23,6 +23,10 @@ pub(crate) enum OAuthError {
     /// The authorization code is unknown, used, expired, or bound to
     /// another client, redirect URI or PKCE challenge.
     InvalidGrant,
+    /// A refresh token that does not renew (`invalid_grant`, with its own
+    /// description): unknown, replayed, bound to another client, or its
+    /// session revoked, capped or ended by the Upstream IdP's answer.
+    RenewalDenied,
     /// dbt platform token exchange (`unsupported_grant_type`, with its own
     /// description).
     TokenExchange,
@@ -45,7 +49,7 @@ impl OAuthError {
             Self::InvalidClient => "invalid_client",
             Self::UnauthorizedClient => "unauthorized_client",
             Self::UnsupportedGrantType | Self::TokenExchange => "unsupported_grant_type",
-            Self::InvalidGrant => "invalid_grant",
+            Self::InvalidGrant | Self::RenewalDenied => "invalid_grant",
             Self::TemporarilyUnavailable => "temporarily_unavailable",
         }
     }
@@ -59,6 +63,7 @@ impl OAuthError {
             Self::InvalidGrant => {
                 "the authorization code is invalid, expired or already used; sign in again"
             }
+            Self::RenewalDenied => "the session has ended or cannot be renewed; sign in again",
             Self::TokenExchange => {
                 "dbt platform token exchange is not supported; authenticate with a client id \
                  and secret, or sign in through the browser"

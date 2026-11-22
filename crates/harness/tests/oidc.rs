@@ -2,7 +2,8 @@
 //! needs a Token-broker-signed token for the dbt State API audience, and
 //! `x-organization-id` must name an active Organization the token lists.
 //!
-//! Tokens come from the test signer (`support/oidc.rs`). Token problems are
+//! Tokens come from the test signer (`support/oidc.rs`); an accepted person
+//! token names a recorded broker session (`person_session`). Token problems are
 //! `UNAUTHENTICATED` and Organization problems `PERMISSION_DENIED`, each with
 //! a fixed message; the server logs every refusal at `warn` with its reason
 //! and never the token.
@@ -17,7 +18,9 @@ use base64::Engine;
 use dbt_state_auth::Role;
 use dbt_state_proto::grpc_health;
 use dbt_state_proto::query_cache as qc;
-use support::oidc::{capture_logs, captured_logs, SignerOptions, TestAuth, TestKey};
+use support::oidc::{
+    capture_logs, captured_logs, person_session, SignerOptions, TestAuth, TestKey,
+};
 use support::scenario::{into_execute, into_skip, model, outcome, Scenario};
 use support::{rows, start_server_oidc};
 use tonic::{Code, Status};
@@ -39,9 +42,10 @@ fn auth() -> TestAuth {
 async fn a_valid_token_decides_and_records_in_the_requested_organization() {
     let auth = auth();
     let server = start_server_oidc(&auth).await;
+    let session = person_session(&server, "principal-ada").await;
     let token = auth
         .signer()
-        .person("principal-ada", "session-1")
+        .person("principal-ada", &session)
         .grant("analytics", Role::Developer)
         .grant("research", Role::Admin)
         .token();
@@ -90,6 +94,7 @@ async fn a_valid_token_decides_and_records_in_the_requested_organization() {
 async fn machine_tokens_and_every_loaded_signing_key_are_accepted() {
     let auth = auth();
     let server = start_server_oidc(&auth).await;
+    let session = person_session(&server, "principal-ada").await;
     let sc = Scenario::connect(&server).await.org("analytics");
     for key in [TestKey::Active, TestKey::Second] {
         let signer = auth.signer_with(SignerOptions {
@@ -97,7 +102,7 @@ async fn machine_tokens_and_every_loaded_signing_key_are_accepted() {
             ..SignerOptions::default()
         });
         let person = signer
-            .person("principal-ada", "session-1")
+            .person("principal-ada", &session)
             .grant("analytics", Role::Developer)
             .token();
         let machine = signer

@@ -165,7 +165,8 @@ pub struct TestServer {
     pub state: AppState,
     /// The in-process Token broker's listener, when it runs one.
     pub broker: Option<SocketAddr>,
-    /// The in-process Token broker's clock.
+    /// The in-process Token broker's clock, which also ages the gRPC
+    /// server's cached person session statuses and decides their cap.
     pub broker_clock: TestClock,
     /// Both listeners serve native TLS with the test certificate
     /// ([`super::tls`]).
@@ -289,7 +290,7 @@ pub struct TestBroker {
     pub auth: super::oidc::TestAuth,
     pub clock: TestClock,
     server: super::http::HttpServer,
-    _database: TestDatabase,
+    database: std::sync::Arc<TestDatabase>,
 }
 
 impl TestBroker {
@@ -304,6 +305,20 @@ impl TestBroker {
 pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
     let database = TestDatabase::new("broker").await;
     database.migrate().await;
+    start_broker_on(std::sync::Arc::new(database), auth)
+}
+
+/// Start another standalone Token broker on `other`'s database, with the
+/// config `auth` builds and its own URL as issuer: another replica of the
+/// deployment, or the deployment restarted with a changed config.
+pub fn start_broker_beside(other: &TestBroker, auth: super::oidc::TestAuthBuilder) -> TestBroker {
+    start_broker_on(std::sync::Arc::clone(&other.database), auth)
+}
+
+fn start_broker_on(
+    database: std::sync::Arc<TestDatabase>,
+    auth: super::oidc::TestAuthBuilder,
+) -> TestBroker {
     let listener = super::http::HttpServer::bind();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let auth = auth.issuer(&url).build();
@@ -319,7 +334,7 @@ pub async fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
         auth,
         clock,
         server,
-        _database: database,
+        database,
     }
 }
 
@@ -371,7 +386,9 @@ async fn start_server_with_database_clock(
                 let mut broker = None;
                 let mut tls = None;
                 if let Some(oidc) = oidc {
-                    state = state.with_oidc(&oidc.config).expect("oidc mode");
+                    state = state
+                        .with_oidc_clock(&oidc.config, broker_clock.broker_clock())
+                        .expect("oidc mode");
                     tls = oidc.tls.then(super::tls::identity);
                     if let Some(listener) = oidc.broker {
                         let listener = TcpListener::from_std(listener).expect("broker listener");

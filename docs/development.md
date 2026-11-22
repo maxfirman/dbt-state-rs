@@ -136,8 +136,36 @@ broker must be registered at the Upstream IdP as an OIDC client
 and `refresh_token_key_file`; see the [example](../examples/auth/auth.toml))
 with redirect URI `<broker.issuer>/callback`. It applies the
 `kind = "person"` mapping rules, and the code exchange returns a person
-token (`sid`) and a refresh token. Refreshing it is not implemented yet
-(#221).
+token (`sid`) and a refresh token, which the `refresh_token` grant renews
+after re-checking the person at the Upstream IdP (#221).
+
+Every RPC with a person token also checks that the token's broker session
+is active: not revoked and not past its 12-hour cap. The gRPC server reads
+the session from its own Postgres, so a standalone broker must share the
+server's database and schema. Each replica caches a session's status for
+at most 30 s.
+
+### Revoking a Principal's sessions
+
+In an incident, revoke every session of a person with the server binary
+(only `DATABASE_URL` is read):
+
+```bash
+DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
+  cargo run -p dbt-state-server -- revoke-sessions \
+    --issuer https://login.example.com/tenant/v2.0 --subject 6b1f...
+# revoked 2 sessions of Principal Zt9...
+```
+
+The issuer is the `[upstream] issuer` and the subject the person's value
+of `[upstream] subject_claim` (default `sub`), which the broker's
+`token issued` log lines show as `subject`. No revoked session renews, and every gRPC
+replica refuses its person tokens (`UNAUTHENTICATED`) within 30 s. The
+command logs `person sessions revoked` on stderr, and fails when no
+Principal with that issuer and subject is known. A later browser sign-in
+starts a new session; to keep the person out, disable them at the
+Upstream IdP. Machine tokens have no session: disable the app registration
+at the IdP instead (they end within the machine token lifetime).
 
 ## Running the UI
 

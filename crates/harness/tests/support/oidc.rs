@@ -1,6 +1,7 @@
 //! `oidc` mode test support: an auth config over the test-only signing keys
 //! (`crates/auth/testdata/`), a test signer that issues tokens in the Token
-//! broker's shape, and a capture of the server's logs.
+//! broker's shape, the person sessions its person tokens name
+//! ([`person_session`]), and a capture of the server's logs.
 //!
 //! [`TestAuth`] writes a real TOML config and loads it with
 //! `AuthConfig::load`, so tests exercise the operator's path. The server
@@ -142,6 +143,8 @@ struct Upstream {
     issuer: String,
     credential: BrokerCredential,
     subject_claim: Option<String>,
+    /// Register the broker for browser sign-in.
+    login: bool,
 }
 
 impl Upstream {
@@ -164,14 +167,20 @@ impl Upstream {
             .as_deref()
             .map(|claim| format!("subject_claim = {}\n", toml_string(claim)))
             .unwrap_or_default();
+        let login = if self.login {
+            format!(
+                "client_id = {}\n{credential}refresh_token_key_file = \"refresh-token.key\"\n",
+                toml_string(BROKER_CLIENT_ID)
+            )
+        } else {
+            String::new()
+        };
         format!(
             "\n[upstream]\nissuer = {}\napi_audience = {}\nclient_credentials_scope = {}\n\
-             client_id = {}\n{credential}refresh_token_key_file = \"refresh-token.key\"\n\
-             {subject_claim}",
+             {login}{subject_claim}",
             toml_string(&self.issuer),
             toml_string(UPSTREAM_AUDIENCE),
             toml_string(UPSTREAM_SCOPE),
-            toml_string(BROKER_CLIENT_ID),
         )
     }
 }
@@ -216,7 +225,15 @@ impl TestAuthBuilder {
             issuer: idp.issuer(),
             credential: BrokerCredential::ClientSecret,
             subject_claim: None,
+            login: true,
         });
+        self
+    }
+
+    /// No browser sign-in registration at the Upstream IdP (no `[upstream]
+    /// client_id`): machines only.
+    pub fn without_browser_sign_in(mut self) -> Self {
+        self.upstream.as_mut().expect("upstream() first").login = false;
         self
     }
 
@@ -493,6 +510,27 @@ impl<'a> TestToken<'a> {
         };
         self.signer.issuer.issue(&request, self.issued_at).token
     }
+}
+
+/// Record an active Token broker person session for `principal` in `db`, as
+/// a browser sign-in would, so a [`TestSigner::person`] token naming it
+/// passes the gRPC server's session check. Returns the session id (`sid`).
+pub async fn person_session(db: &impl super::rows::Db, principal: &str) -> String {
+    let id = uuid::Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO broker_person_sessions (id, principal_id, upstream_issuer, \
+         upstream_subject, client_id, scope, upstream_refresh_token, upstream_renewed_at, \
+         created_at, expires_at) \
+         VALUES ($1, $2, 'https://idp.test', $2, $3, '', '\\x00', now(), now(), \
+         now() + interval '12 hours')",
+    )
+    .bind(id)
+    .bind(principal)
+    .bind(CLIENT_ID)
+    .execute(db.pool())
+    .await
+    .expect("record a person session");
+    id.to_string()
 }
 
 /// Start capturing every log line of this test process (idempotent).

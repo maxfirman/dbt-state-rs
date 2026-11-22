@@ -8,8 +8,10 @@
 //!   sign-in starts, and `GET /callback`, where the Upstream IdP returns
 //!   (`sign_in`);
 //! - `POST /token`: `client_credentials` pass-through for machines
-//!   (`token_endpoint`), and the browser sign-in's `authorization_code`
-//!   exchange (`code_grant`). Token exchange is refused.
+//!   (`token_endpoint`), the browser sign-in's `authorization_code`
+//!   exchange (`code_grant`), and a person's `refresh_token` renewal, which
+//!   goes back to the Upstream IdP for fresh evidence every time
+//!   (`refresh_grant`). Token exchange is refused.
 //!
 //! Its state (pending logins, person sessions, authorization codes and
 //! refresh tokens) lives in the server's Postgres schema, migrated from
@@ -29,13 +31,19 @@
 //!
 //! It records each Principal it issues a token to (`principals`), keyed by
 //! Upstream IdP issuer and subject, before issuing the token.
+//!
+//! The gRPC server checks each person token's session ([`SessionCheck`],
+//! cached for at most [`SESSION_STATUS_MAX_AGE`]), and the admin command
+//! revokes every session of a Principal ([`revoke_sessions`]).
 
 mod clock;
 mod code_grant;
 mod discovery;
 mod oauth;
+mod refresh_grant;
 mod remote_keys;
 mod secret;
+mod sessions;
 mod sign_in;
 mod store;
 pub mod tls;
@@ -56,6 +64,9 @@ use sqlx::PgPool;
 pub use clock::Clock;
 pub use discovery::{Discovery, DiscoveryError};
 pub use remote_keys::{KeyLocation, RemoteKeys, MAX_AGE, MIN_INTERVAL};
+pub use sessions::{
+    revoke_sessions, Revocation, SessionCheck, SessionCheckError, SESSION_STATUS_MAX_AGE,
+};
 pub use tls::{serve_tls, TlsIdentity};
 
 use crate::store::Store;
@@ -204,7 +215,7 @@ async fn discovery_document(
         "token_endpoint": format!("{base}/token"),
         "jwks_uri": format!("{base}/jwks"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code", "client_credentials"],
+        "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
         "id_token_signing_alg_values_supported": ["RS256"],

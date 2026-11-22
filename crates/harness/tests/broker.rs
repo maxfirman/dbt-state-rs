@@ -426,7 +426,7 @@ async fn the_broker_serves_discovery_and_jwks() {
     assert_eq!(discovery["response_types_supported"], json!(["code"]));
     assert_eq!(
         discovery["grant_types_supported"],
-        json!(["authorization_code", "client_credentials"])
+        json!(["authorization_code", "client_credentials", "refresh_token"])
     );
     assert_eq!(
         discovery["code_challenge_methods_supported"],
