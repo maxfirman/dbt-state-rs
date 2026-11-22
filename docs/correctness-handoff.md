@@ -780,9 +780,12 @@ local-only and renders no Explain tree.
   `crates/harness/tests/keycloak.rs`, CI job `keycloak`). The pinned
   Fusion driver (#223) is still open. The broker registers the UI as its
   own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
-  tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`), but the
-  UI does not sign in yet (#229): it reads one configured organization
-  (`DBT_STATE_UI_ORG_ID`).
+  tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`). In
+  `oidc` mode the UI signs people in as that client and shows only their
+  active Organizations, checking their broker session within 30 s and
+  renewing within the person token lifetime (#229,
+  `crates/harness/tests/ui_sign_in.rs`, [ui.md](ui.md)); in `none` mode it
+  still reads one configured organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`
