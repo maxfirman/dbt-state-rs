@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/proto",
     "crates/auth",
+    "crates/broker",
     "crates/server",
     "crates/harness",
     "crates/ui",
@@ -46,5 +47,7 @@ base64 = "0.22"
 rustls-pki-types = { version = "1", features = ["std"] }
 toml = "1"
 tower = { version = "0.5", default-features = false }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+form_urlencoded = "1"
 proptest = "1"
 tempfile = "3"

@@ -8,6 +8,7 @@
 //! | `DBT_STATE_AUTH_CONFIG` | `oidc`: path of the TOML auth config |
 //! | `DBT_STATE_ALLOW_INSECURE` | `none`: allow a non-loopback listen address |
 //! | `DBT_STATE_REQUIRE_ORG_HEADER` | `none`: reject requests without `x-organization-id`; refused in `oidc` |
+//! | `DBT_STATE_BROKER_LISTEN` | `oidc`: also run the Token broker in this process, on this HTTP address; refused in `none` |
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -20,6 +21,9 @@ pub struct Config {
     pub listen: SocketAddr,
     pub database_url: String,
     pub auth: AuthMode,
+    /// `oidc`: the in-process Token broker's listen address, when it runs
+    /// one (the gRPC server's own listener stays HTTP/2 gRPC only).
+    pub broker_listen: Option<SocketAddr>,
 }
 
 /// How gRPC calls are authenticated (`DBT_STATE_AUTH`).
@@ -49,13 +53,22 @@ impl Config {
     /// Read and check the environment, and in `oidc` mode load the auth
     /// config. Refuses `none` mode on a non-loopback address without
     /// `DBT_STATE_ALLOW_INSECURE=true`, `DBT_STATE_REQUIRE_ORG_HEADER` in
-    /// `oidc` mode, and an invalid auth config.
+    /// `oidc` mode, `DBT_STATE_BROKER_LISTEN` in `none` mode or with an auth
+    /// config that cannot run a Token broker, and an invalid auth config.
     pub fn from_env() -> anyhow::Result<Self> {
         let var = |key: &str| std::env::var(key).ok();
         let listen = var("DBT_STATE_LISTEN").unwrap_or_else(|| "127.0.0.1:50051".to_string());
         let listen: SocketAddr = listen
             .parse()
             .with_context(|| format!("DBT_STATE_LISTEN={listen:?} is not a socket address"))?;
+        let broker_listen = var("DBT_STATE_BROKER_LISTEN")
+            .filter(|listen| !listen.is_empty())
+            .map(|listen| {
+                listen.parse::<SocketAddr>().with_context(|| {
+                    format!("DBT_STATE_BROKER_LISTEN={listen:?} is not a socket address")
+                })
+            })
+            .transpose()?;
         let database_url = var("DATABASE_URL")
             .unwrap_or_else(|| "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".to_string());
 
@@ -67,6 +80,12 @@ impl Config {
                         "DBT_STATE_AUTH=none serves without authentication; refusing the \
                          non-loopback address {listen}. Use DBT_STATE_AUTH=oidc, or set \
                          DBT_STATE_ALLOW_INSECURE=true to accept the risk"
+                    );
+                }
+                if broker_listen.is_some() {
+                    bail!(
+                        "DBT_STATE_BROKER_LISTEN runs the Token broker, which needs \
+                         DBT_STATE_AUTH=oidc; unset it in DBT_STATE_AUTH=none mode"
                     );
                 }
                 AuthMode::None {
@@ -88,6 +107,10 @@ impl Config {
                     )?
                     .into();
                 let config = AuthConfig::load(&path)?;
+                if broker_listen.is_some() {
+                    dbt_state_broker::Broker::new(&config)
+                        .context("DBT_STATE_BROKER_LISTEN is set")?;
+                }
                 AuthMode::Oidc {
                     path,
                     config: Box::new(config),
@@ -100,6 +123,7 @@ impl Config {
             listen,
             database_url,
             auth,
+            broker_listen,
         })
     }
 }

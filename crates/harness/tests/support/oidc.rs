@@ -18,6 +18,8 @@ use dbt_state_auth::{
     AuthConfig, OrganizationId, PrincipalId, Role, Scope, TokenIssuer, TokenRequest,
 };
 
+use super::fake_idp::{FakeIdp, UPSTREAM_AUDIENCE, UPSTREAM_SCOPE};
+
 /// The test config's `broker.issuer`.
 pub const ISSUER: &str = "https://broker.dbt-state.test";
 /// The test config's `api.audience`.
@@ -62,20 +64,27 @@ fn toml_string(value: &str) -> String {
 /// Organizations as `(id, disabled)`.
 pub type Declared<'a> = &'a [(&'a str, bool)];
 
-/// The TOML text of a config.
+/// The TOML text of a config. `keys` empty leaves out `[signing]`; `extra`
+/// is appended (for example `[upstream]` and `[[rules]]`).
 fn config_text(
     issuer: &str,
     audience: &str,
     keys: &[TestKey],
     organizations: Declared,
     tokens: &str,
+    extra: &str,
 ) -> String {
     let mut text = format!(
-        "[broker]\nissuer = {}\n\n[api]\naudience = {}\n\n{tokens}\n\n[signing]\nactive_key_id = {}\n",
+        "[broker]\nissuer = {}\n\n[api]\naudience = {}\n\n{tokens}\n",
         toml_string(issuer),
         toml_string(audience),
-        toml_string(keys[0].id_and_file().0),
     );
+    if let Some(active) = keys.first() {
+        text.push_str(&format!(
+            "\n[signing]\nactive_key_id = {}\n",
+            toml_string(active.id_and_file().0)
+        ));
+    }
     for key in keys {
         let (id, file) = key.id_and_file();
         text.push_str(&format!(
@@ -90,6 +99,7 @@ fn config_text(
             toml_string(id)
         ));
     }
+    text.push_str(extra);
     text
 }
 
@@ -101,13 +111,103 @@ fn load(text: &str) -> AuthConfig {
     AuthConfig::load(&path).expect("valid test auth config")
 }
 
-/// The server's auth config: [`ISSUER`], [`AUDIENCE`], `test-key-1`
+/// A deployment's auth config: [`ISSUER`], [`AUDIENCE`], `test-key-1`
 /// (active) and `test-key-2`, default lifetimes, and the given
-/// Organizations.
+/// Organizations; for a Token broker, also an Upstream IdP and mapping
+/// rules.
 #[derive(Clone)]
 pub struct TestAuth {
     config: AuthConfig,
+    issuer: String,
     organizations: Vec<(String, bool)>,
+}
+
+/// Builds a [`TestAuth`]. See [`TestAuth::builder`].
+#[derive(Clone)]
+pub struct TestAuthBuilder {
+    issuer: String,
+    organizations: Vec<(String, bool)>,
+    signing: bool,
+    tokens: String,
+    extra: String,
+}
+
+impl TestAuthBuilder {
+    /// The Token broker's issuer, instead of [`ISSUER`].
+    pub fn issuer(mut self, issuer: &str) -> Self {
+        self.issuer = issuer.into();
+        self
+    }
+
+    /// The fake Upstream IdP `idp`, with [`UPSTREAM_AUDIENCE`] and
+    /// [`UPSTREAM_SCOPE`].
+    pub fn upstream(mut self, idp: &FakeIdp) -> Self {
+        self.extra.push_str(&format!(
+            "\n[upstream]\nissuer = {}\napi_audience = {}\nclient_credentials_scope = {}\n",
+            toml_string(&idp.issuer()),
+            toml_string(UPSTREAM_AUDIENCE),
+            toml_string(UPSTREAM_SCOPE),
+        ));
+        self
+    }
+
+    /// A mapping rule: Principals of `kind` (`person` or `machine`) whose
+    /// `claim` holds `value` get `role` in `organization`.
+    pub fn rule(
+        mut self,
+        kind: &str,
+        claim: &str,
+        value: &str,
+        organization: &str,
+        role: &str,
+    ) -> Self {
+        self.extra.push_str(&format!(
+            "\n[[rules]]\nkind = {}\nclaim = {}\nvalue = {}\norganization = {}\nrole = {}\n",
+            toml_string(kind),
+            toml_string(claim),
+            toml_string(value),
+            toml_string(organization),
+            toml_string(role),
+        ));
+        self
+    }
+
+    /// Machine tokens live `minutes`.
+    pub fn machine_lifetime_minutes(mut self, minutes: u32) -> Self {
+        self.tokens = format!("[tokens]\nmachine_lifetime_minutes = {minutes}\n");
+        self
+    }
+
+    /// No `[signing]`: a gRPC server that fetches the Token broker's keys.
+    pub fn without_signing(mut self) -> Self {
+        self.signing = false;
+        self
+    }
+
+    pub fn build(self) -> TestAuth {
+        let organizations: Vec<(&str, bool)> = self
+            .organizations
+            .iter()
+            .map(|(id, disabled)| (id.as_str(), *disabled))
+            .collect();
+        let keys: &[TestKey] = if self.signing {
+            &[TestKey::Active, TestKey::Second]
+        } else {
+            &[]
+        };
+        TestAuth {
+            config: load(&config_text(
+                &self.issuer,
+                AUDIENCE,
+                keys,
+                &organizations,
+                &self.tokens,
+                &self.extra,
+            )),
+            issuer: self.issuer,
+            organizations: self.organizations,
+        }
+    }
 }
 
 /// How a [`TestSigner`] differs from the server's config.
@@ -133,18 +233,20 @@ impl Default for SignerOptions<'_> {
 
 impl TestAuth {
     pub fn new(organizations: Declared) -> Self {
-        Self {
-            config: load(&config_text(
-                ISSUER,
-                AUDIENCE,
-                &[TestKey::Active, TestKey::Second],
-                organizations,
-                "",
-            )),
+        Self::builder(organizations).build()
+    }
+
+    /// A config like [`TestAuth::new`]'s, to extend.
+    pub fn builder(organizations: Declared) -> TestAuthBuilder {
+        TestAuthBuilder {
+            issuer: ISSUER.into(),
             organizations: organizations
                 .iter()
                 .map(|(id, disabled)| ((*id).to_owned(), *disabled))
                 .collect(),
+            signing: true,
+            tokens: String::new(),
+            extra: String::new(),
         }
     }
 
@@ -152,9 +254,17 @@ impl TestAuth {
         &self.config
     }
 
+    /// The Token broker's issuer.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// Signs as the server's Token broker would.
     pub fn signer(&self) -> TestSigner {
-        self.signer_with(SignerOptions::default())
+        self.signer_with(SignerOptions {
+            issuer: &self.issuer,
+            ..SignerOptions::default()
+        })
     }
 
     /// Signs with `options`.
@@ -171,10 +281,11 @@ impl TestAuth {
             &[options.key],
             organizations,
             "",
+            "",
         ));
         TestSigner {
             lifetimes: config.token_lifetimes(),
-            issuer: config.token_issuer(),
+            issuer: config.token_issuer().expect("signing keys"),
             organizations: config.organizations().clone(),
         }
     }

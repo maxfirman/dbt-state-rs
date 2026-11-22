@@ -29,12 +29,8 @@ fn testdata(file: &str) -> PathBuf {
 
 /// An auth config with one Organization `organization`, in a temp dir.
 fn auth_config(organization: &str) -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("auth.toml");
-    std::fs::write(
-        &path,
-        format!(
-            r#"
+    write_config(&format!(
+        r#"
 [broker]
 issuer = "https://broker.dbt-state.test"
 [api]
@@ -47,11 +43,47 @@ private_key_file = {key:?}
 [[organizations]]
 id = {organization:?}
 "#,
-            key = testdata("signing-key-1.pem").to_str().unwrap(),
-        ),
-    )
-    .unwrap();
+        key = testdata("signing-key-1.pem").to_str().unwrap(),
+    ))
+}
+
+/// `auth_config("analytics")` plus an Upstream IdP and a machine rule: a
+/// config that can run the Token broker. Nothing listens at the IdP; the
+/// broker discovers it on first use.
+fn broker_config() -> (tempfile::TempDir, PathBuf) {
+    let (_dir, path) = auth_config("analytics");
+    let text = std::fs::read_to_string(&path).unwrap();
+    write_config(&format!(
+        r#"{text}
+[upstream]
+issuer = "http://127.0.0.1:1"
+api_audience = "api://dbt-state"
+[[rules]]
+kind = "machine"
+claim = "roles"
+value = "dbt-state.ci"
+organization = "analytics"
+role = "developer"
+"#
+    ))
+}
+
+/// `text` as an auth config file in a temp dir.
+fn write_config(text: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.toml");
+    std::fs::write(&path, text).unwrap();
     (dir, path)
+}
+
+/// `path`'s config without its `[signing]` table.
+fn without_signing(path: &Path) -> (tempfile::TempDir, PathBuf) {
+    let text = std::fs::read_to_string(path).unwrap();
+    let start = text.find("[signing]").unwrap();
+    let end = text.find("[[organizations]]").unwrap();
+    let mut text = text.clone();
+    text.replace_range(start..end, "");
+    write_config(&text)
 }
 
 /// The server's environment: only the given variables, plus a database URL
@@ -139,6 +171,43 @@ fn unsafe_auth_settings_refuse_to_start() {
         server(&[("DBT_STATE_AUTH", "basic")]),
         &["DBT_STATE_AUTH", "basic"],
     );
+
+    let (_broker_dir, broker) = broker_config();
+    let broker = broker.to_str().unwrap();
+    let (_unsigned_dir, unsigned) = without_signing(Path::new(broker));
+    let unsigned = unsigned.to_str().unwrap();
+    assert_refused(
+        "a Token broker in none mode",
+        server(&[("DBT_STATE_BROKER_LISTEN", "127.0.0.1:0")]),
+        &["DBT_STATE_BROKER_LISTEN", "DBT_STATE_AUTH=oidc"],
+    );
+    assert_refused(
+        "a Token broker without an Upstream IdP",
+        server(&[
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", config),
+            ("DBT_STATE_BROKER_LISTEN", "127.0.0.1:0"),
+        ]),
+        &["DBT_STATE_BROKER_LISTEN", "[upstream]"],
+    );
+    assert_refused(
+        "a Token broker without signing keys",
+        server(&[
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", unsigned),
+            ("DBT_STATE_BROKER_LISTEN", "127.0.0.1:0"),
+        ]),
+        &["DBT_STATE_BROKER_LISTEN", "[signing]"],
+    );
+    assert_refused(
+        "a Token broker address that is no address",
+        server(&[
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", broker),
+            ("DBT_STATE_BROKER_LISTEN", "localhost"),
+        ]),
+        &["DBT_STATE_BROKER_LISTEN", "localhost"],
+    );
 }
 
 /// A fresh schema the server may migrate, removed afterwards.
@@ -193,6 +262,11 @@ impl Drop for Schema {
 /// Start the server with `vars` and wait until it reports it is listening,
 /// then stop it.
 fn assert_starts(case: &str, schema: &Schema, vars: &[(&str, &str)]) {
+    assert_starts_logging(case, schema, vars, &[]);
+}
+
+/// [`assert_starts`], and the server logged each of `needles` first.
+fn assert_starts_logging(case: &str, schema: &Schema, vars: &[(&str, &str)], needles: &[&str]) {
     let mut command = server(vars);
     command
         .env("DATABASE_URL", schema.dsn())
@@ -225,6 +299,13 @@ fn assert_starts(case: &str, schema: &Schema, vars: &[(&str, &str)]) {
     let _ = child.kill();
     let _ = child.wait();
     assert!(started, "{case}: did not start\n{}", seen.join("\n"));
+    for needle in needles {
+        assert!(
+            seen.iter().any(|line| line.contains(needle)),
+            "{case}: no {needle:?} in\n{}",
+            seen.join("\n")
+        );
+    }
 }
 
 #[test]
@@ -261,5 +342,31 @@ fn allowed_auth_settings_start() {
             ("DBT_STATE_AUTH", "oidc"),
             ("DBT_STATE_AUTH_CONFIG", config),
         ],
+    );
+
+    let (_broker_dir, broker) = broker_config();
+    assert_starts_logging(
+        "oidc with the Token broker on its own listener",
+        &schema,
+        &[
+            ("DBT_STATE_LISTEN", "127.0.0.1:0"),
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", broker.to_str().unwrap()),
+            ("DBT_STATE_BROKER_LISTEN", "127.0.0.1:0"),
+        ],
+        &["Token broker listening"],
+    );
+    // Without signing keys, the Token broker's keys are fetched when a
+    // request needs them, so an unreachable broker does not stop startup.
+    let (_unsigned_dir, unsigned) = without_signing(Path::new(&config));
+    assert_starts_logging(
+        "oidc verifying with a standalone Token broker's keys",
+        &schema,
+        &[
+            ("DBT_STATE_LISTEN", "127.0.0.1:0"),
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", unsigned.to_str().unwrap()),
+        ],
+        &["broker jwks"],
     );
 }

@@ -28,6 +28,10 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
     session ids) each gRPC handler and decision capture takes.
   - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.
   - `grpc_auth.rs`: `oidc` mode authentication layer (all RPCs but health).
+- `crates/auth`: auth core (scope format, auth config, tokens and JWKS,
+  mapping rules, authenticated context). Pure.
+- `crates/broker`: the Token broker (discovery, JWKS, `client_credentials`
+  pass-through to the Upstream IdP); in-process or standalone binary.
 - `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
   and fuzz tools, integration tests.
 - `crates/ui`: optional read-only web console.

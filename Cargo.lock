@@ -159,6 +159,8 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itoa",
  "matchit 0.8.4",
  "memchr",
@@ -166,7 +168,10 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
+ "serde_json",
+ "serde_path_to_error",
  "sync_wrapper",
+ "tokio",
  "tower",
  "tower-layer",
  "tower-service",
@@ -527,19 +532,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbt-state-broker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "dbt-state-auth",
+ "form_urlencoded",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "dbt-state-harness"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "chrono",
  "dbt-state-auth",
+ "dbt-state-broker",
  "dbt-state-proto",
  "dbt-state-server",
+ "form_urlencoded",
  "prost",
  "prost-types",
  "reqwest",
+ "ring",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -575,12 +604,14 @@ dependencies = [
  "async-trait",
  "chrono",
  "dbt-state-auth",
+ "dbt-state-broker",
  "dbt-state-proto",
  "hex",
  "md-5",
  "proptest",
  "prost",
  "rand 0.8.8",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",

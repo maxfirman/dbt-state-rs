@@ -45,7 +45,7 @@ pub struct AppState {
     pub clock: Clock,
     /// `oidc` mode: authenticates every call but health. `None` is `none`
     /// mode. See `grpc_auth`.
-    pub(crate) authenticator: Option<Arc<dbt_state_auth::RequestAuthenticator>>,
+    pub(crate) oidc: Option<Arc<grpc_auth::Oidc>>,
 }
 
 /// The server clock. Lag tolerance compares a reuse candidate's build age on
@@ -103,7 +103,7 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
-            authenticator: None,
+            oidc: None,
         })
     }
 
@@ -121,16 +121,21 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
-            authenticator: None,
+            oidc: None,
         }
     }
 
     /// `oidc` mode: every call except `grpc.health.v1` needs a token
-    /// `authenticator` accepts for the Organization it names, and handlers
-    /// take the Organization from the authenticated context.
-    pub fn with_oidc(mut self, authenticator: dbt_state_auth::RequestAuthenticator) -> Self {
-        self.authenticator = Some(Arc::new(authenticator));
-        self
+    /// `config` accepts for the Organization it names, and handlers take the
+    /// Organization from the authenticated context.
+    ///
+    /// With `[signing]`, tokens are checked against those keys: the same key
+    /// set an in-process Token broker publishes. Without it, against the
+    /// Token broker's published keys, fetched and cached
+    /// (`dbt_state_broker::RemoteKeys`).
+    pub fn with_oidc(mut self, config: &dbt_state_auth::AuthConfig) -> anyhow::Result<Self> {
+        self.oidc = Some(Arc::new(grpc_auth::Oidc::new(config)?));
+        Ok(self)
     }
 
     /// Use `clock` for build ages and confirmation receipt times.
@@ -169,7 +174,7 @@ pub fn build_router(state: AppState) -> GrpcRouter {
     };
 
     tonic::transport::Server::builder()
-        .layer(grpc_auth::GrpcAuthLayer::new(state.authenticator.clone()))
+        .layer(grpc_auth::GrpcAuthLayer::new(state.oidc.clone()))
         .add_service(health_service())
         .add_service(SqlServer::new(SqlService(state.clone())))
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))

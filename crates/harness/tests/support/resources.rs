@@ -117,7 +117,16 @@ pub struct TestServer {
     pub addr: SocketAddr,
     pub schema: String,
     pub state: AppState,
+    /// The in-process Token broker's listener, when it runs one.
+    pub broker: Option<SocketAddr>,
     _lifetime: ServerLifetime,
+}
+
+impl TestServer {
+    /// The in-process Token broker's base URL.
+    pub fn broker_url(&self) -> String {
+        format!("http://{}", self.broker.expect("a Token broker listener"))
+    }
 }
 
 struct ServerLifetime {
@@ -171,9 +180,60 @@ pub async fn start_server_oidc(auth: &super::oidc::TestAuth) -> TestServer {
         false,
         None,
         dbt_state_server::Clock::Replay,
-        Some(auth.config().request_authenticator()),
+        Some(Oidc {
+            config: auth.config().clone(),
+            broker: false,
+        }),
     )
     .await
+}
+
+/// A server in `oidc` mode with the Token broker in the same process, on its
+/// own listener, sharing its key set: one deployment, as the server binary
+/// runs with `DBT_STATE_BROKER_LISTEN`.
+pub async fn start_server_with_broker(auth: &super::oidc::TestAuth) -> TestServer {
+    start_server_with_database_clock(
+        false,
+        None,
+        dbt_state_server::Clock::Replay,
+        Some(Oidc {
+            config: auth.config().clone(),
+            broker: true,
+        }),
+    )
+    .await
+}
+
+/// A standalone Token broker, as the `dbt-state-broker` binary runs.
+#[must_use = "keep the broker owner alive while clients need it"]
+pub struct TestBroker {
+    pub auth: super::oidc::TestAuth,
+    server: super::http::HttpServer,
+}
+
+impl TestBroker {
+    /// Its base URL, which is also its issuer.
+    pub fn url(&self) -> String {
+        self.server.url()
+    }
+}
+
+/// Start a standalone Token broker whose issuer is its own URL, with the
+/// config `auth` builds.
+pub fn start_broker(auth: super::oidc::TestAuthBuilder) -> TestBroker {
+    let listener = super::http::HttpServer::bind();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let auth = auth.issuer(&url).build();
+    let broker = dbt_state_broker::Broker::new(auth.config()).expect("broker config");
+    let server = super::http::HttpServer::start(listener, move || broker.router());
+    TestBroker { auth, server }
+}
+
+/// How a test server runs `oidc` mode.
+struct Oidc {
+    config: dbt_state_auth::AuthConfig,
+    /// Also run the Token broker, on its own listener.
+    broker: bool,
 }
 
 async fn start_server_with_database(
@@ -193,7 +253,7 @@ async fn start_server_with_database_clock(
     require_org_header: bool,
     database: Option<std::sync::Arc<TestDatabase>>,
     clock: dbt_state_server::Clock,
-    oidc: Option<dbt_state_auth::RequestAuthenticator>,
+    oidc: Option<Oidc>,
 ) -> TestServer {
     let (ready, startup) = oneshot::channel();
     let (stop, shutdown) = oneshot::channel();
@@ -210,14 +270,26 @@ async fn start_server_with_database_clock(
         let result = catch_unwind(AssertUnwindSafe(|| {
             runtime.block_on(async {
                 let mut state = database.state(require_org_header).await.with_clock(clock);
-                if let Some(authenticator) = oidc {
-                    state = state.with_oidc(authenticator);
+                let mut broker = None;
+                if let Some(oidc) = oidc {
+                    state = state.with_oidc(&oidc.config).expect("oidc mode");
+                    if oidc.broker {
+                        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind broker");
+                        let router = dbt_state_broker::Broker::new(&oidc.config)
+                            .expect("broker config")
+                            .router();
+                        broker = Some(listener.local_addr().expect("broker address"));
+                        tokio::spawn(async move { axum::serve(listener, router).await });
+                    }
                 }
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
                 let addr = listener.local_addr().expect("server address");
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
                 let router = dbt_state_server::build_router(state.clone());
-                if ready.send((addr, database.schema.clone(), state)).is_err() {
+                if ready
+                    .send((addr, database.schema.clone(), state, broker))
+                    .is_err()
+                {
                     return;
                 }
                 tokio::select! {
@@ -238,11 +310,12 @@ async fn start_server_with_database_clock(
         stop: Some(stop),
         thread: Some(worker),
     };
-    let (addr, schema, state) = startup.await.expect("test server startup");
+    let (addr, schema, state, broker) = startup.await.expect("test server startup");
     TestServer {
         addr,
         schema,
         state,
+        broker,
         _lifetime: lifetime,
     }
 }

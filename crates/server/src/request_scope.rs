@@ -68,7 +68,7 @@ impl RequestScope {
 /// missing or empty one is `UNAUTHENTICATED`. This enforces that a request is
 /// scoped, not that its caller belongs to the Organization it names.
 fn organization<T>(state: &AppState, request: &Request<T>) -> Result<String, Status> {
-    if state.authenticator.is_some() {
+    if state.oidc.is_some() {
         return request
             .extensions()
             .get::<AuthenticatedContext>()
