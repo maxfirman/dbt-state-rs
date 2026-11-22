@@ -76,6 +76,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # uv runs the pinned Python client driver in `cargo test` and the
+      # DuckDB acceptance cases below.
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.8.22'
+          python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: |
+            integrations/duckdb/uv.lock
+            crates/harness/python-client/uv.lock
+
       - name: Build (workspace)
         run: cargo build --workspace --all-targets
 
@@ -83,7 +94,11 @@ jobs:
         # The differential-fuzz tool (feature "fuzz") is intentionally excluded:
         # it calls the real hosted service and needs credentials. CI runs the
         # unit + integration tests, including the conformance replay of the
-        # committed golden fixtures against a fresh Postgres.
+        # committed golden fixtures against a fresh Postgres, and the pinned
+        # Python client driver (crates/harness/tests/python_client.rs), which
+        # must not skip here.
+        env:
+          DBT_STATE_REQUIRE_PYTHON_CLIENT: '1'
         run: cargo test --workspace
 
       - name: Retain generated Databricks modeled-safety traces
@@ -94,12 +109,6 @@ jobs:
           path: artifacts/databricks-generated
           retention-days: 14
 
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: '0.8.22'
-          python-version: '3.12'
-          enable-cache: true
-          cache-dependency-glob: integrations/duckdb/uv.lock
       - name: All fixed real-dbt cases and bounded generation (four seeds, four episodes)
         run: ./scripts/duckdb-ci.sh --jobs 4
       - name: Retain logs, timing, seeds and replayable traces
