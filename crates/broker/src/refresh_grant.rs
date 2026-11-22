@@ -15,6 +15,12 @@
 //! `expires_in`. On any refusal both fall back to a browser sign-in once
 //! their token has expired.
 //!
+//! The UI (`clients`) renews its person session the same way, authenticated
+//! with a `private_key_jwt` assertion, and gets its own response: a new
+//! `id_token` (without a nonce, OIDC Core §12.2) and `access_token` for its
+//! audience, and a rotated `refresh_token`. A refresh token renews only for
+//! the client it was issued to.
+//!
 //! A renewal runs in one transaction over the session's row (spec #215,
 //! "Token endpoint, by grant"):
 //!
@@ -57,12 +63,11 @@
 use std::collections::BTreeMap;
 
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use chrono::{DateTime, Utc};
 use dbt_state_auth::{PrincipalId, PrincipalKind, Scope, TokenRequest, UpstreamClaims};
-use serde_json::json;
 
-use crate::oauth::{no_store, OAuthError};
+use crate::clients::{self, person_token_response};
+use crate::oauth::OAuthError;
 use crate::secret;
 use crate::store::{Principal, Renewal, Renewed};
 use crate::upstream::{UpstreamError, Userinfo};
@@ -178,19 +183,24 @@ enum Outcome {
 /// See the module docs.
 pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> Response {
     let get = |key: &str| form.get(key).map(String::as_str);
-    let client_id = get("client_id");
+    let registration = match clients::authenticate(broker, form).await {
+        Ok(registration) => registration,
+        Err(refused) => {
+            return Refusal {
+                reason: refused.reason,
+                client_id: refused.client_id,
+                ..Refusal::default()
+            }
+            .respond(refused.error)
+        }
+    };
+    let client = registration.client;
+    let client_id = Some(registration.client_id);
     let refusal = |reason| Refusal {
         reason,
         client_id,
         ..Refusal::default()
     };
-    match client_id {
-        None => return refusal("missing_client_id").respond(OAuthError::InvalidClient),
-        Some(id) if id != broker.0.dbt_client_id => {
-            return refusal("unknown_client").respond(OAuthError::InvalidClient)
-        }
-        Some(_) => {}
-    }
     let Some(presented) = get(REFRESH_TOKEN) else {
         return refusal("missing_parameter").respond(OAuthError::InvalidRequest);
     };
@@ -278,7 +288,8 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
         TokenRequest::person(principal.clone(), session.id.to_string(), client_id, scope);
     request.email = email;
     request.name = name;
-    let issued = broker.0.tokens.issue(&request, now);
+    let (response, expires_in) =
+        person_token_response(broker, client, &request, None, &refresh_token, now);
     tracing::info!(
         grant = REFRESH_TOKEN,
         principal = principal.as_str(),
@@ -289,19 +300,10 @@ pub(crate) async fn renew(broker: &Broker, form: &BTreeMap<String, String>) -> R
         scope = scope_text.as_str(),
         evidence,
         grace_window,
-        expires_in = issued.expires_in.as_secs(),
+        expires_in,
         "token issued"
     );
-    no_store(
-        Json(json!({
-            "id_token": issued.token,
-            "refresh_token": refresh_token,
-            "scope": scope_text,
-            "token_type": "Bearer",
-            "expires_in": issued.expires_in.as_secs(),
-        }))
-        .into_response(),
-    )
+    response
 }
 
 /// Steps 1 to 5 of the module docs, over the locked session of `renewal`.

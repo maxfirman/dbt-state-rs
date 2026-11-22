@@ -5,6 +5,7 @@
 //! never stored in the database or shown by `Debug`.
 
 use std::fmt;
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -12,7 +13,7 @@ use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::Serialize;
 
-use crate::keys::SigningKey;
+use crate::keys::{KeyFileError, SigningKey};
 use crate::token::unix_seconds;
 
 /// The `client_assertion_type` of a `private_key_jwt` assertion.
@@ -92,6 +93,13 @@ struct Claims<'a> {
 impl ClientAssertionKey {
     pub(crate) fn new(key: SigningKey, kid: Option<String>) -> Self {
         Self { key, kid }
+    }
+
+    /// The RSA private key (PKCS#8 or PKCS#1 PEM, 2048 to 4096 bits) in
+    /// `path`, named `kid` in the assertions' JOSE header when set. A
+    /// client of the Token broker (the UI) signs its assertions with it.
+    pub fn load(path: &Path, kid: Option<String>) -> Result<Self, KeyFileError> {
+        Ok(Self::new(SigningKey::load(String::new(), path)?, kid))
     }
 
     /// A signed assertion that `client_id` is authenticating to the token

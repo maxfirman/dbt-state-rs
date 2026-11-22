@@ -55,6 +55,7 @@ const MIGRATED: &[&str] = &[
     "sql_normalization.rs",
     "submit_decision.rs",
     "template_comparison.rs",
+    "ui_client.rs",
     "volatile_evaluation.rs",
     "warehouse_portability.rs",
 ];

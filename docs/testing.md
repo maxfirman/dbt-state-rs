@@ -250,6 +250,19 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   loopback)` fills in Keycloak's login form; `.create_person(&groups)`,
   `.disable(&person)`, `.leave_group(&person, group)` and
   `.user_id(username)` use the realm's admin REST API.
+- `ui_client.rs` drives the broker as the UI does (`TestAuthBuilder::ui_client()`
+  registers it as `UI_CLIENT_ID` with callback `UI_REDIRECT_URI` and
+  `ui-client-public.pem`; `.ui_client_at(uri)` with another callback):
+  `UiSignIn::new()` is one standard OIDC authorize request (`openid email
+  profile`, `state`, `nonce`, PKCE S256; `.client_id`, `.redirect_uri`,
+  `.scope`, `.without_nonce`, `.without_pkce` vary it); `assertion(aud)` is
+  a good `private_key_jwt` assertion signed with `ui-client-key.pem`
+  through the auth crate's `ClientAssertionKey`, and `Assertion::new(aud)`
+  one to spoil (`.claim`, `.without`, `.issued(ago, lifetime)`,
+  `.signed_by_another_key()`, `.alg`); `exchange`, `refresh` and
+  `token_request` post the token requests. Tests: `tests/ui_client.rs`.
+- `rpcs.rs`: `call_every_rpc(&scenario)` calls each RPC of the protocol with
+  a default body (`tests/oidc.rs`, `tests/ui_client.rs`).
 - `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
 - `rows.rs` reads `executions` and `node_states` back for assertions,
   `decisions(&server, n)` the `node_decisions` rows once `n` are captured,

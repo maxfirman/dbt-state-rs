@@ -42,6 +42,11 @@
 //! [clients.dbt]                               # optional
 //! client_id = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"   # the dbt client's built-in id
 //!
+//! [clients.ui]                                # optional: the console
+//! client_id = "dbt-state-ui"                  # the `aud` of its tokens
+//! redirect_uri = "https://console.example.com/auth/callback"   # its only callback
+//! public_key_file = "/run/secrets/dbt-state/ui-client.pub.pem" # private_key_jwt
+//!
 //! [[rules]]                                   # mapping rules
 //! kind = "machine"                            # "person" or "machine"
 //! claim = "roles"
@@ -69,6 +74,7 @@ use serde::Deserialize;
 use crate::credential::{ClientAssertionKey, ClientSecret, UpstreamCredential};
 use crate::keys::{KeyFileError, SigningKey, SigningKeys, VerificationKeys};
 use crate::sealing::RefreshTokenKey;
+use crate::ui_client::{ClientPublicKey, UiClient};
 use crate::{
     InvalidOrganizationId, MappingRule, MappingRules, Organization, OrganizationId, Organizations,
     PrincipalKind, RequestAuthenticator, Role, TokenIssuer, TokenVerifier,
@@ -101,6 +107,7 @@ pub struct AuthConfig {
     upstream: Option<UpstreamConfig>,
     rules: MappingRules,
     dbt_client_id: String,
+    ui_client: Option<UiClient>,
     pending_logins_per_ip: u32,
     client_ip_header: Option<String>,
 }
@@ -261,11 +268,21 @@ struct RawUpstream {
     refresh_token_key_file: Option<PathBuf>,
 }
 
-/// The broker's client registrations (`[clients.dbt]`).
+/// The broker's client registrations (`[clients.dbt]`, `[clients.ui]`).
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawClients {
     dbt: Option<RawDbtClient>,
+    ui: Option<RawUiClient>,
+}
+
+/// The UI registration: no secret, only a public key.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawUiClient {
+    client_id: String,
+    redirect_uri: String,
+    public_key_file: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -435,6 +452,11 @@ impl AuthConfig {
             Some(client) => client.client_id,
             None => DEFAULT_DBT_CLIENT_ID.to_owned(),
         };
+        let ui_client = raw
+            .clients
+            .ui
+            .map(|raw| ui_client(raw, &dbt_client_id, &audience, base))
+            .transpose()?;
         let pending_logins_per_ip = raw
             .broker
             .max_pending_logins_per_ip
@@ -472,9 +494,15 @@ impl AuthConfig {
             upstream,
             rules: MappingRules::new(rules),
             dbt_client_id,
+            ui_client,
             pending_logins_per_ip,
             client_ip_header,
         })
+    }
+
+    /// The UI registration (`[clients.ui]`), when configured.
+    pub fn ui_client(&self) -> Option<&UiClient> {
+        self.ui_client.as_ref()
     }
 
     /// The dbt client registration's client id: the dbt client's built-in
@@ -769,6 +797,41 @@ fn upstream_login(
         scope,
         refresh_token_key,
     })
+}
+
+fn ui_client(
+    raw: RawUiClient,
+    dbt_client_id: &str,
+    api_audience: &str,
+    base: &Path,
+) -> Result<UiClient, ConfigError> {
+    // UI tokens carry the UI's client id as `aud`: equal to the API
+    // audience, gRPC would accept them.
+    if raw.client_id.trim().is_empty()
+        || raw.client_id == dbt_client_id
+        || raw.client_id == api_audience
+    {
+        return Err(ConfigError::Invalid(
+            "clients.ui.client_id must be set, and differ from the dbt client's id and from \
+             api.audience"
+                .into(),
+        ));
+    }
+    // RFC 6749 §3.1.2: an absolute URI without a fragment.
+    if !secure_url(&raw.redirect_uri) || raw.redirect_uri.contains('#') {
+        return Err(ConfigError::Invalid(
+            "clients.ui.redirect_uri must be an https URL (plain http only on a loopback \
+             address) without a fragment"
+                .into(),
+        ));
+    }
+    let path = base.join(&raw.public_key_file);
+    let key = ClientPublicKey::load(&path).map_err(|error| ConfigError::File {
+        key: "clients.ui.public_key_file",
+        path,
+        error: error.to_string(),
+    })?;
+    Ok(UiClient::new(raw.client_id, raw.redirect_uri, key))
 }
 
 fn rule(raw: RawRule, organizations: &Organizations) -> Result<MappingRule, ConfigError> {

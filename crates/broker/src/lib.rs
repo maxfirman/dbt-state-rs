@@ -4,14 +4,15 @@
 //! It serves, over HTTP/1.1:
 //! - `GET /.well-known/openid-configuration`: OIDC discovery;
 //! - `GET /jwks`: the public halves of its `[signing]` keys;
-//! - `GET /`: the authorization endpoint, where the dbt client's browser
-//!   sign-in starts, and `GET /callback`, where the Upstream IdP returns
-//!   (`sign_in`);
+//! - `GET /`: the authorization endpoint, where a registered client's
+//!   browser sign-in starts (the dbt client's or the UI's, `clients`), and
+//!   `GET /callback`, where the Upstream IdP returns (`sign_in`);
 //! - `POST /token`: `client_credentials` pass-through for machines
 //!   (`token_endpoint`), the browser sign-in's `authorization_code`
 //!   exchange (`code_grant`), and a person's `refresh_token` renewal, which
 //!   goes back to the Upstream IdP for fresh evidence every time
-//!   (`refresh_grant`). Token exchange is refused.
+//!   (`refresh_grant`). The UI authenticates both with `private_key_jwt`.
+//!   Token exchange is refused.
 //!
 //! Its state (pending logins, person sessions, authorization codes and
 //! refresh tokens) lives in the server's Postgres schema, migrated from
@@ -36,6 +37,7 @@
 //! cached for at most [`SESSION_STATUS_MAX_AGE`]), and the admin command
 //! revokes every session of a Principal ([`revoke_sessions`]).
 
+mod clients;
 mod clock;
 mod code_grant;
 mod discovery;
@@ -57,7 +59,9 @@ use axum::http::header;
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use dbt_state_auth::{AuthConfig, MappingRules, Organizations, TokenIssuer, VerificationKeys};
+use dbt_state_auth::{
+    AuthConfig, MappingRules, Organizations, TokenIssuer, UiClient, VerificationKeys,
+};
 use serde_json::json;
 use sqlx::PgPool;
 
@@ -102,6 +106,8 @@ struct Inner {
     clock: Clock,
     /// The dbt client registration's client id.
     dbt_client_id: String,
+    /// The UI registration, when configured.
+    ui_client: Option<UiClient>,
     pending_logins_per_ip: u32,
     client_ip_header: Option<String>,
 }
@@ -151,6 +157,7 @@ impl Broker {
             store: Store::new(pool),
             clock,
             dbt_client_id: config.dbt_client_id().to_owned(),
+            ui_client: config.ui_client().cloned(),
             pending_logins_per_ip: config.pending_logins_per_ip(),
             client_ip_header: config.client_ip_header().map(str::to_owned),
         })))
@@ -172,6 +179,11 @@ impl Broker {
     /// The issuer without a trailing `/`: the base of every endpoint URL.
     fn base(&self) -> &str {
         self.0.issuer.trim_end_matches('/')
+    }
+
+    /// The token endpoint's URL.
+    fn token_endpoint(&self) -> String {
+        format!("{}/token", self.base())
     }
 
     /// Where the Upstream IdP sends the browser back: register this
@@ -212,14 +224,22 @@ async fn discovery_document(
     Json(json!({
         "issuer": broker.0.issuer,
         "authorization_endpoint": format!("{base}/"),
-        "token_endpoint": format!("{base}/token"),
+        "token_endpoint": broker.token_endpoint(),
         "jwks_uri": format!("{base}/jwks"),
         "response_types_supported": ["code"],
         "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-        "token_endpoint_auth_methods_supported": ["none", "client_secret_basic"],
+        // `none` for the dbt client, `client_secret_basic` for machines'
+        // client_credentials (forwarded to the Upstream IdP), and
+        // `private_key_jwt` for the UI.
+        "token_endpoint_auth_methods_supported": ["none", "client_secret_basic", "private_key_jwt"],
+        "token_endpoint_auth_signing_alg_values_supported": ["RS256"],
         "id_token_signing_alg_values_supported": ["RS256"],
         "subject_types_supported": ["public"],
+        "scopes_supported": ["openid"],
+        "claims_supported": [
+            "iss", "sub", "aud", "azp", "exp", "iat", "sid", "nonce", "scope", "email", "name",
+        ],
     }))
 }
 

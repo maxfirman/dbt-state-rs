@@ -1,5 +1,5 @@
-//! Browser sign-in: the dbt client's authorize request, and the Upstream
-//! IdP's callback.
+//! Browser sign-in: a registered client's authorize request (the dbt
+//! client's or the UI's, `clients`), and the Upstream IdP's callback.
 //!
 //! Both pinned clients open the browser at their auth URL (the broker's
 //! issuer, which hosted dbt State also uses as its authorization endpoint)
@@ -13,23 +13,27 @@
 //! `REDIRECT_URI`, `_login`, authlib's `create_authorization_url`, and
 //! `dbt_state/auth/sso_server.py` `do_GET`).
 //!
+//! The UI is a standard OIDC relying party: its authorize request also has
+//! `openid` in its `scope` and a `nonce` (OIDC Core §3.1.2.1), which its
+//! code is bound to and its `id_token` echoes.
+//!
 //! 1. `GET /` checks the client id and the exact redirect URI (a mismatch
 //!    gets an error page, never a redirect: RFC 6749 §4.1.2.1), requires
-//!    PKCE S256, records a pending login (capped per client IP), and sends
-//!    the browser to the Upstream IdP as an OIDC relying party with its own
-//!    `state`, `nonce` and PKCE challenge, requesting `openid` and offline
-//!    access.
+//!    PKCE S256 (and, for the UI, `openid` and a nonce), records a pending
+//!    login (capped per client IP), and sends the browser to the Upstream
+//!    IdP as an OIDC relying party with its own `state`, `nonce` and PKCE
+//!    challenge, requesting `openid` and offline access.
 //! 2. `GET /callback` takes the pending login named by the IdP's `state`
 //!    (once), exchanges the IdP's code with the broker's own credential,
 //!    checks the ID token (signature, issuer, audience, expiry, nonce),
 //!    identifies the Principal by the IdP issuer and the configured subject
 //!    claim, applies the person mapping rules only, and creates a person
 //!    session holding the IdP's refresh token, encrypted. It then sends the
-//!    browser to the dbt client's loopback handler with a single-use
-//!    authorization code valid for 60 s.
+//!    browser to the client's redirect URI with a single-use authorization
+//!    code valid for 60 s.
 //!
-//! A refusal after the redirect URI is known goes back to the dbt client as
-//! an OAuth error with a fixed description, and is logged at `warn` with
+//! A refusal after the redirect URI is known goes back to the client as an
+//! OAuth error with a fixed description, and is logged at `warn` with
 //! the reason; nothing secret is logged.
 
 use std::collections::BTreeMap;
@@ -43,6 +47,7 @@ use chrono::{DateTime, Utc};
 use dbt_state_auth::{PrincipalId, PrincipalKind};
 use uuid::Uuid;
 
+use crate::clients::Client;
 use crate::secret;
 use crate::store::{NewCode, NewSession, PendingLogin, Principal};
 use crate::upstream::{AuthorizeRequest, UpstreamError};
@@ -134,7 +139,11 @@ fn browser_headers(mut response: Response) -> Response {
     response
 }
 
-/// The dbt client's loopback handler, where a sign-in ends.
+/// The longest `nonce` accepted from the UI.
+const MAX_NONCE_LENGTH: usize = 512;
+
+/// The client's redirect URI (the dbt client's loopback handler, or the
+/// UI's callback), where a sign-in ends.
 struct ClientRedirect<'a> {
     redirect_uri: &'a str,
     state: Option<&'a str>,
@@ -145,6 +154,10 @@ struct ClientRedirect<'a> {
 enum SignInError {
     /// The request lacks PKCE S256, or is malformed.
     InvalidRequest,
+    /// The UI's request lacks a `nonce`.
+    MissingNonce,
+    /// The UI's request lacks the `openid` scope.
+    InvalidScope,
     UnsupportedResponseType,
     /// The broker has no Upstream IdP registration for browser sign-in.
     UnauthorizedClient,
@@ -164,7 +177,8 @@ enum SignInError {
 impl SignInError {
     fn code(self) -> &'static str {
         match self {
-            Self::InvalidRequest => "invalid_request",
+            Self::InvalidRequest | Self::MissingNonce => "invalid_request",
+            Self::InvalidScope => "invalid_scope",
             Self::UnsupportedResponseType => "unsupported_response_type",
             Self::UnauthorizedClient => "unauthorized_client",
             Self::UpstreamDenied | Self::NotMapped => "access_denied",
@@ -178,6 +192,8 @@ impl SignInError {
             Self::InvalidRequest => {
                 "the sign-in request is malformed; PKCE with code_challenge_method S256 is required"
             }
+            Self::MissingNonce => "a nonce is required",
+            Self::InvalidScope => "the openid scope is required",
             Self::UnsupportedResponseType => "only response_type=code is supported",
             Self::UnauthorizedClient => "browser sign-in is not configured on this dbt State",
             Self::UpstreamDenied => "the identity provider did not sign you in",
@@ -202,7 +218,18 @@ impl ClientRedirect<'_> {
         if let Some(state) = self.state {
             query.append_pair("state", state);
         }
-        redirect(&format!("{}?{}", self.redirect_uri, query.finish()))
+        // A registered query is kept, and the response added to it (RFC
+        // 6749 §3.1.2).
+        let separator = if self.redirect_uri.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
+        redirect(&format!(
+            "{}{separator}{}",
+            self.redirect_uri,
+            query.finish()
+        ))
     }
 
     fn error(&self, refusal: Refusal, error: SignInError) -> Response {
@@ -253,7 +280,14 @@ fn client_ip(broker: &Broker, headers: &HeaderMap, peer: SocketAddr) -> IpAddr {
         .unwrap_or(peer.ip())
 }
 
-/// `GET /`: the dbt client's authorize request.
+/// Whether `nonce` is an acceptable OIDC nonce: 1 to [`MAX_NONCE_LENGTH`]
+/// visible ASCII characters or spaces.
+fn is_nonce(nonce: &str) -> bool {
+    (1..=MAX_NONCE_LENGTH).contains(&nonce.len())
+        && nonce.bytes().all(|b| (0x20..=0x7e).contains(&b))
+}
+
+/// `GET /`: a registered client's authorize request.
 pub(crate) async fn authorize(
     State(broker): State<Broker>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -272,7 +306,7 @@ pub(crate) async fn authorize(
     };
     let get = |key: &str| query.get(key).map(String::as_str);
     let client_id = get("client_id");
-    if client_id != Some(broker.0.dbt_client_id.as_str()) {
+    let Some(registration) = client_id.and_then(|id| broker.registration(id)) else {
         Refusal {
             step,
             reason: "unknown_client",
@@ -284,8 +318,8 @@ pub(crate) async fn authorize(
             StatusCode::BAD_REQUEST,
             "This client is not registered with dbt State.",
         );
-    }
-    if get("redirect_uri") != Some(DBT_CLIENT_REDIRECT_URI) {
+    };
+    if get("redirect_uri") != Some(registration.redirect_uri) {
         Refusal {
             step,
             reason: "redirect_uri_mismatch",
@@ -299,7 +333,7 @@ pub(crate) async fn authorize(
         );
     }
     let client = ClientRedirect {
-        redirect_uri: DBT_CLIENT_REDIRECT_URI,
+        redirect_uri: registration.redirect_uri,
         state: get("state"),
     };
     let refusal = |reason| Refusal {
@@ -324,6 +358,18 @@ pub(crate) async fn authorize(
         get("code_challenge_method") == Some("S256") && is_code_challenge(challenge)
     }) else {
         return client.error(refusal("pkce_s256_required"), SignInError::InvalidRequest);
+    };
+    let client_nonce = match registration.client {
+        Client::Dbt => None,
+        Client::Ui => {
+            if !get("scope").is_some_and(|scope| scope.split(' ').any(|s| s == "openid")) {
+                return client.error(refusal("openid_scope_required"), SignInError::InvalidScope);
+            }
+            let Some(nonce) = get("nonce").filter(|nonce| is_nonce(nonce)) else {
+                return client.error(refusal("nonce_required"), SignInError::MissingNonce);
+            };
+            Some(nonce.to_owned())
+        }
     };
 
     let state = secret::random();
@@ -355,10 +401,11 @@ pub(crate) async fn authorize(
     let now = broker.0.clock.now();
     let login = PendingLogin {
         state_hash: secret::hash(&state),
-        client_id: broker.0.dbt_client_id.clone(),
-        redirect_uri: DBT_CLIENT_REDIRECT_URI.to_owned(),
+        client_id: registration.client_id.to_owned(),
+        redirect_uri: registration.redirect_uri.to_owned(),
         client_state: client.state.map(str::to_owned),
         code_challenge: code_challenge.to_owned(),
+        client_nonce,
         upstream_nonce: nonce,
         upstream_code_verifier: verifier,
         client_ip: client_ip(&broker, &headers, peer).to_string(),
@@ -631,6 +678,7 @@ pub(crate) async fn callback(State(broker): State<Broker>, uri: Uri) -> Response
                 client_id: login.client_id.clone(),
                 redirect_uri: login.redirect_uri.clone(),
                 code_challenge: login.code_challenge.clone(),
+                nonce: login.client_nonce.clone(),
                 expires_at: at(now + CODE_LIFETIME),
             },
         )

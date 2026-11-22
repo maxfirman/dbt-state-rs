@@ -103,8 +103,23 @@ verbatim, as hosted's is its issuer root), the Upstream IdP's return at
 `RUN_CACHE_TOKEN_URL`). Discovery advertises `authorization_endpoint`,
 `response_types_supported: ["code"]`, `grant_types_supported:
 ["authorization_code", "client_credentials", "refresh_token"]`,
-`code_challenge_methods_supported: ["S256"]` and
-`token_endpoint_auth_methods_supported: ["none", "client_secret_basic"]`.
+`code_challenge_methods_supported: ["S256"]`,
+`token_endpoint_auth_methods_supported: ["none", "client_secret_basic",
+"private_key_jwt"]` (the dbt client, machines' `client_credentials`, the UI),
+`token_endpoint_auth_signing_alg_values_supported: ["RS256"]`,
+`scopes_supported: ["openid"]` and `claims_supported`.
+
+The broker knows two client registrations. The **dbt client**
+(`[clients.dbt]`) is public: redirect URI exactly
+`http://127.0.0.1:29525/handler`, no client authentication. The **UI**
+(`[clients.ui]`, optional) is a confidential OIDC client: its own
+`client_id` (neither the dbt client's nor `[api] audience`, which its tokens
+would otherwise carry), exactly one `redirect_uri` (https, or
+plain http on loopback, no fragment), and `private_key_jwt` with the RSA
+public key in `public_key_file` (PEM `BEGIN PUBLIC KEY`, 2048 to 4096 bits);
+no secret can be configured for it. Both use PKCE S256 and the same sign-in,
+code and person session; a code or refresh token is bound to its client, so
+a UI login never yields a dbt-shaped token.
 
 **Browser sign-in.** Both pinned clients open the browser at
 `<auth URL>?response_type=code&client_id&redirect_uri=http://127.0.0.1:29525/handler&scope=runcache:scope:orgs&state&code_challenge&code_challenge_method=S256`
@@ -112,10 +127,13 @@ and check that the loopback redirect echoes `state`
 (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/browser_flow.rs`;
 `dbt-state==2.62.6` `auth/sso.py` `_login` with authlib). The broker:
 
-- accepts only the dbt client registration's client id (`[clients.dbt]
-  client_id`, default the clients' built-in
-  `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`) and exactly that redirect URI;
+- accepts only a registered client id (`[clients.dbt] client_id`, default
+  the clients' built-in `2fd87cd5-69a6-4c5f-9097-747a58f0edf6`, or
+  `[clients.ui] client_id`) and exactly that client's redirect URI;
   otherwise it answers an HTML error page (400) and never redirects;
+- for the UI, also requires `openid` in `scope` (`invalid_scope`) and a
+  `nonce` (1 to 512 visible ASCII characters, `invalid_request`): the UI's
+  request is a standard OIDC one (OIDC Core §3.1.2.1), `response_type=code&client_id&redirect_uri&scope=openid ...&state&nonce&code_challenge&code_challenge_method=S256`;
 - requires PKCE S256, and caps pending sign-ins per client IP
   (`[broker] max_pending_logins_per_ip`, default 20; behind a proxy, the last
   entry of `[broker] client_ip_header`); a pending sign-in lasts 10 minutes;
@@ -134,18 +152,19 @@ and check that the loopback redirect echoes `state`
 - applies the `kind = "person"` rules only, and requires an upstream refresh
   token; then creates a person session (12-hour cap) storing the upstream
   refresh token AES-256-GCM-encrypted (`[upstream] refresh_token_key_file`);
-- redirects to the loopback handler with a single-use `code`, valid 60 s and
-  bound to the client id, redirect URI and PKCE challenge, and the client's
-  `state`.
+- redirects to the client's redirect URI with a single-use `code`, valid 60
+  s and bound to the client id, redirect URI, PKCE challenge and (for the
+  UI) nonce, and the client's `state`.
 
-After the redirect URI is checked, every refusal goes back to the loopback
-handler as `error`, `error_description` (fixed) and `state`, and is logged at
+After the redirect URI is checked, every refusal goes back to the client's
+redirect URI as `error`, `error_description` (fixed) and `state`, and is logged at
 `warn` as `sign-in refused` with `step`, `reason` and, when known,
 Principal, subject, client id and `missing_claims`:
 
 | `error` | Cause (log `reason`) |
 |---|---|
-| `invalid_request` | no PKCE S256 (`pkce_s256_required`) |
+| `invalid_request` | no PKCE S256 (`pkce_s256_required`); the UI sent no nonce (`nonce_required`) |
+| `invalid_scope` | the UI's `scope` lacks `openid` (`openid_scope_required`) |
 | `unsupported_response_type` | `response_type` is not `code` |
 | `unauthorized_client` | no `[upstream] client_id` (`sign_in_not_configured`) |
 | `access_denied` | the IdP returned an error (`upstream_error`) or no code; refused the code (`upstream_refused_grant`); no or an untrusted ID token (`upstream_missing_id_token`, `upstream_token_*`, including `upstream_token_wrong_nonce`); no subject claim (`upstream_token_missing_subject`); no person rule matches (`no_matching_rule`, with `missing_claims`, for example `groups` under Entra group overage) |
@@ -154,7 +173,29 @@ Principal, subject, client id and `missing_claims`:
 
 An unknown, used or expired `state` at `/callback` gets an error page.
 
-**Token endpoint.** `/token` serves three grants:
+**Token endpoint.** `/token` serves three grants. The dbt client
+authenticates with `none` (its `client_id`). The UI authenticates
+`authorization_code` and `refresh_token` with `private_key_jwt` (RFC 7523
+§2.2, OIDC Core §9): `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`
+and `client_assertion`, an RS256 JWS signed by its registered key with `iss`
+and `sub` its client id, `aud` the broker's issuer or `<issuer>/token` (one
+string), `exp`, a `jti`, and optionally `iat` and `nbf`. The assertion must be
+current (60 s skew), valid for at most 5 minutes (`exp` at most 5 minutes
+after `iat`, and at most 5 minutes plus the skew after the request), and
+its `jti` is accepted once: the broker keeps each accepted `jti` (hashed, in
+`broker_client_assertions`) until `exp` plus the skew, on every replica. A
+`client_id` sent beside an assertion must be the UI's. The client is
+authenticated before the code or refresh token is looked at.
+
+For the UI both grants answer `{"access_token", "id_token",
+"refresh_token", "scope", "token_type": "Bearer", "expires_in"}`. The
+`id_token` and `access_token` are person tokens in the dbt token's shape
+(`iss`, `sub`, `azp`, `sid`, `scope`, `iat`, `exp`, `email`, `name`) but with
+`aud` the UI's client id, so the gRPC server refuses both (`bearer token
+has the wrong audience`); the code exchange's `id_token` also carries the
+authorize request's `nonce`, a refreshed one none (OIDC Core §12.2). The UI's
+refresh token renews its person session exactly as the dbt client's does
+(steps below), and only with the UI's assertion.
 
 - `authorization_code`, as both pinned clients send it: the form
   `grant_type=authorization_code&code&redirect_uri&client_id&code_verifier`
@@ -238,8 +279,8 @@ descriptions), logged at `warn` with the reason:
 
 | Status | `error` | Cause (log `reason`) |
 |---|---|---|
-| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without the dbt client id (`missing_client_id`, `unknown_client`) |
-| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client id or redirect URI than the authorize request (`client_mismatch`, `redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`); `authorization_code` or `refresh_token` without a registered client id (`missing_client_id`, `unknown_client`), the UI's without an assertion (`client_authentication_required`); an assertion of another type (`unsupported_client_assertion_type`), none (`missing_client_assertion`), with another `client_id` (`client_id_mismatch`), malformed or not RS256 (`client_assertion_malformed`), not signed by the UI's key (`client_assertion_bad_signature`), `iss` or `sub` not the UI (`client_assertion_wrong_issuer`), `aud` neither the issuer nor the token endpoint (`client_assertion_wrong_audience`), expired (`client_assertion_expired`), valid for more than 5 minutes (`client_assertion_too_long_lived`), `iat` or `nbf` in the future (`client_assertion_not_yet_valid`), no `jti` (`client_assertion_missing_jti`), or presented before (`client_assertion_replayed`) |
+| 400 | `invalid_grant` | `authorization_code`: an unknown code (`unknown_code`), a replay (`code_replayed_session_revoked`), another client than the authorize request's (`client_mismatch`: the UI's code from the dbt client, or the reverse) or redirect URI (`redirect_uri_mismatch`), past 60 s (`code_expired`), a verifier not matching the PKCE challenge (`pkce_mismatch`), a revoked or capped session (`session_inactive`) |
 | 400 | `invalid_grant` | `refresh_token`, with the description "the session has ended or cannot be renewed; sign in again": an unknown refresh token (`unknown_refresh_token`), another client id than the session's (`client_mismatch`), a revoked session (`session_revoked`) or one past its 12-hour cap (`session_expired`), a broker without `[upstream] client_id` (`sign_in_not_configured`). These end the session (log `session_ended=true`): a replay (`refresh_token_replayed_session_revoked`); the IdP refused the refresh, for example a disabled person (`upstream_refused_grant`, with the IdP's `upstream` error); an untrusted refreshed ID token (`upstream_token_*`); neither an ID token nor a userinfo endpoint and access token (`upstream_missing_evidence`); userinfo refused or not JSON (`upstream_userinfo_refused`, `upstream_userinfo_unusable`); no subject claim (`upstream_evidence_missing_subject`) or another subject (`upstream_subject_mismatch`); no person rule matches (`no_matching_rule`, with `missing_claims`); another `[upstream] issuer` than the session's (`upstream_issuer_changed`); a stored upstream refresh token that does not decrypt (`upstream_refresh_token_unreadable`) |
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
 | 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |

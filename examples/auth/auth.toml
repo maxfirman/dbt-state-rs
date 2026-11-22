@@ -94,6 +94,16 @@ refresh_token_key_file = "keys/refresh-token.key"
 # [clients.dbt]
 # client_id = "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"
 
+# Optional: the UI registration, a confidential OIDC client. Its own client
+# id (the `aud` of its tokens, which gRPC never accepts), exactly one
+# callback (https; plain http only on loopback), and the RSA public key of
+# the key pair it signs private_key_jwt assertions with (PEM "BEGIN PUBLIC
+# KEY", `openssl pkey -in ui-client.pem -pubout`). No secret exists for it.
+# [clients.ui]
+# client_id = "dbt-state-ui"
+# redirect_uri = "https://console.state.example.com/auth/callback"
+# public_key_file = "keys/ui-client.pub.pem"
+
 # Mapping rules. Each applies only to its Principal kind: "person" for
 # browser sign-in, "machine" for client_credentials. A rule matches when
 # `claim` is `value`, or is an array of strings holding it. The highest Role
