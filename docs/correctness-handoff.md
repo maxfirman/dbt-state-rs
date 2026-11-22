@@ -764,8 +764,12 @@ local-only and renders no Explain tree.
   Both listeners serve native TLS from mounted files (`DBT_STATE_TLS_*`,
   `DBT_STATE_BROKER_TLS_*`, #219) or plain HTTP behind a TLS-terminating
   proxy; the pinned Python client logs in as a machine and makes RPCs over
-  TLS in CI (`crates/harness/tests/python_client.rs`). The refresh grace
-  window is still open (#222–#224). The UI reads one
+  TLS in CI (`crates/harness/tests/python_client.rs`). A refresh token
+  rotated less than 60 s ago still renews, reusing the session's evidence
+  when it was renewed within that window, so replicas sharing Postgres
+  serve shared logins and retries and the Upstream IdP sees each of its
+  refresh tokens at most once; later it is a replay that revokes the
+  session (#224, `crates/harness/tests/shared_logins.rs`). The UI reads one
   configured organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without

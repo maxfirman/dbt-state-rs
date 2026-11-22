@@ -180,10 +180,25 @@ An unknown, used or expired `state` at `/callback` gets an error page.
   same session (`sid`) and a new refresh token in its family. In one
   transaction holding the session's row lock (`FOR UPDATE`), the broker:
   1. refuses a revoked session or one past its 12-hour cap, and a refresh
-     token bound to another client id;
-  2. treats a refresh token presented again after its renewal as a replay,
-     and revokes the whole session (the 60 s grace window for shared logins
-     and retries is #224);
+     token bound to another client id, whatever token is presented (the
+     grace window below never renews such a session);
+  2. accepts a refresh token already rotated (used to renew) less than 60 s
+     ago, so two dbt processes sharing one login, or a client retrying
+     after a lost response, renew through any replica. Each such renewal
+     returns the usual response with another new refresh token in the
+     session's family: every refresh token issued and not yet used renews,
+     so each process keeps its own, and a retry's token works whether or
+     not the lost one ever arrived. The presented token's window runs from
+     its first rotation and renewing through it does not extend it. When
+     the session's upstream evidence was renewed less than 60 s ago (as by
+     the renewal that rotated the token), the response carries the grant
+     that renewal recorded (scope, email, name) and the Upstream IdP is not
+     asked, so it sees each of its refresh tokens at most once (log
+     `evidence="recent_renewal"`, `grace_window=true`); otherwise, which
+     only replica clocks that disagree reach, the renewal continues at
+     step 4. A rotated refresh token presented 60 s or more after its
+     rotation is a replay and revokes the whole session, including every
+     refresh token the window issued;
   3. refreshes at the Upstream IdP with the session's upstream refresh
      token and its own credential (as at `/callback`), and stores the IdP's
      rotated refresh token encrypted when it rotates;
@@ -229,11 +244,13 @@ descriptions), logged at `warn` with the reason:
 | 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or lacks `[upstream] subject_claim` (`upstream_token_missing_subject`); no machine rule matches (`no_matching_rule`, with `missing_claims`) |
 | 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
 | 400 | `invalid_request` | no `grant_type`, a repeated parameter; `authorization_code` without `code`, `redirect_uri` or `code_verifier`; `refresh_token` without `refresh_token` (`missing_parameter`) |
-| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); the database (`database_unavailable`) |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, rate-limiting or timing out (HTTP 5xx, 408, 429), or its discovery or keys cannot be loaded, including a discovered token, userinfo or `jwks_uri` endpoint that is plain http off loopback (`upstream_unavailable`); on `refresh_token`, also the IdP refusing the broker's own credential (`upstream_rejected_client`) or a refreshed ID token under a key id the IdP's keys still lack after a refetch (`upstream_unavailable`; a refetch runs at most every 30 s), and the session is kept; the machine's Principal cannot be recorded (`principal_not_recorded`); a stored session scope that does not parse (`stored_scope_invalid`); the database (`database_unavailable`) |
 
 Each issued token is logged at `info` with grant, Principal, kind, IdP
 subject, client id, scope, lifetime and (for a person) session, and for a
-renewal the `evidence` (`id_token` or `userinfo`); each completed sign-in as
+renewal the `evidence` (`id_token`, `userinfo`, or `recent_renewal`
+through the grace window) and `grace_window` (whether the presented refresh
+token was already rotated); each completed sign-in as
 `sign-in completed`. Secrets and token values are never
 logged, and stored only as hashes or, for the upstream refresh token,
 encrypted.
