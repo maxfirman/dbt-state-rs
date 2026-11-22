@@ -35,7 +35,10 @@ Per-scenario hosted observations are in [hosted-behavior.md](hosted-behavior.md)
   - `x-dbt-invocation-id` and `x-session-id` group captured decisions for the UI.
   - Each call reads them once, into its request scope
     (`crates/server/src/request_scope.rs`). The handler and the decision
-    capture both take the Organization from that scope.
+    capture both take the Organization from that scope, and in `oidc` mode
+    the Principal: every decision (`node_decisions`) and every execution
+    row a Submit, RecordExecutions or RegisterClone writes (`executions`)
+    records the token's `sub` as `principal_id`. `none` mode records none.
 - `x-dbt-state-replay-now-ms` is a test-only header. The server honors it only
   under `Clock::Replay` (`crates/server/src/lib.rs`), where it sets the clock
   that build age is measured against. Never enable that clock in a deployment.
@@ -112,6 +115,12 @@ descriptions), logged at `warn` with the reason:
 Each issued token is logged at `info` with grant, Principal, kind, IdP
 subject, client id, scope and lifetime. Secrets and token values are never
 logged or stored.
+
+A broker with the server's database (the in-process broker) records each
+Principal before issuing its token: a `principals` row keyed by the IdP
+issuer and subject, with the opaque id the token carries as `sub`, the kind
+and any email. If that write fails, the request is refused with 503
+`temporarily_unavailable` (`principal_not_recorded`).
 
 ## Services
 
