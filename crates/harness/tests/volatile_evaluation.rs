@@ -2166,6 +2166,33 @@ async fn databricks_changed_reruns_render_only_the_captured_projection_over_a_de
     }
 }
 
+/// The rebuild after an External modification of the producer's input reads
+/// that input's State as evidence. Corrupt recorded evidence on it fails the
+/// submit, as it fails a direct copy source lookup, instead of establishing a
+/// producer revision.
+#[tokio::test]
+async fn databricks_producer_input_with_corrupt_state_fails_the_submit() {
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let capture = entries(DATABRICKS_PRODUCER);
+    replay(&sc, &capture, PRODUCER_RERUN_EXPLAIN).await;
+    let source = target(&capture[INPUT_FIRST].request);
+    assert_eq!(
+        support::legacy::corrupt_input_tables_of(
+            &server,
+            support::legacy::Rows::ConfirmedTarget(&source)
+        )
+        .await,
+        1
+    );
+    let err = sc
+        .at(submitted_at(&capture[PRODUCER_AFTER_INPUT_EDIT]))
+        .try_submit(captured_submit(&capture[PRODUCER_AFTER_INPUT_EDIT].request))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Internal);
+}
+
 /// Neighbouring uncaptured Databricks cells keep an empty map.
 #[tokio::test]
 async fn databricks_uncaptured_cells_render_nothing() {
