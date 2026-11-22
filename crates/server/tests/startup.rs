@@ -5,6 +5,8 @@
 //!   start unless `DBT_STATE_ALLOW_INSECURE=true`.
 //! - `DBT_STATE_AUTH=oidc` needs a valid `DBT_STATE_AUTH_CONFIG`, and refuses
 //!   any `DBT_STATE_REQUIRE_ORG_HEADER`.
+//! - The gRPC and Token broker listeners serve native TLS from mounted
+//!   certificate and key files, or plain HTTP behind a TLS-terminating proxy.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -210,6 +212,76 @@ fn unsafe_auth_settings_refuse_to_start() {
     );
 }
 
+/// TLS files that are half set, unreadable, not PEM or not a matching
+/// certificate and key refuse startup, as does a Token broker certificate
+/// without a Token broker listener.
+#[test]
+fn unusable_tls_settings_refuse_to_start() {
+    let (_dir, broker) = broker_config();
+    let broker = broker.to_str().unwrap();
+    let (cert, key) = tls_files();
+    let rsa_key = testdata("signing-key-1.pem");
+    let rsa_key = rsa_key.to_str().unwrap();
+    for (cert_var, key_var, listen) in [
+        ("DBT_STATE_TLS_CERT_FILE", "DBT_STATE_TLS_KEY_FILE", None),
+        (
+            "DBT_STATE_BROKER_TLS_CERT_FILE",
+            "DBT_STATE_BROKER_TLS_KEY_FILE",
+            Some(("DBT_STATE_BROKER_LISTEN", "127.0.0.1:0")),
+        ),
+    ] {
+        let oidc = |vars: &[(&'static str, &str)]| {
+            let mut all = vec![
+                ("DBT_STATE_AUTH", "oidc"),
+                ("DBT_STATE_AUTH_CONFIG", broker),
+            ];
+            all.extend(listen);
+            all.extend_from_slice(vars);
+            server(&all)
+        };
+        assert_refused(
+            "a certificate without its key",
+            oidc(&[(cert_var, &cert)]),
+            &[cert_var, key_var],
+        );
+        assert_refused(
+            "a key without its certificate",
+            oidc(&[(key_var, &key)]),
+            &[cert_var, key_var],
+        );
+        assert_refused(
+            "an unreadable certificate",
+            oidc(&[(cert_var, "/nonexistent/tls.pem"), (key_var, &key)]),
+            &[cert_var, "/nonexistent/tls.pem"],
+        );
+        assert_refused(
+            "a certificate file without a certificate",
+            oidc(&[(cert_var, &key), (key_var, &key)]),
+            &[cert_var, "no PEM certificate"],
+        );
+        assert_refused(
+            "a key file without a key",
+            oidc(&[(cert_var, &cert), (key_var, &cert)]),
+            &[key_var, "no PEM private key"],
+        );
+        assert_refused(
+            "a key of another certificate",
+            oidc(&[(cert_var, &cert), (key_var, rsa_key)]),
+            &[cert_var, "does not belong to the certificate"],
+        );
+    }
+    assert_refused(
+        "a Token broker certificate without a Token broker",
+        server(&[
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", broker),
+            ("DBT_STATE_BROKER_TLS_CERT_FILE", &cert),
+            ("DBT_STATE_BROKER_TLS_KEY_FILE", &key),
+        ]),
+        &["DBT_STATE_BROKER_TLS_CERT_FILE", "DBT_STATE_BROKER_LISTEN"],
+    );
+}
+
 /// A fresh schema the server may migrate, removed afterwards.
 struct Schema {
     name: String,
@@ -267,6 +339,20 @@ fn assert_starts(case: &str, schema: &Schema, vars: &[(&str, &str)]) {
 
 /// [`assert_starts`], and the server logged each of `needles` first.
 fn assert_starts_logging(case: &str, schema: &Schema, vars: &[(&str, &str)], needles: &[&str]) {
+    let (child, seen) = start(case, schema, vars);
+    drop(child);
+    for needle in needles {
+        assert!(
+            seen.iter().any(|line| line.contains(needle)),
+            "{case}: no {needle:?} in\n{}",
+            seen.join("\n")
+        );
+    }
+}
+
+/// Start the server with `vars` and wait until it reports it is listening.
+/// Returns the running server and every line it logged until then.
+fn start(case: &str, schema: &Schema, vars: &[(&str, &str)]) -> (Running, Vec<String>) {
     let mut command = server(vars);
     command
         .env("DATABASE_URL", schema.dsn())
@@ -296,15 +382,20 @@ fn assert_starts_logging(case: &str, schema: &Schema, vars: &[(&str, &str)], nee
             Err(_) => break false,
         }
     };
-    let _ = child.kill();
-    let _ = child.wait();
-    assert!(started, "{case}: did not start\n{}", seen.join("\n"));
-    for needle in needles {
-        assert!(
-            seen.iter().any(|line| line.contains(needle)),
-            "{case}: no {needle:?} in\n{}",
-            seen.join("\n")
-        );
+    let child = Running(child);
+    if !started {
+        panic!("{case}: did not start\n{}", seen.join("\n"));
+    }
+    (child, seen)
+}
+
+/// A started server, stopped when dropped.
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -369,4 +460,97 @@ fn allowed_auth_settings_start() {
         ],
         &["broker jwks"],
     );
+}
+
+/// A loopback address nothing listens on yet.
+fn free_address() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap().to_string()
+}
+
+fn tls_files() -> (String, String) {
+    (
+        testdata("tls-server.pem").to_str().unwrap().into(),
+        testdata("tls-server-key.pem").to_str().unwrap().into(),
+    )
+}
+
+/// With mounted certificate and key files, the gRPC listener serves gRPC
+/// over TLS and the Token broker's listener serves HTTPS, both trusted
+/// through the certificate's CA.
+#[test]
+fn both_listeners_serve_tls_from_mounted_files() {
+    let schema = Schema::new();
+    let (_dir, broker) = broker_config();
+    let (cert, key) = tls_files();
+    let (grpc, http) = (free_address(), free_address());
+    let (_server, seen) = start(
+        "native TLS",
+        &schema,
+        &[
+            ("DBT_STATE_LISTEN", &grpc),
+            ("DBT_STATE_AUTH", "oidc"),
+            ("DBT_STATE_AUTH_CONFIG", broker.to_str().unwrap()),
+            ("DBT_STATE_TLS_CERT_FILE", &cert),
+            ("DBT_STATE_TLS_KEY_FILE", &key),
+            ("DBT_STATE_BROKER_LISTEN", &http),
+            ("DBT_STATE_BROKER_TLS_CERT_FILE", &cert),
+            ("DBT_STATE_BROKER_TLS_KEY_FILE", &key),
+        ],
+    );
+    let ca = std::fs::read(testdata("tls-ca.pem")).unwrap();
+    schema.runtime.block_on(async {
+        let endpoint = tonic::transport::Channel::from_shared(format!("https://{grpc}"))
+            .unwrap()
+            .tls_config(
+                tonic::transport::ClientTlsConfig::new()
+                    .ca_certificate(tonic::transport::Certificate::from_pem(&ca)),
+            )
+            .unwrap();
+        // The server logs that it listens just before it binds.
+        let mut attempts = 0;
+        let channel = loop {
+            match endpoint.connect().await {
+                Ok(channel) => break channel,
+                Err(error) if attempts == 50 => {
+                    panic!("TLS gRPC: {error:?}\n{}", seen.join("\n"))
+                }
+                Err(_) => {
+                    attempts += 1;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
+        let health = tonic_health::pb::health_client::HealthClient::new(channel)
+            .check(tonic_health::pb::HealthCheckRequest::default())
+            .await
+            .expect("health over TLS")
+            .into_inner();
+        assert_eq!(
+            health.status(),
+            tonic_health::pb::health_check_response::ServingStatus::Serving
+        );
+
+        let https = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
+            .build()
+            .unwrap();
+        let discovery: serde_json::Value = https
+            .get(format!(
+                "https://localhost:{}/.well-known/openid-configuration",
+                http.rsplit(':').next().unwrap()
+            ))
+            .send()
+            .await
+            .expect("broker over TLS")
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(discovery["issuer"], "https://broker.dbt-state.test");
+        let plain = reqwest::get(format!("http://{http}/.well-known/openid-configuration")).await;
+        assert!(
+            plain.map_or(true, |response| !response.status().is_success()),
+            "the TLS broker listener also answered plain HTTP"
+        );
+    });
 }

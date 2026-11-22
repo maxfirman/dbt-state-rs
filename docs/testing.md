@@ -156,7 +156,28 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   codes, pending logins and sessions; the gRPC server's person session
   check reads the same clock, so advancing it ages cached session statuses
   (30 s) and brings sessions to their 12-hour cap
-  (`tests/session_revocation.rs`).
+  (`tests/session_revocation.rs`). `start_server_tls(builder).await` is
+  `start_server_with_broker` with native TLS on both listeners, as
+  `DBT_STATE_TLS_*` and `DBT_STATE_BROKER_TLS_*` run them: the broker's
+  issuer is its own `https://127.0.0.1:<port>` URL and `server.tls` is
+  set. `tls.rs` loads the test certificate (`crates/auth/testdata/tls-*`,
+  for `localhost`, `127.0.0.1` and `::1`) and names its CA (`ca_file()`).
+- `python_client.rs` runs the pinned Python client driver
+  (`crates/harness/python-client/driver.py`, environment locked in its
+  `uv.lock`, `uv run --locked`) against a TLS test server:
+  `PythonClient::available(&server)` points the client's own settings at
+  it (`RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `RUN_CACHE_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` for
+  the test CA, a temp `RUN_CACHE_HOME`) in an otherwise cleared
+  environment; `.machine(id, secret)` adds the client id and secret
+  (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
+  `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`) and `CI=true`;
+  `.run(scenario).await` returns the exit status, output and the driver's
+  JSON result. Without `uv` it skips with a message unless
+  `DBT_STATE_REQUIRE_PYTHON_CLIENT` is set, which CI sets. The lock pins
+  public PyPI, and `UV_*` variables pass through (for example
+  `UV_NO_CONFIG=1` under a uv config naming another index). Tests:
+  `tests/python_client.rs`.
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
   Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)

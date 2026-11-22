@@ -1,7 +1,8 @@
 //! Starting the standalone `dbt-state-broker` binary: it needs an auth
 //! config with `[signing]` and `[upstream]` and the server's Postgres
 //! (`DATABASE_URL`), which it migrates; then it serves OIDC discovery on
-//! `DBT_STATE_BROKER_LISTEN`.
+//! `DBT_STATE_BROKER_LISTEN`, over TLS with `DBT_STATE_BROKER_TLS_CERT_FILE`
+//! and `DBT_STATE_BROKER_TLS_KEY_FILE`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -151,6 +152,17 @@ fn configs_that_cannot_run_a_broker_refuse_to_start() {
         ]),
         "DBT_STATE_BROKER_LISTEN",
     );
+    assert_refused(
+        "a certificate without its key",
+        broker(&[
+            ("DBT_STATE_AUTH_CONFIG", valid.to_str().unwrap()),
+            (
+                "DBT_STATE_BROKER_TLS_CERT_FILE",
+                testdata("tls-server.pem").to_str().unwrap(),
+            ),
+        ]),
+        "DBT_STATE_BROKER_TLS_KEY_FILE",
+    );
 }
 
 struct Running(Child);
@@ -206,5 +218,58 @@ async fn a_valid_config_migrates_the_database_and_serves_discovery() {
     ] {
         assert!(tables.iter().any(|t| t == table), "{table} in {tables:?}");
     }
+    schema.drop_schema().await;
+}
+
+/// With mounted certificate and key files the standalone broker serves
+/// HTTPS, trusted through the certificate's CA, and no plain HTTP.
+#[tokio::test]
+async fn a_broker_with_tls_files_serves_https() {
+    let schema = Schema::new().await;
+    let (_dir, path) = config(true, true);
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let addr = format!("127.0.0.1:{port}");
+    let _broker = Running(
+        broker(&[
+            ("DBT_STATE_AUTH_CONFIG", path.to_str().unwrap()),
+            ("DBT_STATE_BROKER_LISTEN", &addr),
+            ("DATABASE_URL", &schema.dsn()),
+            (
+                "DBT_STATE_BROKER_TLS_CERT_FILE",
+                testdata("tls-server.pem").to_str().unwrap(),
+            ),
+            (
+                "DBT_STATE_BROKER_TLS_KEY_FILE",
+                testdata("tls-server-key.pem").to_str().unwrap(),
+            ),
+        ])
+        .spawn()
+        .expect("spawn broker"),
+    );
+    let ca = std::fs::read(testdata("tls-ca.pem")).unwrap();
+    let https = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
+        .build()
+        .unwrap();
+    let url = format!("https://localhost:{port}/.well-known/openid-configuration");
+    let mut discovery = None;
+    for _ in 0..200 {
+        if let Ok(response) = https.get(&url).send().await {
+            discovery = Some(response.json::<serde_json::Value>().await.unwrap());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let discovery = discovery.expect("the broker serves discovery over TLS");
+    assert_eq!(discovery["issuer"], "https://broker.dbt-state.test");
+    let plain = reqwest::get(format!("http://{addr}/.well-known/openid-configuration")).await;
+    assert!(
+        plain.map_or(true, |response| !response.status().is_success()),
+        "the TLS listener also answered plain HTTP"
+    );
     schema.drop_schema().await;
 }

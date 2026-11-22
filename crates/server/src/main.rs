@@ -2,7 +2,7 @@ mod admin;
 
 use admin::Command;
 use dbt_state_server::config::{AuthMode, Config};
-use dbt_state_server::{build_router, AppState};
+use dbt_state_server::{build_router, build_tls_router, AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,9 +53,21 @@ async fn serve() -> anyhow::Result<()> {
                 // gRPC server checks tokens against.
                 let broker = dbt_state_broker::Broker::new(auth, state.store.pool().clone())?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
-                tracing::info!(%addr, issuer = auth.broker_issuer(), "Token broker listening");
+                let tls = config.broker_tls.clone();
+                tracing::info!(
+                    %addr,
+                    issuer = auth.broker_issuer(),
+                    tls = tls.is_some(),
+                    "Token broker listening"
+                );
                 tokio::spawn(async move {
-                    if let Err(error) = dbt_state_broker::serve(listener, broker).await {
+                    let served = match tls {
+                        Some(identity) => {
+                            dbt_state_broker::serve_tls(listener, broker, &identity).await
+                        }
+                        None => dbt_state_broker::serve(listener, broker).await,
+                    };
+                    if let Err(error) = served {
                         tracing::error!(%error, "Token broker stopped");
                         std::process::exit(1);
                     }
@@ -78,9 +90,13 @@ async fn serve() -> anyhow::Result<()> {
     };
 
     let addr = config.listen;
-    tracing::info!(%addr, "dbt-state-server listening");
+    let router = match &config.tls {
+        Some(identity) => build_tls_router(state, identity)?,
+        None => build_router(state),
+    };
+    tracing::info!(%addr, tls = config.tls.is_some(), "dbt-state-server listening");
 
-    build_router(state).serve(addr).await?;
+    router.serve(addr).await?;
 
     Ok(())
 }

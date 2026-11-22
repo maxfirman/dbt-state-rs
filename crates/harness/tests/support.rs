@@ -45,6 +45,9 @@ pub mod native_clock;
 pub mod oidc;
 #[path = "support/python.rs"]
 mod python;
+/// The pinned dbt-state Python client's driver, run through `uv`.
+#[path = "support/python_client.rs"]
+pub mod python_client;
 #[path = "support/resources.rs"]
 mod resources;
 /// Read-only row assertions for executions and node states.
@@ -53,12 +56,15 @@ pub mod rows;
 /// Request builders and the submit/confirm/expect protocol client.
 #[path = "support/scenario.rs"]
 pub mod scenario;
+/// The test-only TLS certificate both listeners serve, and its CA.
+#[path = "support/tls.rs"]
+pub mod tls;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{
     start_broker, start_broker_beside, start_server, start_server_native, start_server_oidc,
-    start_server_on_database, start_server_require_org, start_server_with_broker, TestBroker,
-    TestClock, TestDatabase, TestServer,
+    start_server_on_database, start_server_require_org, start_server_tls, start_server_with_broker,
+    TestBroker, TestClock, TestDatabase, TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";

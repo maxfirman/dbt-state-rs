@@ -9,7 +9,12 @@
   protobuf-compiler`), or set `PROTOC`.
 - **Postgres** reachable at `DATABASE_URL`. CI uses `postgres:17-alpine`.
 - **uv** and **Python 3.12** for the DuckDB acceptance cases
-  (`scripts/duckdb-ci.sh`).
+  (`scripts/duckdb-ci.sh`) and for the pinned Python client driver that
+  `cargo test` runs (`crates/harness/tests/python_client.rs`; it skips
+  without `uv` unless `DBT_STATE_REQUIRE_PYTHON_CLIENT=1`, as CI sets).
+  Both `uv.lock` files pin public PyPI. If your uv config names another
+  package index, `--locked` refuses them; run with `UV_NO_CONFIG=1` (the
+  driver passes `UV_*` variables through).
 
 ## Build, lint and test
 
@@ -94,6 +99,29 @@ against that broker's published keys: fetched from `broker.jwks_url`, or by
 OIDC discovery at `broker.issuer` (https, or plain http only on loopback),
 and cached (refetched after 5 minutes, or
 when a token's key is unknown, at most every 30 s).
+
+Both listeners serve native TLS (rustls) from mounted PEM files, read at
+startup: `DBT_STATE_TLS_CERT_FILE` (certificate chain, leaf first) and
+`DBT_STATE_TLS_KEY_FILE` (PKCS#8, PKCS#1 or SEC1 private key) for the gRPC
+listener, and `DBT_STATE_BROKER_TLS_CERT_FILE` and
+`DBT_STATE_BROKER_TLS_KEY_FILE` for the Token broker's listener (the
+standalone `dbt-state-broker` reads the same two). Set both of a pair or
+neither; without them the listener serves plain HTTP, for a deployment
+behind a TLS-terminating proxy. A renewed certificate applies on restart.
+The dbt client sends credentials only over TLS, so the URLs it uses must be
+`https` (and its gRPC address TLS) at the proxy or here.
+
+```bash
+DBT_STATE_AUTH=oidc DBT_STATE_AUTH_CONFIG=auth.toml \
+DBT_STATE_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_TLS_KEY_FILE=/run/tls/tls.key \
+DBT_STATE_BROKER_LISTEN=127.0.0.1:8443 \
+DBT_STATE_BROKER_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_BROKER_TLS_KEY_FILE=/run/tls/tls.key \
+  cargo run -p dbt-state-server
+```
+
+A client trusts a private CA without patches: the Python client's gRPC
+channel through `RUN_CACHE_CA_BUNDLE`, and its token requests (Python
+`requests`) through `REQUESTS_CA_BUNDLE`.
 
 A CI machine authenticates with its Upstream IdP app registration: point the
 dbt client's token URL (`RUN_CACHE_TOKEN_URL`) at `<broker>/token` and set

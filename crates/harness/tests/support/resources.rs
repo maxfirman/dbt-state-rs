@@ -168,13 +168,20 @@ pub struct TestServer {
     /// The in-process Token broker's clock, which also ages the gRPC
     /// server's cached person session statuses and decides their cap.
     pub broker_clock: TestClock,
+    /// Both listeners serve native TLS with the test certificate
+    /// ([`super::tls`]).
+    pub tls: bool,
     _lifetime: ServerLifetime,
 }
 
 impl TestServer {
     /// The in-process Token broker's base URL.
     pub fn broker_url(&self) -> String {
-        format!("http://{}", self.broker.expect("a Token broker listener"))
+        let scheme = if self.tls { "https" } else { "http" };
+        format!(
+            "{scheme}://{}",
+            self.broker.expect("a Token broker listener")
+        )
     }
 }
 
@@ -231,7 +238,8 @@ pub async fn start_server_oidc(auth: &super::oidc::TestAuth) -> TestServer {
         dbt_state_server::Clock::Replay,
         Some(Oidc {
             config: auth.config().clone(),
-            broker: false,
+            broker: None,
+            tls: false,
         }),
     )
     .await
@@ -247,7 +255,29 @@ pub async fn start_server_with_broker(auth: &super::oidc::TestAuth) -> TestServe
         dbt_state_server::Clock::Replay,
         Some(Oidc {
             config: auth.config().clone(),
-            broker: true,
+            broker: Some(super::http::HttpServer::bind()),
+            tls: false,
+        }),
+    )
+    .await
+}
+
+/// A deployment as the server binary runs it with native TLS on both
+/// listeners (`DBT_STATE_TLS_*`, `DBT_STATE_BROKER_TLS_*`) and the Token
+/// broker in process, with the test certificate ([`super::tls`]). The
+/// broker's issuer is its own `https://127.0.0.1:<port>` URL.
+pub async fn start_server_tls(auth: super::oidc::TestAuthBuilder) -> TestServer {
+    let broker = super::http::HttpServer::bind();
+    let issuer = format!("https://{}", broker.local_addr().expect("broker address"));
+    let auth = auth.issuer(&issuer).build();
+    start_server_with_database_clock(
+        false,
+        None,
+        dbt_state_server::Clock::Replay,
+        Some(Oidc {
+            config: auth.config().clone(),
+            broker: Some(broker),
+            tls: true,
         }),
     )
     .await
@@ -311,8 +341,10 @@ fn start_broker_on(
 /// How a test server runs `oidc` mode.
 struct Oidc {
     config: dbt_state_auth::AuthConfig,
-    /// Also run the Token broker, on its own listener.
-    broker: bool,
+    /// Also run the Token broker, on this listener.
+    broker: Option<std::net::TcpListener>,
+    /// Serve both listeners over TLS with the test certificate.
+    tls: bool,
 }
 
 async fn start_server_with_database(
@@ -352,12 +384,14 @@ async fn start_server_with_database_clock(
             runtime.block_on(async {
                 let mut state = database.state(require_org_header).await.with_clock(clock);
                 let mut broker = None;
+                let mut tls = None;
                 if let Some(oidc) = oidc {
                     state = state
                         .with_oidc_clock(&oidc.config, broker_clock.broker_clock())
                         .expect("oidc mode");
-                    if oidc.broker {
-                        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind broker");
+                    tls = oidc.tls.then(super::tls::identity);
+                    if let Some(listener) = oidc.broker {
+                        let listener = TcpListener::from_std(listener).expect("broker listener");
                         let instance = dbt_state_broker::Broker::with_clock(
                             &oidc.config,
                             state.store.pool().clone(),
@@ -365,15 +399,25 @@ async fn start_server_with_database_clock(
                         )
                         .expect("broker config");
                         broker = Some(listener.local_addr().expect("broker address"));
-                        tokio::spawn(dbt_state_broker::serve(listener, instance));
+                        match tls.clone() {
+                            Some(identity) => tokio::spawn(async move {
+                                dbt_state_broker::serve_tls(listener, instance, &identity).await
+                            }),
+                            None => tokio::spawn(dbt_state_broker::serve(listener, instance)),
+                        };
                     }
                 }
                 let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind server");
                 let addr = listener.local_addr().expect("server address");
                 let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-                let router = dbt_state_server::build_router(state.clone());
+                let router = match &tls {
+                    Some(identity) => dbt_state_server::build_tls_router(state.clone(), identity)
+                        .expect("gRPC TLS"),
+                    None => dbt_state_server::build_router(state.clone()),
+                };
+                let tls = tls.is_some();
                 if ready
-                    .send((addr, database.schema.clone(), state, broker))
+                    .send((addr, database.schema.clone(), state, broker, tls))
                     .is_err()
                 {
                     return;
@@ -396,13 +440,14 @@ async fn start_server_with_database_clock(
         stop: Some(stop),
         thread: Some(worker),
     };
-    let (addr, schema, state, broker) = startup.await.expect("test server startup");
+    let (addr, schema, state, broker, tls) = startup.await.expect("test server startup");
     TestServer {
         addr,
         schema,
         state,
         broker,
         broker_clock: server_clock,
+        tls,
         _lifetime: lifetime,
     }
 }

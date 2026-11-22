@@ -9,12 +9,15 @@
 //! | `DBT_STATE_ALLOW_INSECURE` | `none`: allow a non-loopback listen address |
 //! | `DBT_STATE_REQUIRE_ORG_HEADER` | `none`: reject requests without `x-organization-id`; refused in `oidc` |
 //! | `DBT_STATE_BROKER_LISTEN` | `oidc`: also run the Token broker in this process, on this HTTP address; refused in `none` |
+//! | `DBT_STATE_TLS_CERT_FILE`, `DBT_STATE_TLS_KEY_FILE` | serve gRPC over TLS with this PEM certificate chain and private key (both or neither; plain HTTP/2 without) |
+//! | `DBT_STATE_BROKER_TLS_CERT_FILE`, `DBT_STATE_BROKER_TLS_KEY_FILE` | the same for the Token broker's listener; refused without `DBT_STATE_BROKER_LISTEN` |
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context};
 use dbt_state_auth::AuthConfig;
+use dbt_state_broker::TlsIdentity;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -24,6 +27,12 @@ pub struct Config {
     /// `oidc`: the in-process Token broker's listen address, when it runs
     /// one (the gRPC server's own listener stays HTTP/2 gRPC only).
     pub broker_listen: Option<SocketAddr>,
+    /// The gRPC listener's TLS identity; plain HTTP/2 when `None` (behind
+    /// a TLS-terminating proxy, or on loopback).
+    pub tls: Option<TlsIdentity>,
+    /// The in-process Token broker listener's TLS identity; plain HTTP/1.1
+    /// when `None`.
+    pub broker_tls: Option<TlsIdentity>,
 }
 
 /// How gRPC calls are authenticated (`DBT_STATE_AUTH`).
@@ -54,7 +63,9 @@ impl Config {
     /// config. Refuses `none` mode on a non-loopback address without
     /// `DBT_STATE_ALLOW_INSECURE=true`, `DBT_STATE_REQUIRE_ORG_HEADER` in
     /// `oidc` mode, `DBT_STATE_BROKER_LISTEN` in `none` mode or with an auth
-    /// config that cannot run a Token broker, and an invalid auth config.
+    /// config that cannot run a Token broker, an invalid auth config, and
+    /// TLS files that are half set, unreadable or not a matching certificate
+    /// chain and key.
     pub fn from_env() -> anyhow::Result<Self> {
         let var = |key: &str| std::env::var(key).ok();
         let listen = var("DBT_STATE_LISTEN").unwrap_or_else(|| "127.0.0.1:50051".to_string());
@@ -69,6 +80,18 @@ impl Config {
                 })
             })
             .transpose()?;
+        let tls = TlsIdentity::from_env("DBT_STATE_TLS_CERT_FILE", "DBT_STATE_TLS_KEY_FILE")?;
+        let broker_tls = TlsIdentity::from_env(
+            "DBT_STATE_BROKER_TLS_CERT_FILE",
+            "DBT_STATE_BROKER_TLS_KEY_FILE",
+        )?;
+        if broker_tls.is_some() && broker_listen.is_none() {
+            bail!(
+                "DBT_STATE_BROKER_TLS_CERT_FILE and DBT_STATE_BROKER_TLS_KEY_FILE are for the \
+                 Token broker's listener; set DBT_STATE_BROKER_LISTEN, or use \
+                 DBT_STATE_TLS_CERT_FILE and DBT_STATE_TLS_KEY_FILE for the gRPC listener"
+            );
+        }
         let database_url = var("DATABASE_URL")
             .unwrap_or_else(|| "postgres://dbtstate:dbtstate@localhost:55441/dbtstate".to_string());
 
@@ -124,6 +147,8 @@ impl Config {
             database_url,
             auth,
             broker_listen,
+            tls,
+            broker_tls,
         })
     }
 }
