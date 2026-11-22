@@ -582,9 +582,9 @@ impl Store {
     }
 
     /// Accept the client assertion `jti_hash` of `client_id`, remembered
-    /// until `remember_until`, unless it was accepted before: returns
-    /// whether it is new. Assertions no longer acceptable at `now` are
-    /// forgotten first.
+    /// until `remember_until` (the first moment it is no longer
+    /// acceptable), unless it was accepted before: returns whether it is
+    /// new. Assertions no longer acceptable at `now` are forgotten first.
     pub(crate) async fn accept_client_assertion(
         &self,
         client_id: &str,
@@ -592,7 +592,7 @@ impl Store {
         remember_until: DateTime<Utc>,
         now: DateTime<Utc>,
     ) -> Result<bool, sqlx::Error> {
-        sqlx::query("DELETE FROM broker_client_assertions WHERE remember_until < $1")
+        sqlx::query("DELETE FROM broker_client_assertions WHERE remember_until <= $1")
             .bind(now)
             .execute(&self.pool)
             .await?;

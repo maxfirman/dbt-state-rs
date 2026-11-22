@@ -122,9 +122,11 @@ impl UiClient {
         if jti.len() > MAX_JTI_LENGTH {
             return Err(E::Malformed);
         }
+        // Accepted through the whole second `exp + skew`.
         Ok(VerifiedAssertion {
             jti,
-            remember_until: UNIX_EPOCH + Duration::from_secs(claims.exp.saturating_add(skew)),
+            remember_until: UNIX_EPOCH
+                + Duration::from_secs(claims.exp.saturating_add(skew).saturating_add(1)),
         })
     }
 }
@@ -161,7 +163,8 @@ pub struct VerifiedAssertion {
     /// Its `jti`: a second assertion with it must be refused until
     /// [`Self::remember_until`].
     pub jti: String,
-    /// When it can no longer be accepted (`exp` plus [`CLOCK_SKEW`]).
+    /// The first moment it is no longer accepted: the end of the second
+    /// `exp` plus [`CLOCK_SKEW`].
     pub remember_until: SystemTime,
 }
 

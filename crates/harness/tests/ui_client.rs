@@ -667,3 +667,39 @@ async fn a_ui_callback_keeps_its_query() {
     );
     assert_eq!(query["error"], "invalid_request", "{query:?}");
 }
+
+/// An assertion stays single-use for as long as it is acceptable: in the
+/// last second its `exp` plus the 60 s clock skew allows, it is still a
+/// replay.
+#[tokio::test]
+async fn an_assertion_stays_single_use_until_its_last_acceptable_second() {
+    capture_logs();
+    let idp = FakeIdp::start().await;
+    idp.sign_in(alice());
+    let server = start_server_with_broker(&deployment(&idp).build()).await;
+    let broker = server.broker_url();
+    let sign_in = UiSignIn::new();
+    let code = code_for(&server, &sign_in).await;
+    let used = assertion(&token_endpoint());
+    let response = ui_client::exchange(&broker, &sign_in, &code, Some(&used)).await;
+    assert_eq!(response.status(), 200);
+    let body = json(response).await;
+
+    // Move the broker's clock into the second `exp + 60`.
+    let exp = claims(&used)["exp"].as_u64().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    server
+        .broker_clock
+        .advance(std::time::Duration::from_secs(exp + 60 - now));
+    let response = ui_client::refresh(
+        &broker,
+        body["refresh_token"].as_str().unwrap(),
+        Some(&used),
+    )
+    .await;
+    assert_eq!(response.status(), 401);
+    assert_eq!(json(response).await["error"], "invalid_client");
+}
