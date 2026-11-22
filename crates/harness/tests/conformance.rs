@@ -1178,7 +1178,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        147,
+        148,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1470,7 +1470,22 @@ async fn conformance_replay_all_corpora() {
                                 let ours =
                                     comparable(serde_json::to_value(&response).unwrap(), &context);
                                 let real = comparable(e.response.clone(), &context);
-                                if ours != real {
+                                // A field-scoped gap: both copy, from different
+                                // sources (#239). The payload must match exactly
+                                // outside the named fields, which must differ.
+                                if let Some(gap) = known_gap.filter(|g| !g.ignore_fields.is_empty())
+                                {
+                                    assert!(!gap.reason.trim().is_empty());
+                                    assert_eq!(local_variant, gap.local_variant);
+                                    assert_field_scoped_gap(
+                                        &ours,
+                                        &real,
+                                        &gap.ignore_fields,
+                                        &context,
+                                    );
+                                    seen_gaps.insert((gap.fixture.clone(), i));
+                                    gaps += 1;
+                                } else if ours != real {
                                     mismatches.push(format!(
                                         "{context}: CLONE payload differs ours={ours} real={real}"
                                     ));

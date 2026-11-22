@@ -377,5 +377,119 @@
     "entry": 28,
     "local_variant": "empty_tree",
     "reason": "ACCEPTED CRAFTED DIVERGENCE explain of entry 27 (#114): hosted explains its SKIP; the local server's failed_reuse_qualification rebuild renders no tree. See docs/correctness-handoff.md \"Accepted divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 3,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 2 (#239, history old_alone, first control run): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 7,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 6 (#239, history old_alone): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 10,
+    "local_variant": "ready_to_clone",
+    "reason": "OPEN DIVERGENCE (#239, history mid_alone): an absent FULL destination whose only equivalent is the middle source (CSC_MID, reads CSC_UP_ALT.<src>, the destination reads CSC_UP.<src>, so the same SQL once schemas are abstracted). Hosted builds it (6/6, 'model was executed because its table did not exist', no clone source in its tree); the local server copies the middle source unjudged as an equivalent in another environment (submit_decision::copy_search). Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 11,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 10 (#239): hosted explains its first build ('there is no other table that the model could be cloned from'); the local server explains its copy of the middle source. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 20,
+    "local_variant": "ready_to_clone",
+    "reason": "OPEN DIVERGENCE, field-scoped (#239, history old_mid): the oldest fresh source (CSC_OLD, same upstream reads) and the newer the middle source (CSC_MID, reads CSC_UP_ALT.<src>, the destination reads CSC_UP.<src>, so the same SQL once schemas are abstracted). Hosted copies the oldest source; the local server copies (same decision, codes and description) the newer middle source (newest build first, another environment copied unjudged). Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\".",
+    "ignore_fields": [
+      "clone_sqls",
+      "clone_source",
+      "clone_required_last_modified_epoch",
+      "execution_runtime_ms"
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 21,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 20 (#239): hosted's tree names the oldest source; the local tree names the middle source. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 26,
+    "local_variant": "ready_to_clone",
+    "reason": "OPEN DIVERGENCE, field-scoped (#239, history old_mid_rev): as entry 20 with the two sources confirmed in reverse completion order. Hosted copies the oldest source; the local server copies (same decision, codes and description) the middle source. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\".",
+    "ignore_fields": [
+      "clone_sqls",
+      "clone_source",
+      "clone_required_last_modified_epoch",
+      "execution_runtime_ms"
+    ]
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 27,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 26 (#239): hosted's tree names the oldest source; the local tree names the middle source. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 33,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 32 (#239, history old_new): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 39,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 38 (#239, history old_new_rev): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 46,
+    "local_variant": "ready_to_execute",
+    "reason": "OPEN DIVERGENCE (#239, history old_mid_new): the oldest fresh source, the middle source (CSC_MID, reads CSC_UP_ALT.<src>, the destination reads CSC_UP.<src>, so the same SQL once schemas are abstracted) and the newest source (CSC_NEW, same upstream read before its change, stale at tolerance 0), confirmed in completion order. Hosted copies the oldest source; the local server passes over the stale newest source, then stops at the middle source and builds (6/6), because after a freshness rejection it copies only another same-upstream equivalent (submit_decision::copy_search). Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 47,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 46 (#239): hosted's tree names the oldest source as the copy source; the local server explains its first build. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 54,
+    "local_variant": "ready_to_execute",
+    "reason": "OPEN DIVERGENCE (#239, history old_mid_new_rev): as entry 46 with the three sources confirmed in reverse completion order. Hosted copies the oldest source; the local server builds (6/6). Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 55,
+    "local_variant": "explain",
+    "reason": "OPEN DIVERGENCE explain of entry 54 (#239): hosted's tree names the oldest source as the copy source; the local server explains its first build. Characterization only; policy is for #242/#243. See docs/reports/snowflake-copy-source-choice-2026-11-21.md and docs/correctness-handoff.md \"Known divergences\"."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 61,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 60 (#239, history old_mid_late): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 67,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 66 (#239, history old_new_late): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
+  },
+  {
+    "fixture": "copy_source_choice.jsonl",
+    "entry": 75,
+    "local_variant": "explain",
+    "reason": "OPEN EXPLAIN DIVERGENCE explain of entry 74 (#239, history old_mid_new_late): both copy the oldest source, which read the destination's upstream relation at the epoch the destination reports. Hosted lists that upstream <FRESH> with 'no updates since «destination» last executed'; the local copy tree lists it without a badge or anchor line (explain.rs::clone_upstream_dependencies). Hosted Databricks renders the same <FRESH> line (databricks_submit_copy.jsonl entry 13); the Snowflake copies captured before read another relation. Outside #239's source-choice scope. See docs/reports/snowflake-copy-source-choice-2026-11-21.md."
   }
 ]
