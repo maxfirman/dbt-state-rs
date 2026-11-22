@@ -131,7 +131,10 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   audience, key, organizations })` for wrong issuers, audiences, keys or a
   stale view of the Organizations) issues person (`.person(sub, sid)`) and
   machine (`.machine(sub)`) tokens with `.grant(org, role)` and
-  `.issued_ago(d)`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
+  `.issued_ago(d)`. The gRPC server refuses a person token whose `sid`
+  names no active Token broker session, so a test that needs one accepted
+  records the session first: `person_session(&server, principal).await`
+  returns its `sid`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
   send them. `capture_logs()` / `captured_logs()` capture the process's log
   lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`
   (which also registers the broker for browser sign-in with
@@ -147,7 +150,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   standalone broker on its own migrated schema whose issuer is its own URL
   (`TestBroker::url()`, `.auth`, `.clock`). `server.broker_clock` (a
   `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
-  codes and pending logins.
+  codes and pending logins; the gRPC server's person session check reads
+  the same clock, so advancing it ages cached session statuses (30 s) and
+  brings sessions to their 12-hour cap (`tests/session_revocation.rs`).
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
   serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
   Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
@@ -196,7 +201,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `TestDatabase` only to the migration before `principals` and records a
   decision and an execution there, for upgrade tests of migration 0032
   (#226);
-  `fault::fail_principal_records` makes every `principals` write fail.
+  `fault::fail_principal_records` makes every `principals` write fail;
+  `fault::fail_session_status` makes every person session status read
+  fail.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 

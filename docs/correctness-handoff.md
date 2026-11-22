@@ -757,8 +757,10 @@ local-only and renders no Explain tree.
   Token-broker-signed token and its Organization on every RPC except health
   ([protocol.md](protocol.md#authentication-oidc-mode)). Each decision and
   execution names its Principal (`principal_id`, #226), whom the Token
-  broker records by Upstream IdP issuer and subject. Person session renewal,
-  TLS and session checks are still open (#219, #221–#225). The UI reads one
+  broker records by Upstream IdP issuer and subject. Person tokens need an
+  active broker session on every RPC (cached at most 30 s per replica), and
+  `dbt-state-server revoke-sessions` revokes a Principal's sessions (#225).
+  Person session renewal and TLS are still open (#219, #221–#224). The UI reads one
   configured organization (`DBT_STATE_UI_ORG_ID`).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without

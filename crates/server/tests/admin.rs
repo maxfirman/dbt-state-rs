@@ -241,13 +241,17 @@ fn revoke_sessions_of_an_unknown_principal_fails() {
     );
 }
 
+/// A refused command line: its name, environment, arguments, and what the
+/// refusal must mention.
+type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str], &'a str);
+
 /// The command needs an issuer, a subject and `DATABASE_URL`; anything
 /// else on the command line is refused before connecting, and never
 /// starts the server.
 #[test]
 fn malformed_admin_commands_are_refused() {
     let nowhere = [("DATABASE_URL", "postgres://nobody:nothing@127.0.0.1:1/none")];
-    let cases: &[(&str, &[(&str, &str)], &[&str], &str)] = &[
+    let cases: &[Case] = &[
         (
             "no subject",
             &nowhere,

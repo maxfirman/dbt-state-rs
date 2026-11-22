@@ -63,8 +63,20 @@ auth config (`DBT_STATE_AUTH_CONFIG`, example in
   listed in an `org` entry of the token. Handlers take the Organization from
   the authenticated context, never from the raw header.
 
+- A person token (one with `sid`) also needs an active Token broker
+  session: not revoked and not past its 12-hour cap. The server reads
+  `broker_person_sessions` from the Postgres it shares with the broker (in
+  process or standalone) and caches each status on the replica for at most
+  30 s (`dbt_state_broker::SESSION_STATUS_MAX_AGE`), so a revoked session's
+  tokens are refused within 30 s of the revocation. Machine tokens carry no
+  `sid` and are not checked. A status that cannot be read fails closed.
+- An operator revokes every session of a Principal with
+  `dbt-state-server revoke-sessions --issuer <upstream issuer> --subject
+  <upstream subject>` ([development.md](development.md#revoking-a-principals-sessions)).
+
 Refusals use fixed messages; the reason is logged at `warn`, never with the
-token:
+token (session refusals log `session_unknown`, `session_revoked`,
+`session_expired` or `session_status_unavailable`, with the `session`):
 
 | Code | Cause | Message |
 |---|---|---|
@@ -74,6 +86,8 @@ token:
 | | another issuer | `bearer token has the wrong issuer` |
 | | another audience (for example a UI token) | `bearer token has the wrong audience` |
 | | past `exp` by more than 60 s | `bearer token has expired` |
+| | a person token whose `sid` session is unknown, revoked, or past its 12-hour cap | `bearer token session is not active` |
+| `UNAVAILABLE` | a person token's session status cannot be read from Postgres | `session status unavailable` |
 | `PERMISSION_DENIED` | no or empty `x-organization-id` | `missing x-organization-id metadata` |
 | | an Organization unknown or disabled in config, or not among the token's active entries | `access to the organization is denied` |
 

@@ -55,7 +55,7 @@ enum Refusal {
     Rejected(Rejection),
     /// A valid person token whose session status could not be read.
     SessionUnavailable {
-        context: AuthenticatedContext,
+        context: Box<AuthenticatedContext>,
         error: sqlx::Error,
     },
 }
@@ -113,9 +113,10 @@ impl Oidc {
                     client_id: context.client_id,
                 }))
             }
-            Err(SessionCheckError::Unavailable(error)) => {
-                Err(Refusal::SessionUnavailable { context, error })
-            }
+            Err(SessionCheckError::Unavailable(error)) => Err(Refusal::SessionUnavailable {
+                context: Box::new(context),
+                error,
+            }),
         }
     }
 
