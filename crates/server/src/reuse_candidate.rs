@@ -762,21 +762,36 @@ fn rerun_evidence(
     match (own, upstreams_unchanged, freshness.upstreams.as_slice()) {
         (OwnTarget::AsBuilt, true, _) => RerunEvidence::Unchanged,
         (OwnTarget::Modified | OwnTarget::Missing, true, [_]) => RerunEvidence::TargetChanged,
-        (OwnTarget::AsBuilt, false, [upstream])
-            if !upstream.unprovable
-                && upstream.drifted
-                && prev.input_tables.iter().any(|input| {
-                    input.name == upstream.name
-                        && matches!(input.producer, crate::store::Producer::Build(_))
-                })
-                && evidence.input_tables.iter().any(|input| {
-                    input.name == upstream.name && input.producer == crate::store::Producer::NoBuild
-                }) =>
+        (OwnTarget::AsBuilt, false, _)
+            if sole_upstream_modified_externally(&freshness, prev, &evidence.input_tables) =>
         {
             RerunEvidence::InputModifiedExternally
         }
         _ => RerunEvidence::Unverified,
     }
+}
+
+/// Whether the one genuine upstream drifted since `prev` because it was
+/// modified externally after `prev` read it from a recorded build
+/// ([`InputTable::modified_externally_since`]). `freshness` is the upstream
+/// freshness of `current`, the inputs read now, against `prev`. The #213
+/// rerun cell and its Explain both stand on this situation.
+pub(crate) fn sole_upstream_modified_externally(
+    freshness: &crate::decision::UpstreamFreshness,
+    prev: &ExecutionRow,
+    current: &[InputTable],
+) -> bool {
+    let [upstream] = freshness.upstreams.as_slice() else {
+        return false;
+    };
+    let now = current.iter().find(|t| t.name == upstream.name);
+    let recorded = prev.input_tables.iter().find(|t| t.name == upstream.name);
+    freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
+        && !upstream.unprovable
+        && upstream.drifted
+        && now
+            .zip(recorded)
+            .is_some_and(|(now, recorded)| now.modified_externally_since(recorded))
 }
 
 /// Own-target existence and external edits, checked separately from upstream

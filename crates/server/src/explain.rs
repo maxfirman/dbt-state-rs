@@ -1044,7 +1044,8 @@ fn volatile_rebuild_lines(node: &ExplainNode) -> Option<Vec<qc::ExplainLine>> {
             upstream_data_up_to_date()
         }
         (K::Full | K::Append | K::Snapshot, false, true)
-            if databricks && kind == K::Full || upstreams_fresh_against_anchor(node) =>
+            if upstreams_fresh_against_anchor(node)
+                || databricks && kind == K::Full && sole_upstream_modified_externally(node) =>
         {
             query.push(upstream_queries_unchanged);
             data_freshness_analysis_against_anchor(node)
@@ -1069,6 +1070,19 @@ fn upstreams_fresh_against_anchor(node: &ExplainNode) -> bool {
                 .upstreams
                 .iter()
                 .all(|u| !u.drifted && !u.unprovable && !u.producer_changed)
+    })
+}
+
+/// #213: the one genuine upstream drifted since the anchored build because
+/// it was modified externally after that build read it from a recorded
+/// build (`databricks_volatile_producer.jsonl` entries 30 and 38).
+fn sole_upstream_modified_externally(node: &ExplainNode) -> bool {
+    node.anchor.as_ref().is_some_and(|anchor| {
+        crate::reuse_candidate::sole_upstream_modified_externally(
+            &decision::upstream_freshness(freshness_inputs(node), anchor),
+            anchor,
+            &node.input_tables,
+        )
     })
 }
 
@@ -3031,6 +3045,68 @@ mod tests {
         let mut out = Vec::new();
         flat(&explain_lines(node), 0, &mut out);
         out
+    }
+
+    /// #213: a Databricks FULL rebuild refused for its volatile SQL lists
+    /// an upstream that changed since the refused build only in the captured
+    /// situation: an External modification of its sole input, which the
+    /// refused build read from a recorded build
+    /// (`databricks_volatile_producer.jsonl` entries 30 and 38). A persisted
+    /// map in any other upstream situation, such as that input rebuilt by
+    /// another producer, prints no volatile lines.
+    #[test]
+    fn databricks_volatile_refusal_lists_only_an_externally_modified_sole_input() {
+        const TARGET: &str = "`c`.`s`.`t`";
+        const UP: &str = "`c`.`s`.`up`";
+        let input = |epoch, producer| InputTable {
+            name: UP.into(),
+            last_modified_epoch: Some(epoch),
+            producer,
+            read_copy: None,
+        };
+        for (case, current, prints) in [
+            ("modified externally", input(200, Producer::NoBuild), true),
+            (
+                "rebuilt by another producer",
+                input(200, Producer::Build("up-v2".into())),
+                false,
+            ),
+        ] {
+            let mut n = node(
+                DecisionKind::Build,
+                ModelExecutionType::Full as i32,
+                decision::DESC_EXECUTE,
+            );
+            n.reason = Some(DecisionReason::NoReuseCandidate(
+                NoCandidate::FailedReuseQualification,
+            ));
+            n.target_table = Some(TARGET.into());
+            n.input_tables = vec![tbl(TARGET), current];
+            n.volatile_evaluation = crate::volatile_evaluation::Evidence {
+                requested: Some(true),
+                values: vec![crate::volatile_evaluation::RenderedValue {
+                    query: TARGET.into(),
+                    function: "RAND()".into(),
+                    value: "0.5".into(),
+                }],
+            };
+            n.anchor = Some(ExecutionRow {
+                dialect: "databricks".into(),
+                target_table: TARGET.into(),
+                execution_type: ModelExecutionType::Full as i32,
+                last_modified_epoch: Some(100),
+                input_tables: vec![input(100, Producer::Build("up-v1".into()))],
+                ..ExecutionRow::default()
+            });
+            let lines = render(&n);
+            assert_eq!(
+                lines
+                    .iter()
+                    .any(|(_, text, _, _)| text == "non-deterministic functions detected in query"),
+                prints,
+                "{case}: {lines:?}"
+            );
+        }
     }
 
     #[test]

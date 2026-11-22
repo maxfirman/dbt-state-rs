@@ -29,6 +29,13 @@ pub struct InputTable {
 }
 
 impl InputTable {
+    /// Whether this input, read as `recorded` from a recorded build, now
+    /// holds contents no recorded build produced: an External modification
+    /// since (ADR 0007).
+    pub(crate) fn modified_externally_since(&self, recorded: &InputTable) -> bool {
+        matches!(recorded.producer, Producer::Build(_)) && self.producer == Producer::NoBuild
+    }
+
     /// An input at `epoch` with no recorded producer.
     pub fn at(name: &str, epoch: Option<i64>) -> Self {
         Self {
