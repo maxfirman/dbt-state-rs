@@ -288,7 +288,7 @@ def capture(dest_response, confirm_success=True, new_variant=execute):
         confirm("rm", 2000, 222, success=confirm_success),
         confirm("ro", 1000, 111),
         entry("SubmitEnrichedSQL", DEST, dest_response, "t7"),
-        entry("GetExplainMessages", {"execution_decision_ids": ["ed"]}, {"messages": []}, "t8"),
+        entry("GetExplainMessages", {"execution_decision_ids": ["ed"]}, {"messages": [{"execution_decision_id": "ed", "explain_lines": []}]}, "t8"),
     ]
 
 
@@ -350,7 +350,8 @@ check("a submit reporting an epoch after its own send time is inconclusive",
       csc.history_rows(rows)[0]["inconclusive"])
 rows = capture(granted(OLD["target_table"], 1000, 111))
 rows[1] = sent_at(rows[1], up_epoch)
-rows[5] = sent_at(rows[5], 999)
+rows[5] = sent_at(confirm("ro", up_epoch + 1000, 111), up_epoch + 999)
+rows[6] = entry("SubmitEnrichedSQL", DEST, granted(OLD["target_table"], up_epoch + 1000, 111), "t7")
 check("a confirm whose completion epoch is after its delivery is inconclusive, an epoch at "
       "the send time is not",
       [x for x in csc.history_rows(rows)[0]["inconclusive"]] == ["old confirmed at entry 5 with a future epoch"],
@@ -390,7 +391,7 @@ extra = csc.model_request(RUN, "old_new", "mid", csc.upstream(RUN, "old_new", Tr
 (_, row) = csc.history_rows(rows + other[:2] + [entry("SubmitEnrichedSQL", extra, execute("qm"), "u2b"),
                                                  confirm("qm", 2000, 666)] + other[2:])
 check("a source the history does not plan makes it inconclusive",
-      row["inconclusive"] == ["mid is not in the plan of old_new"], row["inconclusive"])
+      row["inconclusive"] == ["mid is not in the plan of old_new", "destination Explain missing"], row["inconclusive"])
 renamed = [dict(e, request=json.loads(json.dumps(e["request"]).replace(
     "OLD_MID_NEW_REV", "NOT_A_HISTORY").replace("old_mid_new_rev", "not_a_history"))) for e in rows]
 check("a history the plan does not name is inconclusive",
@@ -424,6 +425,15 @@ other_results = {k: r["inconclusive"] for k, r in
                  {r["object"]: r for r in csc.history_rows(dropped)}.items() if k != OMN}
 check("those mutations leave every other history conclusive",
       not any(other_results.values()), other_results)
+
+for label, mutations in (
+    ("source completion before submit", {42: sent_at(hosted[42], hosted[44]["request"]["last_modified_epoch"] + 1)}),
+    ("destination RPC failure", {46: dict(hosted[46], response=None)}),
+    ("missing Explain", {47: dict(hosted[47], response=None)}),
+):
+    changed = [mutations.get(i, e) for i, e in enumerate(hosted)]
+    check(label + " makes old_mid_new inconclusive",
+          next(h for h in csc.history_rows(changed) if h["object"] == OMN)["inconclusive"])
 
 # --- the command line -----------------------------------------------------------------------
 

@@ -75,8 +75,9 @@ the demo namespace). Each role has its own schema, default schema and
 `failed_to_clone: false`, `table_type: "TRANSIENT TABLE"`,
 `execution_results: null` and a runtime distinct within its run.
 
-**Timeline** from a history's base B. Each request was sent at most 7 ms
-after its planned time.
+**Planned timeline** from a history’s base B. The fixture records the
+request timestamp after the probe starts. At entry 76, for example, the
+submit was 411 ms later than planned and preceded completion by 589 ms.
 
 | Step | When |
 |---|---|
@@ -125,9 +126,9 @@ cloned that one". Each grant's `clone_source` names its own history's
 codes 6 / 6, `is_stale: false`, "model was executed because its table did
 not exist".
 
-A `_rev` history and its base share completion epochs and submit times and
+A `_rev` history and its base share relative completion and submit times and
 differ only in confirmation order. A `_late` history and the `_rev` one
-share confirmation order and send times and differ only in completion epochs
+share confirmation order and relative send times and differ only in completion epochs
 (the fresh source completes last). The `_late` histories ran 24 minutes
 after their `_rev` partners, in their own run. The fourth combination (the
 fresh source completes last and is confirmed first) was not run.
@@ -144,10 +145,9 @@ fresh source completes last and is confirmed first) was not run.
    the wire.
 3. **Observed: with competitors, hosted copies the fresh source in every
    history.** Adding the stale `new`, the different-input `mid`, or both
-   changes nothing observable: the same source, epoch, runtime, codes and
-   description as `old_alone`. Neither competitor blocks the copy, whether
-   it completes before or after `old` and whether it is confirmed before or
-   after it.
+   yields the same decision, codes and description as `old_alone`. Each
+   grant names its own `old` source and echoes that build’s epoch and
+   runtime across the tested completion and confirmation orders.
 4. **Observed: neither ordering decides the winner.** Holding completion
    order fixed and reversing confirmation order (`_rev`) leaves the grant on
    `old`; so does then reversing completion order (`_late`). `old` wins as

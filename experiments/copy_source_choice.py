@@ -260,6 +260,8 @@ _ROLE_OF_SCHEMA = {v: k for k, v in SCHEMAS.items()}
 
 
 def _variant(row):
+    if (row.get("status") or {}).get("code", 0) != 0:
+        return None, {}
     resp = (row.get("response") or {}).get("response") or {}
     if len(resp) != 1:
         return None, {}
@@ -308,6 +310,8 @@ def history_rows(rows):
             if role is None:
                 continue
             h = get(obj.lower())
+            if role != "dest" and role in h["_fqn"]:
+                h["inconclusive"].append(f"{role} submitted more than once")
             h["_fqn"][role] = req["target_table"]
             variant, body = _variant(r)
             sent = _sent_at(r)
@@ -332,12 +336,16 @@ def history_rows(rows):
                                  "reads": {t["name"]: t.get("last_modified_epoch")
                                            for t in req.get("tables") or []}})
             if variant == "ready_to_execute":
-                by_rid[body.get("request_id")] = (h, role)
+                ed = body.get("explained_decision") or {}
+                if (ed.get("decision"), ed.get("skip_rejection_reason"), ed.get("clone_rejection_reason")) != (1, 6, 6):
+                    h["inconclusive"].append(f"{role} did not receive the first-build decision")
+                if body.get("request_id"):
+                    by_rid[body["request_id"]] = (h, role, sent)
             else:
                 h["inconclusive"].append(f"{role} submit answered {variant}, not a first build")
                 h["_flagged"].add(role)
         elif r.get("method") == "ConfirmExecution" and req.get("request_id") in by_rid:
-            h, role = by_rid[req["request_id"]]
+            h, role, submitted_at = by_rid[req["request_id"]]
             if (r.get("response") or {}).get("success") is not True:
                 h["inconclusive"].append(f"{role} confirm at entry {i} refused")
                 h["_flagged"].add(role)
@@ -345,13 +353,20 @@ def history_rows(rows):
             sent = _sent_at(r)
             if sent is not None and (req.get("last_modified_epoch") or 0) > sent:
                 h["inconclusive"].append(f"{role} confirmed at entry {i} with a future epoch")
+            epoch = req.get("last_modified_epoch")
+            if epoch is None or req.get("execution_runtime_ms") is None:
+                h["inconclusive"].append(f"{role} confirmation lacks its epoch or runtime")
+            elif submitted_at is not None and epoch < submitted_at:
+                h["inconclusive"].append(f"{role} completion predates its submit")
+            if role in h["_confirmed_at"]:
+                h["inconclusive"].append(f"{role} confirmed more than once")
             h["confirm_order"].append(role)
             h["_confirmed_at"][role] = i
             h["completion"][role] = req.get("last_modified_epoch")
             h["runtime"][role] = req.get("execution_runtime_ms")
         elif r.get("method") == "GetExplainMessages":
             for edid in req.get("execution_decision_ids") or []:
-                if edid in by_edid:
+                if edid in by_edid and (r.get("response") or {}).get("messages"):
                     by_edid[edid]["explain_names"] = _explain_names(r.get("response"))
 
     out = []
@@ -360,22 +375,28 @@ def history_rows(rows):
         flagged, confirmed_at = h.pop("_flagged"), h.pop("_confirmed_at")
         h["inconclusive"].extend(_incomplete(h, flagged, confirmed_at))
         roles_of = {v: k for k, v in h.pop("_fqn").items()}
-        h["completion_order"] = sorted(h["completion"], key=h["completion"].get)
+        h["completion_order"] = sorted((r for r, epoch in h["completion"].items() if epoch is not None),
+                                       key=h["completion"].get)
         variant, body = h.pop("_dest", (None, {}))
+        if h["dest_entry"] is not None and h["explain_names"] is None:
+            h["inconclusive"].append("destination Explain missing")
         if h["dest_entry"] is None:
             h["inconclusive"].append("destination never submitted")
         elif variant == "ready_to_clone":
             src = body.get("clone_source")
             role = roles_of.get(src)
             h["result"] = f"CLONE {role or src}"
-            h["agrees"] = role is not None \
+            h["agrees"] = role in h["completion"] \
                 and body.get("clone_required_last_modified_epoch") == h["completion"].get(role) \
                 and body.get("execution_runtime_ms") == h["runtime"].get(role)
+            if not h["agrees"]:
+                h["inconclusive"].append("grant does not match a confirmed source")
         elif variant == "ready_to_execute":
             h["result"] = f"BUILD {h['codes']}"
         elif variant == "skip_execution":
             h["result"] = "SKIP"
         else:
+            h["inconclusive"].append("destination returned no decision")
             h["result"] = variant
         if h["explain_names"] is not None:
             h["explain_names"] = [roles_of.get(n, n) for n in h["explain_names"]]
@@ -405,8 +426,12 @@ def _incomplete(h, flagged, confirmed_at):
 
 def print_table(rows):
     """Print one result per history; False when any history is inconclusive."""
+    histories = history_rows(rows)
+    if not histories:
+        print(json.dumps({"inconclusive": "capture contains no source-choice histories"}))
+        return False
     conclusive = True
-    for h in history_rows(rows):
+    for h in histories:
         print(json.dumps(h))
         if h["inconclusive"]:
             conclusive = False
