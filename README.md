@@ -47,6 +47,8 @@ For credential-free local runs with a real Python dbt project, see the
 | Crate | Purpose |
 |---|---|
 | `crates/proto` | Generated tonic server and client stubs. |
+| `crates/auth` | Auth core: scope format, auth config, tokens, mapping rules. |
+| `crates/broker` | Token broker: issues dbt client tokens after the Upstream IdP authenticates the Principal. |
 | `crates/server` | The server: decision engine, Postgres store, gRPC services. |
 | `crates/harness` | Recording proxy, golden fixtures, differential and fuzz tools, tests. |
 | `crates/ui` | Optional read-only web console. |

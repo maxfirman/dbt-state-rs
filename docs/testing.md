@@ -133,8 +133,27 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   machine (`.machine(sub)`) tokens with `.grant(org, role)` and
   `.issued_ago(d)`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
   send them. `capture_logs()` / `captured_logs()` capture the process's log
-  lines.
-- `rows.rs` reads `executions` and `node_states` back for assertions.
+  lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`,
+  `.rule(kind, claim, value, org, role)`, `.machine_lifetime_minutes(m)`,
+  `.issuer(url)` and `.without_signing()`.
+- `start_server_with_broker(&auth)` runs the gRPC server and the Token
+  broker in one process on separate listeners (`server.broker_url()`), as
+  `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder)` runs a standalone
+  broker whose issuer is its own URL (`TestBroker::url()`, `.auth`).
+- `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
+  serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
+  Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
+  .claim(name, value))` registers an app registration; `.audience(aud)`,
+  `.issuer(iss)`, `.opaque()`, `.signed_by_impostor()` and `.expired()`
+  spoil its access token. `idp.token_requests()` and `idp.jwks_fetches()`
+  report what the broker sent.
+- `broker_client.rs` sends token requests exactly as the pinned dbt clients
+  do (`client_credentials`, `token_exchange`), and `claims(jwt)` reads a
+  token's claims unverified, as the clients do.
+- `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
+- `rows.rs` reads `executions` and `node_states` back for assertions;
+  `every_row_as_text(&server)` dumps the schema, to prove a value was never
+  stored.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
   `legacy::forget_rendered_volatile_values` and

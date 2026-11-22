@@ -76,6 +76,43 @@ token:
 
 Hosted's own codes and messages for these failures are not characterized.
 
+### Token broker (`crates/broker`)
+
+The Token broker serves HTTP/1.1 at its issuer URL: OIDC discovery at
+`/.well-known/openid-configuration`, its public keys at `/jwks`, and the
+token endpoint at `/token` (the dbt client's `RUN_CACHE_TOKEN_URL`). In this
+release `/token` serves one grant:
+
+- `client_credentials`, as both pinned clients send it: HTTP Basic
+  `client_id:secret` and the form `grant_type=client_credentials&scope=runcache:scope:orgs`
+  (`dbt-fusion@9977b6c` `crates/dbt-run-cache/src/auth/oauth.rs`
+  `fetch_client_credentials`; `dbt-state@b0f3030` `auth/sso.py`
+  `_login_with_client_credentials`). The broker forwards the Basic header
+  unchanged to the Upstream IdP's `client_credentials` grant with
+  `[upstream] client_credentials_scope`, ignoring the requested scope. It
+  accepts only an RS256 JWT access token signed by a key the IdP publishes,
+  with the IdP's issuer, an `aud` holding `[upstream] api_audience`, and
+  current; then applies the `kind = "machine"` rules. The `200` response is
+  `{"id_token", "scope", "token_type": "Bearer", "expires_in"}` with
+  `Cache-Control: no-store` and no refresh token. The `id_token` is a machine
+  token (no `sid`), `azp` the client id, `sub` the opaque Principal id of the
+  IdP issuer and `sub`.
+
+Refusals are OAuth errors (`{"error", "error_description"}`, fixed
+descriptions), logged at `warn` with the reason:
+
+| Status | `error` | Cause (log `reason`) |
+|---|---|---|
+| 401 | `invalid_client` | no or malformed Basic credentials (`missing_client_credentials`); the IdP refused them (`upstream_rejected_client`) |
+| 400 | `unauthorized_client` | the IdP refused the grant (`upstream_refused_grant`); its token is opaque or not RS256 (`upstream_token_not_a_signed_jwt`), badly signed, from another issuer, for another audience, expired or not yet valid (`upstream_token_*`), or has no `sub`; no machine rule matches (`no_matching_rule`, with `missing_claims`) |
+| 400 | `unsupported_grant_type` | token exchange (`token_exchange_unsupported`), any other grant |
+| 400 | `invalid_request` | no `grant_type`, a repeated parameter |
+| 503 | `temporarily_unavailable` | the IdP is unreachable, failing, or its discovery or keys cannot be loaded (`upstream_unavailable`) |
+
+Each issued token is logged at `info` with grant, Principal, kind, IdP
+subject, client id, scope and lifetime. Secrets and token values are never
+logged or stored.
+
 ## Services
 
 | Service | RPCs | Server status |

@@ -73,8 +73,30 @@ on a non-loopback address (for example `0.0.0.0:50051`) unless
 except health, for an Organization in the TOML auth config at
 `DBT_STATE_AUTH_CONFIG` ([example](../examples/auth/auth.toml),
 [wire contract](protocol.md#authentication-oidc-mode)).
-`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode. The Token
-broker that issues these tokens is not built yet (#218).
+`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode.
+
+The Token broker issues those tokens. Set `DBT_STATE_BROKER_LISTEN` (for
+example `127.0.0.1:8080`) to run it in the server process on its own HTTP/1.1
+listener, sharing the config's `[signing]` keys; the gRPC listener stays
+HTTP/2. It needs `[signing]` and `[upstream]` in the auth config, and is a
+startup error in `none` mode. To run it on its own instead:
+
+```bash
+DBT_STATE_AUTH_CONFIG=auth.toml DBT_STATE_BROKER_LISTEN=127.0.0.1:8080 \
+  cargo run -p dbt-state-broker
+```
+
+A gRPC server whose auth config has no `[signing]` then checks tokens
+against that broker's published keys: fetched from `broker.jwks_url`, or by
+OIDC discovery at `broker.issuer`, and cached (refetched after 5 minutes, or
+when a token's key is unknown, at most every 30 s).
+
+A CI machine authenticates with its Upstream IdP app registration: point the
+dbt client's token URL (`RUN_CACHE_TOKEN_URL`) at `<broker>/token` and set
+its client id and secret (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
+`DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`). The broker forwards the
+credentials to the IdP's `client_credentials` grant, checks the access token
+it returns, and applies the `kind = "machine"` mapping rules.
 
 ## Running the UI
 

@@ -1,11 +1,13 @@
 # Architecture
 
-Cargo workspace with five crates. The server depends on the proto and auth
-crates; the harness depends on them to drive replay and differential tests.
+Cargo workspace with six crates. The server depends on the proto, auth and
+broker crates; the harness depends on them to drive replay and differential
+tests.
 
 ```
 crates/proto     generated tonic stubs (server + client) from the .proto files
-crates/auth      auth core: scope format, TOML auth config, RS256 tokens, authenticated context
+crates/auth      auth core: scope format, TOML auth config, RS256 tokens and JWKS, mapping rules, authenticated context
+crates/broker    Token broker: OIDC discovery, JWKS, client_credentials pass-through to the Upstream IdP
 crates/server    the dbt State server (decision engine + Postgres store + gRPC)
 crates/harness   recording proxy, state probe, golden fixtures, differential + fuzz tooling, tests
 crates/ui        optional read-only console, scoped to one configured organization
@@ -35,10 +37,10 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 
 | Module | Responsibility |
 |---|---|
-| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_AUTH` (`none` or `oidc`), `DBT_STATE_AUTH_CONFIG` (`oidc`: TOML auth config, loaded here), `DBT_STATE_ALLOW_INSECURE` (`none` on a non-loopback address), `DBT_STATE_REQUIRE_ORG_HEADER` (`none`: reject requests without `x-organization-id`; a startup error in `oidc`). Every startup refusal happens before connecting. |
+| `config.rs` | Env config: `DBT_STATE_LISTEN` (default `127.0.0.1:50051`), `DATABASE_URL`, `DBT_STATE_AUTH` (`none` or `oidc`), `DBT_STATE_AUTH_CONFIG` (`oidc`: TOML auth config, loaded here), `DBT_STATE_ALLOW_INSECURE` (`none` on a non-loopback address), `DBT_STATE_REQUIRE_ORG_HEADER` (`none`: reject requests without `x-organization-id`; a startup error in `oidc`), `DBT_STATE_BROKER_LISTEN` (`oidc`: run the Token broker in-process on this HTTP address; a startup error in `none` or when the config cannot run a broker). Every startup refusal happens before connecting. |
 | `lib.rs` | `AppState` (`store`, `require_org_header`, `clock`, the `oidc` authenticator), `Clock` (`System`, test-only `Replay`), `build_router()`. `AppState::connect` opens the pool and runs the migrations; `with_oidc` selects `oidc` mode. |
 | `main.rs` | Binary: tracing setup, `Config::from_env`, `AppState::connect`, serve. |
-| `grpc_auth.rs` | The authentication layer in front of every service except `grpc.health.v1`. In `oidc` mode it verifies the token and the Organization (`dbt_state_auth::RequestAuthenticator`), puts the `AuthenticatedContext` in the request extensions, and refuses with `UNAUTHENTICATED` / `PERMISSION_DENIED` (logged at `warn`). In `none` mode it passes calls through. |
+| `grpc_auth.rs` | The authentication layer in front of every service except `grpc.health.v1`. In `oidc` mode it verifies the token and the Organization (`dbt_state_auth::RequestAuthenticator`), puts the `AuthenticatedContext` in the request extensions, and refuses with `UNAUTHENTICATED` / `PERMISSION_DENIED` (logged at `warn`). Without `[signing]` it checks against the Token broker's keys (`dbt_state_broker::RemoteKeys`), refreshed when stale or after a signature miss. In `none` mode it passes calls through. |
 | `request_scope.rs` | One `RequestScope` per gRPC call: the Organization, the dbt invocation id and the session id. `request_scope::organization` is the only place the Organization is resolved: in `oidc` mode from the `AuthenticatedContext`; in `none` mode from `x-organization-id`, default `local` (`UNAUTHENTICATED` when `require_org_header` is set and it is missing). |
 | `services.rs` | gRPC handlers. Each one that scopes by Organization first resolves its `RequestScope`, then calls `submit_decision`, `copy_registration` or the store with its Organization, maps outcomes to the wire (both clone oneofs) and spawns capture from the same scope. Re-exports `sql_execution` for upgrade tests. |
 | `submit_decision/` | How one SQL or values submit is decided (flow below), and the speculative submits that are decided through the same code. Returns a `SubmitOutcome` carrying its `DecisionRecord`; `submit_sql_explained` also returns the `ExplainEvidence` capture persists, in the decision's resolved naming. Pure internal seams: `copy_search.rs` (which equivalent the Result copy fallback copies) and `diagnostics.rs` (which refusal diagnostic asks State history what, in hosted's precedence order). |
@@ -476,18 +478,38 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 
 ## auth crate
 
-`crates/auth` (`dbt-state-auth`) is shared by the gRPC server and, later, the
-Token broker and the UI, so none of them depends on another. It is pure apart
-from reading the config and key files.
+`crates/auth` (`dbt-state-auth`) is shared by the gRPC server, the Token
+broker and, later, the UI. It is pure apart from reading the config and key
+files; fetching keys and talking to the Upstream IdP live in the broker
+crate.
 
 | Module | Responsibility |
 |---|---|
 | `organization.rs` | `OrganizationId` (non-empty visible ASCII, no `:`, not `*`), `Role` (`developer` < `admin`), declared `Organizations` (active or disabled). |
 | `scope.rs` | The `scope` claim: `Scope::issue` (highest Role per declared Organization; active ones as `org` + `app` entries, disabled ones as `app` only) and the strict `Scope::parse`. `tests/scope_proptest.rs` checks both against ports of the pinned clients' scope rules (`tests/client_scope/`). |
-| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer`, `[api] audience`, `[tokens]` lifetimes, `[signing]` keys, `[[organizations]]`), unknown keys refused. Builds the `TokenIssuer`, `TokenVerifier` and `RequestAuthenticator`. |
-| `keys.rs` | RS256 keys from PEM files (PKCS#8 or PKCS#1), several key ids, one active; never echoes key material. |
-| `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId`, `PrincipalKind` (person tokens carry `sid`). |
+| `config.rs` | `AuthConfig::load`: the TOML auth config (`[broker] issuer` and optional `jwks_url`, `[api] audience`, `[tokens]` lifetimes, optional `[signing]` keys, `[[organizations]]`, optional `[upstream]` (`issuer`, `api_audience`, `client_credentials_scope`), `[[rules]]`), unknown keys refused. Builds the `TokenIssuer` (with `[signing]`), `TokenVerifier` and `RequestAuthenticator` over a `VerificationKeys`. |
+| `keys.rs` | RS256 keys from PEM files (PKCS#8 or PKCS#1), several key ids, one active; never echoes key material. `VerificationKeys`: a shared, replaceable public key set, published and read as a JWKS. |
+| `token.rs` | `TokenIssuer::issue` and `TokenVerifier::verify` (signature by any loaded key id, issuer, audience, expiry with 60 s skew, claim shape); `PrincipalId` (`PrincipalId::upstream(issuer, subject)`: an opaque hash of the Upstream IdP pair), `PrincipalKind` (person tokens carry `sid`). |
+| `mapping.rs` | Mapping rules (`kind`, `claim`, `value`, Organization, Role): `MappingRules::scope` evaluates only the Principal kind's rules; a claim matches as a string or an array of strings; highest Role wins; no match is an empty scope. `tests/mapping_proptest.rs`. |
+| `upstream.rs` | `UpstreamTokenVerifier`: an Upstream IdP access token must be an RS256 JWT signed by a published key, with the IdP's issuer, `aud` holding the upstream API audience, and current (`exp`, `nbf`, 60 s skew). Opaque tokens are refused. |
 | `context.rs` | `RequestAuthenticator::authenticate`: token, then Organization; an `AuthenticatedContext` (Principal, Principal kind, Organization, Role, client id, session) or a `Rejection` with its gRPC class, fixed message and log reason. |
+
+## broker crate
+
+`crates/broker` (`dbt-state-broker`, also a standalone binary) is the Token
+broker (ADR 0012). It runs in the server process on its own HTTP/1.1
+listener (`DBT_STATE_BROKER_LISTEN`), sharing the config's key set, or alone
+(`dbt-state-broker`, env `DBT_STATE_BROKER_LISTEN` default `127.0.0.1:8080`
+and `DBT_STATE_AUTH_CONFIG`). It makes no request at startup.
+
+| Module | Responsibility |
+|---|---|
+| `lib.rs` | `Broker::new(&AuthConfig)` (needs `[signing]` and `[upstream]`), `Broker::router()`: `GET /.well-known/openid-configuration`, `GET /jwks`, `POST /token`. `http_client()`: timeouts, no redirects. |
+| `token_endpoint.rs` | `POST /token`. `client_credentials`: HTTP Basic forwarded verbatim to the Upstream IdP with `client_credentials_scope`; the access token is checked, `kind = "machine"` rules applied, and `id_token`, `scope`, `token_type`, `expires_in` returned. Token exchange and other grants are `unsupported_grant_type`. Every issue (`info`) and refusal (`warn`) is logged with grant, Principal, subject, client id and reason. |
+| `upstream.rs` | The Upstream IdP: discovered on first use (retried until it succeeds), the `client_credentials` forward, and access-token checks with a key refresh on an unknown key. |
+| `remote_keys.rs` | `RemoteKeys`: a JWKS fetched (from a URL or through discovery) and cached; refetched after `MAX_AGE` (5 min) or on a signature miss, at most once per `MIN_INTERVAL` (30 s); a failed fetch keeps the loaded keys. Used for the Upstream IdP's keys and, by a gRPC server without `[signing]`, the broker's. |
+| `discovery.rs` | OIDC discovery fetch; the document's `issuer` must equal the one asked for. |
+| `oauth.rs` | OAuth error responses (RFC 6749 §5.2) with fixed descriptions; `Cache-Control: no-store`. |
 
 ## ui crate
 
