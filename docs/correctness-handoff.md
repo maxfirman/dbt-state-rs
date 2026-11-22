@@ -750,52 +750,55 @@ local-only and renders no Explain tree.
 
 ## Deployment gaps
 
-- **Auth and TLS.** In the default `DBT_STATE_AUTH=none` mode,
-  header-based organization selection is isolation, not authentication, and
-  the server refuses a non-loopback address unless
-  `DBT_STATE_ALLOW_INSECURE=true`. `DBT_STATE_AUTH=oidc` verifies a
-  Token-broker-signed token and its Organization on every RPC except health
-  ([protocol.md](protocol.md#authentication-oidc-mode)). Each decision and
-  execution names its Principal (`principal_id`, #226), whom the Token
-  broker records by Upstream IdP issuer and subject. Person sessions renew
-  only on fresh Upstream IdP evidence (#221). Person tokens need an active
-  broker session on every RPC (cached at most 30 s per replica), and
-  `dbt-state-server revoke-sessions` revokes a Principal's sessions (#225).
-  Both listeners serve native TLS from mounted files (`DBT_STATE_TLS_*`,
-  `DBT_STATE_BROKER_TLS_*`, #219) or plain HTTP behind a TLS-terminating
-  proxy; the pinned Python client logs in as a machine, and signs a person
-  in through the browser and keeps them signed in (the next invocation
-  refreshes from the token on disk, a long-running process refreshes in
-  memory, at the 15-minute minimum lifetime too), over TLS in CI
-  (`crates/harness/tests/python_client.rs`, #222). A refresh token
-  rotated less than 60 s ago still renews, reusing the session's evidence
-  when it was renewed within that window, so replicas sharing Postgres
-  serve shared logins and retries and the Upstream IdP sees each of its
-  refresh tokens at most once; later it is a replay that revokes the
-  session (#224, `crates/harness/tests/shared_logins.rs`). Against a real
-  Upstream IdP, Keycloak 26.8.2 in Docker, an opt-in suite signs a person
-  in through Keycloak's login form, denies renewal once Keycloak disables
-  them or drops them from the mapped group, passes `client_credentials`
-  through, and refuses a token for another audience (#227,
-  `crates/harness/tests/keycloak.rs`, CI job `keycloak`). Pinned Fusion's
-  own client code (`dbt-fusion@9977b6c` `dbt-run-cache`, ELv2, compiled
-  against by an out-of-workspace driver, never vendored) logs in as a
-  machine, signs a person in through the browser, refreshes from the token
-  on disk in the next invocation, reads that token once per process and
-  signs in through the browser again only within 300 s of its in-memory
-  token's expiry, so a run shorter than the person lifetime minus 5
-  minutes needs no new token (#223, `crates/harness/tests/fusion_client.rs`,
-  opt-in CI job `fusion`). Its token requests trust only public roots, so
-  a Token broker needs a publicly trusted certificate for Fusion; the
-  driver adds native roots through a reqwest build feature to reach the
-  test CA. The broker registers the UI as its
-  own confidential client (`[clients.ui]`, `private_key_jwt`, #228), whose
-  tokens no gRPC RPC accepts (`crates/harness/tests/ui_client.rs`). In
-  `oidc` mode the UI signs people in as that client and shows only their
-  active Organizations, checking their broker session within 30 s and
-  renewing within the person token lifetime (#229,
-  `crates/harness/tests/ui_sign_in.rs`, [ui.md](ui.md)); in `none` mode it
-  still reads one configured organization (`DBT_STATE_UI_ORG_ID`).
+- **Auth and TLS.** `DBT_STATE_AUTH=oidc` authenticates every RPC except
+  health: a Token-broker-signed token for the dbt State API audience, an
+  `x-organization-id` among its active Organizations, and for a person an
+  active broker session (cached at most 30 s per replica)
+  ([protocol.md](protocol.md#authentication-oidc-mode)). The Token broker
+  signs people in through the operator's Upstream IdP, renews them only on
+  fresh IdP evidence, passes CI credentials through, and records each
+  Principal; decisions and executions name it (`principal_id`). Both
+  listeners serve native TLS or plain HTTP behind a TLS-terminating proxy.
+  Deployment, IdP recipes, client settings and the revocation bounds with
+  the tests that verify them are in the
+  [operator guide](operator-guide.md). Evidence: the fake Upstream IdP in
+  every `cargo test`, Keycloak 26.8.2 in the opt-in `keycloak` job (#227),
+  the pinned Python client's own auth code over TLS in CI (#219, #222), and
+  pinned Fusion's in the opt-in `fusion` job (#223). The default
+  `DBT_STATE_AUTH=none` mode authenticates nothing: header-based
+  Organization selection is isolation, and the server refuses a
+  non-loopback address unless `DBT_STATE_ALLOW_INSECURE=true`. What remains
+  open:
+  - **Entra ID and Okta are untested.** Their recipes follow vendor
+    documentation only. For Entra ID, two points are unverified: Microsoft
+    documents an `x5t#S256` header for certificate client assertions, which
+    the broker's `private_key_jwt` does not send (the recipe uses a client
+    secret), and it describes a refresh response's `id_token` as unsigned,
+    which the broker would refuse and end the session over.
+  - **Public roots only.** Pinned Fusion's token requests trust only the
+    public Mozilla roots (`dbt-fusion@9977b6c`, #223), so the broker's token
+    URL needs a publicly trusted certificate. The broker, a gRPC server
+    fetching the broker's keys, and the console also trust only public
+    roots for their outbound requests, so the Upstream IdP and any internal
+    broker URL need one too (or plain http on loopback).
+  - **Retention.** `broker_person_sessions` and `broker_refresh_tokens`
+    rows are never deleted.
+  - **Bounds that differ from spec #215** (all documented in the guide): an
+    unreachable Upstream IdP answers 503 and keeps the session, though both
+    pinned clients then discard an expired token and open the browser; the
+    grace window can reuse evidence up to 60 s old, so a person disabled at
+    the IdP keeps gRPC access for up to the person token lifetime plus 2
+    minutes; gRPC refuses a person token within 30 s of its session's
+    12-hour cap even before `exp`; any failed console renewal ends the
+    console session; a revoked person can sign in again until disabled at
+    the IdP.
+  - **Not built:** hot reload, refresh-token key rotation, a second console
+    public key, logout endpoints, rate limiting beyond the pending sign-in
+    cap, more than one Upstream IdP, and dbt platform token exchange
+    (refused, so a person whose environment holds a dbt platform credential
+    cannot use the browser flow).
+  - Hosted dbt State's own status codes and messages for auth failures are
+    not characterized ([hosted auth report](reports/hosted-auth-2026-11-21.md#5-unknowns-not-answerable-offline)).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`
