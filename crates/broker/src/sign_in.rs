@@ -218,7 +218,18 @@ impl ClientRedirect<'_> {
         if let Some(state) = self.state {
             query.append_pair("state", state);
         }
-        redirect(&format!("{}?{}", self.redirect_uri, query.finish()))
+        // A registered query is kept, and the response added to it (RFC
+        // 6749 §3.1.2).
+        let separator = if self.redirect_uri.contains('?') {
+            '&'
+        } else {
+            '?'
+        };
+        redirect(&format!(
+            "{}{separator}{}",
+            self.redirect_uri,
+            query.finish()
+        ))
     }
 
     fn error(&self, refusal: Refusal, error: SignInError) -> Response {

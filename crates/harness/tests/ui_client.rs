@@ -617,3 +617,53 @@ async fn the_id_token_carries_the_nonce_of_its_own_sign_in() {
         "a nonce mismatch the UI refuses"
     );
 }
+
+/// A callback registered with a query keeps it: the code and `state` are
+/// added to it (RFC 6749 §3.1.2), on success and on refusal.
+#[tokio::test]
+async fn a_ui_callback_keeps_its_query() {
+    let idp = FakeIdp::start().await;
+    idp.sign_in(alice());
+    let callback = format!("{UI_REDIRECT_URI}?tenant=acme");
+    let server = start_server_with_broker(
+        &TestAuth::builder(ORGANIZATIONS)
+            .upstream(&idp)
+            .ui_client_at(&callback)
+            .rule("person", "groups", "data-eng", "analytics", "developer")
+            .build(),
+    )
+    .await;
+    let browser = || Browser::new().route(ISSUER, &server.broker_url());
+
+    let sign_in = UiSignIn::new().redirect_uri(&callback);
+    let query = browser()
+        .visit(&sign_in.authorize_url(ISSUER), UI_REDIRECT_URI)
+        .await
+        .loopback();
+    assert_eq!(
+        query.get("tenant").map(String::as_str),
+        Some("acme"),
+        "{query:?}"
+    );
+    assert_eq!(query.get("state"), Some(&sign_in.state), "{query:?}");
+    let response = ui_client::exchange(
+        &server.broker_url(),
+        &sign_in,
+        &query["code"],
+        Some(&assertion(&token_endpoint())),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+
+    let refused = UiSignIn::new().redirect_uri(&callback).without_nonce();
+    let query = browser()
+        .visit(&refused.authorize_url(ISSUER), UI_REDIRECT_URI)
+        .await
+        .loopback();
+    assert_eq!(
+        query.get("tenant").map(String::as_str),
+        Some("acme"),
+        "{query:?}"
+    );
+    assert_eq!(query["error"], "invalid_request", "{query:?}");
+}

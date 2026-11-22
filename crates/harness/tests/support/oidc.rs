@@ -264,11 +264,16 @@ impl TestAuthBuilder {
     /// `[clients.ui]`: the UI registered as [`super::ui_client::UI_CLIENT_ID`]
     /// with its one callback [`super::ui_client::UI_REDIRECT_URI`] and its
     /// test public key.
-    pub fn ui_client(mut self) -> Self {
+    pub fn ui_client(self) -> Self {
+        self.ui_client_at(super::ui_client::UI_REDIRECT_URI)
+    }
+
+    /// [`Self::ui_client`] with the callback `redirect_uri`.
+    pub fn ui_client_at(mut self, redirect_uri: &str) -> Self {
         self.extra.push_str(&format!(
             "\n[clients.ui]\nclient_id = {}\nredirect_uri = {}\npublic_key_file = {}\n",
             toml_string(super::ui_client::UI_CLIENT_ID),
-            toml_string(super::ui_client::UI_REDIRECT_URI),
+            toml_string(redirect_uri),
             toml_string(
                 super::ui_client::ui_public_key_file()
                     .to_str()
