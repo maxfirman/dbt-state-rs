@@ -21,11 +21,17 @@
 //! TOLERATES source staleness on this axis; it does not freshness-gate the
 //! clone candidate.
 //!
-//! DETERMINATION (docs/protocol.md, Result copy on submit): the server's
-//! `find_clone_equivalent` also clones here, so it MATCHES hosted — it is NOT
-//! over-conservative. Adding the review's implied freshness GATE would make the
-//! server reuse LESS than hosted (a conformance regression), so the fallback is
-//! intentionally NOT tightened. The exact clone tolerance window and the
+//! DETERMINATION, REVISED (#264): the dev submit reads DEV_CLONE_DEMO.CF2_UP,
+//! which no recorded build or copy produced, and the source read
+//! PROD_STATE_DEMO.CF2_UP. Nothing shows the source's result was computed from
+//! the dev input, so the server builds; the capture stays a keyed replay gap
+//! (golden/replay_gaps.json). Newer hosted captures build this shape too
+//! (copy_source_choice.jsonl entries 10 and 78, #239;
+//! explain_upstream_origin_*.jsonl cases C and D, #237), and a native run in
+//! which the dev input held other rows served the prod rows from the copy
+//! (docs/reports/snowflake-upstream-origin-2026-11-22.md, case D). A
+//! same-input equivalent is judged for freshness like the reuse candidate
+//! (lag_copy_candidates `sne`). The exact clone tolerance window and the
 //! (timing-sensitive, non-reproducible) OUTSIDE_TIME_TRAVEL_WINDOW rejection
 //! remain OPEN — they need a controlled adapter-level capture that this Fusion
 //! version does not expose (lag_tolerance / evaluate_volatile_sql are rejected
@@ -102,13 +108,12 @@ fn hosted_clones_stale_source_with_captured_provenance() {
     );
 }
 
-/// Server reproduction: the server MATCHES hosted — it clones a cross-name
-/// equivalent whose build epoch is OLDER than the submit's current upstream
-/// (does not freshness-gate the clone candidate). This guards against a
-/// regression that would silently tighten `find_clone_equivalent` and reuse
-/// LESS than hosted.
+/// Server reproduction of the 2026-10 capture: a cross-name equivalent that
+/// read the prod upstream is not copied for a dev submit over the dev
+/// upstream, whatever their epochs (#264). Hosted copied it then
+/// (`clone_fallback_stale_source.jsonl` entry 2, a keyed replay gap).
 #[tokio::test]
-async fn server_clones_stale_cross_name_equivalent_like_hosted() {
+async fn server_builds_where_hosted_copied_over_another_dev_input() {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
 
@@ -142,15 +147,13 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
     )
     .await;
 
-    // Dev submit of an absent target whose CURRENT upstream (up_new) is NEWER
-    // than the source's build epoch — the source is stale. The server must
-    // STILL clone (matching hosted), not execute.
+    // Dev submit of an absent target over the dev upstream, which the source
+    // did not read: the source's result says nothing about it.
     let rb = sc.submit(submit(dev, DEV_SCHEMA, up_new)).await;
     let variant = support::response_variant(&rb);
     assert_eq!(
-        variant, "ready_to_clone",
-        "the server clones a stale cross-name equivalent, matching hosted (no \
-         speculative freshness gate on the clone candidate)"
+        variant, "ready_to_execute",
+        "an equivalent that read another upstream is not copied"
     );
 }
 
@@ -173,17 +176,23 @@ async fn server_clones_stale_cross_name_equivalent_like_hosted() {
 ///     function (sql_norm::sql_contains_volatile_function), NOT for every
 ///     tnd=false request — review #2 4th follow-up P1 #3 corrected the earlier
 ///     blanket gate.
+///
+/// REVISED (#264): the zero-tolerance capture's dev submit read the dev
+/// upstream, which the copied source did not read; the server builds it (a
+/// keyed replay gap). Over the same upstream, a stale equivalent is judged
+/// like the reuse candidate, so zero tolerance rebuilds it (lag_tolerance.rs
+/// covers the copy within tolerance).
 #[tokio::test]
-async fn server_clones_stale_equivalent_under_zero_tolerance() {
+async fn zero_tolerance_rebuilds_a_stale_equivalent_over_the_same_input() {
     assert_eq!(
-        clone_eligibility_variant(
-            /*freshness_tolerance_seconds=*/ 0, /*tnd=*/ true,
-            /*volatile_sql=*/ false
-        )
-        .await,
-        "ready_to_clone",
-        "zero freshness tolerance must not suppress the stale cross-name clone \
-         (hosted clones; verified live)"
+        clone_eligibility_variant(0, true, false, DevInput::OwnNewer).await,
+        "ready_to_execute",
+        "an equivalent over another dev input is not copied (#264)"
+    );
+    assert_eq!(
+        clone_eligibility_variant(0, true, false, DevInput::ProdNewer).await,
+        "ready_to_execute",
+        "zero tolerance rebuilds a stale same-input equivalent"
     );
 }
 
@@ -193,33 +202,45 @@ async fn volatile_sql_executes_but_deterministic_clones_under_nondeterminism_fla
     // would serve a stale evaluated value (verified live,
     // golden/fixtures/clone_fallback_volatile.jsonl).
     assert_eq!(
-        clone_eligibility_variant(2700, /*tnd=*/ false, /*volatile_sql=*/ true).await,
+        clone_eligibility_variant(2700, false, true, DevInput::ProdCurrent).await,
         "ready_to_execute",
         "a genuinely volatile model must EXECUTE under tolerate_nondeterminism=false"
     );
-    // DETERMINISTIC SQL + tnd=false → still CLONE the stale equivalent: the flag
+    // DETERMINISTIC SQL + tnd=false → still CLONE the equivalent: the flag
     // alone does NOT suppress the clone (verified live,
     // experiments/clone_eligibility.sh volatile_det). This is the cell the
     // reviewer flagged — the earlier synthetic test used deterministic SQL yet
     // asserted EXECUTE, conflating the flag with genuine volatility.
     assert_eq!(
-        clone_eligibility_variant(2700, /*tnd=*/ false, /*volatile_sql=*/ false).await,
+        clone_eligibility_variant(2700, false, false, DevInput::ProdCurrent).await,
         "ready_to_clone",
-        "a deterministic model clones the stale equivalent even with \
+        "a deterministic model clones the equivalent even with \
          tolerate_nondeterminism=false (flag alone does not gate the clone)"
     );
 }
 
-/// Build a prod source over an OLD upstream, confirm it, then submit an absent
-/// dev target with the given freshness_tolerance_seconds /
-/// tolerate_nondeterminism and (optionally) a GENUINELY volatile projection,
-/// returning the decision variant. The cross-name clone fallback is the path
-/// under test: with no same-target history the dev submit either clones the
-/// prod equivalent or executes.
+/// Which upstream the dev submit of [`clone_eligibility_variant`] reads.
+#[derive(Clone, Copy)]
+enum DevInput {
+    /// The dev upstream, at a newer epoch than the source read prod's.
+    OwnNewer,
+    /// The prod upstream the source read, at the epoch it read.
+    ProdCurrent,
+    /// The prod upstream the source read, changed since the source's build.
+    ProdNewer,
+}
+
+/// Build a prod source over the prod upstream at 1000, confirm it at 1500,
+/// then submit an absent dev target reading `dev_input` with the given
+/// freshness_tolerance_seconds / tolerate_nondeterminism and (optionally) a
+/// GENUINELY volatile projection, returning the decision variant. The
+/// cross-name clone fallback is the path under test: with no same-target
+/// history the dev submit either clones the prod equivalent or executes.
 async fn clone_eligibility_variant(
     freshness_tolerance_seconds: i64,
     tnd: bool,
     volatile_sql: bool,
+    dev_input: DevInput,
 ) -> String {
     let server = start_server().await;
     let sc = Scenario::connect(&server).await;
@@ -228,12 +249,16 @@ async fn clone_eligibility_variant(
     let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"ELIG\"";
     let dev = "\"CDO_DEMO_DB\".\"DEV_CLONE_DEMO\".\"ELIG\"";
 
-    let submit = |target: &str, schema: &str, up_epoch: i64| {
-        let upstream = format!("\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"", schema.to_uppercase());
+    // `target` in `schema`, reading the ELIG_UP of `input_schema` at `up_epoch`.
+    let submit = |target: &str, schema: &str, input_schema: &str, up_epoch: i64| {
+        let upstream = format!(
+            "\"CDO_DEMO_DB\".\"{}\".\"ELIG_UP\"",
+            input_schema.to_uppercase()
+        );
         let sql = if volatile_sql {
-            format!("select id, amount, current_timestamp() as loaded_at from CDO_DEMO_DB.{schema}.elig_up")
+            format!("select id, amount, current_timestamp() as loaded_at from CDO_DEMO_DB.{input_schema}.elig_up")
         } else {
-            format!("select id, amount from CDO_DEMO_DB.{schema}.elig_up")
+            format!("select id, amount from CDO_DEMO_DB.{input_schema}.elig_up")
         };
         demo::model(target, schema, "model.jaffle.elig")
             .sql(&sql)
@@ -244,21 +269,23 @@ async fn clone_eligibility_variant(
                 &upstream,
                 "select 1 as id, 100 as amount",
                 demo::CATALOG,
-                schema,
+                input_schema,
             )
             .namespace(NS)
     };
 
-    // Build + confirm the source over the OLD upstream epoch (1000).
     sc.build_with(
-        submit(source, PROD_SCHEMA, 1_000),
+        submit(source, PROD_SCHEMA, PROD_SCHEMA, 1_000),
         transient_at(1_500).runtime(100),
     )
     .await;
 
-    // Dev submit of an absent target with a NEWER upstream (2000) → the source
-    // (built @1500) is stale relative to it. Return the decision.
-    let rb = sc.submit(submit(dev, DEV_SCHEMA, 2_000)).await;
+    let dev_submit = match dev_input {
+        DevInput::OwnNewer => submit(dev, DEV_SCHEMA, DEV_SCHEMA, 2_000),
+        DevInput::ProdCurrent => submit(dev, DEV_SCHEMA, PROD_SCHEMA, 1_000),
+        DevInput::ProdNewer => submit(dev, DEV_SCHEMA, PROD_SCHEMA, 2_000),
+    };
+    let rb = sc.submit(dev_submit).await;
     support::response_variant(&rb).to_string()
 }
 

@@ -122,8 +122,25 @@ Do not weaken these without new evidence.
   below). **Blind spot:** at submit time an
   External modification of the prod source after its load cannot be seen.
   The submit reports only its own target's epoch, and a seed has no upstream
-  listing, so the copy serves the source as modified. A FULL copy from
-  another environment has the same blind spot: it is copied unjudged.
+  listing, so the copy serves the source as modified. A FULL copy has the
+  same blind spot for its source's own table: the submit reports no epoch
+  for it.
+- **Result copy over different inputs (#264).** A FULL equivalent is copied
+  on submit only when the physical inputs it recorded at build time are the
+  ones the submit reads, each by its own name or as its Stand-in (an
+  unchanged copy this server recorded of the build the equivalent read),
+  and it is then judged for freshness like a Reuse candidate. Any other
+  equivalent is passed over and the search goes on in its shared order
+  (`submit_decision/copy_search.rs`,
+  [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
+  Before #264 the first equivalent that read other relations was copied
+  unjudged, which served prod rows over a dev input in a native run
+  ([report](reports/snowflake-upstream-origin-2026-11-22.md), case D).
+  Regressions: `result_copy_baseline.rs`
+  (`snowflake_differing_input_builds_and_follow_up_reuses`,
+  `snowflake_copy_over_a_copied_upstream_and_follow_up`,
+  `snowflake_copied_upstream_at_another_recorded_epoch_builds`,
+  `snowflake_continues_on_stale_and_passes_over_a_different_input`).
 - **Copy adoption needs the copy's logic.** A later submit reuses a
   RegisterClone copy only when its schema-abstracted logic equals the logic
   the copy inherited from its source build, directly or with the submit's
@@ -151,7 +168,7 @@ Do not weaken these without new evidence.
   reads) admit on the Target relation's schema. Upstream reads compare by
   canonical name both here and when the fallback decides whether an
   equivalent read the submit's upstreams, so a shared relation spelled
-  differently is judged for drift, never copied unjudged
+  differently is judged for drift, never passed over as another input
   (`a_differently_spelled_shared_source_is_judged_before_a_copy`). Each
   dependency's name stays bound to its definition, so a dev dependency whose
   definition differs from the prod build's is not an equivalent
@@ -403,18 +420,16 @@ server keeps the conservative behavior described.
   entries 3–4.
 - **Stale reuse versus a fresh alternative, and copies with Upstream
   producers.** Uncharacterized: whether hosted prefers copying a fresh
-  equivalent over a stale same-target reuse within tolerance; copying an
-  equivalent from another target after a same-upstream one was rejected on
-  freshness (the server rebuilds); and the full clone chain with the upstream's
-  own copies. `clone_chain_upstream_history.jsonl` is characterization-only
+  equivalent over a stale same-target reuse within tolerance, and the full
+  clone chain with the upstream's own copies. `clone_chain_upstream_history.jsonl` is characterization-only
   because every copy source predates the capture
   (`lag_tolerance.rs::clone_chain_external_modification_of_consumed_upstream_rebuilds`).
-  #239 covers part of the second question with crafted histories: after
-  passing over a stale same-upstream source, hosted copied an older fresh
-  one and never a source reading another relation in a fixed third schema;
-  a source whose upstream is in its own Target's schema, as a dbt `ref`
-  resolves it, was not among the candidates
-  ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
+  #239 settled copying after a freshness rejection with crafted histories:
+  after passing over a stale same-upstream source, hosted copied an older
+  fresh one and never a source reading another relation in a fixed third
+  schema, as this server does since #264; a source whose upstream is in its
+  own Target's schema, as a dbt `ref` resolves it, was not among the
+  candidates ([report](reports/snowflake-copy-source-choice-2026-11-21.md)).
 - **Upstream origin and submit-time copy (#237, live, 2026-11-22).** With
   dbt 2.0.11 on Snowflake, hosted copied an absent FULL dev downstream only
   when it read prod's physical upstream (byte-identical SQL). It built the
@@ -428,7 +443,15 @@ server keeps the conservative behavior described.
   built and confirmed in the capture, B's run-2 shape) and
   `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
   built in an earlier session). What separates those from #237 case B is
-  open. Databricks copied the downstream over a confirmed upstream copy in
+  open. Since #264 this server copies over a dev upstream copy only when the
+  equivalent recorded the copied build's exact epoch (a Stand-in): it builds
+  case B, where prod's downstream recorded the prod upstream at its metadata
+  epoch, 727 ms (run 1) and 218 ms (run 2) before the upstream's confirmed
+  epoch, and copies
+  `explain_clone_history.jsonl` entry 12, where it recorded the confirmed
+  epoch. That agrees with every capture but is not shown to be hosted's
+  rule; a capture that varies only the recorded epoch would settle it.
+  Databricks copied the downstream over a confirmed upstream copy in
   its native case B. The reports document the setup differences that limit
   the comparison. [Cross-warehouse comparison](reports/result-copy-source-selection-2026-11-22.md),
   [Snowflake report](reports/snowflake-upstream-origin-2026-11-22.md).
@@ -691,49 +714,59 @@ Characterization-only fixtures, which the generic replay excludes, are listed
 in `CHARACTERIZATION_ONLY` in `crates/harness/tests/conformance.rs` with the
 test that pins each.
 
-**Open — copy over a dev upstream of another origin (#237, live,
-2026-11-22).** `explain_upstream_origin_incremental.jsonl` and
+**Resolved 2026-11-22 — copy over a dev upstream of another origin (#237,
+live; #264).** `explain_upstream_origin_incremental.jsonl` and
 `explain_upstream_origin_table.jsonl` submit an absent FULL dev downstream
 whose dev upstream is a confirmed copy of prod's (B), or an independent dev
 build of the same logic over a dev input with the same row (C) or another row
-(D). Hosted builds all three, and this server copies prod's downstream (keyed
-gaps I28, I36, I44, T34, T45, T57, with their Explains). For C and D's dev
-upstream, this server also reports prod's upstream as an equivalent where
-hosted reports none (field-scoped gaps I34, I42, T39, T51, and the Explains
-T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
-(I23, T29, T36), the rendering gap #239 also reports.
-**Correctness finding.** In D a native run of the table scenario against
-this server copied the prod downstream and served `v='prod'` after
-confirmation and after the next unchanged SKIP. The dev upstream and the
-verified State-disabled Reference both held `v='dev'`. #239's crafted
-different-input grants provide comparable protocol evidence with no
-warehouse execution. The wrong-row finding remains open for policy review.
-[Native D evidence](reports/evidence/snowflake-upstream-origin/D.json),
-[refactor handoff](reports/result-copy-source-selection-2026-11-22.md),
-[policy review #264](https://github.com/maxfirman/dbt-state-rs/issues/264).
+(D). Hosted builds all three. Before #264 this server copied prod's
+downstream, and in D a native run served `v='prod'` where the dev upstream
+and the verified State-disabled Reference held `v='dev'`
+([native D evidence](reports/evidence/snowflake-upstream-origin/D.json)).
+This server now builds all three and SKIPs each next unchanged submit, and
+reports no equivalent for C and D's dev upstream; those decision gaps and
+their Explains are closed. A native rerun against the patched server
+(run `232206b6851a`) served `(1, 'dev')` in D after the build and after the
+SKIP, as the verified Reference did, and still copied A
+([evidence](reports/evidence/snowflake-upstream-origin-264/D.json))
+([ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs)).
+B builds because prod's downstream recorded the copied upstream at an
+earlier metadata epoch; whether that is hosted's deciding condition is open
+(Open hosted questions, "Upstream origin and submit-time copy"). Two
+Explain gaps remain: after B's build, the next unchanged
+submit reports the copy at its metadata epoch, earlier than the confirmed
+epoch the build recorded, and the local SKIP tree omits `upstream data is
+up to date` (I57, T70, `decision::UpstreamFreshness::unchanged`). The copy
+trees of A and B's upstream omit hosted's `<FRESH>` anchor line (I23, T29,
+T36), the rendering gap #239 also reports.
 
-**Open — copy source choice among competing sources (#239, crafted,
-2026-11-21).** `copy_source_choice.jsonl` crafts thirteen Snowflake histories
-in which an absent FULL destination could copy a fresh source that read its
-upstream relation (`old`), a source whose SQL matches once schemas are
-abstracted but reads another relation of the same name (`mid`), and a stale
-source that read the upstream before its change (`new`). Hosted copies `old`
-in every history that has it, whatever the completion and confirmation
+**Open — 2026-10 copies over another dev input (#264).** In
+`clone_fallback_stale_source.jsonl` and `clone_fallback_zero_tolerance.jsonl`
+(entry 2 each, 2026-10-12) hosted copied a prod build for a dev submit that
+read a dev upstream no recorded build or copy produced, while the prod build
+read the prod upstream. This server builds there (keyed gaps), since nothing
+shows the prod result was computed from the dev input. Every later capture
+of that shape builds on hosted: #239 `mid` (entries 10, 78) and #237 cases C
+and D. Hosted's behavior may have changed since; the server keeps the rule
+that cannot serve another input's rows
+(`clone_eligibility.rs::server_builds_where_hosted_copied_over_another_dev_input`).
+
+**Resolved 2026-11-22 — copy source choice among competing sources (#239,
+crafted; #264).** `copy_source_choice.jsonl` crafts thirteen Snowflake
+histories in which an absent FULL destination could copy a fresh source that
+read its upstream relation (`old`), a source whose SQL matches once schemas
+are abstracted but reads another relation of the same name (`mid`), and a
+stale source that read the upstream before its change (`new`). Hosted copies
+`old` in every history that has it, whatever the completion and confirmation
 order, and builds when `mid` or `new` is alone, also when `mid` read its
-relation at the destination's epoch. This server agrees in seven histories.
-It copies `mid` alone (entries 10, 78), copies `mid` over `old` when `mid`
-completed later (entries 20, 26), and builds when all three compete and
-`mid` completed after `old` (entries 46, 54). `submit_decision/copy_search.rs`
-copies an equivalent whose recorded upstream reads differ from the submit's
-unjudged when it is the first candidate offered, and stops at one after a
-freshness rejection. Entries 10 and 78 grant copies from a source whose
-recorded physical input differs from the destination's. These crafted
-histories end at the decision and Explain RPCs. They leave open whether
-hosted's refusal follows from Logical copy identity or a separate input
-check. The decision gaps remain open and the local outcomes are pinned for
-#243. Hosted's copy trees list a same-input upstream `<FRESH>` with an
-anchor line that this server renders on Databricks only. The Snowflake
-Explain gaps (entries 3, 7, 33, 39, 61, 67, 75) are tracked in #252.
+relation at the destination's epoch. This server now agrees in all thirteen:
+it passes over `mid` as an equivalent that read another relation, and over
+`new` as stale. Before #264 it copied `mid` alone (entries 10, 78), copied
+`mid` over `old` when `mid` completed later (entries 20, 26), and built when
+all three competed and `mid` completed after `old` (entries 46, 54).
+Hosted's copy trees list a same-input upstream `<FRESH>` with an anchor line
+that this server renders on Databricks only. The Snowflake Explain gaps
+(entries 3, 7, 21, 27, 33, 39, 47, 55, 61, 67, 75) are tracked in #252.
 [Cross-warehouse comparison](reports/result-copy-source-selection-2026-11-22.md),
 [Snowflake report](reports/snowflake-copy-source-choice-2026-11-21.md).
 

@@ -8,6 +8,29 @@ fact is marked **Observed** (read from the capture or the warehouse) or
 code. The [cross-warehouse comparison](result-copy-source-selection-2026-11-22.md)
 provides the evidence handoff for the #243 refactor.
 
+**Update (#264, 2026-11-22).** This server now builds the dev downstream in
+B, C and D and copies it in A, as hosted does. The "This server" column and
+the Replay section below describe the server before that change. See
+[ADR 0007](../adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs).
+A native rerun of `upstream_origin_table` against the patched server
+(run `232206b6851a`, 2026-11-22 23:22–23:24 UTC, dbt 2.0.11 with the SHA-256
+above, Postgres `i264_native`) confirms it:
+
+| Case | Dev downstream, first | Next | Rows: prod / served / after next / verified Reference |
+|---|---|---|---|
+| A | CLONE from `PROD_STATE_DEMO.OA_DN`, confirmed | SKIP | prod / prod / prod / prod |
+| B | EXEC 6 / 6, confirmed | SKIP | prod / prod / prod / prod |
+| C | EXEC 6 / 6, confirmed | SKIP | same / same / same / same |
+| D | EXEC 6 / 6, confirmed | SKIP | prod / **dev** / dev / dev |
+
+C and D's dev upstream, built on `dev_noclone`, got 6 / 6 as on hosted (it
+got 1 / 10 before). The verified Reference ran `dbt build --no-manage-state
+--target dev_clone --select <the run's dev nodes> --full-refresh` with the
+State URL pointing at the run's own proxy; its capture holds zero RPCs and
+all 14 invocations exited 0. Sanitized per-case records with the verified
+Reference are in
+[`evidence/snowflake-upstream-origin-264/`](evidence/snowflake-upstream-origin-264/).
+
 ## Outcome
 
 - **Observed.** Hosted copied the dev downstream only in case A, where prod

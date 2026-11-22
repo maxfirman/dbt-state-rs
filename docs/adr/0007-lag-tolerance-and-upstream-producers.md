@@ -11,6 +11,8 @@ execution type changed ([below](#execution-type-change)), and by #116
 #158 (2026-11-14): physical completion ordering and unknown-epoch safety.
 Amended by #200 (2026-11-21, maintainer decision option A): a Snowflake data
 test's State history is its history key ([below](#data-test-history-key)).
+Amended by #264 (2026-11-22): a Result copy on submit requires the physical
+inputs the equivalent recorded ([below](#result-copy-over-different-inputs)).
 
 ## Decision
 
@@ -373,6 +375,79 @@ by #200"). Two blind spots of copies carry over as accepted risks:
   (`data_test_history.rs::a_source_modified_before_a_submit_time_copy_is_not_visible`).
 - *A source rewritten between the copy decision and the client's clone DDL*
   is not detected (the accepted unpinned source race, ADR 0004).
+
+## Result copy over different inputs
+
+Amendment (#264). It amends reuse invariant 4 (AGENTS.md) for the SQL
+submit's Result copy fallback on Snowflake and DuckDB. Databricks already
+requires exact current inputs (`copy_lifecycle::source_admits`).
+
+**Evidence.** A native Snowflake run of #237 case D against this server
+(dbt 2.0.11, run `002752a5958d`) copied a prod downstream for a dev
+downstream whose dev upstream had been built independently from a dev
+input. The dev downstream then served the prod rows `(1, 'prod')` where
+the State-disabled Reference execution served `(1, 'dev')`. The schema-
+abstracted logic identity held, and nothing tied the equivalent's recorded
+upstream read to the relation the submit reads. Hosted built that
+downstream in both runs, and in cases B and C
+(`explain_upstream_origin_*.jsonl`,
+[report](../reports/snowflake-upstream-origin-2026-11-22.md)). In #239's
+crafted histories it never copied a source that read another relation of
+the same name, and copied an older source that read the destination's
+upstream past it (`copy_source_choice.jsonl`,
+[report](../reports/snowflake-copy-source-choice-2026-11-21.md)). Hosted
+copied case A, where both downstreams read the one physical prod upstream.
+
+**Rule.** An equivalent under another name qualifies for a submit's Result
+copy only when the physical relations it recorded reading at build time
+are the ones the submit reads (`submit_decision::copy_search::offer`):
+
+- *Each input is itself, or its Stand-in.* An input the equivalent recorded
+  by the same canonical name is itself. An input the equivalent did not
+  record, but that is an unchanged copy this server recorded of a build of a
+  relation the equivalent did record, is read as its Stand-in: that source
+  build, at its epoch and with its Upstream producer (`stand_in::stand_ins`,
+  the rule of [Data-test history key](#data-test-history-key)). A copy of a
+  copy stands for itself.
+- *Then the equivalent is judged as the reuse candidate.* Drift is measured
+  against the epoch the equivalent recorded for each input (invariant 2). A
+  Stand-in proves freshness only at exactly the epoch recorded for its
+  source, so an equivalent that recorded the source at an earlier metadata
+  epoch is stale and the search goes on to the next one.
+- *Any other equivalent is passed over.* Its result was computed from inputs
+  nothing shows the submit reads: an independent build of the same logic,
+  a relation no recorded build produced, or a view of the same definition
+  in another schema. The search goes on to the next equivalent in the shared
+  order (newest build first, `COPY_CANDIDATE_LIMIT`). Before #264 the first
+  such equivalent was copied without a freshness judgment.
+
+The copy's pending row records the submit's own inputs as read, so its next
+unchanged submit is judged over them.
+
+**Considered.**
+
+- *Keep copying an equivalent of another environment unjudged.* Rejected:
+  it serves rows computed from another input (case D).
+- *Match inputs by schema-abstracted name.* Rejected: it is the rule that
+  served the wrong rows; hosted builds over an independently built dev
+  upstream with the same row (case C).
+- *Admit a copied upstream at the copied build's identity, whatever epoch
+  the equivalent recorded.* Not taken: the exact-epoch rule is the one
+  Stand-ins already follow, and hosted built case B, where the equivalent
+  recorded the copied upstream at its metadata epoch, earlier than the
+  build's confirmation (T34, I28). It copied the same shape when the
+  equivalent recorded the build's epoch (`explain_clone_history.jsonl` entry
+  12). Whether hosted's deciding condition is this epoch is open
+  ([correctness-handoff.md](../correctness-handoff.md#open-hosted-questions)).
+
+**Consequences.** Captures from 2026-10 in which hosted copied a source over
+a dev input no recorded build or copy produced
+(`clone_fallback_stale_source.jsonl` and `clone_fallback_zero_tolerance.jsonl`,
+entry 2 each) are keyed replay gaps: the server builds there. A copy over an
+existing Target relation follows the same rule, since every copy is now
+judged. A copy over a Stand-in is recorded and explained as a judged copy,
+with the submit's inputs as read; the replayed tree of
+`explain_clone_history.jsonl` entry 14 matches hosted.
 
 Open questions are in
 [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).

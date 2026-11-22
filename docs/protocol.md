@@ -787,13 +787,19 @@ When the fallback applies:
   that reads the same upstream relations is copied over the target relation,
   and only if it qualifies for this submit, judged on its own build age.
   Explain shows "but it's old, so we will clone from …".
-- An equivalent that reads the same upstream relations is always judged that
-  way. A stale one is skipped and the next same-upstream equivalent is tried,
-  newest build first, up to `COPY_CANDIDATE_LIMIT` (`submit_decision/mod.rs`). An
-  equivalent in another target reads other relations and is copied without
-  that judgment (`clone_fallback_stale_source.jsonl`,
-  `clone_fallback_zero_tolerance.jsonl`). Fixtures `lag_copy_candidates.jsonl`,
-  `lag_dropped_targets.jsonl`.
+- An equivalent qualifies only when the physical inputs it recorded at build
+  time are the ones the submit reads: each by its own name, or as its
+  Stand-in, an unchanged copy this server recorded of the build the
+  equivalent read (#264, ADR 0007 "Result copy over different inputs"). It
+  is then judged that way. A stale one, or one that read other relations, is
+  passed over and the next equivalent is tried, newest build first, up to
+  `COPY_CANDIDATE_LIMIT` (`submit_decision/mod.rs`). Hosted builds over an
+  independently built dev upstream (`explain_upstream_origin_*.jsonl`) and
+  copies a source that read the destination's upstream past one that read
+  another relation (`copy_source_choice.jsonl`). Captures from 2026-10 in
+  which hosted copied over another dev input (`clone_fallback_stale_source.jsonl`,
+  `clone_fallback_zero_tolerance.jsonl`) are keyed replay gaps. Fixtures
+  `lag_copy_candidates.jsonl`, `lag_dropped_targets.jsonl`.
 - Never for data tests, empty SQL, submits without `table_namespace`, or
   `compare_unrendered_code=true` submits (they carry no copy identity), and
   not when volatile SQL blocks it (rule 8 above). Seeds have their own rule

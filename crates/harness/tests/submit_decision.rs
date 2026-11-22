@@ -14,8 +14,8 @@ use dbt_state_server::store::Store;
 use dbt_state_server::submit_decision::{self, DecisionIds, ResultCopy, SubmitOutcome};
 use support::rows;
 use support::scenario::{
-    confirm_in, duckdb_ctas_at, duckdb_model, environment_model, environment_seed,
-    environment_upstream, outcome,
+    confirm_in, duckdb_ctas_at, duckdb_model, environment_model, environment_model_over_prod,
+    environment_seed, environment_upstream, outcome,
 };
 use support::TestDatabase;
 
@@ -191,7 +191,7 @@ async fn equivalent_under_another_name_is_copied_with_a_copy_pending_row() {
     let store = &state.store;
     build(store, environment_model("prod"), BUILT).await;
 
-    let outcome = submit_sql(store, environment_model("dev")).await;
+    let outcome = submit_sql(store, environment_model_over_prod("dev")).await;
     assert!(
         outcome.matched_execution().is_none(),
         "a copy matches nothing"
@@ -246,7 +246,9 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
     let store = &state.store;
     build(store, environment_model("prod"), BUILT).await;
     // DEV becomes a confirmed copy of PROD: its own reuse candidate.
-    let SubmitOutcome::Copy { ids, .. } = submit_sql(store, environment_model("dev")).await else {
+    let SubmitOutcome::Copy { ids, .. } =
+        submit_sql(store, environment_model_over_prod("dev")).await
+    else {
         panic!("expected the first DEV submit to copy");
     };
     confirm(store, &ids, BUILT).await;
@@ -255,7 +257,11 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
         .unwrap()
         .id;
 
-    let outcome = submit_sql(store, environment_model("dev").own_epoch(Some(BUILT))).await;
+    let outcome = submit_sql(
+        store,
+        environment_model_over_prod("dev").own_epoch(Some(BUILT)),
+    )
+    .await;
     let SubmitOutcome::Skip {
         matched_execution, ..
     } = outcome
@@ -266,9 +272,9 @@ async fn reuse_candidate_takes_precedence_over_result_copy() {
 
     let outcome = submit_sql(
         store,
-        environment_model("dev")
+        environment_model_over_prod("dev")
             .own_epoch(Some(BUILT))
-            .upstream(&environment_upstream("dev"), 2_000),
+            .upstream(&environment_upstream("prod"), 2_000),
     )
     .await;
     let SubmitOutcome::Execute {
@@ -293,7 +299,11 @@ async fn copy_forbidding_target_gets_the_chain_limit_execute() {
     let store = &state.store;
     build(store, environment_model("prod"), BUILT).await;
 
-    let outcome = submit_sql(store, environment_model("dev").clone_chain_depth_limit(0)).await;
+    let outcome = submit_sql(
+        store,
+        environment_model_over_prod("dev").clone_chain_depth_limit(0),
+    )
+    .await;
     assert!(outcome.matched_execution().is_none());
     let SubmitOutcome::ChainLimitExecute { ids, .. } = outcome else {
         panic!("expected ChainLimitExecute, got {outcome:?}");
@@ -514,10 +524,10 @@ async fn every_outcome_carries_its_decision_reason() {
         (Some(6), Some(6))
     );
 
-    let forbids_copies = environment_model("dev").clone_chain_depth_limit(0);
+    let forbids_copies = environment_model_over_prod("dev").clone_chain_depth_limit(0);
     let limit = sql(forbids_copies.build()).await;
     assert_eq!(limit.record().reason, DecisionReason::CopyChainLimit);
-    let copy = sql(environment_model("dev").build()).await;
+    let copy = sql(environment_model_over_prod("dev").build()).await;
     assert_eq!(copy.record().reason, DecisionReason::ResultCopy);
 
     let seed_first = submit_values(store, environment_seed("prod").values("v1")).await;
@@ -684,34 +694,34 @@ async fn result_copy_skips_a_stale_newest_equivalent() {
     assert!(!record.is_stale);
 }
 
-/// After a same-upstream equivalent is rejected on freshness, the search
-/// accepts only another same-upstream equivalent: falling back to an unjudged
-/// copy from another environment is uncharacterized, so the target rebuilds.
+/// An equivalent that read another relation is passed over, also after a
+/// stale one, and the search goes on to an older current equivalent
+/// (VERIFIED LIVE 2026-11-21, copy_source_choice.jsonl entry 46: hosted
+/// copied `old` past a stale `new` and a different-input `mid`; #264).
 #[tokio::test]
-async fn result_copy_does_not_fall_back_to_another_environment_after_a_stale_equivalent() {
+async fn result_copy_passes_over_an_equivalent_that_read_another_relation() {
     let db = TestDatabase::new("submit_decision").await;
     let state = db.state(false).await;
     let store = &state.store;
     let up = environment_upstream("prod");
+    let named =
+        |table: &str| environment_model("prod").target(&format!("\"DB\".\"PROD\".\"{table}\""));
+    // Newest first: STALE read the upstream before its change, DEV read its
+    // own upstream, FRESH read the current upstream.
+    build(store, named("STALE"), 9_000).await;
     build(store, environment_model("dev"), 5_000).await;
-    // STALE, in prod, is copied from dev and confirmed later (newest build).
-    let stale = environment_model("prod").target("\"DB\".\"PROD\".\"STALE\"");
-    let SubmitOutcome::Copy { ids, .. } = submit_sql(store, stale).await else {
-        panic!("STALE is copied from dev");
-    };
-    confirm(store, &ids, 9_000).await;
+    build(store, named("FRESH").upstream(&up, 2_000), 3_000).await;
 
-    // Control: with prod's upstream unchanged, STALE is current and copied.
-    let outcome = submit_sql(store, environment_model("prod")).await;
-    let SubmitOutcome::Copy { copy, .. } = outcome else {
-        panic!("the current equivalent is copied, got {outcome:?}");
-    };
-    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"STALE\"");
-
-    // Prod's upstream moved on: STALE is rejected, and dev is not a fallback.
     let outcome = submit_sql(store, environment_model("prod").upstream(&up, 2_000)).await;
+    let SubmitOutcome::Copy { copy, .. } = outcome else {
+        panic!("the current same-input equivalent is copied, got {outcome:?}");
+    };
+    assert_eq!(copy.source_table, "\"DB\".\"PROD\".\"FRESH\"");
+
+    // Without a current same-input equivalent, nothing is copied.
+    let outcome = submit_sql(store, environment_model("prod").upstream(&up, 4_000)).await;
     let SubmitOutcome::Execute { record, .. } = outcome else {
-        panic!("no characterized copy remains, got {outcome:?}");
+        panic!("no equivalent read the current input, got {outcome:?}");
     };
     assert_eq!(record.reason, DecisionReason::FirstBuild);
 }

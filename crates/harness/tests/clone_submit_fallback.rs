@@ -163,7 +163,9 @@ async fn a_view_with_an_equivalent_builds_with_execution_type_not_full() {
 /// copies the prod build, which hosted finds as its equivalent although the
 /// fixed schema is the prod default schema and not the dev one. A dev view
 /// definition that differs from the prod one is still not equivalent
-/// (AGENTS.md invariant 4): that submit builds as a first build.
+/// (AGENTS.md invariant 4): that submit builds as a first build. A dev view
+/// with the prod view's definition is another relation than the one the prod
+/// build read, so that submit builds too (#264, uncaptured).
 #[tokio::test]
 async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_build() {
     let server = start_server().await;
@@ -193,7 +195,6 @@ async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_buil
     };
     let definition = format!("select id from CDO_DEMO_DB.{PROD_SCHEMA}.src");
     let prod = fixed_schema_reader(PROD_SCHEMA, "M", &definition);
-    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"M\"";
     sc.build_with(prod, transient_at(1_791_747_221_679).runtime(15))
         .await;
 
@@ -210,9 +211,38 @@ async fn a_submit_reading_a_fixed_prod_schema_copies_only_a_same_logic_prod_buil
         "a different dev dependency definition has no equivalent"
     );
 
-    let c = sc
-        .expect_clone(fixed_schema_reader(DEV_SCHEMA, "M", &definition))
+    let x = sc
+        .expect_execute(fixed_schema_reader(DEV_SCHEMA, "M", &definition))
         .await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "the dev view is another input than the prod build read"
+    );
+
+    // The captured shape: the dev submit reads only the fixed prod source.
+    let fixed_source_reader = |env: &str| {
+        let upper = env.to_uppercase();
+        demo::model(
+            &format!("\"CDO_DEMO_DB\".\"{upper}\".\"S\""),
+            env,
+            CLONE_PROBE,
+        )
+        .sql(&format!("select s.id from CDO_DEMO_DB.{PROD_SCHEMA}.src s"))
+        .namespace(NS)
+        .upstream(
+            "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"SRC\"",
+            1_791_747_000_000,
+        )
+    };
+    let source = "\"CDO_DEMO_DB\".\"PROD_STATE_DEMO\".\"S\"";
+    sc.build_with(
+        fixed_source_reader(PROD_SCHEMA),
+        transient_at(1_791_747_221_679).runtime(15),
+    )
+    .await;
+    let c = sc.expect_clone(fixed_source_reader(DEV_SCHEMA)).await;
     assert_eq!(c.clone_source, source, "copies the prod build");
 }
 
@@ -320,7 +350,7 @@ async fn a_build_into_the_prod_schema_that_read_another_schema_is_not_copied() {
 /// PR #127 review: a prod build and a dev submit that read the same fixed
 /// prod source, spelled differently, read the same relation. A changed
 /// source is then judged as for any same-upstream equivalent, and the prod
-/// build is not copied unjudged as if it read another environment.
+/// build is not passed over as if it read another relation.
 #[tokio::test]
 async fn a_differently_spelled_shared_source_is_judged_before_a_copy() {
     let server = start_server().await;

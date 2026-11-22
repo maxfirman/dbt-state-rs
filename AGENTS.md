@@ -91,7 +91,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      an absent table or over one holding other values (#91,
      `result_copy::seed_lookup`). The schema-abstracted logic identity binds
      each dependency's schema-abstracted name to its definition (swapping two
-     dependency definitions between references is not equivalent). DuckDB has
+     dependency definitions between references is not equivalent). A source
+     qualifies only when the inputs it recorded at build time are the ones
+     the submit reads, each by name or as its Stand-in, and is then judged
+     for freshness like a Reuse candidate (#264, ADR 0007). DuckDB has
      its own checked copy subset ([docs/duckdb.md](docs/duckdb.md)). Other
      dialects keep exact SQL and do no automatic cross-target reuse. A namespace
      alone never justifies SKIP.

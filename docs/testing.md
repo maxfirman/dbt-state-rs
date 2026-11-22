@@ -46,7 +46,7 @@ build the `fuzz` feature, so it never contacts the hosted service.
 ## Ordinary SQL Result copy baseline
 
 The [public gRPC regression](../crates/harness/tests/result_copy_baseline.rs)
-runs seven isolated histories with a fixed replay clock. Run it before and after
+runs nine isolated histories with a fixed replay clock. Run it before and after
 changing source selection. The command also runs the existing focused tests
 for Snowflake search, Databricks publication and DuckDB copy chains.
 
@@ -56,11 +56,17 @@ cargo test -p dbt-state-harness --test result_copy_baseline \
 ```
 
 The [baseline fixture](../crates/harness/tests/fixtures/result_copy_baseline.jsonl)
-records 58 exchanges from before the #236 extraction. The original 49 came
-from revision `fb142df5fff36dbfce8dd1575cff8f8c60cd3bd3`. The nine exchanges
-covering Snowflake's differing-input copy, confirmation and unchanged
-resubmit came from revision `3464e36807c9d4b2745d1aab3768223fb1413e84`.
-That history characterizes the local behavior under policy review in #264.
+records 75 exchanges. The Databricks, DuckDB and `snowflake-continues`
+histories (43) are unchanged from revision
+`fb142df5fff36dbfce8dd1575cff8f8c60cd3bd3`, before the #236 extraction. #264
+replaced the Snowflake histories that copied an equivalent over another
+input. `snowflake-passes-over` passes over such an equivalent after a stale
+one and copies an older current one. `snowflake-differing-input` builds the
+dev downstream over an independently built dev upstream (#237 case D) and
+SKIPs its unchanged resubmit. `snowflake-copied-upstream` copies prod's
+downstream over a dev upstream copied from the build it recorded (a
+Stand-in), then SKIPs. `snowflake-copied-upstream-earlier` builds when prod's
+downstream recorded that upstream at an earlier epoch (#237 case B).
 
 The replay compares complete protobuf response bodies, gRPC statuses and
 response metadata, pending and confirmed copy provenance, recorded inputs

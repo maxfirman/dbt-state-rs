@@ -8,6 +8,11 @@ fact is marked **Observed** (read from the capture or its replay) or
 code. The [cross-warehouse comparison](result-copy-source-selection-2026-11-22.md)
 provides the evidence handoff for the #243 refactor.
 
+**Update (#264, 2026-11-22).** This server now agrees with hosted in all 13
+histories: it passes over an equivalent that read another relation. The
+"This server" section below describes the server before that change. See
+[ADR 0007](../adr/0007-lag-tolerance-and-upstream-producers.md#result-copy-over-different-inputs).
+
 ## Provenance
 
 | | Main run | Completion-order controls | Middle-epoch control |
