@@ -690,8 +690,8 @@ fn retain_named_fields(value: &mut serde_json::Value, fields: &[String]) {
 /// Assert a FIELD-SCOPED known gap: the two `normalize_ids`-normalized responses
 /// must match EXACTLY outside `fields`, and the exempted `fields` THEMSELVES must
 /// genuinely differ (else the exemption is stale — something else differs, or the
-/// gap is resolved). Shared by the execute / skip submit arms and (structurally)
-/// the explain arm. `fields` may be top-level or one-level dotted paths
+/// gap is resolved). Shared by the skip and copy submit arms and (structurally)
+/// the execute and explain arms. `fields` may be top-level or one-level dotted paths
 /// (`explained_decision.decision_description`).
 fn assert_field_scoped_gap(
     ours: &serde_json::Value,
@@ -1476,7 +1476,10 @@ async fn conformance_replay_all_corpora() {
                                 if let Some(gap) = known_gap.filter(|g| !g.ignore_fields.is_empty())
                                 {
                                     assert!(!gap.reason.trim().is_empty());
-                                    assert_eq!(local_variant, gap.local_variant);
+                                    assert_eq!(
+                                        local_variant, gap.local_variant,
+                                        "{context}: characterized local copy changed"
+                                    );
                                     assert_field_scoped_gap(
                                         &ours,
                                         &real,
