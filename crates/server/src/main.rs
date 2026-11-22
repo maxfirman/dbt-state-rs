@@ -1,14 +1,36 @@
+mod admin;
+
+use admin::Command;
 use dbt_state_server::config::{AuthMode, Config};
 use dbt_state_server::{build_router, AppState};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+    let filter =
+        || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    match Command::parse(std::env::args_os().skip(1))? {
+        Command::Serve => {
+            tracing_subscriber::fmt().with_env_filter(filter()).init();
+            serve().await
+        }
+        Command::Help => {
+            println!("{}", admin::USAGE);
+            Ok(())
+        }
+        Command::RevokeSessions { issuer, subject } => {
+            // stdout carries only the result.
+            use std::io::IsTerminal;
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .with_writer(std::io::stderr)
+                .with_ansi(std::io::stderr().is_terminal())
+                .init();
+            admin::revoke_sessions(&issuer, &subject).await
+        }
+    }
+}
 
+async fn serve() -> anyhow::Result<()> {
     // Every startup refusal happens here, before any connection is made.
     let config = Config::from_env()?;
 

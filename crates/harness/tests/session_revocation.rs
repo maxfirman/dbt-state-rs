@@ -43,8 +43,9 @@ fn person(subject: &str) -> UpstreamPerson {
     UpstreamPerson::new(subject).claim("groups", json!(["data-eng"]))
 }
 
-/// `subject` signs in through the browser: a new session's person token.
-async fn sign_in(server: &TestServer, idp: &FakeIdp, subject: &str) -> String {
+/// `subject` signs in through the browser, up to the code the dbt client's
+/// loopback handler receives.
+async fn sign_in_code(server: &TestServer, idp: &FakeIdp, subject: &str) -> (SignIn, String) {
     idp.sign_in(person(subject));
     let sign_in = SignIn::new();
     let query = Browser::new()
@@ -52,11 +53,29 @@ async fn sign_in(server: &TestServer, idp: &FakeIdp, subject: &str) -> String {
         .visit(&sign_in.authorize_url(ISSUER), LOOPBACK_REDIRECT_URI)
         .await
         .loopback();
-    let code = query.get("code").expect("a code");
-    let response = authorization_code(&server.broker_url(), &sign_in, code).await;
+    let code = query.get("code").expect("a code").clone();
+    (sign_in, code)
+}
+
+/// `subject` signs in through the browser: a new session's person token.
+async fn sign_in(server: &TestServer, idp: &FakeIdp, subject: &str) -> String {
+    let (sign_in, code) = sign_in_code(server, idp, subject).await;
+    let response = authorization_code(&server.broker_url(), &sign_in, &code).await;
     assert_eq!(response.status(), 200);
     let body = json(response).await;
     body["id_token"].as_str().expect("an id_token").to_owned()
+}
+
+/// The admin command's revocation of `subject`'s sessions.
+async fn revoke(server: &TestServer, idp: &FakeIdp, subject: &str) -> dbt_state_broker::Revocation {
+    dbt_state_broker::revoke_sessions(
+        server.state.store.pool(),
+        &idp.issuer(),
+        subject,
+        SystemTime::now(),
+    )
+    .await
+    .expect("revoke")
 }
 
 /// A submit in `analytics` with `token`.
@@ -106,14 +125,7 @@ async fn revoking_a_principal_s_sessions_refuses_their_rpcs_within_30_seconds() 
     submit(&server, &laptop).await.expect("an active session");
     submit(&server, &bob).await.expect("an active session");
 
-    let revoked = dbt_state_broker::revoke_sessions(
-        server.state.store.pool(),
-        &idp.issuer(),
-        "alice-sub",
-        SystemTime::now(),
-    )
-    .await
-    .expect("revoke");
+    let revoked = revoke(&server, &idp, "alice-sub").await;
     assert_eq!(revoked.sessions, 2);
     let alice = claims(&laptop)["sub"].as_str().unwrap().to_owned();
     assert_eq!(revoked.principal.as_deref(), Some(alice.as_str()));
@@ -144,6 +156,23 @@ async fn revoking_a_principal_s_sessions_refuses_their_rpcs_within_30_seconds() 
             "a token was logged"
         );
     }
+}
+
+/// A sign-in still in progress when its Principal is revoked yields no
+/// token: the code exchange finds the session revoked.
+#[tokio::test]
+async fn a_revoked_session_issues_no_more_tokens() {
+    capture_logs();
+    let idp = FakeIdp::start().await;
+    let server = start_server_with_broker(&deployment(&idp).build()).await;
+    let (sign_in, code) = sign_in_code(&server, &idp, "alice-sub").await;
+    assert_eq!(revoke(&server, &idp, "alice-sub").await.sessions, 1);
+
+    let response = authorization_code(&server.broker_url(), &sign_in, &code).await;
+    assert_eq!(response.status(), 400);
+    let body = json(response).await;
+    assert_eq!(body["error"], "invalid_grant", "{body:?}");
+    assert!(!body.contains_key("id_token"), "{body:?}");
 }
 
 /// A session ends at its 12-hour cap: its person tokens are refused even
