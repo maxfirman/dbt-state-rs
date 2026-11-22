@@ -191,3 +191,32 @@ pub async fn complete_execution(db: &impl Db, request_id: &str) -> serde_json::V
         .await
         .expect("complete execution evidence")
 }
+
+/// Every row of every table in the server's schema, as text: for asserting
+/// that a value (such as a client secret) was never stored.
+pub async fn every_row_as_text(server: &TestServer) -> String {
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT table_name::text FROM information_schema.tables \
+         WHERE table_schema = $1 AND table_type = 'BASE TABLE'",
+    )
+    .bind(&server.schema)
+    .fetch_all(server.pool())
+    .await
+    .expect("list tables");
+    let mut text = String::new();
+    for table in tables {
+        let rows: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT t::text FROM \"{}\".\"{}\" t",
+            server.schema,
+            table.replace('"', "\"\"")
+        ))
+        .fetch_all(server.pool())
+        .await
+        .expect("read table");
+        for row in rows {
+            text.push_str(&row);
+            text.push('\n');
+        }
+    }
+    text
+}

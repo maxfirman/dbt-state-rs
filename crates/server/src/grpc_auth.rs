@@ -9,12 +9,18 @@
 //! or `PERMISSION_DENIED` with a fixed message, and the refusal is logged at
 //! `warn` with its reason, never with the token. In `none` mode the layer
 //! passes every call through.
+//!
+//! Without `[signing]` the keys are a standalone Token broker's published
+//! ones ([`RemoteKeys`]): refetched when older than
+//! `dbt_state_broker::MAX_AGE`, and when a token's signature fails to
+//! verify (a rotation), at most once per `dbt_state_broker::MIN_INTERVAL`.
 
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
 
-use dbt_state_auth::{RejectionCode, RequestAuthenticator};
+use dbt_state_auth::{AuthConfig, Rejection, RejectionCode, RequestAuthenticator, TokenError};
+use dbt_state_broker::{KeyLocation, RemoteKeys};
 use tonic::body::Body;
 use tonic::codegen::http;
 use tonic::Status;
@@ -26,16 +32,66 @@ const HEALTH_SERVICE: &str = "/grpc.health.v1.Health/";
 const AUTHORIZATION: &str = "authorization";
 const ORGANIZATION: &str = "x-organization-id";
 
+/// How `oidc` mode authenticates calls.
+pub(crate) struct Oidc {
+    authenticator: RequestAuthenticator,
+    /// The Token broker's keys, when they are fetched rather than loaded.
+    remote: Option<RemoteKeys>,
+}
+
+impl Oidc {
+    pub(crate) fn new(config: &AuthConfig) -> Result<Self, reqwest::Error> {
+        Ok(match config.verification_keys() {
+            Some(keys) => Self {
+                authenticator: config.request_authenticator(keys),
+                remote: None,
+            },
+            None => {
+                let location = match config.broker_jwks_url() {
+                    Some(url) => KeyLocation::Jwks(url.to_owned()),
+                    None => KeyLocation::Discovery(config.broker_issuer().to_owned()),
+                };
+                let remote = RemoteKeys::new(location, dbt_state_broker::http_client()?);
+                Self {
+                    authenticator: config.request_authenticator(remote.keys()),
+                    remote: Some(remote),
+                }
+            }
+        })
+    }
+
+    async fn authenticate(
+        &self,
+        authorization: Option<&[u8]>,
+        organization: Option<&[u8]>,
+    ) -> Result<AuthenticatedContext, Rejection> {
+        if let Some(remote) = &self.remote {
+            remote.refresh_if_stale().await;
+        }
+        let result =
+            self.authenticator
+                .authenticate(authorization, organization, SystemTime::now());
+        match (&result, &self.remote) {
+            (Err(Rejection::Token(TokenError::BadSignature)), Some(remote)) => {
+                remote.refresh_after_miss().await;
+                self.authenticator
+                    .authenticate(authorization, organization, SystemTime::now())
+            }
+            _ => result,
+        }
+    }
+}
+
 /// Installs [`GrpcAuth`] around the router's services.
 #[derive(Clone)]
 pub struct GrpcAuthLayer {
-    authenticator: Option<Arc<RequestAuthenticator>>,
+    oidc: Option<Arc<Oidc>>,
 }
 
 impl GrpcAuthLayer {
-    /// `oidc` mode when `authenticator` is set, else `none` mode.
-    pub(crate) fn new(authenticator: Option<Arc<RequestAuthenticator>>) -> Self {
-        Self { authenticator }
+    /// `oidc` mode when `oidc` is set, else `none` mode.
+    pub(crate) fn new(oidc: Option<Arc<Oidc>>) -> Self {
+        Self { oidc }
     }
 }
 
@@ -45,7 +101,7 @@ impl<S> tower::Layer<S> for GrpcAuthLayer {
     fn layer(&self, inner: S) -> Self::Service {
         GrpcAuth {
             inner,
-            authenticator: self.authenticator.clone(),
+            oidc: self.oidc.clone(),
         }
     }
 }
@@ -54,7 +110,7 @@ impl<S> tower::Layer<S> for GrpcAuthLayer {
 #[derive(Clone)]
 pub struct GrpcAuth<S> {
     inner: S,
-    authenticator: Option<Arc<RequestAuthenticator>>,
+    oidc: Option<Arc<Oidc>>,
 }
 
 impl<S> tower::Service<http::Request<Body>> for GrpcAuth<S>
@@ -77,7 +133,7 @@ where
         // Call the service that was polled ready; leave a fresh clone behind.
         let clone = self.inner.clone();
         let mut inner = std::mem::replace(&mut self.inner, clone);
-        let Some(authenticator) = self.authenticator.clone() else {
+        let Some(oidc) = self.oidc.clone() else {
             return Box::pin(inner.call(request));
         };
         if request.uri().path().starts_with(HEALTH_SERVICE) {
@@ -85,11 +141,12 @@ where
         }
         Box::pin(async move {
             let headers = request.headers();
-            let result = authenticator.authenticate(
-                headers.get(AUTHORIZATION).map(|v| v.as_bytes()),
-                headers.get(ORGANIZATION).map(|v| v.as_bytes()),
-                SystemTime::now(),
-            );
+            let result = oidc
+                .authenticate(
+                    headers.get(AUTHORIZATION).map(|v| v.as_bytes()),
+                    headers.get(ORGANIZATION).map(|v| v.as_bytes()),
+                )
+                .await;
             match result {
                 Ok(context) => {
                     request.extensions_mut().insert(context);

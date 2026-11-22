@@ -19,9 +19,27 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(
                 config = %path.display(),
                 organizations = auth.organizations().iter().count(),
+                keys = if auth.verification_keys().is_some() {
+                    "signing"
+                } else {
+                    "broker jwks"
+                },
                 "auth mode oidc: every RPC except health needs a token"
             );
-            state.with_oidc(auth.request_authenticator())
+            if let Some(addr) = config.broker_listen {
+                // The broker shares this config, and so the key set the
+                // gRPC server checks tokens against.
+                let broker = dbt_state_broker::Broker::new(auth)?;
+                let listener = tokio::net::TcpListener::bind(addr).await?;
+                tracing::info!(%addr, issuer = auth.broker_issuer(), "Token broker listening");
+                tokio::spawn(async move {
+                    if let Err(error) = dbt_state_broker::serve(listener, broker).await {
+                        tracing::error!(%error, "Token broker stopped");
+                        std::process::exit(1);
+                    }
+                });
+            }
+            state.with_oidc(auth)?
         }
         AuthMode::None { require_org_header } => {
             if !config.listen.ip().is_loopback() {

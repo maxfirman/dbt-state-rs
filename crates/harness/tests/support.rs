@@ -16,12 +16,21 @@ use std::net::SocketAddr;
 use dbt_state_proto::query_cache as qc;
 use tonic::transport::Channel;
 
+/// A dbt client's Token broker requests.
+#[path = "support/broker_client.rs"]
+pub mod broker_client;
 /// Request shapes from the live clone captures in the demo database.
 #[path = "support/demo.rs"]
 pub mod demo;
+/// The fake OIDC Upstream IdP.
+#[path = "support/fake_idp.rs"]
+pub mod fake_idp;
 /// Raw-SQL fault injection (the only DDL tests run against State tables).
 #[path = "support/fault.rs"]
 pub mod fault;
+/// HTTP test servers on their own thread.
+#[path = "support/http.rs"]
+pub mod http;
 /// Raw-SQL legacy, frozen, corrupt and captured State (the only raw writers).
 #[path = "support/legacy.rs"]
 pub mod legacy;
@@ -44,8 +53,8 @@ pub mod scenario;
 // Each test binary uses a different subset of these shared helpers.
 #[allow(unused_imports)]
 pub use resources::{
-    start_server, start_server_native, start_server_oidc, start_server_on_database,
-    start_server_require_org, TestDatabase, TestServer,
+    start_broker, start_server, start_server_native, start_server_oidc, start_server_on_database,
+    start_server_require_org, start_server_with_broker, TestBroker, TestDatabase, TestServer,
 };
 
 pub const DEFAULT_DSN: &str = "postgres://dbtstate:dbtstate@localhost:55441/dbtstate";
