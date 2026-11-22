@@ -19,7 +19,9 @@
 //! It runs in the gRPC server's process on its own listener
 //! (`DBT_STATE_BROKER_LISTEN`), sharing the server's key set, or as the
 //! standalone `dbt-state-broker` binary, whose keys a gRPC server without
-//! `[signing]` fetches and caches ([`RemoteKeys`]).
+//! `[signing]` fetches and caches ([`RemoteKeys`]). Either way it serves
+//! native TLS from mounted files ([`serve_tls`], `DBT_STATE_BROKER_TLS_*`),
+//! or plain HTTP behind a TLS-terminating proxy ([`serve`]).
 //!
 //! It holds no credentials of the Principals it serves: a machine's client
 //! secret is forwarded to the Upstream IdP and never stored or logged, and
@@ -36,6 +38,7 @@ mod remote_keys;
 mod secret;
 mod sign_in;
 mod store;
+pub mod tls;
 mod token_endpoint;
 mod upstream;
 
@@ -53,6 +56,7 @@ use sqlx::PgPool;
 pub use clock::Clock;
 pub use discovery::{Discovery, DiscoveryError};
 pub use remote_keys::{KeyLocation, RemoteKeys, MAX_AGE, MIN_INTERVAL};
+pub use tls::{serve_tls, TlsIdentity};
 
 use crate::store::Store;
 use crate::upstream::UpstreamIdp;
@@ -166,7 +170,7 @@ impl Broker {
     }
 }
 
-/// Serve `broker` on `listener` until the process stops.
+/// Serve `broker` over plain HTTP on `listener` until the process stops.
 pub async fn serve(listener: tokio::net::TcpListener, broker: Broker) -> std::io::Result<()> {
     axum::serve(
         listener,
