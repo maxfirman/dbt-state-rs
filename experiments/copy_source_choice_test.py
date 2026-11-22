@@ -54,6 +54,7 @@ BASE = 1_800_000_000_000
 WANT = {
     "old_alone": (["old"], ["old"], ["old"]),
     "mid_alone": (["mid"], ["mid"], ["mid"]),
+    "mid_current_alone": (["mid"], ["mid"], ["mid"]),
     "new_alone": (["new"], ["new"], ["new"]),
     "old_mid": (["old", "mid"], ["old", "mid"], ["old", "mid"]),
     "old_mid_rev": (["old", "mid"], ["mid", "old"], ["old", "mid"]),
@@ -139,6 +140,9 @@ for name, plan in plans.items():
         check(f"{name}: the middle source reads another relation of the upstream's name",
               [t["name"] for t in subs["mid"]["tables"]] == [alt] and alt != up
               and csc.split_fqn(alt)[2] == csc.split_fqn(up)[2], subs["mid"]["tables"])
+        same = epoch_of(subs["mid"], alt) == epoch_of(dest, up)
+        check(f"{name}: the middle source reads its relation at the destination's epoch only in "
+              "mid_current_alone", same == (name == "mid_current_alone"), subs["mid"]["tables"])
 
     # Physical plausibility and the two orders.
     for s in plan["steps"]:
@@ -234,7 +238,8 @@ check("a relation of another run is refused",
 check("the plan's submits stay within the budget",
       csc.max_submits() <= csc.SUBMIT_BUDGET, (csc.max_submits(), csc.SUBMIT_BUDGET))
 check("the submit count is one per source plus the destination",
-      csc.max_submits() == sum(len(s) + 1 for s, _, _ in WANT.values()), csc.max_submits())
+      csc.max_submits() == sum(len(s) + 1 for s, _, _ in WANT.values())
+      and csc.max_submits(["old_mid_new", "old_alone"]) == 6, csc.max_submits())
 
 # --- the capture table -----------------------------------------------------------------------
 
@@ -284,8 +289,9 @@ def capture(dest_response, confirm_success=True, new_variant=execute):
 
 
 (row,) = csc.history_rows(capture(granted(OLD["target_table"], 1000, 111)))
-check("one row per history, named by its object", row["history"] == csc.object_name(RUN, "old_mid_new_rev"),
-      row["history"])
+check("one row per history, with its object and history names",
+      row["object"] == csc.object_name(RUN, "old_mid_new_rev") and row["history"] == "old_mid_new_rev",
+      (row["object"], row["history"]))
 check("sources are listed in submit order with their roles",
       [s["role"] for s in row["sources"]] == ["new", "old", "mid"], row["sources"])
 check("the confirmation order is read from the capture",
@@ -303,13 +309,14 @@ check("a grant whose epoch is another source's is flagged", row["agrees"] is Fal
 check("a rebuild is BUILD with its codes", row["result"] == "BUILD 6/6" and row["agrees"] is None, row)
 
 (row,) = csc.history_rows(capture(granted(OLD["target_table"], 1000, 111), confirm_success=False))
-check("a refused source confirm makes the history inconclusive",
-      any("mid" in x for x in row["inconclusive"]), row["inconclusive"])
+check("a refused source confirm makes the history inconclusive, once",
+      row["inconclusive"] == ["mid confirm at entry 4 refused"], row["inconclusive"])
 
 (row,) = csc.history_rows(capture(granted(OLD["target_table"], 1000, 111),
                                   new_variant=lambda rid: granted(OLD["target_table"], 1, 1)))
 check("a source submit answered with anything but a first build makes the history inconclusive",
-      any("new" in x for x in row["inconclusive"]), row["inconclusive"])
+      row["inconclusive"] == ["new submit answered ready_to_clone, not a first build"],
+      row["inconclusive"])
 
 (row,) = csc.history_rows(capture(granted('"CDO_DEMO_DB"."ELSEWHERE"."X"', 1000, 111)))
 check("a grant naming no source of the history is reported by name",
@@ -355,8 +362,11 @@ other = [entry("SubmitEnrichedSQL", submit_of(Q, "old")["request"], execute("qo"
          confirm("qo", 1000, 444), confirm("qn", 3000, 555),
          entry("SubmitEnrichedSQL", submit_of(Q, "dest")["request"], execute("qd"), "u5")]
 both = csc.history_rows(rows + other)
-check("histories are separated by object name", [r["history"] for r in both]
+check("histories are separated by object name", [r["object"] for r in both]
       == [csc.object_name(RUN, "old_mid_new_rev"), csc.object_name(RUN, "old_new")],
-      [r["history"] for r in both])
+      [r["object"] for r in both])
+check("a source that was never confirmed makes the history inconclusive",
+      csc.history_rows(rows[:4] + rows[5:])[0]["inconclusive"] == ["mid not confirmed"],
+      csc.history_rows(rows[:4] + rows[5:])[0]["inconclusive"])
 
 print(f"\nALL {passed} COPY SOURCE CHOICE TESTS PASSED")

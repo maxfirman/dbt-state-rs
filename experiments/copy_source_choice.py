@@ -19,7 +19,9 @@ Sources (`ROLES`):
        except in the `_late` controls.
   mid  `CSC_MID`: reads `CSC_UP_ALT.<src>`, another relation of the same
        name, so its SQL is the same once schemas are abstracted but its
-       physical input differs.
+       physical input differs. It reads it at B-60s, or in
+       `mid_current_alone` at the epoch the destination reports for
+       `CSC_UP.<src>`.
   new  `CSC_NEW`: reads `CSC_UP.<src>` before its change: stale for the
        destination (tolerance 0). A build that read the upstream before it
        changed was necessarily submitted first.
@@ -71,6 +73,10 @@ HISTORIES = {
                   "what": "positive control: the oldest fresh source alone"},
     "mid_alone": {"sources": ["mid"], "confirm": ["mid"], "completion": ["mid"],
                   "what": "the middle source (other physical input) alone"},
+    "mid_current_alone": {"sources": ["mid"], "confirm": ["mid"], "completion": ["mid"],
+                          "mid_read": "current",
+                          "what": "as mid_alone, the middle source reading its relation at "
+                                  "the epoch the destination reports for its own"},
     "new_alone": {"sources": ["new"], "confirm": ["new"], "completion": ["new"],
                   "what": "control: the newer stale source alone"},
     "old_mid": {"sources": ["old", "mid"], "confirm": ["old", "mid"],
@@ -214,7 +220,8 @@ def plan_history(run, history, base):
     h = HISTORIES[history]
     up, alt = upstream(run, history), upstream(run, history, alternate=True)
     before, after = base - EARLIER, base + UPSTREAM_CHANGE_AT
-    reads = {"old": (up, after), "mid": (alt, before), "new": (up, before)}
+    mid_epoch = after if h.get("mid_read") == "current" else before
+    reads = {"old": (up, after), "mid": (alt, mid_epoch), "new": (up, before)}
     steps = []
     for role in sorted(h["sources"], key=SUBMIT_AT.get):
         steps.append({"op": "submit", "role": role, "at": base + SUBMIT_AT[role],
@@ -236,8 +243,9 @@ def plan_history(run, history, base):
     return {"history": history, "what": h["what"], "base": base, "steps": steps}
 
 
-def max_submits():
-    return sum(len(h["sources"]) + 1 for h in HISTORIES.values())
+def max_submits(names=None):
+    """One submit per source plus the destination's, for `names` (default: all)."""
+    return sum(len(HISTORIES[n]["sources"]) + 1 for n in (names or HISTORIES))
 
 
 # --- reading a capture -------------------------------------------------------------------------
@@ -278,10 +286,11 @@ def history_rows(rows):
 
     def get(name):
         if name not in hist:
-            hist[name] = {"history": name, "sources": [], "confirm_order": [], "completion": {},
+            hist[name] = {"object": name, "history": name.split("_", 1)[1], "sources": [], "confirm_order": [], "completion": {},
                           "runtime": {}, "dest_entry": None, "result": None, "codes": None,
                           "description": None, "is_stale": None, "agrees": None,
-                          "explain_names": None, "inconclusive": [], "_fqn": {}}
+                          "explain_names": None, "inconclusive": [], "_fqn": {},
+                          "_flagged": set()}
             order.append(name)
         return hist[name]
 
@@ -320,10 +329,12 @@ def history_rows(rows):
                 by_rid[body.get("request_id")] = (h, role)
             else:
                 h["inconclusive"].append(f"{role} submit answered {variant}, not a first build")
+                h["_flagged"].add(role)
         elif r.get("method") == "ConfirmExecution" and req.get("request_id") in by_rid:
             h, role = by_rid[req["request_id"]]
             if (r.get("response") or {}).get("success") is not True:
                 h["inconclusive"].append(f"{role} confirm at entry {i} refused")
+                h["_flagged"].add(role)
                 continue
             sent = _sent_at(r)
             if sent is not None and (req.get("last_modified_epoch") or 0) > sent:
@@ -339,9 +350,9 @@ def history_rows(rows):
     out = []
     for name in order:
         h = hist[name]
+        flagged = h.pop("_flagged")
         for s in h["sources"]:
-            if s["variant"] == "ready_to_execute" and s["role"] not in h["completion"] \
-                    and not any(s["role"] in x for x in h["inconclusive"]):
+            if s["role"] not in h["completion"] and s["role"] not in flagged:
                 h["inconclusive"].append(f"{s['role']} not confirmed")
         roles_of = {v: k for k, v in h.pop("_fqn").items()}
         h["completion_order"] = sorted(h["completion"], key=h["completion"].get)
@@ -455,8 +466,7 @@ def main(argv):
             print(f"unknown histories: {unknown}")
             return 2
         run = time.strftime("%H%M%S") + uuid.uuid4().hex[:6]
-        print(json.dumps({"run": run, "histories": names,
-                          "max_submits": sum(len(HISTORIES[n]["sources"]) + 1 for n in names)}))
+        print(json.dumps({"run": run, "histories": names, "max_submits": max_submits(names)}))
         rows = []
         for n in names:
             rows += run_history(run, n)
