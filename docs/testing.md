@@ -172,8 +172,24 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   environment; `.machine(id, secret)` adds the client id and secret
   (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
   `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`) and `CI=true`;
-  `.run(scenario).await` returns the exit status, output and the driver's
-  JSON result. Without `uv` it skips with a message unless
+  `.run(&[scenario, steps..]).await` returns the exit status, output and
+  the driver's JSON result. `.person().await` is a person at a terminal
+  (the driver gives the client a pseudo-terminal) whose client signs in
+  through the browser flow and caches its token in its `RUN_CACHE_HOME`
+  (`.home()`): the driver names the harness browser
+  (`python-client/browser.py`) in `BROWSER`, so the client's own
+  `webbrowser.open` runs it, and it follows the redirects through the
+  Token broker and the fake Upstream IdP to the client's loopback handler;
+  `.browser_visits()` lists each visit (URL opened, redirects, landing,
+  status). The person scenario is `["person", steps..]` with steps `rpc`
+  (one RPC, one credential lookup) and `wait`: `.start(args)` returns a
+  `Driver`, `.paused().await` waits for its next `wait`, `.resume(d).await`
+  moves the driver's wall clock `d` on (move `server.broker_clock` as far
+  first) and `.finish().await` runs it to its end. The client's loopback
+  handler binds the fixed port 29525, so `.person()` holds an exclusive
+  lock on `$TMPDIR/dbt-state-python-client-loopback-29525.lock` until the
+  client is dropped: person tests run one at a time, across test binaries
+  and worktrees. Without `uv` it skips with a message unless
   `DBT_STATE_REQUIRE_PYTHON_CLIENT` is set, which CI sets. The lock pins
   public PyPI, and `UV_*` variables pass through (for example
   `UV_NO_CONFIG=1` under a uv config naming another index). Tests:
