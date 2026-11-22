@@ -165,6 +165,11 @@ Do not weaken these without new evidence.
 Each item needs a controlled capture before the server changes. Until then the
 server keeps the conservative behavior described.
 
+- Which source does a Databricks FULL submit copy when two eligible builds
+  have the same physical completion epoch? With distinct epochs, hosted
+  selected the later one in all three two-source ordering controls.
+  [Captured decisions and confirmation order](reports/databricks-copy-candidates-2026-11-21.md)
+
 - **Speculative decisions beyond a data test without upstreams (#103).**
   Hosted SKIPs an unchanged data test with no upstreams on the
   `SubmitEnrichedSQLSpeculative` call (`explain_rebuild_reason_gaps.jsonl`
@@ -232,22 +237,29 @@ server keeps the conservative behavior described.
     as hosted does, and the entry replays. Decision 3: a model's rebuild refused at Reuse
     qualification records the refused build as its Explain anchor (ADR 0005
     "Amended by #201").
-  - Databricks (#198): #198 captured a FULL table's first build and
-    unchanged rerun, a data test without a Target relation's first execution
-    and rerun, their exact Explain, and a downstream table's reuse within Lag
-    tolerance (`databricks_volatile_evaluation.jsonl`,
-    [characterization note](databricks-volatile.md)); with the query-changed
-    FULL rebuild (controls entries 85, 86) these are the cells that render.
-    The reruns render only as captured, unchanged: the refused build's
-    Target relation as built, a data test's cached results complete, and
-    every upstream unchanged since it (`Selection::unchanged_rerun`).
-    Uncaptured (#213): other execution types and rebuild reasons, refusals for
-    another cause (among them under `compare_unrendered_code`), the same
-    volatile refusal after the table was dropped or modified externally or
-    over changed inputs, a data test's logic change, a data test with a Target relation, volatile query
-    dependencies, evaluation off, and functions other than unseeded
-    `rand()`. Databricks never reuses with evaluation
-    requested, because it has no checked Volatile function detector.
+  - Databricks (#198, #213): FULL and non-storing data-test `rand()`
+    builds and unchanged reruns, the query-changed FULL rebuild, and
+    one-hour consumer Reuse were already captured. #213 added FULL
+    evaluation-off BUILD/SKIP for RAND and current timestamp, additional
+    FULL first-build and rerun function forms, APPEND/MERGE/DELETE_INSERT
+    first builds and unchanged source-less reruns, and the FULL `rand()`
+    graph with known upstream drift, Target modification or drop. The
+    zero-tolerance consumer rebuilt after ordinary volatile data drift.
+    [Characterization and open cells](databricks-volatile.md#priority-follow-up-213).
+    Uncaptured (#213): other function forms and combinations, date rollover,
+    evaluation off outside the pinned cases, volatile query dependencies,
+    stored-failure/logic-changed/changed-input data tests, other FULL
+    target/input combinations, additional qualification refusals (including
+    `compare_unrendered_code`), views, snapshots, custom materializations,
+    INSERT_OVERWRITE, MICROBATCH, and other incremental, consumer, rebuild
+    and Result copy cells.
+    The maintainer approved checked evaluation-on Reuse for ordinary
+    source-less FULL literal projections and `rand(42)`, and the bounded
+    producer transition after an External modification to the sole input of
+    the FULL `rand()` model. The paired Lag-tolerant consumer's rebuild and
+    subsequent stale Reuse replay. [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#databricks-volatile-producer-after-external-modification-213).
+    Same-day `current_date()` Reuse is observed and remains a known difference
+    until rollover policy is captured. [Check-in evidence](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions).
   - Snowflake, not reachable through client 2.0.11: a data test with a
     Target relation. The client sends `target_table: null` even for a
     `store_failures` test (cells entries 61, 145), so this server renders
@@ -767,11 +779,60 @@ local-only and renders no Explain tree.
 
 ## Deployment gaps
 
-- **Auth and TLS.** Header-based organization selection is isolation, not
-  authentication. `DBT_STATE_REQUIRE_ORG_HEADER=true` rejects requests without
-  `x-organization-id` but does not verify it against a trusted token. OAuth,
-  TLS and identity mapping are deployment work. The UI reads one configured
-  organization (`DBT_STATE_UI_ORG_ID`).
+- **Auth and TLS.** `DBT_STATE_AUTH=oidc` authenticates every RPC except
+  health: a Token-broker-signed token for the dbt State API audience, an
+  `x-organization-id` among its active Organizations, and for a person an
+  active broker session (cached at most 30 s per replica)
+  ([protocol.md](protocol.md#authentication-oidc-mode)). The Token broker
+  signs people in through the operator's Upstream IdP, renews them only on
+  fresh IdP evidence, passes CI credentials through, and records each
+  Principal; decisions and executions name it (`principal_id`). Both
+  listeners serve native TLS or plain HTTP behind a TLS-terminating proxy.
+  Deployment, IdP recipes, client settings and the revocation bounds with
+  the tests that verify them are in the
+  [operator guide](operator-guide.md). Evidence: the fake Upstream IdP in
+  every `cargo test`, Keycloak 26.8.2 in the opt-in `keycloak` job (#227),
+  the pinned Python client's own auth code over TLS in CI (#219, #222), and
+  pinned Fusion's in the opt-in `fusion` job (#223), and the released dbt
+  2.0.11 binary building on Snowflake (`CDO_DEMO_DB`) as a machine and as a
+  person, each build's decisions under its own Principal, in an opt-in live
+  run (#232, `crates/harness/tests/fusion_snowflake.rs`). The default
+  `DBT_STATE_AUTH=none` mode authenticates nothing: header-based
+  Organization selection is isolation, and the server refuses a
+  non-loopback address unless `DBT_STATE_ALLOW_INSECURE=true`. What remains
+  open:
+  - **Entra ID and Okta are untested.** Their recipes follow vendor
+    documentation only. For Entra ID, two points are unverified: Microsoft
+    documents an `x5t#S256` header for certificate client assertions, which
+    the broker's `private_key_jwt` does not send (the recipe uses a client
+    secret), and it describes a refresh response's `id_token` as unsigned,
+    which the broker would refuse and end the session over.
+  - **Public roots only.** Pinned Fusion's token requests trust only the
+    public Mozilla roots (`dbt-fusion@9977b6c`, #223), so the broker's token
+    URL needs a publicly trusted certificate for a client built from that
+    source. The released dbt 2.0.11 binary also trusts `SSL_CERT_FILE` there
+    (#232). The broker, a gRPC server
+    fetching the broker's keys, and the console also trust only public
+    roots for their outbound requests, so the Upstream IdP and any internal
+    broker URL need one too (or plain http on loopback).
+  - **Retention.** `broker_person_sessions` and `broker_refresh_tokens`
+    rows are never deleted.
+  - **Bounds that differ from spec #215** (all documented in the guide): an
+    unreachable Upstream IdP answers 503 and keeps the session, though both
+    pinned clients then discard an expired token and open the browser; the
+    grace window can reuse evidence up to 60 s old, so a person disabled at
+    the IdP keeps gRPC access for up to the person token lifetime plus 2
+    minutes; gRPC refuses a person token within 30 s of its session's
+    12-hour cap even before `exp`; any failed console renewal ends the
+    console session; a revoked person can sign in again until disabled at
+    the IdP.
+  - **Not built:** hot reload, refresh-token key rotation, a second console
+    public key, logout endpoints, rate limiting beyond the pending sign-in
+    cap, more than one Upstream IdP, and dbt platform token exchange
+    (refused, so a person whose environment holds a dbt platform credential
+    cannot use the browser flow).
+  - Hosted dbt State's own status codes and messages for auth failures are
+    not characterized ([hosted auth report](reports/hosted-auth-2026-11-21.md#5-unknowns-not-answerable-offline)).
 - **ClientTelemetry** acknowledges pinned 2.0.11 `SubmitTelemetryBatch` calls
   ([dated evidence](https://github.com/maxfirman/dbt-state-rs/blob/d4ac553cdd09becb77c7555b143e5f4bedaeb2fb/docs/reports/databricks-client-auxiliary-2026-11-12.md)) without
   hosted metering persistence. The deprecated standalone `RegisterSessionStart`

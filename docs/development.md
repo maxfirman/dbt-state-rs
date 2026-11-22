@@ -9,7 +9,16 @@
   protobuf-compiler`), or set `PROTOC`.
 - **Postgres** reachable at `DATABASE_URL`. CI uses `postgres:17-alpine`.
 - **uv** and **Python 3.12** for the DuckDB acceptance cases
-  (`scripts/duckdb-ci.sh`).
+  (`scripts/duckdb-ci.sh`) and for the pinned Python client driver that
+  `cargo test` runs (`crates/harness/tests/python_client.rs`; it skips
+  without `uv` unless `DBT_STATE_REQUIRE_PYTHON_CLIENT=1`, as CI sets).
+  Both `uv.lock` files pin public PyPI. If your uv config names another
+  package index, `--locked` refuses them; run with `UV_NO_CONFIG=1` (the
+  driver passes `UV_*` variables through).
+- **Docker**, only for the opt-in Keycloak suite
+  (`scripts/keycloak.sh start`, then `DBT_STATE_KEYCLOAK=1`; see
+  [testing.md](testing.md#keycloak-upstream-suite)). Without
+  `DBT_STATE_KEYCLOAK=1` its tests skip.
 
 ## Build, lint and test
 
@@ -65,6 +74,43 @@ export DBT_STATE_REQUIRE_ORG_HEADER=false      # optional; true rejects requests
 RUST_LOG=info cargo run -p dbt-state-server
 ```
 
+That is `DBT_STATE_AUTH=none` (the default): no tokens. It refuses to start
+on a non-loopback address (for example `0.0.0.0:50051`) unless
+`DBT_STATE_ALLOW_INSECURE=true`.
+
+`DBT_STATE_AUTH=oidc` requires a Token-broker-signed token on every RPC
+except health, for an Organization in the TOML auth config at
+`DBT_STATE_AUTH_CONFIG` ([example](../examples/auth/auth.toml),
+[wire contract](protocol.md#authentication-oidc-mode)).
+`DBT_STATE_REQUIRE_ORG_HEADER` is a startup error in this mode. Deploying
+it (the Token broker in process or standalone, the Upstream IdP, TLS, the
+dbt client's settings, revocation and the admin command) is described in
+the [operator guide](operator-guide.md). From a checkout:
+
+```bash
+# gRPC and the Token broker in one process, both over TLS
+DBT_STATE_AUTH=oidc DBT_STATE_AUTH_CONFIG=auth.toml \
+DBT_STATE_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_TLS_KEY_FILE=/run/tls/tls.key \
+DBT_STATE_BROKER_LISTEN=127.0.0.1:8443 \
+DBT_STATE_BROKER_TLS_CERT_FILE=/run/tls/tls.crt DBT_STATE_BROKER_TLS_KEY_FILE=/run/tls/tls.key \
+  cargo run -p dbt-state-server
+
+# or the Token broker on its own, on the server's database and schema
+DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
+DBT_STATE_AUTH_CONFIG=auth.toml DBT_STATE_BROKER_LISTEN=127.0.0.1:8080 \
+  cargo run -p dbt-state-broker
+
+# revoke every session of a person (only DATABASE_URL is read)
+DATABASE_URL=postgres://dbtstate:dbtstate@localhost:55441/dbtstate \
+  cargo run -p dbt-state-server -- revoke-sessions \
+    --issuer https://login.example.com/tenant/v2.0 --subject 6b1f...
+```
+
+The harness's tests run all of this against a fake Upstream IdP
+([testing.md](testing.md)); the Keycloak suite, the pinned Fusion driver and
+the [live Fusion acceptance on Snowflake](testing.md#live-fusion-acceptance-on-snowflake)
+are opt-in.
+
 ## Running the UI
 
 ```bash
@@ -72,7 +118,8 @@ HOST=127.0.0.1 PORT=4000 DBT_STATE_UI_ORG_ID=local cargo run -p dbt-state-ui
 ```
 
 It reads the same `DATABASE_URL`. `HOST`/`PORT` default to `127.0.0.1:3000`;
-`DBT_STATE_UI_ORG_ID` defaults to `local`. See [ui.md](ui.md).
+`DBT_STATE_UI_ORG_ID` defaults to `local`. With `DBT_STATE_AUTH=oidc` it
+signs people in through the Token broker instead. See [ui.md](ui.md).
 
 ## Pointing the dbt client at the server
 
@@ -87,7 +134,9 @@ dbt build --profile <profile> --target <target> --skip-semantic-manifest-validat
 ```
 
 Client auth, metadata headers and configuration are described in
-[protocol.md](protocol.md).
+[protocol.md](protocol.md). Against an `oidc` deployment the client uses TLS
+and the Token broker's URLs instead
+([operator guide](operator-guide.md#pointing-dbt-clients-at-the-deployment)).
 
 ### Warehouse note
 

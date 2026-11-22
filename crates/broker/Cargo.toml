@@ -1,0 +1,41 @@
+[package]
+name = "dbt-state-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Token broker for dbt State: speaks the dbt client's token protocol and delegates identity to the Upstream IdP."
+
+[[bin]]
+name = "dbt-state-broker"
+path = "src/main.rs"
+
+[lib]
+name = "dbt_state_broker"
+path = "src/lib.rs"
+
+[dependencies]
+dbt-state-auth = { path = "../auth" }
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+form_urlencoded.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+reqwest.workspace = true
+ring.workspace = true
+rustls-pki-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tower = { workspace = true, features = ["util"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

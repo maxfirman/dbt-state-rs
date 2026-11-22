@@ -1,0 +1,78 @@
+# Auth config with Okta as the Upstream IdP. The authorization server and
+# app integrations it names are set up as in
+# docs/operator-guide.md#okta; every key is explained in
+# examples/auth/auth.toml. Every id below is a placeholder. Relative paths
+# resolve from this file's directory.
+
+[broker]
+issuer = "https://auth.state.example.com"
+client_ip_header = "x-forwarded-for"
+
+[api]
+audience = "https://state.example.com"
+
+[signing]
+active_key_id = "2026-11"
+
+[[signing.keys]]
+id = "2026-11"
+private_key_file = "keys/signing-2026-11.pem"
+
+[[organizations]]
+id = "analytics"
+
+[[organizations]]
+id = "finance"
+
+[upstream]
+# A custom authorization server (Security > API). The org authorization
+# server (https://example.okta.com) issues access tokens only for Okta's
+# own APIs, so client_credentials cannot work against it.
+issuer = "https://example.okta.com/oauth2/aus0000000000000000"
+# The authorization server's Audience.
+api_audience = "api://dbt-state"
+# A custom scope of that authorization server: Okta requires one for
+# client_credentials.
+client_credentials_scope = "dbt_state.ci"
+# The default subject_claim ("sub") is a person's Okta user id (00u...).
+# The "dbt State broker" OIDC Web app integration (sign-in redirect URI
+# https://auth.state.example.com/callback; grant types Authorization Code
+# and Refresh Token).
+client_id = "0oa0broker0000000000"
+# Client authentication "Public key / Private key": the public half of this
+# key is registered on the app integration under the key id below.
+private_key_file = "keys/idp-client.pem"
+private_key_id = "dbt-state-broker-2026-11"
+refresh_token_key_file = "keys/refresh-token.key"
+
+# People: a Groups claim named `groups` on the authorization server,
+# included in the ID token (Always).
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "dbt-state-analytics"
+organization = "analytics"
+role = "developer"
+
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "dbt-state-analytics-admins"
+organization = "analytics"
+role = "admin"
+
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "dbt-state-finance"
+organization = "finance"
+role = "developer"
+
+# Machines: an API Services app integration (client secret), by the client
+# id Okta puts in `cid`.
+[[rules]]
+kind = "machine"
+claim = "cid"
+value = "0oa1ci0analytics0000"
+organization = "analytics"
+role = "developer"

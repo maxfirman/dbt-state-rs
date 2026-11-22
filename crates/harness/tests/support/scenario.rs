@@ -917,6 +917,8 @@ pub struct Scenario {
     invocation: Option<(String, String)>,
     /// The replay clock (Unix ms) sent with each request, when set.
     now_ms: Option<i64>,
+    /// The `authorization` metadata sent with each request, when set.
+    authorization: Option<String>,
     builds: std::sync::Arc<std::sync::Mutex<Builds>>,
 }
 
@@ -937,6 +939,7 @@ impl Scenario {
             org: None,
             invocation: None,
             now_ms: None,
+            authorization: None,
             builds: Default::default(),
         }
     }
@@ -954,6 +957,19 @@ impl Scenario {
     pub fn invocation(&self, invocation_id: &str, session_id: &str) -> Self {
         Self {
             invocation: Some((invocation_id.into(), session_id.into())),
+            ..self.clone()
+        }
+    }
+
+    /// The same server, sending `authorization: Bearer <token>`.
+    pub fn bearer(&self, token: &str) -> Self {
+        self.authorization(&format!("Bearer {token}"))
+    }
+
+    /// The same server, sending `authorization: <value>` verbatim.
+    pub fn authorization(&self, value: &str) -> Self {
+        Self {
+            authorization: Some(value.into()),
             ..self.clone()
         }
     }
@@ -1003,7 +1019,9 @@ impl Scenario {
         self.channel.clone()
     }
 
-    fn request<T>(&self, body: T) -> tonic::Request<T> {
+    /// `body` with this scenario's metadata (Organization, invocation,
+    /// authorization, replay clock), for any RPC.
+    pub fn request<T>(&self, body: T) -> tonic::Request<T> {
         let mut req = match &self.org {
             Some(org) => super::request_with_org(body, org),
             None => tonic::Request::new(body),
@@ -1017,6 +1035,12 @@ impl Scenario {
             metadata.insert(
                 "x-session-id",
                 session_id.parse().expect("valid metadata value"),
+            );
+        }
+        if let Some(authorization) = &self.authorization {
+            req.metadata_mut().insert(
+                "authorization",
+                authorization.parse().expect("valid metadata value"),
             );
         }
         if let Some(now_ms) = self.now_ms {

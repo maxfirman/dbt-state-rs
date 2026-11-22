@@ -1,0 +1,893 @@
+//! Loading the TOML auth config: what an operator may declare, and what
+//! config load refuses before the server starts.
+
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use dbt_state_auth::{AuthConfig, OrganizationId, PrincipalKind, Role, UpstreamClaims};
+use proptest::prelude::*;
+
+fn testdata(file: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("testdata")
+        .join(file)
+}
+
+/// A TOML string literal of `value`.
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_owned()).to_string()
+}
+
+/// A valid config whose `[[organizations]]` and `[tokens]` tables are
+/// `organizations` and `tokens`.
+fn config_text(organizations: &str, tokens: &str) -> String {
+    format!(
+        r#"
+[broker]
+issuer = "https://broker.example.test"
+
+[api]
+audience = "dbt-state-api"
+
+{tokens}
+
+[signing]
+active_key_id = "test-key-1"
+
+[[signing.keys]]
+id = "test-key-1"
+private_key_file = {key1}
+
+[[signing.keys]]
+id = "test-key-2"
+private_key_file = {key2}
+
+{organizations}
+"#,
+        key1 = toml_string(testdata("signing-key-1.pem").to_str().unwrap()),
+        key2 = toml_string(testdata("signing-key-2.pem").to_str().unwrap()),
+    )
+}
+
+fn load(text: &str) -> Result<AuthConfig, String> {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("auth.toml");
+    std::fs::write(&path, text).unwrap();
+    AuthConfig::load(&path).map_err(|e| e.to_string())
+}
+
+fn org(id: &str) -> OrganizationId {
+    OrganizationId::new(id).unwrap()
+}
+
+#[test]
+fn a_complete_config_loads_with_default_lifetimes() {
+    let config = load(&config_text(
+        r#"
+[[organizations]]
+id = "analytics"
+
+[[organizations]]
+id = "finance"
+disabled = true
+"#,
+        "",
+    ))
+    .expect("valid config");
+    assert!(config.organizations().is_active(&org("analytics")));
+    assert!(config.organizations().is_disabled(&org("finance")));
+    assert!(!config.organizations().is_active(&org("finance")));
+    assert!(!config.organizations().is_active(&org("unknown")));
+    let lifetimes = config.token_lifetimes();
+    assert_eq!(lifetimes.person, Duration::from_secs(60 * 60));
+    assert_eq!(lifetimes.machine, Duration::from_secs(15 * 60));
+}
+
+/// Key files may be PKCS#8 or PKCS#1 PEM, and relative paths resolve from
+/// the config file's directory.
+#[test]
+fn key_files_resolve_relative_to_the_config_and_accept_pkcs1() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("keys")).unwrap();
+    std::fs::copy(
+        testdata("signing-key-pkcs1.pem"),
+        dir.path().join("keys/k.pem"),
+    )
+    .unwrap();
+    let path = dir.path().join("auth.toml");
+    std::fs::write(
+        &path,
+        r#"
+[broker]
+issuer = "https://broker.example.test"
+[api]
+audience = "dbt-state-api"
+[signing]
+active_key_id = "k"
+[[signing.keys]]
+id = "k"
+private_key_file = "keys/k.pem"
+[[organizations]]
+id = "analytics"
+"#,
+    )
+    .unwrap();
+    AuthConfig::load(&path).expect("relative PKCS#1 key loads");
+}
+
+/// `examples/auth/auth.toml` loads once its key files are mounted.
+#[test]
+fn the_example_config_loads() {
+    let example = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/auth/auth.toml");
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("keys")).unwrap();
+    for (file, key) in [
+        ("signing-2026-11.pem", "signing-key-1.pem"),
+        ("signing-2026-05.pem", "signing-key-2.pem"),
+        ("idp-client.pem", "upstream-rp-key.pem"),
+    ] {
+        std::fs::copy(testdata(key), dir.path().join("keys").join(file)).unwrap();
+    }
+    std::fs::write(dir.path().join("keys/refresh-token.key"), REFRESH_TOKEN_KEY).unwrap();
+    let path = dir.path().join("auth.toml");
+    std::fs::copy(example, &path).unwrap();
+    let config = AuthConfig::load(&path).expect("the example config loads");
+    assert!(config.organizations().is_active(&org("analytics")));
+    assert!(config.organizations().is_disabled(&org("finance")));
+    let login = config.upstream().unwrap().login().expect("browser sign-in");
+    assert_eq!(login.credential().method(), "private_key_jwt");
+}
+
+/// The operator guide's Upstream IdP recipes (`docs/operator-guide.md`)
+/// load as written, and their rules grant what the guide says for the
+/// claims each IdP puts in its tokens.
+#[test]
+fn the_upstream_idp_recipes_load_and_map_as_documented() {
+    struct Recipe {
+        file: &'static str,
+        credential: &'static str,
+        subject_claim: &'static str,
+        person: serde_json::Value,
+        machine: serde_json::Value,
+    }
+    let recipes = [
+        Recipe {
+            file: "entra-id.toml",
+            credential: "client_secret_basic",
+            subject_claim: "oid",
+            // An app role assigned to the person on the broker's app
+            // registration; an app role of the API granted to the CI app.
+            person: serde_json::json!({"roles": ["dbt-state.analytics.developer"]}),
+            machine: serde_json::json!({"roles": ["dbt-state.analytics.ci"]}),
+        },
+        Recipe {
+            file: "okta.toml",
+            credential: "private_key_jwt",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["dbt-state-analytics"]}),
+            machine: serde_json::json!({"cid": "0oa1ci0analytics0000"}),
+        },
+        Recipe {
+            file: "keycloak.toml",
+            credential: "client_secret_basic",
+            subject_claim: "sub",
+            person: serde_json::json!({"groups": ["data-eng"]}),
+            machine: serde_json::json!({"azp": "dbt-state-ci"}),
+        },
+    ];
+    for recipe in recipes {
+        let example = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/auth")
+            .join(recipe.file);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("keys")).unwrap();
+        std::fs::copy(
+            testdata("signing-key-1.pem"),
+            dir.path().join("keys/signing-2026-11.pem"),
+        )
+        .unwrap();
+        std::fs::copy(
+            testdata("upstream-rp-key.pem"),
+            dir.path().join("keys/idp-client.pem"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("keys/idp-client-secret"), "secret\n").unwrap();
+        std::fs::write(dir.path().join("keys/refresh-token.key"), REFRESH_TOKEN_KEY).unwrap();
+        let path = dir.path().join("auth.toml");
+        std::fs::copy(&example, &path).unwrap();
+
+        let config = AuthConfig::load(&path)
+            .unwrap_or_else(|error| panic!("{} loads: {error}", recipe.file));
+        let upstream = config.upstream().expect("an Upstream IdP");
+        assert_eq!(
+            upstream.subject_claim(),
+            recipe.subject_claim,
+            "{}",
+            recipe.file
+        );
+        let login = upstream.login().expect("browser sign-in");
+        assert_eq!(
+            login.credential().method(),
+            recipe.credential,
+            "{}",
+            recipe.file
+        );
+
+        let organizations = config.organizations();
+        let grant = |kind, claims: &serde_json::Value| {
+            let claims = UpstreamClaims::new(claims.as_object().unwrap().clone());
+            config.mapping_rules().scope(kind, &claims, organizations)
+        };
+        let person = grant(PrincipalKind::Person, &recipe.person);
+        assert_eq!(
+            person.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a person",
+            recipe.file
+        );
+        let machine = grant(PrincipalKind::Machine, &recipe.machine);
+        assert_eq!(
+            machine.active_role(&org("analytics")),
+            Some(Role::Developer),
+            "{}: a machine",
+            recipe.file
+        );
+        // Each kind's claims grant the other kind nothing.
+        assert!(
+            grant(PrincipalKind::Machine, &recipe.person)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: person claims for a machine",
+            recipe.file
+        );
+        assert!(
+            grant(PrincipalKind::Person, &recipe.machine)
+                .active_role(&org("analytics"))
+                .is_none(),
+            "{}: machine claims for a person",
+            recipe.file
+        );
+    }
+}
+
+/// Each refusal names what is wrong.
+#[test]
+fn invalid_configs_are_refused() {
+    let one_org = "[[organizations]]\nid = \"analytics\"\n";
+    let cases: Vec<(String, &str)> = vec![
+        (
+            config_text(
+                "[[organizations]]\nid = \"a\"\n[[organizations]]\nid = \"a\"\n",
+                "",
+            ),
+            "more than once",
+        ),
+        (
+            config_text(one_org, "").replace(
+                "active_key_id = \"test-key-1\"",
+                "active_key_id = \"missing\"",
+            ),
+            "active_key_id",
+        ),
+        (
+            config_text(one_org, "").replace("id = \"test-key-2\"", "id = \"test-key-1\""),
+            "more than once",
+        ),
+        (
+            config_text(one_org, "").replace("signing-key-2.pem", "no-such-key.pem"),
+            "no-such-key.pem",
+        ),
+        (
+            config_text(one_org, "").replace("signing-key-2.pem", "README.md"),
+            "README.md",
+        ),
+        (
+            config_text(one_org, "")
+                .replace("issuer = \"https://broker.example.test\"", "issuer = \"\""),
+            "issuer",
+        ),
+        (
+            config_text(one_org, "").replace(
+                "issuer = \"https://broker.example.test\"",
+                "issuer = \"broker\"",
+            ),
+            "issuer",
+        ),
+        (
+            config_text(one_org, "").replace("audience = \"dbt-state-api\"", "audience = \"\""),
+            "audience",
+        ),
+        (
+            config_text("[[organizations]]\nid = \"a\"\ndisable = true\n", ""),
+            "disable",
+        ),
+        (config_text(one_org, "").replace("[api]", "[apis]"), "apis"),
+    ];
+    for (text, needle) in cases {
+        let error = load(&text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+    }
+}
+
+/// A key file's contents never appear in a refusal.
+#[test]
+fn refusals_never_echo_key_material() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = dir.path().join("bad.pem");
+    let pem = std::fs::read_to_string(testdata("signing-key-1.pem")).unwrap();
+    // A truncated PEM: the right header, a broken body.
+    let broken = &pem[..pem.len() / 2];
+    std::fs::write(&key, broken).unwrap();
+    let text = config_text("[[organizations]]\nid = \"a\"\n", "").replace(
+        &toml_string(testdata("signing-key-2.pem").to_str().unwrap()),
+        &toml_string(key.to_str().unwrap()),
+    );
+    let error = load(&text).expect_err("a broken key file");
+    let body_line = broken.lines().nth(1).unwrap();
+    assert!(!error.contains(body_line), "{error}");
+}
+
+proptest! {
+    /// Config load refuses an Organization id that is empty, contains `:` or
+    /// whitespace, or is `*`, and accepts any other visible-ASCII id.
+    #[test]
+    fn organization_ids_are_validated_at_load(id in prop_oneof![
+        "[!-~]{0,6}",
+        "[a-z]{1,3}[ \t:][a-z]{0,3}",
+        "[ -~]{0,4}",
+        "\\PC{1,3}",
+        Just("*".to_owned()),
+        Just(String::new()),
+    ]) {
+        let text = config_text(&format!("[[organizations]]\nid = {}\n", toml_string(&id)), "");
+        let valid = !id.is_empty()
+            && id != "*"
+            && id.chars().all(|c| c.is_ascii_graphic() && c != ':');
+        let result = load(&text);
+        prop_assert_eq!(result.is_ok(), valid, "{:?}: {:?}", id, result.err());
+        if !valid {
+            prop_assert!(result.unwrap_err().contains("Organization id"));
+        }
+    }
+
+    /// Person token lifetimes are 15 to 240 minutes, machine ones 15 to 60.
+    #[test]
+    fn token_lifetimes_are_bounded(person in 0u32..300, machine in 0u32..100) {
+        let tokens = format!(
+            "[tokens]\nperson_lifetime_minutes = {person}\nmachine_lifetime_minutes = {machine}\n"
+        );
+        let text = config_text("[[organizations]]\nid = \"a\"\n", &tokens);
+        let valid = (15..=240).contains(&person) && (15..=60).contains(&machine);
+        let result = load(&text);
+        prop_assert_eq!(result.is_ok(), valid, "{:?}", result.as_ref().err());
+        match result {
+            Ok(config) => {
+                prop_assert_eq!(config.token_lifetimes().person, Duration::from_secs(u64::from(person) * 60));
+                prop_assert_eq!(config.token_lifetimes().machine, Duration::from_secs(u64::from(machine) * 60));
+            }
+            Err(error) => prop_assert!(error.contains("lifetime"), "{}", error),
+        }
+    }
+}
+
+/// The Upstream IdP and the machine mapping rules the Token broker applies.
+const UPSTREAM: &str = r#"
+[upstream]
+issuer = "https://login.example.test/tenant/v2.0"
+api_audience = "api://dbt-state"
+client_credentials_scope = "api://dbt-state/.default"
+
+[[rules]]
+kind = "machine"
+claim = "roles"
+value = "dbt-state.ci"
+organization = "analytics"
+role = "developer"
+
+[[rules]]
+kind = "person"
+claim = "groups"
+value = "data-platform"
+organization = "analytics"
+role = "admin"
+"#;
+
+#[test]
+fn the_upstream_idp_and_mapping_rules_load() {
+    let config = load(&config_text(
+        &format!("[[organizations]]\nid = \"analytics\"\n{UPSTREAM}"),
+        "",
+    ))
+    .expect("valid config");
+    let upstream = config.upstream().expect("an Upstream IdP");
+    assert_eq!(upstream.issuer(), "https://login.example.test/tenant/v2.0");
+    assert_eq!(upstream.api_audience(), "api://dbt-state");
+    assert_eq!(
+        upstream.client_credentials_scope(),
+        Some("api://dbt-state/.default")
+    );
+
+    let mut claims = serde_json::Map::new();
+    claims.insert("roles".into(), serde_json::json!(["dbt-state.ci"]));
+    claims.insert("groups".into(), serde_json::json!(["data-platform"]));
+    let claims = UpstreamClaims::new(claims);
+    let organizations = config.organizations();
+    let machine = config
+        .mapping_rules()
+        .scope(PrincipalKind::Machine, &claims, organizations);
+    assert_eq!(
+        machine.active_role(&org("analytics")),
+        Some(Role::Developer)
+    );
+    let person = config
+        .mapping_rules()
+        .scope(PrincipalKind::Person, &claims, organizations);
+    assert_eq!(person.active_role(&org("analytics")), Some(Role::Admin));
+}
+
+/// A gRPC server that verifies tokens with the Token broker's published keys
+/// needs no `[signing]` table, and issues nothing.
+#[test]
+fn signing_keys_are_optional() {
+    let text = config_text("[[organizations]]\nid = \"analytics\"\n", "");
+    let start = text.find("[signing]").unwrap();
+    let end = text.find("[[organizations]]").unwrap();
+    let mut text = text.clone();
+    text.replace_range(start..end, "");
+    let config = load(&text).expect("a config without signing keys");
+    assert!(config.verification_keys().is_none());
+    assert!(config.token_issuer().is_none());
+    assert!(config.upstream().is_none());
+}
+
+/// Without `[signing]`, the gRPC server fetches the Token broker's keys, so
+/// where it fetches them must use TLS (plain http only on loopback).
+#[test]
+fn fetched_keys_need_a_secure_location() {
+    let text = config_text("[[organizations]]\nid = \"analytics\"\n", "");
+    let start = text.find("[signing]").unwrap();
+    let end = text.find("[[organizations]]").unwrap();
+    let mut unsigned = text.clone();
+    unsigned.replace_range(start..end, "");
+    let issuer = "issuer = \"https://broker.example.test\"";
+    let cases = [
+        (unsigned.replace(issuer, "issuer = \"http://broker.example.test\""), "broker.issuer"),
+        (
+            unsigned.replace(
+                issuer,
+                "issuer = \"https://broker.example.test\"\njwks_url = \"http://broker.internal/jwks\"",
+            ),
+            "broker.jwks_url",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load(&text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+    }
+    for allowed in [
+        unsigned.replace(issuer, "issuer = \"http://127.0.0.1:8080\""),
+        unsigned.replace(
+            issuer,
+            "issuer = \"http://broker.example.test\"\njwks_url = \"https://broker.internal/jwks\"",
+        ),
+        // With [signing] nothing is fetched, so the issuer is only a name.
+        text.replace(issuer, "issuer = \"http://broker.example.test\""),
+    ] {
+        load(&allowed).unwrap_or_else(|error| panic!("{error}\n{allowed}"));
+    }
+}
+
+/// Each refusal of an `[upstream]` or `[[rules]]` mistake names it.
+#[test]
+fn invalid_upstream_and_rules_are_refused() {
+    let with = |upstream: &str| {
+        config_text(
+            &format!(
+                "[[organizations]]\nid = \"analytics\"\n[[organizations]]\nid = \"finance\"\ndisabled = true\n{upstream}"
+            ),
+            "",
+        )
+    };
+    let cases: Vec<(String, &str)> = vec![
+        (with(&UPSTREAM.replace("kind = \"machine\"\n", "")), "kind"),
+        (
+            with(&UPSTREAM.replace("kind = \"machine\"", "kind = \"service\"")),
+            "service",
+        ),
+        (
+            with(&UPSTREAM.replace("role = \"developer\"", "role = \"owner\"")),
+            "owner",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"nowhere\"\nrole = \"developer\"",
+            )),
+            "nowhere",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"*\"\nrole = \"developer\"",
+            )),
+            "Organization id",
+        ),
+        (
+            with(&UPSTREAM.replace("claim = \"roles\"", "claim = \"\"")),
+            "claim",
+        ),
+        (
+            with(&UPSTREAM.replace("value = \"dbt-state.ci\"", "value = \"\"")),
+            "value",
+        ),
+        (
+            with(&UPSTREAM.replace("value = \"dbt-state.ci\"", "valu = \"x\"")),
+            "valu",
+        ),
+        (
+            with(&UPSTREAM.replace(
+                "https://login.example.test/tenant/v2.0",
+                "http://login.example.test",
+            )),
+            "upstream.issuer",
+        ),
+        (
+            with(&UPSTREAM.replace("api_audience = \"api://dbt-state\"", "api_audience = \"\"")),
+            "api_audience",
+        ),
+        (
+            with(&UPSTREAM.replace("api_audience = \"api://dbt-state\"\n", "")),
+            "api_audience",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load(&text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+    }
+    // A disabled Organization may be mapped (its Principals are told it is
+    // disabled), and a loopback Upstream IdP may use plain http.
+    load(&with(
+        &UPSTREAM
+            .replace(
+                "organization = \"analytics\"\nrole = \"developer\"",
+                "organization = \"finance\"\nrole = \"developer\"",
+            )
+            .replace(
+                "https://login.example.test/tenant/v2.0",
+                "http://127.0.0.1:8081",
+            ),
+    ))
+    .expect("a disabled Organization and a loopback http issuer");
+}
+
+/// A base64 refresh-token encryption key file (`openssl rand -base64 32`).
+const REFRESH_TOKEN_KEY: &str = "q1Xh0yEl8M3gVxQq2WwXKk3o2vZc1oV0tGQZbqgT7f4=\n";
+
+/// `[upstream]` with the Token broker's own registration at the IdP, for
+/// browser sign-in, with its secret and key files written next to the
+/// config.
+fn person_login(dir: &Path, extra: &str) -> String {
+    std::fs::write(dir.join("idp-secret"), "rp-secret-9f2\n").unwrap();
+    std::fs::write(dir.join("refresh.key"), REFRESH_TOKEN_KEY).unwrap();
+    config_text(
+        &format!(
+            "[[organizations]]\nid = \"analytics\"\n\n[upstream]\n\
+             issuer = \"https://login.example.test/tenant/v2.0\"\n\
+             api_audience = \"api://dbt-state\"\n\
+             client_id = \"dbt-state-broker\"\n\
+             refresh_token_key_file = \"refresh.key\"\n{extra}"
+        ),
+        "",
+    )
+}
+
+fn load_in(dir: &Path, text: &str) -> Result<AuthConfig, String> {
+    let path = dir.join("auth.toml");
+    std::fs::write(&path, text).unwrap();
+    AuthConfig::load(&path).map_err(|e| e.to_string())
+}
+
+/// Browser sign-in needs the broker's own client id at the Upstream IdP, a
+/// credential from a mounted file, and the refresh-token encryption key.
+/// The dbt client registration defaults to the client's built-in id, and
+/// Principals are identified by `sub` unless configured otherwise.
+#[test]
+fn person_sign_in_settings_load_with_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = load_in(
+        dir.path(),
+        &person_login(dir.path(), "client_secret_file = \"idp-secret\"\n"),
+    )
+    .expect("valid config");
+    // dbt-state==2.62.6 `dbt_state/config.py` CLIENT_ID_DEFAULT and
+    // dbt-fusion@9977b6c `crates/dbt-run-cache/src/service_config.rs`
+    // DEFAULT_OAUTH_CLIENT_ID.
+    assert_eq!(
+        config.dbt_client_id(),
+        "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"
+    );
+    assert_eq!(config.pending_logins_per_ip(), 20);
+    assert_eq!(config.client_ip_header(), None);
+    let upstream = config.upstream().unwrap();
+    assert_eq!(upstream.subject_claim(), "sub");
+    let login = upstream.login().expect("browser sign-in");
+    assert_eq!(login.client_id(), "dbt-state-broker");
+    assert_eq!(login.scope(), "openid offline_access email profile");
+    assert_eq!(login.credential().method(), "client_secret_basic");
+    // The secret never shows in Debug output.
+    assert!(!format!("{config:?}").contains("rp-secret-9f2"));
+
+    let config = load_in(
+        dir.path(),
+        &person_login(
+            dir.path(),
+            &format!(
+                "private_key_file = {}\nprivate_key_id = \"rp-1\"\nsubject_claim = \"oid\"\n\
+                 login_scope = \"openid offline_access groups\"\n\
+                 [clients.dbt]\nclient_id = \"our-dbt\"\n",
+                toml_string(testdata("upstream-rp-key.pem").to_str().unwrap())
+            ),
+        )
+        .replace(
+            "issuer = \"https://broker.example.test\"",
+            "issuer = \"https://broker.example.test\"\nmax_pending_logins_per_ip = 5\n\
+             client_ip_header = \"X-Forwarded-For\"",
+        ),
+    )
+    .expect("valid config");
+    assert_eq!(config.dbt_client_id(), "our-dbt");
+    assert_eq!(config.pending_logins_per_ip(), 5);
+    assert_eq!(config.client_ip_header(), Some("x-forwarded-for"));
+    let upstream = config.upstream().unwrap();
+    assert_eq!(upstream.subject_claim(), "oid");
+    let login = upstream.login().unwrap();
+    assert_eq!(login.scope(), "openid offline_access groups");
+    assert_eq!(login.credential().method(), "private_key_jwt");
+
+    // Machines alone need no browser sign-in settings.
+    let config = load(&config_text(
+        &format!("[[organizations]]\nid = \"analytics\"\n{UPSTREAM}"),
+        "",
+    ))
+    .unwrap();
+    assert!(config.upstream().unwrap().login().is_none());
+}
+
+/// Each refusal of a browser sign-in mistake names it, and never echoes a
+/// secret or key file's contents.
+#[test]
+fn invalid_person_sign_in_settings_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = "client_secret_file = \"idp-secret\"\n";
+    let rp_key = format!(
+        "private_key_file = {}\n",
+        toml_string(testdata("upstream-rp-key.pem").to_str().unwrap())
+    );
+    std::fs::write(dir.path().join("short.key"), "c2hvcnQ=\n").unwrap();
+    std::fs::write(dir.path().join("empty-secret"), "\n").unwrap();
+    let cases: Vec<(String, &str)> = vec![
+        // No credential, or both.
+        (person_login(dir.path(), ""), "client_secret_file"),
+        (
+            person_login(dir.path(), &format!("{secret}{rp_key}")),
+            "private_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("client_id = \"dbt-state-broker\"\n", ""),
+            "client_id",
+        ),
+        (
+            person_login(dir.path(), secret)
+                .replace("refresh_token_key_file = \"refresh.key\"\n", ""),
+            "refresh_token_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("\"refresh.key\"", "\"short.key\""),
+            "refresh_token_key_file",
+        ),
+        (
+            person_login(dir.path(), secret).replace("\"refresh.key\"", "\"missing.key\""),
+            "missing.key",
+        ),
+        (
+            person_login(dir.path(), "client_secret_file = \"empty-secret\"\n"),
+            "client_secret_file",
+        ),
+        (
+            person_login(dir.path(), "client_secret_file = \"no-such-secret\"\n"),
+            "no-such-secret",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &rp_key.replace("upstream-rp-key.pem", "README.md"),
+            ),
+            "README.md",
+        ),
+        (
+            person_login(dir.path(), &format!("{secret}subject_claim = \"\"\n")),
+            "subject_claim",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}login_scope = \"email profile\"\n"),
+            ),
+            "login_scope",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}[clients.dbt]\nclient_id = \"\"\n"),
+            ),
+            "clients.dbt.client_id",
+        ),
+        (
+            person_login(
+                dir.path(),
+                &format!("{secret}[clients.other]\nclient_id = \"other\"\n"),
+            ),
+            "other",
+        ),
+        (
+            person_login(dir.path(), secret).replace(
+                "issuer = \"https://broker.example.test\"",
+                "issuer = \"https://broker.example.test\"\nmax_pending_logins_per_ip = 0",
+            ),
+            "max_pending_logins_per_ip",
+        ),
+        (
+            person_login(dir.path(), secret).replace(
+                "issuer = \"https://broker.example.test\"",
+                "issuer = \"https://broker.example.test\"\nclient_ip_header = \"not a header\"",
+            ),
+            "client_ip_header",
+        ),
+    ];
+    for (text, needle) in cases {
+        let error = load_in(dir.path(), &text).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+        assert!(!error.contains("rp-secret-9f2"), "{error}");
+        assert!(!error.contains(REFRESH_TOKEN_KEY.trim()), "{error}");
+    }
+}
+
+/// `[clients.ui]` for the console, with its public key from the test data.
+fn ui_client(dir: &Path, table: &str) -> String {
+    format!(
+        "{}\n[clients.ui]\n{table}",
+        person_login(dir, "client_secret_file = \"idp-secret\"\n")
+    )
+}
+
+/// The UI registration: its own client id, exactly one callback, and the
+/// public key its `private_key_jwt` assertions are checked with. No shared
+/// secret can be configured for it.
+#[test]
+fn the_ui_client_registration_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    let public_key = toml_string(testdata("ui-client-public.pem").to_str().unwrap());
+    let config = load_in(
+        dir.path(),
+        &person_login(dir.path(), "client_secret_file = \"idp-secret\"\n"),
+    )
+    .expect("valid config");
+    assert!(
+        config.ui_client().is_none(),
+        "the UI is registered only when configured"
+    );
+
+    std::fs::copy(testdata("ui-client-public.pem"), dir.path().join("ui.pem")).unwrap();
+    let config = load_in(
+        dir.path(),
+        &ui_client(
+            dir.path(),
+            "client_id = \"dbt-state-ui\"\n\
+             redirect_uri = \"https://console.example.test/auth/callback\"\n\
+             public_key_file = \"ui.pem\"\n",
+        ),
+    )
+    .expect("valid config");
+    let ui = config.ui_client().expect("the UI registration");
+    assert_eq!(ui.client_id(), "dbt-state-ui");
+    assert_eq!(
+        ui.redirect_uri(),
+        "https://console.example.test/auth/callback"
+    );
+
+    let valid = format!(
+        "client_id = \"dbt-state-ui\"\nredirect_uri = \"https://console.example.test/cb\"\n\
+         public_key_file = {public_key}\n"
+    );
+    std::fs::write(
+        dir.path().join("not-a-key.pem"),
+        "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n",
+    )
+    .unwrap();
+    let cases: Vec<(String, &str)> = vec![
+        (
+            valid.replace("client_id = \"dbt-state-ui\"", "client_id = \"\""),
+            "clients.ui.client_id",
+        ),
+        // The dbt client's id names the dbt client registration.
+        (
+            valid.replace("dbt-state-ui", "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"),
+            "clients.ui.client_id",
+        ),
+        // UI tokens carry it as `aud`: the API audience would let them call
+        // gRPC.
+        (
+            valid.replace("dbt-state-ui", "dbt-state-api"),
+            "clients.ui.client_id",
+        ),
+        (
+            valid.replace("redirect_uri = \"https://console.example.test/cb\"\n", ""),
+            "redirect_uri",
+        ),
+        // Exactly one callback: a string, never a list.
+        (
+            valid.replace(
+                "\"https://console.example.test/cb\"",
+                "[\"https://console.example.test/cb\", \"https://other.example.test/cb\"]",
+            ),
+            "expected a string",
+        ),
+        // https only (plain http on loopback), no fragment.
+        (
+            valid.replace(
+                "https://console.example.test/cb",
+                "http://console.example.test/cb",
+            ),
+            "clients.ui.redirect_uri",
+        ),
+        (
+            valid.replace(
+                "https://console.example.test/cb",
+                "https://console.example.test/cb#x",
+            ),
+            "clients.ui.redirect_uri",
+        ),
+        (
+            valid.replace("https://console.example.test/cb", "console.example.test/cb"),
+            "clients.ui.redirect_uri",
+        ),
+        // A public key, never a secret.
+        (
+            valid.replace(&format!("public_key_file = {public_key}\n"), ""),
+            "public_key_file",
+        ),
+        (
+            format!("{valid}client_secret_file = \"idp-secret\"\n"),
+            "client_secret_file",
+        ),
+        (
+            valid.replace("ui-client-public.pem", "ui-client-key.pem"),
+            "clients.ui.public_key_file",
+        ),
+        (
+            valid.replace(&public_key, "\"not-a-key.pem\""),
+            "clients.ui.public_key_file",
+        ),
+        (valid.replace(&public_key, "\"missing.pem\""), "missing.pem"),
+    ];
+    for (table, needle) in cases {
+        let error = load_in(dir.path(), &ui_client(dir.path(), &table)).expect_err(needle);
+        assert!(
+            error.contains(needle),
+            "{error:?} should mention {needle:?}"
+        );
+        assert!(!error.contains("rp-secret-9f2"), "{error}");
+    }
+}

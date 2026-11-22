@@ -125,7 +125,180 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
     `transformed_nodes_by_query` map) and `hosted_volatile_values` (a
     captured response) read Volatile evaluation values as query → function
     → value; `volatile_map_shape` drops the values.
-- `rows.rs` reads `executions` and `node_states` back for assertions.
+- `oidc.rs` supports `oidc` mode. `TestAuth::new(&[(org, disabled)])`
+  writes and loads a real auth config over the test-only keys in
+  `crates/auth/testdata/`, and `start_server_oidc(&auth)` serves it. A
+  `TestSigner` (`auth.signer()`, or `auth.signer_with(SignerOptions { issuer,
+  audience, key, organizations })` for wrong issuers, audiences, keys or a
+  stale view of the Organizations) issues person (`.person(sub, sid)`) and
+  machine (`.machine(sub)`) tokens with `.grant(org, role)` and
+  `.issued_ago(d)`. The gRPC server refuses a person token whose `sid`
+  names no active Token broker session, so a test that needs one accepted
+  records the session first: `person_session(&server, principal).await`
+  returns its `sid`. `Scenario::bearer(token)` / `Scenario::authorization(raw)`
+  send them. `capture_logs()` / `captured_logs()` capture the process's log
+  lines. `TestAuth::builder(&orgs)` extends the config: `.upstream(&idp)`
+  (which also registers the broker for browser sign-in with
+  `BROKER_CLIENT_SECRET` from a file and a refresh-token key file), or
+  `.upstream_registration(UpstreamRegistration { issuer, api_audience,
+  client_credentials_scope, client_id, client_secret })` for another
+  Upstream IdP (Keycloak),
+  `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
+  `.subject_claim(c)`, `.dbt_client_id(id)`,
+  `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
+  `.without_browser_sign_in()` (no `[upstream] client_id`),
+  `.rule(kind, claim, value, org, role)`, `.person_lifetime_minutes(m)`,
+  `.machine_lifetime_minutes(m)`, `.issuer(url)` and `.without_signing()`.
+- `start_server_with_broker(&auth)` runs the gRPC server and the Token
+  broker in one process on separate listeners (`server.broker_url()`), as
+  `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
+  standalone broker on its own migrated schema whose issuer is its own URL
+  (`TestBroker::url()`, `.auth`, `.clock`), and
+  `start_broker_beside(&broker, builder)` another one on the same schema and
+  clock (a replica, or the deployment restarted with another config;
+  `tests/shared_logins.rs` renews through two replicas). `server.broker_clock` (a
+  `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
+  codes, pending logins and sessions; the gRPC server's person session
+  check reads the same clock, so advancing it ages cached session statuses
+  (30 s) and brings sessions to their 12-hour cap
+  (`tests/session_revocation.rs`). `start_server_tls(builder).await` is
+  `start_server_with_broker` with native TLS on both listeners, as
+  `DBT_STATE_TLS_*` and `DBT_STATE_BROKER_TLS_*` run them: the broker's
+  issuer is its own `https://127.0.0.1:<port>` URL and `server.tls` is
+  set. `tls.rs` loads the test certificate (`crates/auth/testdata/tls-*`,
+  for `localhost`, `127.0.0.1` and `::1`) and names its CA (`ca_file()`).
+- `python_client.rs` runs the pinned Python client driver
+  (`crates/harness/python-client/driver.py`, environment locked in its
+  `uv.lock`, `uv run --locked`) against a TLS test server:
+  `PythonClient::available(&server)` points the client's own settings at
+  it (`RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `RUN_CACHE_CA_BUNDLE` and `REQUESTS_CA_BUNDLE` for
+  the test CA, a temp `RUN_CACHE_HOME`) in an otherwise cleared
+  environment; `.machine(id, secret)` adds the client id and secret
+  (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
+  `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`) and `CI=true`;
+  `.run(&[scenario, steps..]).await` returns the exit status, output and
+  the driver's JSON result. `.person().await` is a person at a terminal
+  (the driver gives the client a pseudo-terminal) whose client signs in
+  through the browser flow and caches its token in its `RUN_CACHE_HOME`
+  (`.home()`): the driver names the harness browser
+  (`python-client/browser.py`) in `BROWSER`, so the client's own
+  `webbrowser.open` runs it, and it follows the redirects through the
+  Token broker and the fake Upstream IdP to the client's loopback handler;
+  `.browser_visits()` lists each visit (URL opened, redirects, landing,
+  status). The person scenario is `["person", steps..]` with steps `rpc`
+  (one RPC, one credential lookup) and `wait`: `.start(args)` returns a
+  `Driver`, `.paused().await` waits for its next `wait`, `.resume(d).await`
+  moves the driver's wall clock `d` on (move `server.broker_clock` as far
+  first) and `.finish().await` runs it to its end. The client's loopback
+  handler binds the fixed port 29525, so `.person()` holds an exclusive
+  lock on `$TMPDIR/dbt-state-python-client-loopback-29525.lock` until the
+  client is dropped: person tests run one at a time, across test binaries
+  and worktrees. Without `uv` it skips with a message unless
+  `DBT_STATE_REQUIRE_PYTHON_CLIENT` is set, which CI sets. The lock pins
+  public PyPI, and `UV_*` variables pass through (for example
+  `UV_NO_CONFIG=1` under a uv config naming another index). Tests:
+  `tests/python_client.rs`.
+- `fusion_client.rs` runs the opt-in [pinned Fusion driver](#pinned-fusion-driver)
+  against a TLS test server: `FusionClient::available(&server)` is `None`
+  (the test returns) unless `DBT_STATE_FUSION_DRIVER` names the built
+  driver, and points Fusion's own settings at the server
+  (`RUN_CACHE_API_URL`, `RUN_CACHE_API_SECURE`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL`, `SSL_CERT_FILE` for the test CA, a temp `HOME`)
+  in an otherwise cleared environment; `.machine(id, secret)` adds the
+  client id and secret. `.person().await` puts the harness's `xdg-open`
+  (which runs the driver's harness browser) first on `PATH` and takes the
+  same loopback port lock as the Python driver; `.token_file()` is the
+  token Fusion keeps on disk (`$HOME/.dbt/state_auth.json`), and
+  `.browser_visits()`, `.run(..)` and `.start(..)` (with the same `Driver`
+  pause protocol) work as for the Python driver. Tests:
+  `tests/fusion_client.rs`.
+- `client_driver.rs` is what both client drivers share: `Driver` (a
+  running driver and its `wait` pauses), `DriverRun`, the browser's visit
+  log and the loopback port lock (`hold_loopback_port`, `LOOPBACK_LOCK`).
+- `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`
+  serves discovery, `/jwks` and `/token` (`client_credentials` by HTTP
+  Basic) at `idp.issuer()`. `idp.machine(UpstreamMachine::new(id, secret)
+  .claim(name, value))` registers an app registration; `.audience(aud)`,
+  `.issuer(iss)`, `.opaque()`, `.signed_by_impostor()` and `.expired()`
+  spoil its access token. `idp.sign_in(UpstreamPerson::new(sub)
+  .claim(name, value))` signs the browser in as a person, whom the
+  auto-approving `/authorize` approves at once; `.wrong_nonce()`,
+  `.signed_by_impostor()`, `.audience(aud)`, `.issuer(iss)`,
+  `.without_id_token()` and `.without_refresh_token()` spoil its token
+  response. The `authorization_code` grant authenticates the broker by
+  `BROKER_CLIENT_SECRET` or a `private_key_jwt` assertion
+  (`upstream-rp-key.pem`) and checks redirect URI and PKCE. The
+  `refresh_token` grant renews a person with their current claims, rotating
+  the refresh token, and `/userinfo` answers for a person's access token:
+  `idp.update(person)` changes a person's claims, `idp.disable(sub)` /
+  `idp.enable(sub)` a person, `idp.fail_refresh(status, error)` /
+  `idp.restore_refresh()` every refresh, `idp.delay_refresh(d)` slows every
+  refresh answer by `d` (a renewal then holds its session's row lock that
+  long); `UpstreamPerson`
+  `.without_refresh_id_token()`, `.without_refresh_access_token()`,
+  `.keeps_refresh_token()`, `.renewed_as(sub)` and `.userinfo_without(claim)`
+  shape renewal, and `idp.follow(&server.broker_clock)` issues person tokens
+  at the broker's test clock. `idp.token_requests()`,
+  `idp.authorize_requests()`, `idp.issued_refresh_tokens()`,
+  `idp.issued_access_tokens()`, `idp.userinfo_requests()` and
+  `idp.jwks_fetches()` report what the broker sent and got.
+- `broker_client.rs` sends token requests exactly as the pinned dbt clients
+  do (`client_credentials`, `token_exchange`, and the browser sign-in's
+  `authorization_code` as Fusion and as the Python client post it, and
+  `refresh_token`, whose form both clients share), and
+  `claims(jwt)` reads a token's claims unverified, as the clients do.
+  `SignIn::new()` is one browser sign-in as the clients start it (client id
+  `DBT_CLIENT_ID`, redirect `LOOPBACK_REDIRECT_URI`, PKCE S256, `state`);
+  `.client_id(id)`, `.redirect_uri(uri)`, `.without_pkce()`,
+  `.plain_pkce()` vary it, and `.authorize_url(auth_url)` is the URL the
+  client opens.
+- `browser.rs`: `Browser::new().route(ISSUER, &server.broker_url())`
+  follows redirects (`visit(url, LOOPBACK_REDIRECT_URI)`) until the dbt
+  client's loopback handler (`Landing::Loopback(query)`) or a page
+  (`Landing::Page { status, body }`), keeping cookies;
+  `submit(action, fields, loopback)` posts a page's form and follows on.
+  Tests: `tests/person_login.rs`, and renewal in `tests/person_renewal.rs`
+  and, across replicas, `tests/shared_logins.rs`.
+- `keycloak.rs`: Keycloak as the Upstream IdP for the opt-in
+  [Keycloak suite](#keycloak-upstream-suite). `Keycloak::from_env().await`
+  is `None` (the test returns) unless `DBT_STATE_KEYCLOAK=1`;
+  `.registration()` (client secret) and `.private_key_jwt_registration()`
+  are the realm's `[upstream]`; `.sign_in(&browser, url, (user, password),
+  loopback)` fills in Keycloak's login form; `.create_person(&groups)`,
+  `.disable(&person)`, `.leave_group(&person, group)` and
+  `.user_id(username)` use the realm's admin REST API.
+- `ui_client.rs` drives the broker as the UI does (`TestAuthBuilder::ui_client()`
+  registers it as `UI_CLIENT_ID` with callback `UI_REDIRECT_URI` and
+  `ui-client-public.pem`; `.ui_client_at(uri)` with another callback):
+  `UiSignIn::new()` is one standard OIDC authorize request (`openid email
+  profile`, `state`, `nonce`, PKCE S256; `.client_id`, `.redirect_uri`,
+  `.scope`, `.without_nonce`, `.without_pkce` vary it); `assertion(aud)` is
+  a good `private_key_jwt` assertion signed with `ui-client-key.pem`
+  through the auth crate's `ClientAssertionKey`, and `Assertion::new(aud)`
+  one to spoil (`.claim`, `.without`, `.issued(ago, lifetime)`,
+  `.signed_by_another_key()`, `.alg`); `exchange`, `refresh` and
+  `token_request` post the token requests. Tests: `tests/ui_client.rs`.
+- `console.rs` (included only by `tests/ui_sign_in.rs`, so other test
+  binaries do not link the UI): `start_ui(&server, &auth)` serves the UI
+  console in `oidc` mode from the operator's environment variables
+  (`oidc_vars`; `start_ui_with(&server, vars)` for others), over the
+  server's schema and broker clock. `TestAuth::config_path()` is the config
+  file it reads. `ConsoleBrowser::new(&ui, &server)` routes `CONSOLE` (the
+  UI's callback origin) and `ISSUER` to the listeners, keeps the console's
+  cookies and records its `Set-Cookie` headers; `open`/`submit` follow
+  redirects, `request`/`request_from(.., site)` make one request, and
+  `.against(&ui)` carries the cookies to a restarted console. Tests:
+  `tests/ui_sign_in.rs`.
+- `rpcs.rs`: `call_every_rpc(&scenario)` calls each RPC of the protocol with
+  a default body (`tests/oidc.rs`, `tests/ui_client.rs`).
+- `http.rs` runs an axum router on its own thread and runtime (`HttpServer`).
+- `rows.rs` reads `executions` and `node_states` back for assertions,
+  `decisions(&server, n)` the `node_decisions` rows once `n` are captured,
+  `principals(&server)` the Principal records and `tables(&server)` the
+  schema's tables;
+  `every_row_as_text(&server)` dumps the schema, to prove a value was never
+  stored.
 - `legacy.rs` (legacy fingerprints, frozen rows, corrupt encodings) and
   `fault.rs` (fault-injection DDL) are the only raw-SQL State writers.
   `legacy::forget_rendered_volatile_values` and
@@ -133,6 +306,13 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   recorded before migration 0027 or 0028, and
   `legacy::forget_data_test_history_keys` makes State history look recorded
   before migration 0029 (#200).
+  `legacy::record_history_before_principals(&database, org)` migrates a
+  `TestDatabase` only to the migration before `principals` and records a
+  decision and an execution there, for upgrade tests of migration 0032
+  (#226);
+  `fault::fail_principal_records` makes every `principals` write fail;
+  `fault::fail_session_status` makes every person session status read
+  fail.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.
 
@@ -141,6 +321,145 @@ hand, destructures decisions, runs SQL, or when raw State writes appear outside
 `legacy.rs`/`fault.rs`. The capture database test lives in
 `crates/server/tests/capture.rs`, so server library tests stay independent of
 Postgres.
+
+## Keycloak upstream suite
+
+`crates/harness/tests/keycloak.rs` runs the Token broker against Keycloak
+26.8.2 in Docker instead of the fake Upstream IdP: a browser sign-in
+through Keycloak's own login form, renewal that re-checks the person at
+Keycloak (and is denied once they are disabled or leave the mapped group),
+`client_credentials` passed through to Keycloak, a Keycloak token for
+another audience refused, and the broker's `private_key_jwt` credential.
+Every test skips unless `DBT_STATE_KEYCLOAK=1`, so `cargo test` needs no
+Docker. To run it locally (Docker and Postgres at `$DATABASE_URL`):
+
+```bash
+./scripts/keycloak.sh start      # pinned image, imports crates/harness/keycloak/dbt-state-realm.json
+DBT_STATE_KEYCLOAK=1 cargo test -p dbt-state-harness --test keycloak
+./scripts/keycloak.sh stop
+```
+
+The script publishes Keycloak on `127.0.0.1:18080` (`DBT_STATE_KEYCLOAK_PORT`;
+point the suite elsewhere with `DBT_STATE_KEYCLOAK_URL`). Tests create
+their own people through the admin REST API, so reruns against one
+Keycloak need no restart. CI's `keycloak` job runs the suite on the weekly
+schedule, on manual dispatch, and on pull requests that change the auth
+crates, broker migrations or the suite. The realm's objects and the
+Keycloak configuration lessons the suite established (mappers, audiences,
+`offline_access`) are in
+[crates/harness/keycloak/README.md](../crates/harness/keycloak/README.md).
+
+## Pinned Fusion driver
+
+`crates/harness/tests/fusion_client.rs` runs pinned dbt Fusion's own dbt
+State client code (`dbt-run-cache` at `dbt-labs/dbt-fusion@9977b6c`)
+through a small driver, `crates/harness/fusion-driver`, against a TLS test
+server with the fake Upstream IdP: a machine's `client_credentials` login
+and RPCs, a person's browser sign-in, the next invocation refreshing from
+the token on disk without a browser, the token on disk read once per
+process (a fresh token another invocation wrote is ignored; the process
+signs in through the browser again once its in-memory token is within
+300 s of expiry), a run shorter than the person token lifetime minus 5
+minutes needing no new token, and two consecutive credential lookups at
+the 15-minute minimum lifetime making no second IdP call. Time passes in
+the driver through its wall clock, which the harness moves with the Token
+broker's test clock; no lifetime validation is relaxed.
+
+dbt-fusion is licensed under the Elastic License 2.0. The driver only
+compiles against it, as a git dependency fetched at build time; its source
+is never vendored, copied or redistributed, and neither the built driver
+nor Cargo's checkout of dbt-fusion is published or kept as a CI artifact or
+cache. So the driver sits outside the Cargo workspace (`cargo test` never
+builds it) and every test skips unless `DBT_STATE_FUSION_DRIVER` names the
+built binary:
+
+```bash
+CARGO_TARGET_DIR=/tmp/fusion-driver \
+  cargo build --locked --manifest-path crates/harness/fusion-driver/Cargo.toml
+DBT_STATE_FUSION_DRIVER=/tmp/fusion-driver/debug/fusion-driver \
+  cargo test -p dbt-state-harness --test fusion_client
+```
+
+How the driver configures Fusion, opens its browser, moves its clock and
+trusts the test CA (pinned Fusion's token requests trust only public
+roots, so the driver adds native roots through a reqwest build feature) is
+in [crates/harness/fusion-driver/README.md](../crates/harness/fusion-driver/README.md).
+CI's `fusion` job builds the driver (in the runner's temp directory,
+outside the Actions cache) and runs the suite on the weekly schedule, on
+manual dispatch, and on pull requests that change the driver, the suite or
+the auth code.
+
+## Live Fusion acceptance on Snowflake
+
+`crates/harness/tests/fusion_snowflake.rs` runs the pinned official dbt
+binary (dbt **2.0.11**, SHA-256
+`f47bcb39cbe325beff9e1e19324266bc5cbb674ab6f879bccae2f2f43db68e31`, the
+client the live captures pin; the test refuses any other) through a real
+`dbt build` on Snowflake, against the harness's TLS test server in `oidc`
+mode with its Token broker and the fake Upstream IdP (#232):
+
+1. a CI machine builds a one-seed, one-table project with
+   `client_credentials` (`DBT_ENGINE_STATE_OAUTH_CLIENT_ID`,
+   `DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET`). Both decisions are BUILD in
+   the run's Organization under the machine's Principal (issuer = the fake
+   IdP, subject `sp-ci-pipeline`, kind `machine`), and no token is written
+   to disk;
+2. a person builds the same project through dbt's browser flow. dbt opens
+   the sign-in URL with `xdg-open` from `PATH`; the test's `xdg-open` is a
+   shell script that follows the redirects with `curl` through the Token
+   broker and the fake IdP to dbt's loopback handler, and refuses any URL
+   outside the broker. Both decisions are SKIP (reusing the machine's
+   builds in the same Organization) under the person's Principal (kind
+   `person`), and the token lands in the person's `~/.dbt/state_auth.json`.
+
+It is opt-in and never runs in CI: it needs Snowflake credentials, spends
+Snowflake compute (three dbt invocations; a run takes about 30 s), and
+builds only in
+`CDO_DEMO_DB`. Run it with the script, which needs Postgres at
+`$DATABASE_URL`, `python3` with PyYAML, `curl` and util-linux `script`:
+
+```bash
+DBT_STATE_FUSION_DBT=~/.local/bin/dbt ./scripts/fusion-snowflake.sh
+```
+
+Without `DBT_STATE_FUSION_SNOWFLAKE_PROFILE` (which the script sets) the
+test skips, so `cargo test` never reaches Snowflake. Safety rules:
+
+- **Only `CDO_DEMO_DB`.** The script copies one profile output
+  (`DBT_STATE_SNOWFLAKE_PROFILE`.`DBT_STATE_SNOWFLAKE_TARGET`, default
+  `snowflake`.`cdo_demo`, from `DBT_STATE_SNOWFLAKE_PROFILES`, default
+  `~/.dbt/profiles.yml`) to a private temporary file and refuses it unless
+  it is a Snowflake output whose database is `CDO_DEMO_DB`; the test checks
+  again. Variables the output reads with `env_var` are passed to dbt; the
+  test refuses an output that reads a dbt State, dbt platform or trust
+  setting (`RUN_CACHE_*`, `DBT_ENGINE_*`, `DBT_CLOUD_*`,
+  `DBT_ENV_SECRET_STATE_*`, `HOME`, `SSL_CERT_FILE`, and the like). The
+  run builds into its own schema, `DBT_STATE_FUSION_<random>`, with one
+  thread, and drops that schema at the end (also when the test fails) with
+  a macro that refuses any other database or schema. A run killed before
+  it ends leaves that schema behind; the test prints its name first.
+- **Never hosted dbt State.** dbt runs in an emptied environment with a
+  temporary `HOME` holding only the copied profile, so it never sees
+  `~/.dbt/dbt_cloud.yml` (a dbt platform credential would select token
+  exchange) and never writes the real `~/.dbt/state_auth.json`. Every
+  dbt State URL (`RUN_CACHE_API_URL`, `RUN_CACHE_AUTH_URL`,
+  `RUN_CACHE_TOKEN_URL` and their `DBT_ENGINE_STATE_*` forms) names the
+  local deployment, and anonymous usage statistics are off. The binary
+  still checks for a newer dbt release at startup, which is not dbt State.
+
+What the run established about dbt 2.0.11 (2026-11-22):
+
+- Its token requests trust `SSL_CERT_FILE`: the Token broker presented the
+  harness's test certificate, and the CA bundle the test passes (the host's
+  roots plus the test CA) was enough. Pinned Fusion's source
+  (`dbt-fusion@9977b6c`, the [pinned Fusion driver](#pinned-fusion-driver))
+  trusts only public roots there, so the released binary differs; a
+  private CA works for it without a TLS-terminating proxy.
+- Its browser flow needs an interactive terminal. Without one it warns
+  `dbt State authentication requires an interactive terminal, but none is
+  available in this environment; executing normally` and builds without
+  dbt State, so the test runs the person's build in a pseudo-terminal
+  (util-linux `script`).
 
 ## Offline regressions
 

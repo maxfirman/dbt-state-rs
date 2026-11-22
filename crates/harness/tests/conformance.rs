@@ -6,11 +6,13 @@
 
 #[path = "support.rs"]
 mod support;
+
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use qc::execution_client::ExecutionClient;
 use qc::sql_client::SqlClient;
 use std::collections::{HashMap, HashSet};
+use support::{databricks_decision_time, hosted_submit_edid};
 
 /// Successful calls retain new capture metadata; old fixtures omit it.
 trait CapturedResponse<T> {
@@ -67,52 +69,21 @@ struct KnownGap {
     ignore_explain_lines: Vec<String>,
 }
 
-/// New Databricks captures expose the actual hosted decision instant in a
-/// UUIDv7 decision ID. Request/response transit can straddle a second; using
-/// response recorded_at would change otherwise exact relative-age Explain text.
-/// Decoding is solely a replay clock source, never a production ID contract.
-fn databricks_decision_time(entry: &diff::GoldenEntry) -> Result<i64, String> {
-    let raw = hosted_submit_edid(&entry.response).ok_or("missing decision ID")?;
-    let id = uuid::Uuid::parse_str(&raw).map_err(|_| "invalid decision UUID")?;
-    if id.get_version_num() != 7 || id.get_variant() != uuid::Variant::RFC4122 {
-        return Err("unsupported decision UUID version/variant".into());
-    }
-    let at = (id.as_u128() >> 80) as i64;
-    let submitted = entry
-        .metadata
-        .iter()
-        .find(|(name, _)| name == "x-submitted-at-epoch")
-        .and_then(|(_, value)| value.parse::<i64>().ok())
-        .ok_or("missing captured submit instant")?;
-    let recorded = entry
-        .recorded_at_ms()
-        .ok_or("missing captured response instant")?;
-    if at < submitted || at > recorded {
-        return Err(format!(
-            "decision instant {at} outside captured interval {submitted}..={recorded}"
-        ));
-    }
-    Ok(at)
-}
-
 fn captured_submit_request<T>(
     body: T,
     entry: &diff::GoldenEntry,
     fixture: &str,
     native_clocks: Option<&support::native_clock::NativeClocks>,
 ) -> tonic::Request<T> {
-    let mut request = support::captured_request(body, entry);
     if fixture.starts_with("databricks_") || native_clocks.is_some() {
         let at = native_clocks.map_or_else(
             || databricks_decision_time(entry).expect("evidenced Databricks decision clock"),
             |clocks| clocks.submit_clock(entry),
         );
-        request.metadata_mut().insert(
-            dbt_state_server::REPLAY_NOW_HEADER,
-            at.to_string().parse().unwrap(),
-        );
+        support::captured_request_at(body, entry, at)
+    } else {
+        support::captured_request(body, entry)
     }
-    request
 }
 
 #[test]
@@ -417,6 +388,7 @@ const VOLATILE_VALUE_FORMATS: &[(&str, ValueFormat)] = &[
     ("RANDSTR(8, RANDOM())", UNIT_DECIMAL),
     ("NORMAL(0, 1, RANDOM())", UNIT_DECIMAL),
     ("UUID_STRING()", LOWERCASE_UUID_V4),
+    ("UUID()", LOWERCASE_UUID_V4),
 ];
 
 /// The only runtime-value normalization of the replay (#67, #193): each
@@ -1178,7 +1150,7 @@ async fn conformance_replay_all_corpora() {
     paths.sort();
     assert_eq!(
         paths.len(),
-        149,
+        154,
         "update corpus coverage when adding fixtures"
     );
     // Optional development validation of a retained local Rust capture. This
@@ -1757,6 +1729,26 @@ async fn databricks_volatile_evaluation_exact_public_history() {
     exact_native_history("databricks_volatile_evaluation.jsonl", 29, 8, 6).await;
 }
 
+#[tokio::test]
+async fn databricks_volatile_priority_exact_public_history() {
+    exact_native_history("databricks_volatile_priority.jsonl", 98, 27, 24).await;
+}
+
+#[tokio::test]
+async fn databricks_volatile_function_builds_exact_public_history() {
+    exact_native_history("databricks_volatile_function_builds.jsonl", 23, 6, 6).await;
+}
+
+#[tokio::test]
+async fn databricks_volatile_checked_reuse_exact_public_history() {
+    exact_native_history("databricks_volatile_checked_reuse.jsonl", 19, 4, 2).await;
+}
+
+#[tokio::test]
+async fn databricks_volatile_producer_exact_public_history() {
+    exact_native_history("databricks_volatile_producer.jsonl", 50, 14, 11).await;
+}
+
 /// Complete hosted composite partition/schema history, including failed builds.
 #[tokio::test]
 async fn databricks_overwrite_recovery_exact_public_history() {
@@ -1804,6 +1796,14 @@ async fn databricks_submit_copy_exact_public_history() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../golden/fixtures/databricks_submit_copy.jsonl");
     exact_native_history_at(&path, 75, 12, 8, 12, None).await;
+}
+
+/// Nine crafted Databricks histories, ending at the absent destination's decision.
+#[tokio::test]
+async fn databricks_copy_candidates_exact_public_history() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../golden/fixtures/databricks_copy_candidates.jsonl");
+    exact_native_history_at(&path, 43, 26, 26, 0, None).await;
 }
 
 #[tokio::test]
@@ -2503,21 +2503,6 @@ async fn databricks_incremental_transition_display_preserves_rejection_lineage()
             }
         }
     }
-}
-
-/// Extract the hosted `execution_decision_id` from a captured submit response
-/// (any variant). Returns None for a response without one.
-fn hosted_submit_edid(resp: &serde_json::Value) -> Option<String> {
-    let variants = resp.get("response")?.as_object()?;
-    for payload in variants.values() {
-        if let Some(id) = payload
-            .get("execution_decision_id")
-            .and_then(|v| v.as_str())
-        {
-            return Some(id.to_string());
-        }
-    }
-    None
 }
 
 /// Extract the locally minted `execution_decision_id` from the server's submit

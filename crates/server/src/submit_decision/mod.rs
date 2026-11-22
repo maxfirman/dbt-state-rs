@@ -42,6 +42,7 @@ use crate::store::{
     CopyCandidate, CopyCandidateQuery, ExecutionRow, Producer, SeedCopyCandidateQuery, Store,
 };
 use crate::warehouse::Warehouse;
+use dbt_state_auth::PrincipalId;
 use std::collections::HashMap;
 
 /// The ids minted for an outcome the client confirms: `request_id` keys the
@@ -272,10 +273,8 @@ pub struct ExplainedOutcome {
     /// enter identity, fingerprints, Upstream producers or Reuse
     /// qualification. `None` when nothing was rendered.
     pub rendered: Option<crate::volatile_evaluation::Rendered>,
-    /// The submit was refused at Reuse qualification in an unchanged rerun
-    /// ([`reuse_candidate::Selection::unchanged_rerun`]). Selects a Volatile
-    /// evaluation cell only; it decides nothing.
-    unchanged_rerun: bool,
+    /// Evidence for a rendering cell after Reuse qualification refused a build.
+    rerun_evidence: crate::reuse_candidate::RerunEvidence,
 }
 
 /// Decide a `SubmitEnrichedSQL` submission (models, snapshots, data tests...).
@@ -287,17 +286,19 @@ pub async fn submit_sql(
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
     let sources = crate::volatile_evaluation::Sources::system(now_ms.saturating_mul(1000));
-    Ok(submit_sql_explained(store, org_id, req, &sources)
+    Ok(submit_sql_explained(store, org_id, None, req, &sources)
         .await?
         .outcome)
 }
 
 /// [`submit_sql`], with the decision's [`ExplainEvidence`] and the values
 /// its Volatile evaluation rendered from `sources`. The build age is
-/// measured on the same clock (`sources.now_micros`).
+/// measured on the same clock (`sources.now_micros`). A pending row it
+/// writes names `principal`.
 pub async fn submit_sql_explained(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     sources: &crate::volatile_evaluation::Sources,
 ) -> sqlx::Result<ExplainedOutcome> {
@@ -309,7 +310,7 @@ pub async fn submit_sql_explained(
     )
     .await;
     let now_ms = sources.now_micros.div_euclid(1000);
-    let mut decided = decide_sql(store, org_id, req, now_ms, Mode::Ordinary)
+    let mut decided = decide_sql(store, org_id, principal, req, now_ms, Mode::Ordinary)
         .await?
         .expect("an ordinary submit is always decided");
     // Volatile evaluation, once decided: a build, a reuse or a Result copy,
@@ -324,7 +325,7 @@ pub async fn submit_sql_explained(
                 && reuse_candidate::refuses_volatile_sql_alone(req)
             {
                 crate::volatile_evaluation::Decided::RefusedVolatileSql {
-                    unchanged_rerun: decided.unchanged_rerun,
+                    rerun: decided.rerun_evidence,
                 }
             } else {
                 crate::volatile_evaluation::Decided::Build(record.reason)
@@ -362,7 +363,7 @@ pub async fn speculative_sql(
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<SubmitOutcome>> {
-    Ok(speculative_sql_explained(store, org_id, req, now_ms)
+    Ok(speculative_sql_explained(store, org_id, None, req, now_ms)
         .await?
         .map(|decided| decided.outcome))
 }
@@ -371,6 +372,7 @@ pub async fn speculative_sql(
 pub async fn speculative_sql_explained(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
 ) -> sqlx::Result<Option<ExplainedOutcome>> {
@@ -387,7 +389,7 @@ pub async fn speculative_sql_explained(
     if !needs_no_table_evidence {
         return Ok(None);
     }
-    let outcome = decide_sql(store, org_id, req, now_ms, Mode::SkipOnly).await?;
+    let outcome = decide_sql(store, org_id, principal, req, now_ms, Mode::SkipOnly).await?;
     if outcome.is_some() {
         record_node_state(
             store,
@@ -415,26 +417,29 @@ enum Mode {
 async fn decide_sql(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitEnrichedSqlRequest,
     now_ms: i64,
     mode: Mode,
 ) -> sqlx::Result<Option<ExplainedOutcome>> {
     let mut evidence = ExecutionEvidence::sql_submit(org_id, req);
+    evidence.principal = principal.cloned();
     evidence.display_submitted_at_ms =
         Warehouse::from_dialect(&req.dialect).explain_submit_clock(now_ms);
     let req = Warehouse::from_dialect(&req.dialect).resolve_submit(req);
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
     crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
-    let selection = select_sql(store, org_id, req, &evidence).await?;
-    let unchanged_rerun = selection.unchanged_rerun;
+    let mut selection = select_sql(store, org_id, req, &evidence).await?;
+    judge_changed_rerun(store, req, &evidence, &mut selection).await?;
+    let rerun_evidence = selection.rerun_evidence;
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
     Ok(outcome.map(|outcome| ExplainedOutcome {
         explain: ExplainEvidence::of(req, &evidence, &outcome),
         outcome,
         rendered: None,
-        unchanged_rerun,
+        rerun_evidence,
     }))
 }
 
@@ -595,6 +600,9 @@ async fn decide_resolved_sql(
             .build_time_ms(row)
             .map(|built| now_ms.saturating_sub(built));
     }
+    let producer_revision = selection
+        .producer_revision
+        .filter(|_| record.class == DecisionKind::Build);
     let (record, candidate) = anchor_rejected(
         record,
         candidate,
@@ -604,7 +612,11 @@ async fn decide_resolved_sql(
             .or(selection.unqualified),
     );
     let record = record.with_unmatched_build(selection.unmatched.as_ref());
-    let mut outcome = settle(store, evidence, record, candidate).await?;
+    let mut revised_evidence = std::borrow::Cow::Borrowed(evidence);
+    if let Some(revision) = producer_revision {
+        revised_evidence.to_mut().producer_revision = Some(revision);
+    }
+    let mut outcome = settle(store, &revised_evidence, record, candidate).await?;
     if req.execution_type == ModelExecutionType::Merge as i32 {
         if let (
             Some(reference),
@@ -618,6 +630,46 @@ async fn decide_resolved_sql(
         }
     }
     Ok(Some(outcome))
+}
+
+/// A model's rebuild refused at Reuse qualification after its Target
+/// relation or sole input changed stands only when its Warehouse
+/// establishes it from the current State of that input (#213). Otherwise
+/// nothing is established about the rerun. An established External
+/// modification of the input also gives the rebuild a producer revision.
+async fn judge_changed_rerun(
+    store: &Store,
+    req: &qc::SubmitEnrichedSqlRequest,
+    evidence: &ExecutionEvidence,
+    selection: &mut reuse_candidate::Selection,
+) -> sqlx::Result<()> {
+    if !selection.rerun_evidence.is_changed() {
+        return Ok(());
+    }
+    let changed = selection.unqualified.as_ref().and_then(|refused| {
+        Warehouse::from_dialect(&req.dialect).changed_volatile_rerun(
+            req,
+            selection.rerun_evidence,
+            refused,
+            &evidence.input_tables,
+        )
+    });
+    let Some(changed) = changed else {
+        selection.rerun_evidence = reuse_candidate::RerunEvidence::Unverified;
+        return Ok(());
+    };
+    let built = store
+        .current_delta_state_without_pending_writes(
+            &evidence.org_id,
+            changed.input(),
+            evidence.table_namespace.as_deref(),
+            &evidence.dialect,
+        )
+        .await?;
+    let judged = changed.judge(built.as_ref());
+    selection.rerun_evidence = judged.rerun;
+    selection.producer_revision = judged.producer_revision.or(selection.producer_revision);
+    Ok(())
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own
@@ -848,10 +900,12 @@ struct Freshness<'a> {
 /// Decide a `SubmitValues` (seed) submission. Seeds have no Lag tolerance and
 /// always use the ANY stale-upstream policy. A seed without a reuse
 /// candidate may be copied from its load under another name where the
-/// Warehouse rules admit it (Snowflake, #91; [`seed_copy_fallback`]).
+/// Warehouse rules admit it (Snowflake, #91; [`seed_copy_fallback`]). A
+/// pending row it writes names `principal`.
 pub async fn submit_values(
     store: &Store,
     org_id: &str,
+    principal: Option<&PrincipalId>,
     req: &qc::SubmitValuesRequest,
     now_ms: i64,
 ) -> sqlx::Result<SubmitOutcome> {
@@ -863,7 +917,8 @@ pub async fn submit_values(
     )
     .await;
 
-    let evidence = ExecutionEvidence::values_submit(org_id, req);
+    let mut evidence = ExecutionEvidence::values_submit(org_id, req);
+    evidence.principal = principal.cloned();
     let current = store
         .current_target_state(
             org_id,

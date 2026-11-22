@@ -10,6 +10,7 @@ mod databricks_submit_copy;
 pub mod decision;
 mod execution;
 pub mod explain;
+pub mod grpc_auth;
 mod request_scope;
 mod result_copy;
 mod reuse_candidate;
@@ -42,6 +43,9 @@ pub struct AppState {
     pub require_org_header: bool,
     /// The clock decisions measure build age against (ADR 0007).
     pub clock: Clock,
+    /// `oidc` mode: authenticates every call but health. `None` is `none`
+    /// mode. See `grpc_auth`.
+    pub(crate) oidc: Option<Arc<grpc_auth::Oidc>>,
 }
 
 /// The server clock. Lag tolerance compares a reuse candidate's build age on
@@ -99,6 +103,7 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            oidc: None,
         })
     }
 
@@ -116,7 +121,36 @@ impl AppState {
             captures: Arc::default(),
             require_org_header: false,
             clock: Clock::System,
+            oidc: None,
         }
+    }
+
+    /// `oidc` mode: every call except `grpc.health.v1` needs a token
+    /// `config` accepts for the Organization it names, and handlers take the
+    /// Organization from the authenticated context.
+    ///
+    /// With `[signing]`, tokens are checked against those keys: the same key
+    /// set an in-process Token broker publishes. Without it, against the
+    /// Token broker's published keys, fetched and cached
+    /// (`dbt_state_broker::RemoteKeys`).
+    ///
+    /// A person token also needs an active Token broker session in this
+    /// state's Postgres (`grpc_auth`).
+    pub fn with_oidc(self, config: &dbt_state_auth::AuthConfig) -> anyhow::Result<Self> {
+        self.with_oidc_clock(config, dbt_state_broker::Clock::system())
+    }
+
+    /// [`Self::with_oidc`], with `clock` deciding how old a cached person
+    /// session status is and when a session reaches its cap (tests move
+    /// it; nothing a client sends can).
+    pub fn with_oidc_clock(
+        mut self,
+        config: &dbt_state_auth::AuthConfig,
+        clock: dbt_state_broker::Clock,
+    ) -> anyhow::Result<Self> {
+        let pool = self.store.pool().clone();
+        self.oidc = Some(Arc::new(grpc_auth::Oidc::new(config, pool, clock)?));
+        Ok(self)
     }
 
     /// Use `clock` for build ages and confirmation receipt times.
@@ -132,9 +166,37 @@ impl AppState {
     }
 }
 
-/// Build the tonic router with all services registered against `state`.
+/// The router [`build_router`] returns: every service behind the
+/// authentication layer.
+pub type GrpcRouter = tonic::transport::server::Router<
+    tower::layer::util::Stack<grpc_auth::GrpcAuthLayer, tower::layer::util::Identity>,
+>;
+
+/// Build the tonic router with all services registered against `state`,
+/// behind the authentication layer (`grpc_auth`), serving plain HTTP/2.
 /// Shared by the binary and by in-process differential tests.
-pub fn build_router(state: AppState) -> tonic::transport::server::Router {
+pub fn build_router(state: AppState) -> GrpcRouter {
+    routes(tonic::transport::Server::builder(), state)
+}
+
+/// [`build_router`], serving gRPC over TLS with `identity`.
+pub fn build_tls_router(
+    state: AppState,
+    identity: &dbt_state_broker::TlsIdentity,
+) -> anyhow::Result<GrpcRouter> {
+    let tls = tonic::transport::ServerTlsConfig::new()
+        .identity(tonic::transport::Identity::from_pem(
+            identity.certificate_chain_pem(),
+            identity.private_key_pem(),
+        ))
+        .timeout(dbt_state_broker::tls::HANDSHAKE_TIMEOUT);
+    let server = tonic::transport::Server::builder()
+        .tls_config(tls)
+        .map_err(|error| anyhow::anyhow!("gRPC TLS: {error}"))?;
+    Ok(routes(server, state))
+}
+
+fn routes(server: tonic::transport::Server, state: AppState) -> GrpcRouter {
     use crate::query_cache::client_telemetry_server::ClientTelemetryServer;
     use crate::query_cache::client_validation_server::ClientValidationServer;
     use crate::query_cache::clone_server::CloneServer;
@@ -147,7 +209,8 @@ pub fn build_router(state: AppState) -> tonic::transport::server::Router {
         ExplainService, SelectorServiceImpl, SqlService,
     };
 
-    tonic::transport::Server::builder()
+    server
+        .layer(grpc_auth::GrpcAuthLayer::new(state.oidc.clone()))
         .add_service(health_service())
         .add_service(SqlServer::new(SqlService(state.clone())))
         .add_service(ExecutionServer::new(ExecutionService(state.clone())))

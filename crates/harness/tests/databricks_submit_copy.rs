@@ -166,6 +166,7 @@ fn after_copy(
 fn native_evidence_guards() {
     for script in [
         "databricks_submit_copy_test.py",
+        "databricks_upstream_origin_test.py",
         "databricks_copy_recovery_test.py",
         "databricks_shared_copy_test.py",
     ] {

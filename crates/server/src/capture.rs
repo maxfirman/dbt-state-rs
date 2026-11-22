@@ -114,6 +114,9 @@ pub struct CaptureInput {
     pub volatile_evaluation: crate::volatile_evaluation::Evidence,
     // identity / grouping
     pub org_id: String,
+    /// The Principal whose request made the decision (`principals.id`);
+    /// `None` in `none` mode.
+    pub principal_id: Option<String>,
     pub external_invocation_id: Option<String>,
     pub session_id: Option<String>,
     pub project_external_id: Option<String>,
@@ -299,11 +302,11 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
             decision_reason, freshness_tolerance_ms, build_age_ms,
             skip_rejection_reason, clone_rejection_reason, unmatched_execution_id,
             reads_relation, display_submitted_at_ms, template_comparison,
-            rendered_volatile_values, volatile_evaluation_requested
+            rendered_volatile_values, volatile_evaluation_requested, principal_id
         )
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
                 $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,
-                $37)
+                $37,$38)
         "#,
     )
     .bind(&i.org_id)
@@ -347,6 +350,7 @@ async fn capture_inner(pool: &PgPool, i: &CaptureInput) -> sqlx::Result<()> {
     )
     .bind(i.volatile_evaluation.stored_values())
     .bind(i.volatile_evaluation.requested)
+    .bind(&i.principal_id)
     .execute(pool)
     .await?;
 

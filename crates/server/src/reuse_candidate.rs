@@ -65,11 +65,11 @@ pub(crate) struct Selection {
     /// listing against it (`explain_volatile_cells.jsonl` entries 189, 190
     /// (#205), 195 and 199 (#206)). Never reused, and never a copy's anchor.
     pub unqualified: Option<ExecutionRow>,
-    /// The submit was refused at Reuse qualification against the latest
-    /// row with its identity, and nothing else is against that row
-    /// ([`unchanged_since`]): an unchanged rerun. Selects a Volatile
-    /// evaluation cell only (#198); it decides nothing.
-    pub unchanged_rerun: bool,
+    /// Evidence from the latest matching build refused at Reuse qualification.
+    pub rerun_evidence: RerunEvidence,
+    /// The latest ordinary build's producer revision for the same rendered
+    /// SQL identity, including builds refused for ambiguous Target evidence.
+    pub producer_revision: Option<crate::store::ProducerRevision>,
 }
 
 impl Selection {
@@ -78,18 +78,14 @@ impl Selection {
         Selection {
             candidate: Some(row),
             target_has_prior_build: true,
-            why_no_candidate: None,
-            rejected: None,
-            unqualified: None,
-            unmatched: None,
-            type_changed: None,
-            transition_display: None,
-            unchanged_rerun: false,
+            ..Selection::FIRST_BUILD
         }
     }
 
-    /// No confirmed build of the target exists in scope.
-    const FIRST_BUILD: Selection = Selection {
+    /// No confirmed build of the target exists in scope: nothing selected
+    /// and nothing established. Every other selection starts from it, so a
+    /// new field is set here once.
+    pub(crate) const FIRST_BUILD: Selection = Selection {
         candidate: None,
         target_has_prior_build: false,
         why_no_candidate: None,
@@ -98,7 +94,8 @@ impl Selection {
         unmatched: None,
         type_changed: None,
         transition_display: None,
-        unchanged_rerun: false,
+        rerun_evidence: RerunEvidence::Unverified,
+        producer_revision: None,
     };
 
     /// The outcome for a latest row in scope: the reuse candidate when the
@@ -147,16 +144,14 @@ impl Selection {
             unqualified,
             unmatched,
             type_changed,
-            transition_display: None,
-            unchanged_rerun: false,
+            ..Selection::FIRST_BUILD
         }
     }
 
-    /// Mark a Reuse qualification refusal against a row that nothing else
-    /// is against (`unchanged`) as an unchanged rerun.
-    fn with_unchanged_rerun(mut self, unchanged: bool) -> Selection {
-        self.unchanged_rerun =
-            unchanged && self.why_no_candidate == Some(NoCandidate::FailedReuseQualification);
+    fn with_rerun_evidence(mut self, rerun: RerunEvidence) -> Selection {
+        if self.why_no_candidate == Some(NoCandidate::FailedReuseQualification) {
+            self.rerun_evidence = rerun;
+        }
         self
     }
 }
@@ -236,17 +231,22 @@ pub(crate) fn for_model(
         unmatched = Some(current);
         None
     };
-    let unchanged = identified
+    let rerun = identified
         .as_ref()
-        .is_some_and(|row| unchanged_since(req, evidence, row));
+        .map(|row| rerun_evidence(req, evidence, row))
+        .unwrap_or_default();
+    let producer_revision = identified
+        .as_ref()
+        .and_then(|row| row.retained_producer_revision(evidence.node_sql_hash.as_deref()));
     let mut selected = Selection::of(
         identified,
         unidentified,
         |prev| model_rejection(req, evidence, prev),
         Workload::Model { unmatched },
     )
-    .with_unchanged_rerun(unchanged);
+    .with_rerun_evidence(rerun);
     selected.transition_display = transition_display;
+    selected.producer_revision = producer_revision;
     Ok(selected)
 }
 
@@ -258,10 +258,12 @@ fn model_rejection(
     evidence: &ExecutionEvidence,
     prev: &ExecutionRow,
 ) -> Option<NoCandidate> {
-    let qualifies = if volatile_sql_compared_by_unrendered_code(req)
+    let template_qualified = volatile_sql_compared_by_unrendered_code(req)
         && evidence.node_template_hash.is_some()
-        && prev.node_template_hash == evidence.node_template_hash
-    {
+        && prev.node_template_hash == evidence.node_template_hash;
+    let checked_databricks = crate::copy_lifecycle::ordinary(prev)
+        && crate::warehouse::Warehouse::from_dialect(&req.dialect).checked_volatile_reuse(req);
+    let qualifies = if template_qualified || checked_databricks {
         sql_evidence_complete(req, evidence)
     } else {
         sql_qualifies(req, evidence)
@@ -420,9 +422,10 @@ pub(crate) fn for_data_test(
     } else {
         None
     };
-    let unchanged = identified
+    let rerun = identified
         .as_ref()
-        .is_some_and(|row| unchanged_since(req, evidence, row));
+        .map(|row| rerun_evidence(req, evidence, row))
+        .unwrap_or_default();
     Ok(Selection::of(
         identified,
         NoCandidate::IdentityMismatch,
@@ -437,7 +440,7 @@ pub(crate) fn for_data_test(
         },
         Workload::DataTest,
     )
-    .with_unchanged_rerun(unchanged))
+    .with_rerun_evidence(rerun))
 }
 
 /// Seeds compare values and seed configuration identity, then require the
@@ -657,8 +660,8 @@ fn sql_evidence_complete(req: &qc::SubmitEnrichedSqlRequest, evidence: &Executio
 }
 
 /// Whether the root SQL or a query dependency definition calls a Volatile
-/// function. A Warehouse without a checked detector reports every SQL as
-/// volatile, so it never reuses with evaluation requested.
+/// function. Warehouses without a general detector report SQL as volatile.
+/// The checked Databricks FULL shape is admitted by model Reuse qualification.
 fn calls_volatile_function(req: &qc::SubmitEnrichedSqlRequest) -> bool {
     crate::warehouse::Warehouse::from_dialect(&req.dialect).has_volatile_sql(
         &req.sql,
@@ -693,26 +696,48 @@ enum OwnTarget {
     Ambiguous,
 }
 
-/// Whether nothing but Reuse qualification is against `prev`, the latest
-/// row with the workload's identity: it is an ordinary build (no copy), a
-/// model's own Target relation is as built ([`own_target`]), a data test's
-/// cached results are complete, and the submit's genuine upstreams are the
-/// ones recorded at `prev`, each with the epoch recorded for it and the same
-/// Upstream producer (none at all also qualifies). Unknown epochs never
-/// qualify. Selects a Volatile evaluation cell only (#198): the captured
-/// Databricks refusals are unchanged reruns
-/// (`databricks_volatile_evaluation.jsonl` entries 21 and 22).
-fn unchanged_since(
+/// What can be established about a rerun of a workload's ordinary build.
+/// Used for the bounded Databricks producer transition and rendering cells.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RerunEvidence {
+    #[default]
+    Unverified,
+    Unchanged,
+    /// Its Target relation changed with one unchanged input.
+    TargetChanged,
+    /// Its sole input was externally modified with the Target relation as built.
+    InputModifiedExternally,
+}
+
+impl RerunEvidence {
+    /// A change to the Target relation or the sole input, which stands only
+    /// when the Warehouse establishes it
+    /// (`Warehouse::changed_volatile_rerun`).
+    pub(crate) fn is_changed(self) -> bool {
+        matches!(self, Self::TargetChanged | Self::InputModifiedExternally)
+    }
+}
+
+/// Compare the Target relation and upstreams with the ordinary build whose
+/// identity matched (#198, #213).
+fn rerun_evidence(
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
     prev: &ExecutionRow,
-) -> bool {
+) -> RerunEvidence {
     use crate::decision::FreshnessEvidence;
+
+    if !crate::copy_lifecycle::ordinary(prev) {
+        return RerunEvidence::Unverified;
+    }
     let data_test = req.execution_type == ModelExecutionType::DbtDataTest as i32;
     let own = if data_test {
-        reusable_test_results(prev.execution_results.as_ref())
+        if !reusable_test_results(prev.execution_results.as_ref()) {
+            return RerunEvidence::Unverified;
+        }
+        OwnTarget::AsBuilt
     } else {
-        matches!(own_target(req, prev), OwnTarget::AsBuilt)
+        own_target(req, prev)
     };
     let inputs = crate::decision::FreshnessInputs {
         execution_type: req.execution_type,
@@ -727,7 +752,39 @@ fn unchanged_since(
         }),
         FreshnessEvidence::DependencySetChanged | FreshnessEvidence::NoBuildAnchor => false,
     };
-    crate::copy_lifecycle::ordinary(prev) && own && upstreams_unchanged
+    match (own, upstreams_unchanged, freshness.upstreams.as_slice()) {
+        (OwnTarget::AsBuilt, true, _) => RerunEvidence::Unchanged,
+        (OwnTarget::Modified | OwnTarget::Missing, true, [_]) => RerunEvidence::TargetChanged,
+        (OwnTarget::AsBuilt, false, _)
+            if sole_upstream_modified_externally(&freshness, prev, &evidence.input_tables) =>
+        {
+            RerunEvidence::InputModifiedExternally
+        }
+        _ => RerunEvidence::Unverified,
+    }
+}
+
+/// Whether the one genuine upstream drifted since `prev` because it was
+/// modified externally after `prev` read it from a recorded build
+/// ([`InputTable::modified_externally_since`]). `freshness` is the upstream
+/// freshness of `current`, the inputs read now, against `prev`. The #213
+/// rerun cell and its Explain both stand on this situation.
+pub(crate) fn sole_upstream_modified_externally(
+    freshness: &crate::decision::UpstreamFreshness,
+    prev: &ExecutionRow,
+    current: &[InputTable],
+) -> bool {
+    let [upstream] = freshness.upstreams.as_slice() else {
+        return false;
+    };
+    let now = current.iter().find(|t| t.name == upstream.name);
+    let recorded = prev.input_tables.iter().find(|t| t.name == upstream.name);
+    freshness.evidence == crate::decision::FreshnessEvidence::Evaluated
+        && !upstream.unprovable
+        && upstream.drifted
+        && now
+            .zip(recorded)
+            .is_some_and(|(now, recorded)| now.modified_externally_since(recorded))
 }
 
 /// Own-target existence and external edits, checked separately from upstream

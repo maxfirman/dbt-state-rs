@@ -24,11 +24,23 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
   - `store.rs` + `store/history.rs`: Postgres writes and scoped State history reads.
   - `request_scope.rs`: the one request scope (Organization, invocation and
     session ids) each gRPC handler and decision capture takes.
-  - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.
+  - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`),
+    `main.rs`, `admin.rs` (the `revoke-sessions` command).
+  - `grpc_auth.rs`: `oidc` mode authentication layer (all RPCs but health).
+- `crates/auth`: auth core shared by server, Token broker and UI (scope
+  format, TOML auth config, tokens and JWKS, mapping rules, authenticated
+  context). Pure apart from reading config and key files.
+- `crates/broker`: the Token broker (discovery, JWKS, browser sign-in through
+  the Upstream IdP, refresh, `client_credentials` pass-through, session check
+  and revocation); in-process or standalone binary.
 - `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
   and fuzz tools, integration tests.
+  `crates/harness/fusion-driver` (outside the workspace) compiles against
+  dbt-fusion (ELv2) for an opt-in suite: never vendor or copy Fusion source.
 - `crates/ui`: optional read-only web console.
-→ full module table in [docs/architecture.md](docs/architecture.md)
+→ full module table in [docs/architecture.md](docs/architecture.md); deploying
+`oidc` mode, with the revocation bounds and the tests behind them, in
+[docs/operator-guide.md](docs/operator-guide.md)
 
 ## Build / test
 ```bash
@@ -91,8 +103,10 @@ cargo clippy --workspace --all-targets --features fuzz -- -D warnings   # CI lin
      relation is not an input: named exactly (#88), or as the only reported
      table in its schema its SQL and query dependencies never mention (#123,
      ADR 0008).
-- **Org isolation.** Every store query is scoped by `org_id` (from the
-  `x-organization-id` metadata header, default `local`). Never weaken this.
+- **Org isolation.** Every store query is scoped by `org_id`: in
+  `DBT_STATE_AUTH=none` from the `x-organization-id` metadata header (default
+  `local`); in `oidc` mode from the authenticated context, after the token and
+  the header's Organization are verified (`grpc_auth.rs`). Never weaken this.
 - **Replay clock is test-only.** `Clock::Replay` lets a request's
   `x-dbt-state-replay-now-ms` header set the server clock
   (`crates/server/src/lib.rs`). Never enable it in a deployment: a client could
