@@ -424,7 +424,8 @@ async fn decide_sql(
     let req = req.as_ref();
     resolve_producers(store, &mut evidence).await?;
     crate::data_test_history::read_through_copies(store, req, &mut evidence).await?;
-    let selection = select_sql(store, org_id, req, &evidence).await?;
+    let mut selection = select_sql(store, org_id, req, &evidence).await?;
+    judge_changed_rerun(store, req, &evidence, &mut selection).await?;
     let rerun_evidence = selection.rerun_evidence;
     let outcome =
         decide_resolved_sql(store, org_id, req, &evidence, selection, now_ms, mode).await?;
@@ -593,11 +594,9 @@ async fn decide_resolved_sql(
             .build_time_ms(row)
             .map(|built| now_ms.saturating_sub(built));
     }
-    let producer_revision = if record.class == DecisionKind::Build {
-        databricks_producer_revision(store, req, evidence, &selection).await?
-    } else {
-        None
-    };
+    let producer_revision = selection
+        .producer_revision
+        .filter(|_| record.class == DecisionKind::Build);
     let (record, candidate) = anchor_rejected(
         record,
         candidate,
@@ -627,58 +626,44 @@ async fn decide_resolved_sql(
     Ok(Some(outcome))
 }
 
-/// #213: a confirmed FULL RAND build over an external modification to
-/// its single managed input changes what its downstreams consume. Ordinary
-/// reruns retain that revision. Rendering is independent of this proof.
-async fn databricks_producer_revision(
+/// A model's rebuild refused at Reuse qualification after its Target
+/// relation or sole input changed stands only when its Warehouse
+/// establishes it from the current State of that input (#213). Otherwise
+/// nothing is established about the rerun. An established External
+/// modification of the input also gives the rebuild a producer revision.
+async fn judge_changed_rerun(
     store: &Store,
     req: &qc::SubmitEnrichedSqlRequest,
     evidence: &ExecutionEvidence,
-    selection: &reuse_candidate::Selection,
-) -> sqlx::Result<Option<i64>> {
-    use crate::reuse_candidate::RerunEvidence;
-
-    let warehouse = Warehouse::from_dialect(&req.dialect);
-    if warehouse != Warehouse::Databricks || req.execution_type != ModelExecutionType::Full as i32 {
-        return Ok(None);
+    selection: &mut reuse_candidate::Selection,
+) -> sqlx::Result<()> {
+    if !selection.rerun_evidence.is_changed() {
+        return Ok(());
     }
-    let source = (selection.rerun_evidence == RerunEvidence::InputModifiedExternally)
-        .then(|| warehouse.volatile_producer_input(req))
-        .flatten();
-    let Some((source, prior)) = source.zip(selection.unqualified.as_ref()) else {
-        return Ok(selection.producer_revision);
-    };
-    let recorded = prior.input_tables.iter().find(|input| input.name == source);
-    let current = evidence
-        .input_tables
-        .iter()
-        .find(|input| input.name == source);
-    let Some((recorded, current)) = recorded.zip(current) else {
-        return Ok(selection.producer_revision);
+    let changed = selection.unqualified.as_ref().and_then(|refused| {
+        Warehouse::from_dialect(&req.dialect).changed_volatile_rerun(
+            req,
+            selection.rerun_evidence,
+            refused,
+            &evidence.input_tables,
+        )
+    });
+    let Some(changed) = changed else {
+        selection.rerun_evidence = reuse_candidate::RerunEvidence::Unverified;
+        return Ok(());
     };
     let built = store
         .current_delta_state_without_pending_writes(
             &evidence.org_id,
-            &source,
+            changed.input(),
             evidence.table_namespace.as_deref(),
             &evidence.dialect,
         )
         .await?;
-    let changed = built.is_some_and(|row| {
-        row.execution_type == ModelExecutionType::Full as i32
-            && crate::copy_lifecycle::ordinary(&row)
-            && row.last_modified_epoch == recorded.last_modified_epoch
-            && row
-                .last_modified_epoch
-                .zip(current.last_modified_epoch)
-                .is_some_and(|(built, observed)| built < observed)
-            && Producer::of(Some(&row), recorded.last_modified_epoch) == recorded.producer
-    });
-    Ok(if changed {
-        Some(prior.id)
-    } else {
-        selection.producer_revision
-    })
+    let judged = changed.judge(built.as_ref());
+    selection.rerun_evidence = judged.rerun;
+    selection.producer_revision = judged.producer_revision.or(selection.producer_revision);
+    Ok(())
 }
 
 /// A rebuild whose latest build had the workload's identity but whose own

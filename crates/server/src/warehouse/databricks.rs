@@ -113,6 +113,8 @@ pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
             cell(Full, true, UNCHANGED_RERUN, Queries::Own)
                 .with_functions(FULL_RERUN_FORMS)
                 .without_upstream_tables(),
+            // Only the captured projection over one Delta input
+            // (`ChangedRerun`).
             cell(
                 Full,
                 true,
@@ -203,6 +205,100 @@ pub(super) fn volatile_producer_input(
         )?
         .input,
     )
+}
+
+/// A FULL model's rebuild refused at Reuse qualification after its Target
+/// relation or its sole input changed (#213). Captured for one plain
+/// `rand()` projection over one Delta input
+/// (`databricks_volatile_priority.jsonl` entries 86 and 93,
+/// `databricks_volatile_producer.jsonl` entry 30): the shape
+/// [`volatile_producer_input`] proves, with that input recorded at the
+/// refused build and reported now.
+pub(crate) struct ChangedRerun<'a> {
+    rerun: crate::reuse_candidate::RerunEvidence,
+    refused: &'a crate::store::ExecutionRow,
+    input: String,
+    recorded: &'a crate::store::InputTable,
+    current: &'a crate::store::InputTable,
+}
+
+/// What a [`ChangedRerun`] establishes once its input's State is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JudgedRerun {
+    pub(crate) rerun: crate::reuse_candidate::RerunEvidence,
+    /// The producer revision a confirmed rebuild publishes.
+    pub(crate) producer_revision: Option<i64>,
+}
+
+pub(super) fn changed_rerun<'a>(
+    req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    rerun: crate::reuse_candidate::RerunEvidence,
+    refused: &'a crate::store::ExecutionRow,
+    inputs: &'a [crate::store::InputTable],
+) -> Option<ChangedRerun<'a>> {
+    let input = volatile_producer_input(req)?;
+    let recorded = refused.input_tables.iter().find(|t| t.name == input)?;
+    let current = inputs.iter().find(|t| t.name == input)?;
+    Some(ChangedRerun {
+        rerun,
+        refused,
+        input,
+        recorded,
+        current,
+    })
+}
+
+impl ChangedRerun<'_> {
+    /// The input whose current State [`ChangedRerun::judge`] needs.
+    pub(crate) fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Judge the rerun against `built`: the input's latest Delta-compatible
+    /// State, provided no pending State write can account for its contents.
+    /// The rerun stands only while `built` is an ordinary FULL build that
+    /// still accounts for the input as recorded at the refused build: the
+    /// recorded build itself, or no build after an External modification
+    /// (the captured Target relation changes followed one). After an
+    /// External modification since the refused build of an input that build
+    /// read from `built`, the rebuild also publishes a producer revision
+    /// (ADR 0007).
+    pub(crate) fn judge(&self, built: Option<&crate::store::ExecutionRow>) -> JudgedRerun {
+        use crate::reuse_candidate::RerunEvidence;
+        let built = built.filter(|row| {
+            row.execution_type == crate::query_cache::ModelExecutionType::Full as i32
+                && crate::copy_lifecycle::ordinary(row)
+        });
+        let accounts_for_recorded = built.is_some_and(|row| {
+            crate::store::Producer::of(Some(row), self.recorded.last_modified_epoch)
+                == self.recorded.producer
+        });
+        let modified_since_recorded_build = built.is_some_and(|row| {
+            row.last_modified_epoch == self.recorded.last_modified_epoch
+                && row
+                    .last_modified_epoch
+                    .zip(self.current.last_modified_epoch)
+                    .is_some_and(|(built, observed)| built < observed)
+        });
+        match self.rerun {
+            RerunEvidence::InputModifiedExternally
+                if accounts_for_recorded && modified_since_recorded_build =>
+            {
+                JudgedRerun {
+                    rerun: self.rerun,
+                    producer_revision: Some(self.refused.id),
+                }
+            }
+            RerunEvidence::TargetChanged if accounts_for_recorded => JudgedRerun {
+                rerun: self.rerun,
+                producer_revision: None,
+            },
+            _ => JudgedRerun {
+                rerun: RerunEvidence::Unverified,
+                producer_revision: None,
+            },
+        }
+    }
 }
 
 /// Check every projection and substitute one plain projection when checking

@@ -120,7 +120,9 @@ pub enum Outcome {
     /// but the volatile SQL is against the refused build
     /// ([`Decided::RefusedVolatileSql`] with [`RerunEvidence::Unchanged`]).
     RefusedVolatileSqlUnchangedRerun,
-    /// The same refusal with known changes to the Target relation or inputs.
+    /// The same refusal after the Target relation or the sole input
+    /// changed, as the Warehouse established it from the input's State
+    /// (`Warehouse::changed_volatile_rerun`, #213).
     RefusedVolatileSqlChangedRerun,
     /// A reuse (`skip_execution`).
     Reuse,

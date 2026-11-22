@@ -870,12 +870,19 @@ impl Warehouse {
         self == Self::Databricks && databricks::checked_volatile_reuse(req)
     }
 
-    pub(crate) fn volatile_producer_input(
+    /// #213: a model's rebuild refused at Reuse qualification after its
+    /// Target relation or sole input changed, in the shape this Warehouse
+    /// was captured in. `None`: no changed rerun is established (Databricks
+    /// only, [`databricks::ChangedRerun`]).
+    pub(crate) fn changed_volatile_rerun<'a>(
         self,
         req: &crate::query_cache::SubmitEnrichedSqlRequest,
-    ) -> Option<String> {
+        rerun: crate::reuse_candidate::RerunEvidence,
+        refused: &'a ExecutionRow,
+        inputs: &'a [crate::store::InputTable],
+    ) -> Option<databricks::ChangedRerun<'a>> {
         (self == Self::Databricks)
-            .then(|| databricks::volatile_producer_input(req))
+            .then(|| databricks::changed_rerun(req, rerun, refused, inputs))
             .flatten()
     }
 

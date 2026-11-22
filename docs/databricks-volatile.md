@@ -156,6 +156,27 @@ consumer resumed stale Reuse on the next ordinary volatile rebuild over
 unchanged inputs. The implementation records that bounded producer
 transition independently of rendered values.
 
+The changed-rerun maps render only in the captured shape: a FULL model
+whose SQL is one plain projection of columns and `rand()` over one directly
+read input, with no join, WHERE or other clause. That input's latest State
+must be an ordinary FULL Delta build with no pending write, and must still
+account for the input as recorded at the refused build. A join, a WHERE
+clause or an input confirmed in another table format keeps an empty map
+(`volatile_evaluation.rs::databricks_changed_reruns_render_only_the_captured_projection_over_a_delta_input`).
+Explain prints the volatile lines for an upstream that changed since the
+refused build only after the captured External modification of that sole
+input.
+
+#213 also narrowed the earlier #198 cells. Every Databricks cell now
+renders only SQL that calls exactly one distinct captured function form
+from its list, calls no other function, is a single query and has no query
+dependencies (`Cell::with_functions`). Before #213 a `rand()` cell also
+rendered `rand()` beside other function calls, and in SQL with query
+dependencies that call no Volatile function. Those forms are uncaptured,
+so the narrowing keeps an empty map where hosted's map is unknown. The
+protocol matrix lists it as a narrowing
+([protocol.md](protocol.md#volatile-evaluation)).
+
 The [priority characterization](reports/databricks-volatile-priority-2026-11-21.md)
 records Warehouse readbacks, hosted maps, reproduction, and observations
 and inferences. Four complete histories replay in the ordinary corpus and

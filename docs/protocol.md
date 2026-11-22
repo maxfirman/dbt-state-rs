@@ -700,7 +700,7 @@ says "empty".
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
 | Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
-| Databricks | FULL model, root SQL, `ready_to_execute` | captured forms on first build, unseeded RAND/UUID/current timestamp on unchanged refusal, and unseeded RAND on query change and the captured input/target changes | unseeded RAND and current timestamp on first build | `databricks_volatile_evaluation.jsonl`, controls 85–86, priority and function-build fixtures |
+| Databricks | FULL model, root SQL, `ready_to_execute` | captured forms on first build, unseeded RAND/UUID/current timestamp on unchanged refusal, unseeded RAND on query change, and unseeded RAND after the captured input/target changes: one plain projection over one Delta input | unseeded RAND and current timestamp on first build | `databricks_volatile_evaluation.jsonl`, controls 85–86, priority and function-build fixtures |
 | Databricks | FULL model, root SQL, `skip_execution` | checked `rand(42)` on unchanged source-less Reuse; same-day date Reuse pending rollover evidence | unseeded RAND and current timestamp on unchanged Reuse | priority entries 56, 58; [maintainer decisions](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions) |
 | Databricks | Source-less APPEND, MERGE, DELETE_INSERT, root SQL | unseeded RAND first build and unchanged refusal | empty, uncaptured | priority entries 13, 14, 18, 59–61 |
 | Databricks | data test without a Target relation (`__target_query__`), its own SQL | unseeded RAND on first execution and unchanged rerun with complete results | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 10, 22 |
@@ -743,7 +743,22 @@ the table was dropped or modified externally, or over changed inputs. Hosted
 was captured only for the unchanged rerun: the refused build an ordinary
 build, a table's Target relation as built, a data test's cached results
 complete, and every upstream with the epoch and Upstream producer recorded
-at the refused build (`reuse_candidate::Selection::unchanged_rerun`). Every
+at the refused build (`reuse_candidate::RerunEvidence::Unchanged`). #213
+added the FULL `rand()` refusals after the Target relation was modified or
+dropped and after an External modification of the sole input
+(`Outcome::RefusedVolatileSqlChangedRerun`). They render only for the
+captured shape: one plain projection of columns and `rand()` over one
+directly read input whose latest State is an ordinary FULL Delta build with
+no pending write that accounts for the input as recorded at the refused
+build (`warehouse/databricks.rs` `ChangedRerun`). A join, a WHERE clause or
+an input confirmed in another table format keeps an empty map. Every
+Databricks cell is also narrowed to SQL calling exactly one distinct
+captured function form from its list and no other function, as a single
+query without query dependencies (`Cell::with_functions`, #213). Before
+#213 the #198 `rand()` cells also rendered `rand()` beside other calls and
+with query dependencies that call no Volatile function; those forms are
+uncaptured, so this narrowing only removes values hosted was not seen
+returning. Every
 other Databricks refusal keeps an empty map and prints no volatile lines;
 the Snowflake refusal cells are not narrowed (its External-modification
 rerun is captured). Databricks has no checked

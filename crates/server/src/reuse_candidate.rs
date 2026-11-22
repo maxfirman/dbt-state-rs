@@ -716,6 +716,15 @@ pub(crate) enum RerunEvidence {
     InputModifiedExternally,
 }
 
+impl RerunEvidence {
+    /// A change to the Target relation or the sole input, which stands only
+    /// when the Warehouse establishes it
+    /// (`Warehouse::changed_volatile_rerun`).
+    pub(crate) fn is_changed(self) -> bool {
+        matches!(self, Self::TargetChanged | Self::InputModifiedExternally)
+    }
+}
+
 /// Compare the Target relation and upstreams with the ordinary build whose
 /// identity matched (#198, #213).
 fn rerun_evidence(

@@ -1945,7 +1945,9 @@ async fn databricks_checked_reuse_refuses_unproven_sql() {
 // rebuilds again (42, confirmed in 43) and the tolerant consumer reuses (44).
 
 const INPUT_FIRST: usize = 3;
+const INPUT_FIRST_CONFIRM: usize = 5;
 const PRODUCER_FIRST: usize = 6;
+const PRODUCER_FIRST_CONFIRM: usize = 8;
 const PRODUCER_RERUN_EXPLAIN: usize = 26;
 const PRODUCER_AFTER_INPUT_EDIT: usize = 30;
 const PRODUCER_AFTER_INPUT_EDIT_CONFIRM: usize = 31;
@@ -2070,6 +2072,98 @@ async fn databricks_record_preserves_the_producer_revision_in_and_after_the_batc
         .expect_skip(strict.own_epoch(Some(recorded_consumer)))
         .await;
     assert!(!skip.explained_decision.unwrap().is_stale);
+}
+
+/// The FULL `rand()` model's reruns after its sole input was modified
+/// externally, or after its Target relation was modified or dropped, were
+/// captured for one plain projection over one Delta input
+/// (`PRODUCER_AFTER_INPUT_EDIT`; `databricks_volatile_priority.jsonl`
+/// entries 86 and 93). The same reruns of a join, of a WHERE clause or over
+/// an input confirmed in another table format are uncaptured: an empty map
+/// and no volatile Explain lines. The captured projection is the positive
+/// control in each situation; a dropped Target relation renders its map but
+/// prints only the absent-table analysis.
+#[tokio::test]
+async fn databricks_changed_reruns_render_only_the_captured_projection_over_a_delta_input() {
+    use support::scenario::outcome;
+    let server = support::start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let capture = entries(DATABRICKS_PRODUCER);
+    let epoch = |entry: usize| {
+        capture[entry].request["last_modified_epoch"]
+            .as_i64()
+            .unwrap()
+    };
+    let input = captured_submit(&capture[INPUT_FIRST].request);
+    let source = target(&capture[INPUT_FIRST].request);
+    let input_built = epoch(INPUT_FIRST_CONFIRM);
+    let built = epoch(PRODUCER_FIRST_CONFIRM);
+    let producer = captured_submit(&capture[PRODUCER_FIRST].request);
+    let projection = capture[PRODUCER_FIRST].request["sql"].as_str().unwrap();
+    let join = format!(
+        "\nselect a.id, a.revision, rand() as value, a.run_id from {source} a \
+         join {source} b on a.id = b.id"
+    );
+    let filtered = format!("{projection} where revision > 0");
+    // The captured confirmation of the input reported no table type.
+    let delta = outcome().epoch(input_built).runtime(10);
+    let parquet = delta.clone().table_type("PARQUET");
+
+    for (shape, sql, input_confirmed, renders) in [
+        ("captured projection", projection, &delta, true),
+        ("join", join.as_str(), &delta, false),
+        ("WHERE clause", filtered.as_str(), &delta, false),
+        ("non-Delta input", projection, &parquet, false),
+    ] {
+        let producer = producer.clone().sql(sql);
+        for (situation, rerun, lines) in [
+            (
+                "input modified externally",
+                producer
+                    .clone()
+                    .upstream(&source, input_built + 1_000)
+                    .own_epoch(Some(built)),
+                renders,
+            ),
+            (
+                "Target relation modified",
+                producer.clone().own_epoch(Some(built + 1_000)),
+                renders,
+            ),
+            (
+                "Target relation dropped",
+                producer.clone().own_epoch(None),
+                false,
+            ),
+        ] {
+            let case = format!("{shape}, {situation}");
+            let org = sc.org(&case);
+            org.build_with(input.clone(), input_confirmed.clone()).await;
+            org.build(producer.clone(), built).await;
+            let ready = org.expect_execute(rerun).await;
+            assert_eq!(
+                ready
+                    .explained_decision
+                    .as_ref()
+                    .unwrap()
+                    .skip_rejection_reason,
+                Some(qc::RejectionReason::NoSuitableMatchFound as i32),
+                "{case}: refused at Reuse qualification"
+            );
+            assert_eq!(
+                !rendered(&ready).is_empty(),
+                renders,
+                "{case}: {:?}",
+                rendered(&ready)
+            );
+            let explained = explain(&org, ready.execution_decision_id.as_deref().unwrap()).await;
+            assert_eq!(
+                prints_volatile_lines(&explained),
+                lines,
+                "{case}: {explained}"
+            );
+        }
+    }
 }
 
 /// Neighbouring uncaptured Databricks cells keep an empty map.
