@@ -98,6 +98,8 @@ fn deployment(idp: &FakeIdp) -> TestAuthBuilder {
 struct Live {
     dbt: PathBuf,
     output: serde_json::Map<String, Value>,
+    /// The variables the profile output reads, as set here.
+    variables: Vec<(String, std::ffi::OsString)>,
 }
 
 impl Live {
@@ -135,7 +137,112 @@ impl Live {
             field("database").eq_ignore_ascii_case(DEMO_DATABASE),
             "the profile output's database is not {DEMO_DATABASE}"
         );
-        Some(Self { dbt, output })
+        let variables = referenced_variables(&output)
+            .unwrap_or_else(|name| {
+                panic!("the profile output reads {name}, which the acceptance sets itself")
+            })
+            .into_iter()
+            .filter_map(|name| std::env::var_os(&name).map(|value| (name, value)))
+            .collect();
+        Some(Self {
+            dbt,
+            output,
+            variables,
+        })
+    }
+}
+
+/// Variables a profile output may not name: dbt State, dbt platform and
+/// this harness's settings, and what decides where dbt looks and whom it
+/// trusts. The acceptance sets those itself.
+const RESERVED_PREFIXES: &[&str] = &[
+    "RUN_CACHE_",
+    "DBT_ENGINE_",
+    "DBT_CLOUD_",
+    "DBT_ENV_SECRET_STATE_",
+    "DBT_STATE_",
+];
+const RESERVED: &[&str] = &["HOME", "PATH", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+/// The environment variables a profile output reads (`env_var('NAME')` in
+/// any of its strings), sorted, or the first reserved one it names.
+fn referenced_variables(output: &serde_json::Map<String, Value>) -> Result<Vec<String>, String> {
+    fn strings<'a>(value: &'a Value, found: &mut Vec<&'a str>) {
+        match value {
+            Value::String(text) => found.push(text),
+            Value::Array(items) => items.iter().for_each(|item| strings(item, found)),
+            Value::Object(map) => map.values().for_each(|item| strings(item, found)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    output.values().for_each(|value| strings(value, &mut texts));
+    let mut names = std::collections::BTreeSet::new();
+    for text in texts {
+        let mut rest = text;
+        while let Some(at) = rest.find("env_var(") {
+            rest = rest[at + "env_var(".len()..].trim_start();
+            let Some(quote) = rest.chars().next().filter(|c| *c == '\'' || *c == '"') else {
+                continue;
+            };
+            let Some(end) = rest[1..].find(quote) else {
+                break;
+            };
+            let name = &rest[1..1 + end];
+            rest = &rest[1 + end..];
+            if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            if RESERVED.contains(&name)
+                || RESERVED_PREFIXES
+                    .iter()
+                    .any(|prefix| name.starts_with(prefix))
+            {
+                return Err(name.to_owned());
+            }
+            names.insert(name.to_owned());
+        }
+    }
+    Ok(names.into_iter().collect())
+}
+
+/// A profile output referencing `env_var` gets those variables passed to
+/// dbt; one naming a dbt State, dbt platform or trust setting is refused.
+#[test]
+fn a_profile_output_gets_the_environment_variables_it_references() {
+    let output = json!({
+        "type": "snowflake",
+        "user": "{{ env_var('SNOWFLAKE_USER') }}",
+        "password": "{{env_var(\"DBT_ENV_SECRET_SNOWFLAKE_PASSWORD\", 'unset')}}",
+        "role": "{{ env_var( 'SNOWFLAKE_ROLE' ) | upper }}",
+        "threads": 4,
+        "schema": "plain",
+    });
+    let Value::Object(output) = output else {
+        unreachable!()
+    };
+    assert_eq!(
+        referenced_variables(&output),
+        Ok(vec![
+            "DBT_ENV_SECRET_SNOWFLAKE_PASSWORD".to_owned(),
+            "SNOWFLAKE_ROLE".to_owned(),
+            "SNOWFLAKE_USER".to_owned(),
+        ])
+    );
+    for name in [
+        "RUN_CACHE_API_URL",
+        "DBT_ENGINE_STATE_TOKEN_URL",
+        "DBT_ENV_SECRET_STATE_OAUTH_CLIENT_SECRET",
+        "DBT_CLOUD_ACCOUNT_ID",
+        "HOME",
+        "SSL_CERT_FILE",
+    ] {
+        let mut output = output.clone();
+        output.insert(
+            "token".into(),
+            json!(format!("{{{{ env_var('{name}') }}}}")),
+        );
+        assert_eq!(referenced_variables(&output), Err(name.to_owned()));
     }
 }
 
@@ -146,6 +253,7 @@ struct Project {
     schema: String,
     dbt: PathBuf,
     output: serde_json::Map<String, Value>,
+    variables: Vec<(String, std::ffi::OsString)>,
     built: bool,
 }
 
@@ -203,11 +311,13 @@ impl Project {
             &uuid::Uuid::new_v4().simple().to_string()[..8]
         )
         .to_uppercase();
+        eprintln!("acceptance schema: {DEMO_DATABASE}.{schema}");
         Self {
             dir,
             schema,
             dbt: live.dbt.clone(),
             output: live.output.clone(),
+            variables: live.variables.clone(),
             built: false,
         }
     }
@@ -241,7 +351,8 @@ impl Project {
     }
 
     /// A `dbt` command for `home`, in an emptied environment: `PATH`, `HOME`,
-    /// the CA bundle and proxy settings, telemetry off, and every dbt State
+    /// the CA bundle, proxy settings, the variables the profile output reads
+    /// ([`referenced_variables`]), telemetry off, and every dbt State
     /// URL naming `api` (gRPC, `host:port`) and `broker`, so hosted dbt
     /// State is never contacted. With a `desktop`, dbt runs as a person at a
     /// terminal: in a pseudo-terminal (util-linux `script`; Fusion's browser
@@ -302,6 +413,7 @@ impl Project {
                 command.env(key, value);
             }
         }
+        command.envs(self.variables.iter().map(|(name, value)| (name, value)));
         let no_proxy = match std::env::var("NO_PROXY") {
             Ok(value) if !value.is_empty() => format!("{value},127.0.0.1,localhost"),
             _ => "127.0.0.1,localhost".into(),

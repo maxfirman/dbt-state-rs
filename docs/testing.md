@@ -429,11 +429,14 @@ test skips, so `cargo test` never reaches Snowflake. Safety rules:
   `snowflake`.`cdo_demo`, from `DBT_STATE_SNOWFLAKE_PROFILES`, default
   `~/.dbt/profiles.yml`) to a private temporary file and refuses it unless
   it is a Snowflake output whose database is `CDO_DEMO_DB`; the test checks
-  again. The run builds into its own schema, `DBT_STATE_FUSION_<random>`,
-  with one thread, and drops that schema at the end (also when the test
-  fails) with a macro that refuses any other database or schema. A run
-  killed before it ends leaves that schema behind; the test prints its
-  name.
+  again. Variables the output reads with `env_var` are passed to dbt; the
+  test refuses an output that reads a dbt State, dbt platform or trust
+  setting (`RUN_CACHE_*`, `DBT_ENGINE_*`, `DBT_CLOUD_*`,
+  `DBT_ENV_SECRET_STATE_*`, `HOME`, `SSL_CERT_FILE`, and the like). The
+  run builds into its own schema, `DBT_STATE_FUSION_<random>`, with one
+  thread, and drops that schema at the end (also when the test fails) with
+  a macro that refuses any other database or schema. A run killed before
+  it ends leaves that schema behind; the test prints its name first.
 - **Never hosted dbt State.** dbt runs in an emptied environment with a
   temporary `HOME` holding only the copied profile, so it never sees
   `~/.dbt/dbt_cloud.yml` (a dbt platform credential would select token
