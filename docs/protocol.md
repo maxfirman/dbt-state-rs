@@ -113,7 +113,8 @@ The broker knows two client registrations. The **dbt client**
 (`[clients.dbt]`) is public: redirect URI exactly
 `http://127.0.0.1:29525/handler`, no client authentication. The **UI**
 (`[clients.ui]`, optional) is a confidential OIDC client: its own
-`client_id` (not the dbt client's), exactly one `redirect_uri` (https, or
+`client_id` (neither the dbt client's nor `[api] audience`, which its tokens
+would otherwise carry), exactly one `redirect_uri` (https, or
 plain http on loopback, no fragment), and `private_key_jwt` with the RSA
 public key in `public_key_file` (PEM `BEGIN PUBLIC KEY`, 2048 to 4096 bits);
 no secret can be configured for it. Both use PKCE S256 and the same sign-in,

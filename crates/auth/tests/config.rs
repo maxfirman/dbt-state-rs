@@ -714,6 +714,12 @@ fn the_ui_client_registration_loads() {
             valid.replace("dbt-state-ui", "2fd87cd5-69a6-4c5f-9097-747a58f0edf6"),
             "clients.ui.client_id",
         ),
+        // UI tokens carry it as `aud`: the API audience would let them call
+        // gRPC.
+        (
+            valid.replace("dbt-state-ui", "dbt-state-api"),
+            "clients.ui.client_id",
+        ),
         (
             valid.replace("redirect_uri = \"https://console.example.test/cb\"\n", ""),
             "redirect_uri",

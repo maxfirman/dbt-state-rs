@@ -455,7 +455,7 @@ impl AuthConfig {
         let ui_client = raw
             .clients
             .ui
-            .map(|raw| ui_client(raw, &dbt_client_id, base))
+            .map(|raw| ui_client(raw, &dbt_client_id, &audience, base))
             .transpose()?;
         let pending_logins_per_ip = raw
             .broker
@@ -799,10 +799,22 @@ fn upstream_login(
     })
 }
 
-fn ui_client(raw: RawUiClient, dbt_client_id: &str, base: &Path) -> Result<UiClient, ConfigError> {
-    if raw.client_id.trim().is_empty() || raw.client_id == dbt_client_id {
+fn ui_client(
+    raw: RawUiClient,
+    dbt_client_id: &str,
+    api_audience: &str,
+    base: &Path,
+) -> Result<UiClient, ConfigError> {
+    // UI tokens carry the UI's client id as `aud`: equal to the API
+    // audience, gRPC would accept them.
+    if raw.client_id.trim().is_empty()
+        || raw.client_id == dbt_client_id
+        || raw.client_id == api_audience
+    {
         return Err(ConfigError::Invalid(
-            "clients.ui.client_id must be set, and differ from the dbt client's".into(),
+            "clients.ui.client_id must be set, and differ from the dbt client's id and from \
+             api.audience"
+                .into(),
         ));
     }
     // RFC 6749 §3.1.2: an absolute URI without a fragment.
