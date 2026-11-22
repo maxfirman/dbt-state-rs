@@ -462,7 +462,7 @@ Schema is defined by `crates/server/migrations/` (applied on startup).
 | `node_decisions` | One row per decision: the Principal whose request made it (`principal_id`, migration 0032, #226; NULL in `none` mode and for older rows), class, description, rejection codes, `is_stale`, `decision_reason`, `matched_execution_id`, Lag tolerance and build age, decision-time inputs; for a view, whether its SQL reads a relation (`reads_relation`, #117); the values Volatile evaluation rendered (`rendered_volatile_values`, migration 0027, #67) and whether the submit requested Volatile evaluation (`volatile_evaluation_requested`, migration 0028, #194). Read by Explain and the UI. |
 | `organizations`, `projects`, `environments`, `invocations` | UI capture domain. An `environments` row is a dbt Target. |
 | `principals` | Each Principal the Token broker issued a token to (migration 0032, #226): a machine before its token, a person with its session. Keyed by Upstream IdP `issuer` and `subject`; the opaque `id` tokens carry as `sub` (the `principal_id` of decisions and executions, with no foreign key, so a decision is recorded even when its Principal has no record), `kind` (`person` or `machine`), a display `email` when known. Not scoped by Organization. Replaces the reserved, never-written `actors`, `roles` and `role_bindings`. |
-| `broker_pending_logins`, `broker_person_sessions`, `broker_authorization_codes`, `broker_refresh_tokens` | Token broker state (migration 0031, #220): browser sign-ins in progress, person sessions (Principal as upstream issuer, subject and `principal_id`; client id; last granted scope; 12 h cap; `revoked_at`; the upstream refresh token sealed; `upstream_renewed_at`), single-use codes and refresh-token family members. Bearer values only as SHA-256 hashes. Not State history and not org-scoped. |
+| `broker_pending_logins`, `broker_person_sessions`, `broker_authorization_codes`, `broker_refresh_tokens`, `broker_client_assertions` | Token broker state (migration 0031, #220; 0033, #228): browser sign-ins in progress, person sessions (Principal as upstream issuer, subject and `principal_id`; client id; last granted scope; 12 h cap; `revoked_at`; the upstream refresh token sealed; `upstream_renewed_at`), single-use codes (with the UI's nonce) and refresh-token family members, and the UI's accepted client assertion ids until they expire. Bearer values only as SHA-256 hashes. Sessions and refresh tokens are never deleted. Not State history and not org-scoped. |
 
 ### Lifecycle
 
@@ -517,7 +517,8 @@ are in `crates/server/migrations` (from `0031_broker_person_login.sql`;
 `0033_broker_ui_client.sql` adds the UI's nonces and `broker_client_assertions`), and
 a standalone broker runs the same migrator at startup (`MIGRATOR`), so any
 number of brokers and servers share one schema. It makes no request to the
-Upstream IdP at startup.
+Upstream IdP at startup. Deployment shapes, configuration and IdP setup are
+in the [operator guide](operator-guide.md).
 
 | Module | Responsibility |
 |---|---|

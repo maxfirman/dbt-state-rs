@@ -11,8 +11,6 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
 
 ## Layout
 - `crates/proto`: generated tonic stubs (server+client) from `proto/`.
-- `crates/auth`: auth core shared by server, Token broker and UI: scope format,
-  TOML auth config, RS256 token issue/verify, authenticated context.
 - `crates/server`: the server. Modules to know:
   - `decision.rs`: the pure decision engine (`decide`), freshness, descriptions.
   - `reuse_candidate.rs`: pure Reuse candidate selection and Reuse qualification.
@@ -26,18 +24,23 @@ BUILD / SKIP / CLONE / DEFER for each dbt node and records outcomes.
   - `store.rs` + `store/history.rs`: Postgres writes and scoped State history reads.
   - `request_scope.rs`: the one request scope (Organization, invocation and
     session ids) each gRPC handler and decision capture takes.
-  - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`), `main.rs`.
+  - `services.rs` (gRPC handlers), `lib.rs` (`AppState`, `build_router`),
+    `main.rs`, `admin.rs` (the `revoke-sessions` command).
   - `grpc_auth.rs`: `oidc` mode authentication layer (all RPCs but health).
-- `crates/auth`: auth core (scope format, auth config, tokens and JWKS,
-  mapping rules, authenticated context). Pure.
-- `crates/broker`: the Token broker (discovery, JWKS, `client_credentials`
-  pass-through to the Upstream IdP); in-process or standalone binary.
+- `crates/auth`: auth core shared by server, Token broker and UI (scope
+  format, TOML auth config, tokens and JWKS, mapping rules, authenticated
+  context). Pure apart from reading config and key files.
+- `crates/broker`: the Token broker (discovery, JWKS, browser sign-in through
+  the Upstream IdP, refresh, `client_credentials` pass-through, session check
+  and revocation); in-process or standalone binary.
 - `crates/harness`: recording proxy, `state-probe`, golden fixtures, differential
   and fuzz tools, integration tests.
   `crates/harness/fusion-driver` (outside the workspace) compiles against
   dbt-fusion (ELv2) for an opt-in suite: never vendor or copy Fusion source.
 - `crates/ui`: optional read-only web console.
-→ full module table in [docs/architecture.md](docs/architecture.md)
+→ full module table in [docs/architecture.md](docs/architecture.md); deploying
+`oidc` mode, with the revocation bounds and the tests behind them, in
+[docs/operator-guide.md](docs/operator-guide.md)
 
 ## Build / test
 ```bash
