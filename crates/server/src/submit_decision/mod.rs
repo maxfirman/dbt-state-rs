@@ -1254,10 +1254,10 @@ async fn result_copy_fallback(
         publication_source: Option<ExecutionRow>,
     }
     let candidates = copy_candidates(store, org_id, req, &lookup).await?;
-    let stand_ins = if requires_checked_source || candidates.is_empty() {
+    let reads = if requires_checked_source || candidates.is_empty() {
         Vec::new()
     } else {
-        crate::stand_in::stand_ins(store, evidence).await?
+        crate::stand_in::input_reads(store, evidence).await?
     };
     let mut chosen = None;
     for candidate in candidates {
@@ -1281,7 +1281,7 @@ async fn result_copy_fallback(
             let upstreams: Vec<_> = evidence
                 .input_tables
                 .iter()
-                .filter(|t| t.name != evidence.target_table)
+                .filter(|t| !copy_search::is_target_relation(evidence, t))
                 .cloned()
                 .collect();
             let Some(judged) =
@@ -1315,7 +1315,7 @@ async fn result_copy_fallback(
                     &req.dialect,
                 )
                 .await?;
-            let judged = match copy_search::offer(evidence, freshness, &stand_ins, source) {
+            let judged = match copy_search::offer(evidence, freshness, &reads, source) {
                 copy_search::Offer::Choose(judged) => judged,
                 copy_search::Offer::Next => continue,
                 copy_search::Offer::Stop => break,
@@ -1375,12 +1375,11 @@ async fn result_copy_fallback(
                 None => evidence.copied_from(&copy),
             };
             write_pending(store, &pending, &ids).await?;
-            let (reuse, build_age_ms) = judged;
             let record = DecisionRecord::result_copy_judged(
                 anchor.or(publication_source.as_ref()),
-                reuse,
+                judged.reuse,
                 freshness.tolerance_ms,
-                build_age_ms,
+                judged.build_age_ms,
                 &evidence.input_tables,
             );
             Ok(CopyFallback::Decided(Box::new(SubmitOutcome::Copy {
@@ -1396,7 +1395,7 @@ async fn result_copy_fallback(
             clone_rejection_reason,
         } => Ok(CopyFallback::Refused {
             clone_rejection_reason,
-            equivalent_build_age_ms: judged.1,
+            equivalent_build_age_ms: judged.build_age_ms,
         }),
         SubmitCopyPlan::Unavailable { reason } => {
             tracing::warn!(

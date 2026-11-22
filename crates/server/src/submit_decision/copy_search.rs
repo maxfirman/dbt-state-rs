@@ -7,11 +7,17 @@ use super::{context, Freshness};
 use crate::decision;
 use crate::execution::ExecutionEvidence;
 use crate::reuse_candidate::Selection;
+use crate::sql_norm::canonical_identifiers;
+use crate::stand_in::InputRead;
 use crate::store::{ExecutionRow, InputTable};
 
-/// How a chosen equivalent would be reused for this submit, and its build
-/// age.
-pub(super) type Judged = (decision::Reuse, Option<i64>);
+/// How a chosen equivalent would be reused for this submit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct Judged {
+    pub reuse: decision::Reuse,
+    /// The equivalent's build age, when its build time is known.
+    pub build_age_ms: Option<i64>,
+}
 
 /// What the search does with one offered equivalent.
 #[derive(Debug, PartialEq)]
@@ -25,9 +31,8 @@ pub(super) enum Offer {
 }
 
 /// Offer an eligible equivalent with its current physical state, `None`
-/// when that state vanished since the candidates were read. `stand_ins` is
-/// the Stand-in of each of the submit's inputs, in `evidence.input_tables`
-/// order ([`crate::stand_in::stand_ins`]).
+/// when that state vanished since the candidates were read. `reads` are the
+/// submit's inputs with their Stand-ins ([`crate::stand_in::input_reads`]).
 ///
 /// An equivalent qualifies only when the physical inputs it recorded at
 /// build time are the ones this submit reads ([`reads_as_recorded`]). It is
@@ -44,13 +49,13 @@ pub(super) enum Offer {
 pub(super) fn offer(
     evidence: &ExecutionEvidence,
     freshness: &Freshness<'_>,
-    stand_ins: &[Option<InputTable>],
+    reads: &[InputRead],
     source: Option<ExecutionRow>,
 ) -> Offer {
     let Some(source) = source else {
         return Offer::Stop;
     };
-    match reads_as_recorded(evidence, stand_ins, &source) {
+    match reads_as_recorded(evidence, reads, &source) {
         Some(upstreams) => match judge_equivalent(evidence, freshness, &upstreams, source) {
             Some(judged) => Offer::Choose(judged),
             None => Offer::Next,
@@ -59,10 +64,10 @@ pub(super) fn offer(
     }
 }
 
-/// How fresh an equivalent would be if reused for this submit, with its
-/// build age, judged exactly as if it were the reuse candidate over
-/// `upstreams`, the submit's upstream reads as the equivalent recorded them;
-/// or `None` when this submit would rebuild it.
+/// How fresh an equivalent would be if reused for this submit, judged
+/// exactly as if it were the reuse candidate over `upstreams`, the submit's
+/// upstream reads as the equivalent recorded them; or `None` when this
+/// submit would rebuild it.
 pub(super) fn judge_equivalent(
     evidence: &ExecutionEvidence,
     freshness: &Freshness<'_>,
@@ -74,7 +79,15 @@ pub(super) fn judge_equivalent(
     let mut ctx = context(evidence, &selection, freshness, Some(&source));
     ctx.input_tables = upstreams;
     ctx.target_table = Some(source.target_table.as_str());
-    decision::reusable(&ctx, &source).map(|reuse| (reuse, ctx.build_age_ms))
+    decision::reusable(&ctx, &source).map(|reuse| Judged {
+        reuse,
+        build_age_ms: ctx.build_age_ms,
+    })
+}
+
+/// Whether `input` is the submit's Target relation, however it is spelled.
+pub(super) fn is_target_relation(evidence: &ExecutionEvidence, input: &InputTable) -> bool {
+    canonical_identifiers(&input.name) == canonical_identifiers(&evidence.target_table)
 }
 
 /// The submit's upstream reads (every input but its Target relation), when
@@ -84,33 +97,64 @@ pub(super) fn judge_equivalent(
 /// relation `source` read when `source` read the copy's source build: it is
 /// then given as its Stand-in, judged at that build's epoch. Otherwise each
 /// input is itself, and a relation the source shares with the submit is
-/// judged for drift (PR #127 review). A client-requested copy records no
-/// reads; it reads what its submit reads.
-pub(super) fn reads_as_recorded(
+/// judged for drift (PR #127 review).
+fn reads_as_recorded(
     evidence: &ExecutionEvidence,
-    stand_ins: &[Option<InputTable>],
+    reads: &[InputRead],
     source: &ExecutionRow,
 ) -> Option<Vec<InputTable>> {
     use crate::copy_lifecycle::canonical_reads;
-    use crate::sql_norm::canonical_identifiers;
-    let own = canonical_identifiers(&evidence.target_table);
-    let reads = evidence
-        .input_tables
+    let recorded = recorded_reads(source)?;
+    let was_recorded = |input: &InputTable| recorded.contains(&canonical_identifiers(&input.name));
+    let upstreams: Vec<&InputRead> = reads
         .iter()
-        .zip(stand_ins.iter().chain(std::iter::repeat(&None)))
-        .filter(|(read, _)| canonical_identifiers(&read.name) != own);
-    if source.input_tables.is_empty() && source.clone_source_table.is_some() {
-        return Some(reads.map(|(read, _)| read.clone()).collect());
-    }
-    let recorded = canonical_reads(&source.input_tables, &source.target_table, None);
-    let records = |input: &InputTable| recorded.contains(&canonical_identifiers(&input.name));
-    let upstreams: Vec<InputTable> = reads
-        .map(|(read, stand_in)| match stand_in {
-            Some(stand_in) if !records(read) && records(stand_in) => stand_in.clone(),
-            _ => read.clone(),
+        .filter(|read| !is_target_relation(evidence, &read.input))
+        .collect();
+    // A Stand-in for a relation the submit also reads directly would make
+    // two reads one: such a copy stands for itself.
+    let read_directly = |stand_in: &InputTable| {
+        let name = canonical_identifiers(&stand_in.name);
+        upstreams
+            .iter()
+            .any(|read| canonical_identifiers(&read.input.name) == name)
+    };
+    let upstreams: Vec<InputTable> = upstreams
+        .iter()
+        .map(|read| match &read.stand_in {
+            Some(stand_in)
+                if !was_recorded(&read.input)
+                    && was_recorded(stand_in)
+                    && !read_directly(stand_in) =>
+            {
+                stand_in.clone()
+            }
+            _ => read.input.clone(),
         })
         .collect();
     (canonical_reads(&upstreams, &source.target_table, None) == recorded).then_some(upstreams)
+}
+
+/// The physical relations `source` recorded reading at build time, other
+/// than its Target relation, canonical and sorted. A client-requested copy
+/// records no reads of its own: it holds the build it was copied from, so it
+/// has the reads that build recorded (`clone_source_inputs`); `None` when
+/// they were not recorded (no confirmed source build was read).
+fn recorded_reads(source: &ExecutionRow) -> Option<Vec<Vec<String>>> {
+    use crate::copy_lifecycle::{canonical_reads, is_copy_registration};
+    if is_copy_registration(source) && source.input_tables.is_empty() {
+        let copied: Vec<InputTable> = source
+            .clone_source_inputs
+            .as_ref()?
+            .iter()
+            .map(|name| InputTable::at(name, None))
+            .collect();
+        return Some(canonical_reads(&copied, &source.target_table, None));
+    }
+    Some(canonical_reads(
+        &source.input_tables,
+        &source.target_table,
+        None,
+    ))
 }
 
 #[cfg(test)]
@@ -176,6 +220,19 @@ mod tests {
         evidence_reading(read(RAW, 200))
     }
 
+    /// The submit's inputs, the first read through a copy as `stand_in`.
+    fn reads(evidence: &ExecutionEvidence, stand_in: Option<InputTable>) -> Vec<InputRead> {
+        let mut stand_in = stand_in;
+        evidence
+            .input_tables
+            .iter()
+            .map(|input| InputRead {
+                input: input.clone(),
+                stand_in: stand_in.take(),
+            })
+            .collect()
+    }
+
     fn freshness() -> Freshness<'static> {
         Freshness {
             sql_reads_relation: Some(true),
@@ -203,10 +260,11 @@ mod tests {
 
     #[test]
     fn a_same_upstream_equivalent_is_judged_as_the_reuse_candidate() {
+        let evidence = evidence();
         let offer = offer(
-            &evidence(),
+            &evidence,
             &freshness(),
-            &[None],
+            &reads(&evidence, None),
             Some(equivalent(read(RAW, 200))),
         );
         assert!(matches!(offer, Offer::Choose(_)), "{offer:?}");
@@ -218,14 +276,14 @@ mod tests {
         let stale = offer(
             &evidence,
             &freshness,
-            &[None],
+            &reads(&evidence, None),
             Some(equivalent(read(RAW, 100))),
         );
         assert_eq!(stale, Offer::Next);
         let current = offer(
             &evidence,
             &freshness,
-            &[None],
+            &reads(&evidence, None),
             Some(equivalent(read(RAW, 200))),
         );
         assert!(matches!(current, Offer::Choose(_)), "{current:?}");
@@ -238,7 +296,7 @@ mod tests {
             offer(
                 &evidence,
                 &freshness,
-                &[None],
+                &reads(&evidence, None),
                 Some(equivalent(read(OTHER_RAW, 200)))
             ),
             Offer::Next
@@ -251,7 +309,7 @@ mod tests {
         let evidence = evidence_reading(built(DEV_UP, 600, "dev-up"));
         let prod = equivalent(built(PROD_UP, 500, "prod-up"));
         assert_eq!(
-            offer(&evidence, &freshness(), &[None], Some(prod)),
+            offer(&evidence, &freshness(), &reads(&evidence, None), Some(prod)),
             Offer::Next
         );
     }
@@ -263,7 +321,7 @@ mod tests {
         let offer = offer(
             &evidence,
             &freshness(),
-            &[Some(stand_in(DEV_UP, 500))],
+            &reads(&evidence, Some(stand_in(DEV_UP, 500))),
             Some(prod),
         );
         assert!(matches!(offer, Offer::Choose(_)), "{offer:?}");
@@ -279,7 +337,7 @@ mod tests {
                 offer(
                     &evidence,
                     &freshness,
-                    &[Some(stand_in(DEV_UP, 500))],
+                    &reads(&evidence, Some(stand_in(DEV_UP, 500))),
                     Some(prod)
                 ),
                 Offer::Next,
@@ -295,14 +353,70 @@ mod tests {
         let offer = offer(
             &evidence,
             &freshness(),
-            &[Some(stand_in(DEV_UP, 500))],
+            &reads(&evidence, Some(stand_in(DEV_UP, 500))),
             Some(dev_reader),
         );
         assert!(matches!(offer, Offer::Choose(_)), "{offer:?}");
     }
 
     #[test]
+    fn a_stand_in_for_a_relation_the_submit_also_reads_stands_for_itself() {
+        let mut evidence = evidence_reading(built(DEV_UP, 600, "dev-copy"));
+        evidence.input_tables.push(built(PROD_UP, 500, "prod-up"));
+        let prod = equivalent(built(PROD_UP, 500, "prod-up"));
+        assert_eq!(
+            offer(
+                &evidence,
+                &freshness(),
+                &reads(&evidence, Some(stand_in(DEV_UP, 500))),
+                Some(prod)
+            ),
+            Offer::Next
+        );
+    }
+
+    /// A client-requested copy under `PROD` of a build that recorded
+    /// reading `copied` (`None`: no source build was read).
+    fn copy_registration(copied: Option<&str>) -> ExecutionRow {
+        ExecutionRow {
+            input_tables: Vec::new(),
+            clone_source_table: Some("cdo.ci.orders".into()),
+            clone_source_inputs: copied.map(|name| vec![name.to_string()]),
+            ..equivalent(read(RAW, 200))
+        }
+    }
+
+    #[test]
+    fn a_copy_registration_has_the_reads_of_the_build_it_was_copied_from() {
+        let evidence = evidence();
+        let reads = reads(&evidence, None);
+        let same = offer(
+            &evidence,
+            &freshness(),
+            &reads,
+            Some(copy_registration(Some(RAW))),
+        );
+        assert!(matches!(same, Offer::Choose(_)), "{same:?}");
+        for copied in [Some(OTHER_RAW), None] {
+            assert_eq!(
+                offer(
+                    &evidence,
+                    &freshness(),
+                    &reads,
+                    Some(copy_registration(copied))
+                ),
+                Offer::Next,
+                "copied build read {copied:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_equivalent_whose_state_vanished_ends_the_search() {
-        assert_eq!(offer(&evidence(), &freshness(), &[None], None), Offer::Stop);
+        let evidence = evidence();
+        assert_eq!(
+            offer(&evidence, &freshness(), &reads(&evidence, None), None),
+            Offer::Stop
+        );
     }
 }

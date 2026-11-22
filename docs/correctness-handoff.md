@@ -443,7 +443,11 @@ server keeps the conservative behavior described.
   built and confirmed in the capture, B's run-2 shape) and
   `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
   built in an earlier session). What separates those from #237 case B is
-  open. Since #264 this server copies over a dev upstream copy only when the
+  open. In entry 13 the server sees neither the granted source's build
+  (`CF2_MODEL_164819`) nor its recorded inputs; it sees only that the dev
+  upstream (entries 8–9) and the prod upstream (entries 2–3) are both copies
+  of `DEV_CLONE_DEMO.CF2_UP_F133217`, also from the earlier session. The
+  fixture stays characterization-only for that reason. Since #264 this server copies over a dev upstream copy only when the
   equivalent recorded the copied build's exact epoch (a Stand-in): it builds
   case B, where prod's downstream recorded the prod upstream at its metadata
   epoch, 727 ms (run 1) and 218 ms (run 2) before the upstream's confirmed

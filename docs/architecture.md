@@ -48,7 +48,7 @@ Modules: `dbt_state_proto::query_cache` and `dbt_state_proto::grpc_health`.
 | `copy_registration.rs` | How one RegisterClone request is decided and recorded: `result_copy::register_lookup`, the one matching State history read, `result_copy::plan_register`, and the pending copy row. Returns a `RegisterOutcome`. |
 | `reuse_candidate.rs` | Pure Reuse candidate selection on the latest row (strict identity match or copy-origin adoption), then Reuse qualification. Reports why there is no candidate, and which build an execution type change is judged against. |
 | `data_test_history.rs` | Snowflake data-test history by key (#200): each input of a data test read as its Stand-in and the key recomputed over those readings (`read_through_copies`). |
-| `stand_in.rs` | Stand-ins: which build an input stands for (`stand_in`, pure: an unchanged copy this server recorded stands for its source build), and each submit input's Stand-in read from State history (`stand_ins`). Used by data-test history keys and by Result copy source qualification (`copy_search`, #264). |
+| `stand_in.rs` | Stand-ins: which build an input stands for (`stand_in`, pure: an unchanged copy this server recorded stands for its source build), and each submit input with its Stand-in read from State history (`input_reads`). Used by data-test history keys and by Result copy source qualification (`copy_search`, #264). |
 | `decision.rs` | The pure decision engine (`decide`, `reusable`), per-upstream freshness (`upstream_freshness`), decision reasons and hosted descriptions. |
 | `decision_proptest.rs` | Property tests for `decide` (a `#[cfg(test)]` submodule of `decision`). |
 | `result_copy.rs` | Pure Result copy planning for the submit fallback, the Snowflake seed copy on submit (#91) and RegisterClone, and the rejection codes of a submit that is not copied. Asks the Warehouse rules which execution types a submit may copy, and for chain limits, relation checks, source evidence, the incremental contract and DDL. |
@@ -366,7 +366,7 @@ exercise the production wiring. Wire semantics are in [protocol.md](protocol.md)
    each input that is an unchanged copy this server recorded as the build it
    was copied from, and recomputes its history key over those readings
    (`data_test_history::read_through_copies`, #200; the Stand-ins come from
-   `stand_in::stand_ins`).
+   `stand_in::input_reads`).
 3. Read State history once: the Target relation's current physical state, or a
    data test's latest run under its history key (Snowflake; under
    `compare_unrendered_code` a key without a run falls back to the unique

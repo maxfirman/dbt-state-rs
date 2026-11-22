@@ -25,7 +25,10 @@ mod support;
 use dbt_state_harness::diff;
 use dbt_state_proto::query_cache as qc;
 use support::demo::{self, transient_at, CLONE_PROBE, DEV_SCHEMA, NS, PROD_SCHEMA};
-use support::scenario::{outcome, ExecutionType, Scenario};
+use support::scenario::{
+    built_at, clone_request, environment_model, environment_target, environment_upstream, outcome,
+    ExecutionType, Scenario, ENVIRONMENT_NAMESPACE,
+};
 use support::{legacy, rows, start_server};
 
 /// The captured probe's SQL in `schema` (the base most tests below override).
@@ -1971,4 +1974,64 @@ async fn captured_clone_rows(server: &support::TestServer, targets: &[&str]) -> 
             })
         })
         .collect()
+}
+
+/// #264: a client-requested copy holds the build it was copied from, so it
+/// is a Result copy source only for a submit over the inputs that build
+/// recorded, each by name or as its Stand-in. A CI copy of prod's
+/// downstream, registered after the build, is not copied for a dev
+/// downstream over an independently built dev upstream (#237 case D with a
+/// `dbt clone` step), and neither is prod's downstream. Over a QA upstream
+/// copied from prod's, the CI copy is copied.
+#[tokio::test]
+async fn a_registered_copy_is_copied_only_over_the_inputs_of_its_build() {
+    let server = start_server().await;
+    let sc = Scenario::connect(&server).await;
+    let upstream = |schema: &str, marker: &str| {
+        environment_model(schema)
+            .target(&environment_upstream(schema))
+            .unique_id("model.p.up")
+            .no_tables()
+            .sql(&format!("select '{marker}' as v"))
+    };
+    let downstream = |schema: &str, epoch| {
+        environment_model(schema)
+            .sql(&format!("select v from DB.{schema}.up"))
+            .upstream(&environment_upstream(schema), epoch)
+    };
+    sc.build_with(upstream("prod", "prod"), built_at(500)).await;
+    sc.build_with(upstream("dev", "dev"), built_at(600)).await;
+    sc.build_with(downstream("prod", 500), built_at(2_000))
+        .await;
+    let ci = environment_target("ci");
+    let copy = sc
+        .register_clone(
+            clone_request(&environment_target("prod"), &ci)
+                .catalog("DB")
+                .namespace(ENVIRONMENT_NAMESPACE)
+                .source_epoch(2_000)
+                .label("dbt_node_unique_id", "model.p.m"),
+        )
+        .await
+        .expect("RegisterClone")
+        .ready_to_clone
+        .expect("ready_to_clone");
+    assert!(sc.confirm(&copy.request_id, built_at(2_500)).await);
+
+    let x = sc.expect_execute(downstream("dev", 600)).await;
+    let ed = x.explained_decision.expect("explained_decision");
+    assert_eq!(
+        (ed.skip_rejection_reason, ed.clone_rejection_reason),
+        (Some(6), Some(6)),
+        "neither the CI copy nor prod's build read the dev upstream"
+    );
+
+    let qa_up = sc.expect_clone(upstream("qa", "prod")).await;
+    assert_eq!(qa_up.clone_source, environment_upstream("prod"));
+    assert!(sc.confirm(&qa_up.request_id, built_at(700)).await);
+    let c = sc.expect_clone(downstream("qa", 700)).await;
+    assert_eq!(
+        c.clone_source, ci,
+        "the newest equivalent over prod's upstream"
+    );
 }

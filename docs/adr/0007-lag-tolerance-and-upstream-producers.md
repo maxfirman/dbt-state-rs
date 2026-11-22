@@ -406,9 +406,15 @@ are the ones the submit reads (`submit_decision::copy_search::offer`):
   by the same canonical name is itself. An input the equivalent did not
   record, but that is an unchanged copy this server recorded of a build of a
   relation the equivalent did record, is read as its Stand-in: that source
-  build, at its epoch and with its Upstream producer (`stand_in::stand_ins`,
+  build, at its epoch and with its Upstream producer (`stand_in::input_reads`,
   the rule of [Data-test history key](#data-test-history-key)). A copy of a
-  copy stands for itself.
+  copy stands for itself, and so does a copy of a relation the submit also
+  reads directly.
+- *A client-requested copy has the reads of its build.* A RegisterClone copy
+  records no reads of its own; it qualifies with the reads the build it was
+  copied from recorded (`clone_source_inputs`), and not at all when that
+  build was not recorded. Before this, a CI copy of prod's downstream could
+  be copied for a dev downstream over another dev input.
 - *Then the equivalent is judged as the reuse candidate.* Drift is measured
   against the epoch the equivalent recorded for each input (invariant 2). A
   Stand-in proves freshness only at exactly the epoch recorded for its
@@ -426,8 +432,8 @@ unchanged submit is judged over them.
 
 **Considered.**
 
-- *Keep copying an equivalent of another environment unjudged.* Rejected:
-  it serves rows computed from another input (case D).
+- *Keep copying the first equivalent that read other relations, unjudged.*
+  Rejected: it serves rows computed from another input (case D).
 - *Match inputs by schema-abstracted name.* Rejected: it is the rule that
   served the wrong rows; hosted builds over an independently built dev
   upstream with the same row (case C).

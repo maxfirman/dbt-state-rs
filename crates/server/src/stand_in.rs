@@ -15,7 +15,7 @@
 //! qualifies an equivalent that read a Stand-in's source
 //! (`submit_decision::copy_search`, #264).
 //!
-//! [`stand_in`] is pure; [`stand_ins`] reads the copies and their sources.
+//! [`stand_in`] is pure; [`input_reads`] reads the copies and their sources.
 
 use crate::execution::{self, ExecutionEvidence};
 use crate::store::{ExecutionRow, InputTable, Producer, Store};
@@ -60,14 +60,21 @@ pub(crate) fn stand_in(
     })
 }
 
-/// The Stand-in of each of the submit's inputs, in `evidence.input_tables`
-/// order: `Some` for an input read through a copy this server recorded
-/// ([`stand_in`]), `None` for one that stands for itself. Its producers must
-/// be resolved first: a Stand-in carries its source build's.
-pub(crate) async fn stand_ins(
+/// One of a submit's inputs as it reports it, with its Stand-in when it is
+/// read through a copy this server recorded ([`stand_in`]).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct InputRead {
+    pub input: InputTable,
+    pub stand_in: Option<InputTable>,
+}
+
+/// Each of the submit's inputs, in `evidence.input_tables` order, with its
+/// Stand-in read from State history. Its producers must be resolved first: a
+/// Stand-in carries its source build's.
+pub(crate) async fn input_reads(
     store: &Store,
     evidence: &ExecutionEvidence,
-) -> sqlx::Result<Vec<Option<InputTable>>> {
+) -> sqlx::Result<Vec<InputRead>> {
     if evidence.input_tables.is_empty() {
         return Ok(Vec::new());
     }
@@ -81,22 +88,29 @@ pub(crate) async fn stand_ins(
         .current_target_states(&evidence.org_id, &names, namespace, &evidence.dialect)
         .await?;
     let mut sources: HashMap<i64, Option<ExecutionRow>> = HashMap::new();
-    let mut stand_ins = Vec::with_capacity(evidence.input_tables.len());
+    let mut reads = Vec::with_capacity(evidence.input_tables.len());
     for input in &evidence.input_tables {
-        let Some((copy, source_id)) = current
+        let copy = current
             .get(&input.name)
-            .and_then(|copy| Some((copy, copy.clone_source_execution_id?)))
-        else {
-            stand_ins.push(None);
-            continue;
+            .and_then(|copy| Some((copy, copy.clone_source_execution_id?)));
+        let stand_in = match copy {
+            Some((copy, source_id)) => {
+                if let std::collections::hash_map::Entry::Vacant(slot) = sources.entry(source_id) {
+                    slot.insert(store.execution_by_id(&evidence.org_id, source_id).await?);
+                }
+                sources
+                    .get(&source_id)
+                    .and_then(Option::as_ref)
+                    .and_then(|source| stand_in(input, copy, source))
+            }
+            None => None,
         };
-        if let std::collections::hash_map::Entry::Vacant(slot) = sources.entry(source_id) {
-            slot.insert(store.execution_by_id(&evidence.org_id, source_id).await?);
-        }
-        let source = sources.get(&source_id).and_then(Option::as_ref);
-        stand_ins.push(source.and_then(|source| stand_in(input, copy, source)));
+        reads.push(InputRead {
+            input: input.clone(),
+            stand_in,
+        });
     }
-    Ok(stand_ins)
+    Ok(reads)
 }
 
 #[cfg(test)]

@@ -26,15 +26,15 @@ pub(crate) async fn read_through_copies(
     if !keyed || evidence.input_tables.is_empty() {
         return Ok(());
     }
-    let reads = crate::stand_in::stand_ins(store, evidence).await?;
+    let reads = crate::stand_in::input_reads(store, evidence).await?;
     let mut stand_ins = Vec::new();
     for (input, read) in evidence.input_tables.iter_mut().zip(reads) {
-        if let Some(read) = read {
+        if let Some(source) = read.stand_in {
             stand_ins.push(crate::analyzed_workload::identity::StandIn {
                 copy: crate::sql_norm::canonical_identifiers(&input.name),
-                source: crate::sql_norm::canonical_identifiers(&read.name),
+                source: crate::sql_norm::canonical_identifiers(&source.name),
             });
-            *input = read;
+            *input = source;
         }
     }
     if !stand_ins.is_empty() {
