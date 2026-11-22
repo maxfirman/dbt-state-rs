@@ -89,6 +89,11 @@ pub async fn corrupt_input_tables(db: &impl Db) {
         .expect("corrupt input_tables");
 }
 
+/// Corrupt State: [`corrupt_input_tables`] for `rows` only.
+pub async fn corrupt_input_tables_of(db: &impl Db, rows: Rows<'_>) -> u64 {
+    rows.update(db, "input_tables = '{}'::jsonb", &[]).await
+}
+
 /// Corrupt State: every row gets valid (empty) inputs but undecodable cached
 /// `execution_results` bytes.
 pub async fn corrupt_execution_results(db: &impl Db) {
@@ -379,24 +384,33 @@ pub async fn forget_data_test_history_keys(db: &impl Db) -> u64 {
         .await
 }
 
-/// Migrate `database` only up to migration 0029 and record State history as
-/// a server from before Principals were recorded (#226) did: a confirmed
-/// execution and a decision in `org`, and a row in the reserved `actors`
-/// table that migration 0030 drops. Start a server on `database` afterwards
-/// to upgrade it.
+/// Migrate `database` only up to the migration before `principals` (#226)
+/// and record State history as a server from before Principals were
+/// recorded did: a confirmed execution and a decision in `org`, and a row in
+/// the reserved `actors` table that the `principals` migration drops. Start
+/// a server on `database` afterwards to upgrade it.
 pub async fn record_history_before_principals(database: &super::TestDatabase, org: &str) {
     let pool = sqlx::PgPool::connect(&database.scoped_dsn())
         .await
         .expect("connect");
     let mut before = sqlx::migrate!("../server/migrations");
+    let principals = before
+        .migrations
+        .iter()
+        .find(|migration| migration.description == "principals")
+        .expect("the principals migration")
+        .version;
     before.migrations = before
         .migrations
         .iter()
-        .filter(|migration| migration.version < 30)
+        .filter(|migration| migration.version < principals)
         .cloned()
         .collect::<Vec<_>>()
         .into();
-    before.run(&pool).await.expect("migrate to 0029");
+    before
+        .run(&pool)
+        .await
+        .expect("migrate to before principals");
     for statement in [
         "INSERT INTO executions (org_id, target_table, execution_type, dialect, status, request_id) \
          VALUES ($1, 'DB.S.T', 1, 'snowflake', 'confirmed', 'old-request')",

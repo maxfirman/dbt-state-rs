@@ -740,7 +740,11 @@ client.
 | Snowflake | `randstr(8, 1234)` | `RANDSTR(8, 1234)` | constant `9XChaf68` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `normal(0, 1, 1234)` | `NORMAL(0, 1, 1234)` | constant `1.0542196419272387` | 2.0.11: run 1 entries 6, 8, 33, 34, 50 | other arguments render nothing |
 | Snowflake | `uuid_string()` | `UUID_STRING()` | lowercase version 4 UUID | 2.0.11: run 1 entry 6; cells entries 59, 159 | none |
-| Databricks | `rand()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl` entries 5, 10, 21, 22; `crates/harness/tests/fixtures/databricks_submit_copy_controls.jsonl` entries 85, 86 | other Databricks functions render nothing (#198) |
+| Databricks | `rand()`, `random()` | `RAND()` | decimal in [0, 1) | 2.0.11: `databricks_volatile_evaluation.jsonl`, controls 85–86, `databricks_volatile_priority.jsonl` | cells below |
+| Databricks | `uuid()` | `UUID()` | lowercase version 4 UUID | priority entries 16, 52 | FULL first build and unchanged rerun |
+| Databricks | `current_timestamp()`, bare `current_timestamp`, `now()` | `CURRENT_TIMESTAMP()` | UTC timestamp with six fractional digits | priority entries 15, 19, 22, 53, 54, 58; function builds entry 13 | FULL cells below |
+| Databricks | `current_date()`, bare `current_date` | `CURRENT_DATE` | UTC date | `databricks_volatile_function_builds.jsonl` entries 8, 9 | FULL first builds with evaluation on |
+| Databricks | `rand(0)`, `rand(-7)`, `rand(42)` | `RAND(0)`, `RAND(-7)`, `RAND(42)` | constants `0.8444218515250481`, `0.32383276483316237`, `0.6394267984578837` | function builds entries 10–12 | other seeds uncaptured |
 
 A constant is hosted's value for exactly the captured arguments, not a value
 the server computes. The other function forms render nothing:
@@ -780,14 +784,16 @@ says "empty".
 | Snowflake | data test with a Target relation | empty: unreachable through client 2.0.11, which sends a `store_failures` test without one | same | cells entries 61, 145 (`target_table: null`) |
 | Snowflake | FULL model, root SQL, `ready_to_clone` into an absent Target relation | not copied: volatile SQL builds instead, and the build renders | rendered, keyed by the copy's Target relation as sent, at the copy decision | on: crafted `clone_fallback_volatile.jsonl` entries 0, 2. Off: cells entry 207 (#207) |
 | Snowflake | `ready_to_clone` over an existing Target relation or with values in a query dependency; the chain-limit `ready_to_execute` | not copied | empty, uncaptured | — |
-| Databricks | FULL model, root SQL, `ready_to_execute` | rendered on a first build, an unchanged rerun refused at Reuse qualification (its Target relation as built, its inputs unchanged) and a query-changed rebuild over its existing Target relation; empty for the refusal after the table was dropped, after an External modification or over changed inputs (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 5, 21; controls entries 85, 86 |
-| Databricks | data test without a Target relation (`__target_query__`), its own SQL | rendered on a first execution and an unchanged rerun (its inputs unchanged, its cached results complete); empty for the refusal after an upstream changed or over incomplete cached results (uncaptured) | empty, uncaptured | on: `databricks_volatile_evaluation.jsonl` entries 10, 22 |
-| Databricks | table downstream of a volatile model, one-hour Lag tolerance | — | empty: a first build, then `skip_execution` within Lag tolerance after the producer's rebuild | off: `databricks_volatile_evaluation.jsonl` entries 9, 26 |
-| Databricks | other rebuild reasons and refusals, a data test's logic change, other execution types, query dependencies, a data test with a Target relation, `skip_execution`, `ready_to_clone` | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
+| Databricks | FULL model, root SQL, `ready_to_execute` | captured forms on first build, unseeded RAND/UUID/current timestamp on unchanged refusal, unseeded RAND on query change, and unseeded RAND after the captured input/target changes: one plain projection over one Delta input | unseeded RAND and current timestamp on first build | `databricks_volatile_evaluation.jsonl`, controls 85–86, priority and function-build fixtures |
+| Databricks | FULL model, root SQL, `skip_execution` | checked `rand(42)` on unchanged source-less Reuse; same-day date Reuse pending rollover evidence | unseeded RAND and current timestamp on unchanged Reuse | priority entries 56, 58; [maintainer decisions](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions) |
+| Databricks | Source-less APPEND, MERGE, DELETE_INSERT, root SQL | unseeded RAND first build and unchanged refusal | empty, uncaptured | priority entries 13, 14, 18, 59–61 |
+| Databricks | data test without a Target relation (`__target_query__`), its own SQL | unseeded RAND on first execution and unchanged rerun with complete results | empty, uncaptured | `databricks_volatile_evaluation.jsonl` entries 10, 22 |
+| Databricks | table downstream of a volatile model | — | empty map on first build, within-tolerance Reuse, zero-tolerance rebuild after ordinary volatile data drift, and both consumers rebuilding after the captured producer transition | `databricks_volatile_evaluation.jsonl` entries 9, 26; priority entries 35, 69; producer entries 9, 10, 22, 23, 32, 33, 44, 45 |
+| Databricks | other rebuilds and refusals, node kinds, query dependencies, mixed cases, and Result copy; SQL calling a captured form beside another function, or not one query (rendered before #213, narrowed by `Cell::with_functions`) | empty, uncaptured (#213) | empty, uncaptured (#213) | — |
 | every Warehouse | seeds (`SubmitValues`), `RegisterClone`, speculative submits | empty | empty | — |
 
-The [Databricks characterization](databricks-volatile.md) records the complete
-#198 history, Warehouse values, exact replay and persisted Explain coverage.
+The [Databricks characterization](databricks-volatile.md) records the
+#198 and #213 histories, Warehouse values, replay and persisted Explain coverage.
 
 A Snowflake build renders only for a captured decision reason
 (`warehouse/snowflake.rs` cells). With evaluation on: a first build
@@ -821,7 +827,22 @@ the table was dropped or modified externally, or over changed inputs. Hosted
 was captured only for the unchanged rerun: the refused build an ordinary
 build, a table's Target relation as built, a data test's cached results
 complete, and every upstream with the epoch and Upstream producer recorded
-at the refused build (`reuse_candidate::Selection::unchanged_rerun`). Every
+at the refused build (`reuse_candidate::RerunEvidence::Unchanged`). #213
+added the FULL `rand()` refusals after the Target relation was modified or
+dropped and after an External modification of the sole input
+(`Outcome::RefusedVolatileSqlChangedRerun`). They render only for the
+captured shape: one plain projection of columns and `rand()` over one
+directly read input whose latest State is an ordinary FULL Delta build with
+no pending write that accounts for the input as recorded at the refused
+build (`warehouse/databricks.rs` `ChangedRerun`). A join, a WHERE clause or
+an input confirmed in another table format keeps an empty map. Every
+Databricks cell is also narrowed to SQL calling exactly one distinct
+captured function form from its list and no other function, as a single
+query without query dependencies (`Cell::with_functions`, #213). Before
+#213 the #198 `rand()` cells also rendered `rand()` beside other calls and
+with query dependencies that call no Volatile function; those forms are
+uncaptured, so this narrowing only removes values hosted was not seen
+returning. Every
 other Databricks refusal keeps an empty map and prints no volatile lines;
 the Snowflake refusal cells are not narrowed (its External-modification
 rerun is captured). Databricks has no checked
@@ -879,7 +900,7 @@ data test with the same SQL, the later-confirmed run of its history key
 **Not captured.** The remaining Snowflake cells, each with its tracking
 issue or whether client 2.0.11 can reach it, are listed in
 [correctness-handoff.md](correctness-handoff.md#open-hosted-questions).
-#198's captured Databricks cells and remaining limits are in the
+#198 and #213's captured Databricks cells and remaining limits are in the
 [characterization note](databricks-volatile.md); the remaining Databricks
 cells are tracked in #213.
 

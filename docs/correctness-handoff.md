@@ -237,22 +237,29 @@ server keeps the conservative behavior described.
     as hosted does, and the entry replays. Decision 3: a model's rebuild refused at Reuse
     qualification records the refused build as its Explain anchor (ADR 0005
     "Amended by #201").
-  - Databricks (#198): #198 captured a FULL table's first build and
-    unchanged rerun, a data test without a Target relation's first execution
-    and rerun, their exact Explain, and a downstream table's reuse within Lag
-    tolerance (`databricks_volatile_evaluation.jsonl`,
-    [characterization note](databricks-volatile.md)); with the query-changed
-    FULL rebuild (controls entries 85, 86) these are the cells that render.
-    The reruns render only as captured, unchanged: the refused build's
-    Target relation as built, a data test's cached results complete, and
-    every upstream unchanged since it (`Selection::unchanged_rerun`).
-    Uncaptured (#213): other execution types and rebuild reasons, refusals for
-    another cause (among them under `compare_unrendered_code`), the same
-    volatile refusal after the table was dropped or modified externally or
-    over changed inputs, a data test's logic change, a data test with a Target relation, volatile query
-    dependencies, evaluation off, and functions other than unseeded
-    `rand()`. Databricks never reuses with evaluation
-    requested, because it has no checked Volatile function detector.
+  - Databricks (#198, #213): FULL and non-storing data-test `rand()`
+    builds and unchanged reruns, the query-changed FULL rebuild, and
+    one-hour consumer Reuse were already captured. #213 added FULL
+    evaluation-off BUILD/SKIP for RAND and current timestamp, additional
+    FULL first-build and rerun function forms, APPEND/MERGE/DELETE_INSERT
+    first builds and unchanged source-less reruns, and the FULL `rand()`
+    graph with known upstream drift, Target modification or drop. The
+    zero-tolerance consumer rebuilt after ordinary volatile data drift.
+    [Characterization and open cells](databricks-volatile.md#priority-follow-up-213).
+    Uncaptured (#213): other function forms and combinations, date rollover,
+    evaluation off outside the pinned cases, volatile query dependencies,
+    stored-failure/logic-changed/changed-input data tests, other FULL
+    target/input combinations, additional qualification refusals (including
+    `compare_unrendered_code`), views, snapshots, custom materializations,
+    INSERT_OVERWRITE, MICROBATCH, and other incremental, consumer, rebuild
+    and Result copy cells.
+    The maintainer approved checked evaluation-on Reuse for ordinary
+    source-less FULL literal projections and `rand(42)`, and the bounded
+    producer transition after an External modification to the sole input of
+    the FULL `rand()` model. The paired Lag-tolerant consumer's rebuild and
+    subsequent stale Reuse replay. [ADR 0007](adr/0007-lag-tolerance-and-upstream-producers.md#databricks-volatile-producer-after-external-modification-213).
+    Same-day `current_date()` Reuse is observed and remains a known difference
+    until rollover policy is captured. [Check-in evidence](reports/databricks-volatile-priority-2026-11-21.md#maintainer-decisions).
   - Snowflake, not reachable through client 2.0.11: a data test with a
     Target relation. The client sends `target_table: null` even for a
     `store_failures` test (cells entries 61, 145), so this server renders

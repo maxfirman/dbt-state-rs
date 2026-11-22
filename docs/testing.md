@@ -165,8 +165,9 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `legacy::forget_data_test_history_keys` makes State history look recorded
   before migration 0029 (#200).
   `legacy::record_history_before_principals(&database, org)` migrates a
-  `TestDatabase` only to 0029 and records a decision and an execution there,
-  for upgrade tests of migration 0030 (#226);
+  `TestDatabase` only to the migration before `principals` and records a
+  decision and an execution there, for upgrade tests of migration 0031
+  (#226);
   `fault::fail_principal_records` makes every `principals` write fail.
 - `python.rs` provides `python_project(...)` for real-dbt cases. Successful
   projects are removed; a failed one is kept and its path reported.

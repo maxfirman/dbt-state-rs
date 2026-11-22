@@ -29,6 +29,13 @@ pub struct InputTable {
 }
 
 impl InputTable {
+    /// Whether this input, read as `recorded` from a recorded build, now
+    /// holds contents no recorded build produced: an External modification
+    /// since (ADR 0007).
+    pub(crate) fn modified_externally_since(&self, recorded: &InputTable) -> bool {
+        matches!(recorded.producer, Producer::Build(_)) && self.producer == Producer::NoBuild
+    }
+
     /// An input at `epoch` with no recorded producer.
     pub fn at(name: &str, epoch: Option<i64>) -> Self {
         Self {
@@ -64,7 +71,9 @@ impl Producer {
     /// (an External modification, or no build in scope at all).
     pub(crate) fn of(current_build: Option<&ExecutionRow>, epoch: Option<i64>) -> Self {
         match current_build {
-            Some(build) => Self::of_build(build.logic_identity(), build.last_modified_epoch, epoch),
+            Some(build) => {
+                Self::of_build(build.producer_identity(), build.last_modified_epoch, epoch)
+            }
             None => Self::NoBuild,
         }
     }
@@ -103,19 +112,45 @@ impl From<&qc::TableModifiedInfo> for InputTable {
     }
 }
 
-/// The logic identity a producer is recorded by (ADR 0007): the rendered
-/// logic hash with a seed's values, else a copy's schema-abstracted logic.
-/// `None` when the execution has neither (its identity is then its id).
-pub(crate) fn logic_identity(
+/// A producer revision (#213, ADR 0007): the prior execution whose rebuild
+/// changed what its downstreams consume although its rendered SQL did not.
+/// A producer recorded with a revision is a distinct Upstream producer from
+/// the same logic without it, or with another revision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct ProducerRevision(i64);
+
+impl ProducerRevision {
+    /// The revision established by rebuilding `prior`.
+    pub(crate) fn of(prior: &ExecutionRow) -> Self {
+        Self(prior.id)
+    }
+
+    /// The producer identity `logic` carries under this revision.
+    fn revise(self, logic: String) -> String {
+        format!("revised:{}:{logic}", self.0)
+    }
+}
+
+/// The identity a producer is recorded by (ADR 0007): the rendered logic
+/// hash with a seed's values, else a copy's schema-abstracted logic, with
+/// any established producer revision. Without either hash the caller may
+/// fall back to the execution's ID.
+pub(crate) fn producer_identity(
     node_sql_hash: Option<&str>,
     node_namespace_logic_hash: Option<&str>,
     values_hash: Option<&str>,
+    producer_revision: Option<ProducerRevision>,
 ) -> Option<String> {
-    match (node_sql_hash, node_namespace_logic_hash) {
+    let logic = match (node_sql_hash, node_namespace_logic_hash) {
         (Some(sql), _) => Some(format!("sql:{sql}:{}", values_hash.unwrap_or(""))),
         (None, Some(ns)) => Some(format!("ns:{ns}")),
         (None, None) => None,
-    }
+    }?;
+    Some(match producer_revision {
+        Some(revision) => revision.revise(logic),
+        None => logic,
+    })
 }
 
 /// A stored execution: the one read type for the `executions` table. State
@@ -144,6 +179,7 @@ pub struct ExecutionRow {
     pub node_configs_hash: Option<String>,
     pub node_macros_hash: Option<String>,
     pub node_sql_hash: Option<String>,
+    pub(crate) producer_revision: Option<ProducerRevision>,
     pub(crate) analyzed_copy_proof: Option<crate::analyzed_workload::query::CopyProof>,
     pub(crate) direct_copy_provenance: Option<crate::copy_lifecycle::DirectCopyProvenance>,
     pub(crate) submit_copy_provenance: Option<crate::copy_lifecycle::Provenance>,
@@ -191,16 +227,43 @@ pub(crate) struct Undecodable {
 }
 
 impl ExecutionRow {
-    /// The logic identity a producer is recorded by (ADR 0007): the rendered
-    /// logic hash with a seed's values, else the copy's schema-abstracted
-    /// logic, else the execution itself.
-    pub(crate) fn logic_identity(&self) -> String {
-        logic_identity(
+    /// The identity this execution is recorded by as an Upstream producer
+    /// (ADR 0007): the rendered logic hash with a seed's values, else the
+    /// copy's schema-abstracted logic, with any established producer
+    /// revision, else the execution itself.
+    pub(crate) fn producer_identity(&self) -> String {
+        producer_identity(
             self.node_sql_hash.as_deref(),
             self.node_namespace_logic_hash.as_deref(),
             self.values_hash.as_deref(),
+            self.producer_revision,
         )
         .unwrap_or_else(|| format!("execution:{}", self.id))
+    }
+
+    /// Whether this is an ordinary build (no copy origin) of
+    /// `execution_type`.
+    pub(crate) fn is_ordinary_build_of(&self, execution_type: i32) -> bool {
+        self.execution_type == execution_type && crate::copy_lifecycle::ordinary(self)
+    }
+
+    /// How this row's build epoch orders against `epoch`; `None` when either
+    /// is unknown, which orders nothing.
+    pub(crate) fn built_relative_to(&self, epoch: Option<i64>) -> Option<std::cmp::Ordering> {
+        self.last_modified_epoch
+            .zip(epoch)
+            .map(|(built, other)| built.cmp(&other))
+    }
+
+    pub(crate) fn retained_producer_revision(
+        &self,
+        rendered_hash: Option<&str>,
+    ) -> Option<ProducerRevision> {
+        if self.node_sql_hash.as_deref() == rendered_hash && crate::copy_lifecycle::ordinary(self) {
+            self.producer_revision
+        } else {
+            None
+        }
     }
 
     /// Whether this row records Target relation `relation` in `scope`'s
@@ -215,12 +278,13 @@ impl ExecutionRow {
             && crate::warehouse::Warehouse::physical_scope_key(&self.dialect, &self.target_table)
                 == crate::warehouse::Warehouse::physical_scope_key(&scope.dialect, relation)
     }
+
     /// The columns the `FromRow` mapping reads.
     pub(crate) const COLUMNS: &'static str = "id, org_id, target_table, execution_type, \
         node_body_hash, node_configs_hash, node_macros_hash, node_sql_hash, node_namespace_logic_hash, node_template_hash, \
         values_hash, dialect, table_namespace, node_unique_id, last_modified_epoch, \
         execution_runtime_ms, execution_results, input_tables, status, request_id, \
-        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, \
+        clone_source_table, clone_source_inputs, display_submitted_at_ms, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, producer_revision, \
         clone_source_execution_id, data_test_key, \
         (extract(epoch from confirmed_at) * 1000)::bigint AS confirmed_at_ms";
 
@@ -282,6 +346,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for ExecutionRow {
             node_configs_hash: row.try_get("node_configs_hash")?,
             node_macros_hash: row.try_get("node_macros_hash")?,
             node_sql_hash: row.try_get("node_sql_hash")?,
+            producer_revision: row.try_get("producer_revision")?,
             analyzed_copy_proof: row
                 .try_get::<Option<serde_json::Value>, _>("analyzed_copy_proof")?
                 .and_then(|v| serde_json::from_value(v).ok()),
@@ -522,11 +587,11 @@ impl Store {
                 execution_decision_id, node_sql_hash, project_id, node_namespace_logic_hash,
                 clone_source_table, node_template_hash, last_modified_epoch, table_type,
                 execution_runtime_ms, execution_results, confirmed_at, clone_source_inputs,
-                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof,
+                node_profile_name, node_project_name, node_target_name, display_submitted_at_ms, node_macros_hash, direct_copy_provenance, submit_copy_provenance, analyzed_copy_proof, producer_revision,
                 data_test_key, clone_source_execution_id, principal_id
             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
                       $21,$22,$23,$24,CASE WHEN $25 THEN now() END,$26,$27,$28,$29,$30,$31,$32,$33,$34,
-                      $35,$36,$37)
+                      $35,$36,$37,$38)
             "#,
         )
         .bind(&e.org_id)
@@ -577,6 +642,7 @@ impl Store {
         .bind(e.direct_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize direct provenance")))
         .bind(e.submit_copy_provenance.as_ref().map(|p| serde_json::to_value(p).expect("serialize submit provenance")))
         .bind(e.analyzed_copy_proof.as_ref().map(|p| serde_json::to_value(p).expect("serialize analyzed proof")))
+        .bind(e.producer_revision)
         .bind(&e.data_test_key)
         .bind(e.clone_source_execution_id)
         .bind(e.principal.as_ref().map(|p| p.as_str()))

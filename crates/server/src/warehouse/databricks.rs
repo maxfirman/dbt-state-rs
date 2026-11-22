@@ -12,51 +12,341 @@ use sqlparser::tokenizer::{Location, Token, Tokenizer, Whitespace};
 
 pub(super) const SQL_IDENTITY_VERSION: &[u8] = b"dbt-state-databricks-sql-v4";
 
-/// Volatile evaluation (#67, #192): hosted renders `rand()` as `RAND()` with
-/// a decimal in [0, 1) (`databricks_submit_copy_controls.jsonl` entry 85;
-/// `databricks_volatile_evaluation.jsonl` entries 5, 10, 21 and 22, #198).
-/// Other Databricks Volatile functions are uncaptured and render nothing.
+/// Captured rendering cells, without changes to Reuse qualification or
+/// Upstream producers (#198 and #213, docs/databricks-volatile.md).
 pub(super) const VOLATILE_RULES: crate::volatile_evaluation::Rules = {
     use crate::decision::{DecisionReason, NoCandidate};
-    use crate::query_cache::ModelExecutionType::{DbtDataTest, Full};
+    use crate::query_cache::ModelExecutionType::{Append, DbtDataTest, DeleteInsert, Full, Merge};
     use crate::volatile_evaluation::{cell, Call, Outcome, Queries, Rule, Rules, Value};
+
+    const fn rule(name: &'static str, call: Call, key: &'static str, value: Value) -> Rule {
+        Rule {
+            name,
+            call,
+            key,
+            value,
+        }
+    }
+
+    const RAND: Rule = rule("rand", Call::Empty, "RAND()", Value::UnitRandom);
+    const RANDOM: Rule = rule("random", Call::Empty, "RAND()", Value::UnitRandom);
+    const RAND_0: Rule = rule(
+        "rand",
+        Call::Arguments("0"),
+        "RAND(0)",
+        Value::Constant("0.8444218515250481"),
+    );
+    const RAND_MINUS_7: Rule = rule(
+        "rand",
+        Call::Arguments("-7"),
+        "RAND(-7)",
+        Value::Constant("0.32383276483316237"),
+    );
+    const RAND_42: Rule = rule(
+        "rand",
+        Call::Arguments("42"),
+        "RAND(42)",
+        Value::Constant("0.6394267984578837"),
+    );
+    const UUID: Rule = rule("uuid", Call::Empty, "UUID()", Value::Uuid);
+    const TIMESTAMP: Rule = rule(
+        "current_timestamp",
+        Call::Empty,
+        "CURRENT_TIMESTAMP()",
+        Value::UtcTimestampMicros,
+    );
+    const BARE_TIMESTAMP: Rule = Rule {
+        call: Call::Parenless,
+        ..TIMESTAMP
+    };
+    const NOW: Rule = Rule {
+        name: "now",
+        ..TIMESTAMP
+    };
+    const DATE: Rule = rule("current_date", Call::Empty, "CURRENT_DATE", Value::UtcDate);
+    const BARE_DATE: Rule = Rule {
+        call: Call::Parenless,
+        ..DATE
+    };
+
     const FIRST_BUILD: Outcome = Outcome::BuildFor(DecisionReason::FirstBuild);
     const QUERY_CHANGED: Outcome = Outcome::BuildFor(DecisionReason::NoReuseCandidate(
         NoCandidate::IdentityMismatch,
     ));
     const UNCHANGED_RERUN: Outcome = Outcome::RefusedVolatileSqlUnchangedRerun;
+    const FULL_INITIAL_FORMS: &[Rule] = &[
+        RANDOM,
+        UUID,
+        TIMESTAMP,
+        NOW,
+        BARE_TIMESTAMP,
+        DATE,
+        BARE_DATE,
+        RAND_0,
+        RAND_MINUS_7,
+        RAND_42,
+    ];
+    const FULL_RERUN_FORMS: &[Rule] = &[RANDOM, UUID, TIMESTAMP, NOW];
+
     Rules {
         dialect: &DatabricksDialect {},
-        functions: &[Rule {
-            name: "rand",
-            call: Call::Empty,
-            key: "RAND()",
-            value: Value::UnitRandom,
-        }],
-        // Evaluation on, values in the node's own SQL only. A FULL table's
-        // query-changed rebuild over its existing Target relation (controls
-        // entries 85–86), first build and unchanged rerun refused at Reuse
-        // qualification for its volatile SQL alone (#198,
-        // `databricks_volatile_evaluation.jsonl` entries 5 and 21); a data
-        // test without a Target relation, first execution and unchanged
-        // rerun (entries 10 and 22). Each rerun was captured over its
-        // Target relation as built and unchanged inputs only, so the same
-        // refusal after the table was dropped or modified externally, or
-        // over changed inputs, is uncaptured
-        // (`reuse_candidate::Selection::unchanged_rerun`). Every other cell
-        // is uncaptured and renders nothing: other rebuild reasons and
-        // refusals, other execution types, a data test's query-changed
-        // rebuild or stored failures, query dependencies, evaluation off, a
-        // reuse and a Result copy.
+        functions: &[
+            RAND,
+            RANDOM,
+            RAND_0,
+            RAND_MINUS_7,
+            RAND_42,
+            UUID,
+            TIMESTAMP,
+            BARE_TIMESTAMP,
+            NOW,
+            DATE,
+            BARE_DATE,
+        ],
         cells: &[
-            cell(Full, true, QUERY_CHANGED, Queries::Own),
-            cell(Full, true, FIRST_BUILD, Queries::Own),
-            cell(Full, true, UNCHANGED_RERUN, Queries::Own),
-            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own),
-            cell(DbtDataTest, true, UNCHANGED_RERUN, Queries::Own),
+            cell(Full, true, FIRST_BUILD, Queries::Own).with_functions(&[RAND]),
+            cell(Full, true, FIRST_BUILD, Queries::Own)
+                .with_functions(FULL_INITIAL_FORMS)
+                .without_upstream_tables(),
+            cell(Full, true, QUERY_CHANGED, Queries::Own).with_functions(&[RAND]),
+            cell(Full, true, UNCHANGED_RERUN, Queries::Own).with_functions(&[RAND]),
+            cell(Full, true, UNCHANGED_RERUN, Queries::Own)
+                .with_functions(FULL_RERUN_FORMS)
+                .without_upstream_tables(),
+            // Only the captured projection over one Delta input
+            // (`ChangedRerun`).
+            cell(
+                Full,
+                true,
+                Outcome::RefusedVolatileSqlChangedRerun,
+                Queries::Own,
+            )
+            .with_functions(&[RAND]),
+            cell(Full, false, FIRST_BUILD, Queries::Own)
+                .with_functions(&[RAND, TIMESTAMP])
+                .without_upstream_tables(),
+            cell(Full, false, Outcome::Reuse, Queries::Own)
+                .with_functions(&[RAND, TIMESTAMP])
+                .without_upstream_tables(),
+            cell(Full, true, Outcome::Reuse, Queries::Own)
+                .with_functions(&[RAND_42])
+                .without_upstream_tables(),
+            cell(Append, true, FIRST_BUILD, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(Append, true, UNCHANGED_RERUN, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(Merge, true, FIRST_BUILD, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(Merge, true, UNCHANGED_RERUN, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(DeleteInsert, true, FIRST_BUILD, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(DeleteInsert, true, UNCHANGED_RERUN, Queries::Own)
+                .with_functions(&[RAND])
+                .without_upstream_tables(),
+            cell(DbtDataTest, true, FIRST_BUILD, Queries::Own).with_functions(&[RAND]),
+            cell(DbtDataTest, true, UNCHANGED_RERUN, Queries::Own).with_functions(&[RAND]),
         ],
     }
 };
+
+/// The evaluated FULL shapes characterized in #213. Template comparison and
+/// query dependencies have their own unresolved Volatile evaluation behavior.
+fn checked_volatile_full(req: &crate::query_cache::SubmitEnrichedSqlRequest) -> bool {
+    req.execution_type == crate::query_cache::ModelExecutionType::Full as i32
+        && !req.tolerate_nondeterminism
+        && !req.compare_unrendered_code
+        && req.query_dependencies.is_empty()
+}
+
+/// Literal projections and a literal `rand(42)`, with no source or other
+/// clauses. Unknown functions, date, and unproven forms retain the refusal.
+pub(super) fn checked_volatile_reuse(req: &crate::query_cache::SubmitEnrichedSqlRequest) -> bool {
+    use crate::volatile_evaluation::{matches_call, Call};
+    use sqlparser::ast::Value;
+
+    checked_volatile_full(req)
+        && req.tables.iter().all(|table| Some(&table.name) == req.target_table.as_ref())
+        && projection_skeleton(&req.sql, |expr| {
+            matches!(expr, Expr::Value(value) if matches!(value.value, Value::Number(_, false) | Value::SingleQuotedString(_)))
+                || matches_call(expr, "rand", Call::Arguments("42"))
+        }).is_some_and(|query| query == "SELECT checked_projection")
+}
+
+/// A FULL build keeps its producer revision: the captured `rand()`
+/// producer's revision held across its ordinary reruns
+/// (`databricks_volatile_producer.jsonl`, #213).
+pub(super) fn retains_producer_revision(execution_type: i32) -> bool {
+    execution_type == crate::query_cache::ModelExecutionType::Full as i32
+}
+
+/// How Explain describes the captured volatile decisions (#213,
+/// `docs/reports/databricks-volatile-priority-2026-11-21.md`):
+/// a FULL `rand()` refusal after its Target relation was dropped prints only
+/// the absent-table analysis; source-less APPEND, MERGE and DELETE_INSERT
+/// refusals say `no upstream dependencies` (`databricks_volatile_priority.jsonl`);
+/// a FULL refusal after an External modification of its sole input lists
+/// that upstream (`databricks_volatile_producer.jsonl` entries 30 and 38);
+/// and the checked `rand(42)` reuse says its query has not changed
+/// (priority entries 56 and 58).
+pub(super) const VOLATILE_EXPLAIN_FORMS: crate::explain::VolatileForms = {
+    use crate::query_cache::ModelExecutionType::{Append, DeleteInsert, Full, Merge};
+    crate::explain::VolatileForms {
+        dropped_target_refusal: &[Full],
+        sourceless_refusal: &[Append, Merge, DeleteInsert],
+        input_modified_externally_refusal: &[Full],
+        requested_reuse: true,
+    }
+};
+
+/// Prove the direct input to a captured FULL RAND() model independently of
+/// rendering. The producer transition is limited to this one-input shape.
+pub(super) fn volatile_producer_input(
+    req: &crate::query_cache::SubmitEnrichedSqlRequest,
+) -> Option<String> {
+    use crate::volatile_evaluation::{matches_call, Call};
+
+    if !checked_volatile_full(req) || req.ignore_external_modifications {
+        return None;
+    }
+    let mut has_rand = false;
+    let sql = projection_skeleton(&req.sql, |expr| {
+        let rand = matches_call(expr, "rand", Call::Empty);
+        has_rand |= rand;
+        rand || matches!(expr, Expr::Identifier(_))
+    })?;
+    if !has_rand {
+        return None;
+    }
+    Some(
+        resolved_sql(
+            &sql,
+            &req.default_catalog,
+            req.default_schema.as_deref().unwrap_or(""),
+        )?
+        .input,
+    )
+}
+
+/// A FULL model's rebuild refused at Reuse qualification after its Target
+/// relation or its sole input changed (#213). Captured for one plain
+/// `rand()` projection over one Delta input
+/// (`databricks_volatile_priority.jsonl` entries 86 and 93,
+/// `databricks_volatile_producer.jsonl` entry 30): the shape
+/// [`volatile_producer_input`] proves, with that input recorded at the
+/// refused build and reported now.
+pub(crate) struct ChangedRerun<'a> {
+    rerun: crate::reuse_candidate::RerunEvidence,
+    refused: &'a crate::store::ExecutionRow,
+    input: String,
+    recorded: &'a crate::store::InputTable,
+    current: &'a crate::store::InputTable,
+}
+
+/// What a [`ChangedRerun`] establishes once its input's State is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct JudgedRerun {
+    pub(crate) rerun: crate::reuse_candidate::RerunEvidence,
+    /// The producer revision a confirmed rebuild publishes.
+    pub(crate) producer_revision: Option<crate::store::ProducerRevision>,
+}
+
+pub(super) fn changed_rerun<'a>(
+    req: &crate::query_cache::SubmitEnrichedSqlRequest,
+    rerun: crate::reuse_candidate::RerunEvidence,
+    refused: &'a crate::store::ExecutionRow,
+    inputs: &'a [crate::store::InputTable],
+) -> Option<ChangedRerun<'a>> {
+    let input = volatile_producer_input(req)?;
+    let recorded = refused.input_tables.iter().find(|t| t.name == input)?;
+    let current = inputs.iter().find(|t| t.name == input)?;
+    Some(ChangedRerun {
+        rerun,
+        refused,
+        input,
+        recorded,
+        current,
+    })
+}
+
+impl ChangedRerun<'_> {
+    /// The input whose current State [`ChangedRerun::judge`] needs.
+    pub(crate) fn input(&self) -> &str {
+        &self.input
+    }
+
+    /// Judge the rerun against `built`: the input's latest Delta-compatible
+    /// State, provided no pending State write can account for its contents.
+    /// The rerun stands only while `built` is an ordinary FULL build that
+    /// still accounts for the input as recorded at the refused build: the
+    /// recorded build itself, or no build after an External modification
+    /// (the captured Target relation changes followed one). After an
+    /// External modification since the refused build of an input that build
+    /// read from `built`, the rebuild also publishes a producer revision
+    /// (ADR 0007).
+    pub(crate) fn judge(&self, built: Option<&crate::store::ExecutionRow>) -> JudgedRerun {
+        use crate::reuse_candidate::RerunEvidence;
+        let built = built.filter(|row| {
+            row.is_ordinary_build_of(crate::query_cache::ModelExecutionType::Full as i32)
+        });
+        let accounts_for_recorded = built.is_some_and(|row| {
+            crate::store::Producer::of(Some(row), self.recorded.last_modified_epoch)
+                == self.recorded.producer
+        });
+        let modified_since_recorded_build = built.is_some_and(|row| {
+            row.last_modified_epoch == self.recorded.last_modified_epoch
+                && row.built_relative_to(self.current.last_modified_epoch)
+                    == Some(std::cmp::Ordering::Less)
+        });
+        match self.rerun {
+            RerunEvidence::InputModifiedExternally
+                if accounts_for_recorded && modified_since_recorded_build =>
+            {
+                JudgedRerun {
+                    rerun: self.rerun,
+                    producer_revision: Some(crate::store::ProducerRevision::of(self.refused)),
+                }
+            }
+            RerunEvidence::TargetChanged if accounts_for_recorded => JudgedRerun {
+                rerun: self.rerun,
+                producer_revision: None,
+            },
+            _ => JudgedRerun {
+                rerun: RerunEvidence::Unverified,
+                producer_revision: None,
+            },
+        }
+    }
+}
+
+/// Check every projection and substitute one plain projection when checking
+/// the rest of the statement's grammar.
+fn projection_skeleton(sql: &str, mut allowed: impl FnMut(&Expr) -> bool) -> Option<String> {
+    let mut statements = Parser::parse_sql(&DatabricksDialect {}, sql).ok()?;
+    let [Statement::Query(query)] = statements.as_mut_slice() else {
+        return None;
+    };
+    let SetExpr::Select(select) = query.body.as_mut() else {
+        return None;
+    };
+    if select.projection.is_empty()
+        || !select.projection.iter().all(|item| match item {
+            SelectItem::UnnamedExpr(expr) | SelectItem::ExprWithAlias { expr, .. } => allowed(expr),
+            _ => false,
+        })
+    {
+        return None;
+    }
+    select.projection = vec![SelectItem::UnnamedExpr(Expr::Identifier(
+        sqlparser::ast::Ident::new("checked_projection"),
+    ))];
+    Some(query.to_string())
+}
 
 /// Extra bounds on #144's source-less ordinary-submit rejection. The shared
 /// relation-read proof deliberately treats literal table functions as reading

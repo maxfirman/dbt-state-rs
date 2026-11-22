@@ -54,7 +54,7 @@ pub(crate) fn stand_in(
             .clone()
             .unwrap_or_else(|| source.target_table.clone()),
         last_modified_epoch: source.last_modified_epoch,
-        producer: Producer::Build(source.logic_identity()),
+        producer: Producer::Build(source.producer_identity()),
         read_copy: Some(read.name.clone()),
     })
 }
@@ -151,7 +151,7 @@ mod tests {
         let stood = stand_in(&read, &copy_of(&source, 200), &source).expect("a stand-in");
         assert_eq!(stood.name, SOURCE);
         assert_eq!(stood.last_modified_epoch, Some(100));
-        assert_eq!(stood.producer, Producer::Build(source.logic_identity()));
+        assert_eq!(stood.producer, Producer::Build(source.producer_identity()));
         assert_eq!(stood.read_copy.as_deref(), Some(COPY));
     }
 

@@ -4,7 +4,7 @@
 //!
 //! The gRPC server records a token's opaque Principal id (`sub`) on every
 //! decision and execution; this record names who that is. The table is
-//! defined by the server's migrations (`0030_principals.sql`), in the
+//! defined by the server's migrations (`0031_principals.sql`), in the
 //! Postgres schema the broker shares with the server.
 
 use dbt_state_auth::{PrincipalId, PrincipalKind};
