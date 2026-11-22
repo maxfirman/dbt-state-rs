@@ -310,13 +310,18 @@ async fn assess(
 
     // 4. Renew upstream and collect fresh evidence.
     let upstream = &broker.0.upstream;
+    // Sessions outlive a config: this deployment may have been restarted
+    // without the broker's registration for browser sign-in.
+    let Some(login) = upstream.login() else {
+        return Outcome::Denied(Denial::keep(
+            "sign_in_not_configured",
+            OAuthError::RenewalDenied,
+        ));
+    };
     if session.upstream_issuer != upstream.issuer() {
         return Outcome::Denied(Denial::end("upstream_issuer_changed"));
     }
-    let key = upstream
-        .login()
-        .expect("a person session means browser sign-in is configured")
-        .refresh_token_key();
+    let key = login.refresh_token_key();
     let context = session.id.as_bytes();
     let Some(upstream_refresh_token) = key
         .open(&session.sealed_upstream_refresh_token, context)

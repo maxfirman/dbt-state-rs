@@ -18,7 +18,7 @@ use support::browser::Browser;
 use support::fake_idp::{FakeIdp, UpstreamPerson, BROKER_CLIENT_ID, BROKER_CLIENT_SECRET};
 use support::oidc::{capture_logs, captured_logs, TestAuth, TestAuthBuilder, ISSUER};
 use support::scenario::{model, Scenario};
-use support::{rows, start_server_with_broker, TestServer};
+use support::{rows, start_broker, start_broker_beside, start_server_with_broker, TestServer};
 use tonic::Code;
 
 const TARGET: &str = "\"DB\".\"S\".\"T\"";
@@ -577,4 +577,26 @@ async fn an_idp_that_keeps_its_refresh_token_is_asked_with_the_same_one() {
         upstream_refreshes(&idp),
         [issued[0].clone(), issued[0].clone()]
     );
+}
+
+/// A deployment restarted without browser sign-in (no `[upstream]
+/// client_id`) cannot renew the person sessions it started before: it
+/// refuses their refresh tokens.
+#[tokio::test]
+async fn renewal_is_refused_once_browser_sign_in_is_no_longer_configured() {
+    capture_logs();
+    let idp = FakeIdp::start().await;
+    idp.sign_in(alice());
+    let before = start_broker(deployment(&idp)).await;
+    let sign_in = SignIn::new();
+    let query = Browser::new()
+        .visit(&sign_in.authorize_url(&before.url()), LOOPBACK_REDIRECT_URI)
+        .await
+        .loopback();
+    let login = json(authorization_code(&before.url(), &sign_in, &query["code"]).await).await;
+
+    let after = start_broker_beside(&before, deployment(&idp).without_browser_sign_in());
+    let response = refresh_token(&after.url(), DBT_CLIENT_ID, field(&login, "refresh_token")).await;
+    assert_refused(response, 400, "invalid_grant", "sign_in_not_configured").await;
+    assert!(upstream_refreshes(&idp).is_empty(), "the IdP was not asked");
 }

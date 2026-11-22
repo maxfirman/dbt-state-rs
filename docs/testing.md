@@ -139,13 +139,16 @@ Integration tests share `crates/harness/tests/support.rs` and its modules in
   `.broker_credential(BrokerCredential::PrivateKeyJwt)`,
   `.subject_claim(c)`, `.dbt_client_id(id)`,
   `.max_pending_logins_per_ip(n)`, `.client_ip_header(h)`,
+  `.without_browser_sign_in()` (no `[upstream] client_id`),
   `.rule(kind, claim, value, org, role)`, `.person_lifetime_minutes(m)`,
   `.machine_lifetime_minutes(m)`, `.issuer(url)` and `.without_signing()`.
 - `start_server_with_broker(&auth)` runs the gRPC server and the Token
   broker in one process on separate listeners (`server.broker_url()`), as
   `DBT_STATE_BROKER_LISTEN` does; `start_broker(builder).await` runs a
   standalone broker on its own migrated schema whose issuer is its own URL
-  (`TestBroker::url()`, `.auth`, `.clock`). `server.broker_clock` (a
+  (`TestBroker::url()`, `.auth`, `.clock`), and
+  `start_broker_beside(&broker, builder)` another one on the same schema (a
+  replica, or the deployment restarted with another config). `server.broker_clock` (a
   `TestClock`) moves the broker's clock forward (`.advance(d)`) to expire
   codes, pending logins and sessions.
 - `fake_idp.rs` is the fake OIDC Upstream IdP (no Docker): `FakeIdp::start()`

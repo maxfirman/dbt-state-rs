@@ -142,6 +142,8 @@ struct Upstream {
     issuer: String,
     credential: BrokerCredential,
     subject_claim: Option<String>,
+    /// Register the broker for browser sign-in.
+    login: bool,
 }
 
 impl Upstream {
@@ -164,14 +166,20 @@ impl Upstream {
             .as_deref()
             .map(|claim| format!("subject_claim = {}\n", toml_string(claim)))
             .unwrap_or_default();
+        let login = if self.login {
+            format!(
+                "client_id = {}\n{credential}refresh_token_key_file = \"refresh-token.key\"\n",
+                toml_string(BROKER_CLIENT_ID)
+            )
+        } else {
+            String::new()
+        };
         format!(
             "\n[upstream]\nissuer = {}\napi_audience = {}\nclient_credentials_scope = {}\n\
-             client_id = {}\n{credential}refresh_token_key_file = \"refresh-token.key\"\n\
-             {subject_claim}",
+             {login}{subject_claim}",
             toml_string(&self.issuer),
             toml_string(UPSTREAM_AUDIENCE),
             toml_string(UPSTREAM_SCOPE),
-            toml_string(BROKER_CLIENT_ID),
         )
     }
 }
@@ -216,7 +224,15 @@ impl TestAuthBuilder {
             issuer: idp.issuer(),
             credential: BrokerCredential::ClientSecret,
             subject_claim: None,
+            login: true,
         });
+        self
+    }
+
+    /// No browser sign-in registration at the Upstream IdP (no `[upstream]
+    /// client_id`): machines only.
+    pub fn without_browser_sign_in(mut self) -> Self {
+        self.upstream.as_mut().expect("upstream() first").login = false;
         self
     }
 
