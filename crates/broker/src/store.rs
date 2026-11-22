@@ -1,7 +1,9 @@
 //! The Token broker's Postgres state: pending logins, person sessions,
 //! authorization codes and refresh-token family members
 //! (`crates/server/migrations/0031_broker_person_login.sql`), and the
-//! Principals it issues tokens to (`0032_principals.sql`).
+//! Principals it issues tokens to (`0032_principals.sql`), and the UI's
+//! authorize nonces and accepted client assertions
+//! (`0033_broker_ui_client.sql`).
 //!
 //! Every bearer value is looked up by its SHA-256 hash; none is stored.
 
@@ -23,6 +25,9 @@ pub(crate) struct PendingLogin {
     pub redirect_uri: String,
     pub client_state: Option<String>,
     pub code_challenge: String,
+    /// The UI's `nonce`, which its code and `id_token` echo; `None` for
+    /// the dbt client.
+    pub client_nonce: Option<String>,
     pub upstream_nonce: String,
     pub upstream_code_verifier: String,
     pub client_ip: String,
@@ -86,6 +91,8 @@ pub(crate) struct NewCode {
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
+    /// The UI's authorize `nonce`.
+    pub nonce: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -119,6 +126,7 @@ pub(crate) struct CodeGrant {
     pub client_id: String,
     pub redirect_uri: String,
     pub code_challenge: String,
+    pub nonce: Option<String>,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -336,7 +344,8 @@ impl Store {
         sqlx::query(
             "INSERT INTO broker_pending_logins (state_hash, client_id, redirect_uri, \
              client_state, code_challenge, upstream_nonce, upstream_code_verifier, client_ip, \
-             created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+             created_at, expires_at, client_nonce) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&login.state_hash)
         .bind(&login.client_id)
@@ -348,6 +357,7 @@ impl Store {
         .bind(&login.client_ip)
         .bind(login.created_at)
         .bind(login.expires_at)
+        .bind(&login.client_nonce)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -363,7 +373,7 @@ impl Store {
         let row = sqlx::query(
             "DELETE FROM broker_pending_logins WHERE state_hash = $1 RETURNING state_hash, \
              client_id, redirect_uri, client_state, code_challenge, upstream_nonce, \
-             upstream_code_verifier, client_ip, created_at, expires_at",
+             upstream_code_verifier, client_ip, created_at, expires_at, client_nonce",
         )
         .bind(state_hash)
         .fetch_optional(&self.pool)
@@ -375,6 +385,7 @@ impl Store {
                 redirect_uri: row.try_get("redirect_uri")?,
                 client_state: row.try_get("client_state")?,
                 code_challenge: row.try_get("code_challenge")?,
+                client_nonce: row.try_get("client_nonce")?,
                 upstream_nonce: row.try_get("upstream_nonce")?,
                 upstream_code_verifier: row.try_get("upstream_code_verifier")?,
                 client_ip: row.try_get("client_ip")?,
@@ -421,8 +432,8 @@ impl Store {
         .await?;
         sqlx::query(
             "INSERT INTO broker_authorization_codes (code_hash, session_id, client_id, \
-             redirect_uri, code_challenge, created_at, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             redirect_uri, code_challenge, created_at, expires_at, nonce) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&code.code_hash)
         .bind(session.id)
@@ -431,6 +442,7 @@ impl Store {
         .bind(&code.code_challenge)
         .bind(session.created_at)
         .bind(code.expires_at)
+        .bind(&code.nonce)
         .execute(&mut *tx)
         .await?;
         tx.commit().await
@@ -449,7 +461,7 @@ impl Store {
         let used = sqlx::query(
             "UPDATE broker_authorization_codes SET used_at = $2 \
              WHERE code_hash = $1 AND used_at IS NULL \
-             RETURNING session_id, client_id, redirect_uri, code_challenge, expires_at",
+             RETURNING session_id, client_id, redirect_uri, code_challenge, nonce, expires_at",
         )
         .bind(code_hash)
         .bind(now)
@@ -499,6 +511,7 @@ impl Store {
             client_id: code.try_get("client_id")?,
             redirect_uri: code.try_get("redirect_uri")?,
             code_challenge: code.try_get("code_challenge")?,
+            nonce: code.try_get("nonce")?,
             expires_at: code.try_get("expires_at")?,
         })))
     }
@@ -566,5 +579,32 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    /// Accept the client assertion `jti_hash` of `client_id`, remembered
+    /// until `remember_until`, unless it was accepted before: returns
+    /// whether it is new. Assertions no longer acceptable at `now` are
+    /// forgotten first.
+    pub(crate) async fn accept_client_assertion(
+        &self,
+        client_id: &str,
+        jti_hash: &[u8],
+        remember_until: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query("DELETE FROM broker_client_assertions WHERE remember_until < $1")
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        let inserted = sqlx::query(
+            "INSERT INTO broker_client_assertions (client_id, jti_hash, remember_until) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(client_id)
+        .bind(jti_hash)
+        .bind(remember_until)
+        .execute(&self.pool)
+        .await?;
+        Ok(inserted.rows_affected() == 1)
     }
 }
