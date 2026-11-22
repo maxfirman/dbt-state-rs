@@ -70,7 +70,7 @@ ever mutate `CDO_DEMO_DB`.
 | Area | Drivers |
 |---|---|
 | Proxy and generic runs | `proxy_up.sh` (start or restart the proxy; captures go to `$GOLDEN_DIR`, default `/tmp/conf_golden`), `run.sh LABEL SELECT [EDIT_PY] [EXTRA…]` |
-| Result copy (clone) | `clone_experiment.sh LABEL {incremental\|table\|snapshot} [--fresh-source] [--no-clones]`, `clone_logic_sensitivity.sh`, `clone_eligibility.sh`, `clone_fallback_xenv.sh`, `clone_fallback_control.sh`, `clone_fallback_freshness.sh`, `clone_chain_provenance.sh`, `registerclone_source_age.sh`, `p0_fallback_over_existing.sh`, `physical_state_exec_type.sh`, `upstream_origin.py WORK_DIR [--json]` (#237: the per-case record of an `explain_capture.py upstream_origin` or `upstream_origin_table` run, served rows against the Reference execution; tested by `upstream_origin_test.py`) |
+| Result copy (clone) | `clone_experiment.sh LABEL {incremental\|table\|snapshot} [--fresh-source] [--no-clones]`, `clone_logic_sensitivity.sh`, `clone_eligibility.sh`, `clone_fallback_xenv.sh`, `clone_fallback_control.sh`, `clone_fallback_freshness.sh`, `clone_chain_provenance.sh`, `registerclone_source_age.sh`, `p0_fallback_over_existing.sh`, `physical_state_exec_type.sh`, `upstream_origin.py {WORK_DIR [--json]\|extract OUT_DIR LABEL=SERVICE=WORK_DIR…}` (#237: the per-case record of an `explain_capture.py upstream_origin` or `upstream_origin_table` run, served rows against the Reference execution, and the per-case evidence extract; tested by `upstream_origin_test.py`) |
 | Dependency and SQL identity | `finding3_*.sh`, `quoted_identifier_case.sh`, `resolution_context.sh` |
 | Lag tolerance | `lag_experiment.sh LABEL {any\|all} LAG {none\|a\|b\|both}`, `lag_buildage.sh`, `lag_isolate.sh`, `lag_docs_example.sh` (`DIRECT=1` runs without the proxy as a control), `lag_matrix.py ARM…`, `copy_candidates.py`, `seed_upstream.py` |
 | Data tests and templates | `data_test_freshness.sh`, `data_test_freshness_control.sh`, `data_test_template.sh`, `template_comparison.sh`, `data_test_history.py {table CAPTURE…\|probes\|probes-order}` (#200: attributes each data-test SKIP's echoed runtime to the confirmed run it matches; crafted one-factor and same-key cells through `PROBE_URL`; tested by `data_test_history_test.py`) |
@@ -192,15 +192,17 @@ SCENARIO = Scenario(
   `truncate table`, `drop table [if exists]` or `drop view [if exists]`
   followed by the per-run relation it writes. Unqualified names are allowed; two- or four-part names,
   `IDENTIFIER(...)`, Jinja braces, comments and `;` are refused.
-- `Read(relation, target="prod_demo")`: one `dbt show --inline "select * from
-  <relation>" --limit -1 --output json` with dbt State disabled (no proxy, no
-  RPC). The relation must be a three-part per-run object in a demo schema of
+- `Read(relation, target="prod_demo")`: one `dbt show --no-manage-state --inline
+  "select * from <relation>" --limit -1 --output json` with dbt State disabled
+  (no proxy, no RPC, and project or user settings cannot enable it). The relation must be a three-part per-run object in a demo schema of
   `CDO_DEMO_DB`. The rows go to `reads.json`, so a capture can compare what the
   Warehouse wrote with what the service returned (`volatile_evaluation.py`,
   #191).
-- `Reference(*select, target="prod_demo")`: one `dbt build --full-refresh
-  --select …` with dbt State disabled (no proxy, no RPC, no metering): a
-  Reference execution of per-run nodes (selectors checked as for `Build`). It
+- `Reference(*select, target="prod_demo")`: one `dbt build --no-manage-state
+  --full-refresh --select …` with dbt State disabled (no proxy, no RPC, no
+  metering): a Reference execution of per-run nodes. Each selector must be
+  exactly one of the run's node names, because dbt reads one string as
+  several selectors and a full refresh must not reach a shared model. It
   overwrites those relations, so put it after every State step that depends
   on them, then `Read` them (`upstream_origin.py`, #237).
 - `Explain(select, intent, node=None, decision=None, execution_type=None,

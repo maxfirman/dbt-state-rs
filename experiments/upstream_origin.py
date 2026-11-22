@@ -6,17 +6,25 @@ each case (A same physical upstream, B confirmed copy, C independent build, D
 independent build with a dev marker):
 
 - the prod downstream build (the one FULL candidate) and its confirmation;
-- the dev upstream's origin: RegisterClone copy (and its source and
-  confirmation) or its own build, with every dev upstream decision;
+- the dev upstream's origin, judged by its confirmed outcome: copied (and
+  from which source), built, built after a failed copy (the client's
+  fallback, `failed_to_clone`) or unconfirmed, with every dev upstream
+  decision;
 - every ordinary dev downstream submit in order (the first dev build, then
   the next unchanged one): decision, reason codes, description, the source
   named by a grant, the copy permissions the submit carried, and the
   confirmation (or client fallback, `failed_to_clone`);
 - the rows prod holds, the rows dev served after the first and the next dev
-  build, and the rows the State-disabled Reference execution produced. Served
-  rows other than the Reference's are a wrong-marker correctness finding.
+  build, and the rows the State-disabled Reference execution produced, each
+  attributed to the planned Read step it came from. Served rows other than the
+  Reference's are a wrong-marker correctness finding; a missing read makes
+  the case inconclusive.
 
-Usage: upstream_origin.py WORK_DIR [--json]
+Usage:
+  upstream_origin.py WORK_DIR [--json]
+  upstream_origin.py extract OUT_DIR LABEL=SERVICE=WORK_DIR ...
+      one credential-free evidence document per case (OUT_DIR/<case>.json);
+      SERVICE `hosted` names the scenario's promoted fixture
 Self-test: python3 experiments/upstream_origin_test.py
 """
 import json
@@ -51,11 +59,6 @@ def _confirms(rows):
                                           "failed_to_clone": req.get("failed_to_clone"),
                                           "last_modified_epoch": req.get("last_modified_epoch")}
     return out
-
-
-def _accepted(conf):
-    """An accepted confirmation that is not a client fallback after a failed copy."""
-    return bool(conf) and conf.get("success") is True and not conf.get("failed_to_clone")
 
 
 def _confirmed_epochs(rows, confirms):
@@ -106,48 +109,90 @@ def _decisions(rows, node, schema, confirms, methods=("SubmitEnrichedSQL",)):
             and variant(r)[0]]
 
 
+def _origin(variant_name, conf):
+    """What the dev Target holds after a decision, judged by its confirmed outcome."""
+    if variant_name == "skip_execution":
+        return "reused"
+    kind = {"ready_to_clone": "copy", "ready_to_execute": "build"}.get(variant_name, variant_name)
+    if not conf or conf.get("success") is not True:
+        return f"unconfirmed {kind}"
+    if variant_name == "ready_to_clone":
+        return "built after failed copy" if conf.get("failed_to_clone") else "copied"
+    return "built"
+
+
 def _upstream(rows, node, confirms):
+    """The dev upstream's origin: the RegisterClone pre-step if granted, else its first submit."""
     copies = [r for r in rows if r.get("method") == "RegisterClone" and _node(r) == node
               and _schema(r) == DEV]
     decisions = _decisions(rows, node, DEV, confirms)
     granted = next((r for r in copies if variant(r)[0] == "ready_to_clone"), None)
-    if granted is not None:
-        v, p = variant(granted)
-        return {"origin": "copied", "copy_source": p.get("clone_source"),
-                "confirmed": _accepted(confirms.get(p.get("request_id"))),
-                "register_clone": _decision(granted, confirms), "decisions": decisions}
-    first = decisions[0] if decisions else None
-    origin = {"ready_to_execute": "built", "ready_to_clone": "copied on submit",
-              "skip_execution": "skipped"}.get(first and first["variant"])
-    return {"origin": origin, "copy_source": (first or {}).get("source"),
-            "confirmed": _accepted((first or {}).get("confirm")),
-            "register_clone": None, "decisions": decisions}
+    first = _decision(granted, confirms) if granted is not None else (
+        decisions[0] if decisions else None)
+    if first is None:
+        return {"origin": None, "copy_source": None, "granted_source": None, "confirmed": False,
+                "register_clone": None, "decisions": decisions}
+    origin = _origin(first["variant"], first["confirm"])
+    return {"origin": origin,
+            "copy_source": first["source"] if origin == "copied" else None,
+            "granted_source": first["source"],
+            "confirmed": bool(first["confirm"]) and first["confirm"]["success"] is True,
+            "register_clone": first if granted is not None else None,
+            "decisions": decisions}
 
 
-def _rows_by_phase(steps, reads, name):
-    """{prod, served, after_next, reference} rows of relation `name` (unqualified)."""
-    ref_at = next((i for i, s in enumerate(steps["steps"]) if s.get("kind") == "Reference"), None)
-    out = {"prod": None, "served": None, "after_next": None, "reference": None}
-    dev_state = []
-    for rd in reads:
-        db, schema, obj = rd["relation"].split(".")
-        if obj.upper() != name.upper():
-            continue
-        if schema.upper() == PROD:
-            out["prod"] = rd["rows"]
-        elif ref_at is not None and rd["step"] > ref_at:
-            out["reference"] = rd["rows"]
-        else:
-            dev_state.append(rd["rows"])
-    if dev_state:
-        out["served"] = dev_state[0]
-    if len(dev_state) > 1:
-        out["after_next"] = dev_state[1]
+PHASES = ("prod", "served", "after_next", "reference")
+
+
+def _planned_reads(steps, name):
+    """Every planned Read of relation `name` (unqualified): (step index, phase, relation).
+
+    A read's phase comes from the steps before it: a prod-schema read is
+    `prod`; a dev read after a Reference selecting the node is `reference`;
+    otherwise the number of `dev_clone` builds selecting the node so far makes
+    it `served` (1) or `after_next` (2).
+    """
+    out, dev_builds, referenced = [], 0, False
+    for i, s in enumerate(steps["steps"]):
+        sel = {x.upper() for x in s.get("select") or ()}
+        if s.get("kind") == "Build" and s.get("target") == "dev_clone" and name.upper() in sel:
+            dev_builds += 1
+        elif s.get("kind") == "Reference" and name.upper() in sel:
+            referenced = True
+        elif s.get("kind") == "Read":
+            _, schema, obj = s["relation"].split(".")
+            if obj.upper() != name.upper():
+                continue
+            if schema.upper() == PROD:
+                phase = "prod"
+            elif referenced:
+                phase = "reference"
+            else:
+                phase = {1: "served", 2: "after_next"}.get(dev_builds, f"after_build_{dev_builds}")
+            out.append((i, phase, s["relation"]))
     return out
 
 
+def _rows_by_phase(steps, reads, name):
+    """({phase: rows, or None when not measured}, [every planned read with its rows])."""
+    by_step = {rd["step"]: rd["rows"] for rd in reads}
+    rows = dict.fromkeys(PHASES)
+    listed = []
+    for step, phase, relation in _planned_reads(steps, name):
+        got = by_step.get(step)
+        listed.append({"phase": phase, "step": step, "relation": relation, "rows": got})
+        if got is not None:
+            rows[phase] = got
+    return rows, listed
+
+
 def record(rows, steps, reads):
-    """The per-case record for every case whose downstream the capture holds."""
+    """The per-case record for every case whose downstream the capture holds.
+
+    `wrong_marker` is True when a dev read after the first or the next dev
+    build differs from the Reference read, False when all agree, and None
+    (inconclusive) when any of those three reads is missing.
+    """
     names = steps["names"]
     confirms = _confirms(rows)
     out = {}
@@ -155,9 +200,11 @@ def record(rows, steps, reads):
         dn, up = names.get(f"o{c}_dn"), names.get(f"o{c}_up")
         if not dn or not any(_node(r) == dn for r in rows):
             continue
-        rows_dn = _rows_by_phase(steps, reads, dn)
-        rows_up = _rows_by_phase(steps, reads, up) if c != "a" else None
-        served = [x for x in (rows_dn["served"], rows_dn["after_next"]) if x is not None]
+        rows_dn, reads_dn = _rows_by_phase(steps, reads, dn)
+        missing = [p for p in ("served", "after_next", "reference") if rows_dn[p] is None]
+        rows_up, reads_up = (None, [])
+        if c != "a":
+            rows_up, reads_up = _rows_by_phase(steps, reads, up)
         out[c] = {
             "names": {"input": names.get(f"o{c}_in"), "upstream": up, "downstream": dn},
             "prod_downstream": _decisions(rows, dn, PROD, confirms),
@@ -170,8 +217,12 @@ def record(rows, steps, reads):
                                               and _node(r) == dn for r in rows),
             "rows": rows_dn,
             "upstream_rows": rows_up,
-            "wrong_marker": (rows_dn["reference"] is not None
-                             and any(_canon(x) != _canon(rows_dn["reference"]) for x in served)),
+            "reads": reads_dn,
+            "upstream_reads": reads_up,
+            "missing": missing,
+            "wrong_marker": None if missing else any(
+                _canon(rows_dn[p]) != _canon(rows_dn["reference"])
+                for p in ("served", "after_next")),
         }
     return out
 
@@ -201,13 +252,16 @@ def _line(d):
 def render(rec):
     out = []
     for c, r in rec.items():
-        out.append(f"## {LABEL[c]}" + ("  ** WRONG MARKER **" if r["wrong_marker"] else ""))
+        verdict = ("  ** WRONG MARKER **" if r["wrong_marker"] else
+                   f"  INCONCLUSIVE (missing: {', '.join(r['missing'])})"
+                   if r["wrong_marker"] is None else "")
+        out.append(f"## {LABEL[c]}{verdict}")
         for d in r["prod_downstream"]:
             out.append(f"  prod downstream: {_line(d)}")
         u = r["dev_upstream"]
         if u:
-            out.append(f"  dev upstream origin: {u['origin']} (source {u['copy_source']}, "
-                       f"confirmed {u['confirmed']})")
+            out.append(f"  dev upstream origin: {u['origin']} (copy source {u['copy_source']}, "
+                       f"granted source {u['granted_source']}, confirmed {u['confirmed']})")
             if u["register_clone"]:
                 out.append(f"    RegisterClone: {_line(u['register_clone'])}")
             for d in u["decisions"]:
@@ -227,18 +281,86 @@ def render(rec):
     return "\n".join(out)
 
 
-def main(argv):
-    if not argv or argv[0].startswith("-"):
-        print(__doc__)
-        return 2
-    work = argv[0]
+# The promoted fixture of each scenario's hosted capture.
+FIXTURES = {"upstream_origin": "golden/fixtures/explain_upstream_origin_incremental.jsonl",
+            "upstream_origin_table": "golden/fixtures/explain_upstream_origin_table.jsonl"}
 
+
+def _case_rpcs(rows, nodes):
+    """The capture rows of `nodes` (decisions) and their confirmations, without call metadata."""
+    mine = [r for r in rows if _node(r) in nodes and r.get("method") != "ConfirmExecution"]
+    ids = {variant(r)[1].get("request_id") for r in mine} - {None, ""}
+    mine_ids = {id(r) for r in mine}
+    keep = [r for r in rows if id(r) in mine_ids
+            or r.get("method") == "ConfirmExecution"
+            and (r.get("request") or {}).get("request_id") in ids]
+    drop = ("metadata", "response_metadata")
+    return [{k: v for k, v in r.items() if k not in drop} for r in keep]
+
+
+def extract(runs):
+    """One evidence document per case across `runs`, keyed by the case letter.
+
+    Each run is {label, service, fixture, rows, steps, reads}. A document holds,
+    per run, the decisions' record summary, every planned read with its run
+    step, phase, relation and rows, and the case's RPCs without call metadata.
+    """
+    docs = {}
+    for run in runs:
+        rec = record(run["rows"], run["steps"], run["reads"])
+        for c, r in rec.items():
+            doc = docs.setdefault(c.upper(), {"case": c.upper(), "description": LABEL[c],
+                                              "runs": []})
+            u = r["dev_upstream"]
+            doc["runs"].append({
+                "label": run["label"], "service": run["service"], "fixture": run["fixture"],
+                "run": run["steps"].get("run"), "scenario": run["steps"].get("scenario"),
+                "names": r["names"],
+                "dev_upstream_origin": u and {k: u[k] for k in
+                                              ("origin", "copy_source", "granted_source",
+                                               "confirmed")},
+                "dev_downstream_decisions": [
+                    {k: d[k] for k in ("decision", "codes", "description", "source",
+                                       "allow_clones", "clone_chain_depth_limit",
+                                       "freshness_tolerance_seconds", "confirm")}
+                    for d in r["dev_downstream"]],
+                "wrong_marker": r["wrong_marker"], "missing": r["missing"],
+                "reads": r["reads"], "upstream_reads": r["upstream_reads"],
+                "rpcs": _case_rpcs(run["rows"], {r["names"]["upstream"],
+                                                 r["names"]["downstream"]}),
+            })
+    return docs
+
+
+def _load(work):
     def load(name):
         with open(os.path.join(work, name)) as fh:
             return fh.read()
 
     rows = [json.loads(line) for line in load("window.jsonl").splitlines() if line.strip()]
-    rec = record(rows, json.loads(load("steps.json")), json.loads(load("reads.json")))
+    return rows, json.loads(load("steps.json")), json.loads(load("reads.json"))
+
+
+def main(argv):
+    if argv[:1] == ["extract"] and len(argv) >= 3:
+        out_dir, runs = argv[1], []
+        for spec in argv[2:]:
+            label, service, work = spec.split("=", 2)
+            rows, steps, reads = _load(work)
+            fixture = FIXTURES.get(steps.get("scenario")) if service == "hosted" else None
+            runs.append({"label": label, "service": service, "fixture": fixture,
+                         "rows": rows, "steps": steps, "reads": reads})
+        os.makedirs(out_dir, exist_ok=True)
+        for case, doc in extract(runs).items():
+            with open(os.path.join(out_dir, f"{case}.json"), "w") as fh:
+                json.dump(doc, fh, indent=1)
+                fh.write("\n")
+            print(f"wrote {os.path.join(out_dir, case + '.json')}")
+        return 0
+    if not argv or argv[0].startswith("-"):
+        print(__doc__)
+        return 2
+    rec = record(*_load(argv[0]))
     print(json.dumps(rec, indent=1) if "--json" in argv else render(rec))
     return 0
 

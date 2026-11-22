@@ -25,12 +25,13 @@ code. The comparison with Databricks (#238) and any policy change belong to
   downstream in B, C and D in both runs. In D that serves the prod marker:
   replaying run 2 natively against this server (dbt 2.0.11, Snowflake)
   served `v='prod'` where the Reference execution serves `v='dev'`. This is
-  the dev-input case #236 user story 2 describes. The #239 crafted histories
-  report the same local behaviour: this server copies a source whose upstream
-  sits in its own Target's schema, which hosted does not consider. Keyed as
-  open gaps, not accepted divergences, for policy review in #242 and #243.
-  This finding rests on the rehearsal's warehouse reads, which are kept out
-  of the tree (see Provenance).
+  the dev-input case #236 user story 2 describes. #239's crafted histories
+  observed the same outcome in another setup: this server copied a source
+  whose SQL matches once schemas are abstracted but which read another
+  relation of the same name (a third schema, `CSC_UP_ALT`), where hosted
+  built. Keyed as open gaps, not accepted divergences, for policy review in
+  #242 and #243. The rehearsal's reads, phases and RPCs are in the
+  [evidence extract](evidence/snowflake-upstream-origin/D.json).
 
 ## Provenance
 
@@ -55,13 +56,19 @@ code. The comparison with Databricks (#238) and any policy change belong to
 - Run 2 builds C and D's dev upstream on the profile output `dev_noclone`.
   It is `dev_clone` with `allow_clones: false` (it sends `clone_chain_depth_limit: 0`),
   added to the local `~/.dbt/profiles.yml` for this run.
-- Raw windows, dbt logs, `reads.json` and the per-case records
-  (`run*.record.{txt,json}`) are out of the tree at
-  `~/projects/worktrees/dbt-state-rs/notes-237/`. The fixtures hold every
-  request and response quoted below. They hold no warehouse rows: the rows in
-  the Results table come from the State-free `dbt show` reads in each run's
-  `reads.json`, and the Rust rehearsal (its window and reads) is kept only
-  there too. Both are reproduced by rerunning the scenarios (Reproduce).
+- **Evidence in the tree.** The fixtures hold every hosted request and
+  response quoted below. The rows come from State-free `dbt show` reads.
+  [`evidence/snowflake-upstream-origin/`](evidence/snowflake-upstream-origin/)
+  holds one document per case (`A.json` … `D.json`), written by
+  `experiments/upstream_origin.py extract`. For hosted run 1, hosted run 2 and
+  the Rust rehearsal, each document lists every planned read with its run
+  step, phase (`prod`, `served`, `after_next`, `reference`), relation and
+  rows. It also lists the dev upstream's origin, the dev downstream
+  decisions, the verdict, and the case's RPCs without call metadata. The
+  rehearsal was not promoted as a fixture; its document is its only
+  in-tree record.
+- Raw windows, dbt logs and `reads.json` remain out of the tree at
+  `~/projects/worktrees/dbt-state-rs/notes-237/`.
 
 ## Setup (both runs)
 
@@ -90,8 +97,10 @@ downstream `ox_dn` ([`_upstream_origin.py`](../../experiments/capture_scenarios/
   `(1, 'dev')`. Run 1 sets `pre_clone: never` on the upstream; run 2 builds it
   on `dev_noclone`.
 - Then, per case: the next unchanged dev build. Last: a State-disabled
-  `dbt build --full-refresh` of every dev node (the Reference execution, the
-  driver's `Reference` step), read back.
+  `dbt build --full-refresh --no-manage-state` of every dev node (the
+  Reference execution, the driver's `Reference` step), read back. The
+  capture's reads also pass `--no-manage-state`. Both run without the proxy
+  or the State environment.
 
 ## Results
 
@@ -151,17 +160,24 @@ so no copy fell back to a build on the client.
   `explain_clone_history.jsonl` entry 12 (client 2.0.6, 2026-11-08, upstream
   copied on submit), `clone_fallback_zero_tolerance.jsonl` entry 2
   (2026-10-12) and `clone_chain_upstream_history.jsonl` entry 13 (client
-  2.0.11, 2026-11-10). This run does not explain why those were copied while
-  B was not. Possible factors are the client version, the source's own
-  history (those sources were themselves copies) and a hosted change since
-  2026-11-10. The question is open; see
+  2.0.11, 2026-11-10). In the first two, the granted source was built and
+  confirmed in the same capture (entries 3–4 and 0–1); `explain_clone_history`
+  has B's run-2 shape, with the dev upstream copied on submit from prod's
+  (entry 7). In the third, the granted source `CF2_MODEL_164819` was built in
+  an earlier session the capture lacks. This run does not explain why those
+  were copied while B was not. Observed differences, none shown to be the
+  cause: the client (2.0.6 in `explain_clone_history`), the Lag tolerance
+  (2700 s there, 0 s here, though `clone_fallback_zero_tolerance` copied at
+  0 s), the downstream's configuration (`node_configs_hash` differs:
+  `pre_clone` and `lag_tolerance` are set here), and the capture dates
+  (hosted may have changed since 2026-11-10). The question is open; see
   [correctness-handoff.md](../correctness-handoff.md#open-hosted-questions).
-- This server's copy of D serves rows computed from prod's input. The cause
-  is the one #239 reports for its middle source.
-  `submit_decision/copy_search.rs` takes an equivalent recorded under another
-  Target, the schema-abstracted logic identity holds, and nothing ties the
-  candidate's recorded upstream read to the physical upstream the submit
-  reads.
+- This server's copy of D serves rows computed from prod's input. From the
+  code, not from a capture: `submit_decision/copy_search.rs` takes an
+  equivalent recorded under another Target when the schema-abstracted logic
+  identity holds, and nothing ties the candidate's recorded upstream read to
+  the physical upstream the submit reads. #239's middle source shows the same
+  outcome; whether it has the same cause is not established.
 
 ## Replay
 
@@ -184,7 +200,8 @@ exactly.
 - **Copy trees (3):** I23, T29 (A) and T36 (B's dev upstream). Both copy.
   Hosted lists the upstream `<FRESH>` with "no updates since … last
   executed"; this server omits the badge and the line. #239 reports the same
-  open Snowflake rendering gap.
+  open Snowflake rendering gap. T36's source is prod's upstream
+  (`OB_UP`), the others' prod's downstream.
 
 6 + 12 + 4 + 2 + 3 = 27.
 
@@ -198,6 +215,10 @@ python3 experiments/upstream_origin_test.py        # per-case record self-test
 python3 experiments/explain_capture.py upstream_origin --port <p> --work-dir <dir1>
 python3 experiments/explain_capture.py upstream_origin_table --port <p> --work-dir <dir2>
 python3 experiments/upstream_origin.py <dir>       # per-case record (--json for all fields)
+python3 experiments/upstream_origin.py extract docs/reports/evidence/snowflake-upstream-origin \
+  "hosted run 1 (merge-incremental upstream)=hosted=<dir1>" \
+  "hosted run 2 (table upstream)=hosted=<dir2>" \
+  "dbt-state-server rehearsal of run 2=dbt-state-server=<rehearsal dir>"
 ```
 
 For a rehearsal against this server, start `dbt-state-server` on another

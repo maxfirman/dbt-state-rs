@@ -189,10 +189,15 @@ _RELATION = re.compile(r"[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*){2}
 class Reference:
     """One State-disabled `dbt build --full-refresh --select ...`: a Reference execution.
 
-    No proxy, no State RPC, no metering. It rebuilds the selected per-run nodes
-    from their inputs, so a capture can compare the rows State served with the
-    rows an independent run produces (#237). It overwrites those relations, so
-    put it after every State step that depends on them.
+    No proxy, no State RPC, no metering, and `--no-manage-state` so project or
+    user settings cannot enable State either. It rebuilds the selected per-run
+    nodes from their inputs, so a capture can compare the rows State served
+    with the rows an independent run produces (#237). It overwrites those
+    relations, so put it after every State step that depends on them.
+
+    Each selector must be exactly one of the run's node names: dbt reads one
+    string as several selectors, and a full refresh must never reach a shared
+    model.
     """
     select: tuple
     target: str = "prod_demo"
@@ -202,13 +207,21 @@ class Reference:
         self.target = target
 
     def bind(self, m, run):
-        b = Build(*self.select, target=self.target).bind(m, run)
-        return Reference(*b.select, target=b.target)
+        nodes = {v for k, v in m.items() if k != "run"}
+        sel = tuple(_sub(s, m, "Reference select") for s in self.select)
+        if not sel:
+            raise CaptureError("Reference selects nothing")
+        for s in sel:
+            if s not in nodes:
+                raise CaptureError(f"Reference selector {s!r} is not exactly one of the run's "
+                                   "node names")
+        return Reference(*sel, target=self.target)
 
 
 @dataclass(init=False)
 class Read:
-    """Read every row of one per-run demo relation with `dbt show --inline`, without dbt State.
+    """Read every row of one per-run demo relation with `dbt show --inline`, without dbt State
+    (no proxy, and `--no-manage-state`).
 
     The rows land in `reads.json`, so a capture can compare the value the
     Warehouse wrote with the value the service rendered (#191).
@@ -771,12 +784,14 @@ class Run:
             if rc:
                 print(f"  (dbt build exited 1 with failing data tests expected; see {log})")
         elif isinstance(step, Reference):
-            rc, log = self.dbt(k, "reference", ["build", "--target", step.target, "--select",
-                                                *step.select, "--full-refresh"], env=self.read_env())
+            rc, log = self.dbt(k, "reference", ["build", "--no-manage-state", "--target",
+                                                step.target, "--select", *step.select,
+                                                "--full-refresh"], env=self.read_env())
             if rc:
                 raise CaptureError(f"State-disabled reference build exited {rc}; see {log}")
         elif isinstance(step, Read):
-            rc, log = self.dbt(k, "show", ["show", "--target", step.target, "--inline", step.query,
+            rc, log = self.dbt(k, "show", ["show", "--no-manage-state", "--target", step.target,
+                                           "--inline", step.query,
                                            "--limit", "-1", "--output", "json"], env=self.read_env())
             if rc:
                 raise CaptureError(f"dbt show exited {rc}; see {log}")

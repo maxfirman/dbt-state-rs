@@ -416,9 +416,11 @@ server keeps the conservative behavior described.
   or submit copy) or an independent build of the same logic, for a merge
   incremental and a table upstream alike. It served the Reference execution's
   rows in every case. Older captures copied a downstream over a dev upstream
-  copy (`explain_clone_history.jsonl` entry 12, client 2.0.6;
-  `clone_chain_upstream_history.jsonl` entry 13, client 2.0.11, whose sources
-  were themselves copies). What separates those from #237 case B is open
+  copy: `explain_clone_history.jsonl` entry 12 (client 2.0.6, the source
+  built and confirmed in the capture, B's run-2 shape) and
+  `clone_chain_upstream_history.jsonl` entry 13 (client 2.0.11, the source
+  built in an earlier session). What separates those from #237 case B is
+  open; the report lists the observed differences
   ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
 - **Seed copy, uncaptured cases (#91).** A seed whose target forbids copies
   with `clone_chain_depth_limit: 0` alone (client 2.0.11 sends it only with
@@ -693,7 +695,10 @@ T41, T53; both build). Its copy trees omit hosted's `<FRESH>` anchor line
 **Correctness finding:** in D the copy
 serves rows computed from prod's input. A native run of the table scenario
 against this server served `v='prod'` where the State-disabled Reference
-execution serves `v='dev'`. #239 reports the same cause. Open for #242 and
+execution serves `v='dev'`. #239's middle source shows the same outcome
+(a source that read another relation of the same name, there in a third
+schema); a shared cause is inferred from `copy_search.rs`, not observed.
+Evidence: `docs/reports/evidence/snowflake-upstream-origin/`. Open for #242 and
 #243, not an accepted divergence
 ([report](reports/snowflake-upstream-origin-2026-11-22.md)).
 

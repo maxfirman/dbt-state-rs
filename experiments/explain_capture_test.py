@@ -410,6 +410,9 @@ with tempfile.TemporaryDirectory() as work:
     if any(k in kw["env"] for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL")):
         fail("a Read runs without dbt State", kw["env"])
     ok("a Read runs without dbt State")
+    if "--no-manage-state" not in cmd:
+        fail("a Read disables dbt State on the command line", cmd)
+    ok("a Read disables dbt State on the command line")
     if run.reads != [{"step": 1, "relation": rb.steps[1].relation, "rows": ec.parse_show_rows(SHOW_LOG)}]:
         fail("a Read records the rows it read", run.reads)
     ok("a Read records the rows it read")
@@ -430,9 +433,14 @@ fp = ec.plan(fb_)
 if (fp.builds, fp.references, fp.total, fp.targets) != (1, 1, 2, {"dev_clone"}):
     fail("a Reference is a dbt invocation on its target, not a State build", fp)
 ok("a Reference is a dbt invocation on its target, not a State build")
-for bad in ("orders", "+${fa}"):
+# A Reference full-refreshes what it selects, so each selector must be exactly
+# one of the run's node names: dbt reads one string as several selectors.
+for bad in ("orders", "+${fa}", "${fa}+", "orders ${fa}", "${fa} orders", "${fa},orders",
+            "tag:${fa}", "${run}"):
     expect_refusal(f"a Reference selecting {bad!r} is refused",
                    lambda: ec.bind(ec.Scenario("bad", "", ("fa",), [ec.Reference(bad)]), RUN))
+expect_refusal("a Reference selecting nothing is refused",
+               lambda: ec.bind(ec.Scenario("bad", "", ("fa",), [ec.Reference()]), RUN))
 with tempfile.TemporaryDirectory() as work:
     run = ec.Run(fb_, 50999, work, "/nonexistent", False, "/validated/dir")
     os.makedirs(run.logs)
@@ -456,6 +464,9 @@ with tempfile.TemporaryDirectory() as work:
     if any(k in kw["env"] for k in ("DBT_ENGINE_MANAGE_STATE", "RUN_CACHE_API_URL")):
         fail("a Reference runs without dbt State", kw["env"])
     ok("a Reference runs without dbt State")
+    if "--no-manage-state" not in cmd:
+        fail("a Reference disables dbt State on the command line", cmd)
+    ok("a Reference disables dbt State on the command line (project or user settings cannot enable it)")
 
     class _Rc1:
         returncode = 1
